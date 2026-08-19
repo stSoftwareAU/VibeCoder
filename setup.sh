@@ -117,9 +117,15 @@ set -euo pipefail
 #                             Get a free key from https://api.imgbb.com/
 #                             Without this, screenshots are saved locally and must
 #                             be manually uploaded to the PR if needed.
-#   VIBE_FLEET_HEALTH_DIR     - Directory for FLEET health tracking repository
-#                             Defaults to ../private-repo-6 (sibling of VibeCoder).
-#                             Cloned automatically if missing.
+#   VIBE_FLEET_HEALTH_DIR     - Directory of the FLEET health tracking checkout
+#                             (optional; a single host does not need one).
+#                             Defaults to ../private-repo-6 (sibling of VibeCoder)
+#                             and is recorded only when that directory exists.
+#   VIBE_FLEET_HEALTH_REPO    - Git URL of your fleet's health repository. When
+#                             set and the directory is missing, setup clones it
+#                             there. Never assumed: without it setup does not
+#                             attempt a clone (an unreachable guessed URL only
+#                             ever produced a "repository exists?" warning).
 #   VIBE_UPDATE_GH_USER_STATUS - Set to "true" (default) or "false" to control
 #                             GitHub user profile status updates. Requires the
 #                             `user` scope on the GitHub token.
@@ -635,6 +641,7 @@ prompt_interactive_config() {
     local existing_ssh_key_path=""
     local existing_gh_config_dir=""
     local existing_imgbb_api_key=""
+    local existing_fleet_health_dir=""
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         existing_repos=$(jq -r '(.repos // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
         existing_allowed_author=$(jq -r '(.allowed_authors // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
@@ -642,6 +649,7 @@ prompt_interactive_config() {
         existing_ssh_key_path=$(jq -r '.ssh_key_path // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_gh_config_dir=$(jq -r '.gh_config_dir // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_imgbb_api_key=$(jq -r '.imgbb_api_key // empty' "$CONFIG_FILE" 2>/dev/null)
+        existing_fleet_health_dir=$(jq -r '.fleet_health_dir // empty' "$CONFIG_FILE" 2>/dev/null)
     fi
 
     # Prompt for repos to monitor (required)
@@ -758,11 +766,23 @@ prompt_interactive_config() {
 
     echo ""
 
-    # FLEET health tracking — always at ../private-repo-6 (sibling of VibeCoder)
-    INTERACTIVE_FLEET_HEALTH_DIR="$(cd "$SCRIPT_DIR" && cd .. && pwd)/private-repo-6"
-    local expanded_fleet="$INTERACTIVE_FLEET_HEALTH_DIR"
-    if [[ ! -d "$expanded_fleet" ]]; then
-        print_info "Cloning FLEET health repository to ${INTERACTIVE_FLEET_HEALTH_DIR}..."
+    # FLEET health tracking (optional, Issue #535). A fleet of workers can
+    # report into a shared health repository; a single host does not need one.
+    # Enabled when a checkout already exists (VIBE_FLEET_HEALTH_DIR, the
+    # configured fleet_health_dir, or the ../private-repo-6 sibling) or when
+    # the operator names the repository to clone (VIBE_FLEET_HEALTH_REPO).
+    # Setup never clones an assumed URL: on a host without access that only
+    # ever produced "Could not read from remote repository ... repository
+    # exists".
+    local fleet_default_dir
+    fleet_default_dir="$(cd "$SCRIPT_DIR" && cd .. && pwd)/private-repo-6"
+    local fleet_dir="${VIBE_FLEET_HEALTH_DIR:-${existing_fleet_health_dir:-$fleet_default_dir}}"
+    local expanded_fleet="${fleet_dir/#\~/$HOME}"
+    if [[ -d "$expanded_fleet" ]]; then
+        INTERACTIVE_FLEET_HEALTH_DIR="$fleet_dir"
+        print_success "FLEET health directory found at ${fleet_dir}"
+    elif [[ -n "${VIBE_FLEET_HEALTH_REPO:-}" ]]; then
+        print_info "Cloning FLEET health repository to ${fleet_dir}..."
         local _fleet_ssh_cmd=""
         if [[ -n "${INTERACTIVE_SSH_KEY_PATH:-}" ]]; then
             local _expanded_ssh="${INTERACTIVE_SSH_KEY_PATH/#\~/$HOME}"
@@ -772,21 +792,26 @@ prompt_interactive_config() {
             # SEC-a228ff008ed4). printf %q is bash 3.2+ and macOS-safe.
             _fleet_ssh_cmd="ssh -i $(printf '%q' "$_expanded_ssh") -o IdentitiesOnly=yes"
         fi
+        local _fleet_cloned=false
         if [[ -n "$_fleet_ssh_cmd" ]]; then
-            if GIT_SSH_COMMAND="$_fleet_ssh_cmd" git clone git@github.com:stSoftwareAU/private-repo-6.git "$expanded_fleet" 2>&1; then
-                print_success "FLEET health repository cloned"
-            else
-                print_warning "Failed to clone FLEET health repository (non-fatal)"
+            if GIT_SSH_COMMAND="$_fleet_ssh_cmd" git clone "$VIBE_FLEET_HEALTH_REPO" "$expanded_fleet" 2>&1; then
+                _fleet_cloned=true
             fi
         else
-            if git clone git@github.com:stSoftwareAU/private-repo-6.git "$expanded_fleet" 2>&1; then
-                print_success "FLEET health repository cloned"
-            else
-                print_warning "Failed to clone FLEET health repository (non-fatal)"
+            if git clone "$VIBE_FLEET_HEALTH_REPO" "$expanded_fleet" 2>&1; then
+                _fleet_cloned=true
             fi
         fi
+        if [[ "$_fleet_cloned" == "true" ]]; then
+            INTERACTIVE_FLEET_HEALTH_DIR="$fleet_dir"
+            print_success "FLEET health repository cloned"
+        else
+            # Not recorded: a fleet_health_dir that points at nothing would
+            # have the worker warn about the missing checkout every heartbeat.
+            print_warning "Failed to clone FLEET health repository from ${VIBE_FLEET_HEALTH_REPO} (non-fatal; health tracking stays off)"
+        fi
     else
-        print_success "FLEET health directory found at ${INTERACTIVE_FLEET_HEALTH_DIR}"
+        print_info "FLEET health tracking not configured (optional). To enable it, clone your fleet's health repository to ${fleet_default_dir} or set VIBE_FLEET_HEALTH_REPO to its git URL and re-run setup."
     fi
 
     # If a gh config dir is set, ensure it exists and offer to run gh auth login
@@ -887,6 +912,21 @@ write_interactive_config() {
 # ~/auto-issue-work (or its approval-state sibling) on the host is never
 # mounted again and only wastes disk. Reminder only — deleting operator data
 # is never setup's call, and native-mode hosts still use these directories.
+# True when the directory holds anything besides setup's own `.vibe-cache`.
+# Setup's host-side steps (the workflow and best-practice audits) keep a small
+# lookup cache at `${WORK_DIR}/.vibe-cache`, so that entry is setup's doing,
+# not a leftover workspace: only repository checkouts and other worker data
+# count as wasted disk.
+host_work_dir_holds_worker_data() {
+    local entry
+    for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [[ -e "${entry}" || -L "${entry}" ]] || continue
+        [[ "${entry##*/}" == ".vibe-cache" ]] && continue
+        return 0
+    done
+    return 1
+}
+
 remind_obsolete_host_work_dirs() {
     # Resolve the run mode through the same Deno command the launchers use,
     # so the precedence (VIBE_RUN_MODE, then .config.json, then container)
@@ -904,7 +944,7 @@ remind_obsolete_host_work_dirs() {
     local work_dir="${WORK_DIR:-${HOME}/auto-issue-work}"
     local dir size found=false
     for dir in "${work_dir}" "${work_dir}-approval-state"; do
-        if [[ -d "${dir}" ]] && [[ -n "$(ls -A "${dir}" 2>/dev/null)" ]]; then
+        if [[ -d "${dir}" ]] && host_work_dir_holds_worker_data "${dir}"; then
             size="$(du -sh "${dir}" 2>/dev/null | cut -f1)"
             print_warning "${dir} (${size:-size unknown}) is wasting disk: container mode keeps the workspace on named volumes (Issue #4186), so this host directory is never mounted again."
             found=true
@@ -1012,4 +1052,9 @@ main() {
 # exercise individual helpers such as run_setup_cli (Issue #3653).
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
+    # Leave through exit rather than falling off the end: bash reads a script
+    # lazily by byte offset, so a setup.sh rewritten while a long run is still
+    # going (a `git pull` in another window) would otherwise be read past its
+    # old end and a fragment of the new text executed as a command.
+    exit $?
 fi

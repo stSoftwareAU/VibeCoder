@@ -576,12 +576,17 @@ repository to signal it is functioning correctly.
 
 | Variable          | Default                                      | Description                                               |
 | ----------------- | -------------------------------------------- | --------------------------------------------------------- |
-| `FLEET_HEALTH_DIR`  | (empty)                                      | Directory for private-repo-6 repository. Disabled when empty. |
-| `FLEET_HEALTH_REPO` | `git@github.com:stSoftwareAU/private-repo-6.git` | Git URL to clone if directory doesn't exist               |
+| `FLEET_HEALTH_DIR`  | (empty)                                      | Directory of the private-repo-6 checkout. Disabled when empty. |
+| `FLEET_HEALTH_REPO` | (empty)                                      | Git URL to clone into `FLEET_HEALTH_DIR` when that directory does not exist. Unset, the worker never clones (it logs that tracking is off) — no URL is assumed. |
 | `FLEET_HEALTH_TIMEOUT_MS` | `600000` (10 minutes)                  | Timeout for the `helpers/repos.sh` health-report subprocess. Raised from 60s so a slow-but-healthy report run is not killed and the host wrongly marked dead (Issue #3127). |
 
 These values can be configured via `setup.sh` using `VIBE_FLEET_HEALTH_DIR` or
-persisted in `.config.json` as `fleet_health_dir` (Issue #535).
+persisted in `.config.json` as `fleet_health_dir` (Issue #535). Health
+tracking is optional — a single host does not need it. `setup.sh` /
+`setup.ps1` record `fleet_health_dir` only when the checkout exists (the
+`../private-repo-6` sibling by default), and clone it there only when
+`VIBE_FLEET_HEALTH_REPO` names your fleet's health repository; otherwise setup
+prints one informational line and moves on.
 
 ## 🔌 Feature Availability
 

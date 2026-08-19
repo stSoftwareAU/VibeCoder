@@ -39,8 +39,14 @@ export const DEFAULT_FLEET_HEALTH_TIMEOUT_MS = 600_000;
 export interface FleetHealthConfig {
   /** Directory where the private-repo-6 repository is cloned. */
   healthDir: string;
-  /** Git clone URL for the private-repo-6 repository. */
-  healthRepo: string;
+  /**
+   * Git clone URL for the private-repo-6 repository (`FLEET_HEALTH_REPO`),
+   * used only when `healthDir` does not exist yet. Undefined when the operator
+   * has not named one: the worker never clones an assumed URL — on a host
+   * without access to it that only ever produced a failed clone every
+   * heartbeat.
+   */
+  healthRepo: string | undefined;
   /** Host identifier for health reports (e.g., hostname without domain). */
   hostId: string;
   /**
@@ -49,6 +55,17 @@ export interface FleetHealthConfig {
    * `FLEET_HEALTH_TIMEOUT_MS` environment variable (Issue #3127).
    */
   reportTimeoutMs: number;
+}
+
+/**
+ * FLEET health tracking is not configured on this host: the checkout does not
+ * exist and no `FLEET_HEALTH_REPO` names a repository to clone it from.
+ */
+export class FleetHealthNotConfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FleetHealthNotConfiguredError";
+  }
 }
 
 /** Dependency injection for FLEET health operations. */
@@ -105,8 +122,7 @@ export function buildFleetHealthConfig(repoDir: string): FleetHealthConfig {
     (inContainer
       ? `${workDir}/private-repo-6`
       : `${repoDir}/../private-repo-6`);
-  const healthRepo = Deno.env.get("FLEET_HEALTH_REPO") ??
-    "git@github.com:stSoftwareAU/private-repo-6.git";
+  const healthRepo = Deno.env.get("FLEET_HEALTH_REPO") || undefined;
 
   // Host identity. Inside the container `Deno.hostname()` is the ephemeral
   // container name (a fresh one every cycle), which would leave the real
@@ -356,6 +372,18 @@ export async function ensureFleetHealthRepo(
   const exists = await deps.directoryExists(config.healthDir);
 
   if (!exists) {
+    if (!config.healthRepo) {
+      // Optional feature, not configured on this host: no checkout and no
+      // repository to clone it from. Say so once per call and stop — the
+      // report itself is skipped by the caller, so this is the whole story
+      // in the log rather than a failed clone plus a "script not found".
+      const message =
+        `FLEET health tracking is off: ${config.healthDir} does not exist ` +
+        "and FLEET_HEALTH_REPO is not set (optional; clone your fleet's " +
+        "health repository there or set FLEET_HEALTH_REPO to enable it)";
+      deps.log(message);
+      return { ok: false, error: new FleetHealthNotConfiguredError(message) };
+    }
     deps.log("Cloning private-repo-6 repository...");
     const cloneResult = await deps.runCommand(
       ["git", "clone", "--depth=1", config.healthRepo, config.healthDir],
@@ -528,8 +556,15 @@ export async function runFleetHealthReporting(
   config: FleetHealthConfig,
   deps: FleetHealthDeps,
 ): Promise<Result<void>> {
-  // Ensure repo is cloned/updated (best-effort)
-  await ensureFleetHealthRepo(config, deps);
+  // Ensure repo is cloned/updated (best-effort). Not configured at all —
+  // no checkout, nothing to clone from — means there is nothing to report
+  // into either, so stop here rather than add a "script not found" warning.
+  const ensured = await ensureFleetHealthRepo(config, deps);
+  if (
+    !ensured.ok && ensured.error instanceof FleetHealthNotConfiguredError
+  ) {
+    return ensured;
+  }
 
   // Report health
   return await reportFleetHealth(config, deps);

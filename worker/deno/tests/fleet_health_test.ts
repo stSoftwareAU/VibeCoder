@@ -25,6 +25,7 @@ import {
   createProductionFleetHealthDeps,
   DEFAULT_FLEET_HEALTH_TIMEOUT_MS,
   ensureFleetHealthRepo,
+  FleetHealthNotConfiguredError,
   MAX_FAILURE_STREAM_CHARS,
   reportFleetHealth,
   runFleetHealthReporting,
@@ -112,10 +113,9 @@ Deno.test("buildFleetHealthConfig - uses defaults when env vars not set", () => 
 
     const config = buildFleetHealthConfig("/home/user/VibeCoder");
     assertEquals(config.healthDir, "/home/user/VibeCoder/../private-repo-6");
-    assertEquals(
-      config.healthRepo,
-      "git@github.com:stSoftwareAU/private-repo-6.git",
-    );
+    // No repository is assumed: the worker only ever clones a URL the
+    // operator named through FLEET_HEALTH_REPO.
+    assertEquals(config.healthRepo, undefined);
     assertEquals(typeof config.hostId, "string");
     assertEquals(config.hostId.length > 0, true);
   } finally {
@@ -217,6 +217,25 @@ Deno.test("ensureFleetHealthRepo - clones when directory does not exist", async 
   assertEquals(cmd[3], config.healthRepo);
   assertEquals(cmd[4], config.healthDir);
   assertStringIncludes(deps.logs[0]!, "Cloning");
+});
+
+Deno.test("ensureFleetHealthRepo - no checkout and no FLEET_HEALTH_REPO: says tracking is off, never clones a guessed URL", async () => {
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(false),
+  });
+  const config = { ...createTestConfig(), healthRepo: undefined };
+
+  const result = await ensureFleetHealthRepo(config, deps);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error instanceof FleetHealthNotConfiguredError, true);
+  }
+  assertEquals(deps.commands.length, 0, "no git command may run");
+  assertEquals(deps.warnings.length, 0, "not configured is not a warning");
+  assertStringIncludes(deps.logs[0]!, "FLEET health tracking is off");
+  assertStringIncludes(deps.logs[0]!, config.healthDir);
+  assertStringIncludes(deps.logs[0]!, "FLEET_HEALTH_REPO");
 });
 
 Deno.test("ensureFleetHealthRepo - uses fetch+reset when directory exists (self-heals diverged state)", async () => {
@@ -577,6 +596,20 @@ Deno.test("runFleetHealthReporting - syncs repo and reports health", async () =>
   assertStringIncludes(fetchCmd.join(" "), "fetch");
   const healthCmd = deps.commands[deps.commands.length - 1]!;
   assertStringIncludes(healthCmd[0]!, "repos.sh");
+});
+
+Deno.test("runFleetHealthReporting - not configured: skips the report too, so the log carries one line, not a failed clone plus a missing script", async () => {
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(false),
+  });
+  const config = { ...createTestConfig(), healthRepo: undefined };
+
+  const result = await runFleetHealthReporting(config, deps);
+
+  assertEquals(result.ok, false);
+  assertEquals(deps.commands.length, 0);
+  assertEquals(deps.warnings.length, 0, deps.warnings.join("\n"));
+  assertEquals(deps.logs.length, 1, deps.logs.join("\n"));
 });
 
 Deno.test("runFleetHealthReporting - still attempts report after sync failure", async () => {
