@@ -928,51 +928,25 @@ function Read-VibeInteractiveConfig {
 
     # FLEET health tracking (optional, Issue #535). A fleet of workers can
     # report into a shared health repository; a single host does not need one.
-    # Setup asks where that repository is and stores the answer in
-    # .config.json (fleet_health_repo + fleet_health_dir) — a one-off, no
-    # environment variables. Nothing is cloned unless the operator named the
-    # repository: an assumed URL on a host without access to it only ever
-    # produced "Could not read from remote repository ... repository exists".
+    # Setup asks only where that repository is and stores it in .config.json
+    # (fleet_health_repo). The worker clones it itself on its first run -
+    # natively beside VibeCoder, in container mode inside its own work volume
+    # - so no directory is asked for and nothing is cloned here. Nothing is
+    # ever cloned from an assumed URL.
     $fleetRepo = Read-Answer `
         -Prompt "FLEET health repository (optional): git URL of the fleet's health repository" `
         -Existing $existing.fleet_health_repo `
         -Notes @(
             "e.g. git@github.com:your-org/your-health-repo.git",
-            "Leave blank to keep the current value, or '-' to turn health tracking off.")
+            "The worker clones it on first run. Leave blank to keep the current value,",
+            "or '-' to turn health tracking off.")
     if ($fleetRepo -eq "-") {
         $answers.fleet_health_repo = $null
         $answers.fleet_health_dir = $null
         Write-VibeInfo "FLEET health tracking turned off."
     } elseif ($fleetRepo) {
-        # Checkout directory: the configured one, else a sibling of VibeCoder
-        # named after the repository (git@host:org/GRQ-health.git -> ..\GRQ-health).
-        $fleetRepoName = ($fleetRepo -split "/")[-1] -replace "\.git$", ""
-        $fleetDefaultDir = if ($existing.fleet_health_dir) {
-            $existing.fleet_health_dir
-        } else {
-            Join-Path (Split-Path -Parent $ScriptDir) $fleetRepoName
-        }
-        $fleetDir = Read-Answer `
-            -Prompt "FLEET health checkout directory" `
-            -Existing $fleetDefaultDir
         $answers.fleet_health_repo = $fleetRepo
-        # The directory is recorded either way: the worker clones
-        # fleet_health_repo there itself when it is missing, so a clone that
-        # failed here (network, key not yet authorised) self-heals on the
-        # first run instead of leaving tracking silently off.
-        $answers.fleet_health_dir = $fleetDir
-        if (Test-Path -LiteralPath $fleetDir -PathType Container) {
-            Write-VibeSuccess "FLEET health directory found at $fleetDir"
-        } else {
-            Write-VibeInfo "Cloning FLEET health repository to $fleetDir..."
-            & git clone $fleetRepo $fleetDir
-            if ($LASTEXITCODE -eq 0) {
-                Write-VibeSuccess "FLEET health repository cloned"
-            } else {
-                Write-VibeWarning ("Failed to clone FLEET health repository from $fleetRepo " +
-                    "(non-fatal; the worker retries the clone on its first run)")
-            }
-        }
+        Write-VibeSuccess "FLEET health repository: $fleetRepo"
     } else {
         Write-VibeInfo "FLEET health tracking not configured (optional) - re-run setup and give the repository's git URL to enable it."
     }

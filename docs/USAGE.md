@@ -580,15 +580,18 @@ repository to signal it is functioning correctly.
 | `FLEET_HEALTH_REPO` | (empty)                                      | Git URL to clone into `FLEET_HEALTH_DIR` when that directory does not exist (from `fleet_health_repo` in `.config.json`). Unset, the worker never clones (it logs that tracking is off) — no URL is assumed. |
 | `FLEET_HEALTH_TIMEOUT_MS` | `600000` (10 minutes)                  | Timeout for the `helpers/repos.sh` health-report subprocess. Raised from 60s so a slow-but-healthy report run is not killed and the host wrongly marked dead (Issue #3127). |
 
-Both come from `.config.json` (`fleet_health_dir`, `fleet_health_repo`,
-Issue #535), which `run.sh` exports as the variables above. Health tracking is
-optional — a single host does not need it. The interactive `setup.sh` /
-`setup.ps1` ask once for the health repository's git URL (blank keeps the
-current value, `-` turns tracking off) and its checkout directory (defaults to
-a sibling of VibeCoder named after the repository), store both, and clone the
-repository if the checkout is missing; the worker re-tries that clone on its
-first run. With no repository configured setup prints one informational line
-and moves on.
+Both come from `.config.json` (`fleet_health_repo`, and optionally
+`fleet_health_dir`, Issue #535); the worker applies them to its own
+environment at start (natively and in the container — a host
+`fleet_health_dir` is ignored inside the container, where the worker clones
+into its own work volume). Health tracking is optional — a single host does
+not need it. The interactive `setup.sh` / `setup.ps1` ask once for the health
+repository's git URL (blank keeps the current value, `-` turns tracking off)
+and store it; nothing is cloned by setup. The worker clones the repository on
+its first run into a checkout named after it — `../GRQ-health` beside the
+worker checkout natively, `~/auto-issue-work/GRQ-health` in the container —
+unless `fleet_health_dir` names another directory (native mode). With no
+repository configured setup prints one informational line and moves on.
 
 ## 🔌 Feature Availability
 

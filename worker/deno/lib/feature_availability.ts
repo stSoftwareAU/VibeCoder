@@ -176,11 +176,15 @@ export function checkImgbbAvailable(): boolean {
 /**
  * Check if health tracking is configured.
  *
- * Returns true if FLEET_HEALTH_DIR is set and non-empty.
+ * Returns true if FLEET_HEALTH_DIR or FLEET_HEALTH_REPO is set and non-empty:
+ * a repository alone is enough — the worker clones it itself (in container
+ * mode there is no host directory to name).
  */
 export function checkHealthTrackingAvailable(): boolean {
   const dir = Deno.env.get("FLEET_HEALTH_DIR");
-  return dir !== undefined && dir !== "";
+  const repo = Deno.env.get("FLEET_HEALTH_REPO");
+  return (dir !== undefined && dir !== "") ||
+    (repo !== undefined && repo !== "");
 }
 
 /**
