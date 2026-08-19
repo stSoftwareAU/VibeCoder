@@ -97,9 +97,28 @@ export interface FailureDetectionRepairResult {
   repaired: number[];
   /** Offenders that genuinely could not be repaired (hard-block fallback). */
   stillOffending: FailureDetectionOffender[];
+  /**
+   * Offenders **never attempted — out of budget** (Issue #58).
+   *
+   * Deliberately distinct from {@link FailureDetectionRepairResult.stillOffending}:
+   * `stillOffending` means the model tried and could not produce a passing
+   * section, `deferred` means the remaining handler budget could not fit
+   * another repair so no work was started for them.
+   */
+  deferred: FailureDetectionOffender[];
   /** Claude invocations made during the repair, for the run's stats. */
   invocations: PlanningInvocationStats[];
 }
+
+/**
+ * Estimated wall-clock cost of one Claude repair invocation (Issue #58).
+ *
+ * A batched draft of eight offenders was observed at ~18 s and a per-offender
+ * draft at ~18 s each, so two minutes covers a slow call without being so large
+ * that a repair with real room to run is never started. Overridable per call
+ * via `repairCostEstimateMs`.
+ */
+export const DEFAULT_REPAIR_COST_ESTIMATE_MS = 120_000;
 
 /**
  * Build the repair prompt for a single sub-issue.
@@ -446,6 +465,17 @@ interface ReadOffender {
  * gate, or whose `gh issue edit` throws stays in `stillOffending` — never
  * silently reported as repaired. Every Claude call is recorded into
  * `invocations` so the run's stats observe a served model (Issue #3272).
+ *
+ * The pass is **deadline-aware** (Issue #58). The repair runs inside the
+ * Planning handler, after sub-issues are published; without a deadline the
+ * handler watchdog was the only bound, and it bounds by killing the handler
+ * mid-repair — the in-flight calls were then reported as "timed out or was
+ * empty", indistinguishable from a genuine model failure. With `deadlineMs`
+ * supplied, the remaining budget is checked against `repairCostEstimateMs`
+ * before every Claude invocation; when it cannot fit one, the repair stops
+ * cleanly and every un-attempted offender is reported in `deferred` — never
+ * started, never mislabelled as a model failure. With no `deadlineMs` the
+ * behaviour is exactly as before and `deferred` is empty.
  */
 export async function repairFailureDetectionSections(opts: {
   repo: string;
@@ -453,10 +483,63 @@ export async function repairFailureDetectionSections(opts: {
   runClaude: RepairClaudeRunner;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: GateLogger;
+  /**
+   * Absolute epoch-millisecond deadline for the repair (Issue #58) — wired at
+   * the call site from the handler's own watchdog budget. Omitted (tests, CLI
+   * paths): the repair is unbounded, exactly as before.
+   */
+  deadlineMs?: number;
+  /** Injected clock (epoch ms), so the budget is testable with no timers. */
+  now?: () => number;
+  /** Estimated cost of one Claude repair call; see {@link DEFAULT_REPAIR_COST_ESTIMATE_MS}. */
+  repairCostEstimateMs?: number;
 }): Promise<FailureDetectionRepairResult> {
-  const { repo, offenders, runClaude, ghCommandFn, logger } = opts;
+  const { repo, offenders, runClaude, ghCommandFn, logger, deadlineMs } = opts;
+  const now = opts.now ?? (() => Date.now());
+  const costEstimateMs = opts.repairCostEstimateMs ??
+    DEFAULT_REPAIR_COST_ESTIMATE_MS;
   const invocations: PlanningInvocationStats[] = [];
   const repairedNumbers = new Set<number>();
+  const deferredNumbers = new Set<number>();
+
+  /** Whether the remaining budget can fit one more Claude repair call. */
+  const canAffordRepair = (): boolean =>
+    deadlineMs === undefined || deadlineMs - now() >= costEstimateMs;
+
+  /**
+   * Stop cleanly: record every still-unattempted offender as deferred and log
+   * the budget as the reason. Deliberately worded so the log can never read as
+   * a model timeout — the cause is the handler budget, not Claude.
+   */
+  const deferRemaining = (
+    remaining: FailureDetectionOffender[],
+    stage: string,
+  ): void => {
+    for (const offender of remaining) deferredNumbers.add(offender.number);
+    logger.warn(
+      "Failure-Detection repair: stopping — the remaining handler budget cannot fit another repair; deferring un-attempted offender(s) (Issue #58)",
+      {
+        repo,
+        stage,
+        deferred: remaining.map((o) => o.number).join(","),
+        remainingMs: deadlineMs === undefined
+          ? "unbounded"
+          : deadlineMs - now(),
+        estimatedRepairCostMs: costEstimateMs,
+      },
+    );
+  };
+
+  // Out of budget before any work starts: read nothing, draft nothing.
+  if (!canAffordRepair()) {
+    deferRemaining(offenders, "before-read");
+    return {
+      repaired: [],
+      stillOffending: [],
+      deferred: [...offenders],
+      invocations,
+    };
+  }
 
   // --- Read every offender's current body ---
   const readable: ReadOffender[] = [];
@@ -482,7 +565,16 @@ export async function repairFailureDetectionSections(opts: {
 
   /** Draft one section per offender — the fallback and single-offender path. */
   const draftPerOffender = async (items: ReadOffender[]) => {
-    for (const { offender, sub } of items) {
+    for (let i = 0; i < items.length; i++) {
+      const { offender, sub } = items[i]!;
+      // Never start a call the budget cannot finish (Issue #58).
+      if (!canAffordRepair()) {
+        deferRemaining(
+          items.slice(i).map((item) => item.offender),
+          "per-offender-draft",
+        );
+        return;
+      }
       const result = await runClaude(buildRepairPrompt(sub));
       if (!result.ok) {
         logger.warn(
@@ -503,7 +595,11 @@ export async function repairFailureDetectionSections(opts: {
     }
   };
 
-  if (readable.length > 1) {
+  // Reading the bodies spent part of the budget: re-check before drafting so a
+  // repair that can no longer finish is deferred rather than started (#58).
+  if (readable.length > 0 && !canAffordRepair()) {
+    deferRemaining(readable.map((r) => r.offender), "before-draft");
+  } else if (readable.length > 1) {
     const batched = await runClaude(
       buildBatchRepairPrompt(readable.map((r) => r.sub)),
     );
@@ -550,6 +646,10 @@ export async function repairFailureDetectionSections(opts: {
 
   // --- Apply, re-gate and write each drafted section ---
   for (const { offender, sub } of readable) {
+    // A deferred offender was never drafted for — reporting it as "no drafted
+    // section" would read as a model failure (Issue #58).
+    if (deferredNumbers.has(offender.number)) continue;
+
     const draft = drafts.get(offender.number);
     if (draft === undefined) {
       logger.warn(
@@ -606,11 +706,16 @@ export async function repairFailureDetectionSections(opts: {
 
   // Anything not positively confirmed as repaired stays an offender — an
   // offender the batched output omitted can never be reported as repaired.
+  // Offenders the budget deferred are reported separately: they were never
+  // attempted, so they are not evidence that a repair is impossible (#58).
   return {
     repaired: offenders
       .filter((o) => repairedNumbers.has(o.number))
       .map((o) => o.number),
-    stillOffending: offenders.filter((o) => !repairedNumbers.has(o.number)),
+    stillOffending: offenders.filter((o) =>
+      !repairedNumbers.has(o.number) && !deferredNumbers.has(o.number)
+    ),
+    deferred: offenders.filter((o) => deferredNumbers.has(o.number)),
     invocations,
   };
 }

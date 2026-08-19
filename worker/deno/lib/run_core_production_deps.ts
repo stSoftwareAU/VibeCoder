@@ -565,6 +565,8 @@ export async function createProductionRunCoreDeps(
       ctx: IssueContext,
       deps: { ghClient: GitHubClient; logger: Logger; deps: WorkerDeps },
     ) => Promise<R>,
+    /** Watchdog deadline for the calling handler, epoch-ms (Issue #58). */
+    handlerDeadlineEpochMs?: number,
   ): Promise<PriorityHandlerResult> {
     const result = await findIssuesByLabel(config, label, false, {
       githubUser,
@@ -607,6 +609,9 @@ export async function createProductionRunCoreDeps(
       // Issue #1300: Pass milestone so label-based processors can use it
       milestoneTitle: milestoneTitle || issueData.milestoneTitle || undefined,
       config,
+      ...(handlerDeadlineEpochMs !== undefined
+        ? { handlerDeadlineEpochMs }
+        : {}),
     };
 
     const processResult = await processFn(ctx, processorDeps);
@@ -1703,10 +1708,14 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 1.80: Planning --
-    async findAndProcessPlanning() {
+    async findAndProcessPlanning(opts) {
+      // Issue #58: the dispatcher's watchdog deadline rides into the planning
+      // context so the post-publication Failure-Detection self-repair defers
+      // offenders it cannot finish rather than being killed mid-repair.
       const result = await findAndProcessByLabel(
         config.planningLabel,
         processIssuePlanning,
+        opts?.deadlineEpochMs,
       );
       return { ok: true, value: result };
     },

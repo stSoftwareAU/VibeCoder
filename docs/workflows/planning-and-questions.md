@@ -301,17 +301,23 @@ retrying per offender, which would multiply the very cost batching removes.
 
 ```mermaid
 flowchart TD
-    A[Gate finds offenders] --> B[Read each offender's body]
-    B --> C{More than one readable offender?}
+    A[Gate finds offenders] --> Z{Budget left for one repair?}
+    Z -->|no| Y[deferred — never attempted]
+    Z -->|yes| B[Read each offender's body]
+    B --> Z2{Budget left for one repair?}
+    Z2 -->|no| Y
+    Z2 -->|yes| C{More than one readable offender?}
     C -->|yes| D[One batched Claude call<br/>drafts every section]
-    C -->|no| E[Per-offender Claude call]
+    C -->|no| E[Per-offender Claude call<br/>budget checked before each]
     D -->|output unparseable| E
+    E -->|budget exhausted| Y
     D --> F{Per offender: patch + re-gate}
     E --> F
     F -->|re-gate passes, edit succeeds| G[repaired]
     F -->|absent from output, fails re-gate,<br/>or read/draft/edit fails| H[stillOffending]
-    G --> I{Any stillOffending?}
+    G --> I{Any stillOffending or deferred?}
     H --> I
+    Y --> I
     I -->|no| J[Run completes successfully]
     I -->|yes| K[handlePlanningFailure — loud, labelled hard-block]
 ```
@@ -324,6 +330,28 @@ impossible → hard-block remains the fallback, per #3270). Only a positively
 confirmed repair is reported as repaired. The re-gate is performed on the
 constructed body *before* the patch, so a still-failing draft never overwrites
 the sub-issue.
+
+**Deadline-awareness (Issue #58)** stops the handler watchdog from killing the
+repair mid-way. The repair runs *inside* the Planning handler, after sub-issues
+are published; on one live run the watchdog killed the handler with 6 of 8
+offenders repaired, and the two Claude calls still in flight were reported as
+"timed out or was empty" — indistinguishable, in the logs and in the result,
+from a genuine model failure. The dispatcher now hands each handler the exact
+instant its watchdog will abandon it (`handlerHardTimeoutMs`, the same value the
+watchdog arms, so the two cannot drift), the planning context carries it as
+`handlerDeadlineEpochMs`, and `repairFailureDetectionSections()` checks the
+remaining budget against a per-repair cost estimate (default 2 min, injectable)
+**before every Claude invocation** — before the reads, before the batched call,
+and before each per-offender call. When the budget cannot fit another repair the
+pass stops cleanly and every un-attempted offender is returned in a separate
+`deferred` list, logged with the budget named as the reason.
+
+`deferred` ("we never tried — out of budget") is deliberately distinct from
+`stillOffending` ("the model tried and could not produce a passing section"): a
+deferred offender is no evidence that a repair is impossible, so a resumed run
+may still fix it. Both sets still **block** the planning run — the criterion is
+missing either way, so a deferral is never a silent pass. With no deadline
+supplied (tests, CLI paths) behaviour is unchanged and `deferred` is empty.
 
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
 

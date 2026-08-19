@@ -532,6 +532,220 @@ Deno.test("repair - batched invocation records runStats, fallbackModel and prefl
   assertEquals(invocation.preflightDegradedReason, "pre-flight reroute");
 });
 
+// --- (e) deadline-aware repair: defer what the budget cannot fit (#58) ---
+
+/** A logger that records every warning message and its context. */
+function recordingLogger() {
+  const warnings: { message: string; context?: Record<string, unknown> }[] = [];
+  const infos: string[] = [];
+  return {
+    warnings,
+    infos,
+    logger: {
+      info(message: string) {
+        infos.push(message);
+      },
+      warn(message: string, context?: Record<string, unknown>) {
+        warnings.push({ message, context });
+      },
+    },
+  };
+}
+
+Deno.test("repair - deadline already passed: zero Claude calls, every offender deferred (Issue #58)", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    1001: bodyMissingSection(),
+    1002: bodyMissingSection(),
+  });
+  let calls = 0;
+  const runClaude = () => {
+    calls++;
+    return Promise.resolve({
+      ok: true as const,
+      value: { output: "## Failure Detection\n\nNever drafted." },
+    });
+  };
+  const { warnings, logger } = recordingLogger();
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(1001), offender(1002)],
+    runClaude,
+    ghCommandFn,
+    logger,
+    // The handler budget is already spent when the repair starts.
+    deadlineMs: 5_000,
+    now: () => 5_000,
+    repairCostEstimateMs: 1_000,
+  });
+
+  assertEquals(calls, 0);
+  assertEquals(result.repaired, []);
+  assertEquals(result.stillOffending, []);
+  assertEquals(result.deferred.map((o) => o.number), [1001, 1002]);
+  assertEquals(result.invocations.length, 0);
+  assertEquals(edits.length, 0);
+
+  // The stop names the budget — never the "draft timed out or was empty"
+  // warning, which would read as a model failure.
+  const budgetWarning = warnings.find((w) => /budget/i.test(w.message));
+  assert(budgetWarning !== undefined);
+  assertStringIncludes(budgetWarning!.message, "Issue #58");
+  assertEquals(budgetWarning!.context?.deferred, "1001,1002");
+  assertEquals(
+    warnings.some((w) => w.message.includes("timed out or was empty")),
+    false,
+  );
+});
+
+Deno.test("repair - budget for exactly one repair: one repaired, the rest deferred (Issue #58)", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    1101: bodyMissingSection(),
+    1102: bodyMissingSection(),
+  });
+
+  // Injected clock: each Claude call costs 1 000 ms of the budget. No timers.
+  let nowMs = 0;
+  const prompts: string[] = [];
+  const runClaude = (prompt: string) => {
+    prompts.push(prompt);
+    nowMs += 1_000;
+    // The batched output carries no block markers, so drafting falls back to
+    // the per-offender path — where the budget guards each call.
+    const output = prompts.length === 1
+      ? "Sorry, I could not use the markers."
+      : "## Failure Detection\n\nTest `budget_test.ts` covers it.";
+    return Promise.resolve({ ok: true as const, value: { output } });
+  };
+  const { warnings, logger } = recordingLogger();
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(1101), offender(1102)],
+    runClaude,
+    ghCommandFn,
+    logger,
+    // Room for the batched call plus exactly one per-offender repair.
+    deadlineMs: 2_500,
+    now: () => nowMs,
+    repairCostEstimateMs: 1_000,
+  });
+
+  // Batched call + one per-offender call — the second never started.
+  assertEquals(prompts.length, 2);
+  assertEquals(result.repaired, [1101]);
+  assertEquals(result.deferred.map((o) => o.number), [1102]);
+  assertEquals(result.stillOffending, []);
+  assertEquals(edits.map((e) => e.number), [1101]);
+  assert(warnings.some((w) => /budget/i.test(w.message)));
+});
+
+Deno.test("repair - budget too small for the batched call defers every offender (Issue #58)", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    1201: bodyMissingSection(),
+    1202: bodyMissingSection(),
+  });
+  let calls = 0;
+  const runClaude = () => {
+    calls++;
+    return Promise.resolve({
+      ok: true as const,
+      value: { output: batchBlock(1201, "Test `x_test.ts` covers it.") },
+    });
+  };
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(1201), offender(1202)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+    // 900 ms left, one repair estimated at 1 000 ms — not enough to start.
+    deadlineMs: 900,
+    now: () => 0,
+    repairCostEstimateMs: 1_000,
+  });
+
+  assertEquals(calls, 0);
+  assertEquals(result.repaired, []);
+  assertEquals(result.deferred.map((o) => o.number), [1201, 1202]);
+  assertEquals(result.stillOffending, []);
+  assertEquals(edits.length, 0);
+});
+
+Deno.test("repair - no deadline supplied: unchanged behaviour, deferred is empty (Issue #58)", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    1301: bodyMissingSection(),
+    1302: bodyMissingSection(),
+  });
+  const runClaude = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: {
+        output: [
+          batchBlock(1301, "Test `a_test.ts` covers it."),
+          batchBlock(1302, "Test `b_test.ts` covers it."),
+        ].join("\n\n"),
+      },
+    });
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(1301), offender(1302)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  assertEquals(result.repaired, [1301, 1302]);
+  assertEquals(result.stillOffending, []);
+  assertEquals(result.deferred, []);
+  assertEquals(edits.map((e) => e.number), [1301, 1302]);
+});
+
+Deno.test("repair - an unreadable offender stays stillOffending while others defer (Issue #58)", async () => {
+  // #1402's body cannot be read; each read costs 600 ms of the budget, so the
+  // budget then stops the repair before any draft is attempted.
+  let nowMs = 0;
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    if (args[0] === "issue" && args[1] === "view") {
+      nowMs += 600;
+      if (Number(args[2]) === 1402) return Promise.reject(new Error("gh view"));
+      return Promise.resolve(
+        JSON.stringify({
+          number: Number(args[2]),
+          title: "Add the widget",
+          body: bodyMissingSection(),
+        }),
+      );
+    }
+    return Promise.resolve("");
+  };
+
+  let claudeCalls = 0;
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(1401), offender(1402), offender(1403)],
+    runClaude: () => {
+      claudeCalls++;
+      return Promise.resolve({ ok: true as const, value: { output: "" } });
+    },
+    ghCommandFn,
+    logger: silentLogger(),
+    // Enough to enter, not enough to draft once the reads are done.
+    deadlineMs: 1_000,
+    now: () => nowMs,
+    repairCostEstimateMs: 1_000,
+  });
+
+  assertEquals(claudeCalls, 0);
+
+  assertEquals(result.repaired, []);
+  // "we never tried" (budget) is distinct from "the read failed".
+  assertEquals(result.stillOffending.map((o) => o.number), [1402]);
+  assertEquals(result.deferred.map((o) => o.number), [1401, 1403]);
+});
+
 // --- batched prompt and parser unit tests ---
 
 Deno.test("buildBatchRepairPrompt - names every sub-issue and asks for one block each", () => {

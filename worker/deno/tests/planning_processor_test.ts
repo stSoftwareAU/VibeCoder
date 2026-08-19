@@ -1594,6 +1594,115 @@ Deno.test("processIssuePlanning - fails the run when a published sub-issue's Fai
   assertEquals(subIssueComments.some((c) => c.number === 201), false);
 });
 
+// Issue #58: the processor threads its handler watchdog deadline into the
+// Failure-Detection self-repair. With that deadline already spent the repair
+// must make **zero** repair Claude calls, report the offenders as deferred
+// (never attempted), and still fail the run loudly — the criterion is missing
+// either way, so a deferral never becomes a silent pass.
+Deno.test("processIssuePlanning - a spent handler deadline defers the Failure-Detection repair instead of starting it (Issue #58)", async () => {
+  const ctx = makeContext({ handlerDeadlineEpochMs: Date.now() - 1_000 });
+
+  let failureHandled = false;
+  let repairPrompts = 0;
+  const subIssueComments: Array<{ number: number; body: string }> = [];
+  const editedSubIssues: number[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (opts: { prompt: string }) => {
+        if (opts.prompt.includes("repairing")) repairPrompts++;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output:
+              "Created https://github.com/org/repo/issues/401\nCreated https://github.com/org/repo/issues/402",
+            exitCode: 0,
+            timedOut: false,
+          },
+        });
+      },
+    },
+    github: {
+      handleIssueFailure: () => {
+        failureHandled = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            markedAsFailed: false,
+            markedAsFailedOnce: true,
+            failureCategory: "unknown",
+            isInfrastructure: false,
+          },
+        });
+      },
+      runGhCommand: (args: string[]) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          const jsonArg = args[args.indexOf("--json") + 1] ?? "";
+          if (jsonArg.includes("body")) {
+            return Promise.resolve(
+              JSON.stringify({
+                number: Number(args[2]),
+                title: "Sub-issue",
+                body: "## Summary\nDo a thing.\n",
+              }),
+            );
+          }
+          return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+        }
+        if (args[0] === "issue" && args[1] === "edit") {
+          editedSubIssues.push(Number(args[2]));
+          return Promise.resolve("");
+        }
+        if (args.includes("search")) return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: (_r: string, n: number) =>
+      Promise.resolve({
+        number: n,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: (_repo: string, n: number, body: string) => {
+      subIssueComments.push({ number: n, body });
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  // The deadline was threaded through: no repair draft was ever requested.
+  assertEquals(repairPrompts, 0);
+  assertEquals(editedSubIssues.length, 0);
+  // Deferred offenders still block the run — never a silent pass.
+  assertEquals(result.ok, false);
+  assertEquals(failureHandled, true);
+  // Both offending sub-issues were named on the parent's failure path.
+  assertEquals(
+    subIssueComments.filter((c) => c.number === 401 || c.number === 402).length,
+    2,
+  );
+});
+
 // Issue #3272: the pre-check recovery path (existing sub-issues found in
 // comments) used to skip Claude and fast-fail the gate with an empty
 // invocation set — a retry deadlock. It now runs the model-driven self-repair:
