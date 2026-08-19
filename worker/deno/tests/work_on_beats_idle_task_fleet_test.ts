@@ -1,9 +1,9 @@
 /**
  * End-to-end regression test: `work-on` beats `idle-task` fleet-wide
- * (Issue #2814 — reproduces the NEAT-AI-Discovery #1365–#1372 inversion).
+ * (Issue #2814 — reproduces the private-repo-17 #1365–#1372 inversion).
  *
  * #2771 shipped fair within-tier rotation + per-repo `nice` and named this
- * exact NEAT-AI-Discovery batch, yet the inversion still occurred: a
+ * exact private-repo-17 batch, yet the inversion still occurred: a
  * low-`nice` repo's `idle-task` was being selected — and a fresh idle-task
  * filed — ahead of a higher-`nice` repo's unblocked `work-on` backlog. The
  * two halves were repaired by #2812 (selection: idle-task is a fleet-global
@@ -13,7 +13,7 @@
  * again (precedent: `idle_task_multi_worker_end_to_end_test.ts`).
  *
  * Fleet fixture:
- *   - Repo A (NEAT-AI-Discovery-like) — several open, unassigned `work-on`
+ *   - Repo A (private-repo-17-like) — several open, unassigned `work-on`
  *     issues that also carry `degraded-model` and `lang:rust`, placed in a
  *     *higher* `nice` tier (worked last).
  *   - Repo B — a *lower* `nice` tier (worked sooner) whose only candidate is
@@ -64,10 +64,10 @@ import type { Result } from "../types.ts";
 // Shared fleet fixture
 // ---------------------------------------------------------------------------
 
-/** NEAT-AI-Discovery-like repo with the deferred `work-on` backlog. */
-const REPO_A = "example-org/private-repo-32";
+/** private-repo-17-like repo with the deferred `work-on` backlog. */
+const REPO_A = "stSoftwareAU/private-repo-17";
 /** Quiet repo whose only candidate is an idle-task wrapper. */
-const REPO_B = "example-org/private-repo-46";
+const REPO_B = "stSoftwareAU/quiet-repo";
 const WORKER_USER = "VibeBot";
 
 /**
@@ -79,7 +79,7 @@ const WORKER_USER = "VibeBot";
 const NICE: Record<string, number> = { [REPO_A]: 10, [REPO_B]: 0 };
 const repoNice = (repo: string): number => NICE[repo] ?? 0;
 
-/** Labels a NEAT-AI-Discovery work-on issue carries in the real scenario. */
+/** Labels a private-repo-17 work-on issue carries in the real scenario. */
 const WORK_ON_LABELS = ["work-on", "degraded-model", "lang:rust"];
 
 function workOnCandidate(
@@ -90,7 +90,7 @@ function workOnCandidate(
     repo: REPO_A,
     number,
     url: `https://github.com/${REPO_A}/issues/${number}`,
-    title: `NEAT work-on #${number}`,
+    title: `private-repo-13 work-on #${number}`,
     milestone: "",
     createdAt,
     labelIndex: 0,
@@ -346,7 +346,7 @@ Deno.test(
     const issues: FilterableIssue[] = [
       {
         number: 1365,
-        title: "NEAT work-on #1365",
+        title: "private-repo-13 work-on #1365",
         url: `https://github.com/${REPO_A}/issues/1365`,
         author: WORKER_USER,
         assignees: [],

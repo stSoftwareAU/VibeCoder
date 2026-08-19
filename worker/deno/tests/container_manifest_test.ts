@@ -801,7 +801,7 @@ function toolchainManifestObject(): Record<string, unknown> {
         commands: ["cargo", "rustc", "cargo-clippy", "rustfmt"],
         versionCommand: "cargo",
         sha256: { amd64: SHA_AMD64, arm64: SHA_ARM64 },
-        repos: ["example-org/private-repo-32"],
+        repos: ["stSoftwareAU/private-repo-17"],
       },
     ],
   };
@@ -838,7 +838,7 @@ Deno.test("parseContainerManifest - parses a documented toolchain", () => {
     "rustfmt",
   ]);
   assertEquals(manifest.toolchains[0]?.repos, [
-    "example-org/private-repo-32",
+    "stSoftwareAU/private-repo-17",
   ]);
 });
 
@@ -877,7 +877,7 @@ Deno.test("parseContainerManifest - rejects a repos entry that is not owner/repo
     () =>
       parseContainerManifest(
         toolchainManifestText((t) => {
-          t.repos = ["NEAT-AI-Discovery"];
+          t.repos = ["private-repo-17"];
         }),
       ),
     Error,

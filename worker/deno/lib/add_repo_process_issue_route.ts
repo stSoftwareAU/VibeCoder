@@ -2,7 +2,7 @@
  * Production-loop add-repo routing helper (Issue #2579).
  *
  * Routes a claimed `work-on` issue whose title starts with `add-repo:`
- * (for example `add-repo: example-org/private-repo-23`) to the
+ * (for example `add-repo: stSoftwareAU/private-repo-11`) to the
  * `process-add-repo` command (Issue #2578) instead of the standard
  * Claude-driven coding/PR flow — which would otherwise try to open a
  * code PR, the wrong outcome for an add-repo request.

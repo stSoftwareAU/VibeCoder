@@ -26,8 +26,8 @@ Deno.test("buildOverridesOnly - preserves operator keys not declared on SetupCon
   // deno-lint-ignore no-explicit-any
   const config: any = {
     allowed_authors: ["operator"],
-    fleet_pr_authors: ["VibeCoderBot"],
-    service_accounts: ["VibeCoderBot"],
+    fleet_pr_authors: ["Vibecoderbot"],
+    service_accounts: ["Vibecoderbot"],
     trusted_review_bots: ["cursor[bot]"],
     worker_name: "host-3",
     shuffle_repos: true,
@@ -36,8 +36,8 @@ Deno.test("buildOverridesOnly - preserves operator keys not declared on SetupCon
 
   const result = buildOverridesOnly(config as SetupConfig);
 
-  assertEquals(result.fleet_pr_authors, ["VibeCoderBot"]);
-  assertEquals(result.service_accounts, ["VibeCoderBot"]);
+  assertEquals(result.fleet_pr_authors, ["Vibecoderbot"]);
+  assertEquals(result.service_accounts, ["Vibecoderbot"]);
   assertEquals(result.trusted_review_bots, ["cursor[bot]"]);
   assertEquals(result.worker_name, "host-3");
   assertEquals(result.shuffle_repos, true);
@@ -51,7 +51,7 @@ Deno.test("buildOverridesOnly - passthrough still drops hardwired label keys (Is
     issue_labels: ["custom-label"],
     work_on_label: "custom-work-on",
     low_priority_label: "custom-low-priority",
-    fleet_pr_authors: ["VibeCoderBot"],
+    fleet_pr_authors: ["Vibecoderbot"],
   };
 
   const result = buildOverridesOnly(config as SetupConfig);
@@ -59,7 +59,7 @@ Deno.test("buildOverridesOnly - passthrough still drops hardwired label keys (Is
   assertEquals(result.issue_labels, undefined);
   assertEquals(result.work_on_label, undefined);
   assertEquals(result.low_priority_label, undefined);
-  assertEquals(result.fleet_pr_authors, ["VibeCoderBot"]);
+  assertEquals(result.fleet_pr_authors, ["Vibecoderbot"]);
 });
 
 Deno.test("buildOverridesOnly - passthrough does not resurrect default-matching handled keys", () => {
@@ -91,13 +91,13 @@ Deno.test("pruneOrphanRepoConfig - drops repo_config entries for unmonitored rep
     repos: ["stSoftwareAU/VibeCoder"],
     repo_config: {
       "stSoftwareAU/VibeCoder": { nice: 1 },
-      "example-org/private-repo-13": { nice: 2 },
+      "stSoftwareAU/private-repo-1": { nice: 2 },
     },
   };
 
   const { config: pruned, removed } = pruneOrphanRepoConfig(config);
 
-  assertEquals(removed, ["example-org/private-repo-13"]);
+  assertEquals(removed, ["stSoftwareAU/private-repo-1"]);
   assertEquals(Object.keys(pruned.repo_config ?? {}), [
     "stSoftwareAU/VibeCoder",
   ]);
@@ -122,24 +122,28 @@ Deno.test("pruneOrphanRepoConfig - keeps case-variant matches", () => {
 Deno.test("pruneOrphanRepoConfig - no-op when repos is empty", () => {
   const config: SetupConfig = {
     repos: [],
-    repo_config: { "example-org/private-repo-13": { nice: 2 } },
+    repo_config: { "stSoftwareAU/private-repo-1": { nice: 2 } },
   };
 
   const { config: pruned, removed } = pruneOrphanRepoConfig(config);
 
   assertEquals(removed, []);
-  assertEquals(Object.keys(pruned.repo_config ?? {}), ["example-org/private-repo-13"]);
+  assertEquals(Object.keys(pruned.repo_config ?? {}), [
+    "stSoftwareAU/private-repo-1",
+  ]);
 });
 
 Deno.test("pruneOrphanRepoConfig - no-op when repos is absent", () => {
   const config: SetupConfig = {
-    repo_config: { "example-org/private-repo-13": { nice: 2 } },
+    repo_config: { "stSoftwareAU/private-repo-1": { nice: 2 } },
   };
 
   const { config: pruned, removed } = pruneOrphanRepoConfig(config);
 
   assertEquals(removed, []);
-  assertEquals(Object.keys(pruned.repo_config ?? {}), ["example-org/private-repo-13"]);
+  assertEquals(Object.keys(pruned.repo_config ?? {}), [
+    "stSoftwareAU/private-repo-1",
+  ]);
 });
 
 Deno.test("pruneOrphanRepoConfig - no-op when repo_config is absent", () => {
@@ -163,8 +167,8 @@ Deno.test("runConfigSetup - preserves fleet_pr_authors and service_accounts", as
     JSON.stringify({
       allowed_authors: ["operator"],
       repos: ["stSoftwareAU/VibeCoder"],
-      fleet_pr_authors: ["VibeCoderBot"],
-      service_accounts: ["VibeCoderBot"],
+      fleet_pr_authors: ["Vibecoderbot"],
+      service_accounts: ["Vibecoderbot"],
       worker_name: "host-3",
     }),
   );
@@ -173,8 +177,8 @@ Deno.test("runConfigSetup - preserves fleet_pr_authors and service_accounts", as
   assertEquals(result.ok, true);
 
   const written = JSON.parse(await Deno.readTextFile(configPath));
-  assertEquals(written.fleet_pr_authors, ["VibeCoderBot"]);
-  assertEquals(written.service_accounts, ["VibeCoderBot"]);
+  assertEquals(written.fleet_pr_authors, ["Vibecoderbot"]);
+  assertEquals(written.service_accounts, ["Vibecoderbot"]);
   assertEquals(written.worker_name, "host-3");
 
   await Deno.remove(tmpDir, { recursive: true });
@@ -190,18 +194,20 @@ Deno.test("runConfigSetup - reports pruned orphan repo_config entries", async ()
       repos: ["stSoftwareAU/VibeCoder"],
       repo_config: {
         "stSoftwareAU/VibeCoder": { nice: 1 },
-        "example-org/private-repo-13": { nice: 2 },
+        "stSoftwareAU/private-repo-1": { nice: 2 },
       },
     }),
   );
 
   // Issue #4030: stub the login lookup so the test never shells out to `gh`.
   const result = await runConfigSetup(configPath, () => undefined, {
-    resolveWorkerLogin: () => Promise.resolve("VibeCoderBot"),
+    resolveWorkerLogin: () => Promise.resolve("Vibecoderbot"),
   });
   assertEquals(result.ok, true);
   assertEquals(
-    (result.warnings ?? []).some((w) => w.includes("example-org/private-repo-13")),
+    (result.warnings ?? []).some((w) =>
+      w.includes("stSoftwareAU/private-repo-1")
+    ),
     true,
   );
 
@@ -220,12 +226,12 @@ Deno.test("runConfigSetup - no prune warnings when every repo_config entry is mo
       allowed_authors: ["operator"],
       repos: ["stSoftwareAU/VibeCoder"],
       repo_config: { "stSoftwareAU/VibeCoder": { nice: 1 } },
-      service_accounts: ["VibeCoderBot"],
+      service_accounts: ["Vibecoderbot"],
     }),
   );
 
   const result = await runConfigSetup(configPath, () => undefined, {
-    resolveWorkerLogin: () => Promise.resolve("VibeCoderBot"),
+    resolveWorkerLogin: () => Promise.resolve("Vibecoderbot"),
   });
   assertEquals(result.ok, true);
   // No prune warnings — every repo_config entry is monitored (Issue #4033).

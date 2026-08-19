@@ -29,7 +29,7 @@ import { MILESTONE_BRANCH_NEXT_STEP } from "../lib/phases/setup_branch_phase.ts"
  * Stub GitHubClient that records mutation calls instead of running gh
  * subprocesses. Used by clarity-phase tests that exercise the
  * label-and-unassign routing added to fix infinite loops on complex /
- * unclear issues (FLEET#1626, NEAT-AI-Discovery#1085).
+ * unclear issues (FLEET#1626, private-repo-17#1085).
  */
 interface StubGhCalls {
   addLabel: Array<{ repo: string; issueNumber: number; label: string }>;
@@ -1914,9 +1914,9 @@ Deno.test("completion - self-heals when PR creation fails but PR exists", async 
 });
 
 Deno.test(
-  "completion - bails out before gh pr create when branch has zero commits ahead of base (NEAT-AI-scorer#42 regression)",
+  "completion - bails out before gh pr create when branch has zero commits ahead of base (private-repo-22#42 regression)",
   async () => {
-    // Repro for the production failure observed on NEAT-AI-scorer#42:
+    // Repro for the production failure observed on private-repo-22#42:
     //   "PR creation failed: GraphQL: No commits between Develop and
     //    issue-42-eliminate-per-worker-creature-recompilation-in-mul"
     // pushUnpushedCommits succeeded but the branch had no commits ahead of
@@ -2433,7 +2433,7 @@ Deno.test(
 Deno.test(
   "workOnIssue - refuses to run when title matches a registered template (Issue #2083 guard)",
   async () => {
-    // Regression: NEAT-AI-scorer#97 lost its `idle-task` label yet
+    // Regression: private-repo-22#97 lost its `idle-task` label yet
     // its title still read "Run a security scan". The orchestrator
     // must catch this by title and bail out.
     const ctx = makeContext({

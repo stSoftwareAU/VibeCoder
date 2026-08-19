@@ -334,7 +334,7 @@ Deno.test("config - REPO_SLUG_PATTERN accepts valid owner/repo slugs", () => {
   for (
     const slug of [
       "owner/repo",
-      "example-org/private-repo-23",
+      "stSoftwareAU/private-repo-11",
       "org/repo1",
       "a_b/c.d",
       "user-name/repo.name-1",

@@ -523,8 +523,11 @@ Deno.test("syncBranchProtectionForRepo - a missing default branch is recorded as
 
 Deno.test("sync - a direct-push data repo gets no ruleset and its stale one is deleted", async () => {
   const { runCommand } = makeRunCommand({
-    "example-org/private-repo-16": { visibility: "private", defaultBranch: "Develop" },
-    "example-org/private-repo-14": {
+    "stSoftwareAU/private-repo-4": {
+      visibility: "private",
+      defaultBranch: "Develop",
+    },
+    "stSoftwareAU/private-repo-2": {
       visibility: "private",
       defaultBranch: "Develop",
     },
@@ -534,15 +537,18 @@ Deno.test("sync - a direct-push data repo gets no ruleset and its stale one is d
     },
   });
   const { gh, calls } = makeGhExec({
-    directPushRepos: ["example-org/private-repo-16", "example-org/private-repo-14"],
-    // FLEET-actual still carries the ruleset created on 2026-08-16.
-    seeded: ["example-org/private-repo-14"],
+    directPushRepos: [
+      "stSoftwareAU/private-repo-4",
+      "stSoftwareAU/private-repo-2",
+    ],
+    // private-repo-2 still carries the ruleset created on 2026-08-16.
+    seeded: ["stSoftwareAU/private-repo-2"],
   });
 
   const summary = await syncBranchProtectionForAllRepos({
     repos: [
-      "example-org/private-repo-16",
-      "example-org/private-repo-14",
+      "stSoftwareAU/private-repo-4",
+      "stSoftwareAU/private-repo-2",
       "stSoftwareAU/VibeCoder",
     ],
     runCommand,
@@ -552,15 +558,18 @@ Deno.test("sync - a direct-push data repo gets no ruleset and its stale one is d
   assertEquals(summary.failed, 0);
   assertEquals(summary.changed, 1, "only the code repo is written");
   const byRepo = Object.fromEntries(summary.results.map((r) => [r.repo, r]));
-  assertEquals(byRepo["example-org/private-repo-16"]?.skipped, "direct-push-branch");
-  assertEquals(byRepo["example-org/private-repo-16"]?.deleted, false);
   assertEquals(
-    byRepo["example-org/private-repo-14"]?.skipped,
+    byRepo["stSoftwareAU/private-repo-4"]?.skipped,
     "direct-push-branch",
   );
-  assertEquals(byRepo["example-org/private-repo-14"]?.deleted, true);
+  assertEquals(byRepo["stSoftwareAU/private-repo-4"]?.deleted, false);
   assertEquals(
-    typeof byRepo["example-org/private-repo-14"]?.detail,
+    byRepo["stSoftwareAU/private-repo-2"]?.skipped,
+    "direct-push-branch",
+  );
+  assertEquals(byRepo["stSoftwareAU/private-repo-2"]?.deleted, true);
+  assertEquals(
+    typeof byRepo["stSoftwareAU/private-repo-2"]?.detail,
     "string",
     "the offending commit is reported",
   );
@@ -570,7 +579,10 @@ Deno.test("sync - a direct-push data repo gets no ruleset and its stale one is d
     c.args[1] === "-X" && c.args[2] === "DELETE"
   );
   assertEquals(deletes.length, 1);
-  assertEquals(deletes[0]?.args[3], "repos/example-org/private-repo-14/rulesets/1");
+  assertEquals(
+    deletes[0]?.args[3],
+    "repos/stSoftwareAU/private-repo-2/rulesets/1",
+  );
   // No create/update ever targeted a direct-push repo.
   const dataWrites = rulesetWrites(calls).filter((c) =>
     String(c.args[3]).includes("FLEET-") && c.args[2] !== "DELETE"

@@ -99,7 +99,7 @@ export function buildUnparseableComment(title: string): string {
     "Could not parse an `owner/repo` from this title:\n\n" +
     `> ${title.trim()}\n\n` +
     "Re-open with a title of the form `seed-idle-tasks: owner/repo` " +
-    "(for example `seed-idle-tasks: example-org/private-repo-29`)."
+    "(for example `seed-idle-tasks: stSoftwareAU/private-repo-14`)."
   );
 }
 

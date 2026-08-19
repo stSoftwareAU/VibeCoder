@@ -350,7 +350,7 @@ template (today, only `security-scan`). Issue #2023 retired the previous
 in-process `runIdleSecurityScan` hook and its three state files
 (`security_scan_idle.json`, `security-scan-state.json`, `security_scan.lock`).
 Full details and the four-phase pipeline are documented in
-Security Scans — Operator Manual.
+[Security Scans — Operator Manual](SECURITY-SCAN.md).
 
 ### 🔐 PID guard (`worker/deno/commands/pid_guard.ts`)
 
@@ -473,7 +473,7 @@ does not.
 The access condition reads the per-repo access store (Issue #4036), which only
 reports a repo inaccessible after two consecutive access-denied probes, so a
 transient blip cannot flip the fleet. An unhealthy iteration suppresses the
-FLEET-health heartbeat, so the host goes stale on the dashboard instead of
+private-repo-6 heartbeat, so the host goes stale on the dashboard instead of
 reporting green while its repos 404 (the Issue #4028 signature). Recovery is
 automatic: one successful probe clears the store and the next iteration reports
 healthy again — no operator action, no restart.
@@ -498,7 +498,7 @@ them:
   boundary (`resetIterationCaches`) re-arms it. A changed repo set is new
   information and logs immediately.
 
-- **FLEET-health report payload** — `reportFleetHealth` appends
+- **private-repo-6 report payload** — `reportFleetHealth` appends
   `--message "repos inaccessible: TitlePage/bar, TitlePage/foo"` to the
   `helpers/repos.sh` invocation. Additive only: the identity argument is
   unchanged, no `docs/repos.json` field is repurposed, and on a healthy host the
@@ -509,7 +509,7 @@ them:
 Healthy hosts stay silent — no log line, no extra payload field. The operator
 runbook for this condition — what it means, what the worker keeps doing, and the
 identity checks to run first — is
-Host reports unhealthy — `repos inaccessible`.
+[Host reports unhealthy — `repos inaccessible`](TROUBLESHOOTING.md#-host-reports-unhealthy--repos-inaccessible).
 The whole chain is covered end to end by
 `worker/deno/tests/worker_health_fleet3_e2e_test.ts` (Issue #4040), including the
 inverse guard that a rate-limit storm must stay healthy.
@@ -567,7 +567,7 @@ network hiccups, and even its own mistakes:
   (`worker/deno/lib/heartbeat_storage.ts`) used to decide POST-vs-PATCH purely
   from the local `.heartbeat-marker_<repo>_<n>` state file, so every run that
   started without that file (new host, cleared claim, wiped `/tmp`) posted a
-  fresh comment — NEAT-AI PR #3644 collected nine markers in ~70 minutes. When
+  fresh comment — private-repo-14 PR #3644 collected nine markers in ~70 minutes. When
   the state file is missing, `findExistingMarkerComment()` now looks for the
   newest **fleet-authored** `VIBE_CODER_HEARTBEAT` comment and PATCHes it
   instead. A **cleared** marker (`epoch 0` + `cleared:`) is a valid adoption
@@ -709,7 +709,7 @@ network hiccups, and even its own mistakes:
   the implementing files.
 - **All-account claim release for grill-me (Issue #3109)** — `releaseClaim()`
   only removes the **current run's** account, but a grill-me cycle spans several
-  runs across different fleet accounts (e.g. Round 1 as `VibeCoderBot`, Round 2
+  runs across different fleet accounts (e.g. Round 1 as `Vibecoderbot`, Round 2
   as `stsvcbot`). An earlier round's assignee therefore lingered until the
   ~30-minute cross-account recovery cleared it. The grill-me processor's
   hand-off paths (Ready hand-off **and** between rounds) now call
@@ -724,7 +724,7 @@ network hiccups, and even its own mistakes:
   swallowed, never throws) and the ~30-minute auto-recovery remains the silent
   backstop — no human is ever flagged.
 - **Cross-identity round verification for grill-me (Issue #3768)** — the same
-  multi-account fleet means a peer (`VibeCoderBot`) can post
+  multi-account fleet means a peer (`Vibecoderbot`) can post
   `## Grill-Me Round N` moments before another identity (`stsvcbot`) claims the
   issue. `countGrillMeRounds` / `hasReadyMarkerBeenPosted` only see the current
   identity's comments, so the post-run verification declared a false
@@ -930,7 +930,7 @@ at any given time. This prevents conflicts from concurrent changes to the same
 codebase area. The check is **fleet-aware** (Issue #3099): a work stream is
 occupied when an issue in it is assigned to **any** fleet account — the current
 host's login plus every fleet login in `config.allowedAuthors` — so in a
-multi-account fleet (`VibeCoderBot`, `stsvcbot`, …) a sibling host's assignment
+multi-account fleet (`Vibecoderbot`, `stsvcbot`, …) a sibling host's assignment
 also occupies the stream and a second host will not start the same issue.
 Non-fleet human assignees are ignored.
 
@@ -2064,7 +2064,7 @@ cost-savings estimation — with no network I/O. The worker runs on the Claude C
 exclusively and submits no work to the Batch API. The path was rejected because
 the Batch API's up-to-24h async turnaround is incompatible with the worker's
 bounded interactive run; see
-Model, Caching & Batching § Batch API for the
+[Model, Caching & Batching § Batch API](MODEL-AND-CACHING.md#batch-api) for the
 full negative-result note.
 
 ### 📁 In-repo `.vibecoder.json` configuration removed (Issues #1278, #2626)
@@ -2250,7 +2250,7 @@ links to its issue for the full rationale.
   (Issue #1683, #1713), and the `tail -f | head` foot-gun detector (Issue #1681,
   #1715).
 - **Standard workflow templates (Issues #1581, #1596, #1656, #1703):**
-  `workflow_setup` v2/v3 provisions Gitleaks, Semgrep SAST, NEAT-AI scorer
+  `workflow_setup` v2/v3 provisions Gitleaks, Semgrep SAST, private-repo-14 scorer
   hardening, Dependency Review and markdown-lint with commit-SHA-pinned actions.
 - **Combined claim + heartbeat comment (Issue #1628):** First claim and first
   heartbeat are merged into a single comment, reducing notification noise and

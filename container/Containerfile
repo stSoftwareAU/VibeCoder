@@ -124,7 +124,7 @@ ARG RUST_SHA256_CLIPPY_ARM64="84480abfbfed89616b1e0b35acb9db84766f0353b671766638
 
 # Static analysers the monitored repositories' gates invoke directly:
 # shellcheck (every repo with a committed shell gate), actionlint
-# (NEAT-AI-scorer) and cargo-deny (the Rust crates, which exit non-zero when
+# (private-repo-22) and cargo-deny (the Rust crates, which exit non-zero when
 # it is absent). All three are single, checksum-verified binaries.
 RUN set -eu; \
     arch="$(uname -m)"; \
@@ -231,7 +231,7 @@ RUN set -eu; \
     chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
     NODE_PATH="$(npm root -g)" node -e "const {chromium} = require('playwright-core'); chromium.launch({args: ['--no-sandbox']}).then(async (browser) => { const page = await browser.newPage(); await page.setContent('<h1>baked</h1>'); const text = await page.textContent('h1'); await browser.close(); if (text !== 'baked') { throw new Error('unexpected page content: ' + text); } console.log('headless Chromium launched from ' + process.env.PLAYWRIGHT_BROWSERS_PATH); }).catch((err) => { console.error(err); process.exit(1); })"
 
-# FLEET-taxation's gate runs `rustup update stable` unless this is set. The
+# private-repo-9's gate runs `rustup update stable` unless this is set. The
 # image owns its Rust toolchain, so the gate must use the baked one rather
 # than trying to install another at run time.
 ENV QUALITY_SKIP_RUST_UPDATE="1"

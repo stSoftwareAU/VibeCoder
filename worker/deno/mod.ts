@@ -169,6 +169,7 @@ import { containerLaunchPlanCommand } from "./commands/container_launch_plan.ts"
 import { containerRestartBackoffCommand } from "./commands/container_restart_backoff.ts";
 import { containerReapCommand } from "./commands/container_reap.ts";
 import { containerImagePruneCommand } from "./commands/container_image_prune.ts";
+import { containerBuildHealCommand } from "./commands/container_build_heal.ts";
 import { runModeCommand } from "./commands/run_mode.ts";
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
 import { secretsHistoryScanCommand } from "./commands/secrets_history_scan.ts";
@@ -354,6 +355,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(containerRestartBackoffCommand);
   registry.register(containerReapCommand);
   registry.register(containerImagePruneCommand);
+  registry.register(containerBuildHealCommand);
   registry.register(runModeCommand);
   registry.register(auditDefaultBranchRulesetsCommand);
   registry.register(secretsHistoryScanCommand);
@@ -568,6 +570,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-reap",
       // The launchers call this to prune superseded image tags (Issue #4162).
       "container-image-prune",
+      // The launchers call this when a build fails (Issue #4441).
+      "container-build-heal",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
       "seatbelt-profile",
@@ -727,6 +731,12 @@ function outputResult(result: CommandResult, _logger: Logger): void {
   // If there's additional data, output as JSON for machine parsing
   if (result.data && Deno.env.get("OUTPUT_JSON") === "true") {
     console.log(JSON.stringify(result.data, null, 2));
+  }
+
+  // A command that must tell its caller apart from a bare pass/fail names its
+  // own status (Issue #4441); everything else keeps the 0/1 default.
+  if (result.exitCode !== undefined && result.exitCode !== 0) {
+    Deno.exit(result.exitCode);
   }
 
   if (!result.success) {

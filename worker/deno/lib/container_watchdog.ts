@@ -36,7 +36,7 @@
  *    same way. This also covers a wedge that outlived a host reboot.
  *
  * Every forced reap is emitted as a `container_wedged` self-heal event, so
- * `self-heal-summary` and FLEET-health surface a chronically wedging host rather
+ * `self-heal-summary` and private-repo-6 surface a chronically wedging host rather
  * than losing it in a host log.
  *
  * ## Why the seams

@@ -314,13 +314,13 @@ Deno.test({
     );
     try {
       // The worker grants itself a second repo *after* the child was spawned.
-      registerWriteRepo("example-org/private-repo-29");
+      registerWriteRepo("stSoftwareAU/private-repo-14");
 
       const result = await runShim(shim.shimPath, shim.env, [
         "issue",
         "create",
         "--repo",
-        "example-org/private-repo-29",
+        "stSoftwareAU/private-repo-14",
         "--title",
         "Idle task: security scan",
         "--body",
@@ -333,7 +333,7 @@ Deno.test({
       // The ineffective-for-the-agent grant is reported, not swallowed.
       assertEquals(logs.length, 1);
       assertStringIncludes(logs[0] ?? "", "WRITE_REPO_GRANT_AFTER_SPAWN");
-      assertStringIncludes(logs[0] ?? "", "example-org/private-repo-29");
+      assertStringIncludes(logs[0] ?? "", "stsoftwareau/private-repo-14");
     } finally {
       await shim.cleanup();
       await Deno.remove(stub.dir, { recursive: true });
@@ -822,7 +822,7 @@ Deno.test({
       const prepB = withWriteRepoAllowlistContext(
         createWriteRepoAllowlistContext(),
         async () => {
-          seedWriteRepoAllowlist("example-org/private-repo-29");
+          seedWriteRepoAllowlist("stSoftwareAU/private-repo-14");
           await tick();
           shimB = expectInstalled(
             await prepareGhGuardShim({
@@ -845,11 +845,11 @@ Deno.test({
         "--body",
         "x",
       ];
-      // A's shim: NEAT-AI is refused, VibeCoder is allowed through.
+      // A's shim: private-repo-14 is refused, VibeCoder is allowed through.
       const aCross = await runShim(
         shimA.shimPath,
         shimA.env,
-        write("example-org/private-repo-29"),
+        write("stSoftwareAU/private-repo-14"),
       );
       assert(aCross.code !== 0, "shim A must refuse slot B's repo");
       assertStringIncludes(aCross.stderr, "WRITE_REPO_BLOCKED");
@@ -870,7 +870,7 @@ Deno.test({
       const bOwn = await runShim(
         shimB.shimPath,
         shimB.env,
-        write("example-org/private-repo-29"),
+        write("stSoftwareAU/private-repo-14"),
       );
       assertEquals(bOwn.code, 0, bOwn.stderr);
     } finally {

@@ -39,20 +39,22 @@ function fail(stderr: string): CommandOutput {
 // ---------------------------------------------------------------------------
 
 Deno.test("classifyDependencySpec - jsr internal scope maps to stSoftwareAU repo", () => {
-  const result = classifyDependencySpec("jsr:@stsoftware/neat-ai");
+  const result = classifyDependencySpec("jsr:@stsoftware/private-repo-14");
   assertEquals(result.kind, "internal");
   if (result.kind === "internal") {
-    assertEquals(result.name, "neat-ai");
-    assertEquals(result.candidateRepo, "example-org/private-repo-29");
+    assertEquals(result.name, "private-repo-14");
+    assertEquals(result.candidateRepo, "stSoftwareAU/private-repo-14");
   }
 });
 
 Deno.test("classifyDependencySpec - npm internal scope with version suffix", () => {
-  const result = classifyDependencySpec("npm:@stsoftware/neat-ai@^5.6.0");
+  const result = classifyDependencySpec(
+    "npm:@stsoftware/private-repo-14@^5.6.0",
+  );
   assertEquals(result.kind, "internal");
   if (result.kind === "internal") {
-    assertEquals(result.name, "neat-ai");
-    assertEquals(result.candidateRepo, "example-org/private-repo-29");
+    assertEquals(result.name, "private-repo-14");
+    assertEquals(result.candidateRepo, "stSoftwareAU/private-repo-14");
   }
 });
 
@@ -60,16 +62,16 @@ Deno.test("classifyDependencySpec - bare scoped spec (no registry prefix)", () =
   const result = classifyDependencySpec("@stsoftware/widgets");
   assertEquals(result.kind, "internal");
   if (result.kind === "internal") {
-    assertEquals(result.candidateRepo, "example-org/private-repo-62");
+    assertEquals(result.candidateRepo, "stSoftwareAU/widgets");
   }
 });
 
 Deno.test("classifyDependencySpec - scope match is case-insensitive", () => {
-  const result = classifyDependencySpec("jsr:@StSoftware/Neat-AI");
+  const result = classifyDependencySpec("jsr:@StSoftware/private-repo-14");
   assertEquals(result.kind, "internal");
   if (result.kind === "internal") {
     // Repo name preserves the package name casing; probe canonicalises.
-    assertEquals(result.candidateRepo, "example-org/private-repo-29");
+    assertEquals(result.candidateRepo, "stSoftwareAU/private-repo-14");
   }
 });
 
@@ -106,18 +108,23 @@ Deno.test("probeCrossRepoAccess - clonable with push access is reachable, uses c
   const runner: RunCommand = (_cmd) =>
     Promise.resolve(
       ok(JSON.stringify({
-        full_name: "example-org/private-repo-29",
+        full_name: "stSoftwareAU/private-repo-14",
         permissions: { push: true },
       })),
     );
-  const access = await probeCrossRepoAccess("example-org/private-repo-29", runner);
+  const access = await probeCrossRepoAccess(
+    "stSoftwareAU/private-repo-14",
+    runner,
+  );
   assertEquals(access.reachable, true);
-  if (access.reachable) assertEquals(access.repo, "example-org/private-repo-29");
+  if (access.reachable) {
+    assertEquals(access.repo, "stSoftwareAU/private-repo-14");
+  }
 });
 
 Deno.test("probeCrossRepoAccess - repo not found is unreachable", async () => {
   const runner: RunCommand = (_cmd) => Promise.resolve(fail("HTTP 404"));
-  const access = await probeCrossRepoAccess("example-org/private-repo-12", runner);
+  const access = await probeCrossRepoAccess("stSoftwareAU/ghost", runner);
   assertEquals(access.reachable, false);
 });
 
@@ -125,11 +132,11 @@ Deno.test("probeCrossRepoAccess - no push access is unreachable", async () => {
   const runner: RunCommand = (_cmd) =>
     Promise.resolve(
       ok(JSON.stringify({
-        full_name: "example-org/private-repo-47",
+        full_name: "stSoftwareAU/readonly",
         permissions: { push: false, pull: true },
       })),
     );
-  const access = await probeCrossRepoAccess("example-org/private-repo-47", runner);
+  const access = await probeCrossRepoAccess("stSoftwareAU/readonly", runner);
   assertEquals(access.reachable, false);
   if (!access.reachable) assertStringIncludes(access.reason, "push");
 });
@@ -142,17 +149,17 @@ Deno.test("resolveCrossRepoTarget - internal + reachable yields internal-reachab
   const runner: RunCommand = (_cmd) =>
     Promise.resolve(
       ok(JSON.stringify({
-        full_name: "example-org/private-repo-29",
+        full_name: "stSoftwareAU/private-repo-14",
         permissions: { push: true },
       })),
     );
   const target = await resolveCrossRepoTarget(
-    "jsr:@stsoftware/neat-ai",
+    "jsr:@stsoftware/private-repo-14",
     runner,
   );
   assertEquals(target.kind, "internal-reachable");
   if (target.kind === "internal-reachable") {
-    assertEquals(target.repo, "example-org/private-repo-29");
+    assertEquals(target.repo, "stSoftwareAU/private-repo-14");
   }
 });
 
@@ -194,7 +201,7 @@ function scriptedRunner(
     // Default: PR-create returns a URL; everything else succeeds quietly.
     if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "create") {
       return Promise.resolve(
-        ok("https://github.com/example-org/private-repo-29/pull/42"),
+        ok("https://github.com/stSoftwareAU/private-repo-14/pull/42"),
       );
     }
     if (cmd.includes("symbolic-ref")) {
@@ -209,7 +216,7 @@ function baseRequest(
   overrides: Partial<CrossRepoFixRequest> = {},
 ): CrossRepoFixRequest {
   return {
-    repo: "example-org/private-repo-29",
+    repo: "stSoftwareAU/private-repo-14",
     branch: "fix/issue-2941-root-cause",
     title: "Fix the root cause",
     body: "Closes the upstream defect.",
@@ -232,9 +239,9 @@ Deno.test("openCrossRepoFixPr - opens a PR in a different repo and surfaces the 
   if (result.ok) {
     assertEquals(
       result.value.prUrl,
-      "https://github.com/example-org/private-repo-29/pull/42",
+      "https://github.com/stSoftwareAU/private-repo-14/pull/42",
     );
-    assertEquals(result.value.repo, "example-org/private-repo-29");
+    assertEquals(result.value.repo, "stSoftwareAU/private-repo-14");
   }
   assertEquals(fixApplied, true);
 
@@ -242,14 +249,14 @@ Deno.test("openCrossRepoFixPr - opens a PR in a different repo and surfaces the 
   const prCreate = calls.find(
     (c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create",
   );
-  assertEquals(prCreate?.includes("example-org/private-repo-29"), true);
+  assertEquals(prCreate?.includes("stSoftwareAU/private-repo-14"), true);
   assertEquals(prCreate?.includes("--repo"), true);
 
   // A clone happened before the branch/commit/push sequence.
   const cloned = calls.find((c) =>
     c[0] === "gh" && c[1] === "repo" && c[2] === "clone"
   );
-  assertEquals(cloned?.includes("example-org/private-repo-29"), true);
+  assertEquals(cloned?.includes("stSoftwareAU/private-repo-14"), true);
 
   // A feature branch was created and pushed (never a direct default push).
   const pushed = calls.find((c) => c[0] === "git" && c.includes("push"));

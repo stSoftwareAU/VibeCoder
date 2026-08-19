@@ -2,7 +2,7 @@
  * The completion phase reconciles HEAD to the worker branch before pushing
  * (Issue #4286): the agent had committed on a branch of its own, so the
  * worker branch was pushed empty and `gh pr create` failed with "No commits
- * between …" (NEAT-AI-scorer#565, three attempts).
+ * between …" (private-repo-22#565, three attempts).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -51,7 +51,7 @@ async function runCompletion(
   );
   const config = buildDefaultWorkerConfig();
   const ctx: IssueContext = {
-    repo: "example-org/private-repo-37",
+    repo: "stSoftwareAU/private-repo-22",
     issueNumber: 565,
     issueTitle: "Branding: hot-link the banner",
     issueBody: "",
@@ -85,7 +85,7 @@ async function runCompletion(
       createClient: () => stubClient(),
       runGhCommand: () =>
         Promise.resolve(
-          "https://github.com/example-org/private-repo-37/pull/9",
+          "https://github.com/stSoftwareAU/private-repo-22/pull/9",
         ),
     },
     git: {

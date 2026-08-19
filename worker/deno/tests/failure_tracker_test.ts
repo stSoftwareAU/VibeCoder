@@ -57,14 +57,23 @@ Deno.test("failure tracker - trackFailure increments counter for same key", asyn
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    const r1 = await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    const r1 = await trackFailure(
+      config,
+      "spelling|stSoftwareAU/private-repo-1|1277",
+    );
     assertEquals(r1.ok, true);
     if (r1.ok) assertEquals(r1.value.consecutiveFailures, 1);
 
-    const r2 = await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    const r2 = await trackFailure(
+      config,
+      "spelling|stSoftwareAU/private-repo-1|1277",
+    );
     if (r2.ok) assertEquals(r2.value.consecutiveFailures, 2);
 
-    const r3 = await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    const r3 = await trackFailure(
+      config,
+      "spelling|stSoftwareAU/private-repo-1|1277",
+    );
     if (r3.ok) assertEquals(r3.value.consecutiveFailures, 3);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -75,14 +84,20 @@ Deno.test("failure tracker - trackFailure resets counter for different key", asy
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
 
-    const result = await trackFailure(config, "issue|example-org/private-repo-13|42");
+    const result = await trackFailure(
+      config,
+      "issue|stSoftwareAU/private-repo-1|42",
+    );
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value.consecutiveFailures, 1);
-      assertEquals(result.value.lastFailureKey, "issue|example-org/private-repo-13|42");
+      assertEquals(
+        result.value.lastFailureKey,
+        "issue|stSoftwareAU/private-repo-1|42",
+      );
     }
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -97,8 +112,8 @@ Deno.test("failure tracker - resetFailures clears counter and key", async () => 
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
 
     const result = await resetFailures(config);
     assertEquals(result.ok, true);
@@ -124,8 +139,8 @@ Deno.test("failure tracker - shouldExitOnFailures returns false below threshold"
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
 
     const shouldExit = await shouldExitOnFailures(config);
     assertEquals(shouldExit, false);
@@ -138,9 +153,9 @@ Deno.test("failure tracker - shouldExitOnFailures returns true at threshold", as
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
 
     const shouldExit = await shouldExitOnFailures(config);
     assertEquals(shouldExit, true);
@@ -153,10 +168,10 @@ Deno.test("failure tracker - shouldExitOnFailures returns true above threshold",
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
 
     const shouldExit = await shouldExitOnFailures(config);
     assertEquals(shouldExit, true);
@@ -174,7 +189,7 @@ Deno.test("failure tracker - expired state is treated as empty", async () => {
   try {
     const oldState = {
       consecutiveFailures: 2,
-      lastFailureKey: "spelling|example-org/private-repo-13|1277",
+      lastFailureKey: "spelling|stSoftwareAU/private-repo-1|1277",
       lastFailureTimestamp: Math.floor(Date.now() / 1000) - 7200, // 2 hours ago
     };
     await Deno.writeTextFile(
@@ -195,7 +210,7 @@ Deno.test("failure tracker - non-expired state is preserved", async () => {
   try {
     const recentState = {
       consecutiveFailures: 2,
-      lastFailureKey: "issue|example-org/private-repo-13|42",
+      lastFailureKey: "issue|stSoftwareAU/private-repo-1|42",
       lastFailureTimestamp: Math.floor(Date.now() / 1000),
     };
     await Deno.writeTextFile(
@@ -205,7 +220,7 @@ Deno.test("failure tracker - non-expired state is preserved", async () => {
 
     const state = await loadState(dir, 3600);
     assertEquals(state.consecutiveFailures, 2);
-    assertEquals(state.lastFailureKey, "issue|example-org/private-repo-13|42");
+    assertEquals(state.lastFailureKey, "issue|stSoftwareAU/private-repo-1|42");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -219,13 +234,16 @@ Deno.test("failure tracker - state persists and reloads correctly", async () => 
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
 
     // Simulate restart: reload from disk
     const state = await loadState(dir);
     assertEquals(state.consecutiveFailures, 2);
-    assertEquals(state.lastFailureKey, "spelling|example-org/private-repo-13|1277");
+    assertEquals(
+      state.lastFailureKey,
+      "spelling|stSoftwareAU/private-repo-1|1277",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -235,8 +253,8 @@ Deno.test("failure tracker - resetFailures clears persisted state", async () => 
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
-    await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
+    await trackFailure(config, "spelling|stSoftwareAU/private-repo-1|1277");
     await resetFailures(config);
 
     // Simulate restart: reload from disk

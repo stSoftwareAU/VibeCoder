@@ -205,7 +205,7 @@ Deno.test("ghostcommit escalation - flagged canary applies needs-human, posts a 
       repo: "stSoftwareAU/VibeCoder",
       issueNumber: 3390,
       needsHumanLabel: "needs-human",
-      githubUser: "VibeCoderBot",
+      githubUser: "Vibecoderbot",
       detection,
       logger: makeSilentLogger(),
       deps: { ensureLabelExists: ensureLabelStub() },

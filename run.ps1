@@ -386,16 +386,130 @@ if ($reaped.ExitCode -ne 0) {
         "[run.ps1] warning: the pre-launch container reaper did not complete")
 }
 
+# Exit status container-build-heal reports for a build failure it does not
+# cover, as opposed to 0 (healed - retry) or any other status (the heal itself
+# failed). Kept in step with BUILD_NOT_HEALABLE_EXIT in
+# worker/deno/commands/container_build_heal.ts by the launcher tests.
+$BuildNotHealableExit = 3
+
+<#
+.SYNOPSIS
+    Append one line to the worker's own host log, best-effort.
+.DESCRIPTION
+    A fleet host that keeps restarting its builder is visible in run_core.log
+    without anyone reading launcher stderr (Issue #4441). An unwritable log
+    must never fail a launch.
+#>
+function Write-RunCoreLog {
+    param([Parameter(Mandatory = $true)][string] $Message)
+
+    try {
+        # The backslashes escape the literal T and Z for .NET's custom
+        # date-format parser, so the stamp matches run.sh's `date -u` exactly.
+        $stamp = [DateTime]::UtcNow.ToString("yyyy-MM-dd\THH:mm:ss\Z")
+        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
+            -Value "$stamp $Message" -ErrorAction Stop
+    } catch {
+        # Best-effort by design.
+    }
+}
+
+<#
+.SYNOPSIS
+    Build the image, capturing its output for the builder heal.
+.DESCRIPTION
+    The output is captured rather than inherited so container-build-heal can
+    classify a failure from the build's own diagnostics (Issue #4441); it is
+    written straight back out to stderr, so nothing is lost from the host log.
+.OUTPUTS
+    The build's exit status.
+#>
+function Invoke-ImageBuild {
+    param([Parameter(Mandatory = $true)][string] $LogPath)
+
+    $build = Invoke-HostCommand -FilePath $Runtime -ArgumentList $BuildArgs -Capture
+    $text = "$($build.StdOut)$($build.StdErr)"
+    [System.IO.File]::WriteAllText($LogPath, $text)
+    if ($text) { [Console]::Error.Write($text) }
+    return $build.ExitCode
+}
+
+<#
+.SYNOPSIS
+    Classify a failed build and restart the runtime's builder when it is the
+    builder's storage that failed (Issue #4441).
+.OUTPUTS
+    0 healed (retry the build), 3 not a healable failure, anything else the
+    heal itself failed.
+#>
+function Invoke-BuildHeal {
+    param(
+        [Parameter(Mandatory = $true)][string] $LogPath,
+        [Parameter(Mandatory = $true)][int] $Attempt
+    )
+
+    $healed = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+        "run",
+        "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+        "--allow-env", "--allow-read", "--allow-run",
+        "$BaseDir/worker/deno/mod.ts", "container-build-heal",
+        "--runtime", $Runtime,
+        "--log", $LogPath,
+        "--attempt", "$Attempt"
+    )
+    if ($healed.StdOut) { [Console]::Error.Write($healed.StdOut) }
+    if ($healed.StdErr) { [Console]::Error.Write($healed.StdErr) }
+    return $healed.ExitCode
+}
+
 # Content-derived identity: a changed container definition is a different
 # reference, so an absent reference is exactly the rebuild signal (#4062).
 $present = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ExistsArgs -Capture
 if ($present.ExitCode -ne 0) {
     [Console]::Error.WriteLine("[run.ps1] building $Image")
     Write-LaunchPhase "image_build"
-    $build = Invoke-HostCommand -FilePath $Runtime -ArgumentList $BuildArgs
-    if ($build.ExitCode -ne 0) {
-        [Console]::Error.WriteLine("Error: failed to build $Image")
-        Exit-Launcher $build.ExitCode
+    $BuildLog = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ("vibe-build-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+    try {
+        $buildStatus = Invoke-ImageBuild -LogPath $BuildLog
+
+        # Builder self-heal (Issue #4441). A build that ran the builder's
+        # store out of space leaves it unusable until it is restarted, and
+        # every later launch then fails before it builds anything. Exactly one
+        # heal and one retry per launch: a build that failed for its own
+        # reasons still fails here, exactly as it always has.
+        if ($buildStatus -ne 0) {
+            $healStatus = Invoke-BuildHeal -LogPath $BuildLog -Attempt 1
+            if ($healStatus -eq 0) {
+                [Console]::Error.WriteLine(
+                    "[run.ps1] retrying the build of $Image after a builder restart (Issue #4441)")
+                Write-RunCoreLog "container-build-heal: builder restarted after a storage failure - retrying $Image"
+                $buildStatus = Invoke-ImageBuild -LogPath $BuildLog
+                if ($buildStatus -eq 0) {
+                    Write-RunCoreLog "container-build-heal: retry of $Image succeeded"
+                } else {
+                    # A second failure in the same launch escalates to a
+                    # builder recreate, so the next launch starts clean. This
+                    # launch still fails - it never loops.
+                    Write-RunCoreLog "container-build-heal: retry of $Image failed (status $buildStatus) - recreating the builder"
+                    if ((Invoke-BuildHeal -LogPath $BuildLog -Attempt 2) -ne 0) {
+                        [Console]::Error.WriteLine(
+                            "[run.ps1] warning: could not recreate the $Runtime builder")
+                    }
+                }
+            } elseif ($healStatus -eq $BuildNotHealableExit) {
+                Write-RunCoreLog "container-build-heal: $Image build failed for a reason the builder heal does not cover"
+            } else {
+                Write-RunCoreLog "container-build-heal: could not heal the $Runtime builder (status $healStatus)"
+            }
+        }
+
+        if ($buildStatus -ne 0) {
+            [Console]::Error.WriteLine("Error: failed to build $Image")
+            Exit-Launcher $buildStatus
+        }
+    } finally {
+        Remove-Item -LiteralPath $BuildLog -Force -ErrorAction SilentlyContinue
     }
 }
 

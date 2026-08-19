@@ -533,12 +533,12 @@ export async function createProductionRunCoreDeps(
   const repos = config.repos ?? [];
   const authorisedCommenters = config.allowedAuthors ?? [];
 
-  // Issue #1935: build the FLEET-health config + deps once so the
+  // Issue #1935: build the private-repo-6 config + deps once so the
   // per-iteration heartbeat does not re-resolve env vars / hostname on
   // every loop. The heartbeat itself is registered below in the deps
   // object so it can be replaced under test.
   //
-  // Issue #2015: pass the shared worker logger into the FLEET-health deps so
+  // Issue #2015: pass the shared worker logger into the private-repo-6 deps so
   // heartbeat info/warning lines land in `~/logs/worker-*.log` alongside
   // the rest of the loop. Without this the deps log via raw `console.log`,
   // which goes to the inherited tty and is silently lost — masking any
@@ -2307,7 +2307,7 @@ export async function createProductionRunCoreDeps(
       resetRepoAccessLogState();
     },
 
-    // Issue #1935: per-iteration FLEET-health heartbeat. The end-of-run
+    // Issue #1935: per-iteration private-repo-6 heartbeat. The end-of-run
     // call in `commands/run_core.ts` was silently lost when the parent
     // shell sent SIGTERM during the post-loop block, leaving the host
     // flagged dead on the dashboard. Reporting from the top of every
@@ -2361,7 +2361,7 @@ export async function createProductionRunCoreDeps(
                 // inherits from the parent shell's tty and never reaches
                 // the worker log — making "filer never fires" indistinguishable
                 // from "filer fired but silently failed". Same root cause
-                // and same fix shape as PR #2016 for the FLEET-health
+                // and same fix shape as PR #2016 for the private-repo-6
                 // heartbeat.
                 __testDeps: { log: (line: string) => logger.info(line) },
               },
@@ -2404,7 +2404,7 @@ export async function createProductionRunCoreDeps(
         });
         // Return the claimable total so the run-core gate can skip
         // the idle-task filer this iteration when the audit already
-        // sees claimable work (Issue #2106 + FLEET-validation #45-#48
+        // sees claimable work (Issue #2106 + private-repo-10 #45-#48
         // budget guard).
         return { claimableTotal: result.claimableTotal };
       } catch (err) {
@@ -2496,7 +2496,7 @@ export async function createProductionRunCoreDeps(
     // implementations; we thread the shared logger so the `[liveness] ALERT`
     // line and the per-tick decision line land in `~/logs/worker-*.log`
     // rather than the inherited tty (same fix shape as the idle-task filer
-    // and FLEET-health heartbeat). Best-effort: any throw is caught here and
+    // and private-repo-6 heartbeat). Best-effort: any throw is caught here and
     // logged so a guard failure never reaches the loop's catch.
     checkLivenessWindow: async ({ tick }: { tick: number }) => {
       try {

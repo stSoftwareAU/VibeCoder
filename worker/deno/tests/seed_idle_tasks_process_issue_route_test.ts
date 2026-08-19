@@ -33,7 +33,7 @@ function makeLogger(): Logger {
 }
 
 const CONFIG = {
-  repos: ["stSoftwareAU/VibeCoder", "example-org/private-repo-29"],
+  repos: ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"],
   workDir: "/tmp/work",
 } as unknown as WorkerConfig;
 
@@ -60,7 +60,7 @@ Deno.test("routeSeedIdleTasksInProcessIssue - routes a seeding title", async () 
     {
       repo: "stSoftwareAU/VibeCoder",
       issueNumber: 3858,
-      issueTitle: "seed-idle-tasks: example-org/private-repo-29",
+      issueTitle: "seed-idle-tasks: stSoftwareAU/private-repo-14",
       config: CONFIG,
     },
     { logger: makeLogger(), executeFn: fn },
@@ -72,7 +72,7 @@ Deno.test("routeSeedIdleTasksInProcessIssue - routes a seeding title", async () 
   assertEquals(calls[0]!.args["issue-number"], 3858);
   assertEquals(
     calls[0]!.args["title"],
-    "seed-idle-tasks: example-org/private-repo-29",
+    "seed-idle-tasks: stSoftwareAU/private-repo-14",
   );
   // The config carrying the operator-controlled `repos` allowlist must be
   // threaded through — it is the only sanctioned source of the target.
@@ -86,7 +86,7 @@ Deno.test("routeSeedIdleTasksInProcessIssue - mirrors command failure", async ()
     {
       repo: "stSoftwareAU/VibeCoder",
       issueNumber: 99,
-      issueTitle: "SEED-IDLE-TASKS: example-org/private-repo-29",
+      issueTitle: "SEED-IDLE-TASKS: stSoftwareAU/private-repo-14",
       config: CONFIG,
     },
     { logger: makeLogger(), executeFn: fn },

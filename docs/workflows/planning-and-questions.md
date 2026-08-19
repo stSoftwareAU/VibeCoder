@@ -710,7 +710,7 @@ repositories or read large codebases.
   [worker/deno/lib/planning_degraded_label.ts](../../worker/deno/lib/planning_degraded_label.ts)
   (label application), [prompts/planning/](../../prompts/planning/),
   [prompts/question/](../../prompts/question/).
-- **Model and caching:** MODEL-AND-CACHING.md —
+- **Model and caching:** [MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md) —
   planning-run stats and degraded-model detection.
 - **User docs:** [README.md](../../README.md), [USAGE.md](../USAGE.md),
   [issue-processing.md](issue-processing.md).

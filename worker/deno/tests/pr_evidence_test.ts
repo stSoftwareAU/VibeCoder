@@ -17,7 +17,7 @@ import type { Result } from "../types.ts";
 // --- convertEvidenceImagesToRawUrls (Issue #2985) ---
 
 const SHA = "9ad209d9b3f438e12562c046c06dfc6f9ad2d4d0";
-const REPO = "example-org/private-repo-22";
+const REPO = "stSoftwareAU/private-repo-10";
 
 /** Existence predicate that treats a fixed allow-list of paths as present. */
 function fakeExists(

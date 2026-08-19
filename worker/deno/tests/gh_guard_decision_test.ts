@@ -298,7 +298,7 @@ Deno.test("gh-guard - agent allowlist stays ctx.repo-only when a sweep is reques
         "issue",
         "create",
         "--repo",
-        "example-org/private-repo-29",
+        "stSoftwareAU/private-repo-14",
         "--title",
         "Idle task: security scan",
         "--body",
@@ -308,14 +308,14 @@ Deno.test("gh-guard - agent allowlist stays ctx.repo-only when a sweep is reques
     );
     assertEquals(decision.allowed, false);
     assertEquals(decision.marker, "WRITE_REPO_BLOCKED");
-    assert(decision.reason?.includes("example-org/private-repo-29"));
+    assert(decision.reason?.includes("stSoftwareAU/private-repo-14"));
 
     // Running the worker-side sweep does not widen what a later spawn bakes.
     const result = await processSeedIdleTasksCommand.execute(
       {
         "repo": "stSoftwareAU/VibeCoder",
         "issue-number": 3858,
-        "title": "seed-idle-tasks: example-org/private-repo-29",
+        "title": "seed-idle-tasks: stSoftwareAU/private-repo-14",
         "__testDeps": {
           runGhCommand: () => Promise.resolve(""),
           logger: guardTestLogger(),
@@ -327,7 +327,7 @@ Deno.test("gh-guard - agent allowlist stays ctx.repo-only when a sweep is reques
         },
       },
       {
-        repos: ["stSoftwareAU/VibeCoder", "example-org/private-repo-29"],
+        repos: ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"],
       } as unknown as WorkerConfig,
     );
     assertEquals(result.success, true);

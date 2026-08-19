@@ -64,8 +64,8 @@ export const DEFAULT_MARKER_REFRESH_SECONDS = 300;
  * by a peer reading the same issue. That short-circuit over-reached — if
  * the issue was later re-assigned and the new worker crashed before
  * recording a heartbeat, the old cleared marker still suppressed recovery
- * forever (live evidence: VibeCoder#1891, NEAT-AI#2612,
- * NEAT-AI-Examples#253 stuck ~24h).
+ * forever (live evidence: VibeCoder#1891, private-repo-14#2612,
+ * private-repo-18#253 stuck ~24h).
  *
  * The grace window keeps the original protection for the legitimate case
  * (the previous worker JUST finished and the recovery scan races the

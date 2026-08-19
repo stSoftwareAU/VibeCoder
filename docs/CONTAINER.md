@@ -289,6 +289,66 @@ watching:
 listing/removal spelling lives with the rest of its dialect in
 `container_runtime.ts` (`docker image rm`, `container image delete`).
 
+### A builder that ran out of storage heals itself (Issue #4441)
+
+Pruning stops the store filling; this is what happens when it filled anyway.
+On host-23 the host dropped to 135 MiB free and `container build` died
+mid-export with `no space left on device`. Freeing host space did **not** fix
+it: Apple container's BuildKit builder VM had remounted its own filesystem
+read-only after the ENOSPC and stayed that way, so every later launch failed
+with `open /tmp/1326465203: read-only file system` before it built anything.
+`loop.sh` backed off 120 s → 240 s → … → 960 s and would have retried for
+ever; a human ran `container builder stop && container builder start` and the
+host came back at once.
+
+So a failed build is now classified from its own output, and only a
+builder-storage failure is healed:
+
+```mermaid
+flowchart TD
+    B["🐳 container build"] --> Q{"failed?"}
+    Q -->|no| G["🚀 launch"]
+    Q -->|yes| C{"builder-storage<br/>signature?"}
+    C -->|no| F["❌ fail, exactly as before"]
+    C -->|yes| H["🔧 builder restart"]
+    H --> R["🐳 retry the build — once"]
+    R -->|ok| G
+    R -->|failed| E["🔧 builder recreate<br/>(for the next launch)"] --> F
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style H fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style E fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style F fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
+```bash
+deno run --allow-env --allow-read --allow-run worker/deno/mod.ts \
+  container-build-heal --runtime container --log /tmp/vibe-build.log
+# [container-build-heal] the build failed on builder storage
+#   (no space left on device) — performing a builder restart
+```
+
+The command's **exit status is the launcher's instruction**, so "healed" and
+"not my problem" are never confused with each other:
+
+| Status | Meaning                                       | What the launcher does        |
+| ------ | --------------------------------------------- | ----------------------------- |
+| `0`    | The builder was restarted                     | Retries the build exactly once |
+| `3`    | The build failed for its own reasons          | Fails, exactly as it always has |
+| other  | The failure was healable, the heal was not     | Fails, and says why           |
+
+Four boundaries keep that safe on a machine nobody is watching:
+
+| Boundary                | Behaviour                                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| A narrow signature list | Only `no space left on device`, `read-only file system`, `ENOSPC` and BuildKit's `ResourceExhausted` are healed. A broken `RUN` step, a missing package or a syntax error is untouched — "healing" a genuine build error is how a launcher starts looping on it |
+| One retry, never a loop | Exactly one heal and one retry per launch. A second failure in the same launch escalates to a builder *recreate* (`builder delete` + `builder start`) so the **next** launch starts clean, and this launch still fails |
+| Per-runtime, in one place | Apple container bounces its builder VM; Docker and Podman build in-process and prune the build cache instead. Both spellings live with the rest of the dialect in `container_runtime.ts` |
+| Fails loud              | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `~/logs/run_core.log` (Issues #3234, #4441) |
+
+`worker/deno/lib/container_build_heal.ts` owns the classifier and the
+escalation; the runtime is driven through an injected seam, so the tests never
+start a builder VM.
+
 ## Runtime detection — which runtime the launchers use
 
 `run.sh` and `run.ps1` must resolve a supported container runtime before they
@@ -409,7 +469,10 @@ flowchart TD
     P --> E{"image reference<br/>present?"}
     E -->|no| B["🐳 build"]
     E -->|yes| PR
-    B --> PR["🧹 container-image-prune<br/>(every other vibe-coder tag)"]
+    B --> BF{"build failed on<br/>builder storage?"}
+    BF -->|yes| BH["🔧 container-build-heal<br/>restart the builder, retry once"]
+    BH --> PR
+    BF -->|no| PR["🧹 container-image-prune<br/>(every other vibe-coder tag)"]
     PR --> L["🚀 runtime run — 7 mounts, least privilege"]
     L -->|SIGTERM / SIGINT| T["forward to container<br/>(graceful shutdown)"]
     L --> W{"exited before the<br/>watchdog deadline?"}

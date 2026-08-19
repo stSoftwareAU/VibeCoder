@@ -123,7 +123,7 @@ Deno.test("census - degraded-model and lang:rust issues still count (lead hypoth
     workerUser: "vibe-bot",
     repos: [
       repoInput({
-        repo: "org/neat",
+        repo: "org/private-repo-13",
         issues: [
           issue(1365, ["work-on", "degraded-model", "lang:rust"]),
           issue(1366, ["work-on", "lang:rust"]),
@@ -135,7 +135,7 @@ Deno.test("census - degraded-model and lang:rust issues still count (lead hypoth
   assertEquals(entry.unblocked.workOn, 2);
   assert(entry.inversionSignal);
   assert(census.inversionDetected);
-  assertEquals(census.inversionRepos, ["org/neat"]);
+  assertEquals(census.inversionRepos, ["org/private-repo-13"]);
 });
 
 Deno.test("census - idle-task alone does not raise the inversion signal", () => {
@@ -224,7 +224,7 @@ Deno.test("formatter - emits a header, per-repo lines, and an inversion ALERT", 
     workerUser: "vibe-bot",
     repos: [
       repoInput({
-        repo: "org/neat",
+        repo: "org/private-repo-13",
         nice: 5,
         issues: [issue(1365, ["work-on"])],
       }),
@@ -241,14 +241,14 @@ Deno.test("formatter - emits a header, per-repo lines, and an inversion ALERT", 
   assert(lines[0]!.includes("host=host1:42"));
 
   // Per-repo line carries nice + counts.
-  const neatLine = lines.find((l) => l.includes("repo=org/neat"))!;
+  const neatLine = lines.find((l) => l.includes("repo=org/private-repo-13"))!;
   assert(neatLine.includes("nice=5"));
   assert(neatLine.includes("work_on=1"));
   assert(neatLine.includes("inversion_signal=true"));
 
   // ALERT line names the offending repo.
   const alert = lines.find((l) => l.includes("ALERT inversion"))!;
-  assert(alert.includes("repos=org/neat"));
+  assert(alert.includes("repos=org/private-repo-13"));
 });
 
 Deno.test("formatter - no ALERT line when the inversion signal did not fire", () => {
@@ -273,7 +273,7 @@ Deno.test("formatter - no ALERT line when the inversion signal did not fire", ()
 // non-milestone PR is open in the repo (`getBlockingPRForIssue`). The census
 // must apply the same rule when counting "unblocked" work, otherwise a
 // PR-blocked backlog raises the inversion signal and starves the idle-task
-// filer (the host-23 NEAT-AI-scorer #357–360 incident).
+// filer (the host-23 private-repo-22 #357–360 incident).
 
 Deno.test("census - non-milestone issue blocked by an open non-milestone PR is not counted (Issue #3526)", () => {
   const census = buildIdleDecisionCensus({

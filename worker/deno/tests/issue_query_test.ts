@@ -274,7 +274,10 @@ Deno.test("issue_query - getBlockingPRForIssue ignores a human-authored PR (Issu
   // `maintainer` is a trusted human: fetched by the fleet-owned guard set, but
   // never push-capable. Their PR is theirs to manage, so it must not park
   // the repo's queue.
-  assertEquals(getBlockingPRForIssue([prBy(4036, "maintainer")], "", FLEET), null);
+  assertEquals(
+    getBlockingPRForIssue([prBy(4036, "maintainer")], "", FLEET),
+    null,
+  );
 });
 
 Deno.test("issue_query - getBlockingPRForIssue still blocks on a fleet PR (Issue #4133)", () => {
@@ -330,7 +333,8 @@ Deno.test("issue_query - getBlockingPRForIssue blocks on an unstamped author (Is
 Deno.test("issue_query - getBlockingPRForIssue blocks when the fleet set is unresolved (Issue #4133)", () => {
   // An empty push-capable set classifies nothing — fail safe, not open.
   assertEquals(
-    getBlockingPRForIssue([prBy(700, "maintainer")], "", UNCLASSIFIABLE)?.number,
+    getBlockingPRForIssue([prBy(700, "maintainer")], "", UNCLASSIFIABLE)
+      ?.number,
     700,
   );
 });
@@ -399,7 +403,7 @@ Deno.test("issue_query - work-on added by a fleet worker login is untrusted (Iss
         {
           event: "labeled",
           label: { name: "work-on" },
-          actor: { login: "VibeCoderBot" }, // fleet worker, in allowedAuthors
+          actor: { login: "Vibecoderbot" }, // fleet worker, in allowedAuthors
         },
       ]);
     }
@@ -409,10 +413,10 @@ Deno.test("issue_query - work-on added by a fleet worker login is untrusted (Iss
     "owner/repo",
     1,
     "work-on",
-    ["alice", "VibeCoderBot"], // human + fleet worker (fleet requirement)
+    ["alice", "Vibecoderbot"], // human + fleet worker (fleet requirement)
     mockGh,
     undefined,
-    ["VibeCoderBot", "stsvcbot"], // fleet worker logins
+    ["Vibecoderbot", "stsvcbot"], // fleet worker logins
   );
   assertEquals(result, false);
 });
@@ -436,10 +440,10 @@ Deno.test("issue_query - top-priority added by a genuine human stays trusted wit
     "owner/repo",
     2,
     "top-priority",
-    ["alice", "VibeCoderBot"],
+    ["alice", "Vibecoderbot"],
     mockGh,
     undefined,
-    ["VibeCoderBot", "stsvcbot"],
+    ["Vibecoderbot", "stsvcbot"],
   );
   assertEquals(result, true);
 });
@@ -473,7 +477,7 @@ Deno.test("issue_query - fleet exclusion also applies on the cached timeline pat
     ["alice", "stsvcbot"],
     mockGh,
     cache,
-    ["stsvcbot", "VibeCoderBot"],
+    ["stsvcbot", "Vibecoderbot"],
   );
   assertEquals(result, false);
   assertEquals(apiCalled, false); // resolved from the cache, not the API
@@ -758,12 +762,12 @@ function mockGhByAuthor(
 
 Deno.test("issue_query - fetchOpenPRsForFleet - unions PRs across fleet accounts", async () => {
   const { fn } = mockGhByAuthor({
-    VibeCoderBot: [{ number: 10, baseRefName: "main" }],
+    Vibecoderbot: [{ number: 10, baseRefName: "main" }],
     stsvcbot: [{ number: 20, baseRefName: "milestone/x" }],
   });
   const prs = await fetchOpenPRsForFleet(
     "o/r",
-    ["VibeCoderBot", "stsvcbot"],
+    ["Vibecoderbot", "stsvcbot"],
     undefined,
     fn,
   );

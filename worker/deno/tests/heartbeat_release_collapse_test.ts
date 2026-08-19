@@ -43,7 +43,7 @@ const TIMEOUT: RunOutcome = {
 function fakeIssue(
   initial: { id: number; body: string; author?: string }[] = [],
 ) {
-  const comments = initial.map((c) => ({ author: "VibeCoderBot", ...c }));
+  const comments = initial.map((c) => ({ author: "Vibecoderbot", ...c }));
   const rec = { posts: 0, patches: [] as number[], deletes: 0, lists: 0 };
   let failListing = false;
   const ghFn = (args: string[]): Promise<string> => {
@@ -97,7 +97,7 @@ async function claim(
 ) {
   gh.comments.push({
     id: commentId,
-    author: "VibeCoderBot",
+    author: "Vibecoderbot",
     body: `<!-- CLAIM_LOCK:w-${commentId} --> Claimed by \`w-${commentId}\`\n` +
       renderHeartbeatBody({ machineId, epoch }, () => epoch),
   });
@@ -119,7 +119,7 @@ async function release(
     dir,
     "stSoftwareAU/VibeCoder",
     4174,
-    { machineId, ghFn: gh.ghFn, allowedAuthors: ["VibeCoderBot", "stsvcbot"] },
+    { machineId, ghFn: gh.ghFn, allowedAuthors: ["Vibecoderbot", "stsvcbot"] },
     () => epoch,
     outcome,
   );

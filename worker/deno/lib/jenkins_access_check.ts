@@ -130,7 +130,7 @@ export function basicAuthHeader(user: string, token: string): string {
  * `jobPath` gets its own `/job/` prefix — a folder path must not collapse
  * to `/job/<a>/<b>/<c>`, which 404s. This matches the reference
  * implementation in `scripts/fetch-jenkins-build.sh`
- * (example-org/private-repo-27#585).
+ * (stSoftwareAU/private-repo-12#585).
  *
  * Paths that already spell the separators out (`MyFolder/job/MyJob`) are
  * accepted and produce the same URL, so both spellings are equivalent.

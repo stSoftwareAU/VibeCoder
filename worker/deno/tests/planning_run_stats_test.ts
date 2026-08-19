@@ -140,7 +140,7 @@ Deno.test("assessDegradation - degraded when every served model is a different t
 // ---------------------------------------------------------------------------
 
 Deno.test("assessDegradation - mixed run where the expected model also served is not degraded (Issue #3593)", () => {
-  // NEAT-AI#3505: `fable` requested, served by both `claude-fable-5` and
+  // private-repo-14#3505: `fable` requested, served by both `claude-fable-5` and
   // `claude-opus-5` across the run's invocations.
   const verdict = assessDegradation(
     [

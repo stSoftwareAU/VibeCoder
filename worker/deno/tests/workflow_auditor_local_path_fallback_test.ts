@@ -1,7 +1,7 @@
 /**
  * Regression tests for Issue #1838.
  *
- * Reproduces the NEAT-AI-core scenario: workflow-sync runs against a
+ * Reproduces the private-repo-16 scenario: workflow-sync runs against a
  * repo where `localRepoPath` is provided but the local clone does not
  * exist on disk. Before the fix, `fetchWorkflowFiles` correctly fell
  * through to `gh api` for the listing, but `fetchWorkflowContent` did
@@ -30,7 +30,7 @@ import type { RepoLanguages } from "../lib/language_detector.ts";
 // ---------------------------------------------------------------------------
 
 /** A combined `ci.yml` carrying cargo fmt / clippy + shellcheck steps,
- * mirroring the NEAT-AI-core layout. */
+ * mirroring the private-repo-16 layout. */
 const ciYaml = `name: CI
 on:
   pull_request:
@@ -75,7 +75,7 @@ function makeLanguages(langs: string[]): RepoLanguages {
 }
 
 /**
- * Build a runner that fakes the API responses NEAT-AI-core would
+ * Build a runner that fakes the API responses private-repo-16 would
  * return: a non-empty workflow listing plus content for each named
  * file. Visibility lookups answer "private" so the audit doesn't
  * include public-only specs.
@@ -190,7 +190,7 @@ Deno.test(
 );
 
 Deno.test(
-  "workflow_auditor - NEAT-AI-core scenario: ci.yml satisfies cargo-quality and shellcheck under different filename",
+  "workflow_auditor - private-repo-16 scenario: ci.yml satisfies cargo-quality and shellcheck under different filename",
   async () => {
     // Repo has a single ci.yml that runs both cargo fmt/clippy AND
     // shellcheck. The auditor must detect both capabilities regardless

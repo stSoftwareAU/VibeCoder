@@ -1,5 +1,5 @@
 /**
- * FLEET health reporting — clone/sync FLEET-health repository and report
+ * FLEET health reporting — clone/sync private-repo-6 repository and report
  * worker health at the end of each run.
  *
  * Issue #1124: Migrated from run_core.sh (lines 1118–1141) to Deno TypeScript
@@ -37,9 +37,9 @@ export const DEFAULT_FLEET_HEALTH_TIMEOUT_MS = 600_000;
 
 /** Configuration for FLEET health reporting. */
 export interface FleetHealthConfig {
-  /** Directory where the FLEET-health repository is cloned. */
+  /** Directory where the private-repo-6 repository is cloned. */
   healthDir: string;
-  /** Git clone URL for the FLEET-health repository. */
+  /** Git clone URL for the private-repo-6 repository. */
   healthRepo: string;
   /** Host identifier for health reports (e.g., hostname without domain). */
   hostId: string;
@@ -95,20 +95,22 @@ export interface FleetHealthDeps {
 export function buildFleetHealthConfig(repoDir: string): FleetHealthConfig {
   // Container fallback (Issue #4165): the sibling default resolves to the
   // root-owned "/" inside the container ("could not create work tree dir
-  // '/workspace/../FLEET-health'" observed live), so the clone lands under the
+  // '/workspace/../private-repo-6'" observed live), so the clone lands under the
   // writable work-dir mount instead. Disposable by design — the remote is
   // the repository of record. An explicit FLEET_HEALTH_DIR always wins.
   const inContainer = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
   const workDir = Deno.env.get("WORK_DIR") ??
     `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
   const healthDir = Deno.env.get("FLEET_HEALTH_DIR") ??
-    (inContainer ? `${workDir}/FLEET-health` : `${repoDir}/../FLEET-health`);
+    (inContainer
+      ? `${workDir}/private-repo-6`
+      : `${repoDir}/../private-repo-6`);
   const healthRepo = Deno.env.get("FLEET_HEALTH_REPO") ??
-    "git@github.com:example-org/private-repo-18.git";
+    "git@github.com:stSoftwareAU/private-repo-6.git";
 
   // Host identity. Inside the container `Deno.hostname()` is the ephemeral
   // container name (a fresh one every cycle), which would leave the real
-  // host permanently "dead" on the FLEET-health board and register a phantom
+  // host permanently "dead" on the private-repo-6 board and register a phantom
   // host per run — so the launcher passes the host's own name through
   // VIBE_HOST_ID and it wins when present. Domain suffix trimmed either way.
   let hostId: string;
@@ -160,7 +162,7 @@ export const MAX_FAILURE_STREAM_CHARS = 4000;
  * Build the Error for a failed health subprocess, surfacing BOTH stderr and
  * (the tail of) stdout.
  *
- * FLEET-health's `helpers/repos.sh` prints the real `git push` rejection — e.g.
+ * private-repo-6's `helpers/repos.sh` prints the real `git push` rejection — e.g.
  * the GH006 "Protected branch update failed" message — to **stdout**, while
  * only a terse `status=failed reason=push-failed` trap line goes to stderr.
  * Earlier code ran the report with `quiet: true` (stdout discarded) and built
@@ -205,7 +207,7 @@ export function buildCommandFailureError(
  * same file handle the rest of the loop uses. Without the logger the
  * heartbeat's `console.log` goes only to the inherited tty (Issue #2015).
  *
- * Standalone invocations (`deno mod.ts fleet-health`) can omit the logger to
+ * Standalone invocations (`deno mod.ts private-repo-6`) can omit the logger to
  * keep their plain stdout/stderr output for operators running the command
  * interactively.
  */
@@ -337,7 +339,7 @@ export function createProductionFleetHealthDeps(
 // ---------------------------------------------------------------------------
 
 /**
- * Ensure the FLEET-health repository is cloned and up to date.
+ * Ensure the private-repo-6 repository is cloned and up to date.
  *
  * Clones the repository if missing, otherwise fetches from remote and
  * hard-resets to match — following the model_fetch.sh "never merge"
@@ -354,14 +356,14 @@ export async function ensureFleetHealthRepo(
   const exists = await deps.directoryExists(config.healthDir);
 
   if (!exists) {
-    deps.log("Cloning FLEET-health repository...");
+    deps.log("Cloning private-repo-6 repository...");
     const cloneResult = await deps.runCommand(
       ["git", "clone", "--depth=1", config.healthRepo, config.healthDir],
       { quiet: true },
     );
     if (!cloneResult.ok) {
       deps.logWarning(
-        `Failed to clone FLEET-health repository: ${cloneResult.error.message}`,
+        `Failed to clone private-repo-6 repository: ${cloneResult.error.message}`,
       );
       return cloneResult;
     }
@@ -376,7 +378,7 @@ export async function ensureFleetHealthRepo(
   );
   if (!fetchResult.ok) {
     deps.logWarning(
-      `Failed to fetch FLEET-health repository: ${fetchResult.error.message}`,
+      `Failed to fetch private-repo-6 repository: ${fetchResult.error.message}`,
     );
     // Non-fatal — we can still attempt to report with stale data
     return { ok: true, value: undefined };
@@ -394,7 +396,7 @@ export async function ensureFleetHealthRepo(
     );
     if (!mainResult.ok) {
       deps.logWarning(
-        "Failed to reset FLEET-health to remote branch (tried Develop and main)",
+        "Failed to reset private-repo-6 to remote branch (tried Develop and main)",
       );
     }
   }
@@ -403,9 +405,9 @@ export async function ensureFleetHealthRepo(
 }
 
 /**
- * Report worker health to the FLEET-health repository.
+ * Report worker health to the private-repo-6 repository.
  *
- * Calls the `helpers/repos.sh` script in the FLEET-health repository
+ * Calls the `helpers/repos.sh` script in the private-repo-6 repository
  * with the worker identity string "Vibe Coder:{hostId}".
  */
 export async function reportFleetHealth(
@@ -418,7 +420,7 @@ export async function reportFleetHealth(
   // "this host is unhealthy" alone is not actionable (#4031). Read the
   // access store (#4036) once and use it for both the operator log line
   // and the report payload below. Emitted before the script check so the
-  // state reaches the log even on a host with no FLEET-health checkout.
+  // state reaches the log even on a host with no private-repo-6 checkout.
   const inaccessibleRepos = getInaccessibleRepos();
   logRepoAccessOnce(inaccessibleRepos, deps.logWarning, {
     hostId: config.hostId,

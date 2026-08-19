@@ -32,10 +32,10 @@ function envOf(
 Deno.test("mergeNonInteractive - VIBE_SERVICE_ACCOUNTS is parsed as CSV", () => {
   const result = mergeNonInteractive(
     {},
-    envOf({ VIBE_SERVICE_ACCOUNTS: "stsvcbot, VibeCoderBot" }),
+    envOf({ VIBE_SERVICE_ACCOUNTS: "stsvcbot, Vibecoderbot" }),
   );
 
-  assertEquals(result.service_accounts, ["stsvcbot", "VibeCoderBot"]);
+  assertEquals(result.service_accounts, ["stsvcbot", "Vibecoderbot"]);
 });
 
 Deno.test("mergeNonInteractive - VIBE_SERVICE_ACCOUNTS replaces the existing list", () => {
@@ -49,11 +49,11 @@ Deno.test("mergeNonInteractive - VIBE_SERVICE_ACCOUNTS replaces the existing lis
 
 Deno.test("mergeNonInteractive - existing service_accounts survive when the env var is absent", () => {
   const result = mergeNonInteractive(
-    { service_accounts: ["stsvcbot", "VibeCoderBot"] },
+    { service_accounts: ["stsvcbot", "Vibecoderbot"] },
     envOf({}),
   );
 
-  assertEquals(result.service_accounts, ["stsvcbot", "VibeCoderBot"]);
+  assertEquals(result.service_accounts, ["stsvcbot", "Vibecoderbot"]);
 });
 
 // =============================================================================
@@ -61,9 +61,9 @@ Deno.test("mergeNonInteractive - existing service_accounts survive when the env 
 // =============================================================================
 
 Deno.test("applyServiceAccountDefault - defaults an absent list to the worker login", () => {
-  const { config, defaulted } = applyServiceAccountDefault({}, "VibeCoderBot");
+  const { config, defaulted } = applyServiceAccountDefault({}, "Vibecoderbot");
 
-  assertEquals(config.service_accounts, ["VibeCoderBot"]);
+  assertEquals(config.service_accounts, ["Vibecoderbot"]);
   assertEquals(defaulted, true);
 });
 
@@ -79,11 +79,11 @@ Deno.test("applyServiceAccountDefault - defaults a blank-only list to the worker
 
 Deno.test("applyServiceAccountDefault - never overrides a configured allowlist", () => {
   const { config, defaulted } = applyServiceAccountDefault(
-    { service_accounts: ["stsvcbot", "VibeCoderBot"] },
+    { service_accounts: ["stsvcbot", "Vibecoderbot"] },
     "someone-else",
   );
 
-  assertEquals(config.service_accounts, ["stsvcbot", "VibeCoderBot"]);
+  assertEquals(config.service_accounts, ["stsvcbot", "Vibecoderbot"]);
   assertEquals(defaulted, false);
 });
 
@@ -96,7 +96,7 @@ Deno.test("applyServiceAccountDefault - leaves the list empty when no login reso
 
 Deno.test("applyServiceAccountDefault - does not mutate the input config", () => {
   const input: SetupConfig = {};
-  applyServiceAccountDefault(input, "VibeCoderBot");
+  applyServiceAccountDefault(input, "Vibecoderbot");
 
   assertEquals(input.service_accounts, undefined);
 });
@@ -112,13 +112,13 @@ Deno.test("runConfigSetup - writes both accounts from VIBE_SERVICE_ACCOUNTS", as
 
   const result = await runConfigSetup(
     configPath,
-    envOf({ VIBE_SERVICE_ACCOUNTS: "stsvcbot,VibeCoderBot" }),
+    envOf({ VIBE_SERVICE_ACCOUNTS: "stsvcbot,Vibecoderbot" }),
     { resolveWorkerLogin: () => Promise.resolve("should-not-be-used") },
   );
   assertEquals(result.ok, true);
 
   const written = JSON.parse(await Deno.readTextFile(configPath));
-  assertEquals(written.service_accounts, ["stsvcbot", "VibeCoderBot"]);
+  assertEquals(written.service_accounts, ["stsvcbot", "Vibecoderbot"]);
 
   await Deno.remove(tmpDir, { recursive: true });
 });
@@ -129,17 +129,17 @@ Deno.test("runConfigSetup - falls back to the resolved worker login", async () =
   await Deno.writeTextFile(configPath, JSON.stringify({ repos: ["org/repo"] }));
 
   const result = await runConfigSetup(configPath, envOf({}), {
-    resolveWorkerLogin: () => Promise.resolve("VibeCoderBot"),
+    resolveWorkerLogin: () => Promise.resolve("Vibecoderbot"),
   });
   assertEquals(result.ok, true);
   // The default must be reported, never applied silently.
   assertEquals(
-    (result.warnings ?? []).some((w) => w.includes("VibeCoderBot")),
+    (result.warnings ?? []).some((w) => w.includes("Vibecoderbot")),
     true,
   );
 
   const written = JSON.parse(await Deno.readTextFile(configPath));
-  assertEquals(written.service_accounts, ["VibeCoderBot"]);
+  assertEquals(written.service_accounts, ["Vibecoderbot"]);
 
   await Deno.remove(tmpDir, { recursive: true });
 });

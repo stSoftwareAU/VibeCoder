@@ -2,7 +2,7 @@
  * End-to-end test: the worker auto-resolves automated review findings without
  * human follow-up (Issue #1860, part of #1854).
  *
- * Reproduces the NEAT-AI #2524 scenario at integration scope: a trusted
+ * Reproduces the private-repo-14 #2524 scenario at integration scope: a trusted
  * automated review bot leaves a "Useless conditional" line-level review
  * comment on a PR. The worker must:
  *
@@ -18,7 +18,7 @@
  * present in the prompt. The neutral fallback "could not identify a
  * code change to apply" message must not be produced.
  *
- * Reference: NEAT-AI#2524 — `https://github.com/example-org/private-repo-29/pull/2524`.
+ * Reference: private-repo-14#2524 — `https://github.com/stSoftwareAU/private-repo-14/pull/2524`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -42,7 +42,7 @@ import type {
 import type { Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
-// Fixtures matching the NEAT-AI #2524 finding shape
+// Fixtures matching the private-repo-14 #2524 finding shape
 // ---------------------------------------------------------------------------
 
 const REPO = "org/repo";

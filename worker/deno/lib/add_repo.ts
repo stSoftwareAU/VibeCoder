@@ -102,7 +102,7 @@ export async function validateAddRepoTarget(
 
 /**
  * Title prefix that marks an issue as an add-repo request, e.g.
- * `add-repo: example-org/private-repo-23`. Matched case-insensitively in the
+ * `add-repo: stSoftwareAU/private-repo-11`. Matched case-insensitively in the
  * same `.startsWith()` style as `IDLE_TASK_MILESTONE_PREFIX`.
  */
 export const ADD_REPO_PREFIX = "add-repo:";

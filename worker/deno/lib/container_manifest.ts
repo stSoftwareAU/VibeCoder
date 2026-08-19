@@ -134,9 +134,9 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * Commands the monitored repositories' own quality gates invoke (Issue #4068).
  *
  * Enumerated by reading each `repos` entry in `.config.json` at its own
- * `quality.sh`: the Rust crates (FLEET-GTC, FLEET-taxation, FLEET-validation and the
- * NEAT-AI crates) drive `cargo`/`cargo-clippy`/`rustfmt` and hard-fail without
- * `cargo-deny`, every gate carrying shell scripts runs `shellcheck`, NEAT-AI-
+ * `quality.sh`: the Rust crates (private-repo-5, private-repo-9, private-repo-10 and the
+ * private-repo-14 crates) drive `cargo`/`cargo-clippy`/`rustfmt` and hard-fail without
+ * `cargo-deny`, every gate carrying shell scripts runs `shellcheck`, private-repo-14-
  * scorer runs `actionlint`, and this repo's own gate drives `markdownlint-cli2`
  * against `.markdownlint-cli2.jsonc`. Each must be supplied by a manifest
  * toolchain, so the image never falls back to a host-installed equivalent.

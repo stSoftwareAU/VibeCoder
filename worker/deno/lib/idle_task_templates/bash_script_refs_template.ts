@@ -344,7 +344,7 @@ export function createBashScriptRefsTemplate(
       //    #3292: `opts.workDir` is the PARENT directory holding every
       //    repo clone side by side — `setupRepo` checks each repo out at
       //    `${workDir}/${repoName}`. Passing the parent swept sibling
-      //    checkouts (NEAT-AI, VibeCoder, …) and filed cross-repo false
+      //    checkouts (private-repo-14, VibeCoder, …) and filed cross-repo false
       //    positives against the target repo. Derive the checkout path
       //    (the established #2880 pattern). Fail-loud: a walk/read failure
       //    is surfaced as a loud summary, never reconciled as "no findings".

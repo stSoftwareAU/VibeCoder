@@ -40,7 +40,11 @@ import { makeStableId } from "./workflow_scan_common.ts";
 export const BASH_SCRIPT_REFS_DISCRIMINATOR = "bash-script-refs";
 
 /** The kind of reference a {@link BashRef} was extracted from. */
-export type BashRefKind = "source" | "fleet_source_or_fail" | "bash" | "relative";
+export type BashRefKind =
+  | "source"
+  | "fleet_source_or_fail"
+  | "bash"
+  | "relative";
 
 /** A single static script reference extracted from a shell file. */
 export interface BashRef {

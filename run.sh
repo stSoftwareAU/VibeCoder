@@ -98,6 +98,15 @@ PLAN_FILE=""
 # Marker the watchdog writes before it reaps, so the exit status can name the
 # reason (Issue #4173). Set only once the container path starts the container.
 WEDGE_MARKER=""
+# Where the image build's output is captured, so a failed build can be
+# classified by container-build-heal (Issue #4441). Set only when a build runs.
+BUILD_LOG=""
+
+# Exit status container-build-heal reports for a build failure it does not
+# cover, as opposed to 0 (healed - retry) or any other status (the heal itself
+# failed). Kept in step with BUILD_NOT_HEALABLE_EXIT in
+# worker/deno/commands/container_build_heal.ts by the launcher tests.
+BUILD_NOT_HEALABLE_EXIT=3
 
 # A wedged helper must never wedge this launcher: the helpers below run under
 # a time bound where the host has one (gtimeout on macOS, timeout on Linux).
@@ -154,6 +163,9 @@ on_exit() {
   fi
   if [[ -n "${WEDGE_MARKER}" ]]; then
     rm -f "${WEDGE_MARKER}"
+  fi
+  if [[ -n "${BUILD_LOG}" ]]; then
+    rm -f "${BUILD_LOG}"
   fi
   record_outcome "${status}"
 }
@@ -387,12 +399,86 @@ if ! bounded 300 "${DENO_CMD}" run \
   echo "[run.sh] warning: the pre-launch container reaper did not complete" >&2
 fi
 
+# One line per build-heal decision in the worker's own host log, so a fleet
+# host that keeps restarting its builder is visible without reading stderr.
+# Best-effort: an unwritable log must never fail a launch.
+log_run_core() {
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
+    >>"${HOME}/logs/run_core.log" 2>/dev/null || true
+}
+
+# Build the image, streaming the output and capturing it for the heal.
+# Returns the build's own exit status, not tee's.
+run_build() {
+  local status=0
+  set +e
+  "${RUNTIME}" "${build_args[@]}" </dev/null 2>&1 | tee "${BUILD_LOG}" >&2
+  status="${PIPESTATUS[0]}"
+  set -e
+  return "${status}"
+}
+
+# Ask container-build-heal to classify the captured build failure and, when the
+# builder's storage is what failed, restart it (Issue #4441). Exit 0 = healed,
+# 3 = not a healable failure, anything else = the heal itself failed.
+heal_builder() {
+  local attempt="$1"
+  bounded 900 "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-run \
+    "${BASE_DIR}/worker/deno/mod.ts" container-build-heal \
+    --runtime "${RUNTIME}" \
+    --log "${BUILD_LOG}" \
+    --attempt "${attempt}" </dev/null >&2
+}
+
 # Content-derived identity: a changed container definition is a different
 # reference, so an absent reference is exactly the rebuild signal (#4062).
 if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
   echo "[run.sh] building ${IMAGE}" >&2
   record_phase image_build
-  "${RUNTIME}" "${build_args[@]}" </dev/null
+  BUILD_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe-build.XXXXXX")"
+
+  build_status=0
+  run_build || build_status=$?
+
+  # Builder self-heal (Issue #4441). An ENOSPC mid-export leaves Apple
+  # container's BuildKit VM with a read-only filesystem, and every later
+  # launch then dies with "read-only file system" before it builds anything -
+  # on host-23 loop.sh backed off to 960 s and would have retried for ever.
+  # Exactly one heal and one retry per launch: a build that failed for its own
+  # reasons still fails here, exactly as it always has.
+  if ((build_status != 0)); then
+    heal_status=0
+    heal_builder 1 || heal_status=$?
+
+    if ((heal_status == 0)); then
+      echo "[run.sh] retrying the build of ${IMAGE} after a builder" \
+        "restart (Issue #4441)" >&2
+      log_run_core "container-build-heal: builder restarted after a storage failure - retrying ${IMAGE}"
+      build_status=0
+      run_build || build_status=$?
+      if ((build_status == 0)); then
+        log_run_core "container-build-heal: retry of ${IMAGE} succeeded"
+      else
+        # A second failure in the same launch escalates to a builder recreate,
+        # so the next launch starts from a clean builder rather than the
+        # damaged one. This launch still fails - it never loops.
+        log_run_core "container-build-heal: retry of ${IMAGE} failed (status ${build_status}) - recreating the builder"
+        heal_builder 2 || echo "[run.sh] warning: could not recreate the" \
+          "${RUNTIME} builder" >&2
+      fi
+    elif ((heal_status == BUILD_NOT_HEALABLE_EXIT)); then
+      log_run_core "container-build-heal: ${IMAGE} build failed for a reason the builder heal does not cover"
+    else
+      log_run_core "container-build-heal: could not heal the ${RUNTIME} builder (status ${heal_status})"
+    fi
+
+    if ((build_status != 0)); then
+      echo "Error: failed to build ${IMAGE}" >&2
+      exit "${build_status}"
+    fi
+  fi
 fi
 
 # Prune the tags this reference superseded (Issue #4162). The content-derived

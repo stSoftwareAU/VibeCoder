@@ -61,7 +61,7 @@ function makeExecuteStub(
 Deno.test("routeAddRepoInProcessIssue - routes add-repo: title to process-add-repo", async () => {
   const { fn, calls } = makeExecuteStub({
     success: true,
-    message: "process-add-repo: added example-org/private-repo-23",
+    message: "process-add-repo: added stSoftwareAU/private-repo-11",
     data: { outcome: "added" },
   });
 
@@ -69,7 +69,7 @@ Deno.test("routeAddRepoInProcessIssue - routes add-repo: title to process-add-re
     {
       repo: "stSoftwareAU/VibeCoder",
       issueNumber: 2579,
-      issueTitle: "add-repo: example-org/private-repo-23",
+      issueTitle: "add-repo: stSoftwareAU/private-repo-11",
       config: CONFIG,
     },
     { logger: makeLogger(), executeFn: fn },
@@ -80,7 +80,7 @@ Deno.test("routeAddRepoInProcessIssue - routes add-repo: title to process-add-re
   const call = calls[0]!;
   assertEquals(call.args["repo"], "stSoftwareAU/VibeCoder");
   assertEquals(call.args["issue-number"], 2579);
-  assertEquals(call.args["title"], "add-repo: example-org/private-repo-23");
+  assertEquals(call.args["title"], "add-repo: stSoftwareAU/private-repo-11");
   assertEquals(call.config, CONFIG);
 });
 
@@ -94,7 +94,7 @@ Deno.test("routeAddRepoInProcessIssue - mirrors command failure as success=false
     {
       repo: "stSoftwareAU/VibeCoder",
       issueNumber: 99,
-      issueTitle: "add-repo: example-org/private-repo-6",
+      issueTitle: "add-repo: stSoftwareAU/Broken",
       config: CONFIG,
     },
     { logger: makeLogger(), executeFn: fn },

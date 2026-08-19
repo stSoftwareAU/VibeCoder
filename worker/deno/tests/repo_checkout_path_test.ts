@@ -8,8 +8,11 @@ import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 
 Deno.test("repoCheckoutPath - appends the repo name to the work dir", () => {
   assertEquals(
-    repoCheckoutPath("/home/vibe/auto-issue-work", "example-org/private-repo-29"),
-    "/home/vibe/auto-issue-work/NEAT-AI",
+    repoCheckoutPath(
+      "/home/vibe/auto-issue-work",
+      "stSoftwareAU/private-repo-14",
+    ),
+    "/home/vibe/auto-issue-work/private-repo-14",
   );
 });
 

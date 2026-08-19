@@ -28,7 +28,7 @@ import {
 } from "../lib/stuck_issue_detector.ts";
 
 const SCANNING_USER = "stsvcbot";
-const LEAKING_ACCOUNT = "VibeCoderBot";
+const LEAKING_ACCOUNT = "Vibecoderbot";
 
 async function makeTempDir(prefix = "xa-"): Promise<string> {
   return await Deno.makeTempDir({ prefix });

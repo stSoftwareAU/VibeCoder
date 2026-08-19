@@ -62,7 +62,7 @@ Deno.test(
     const capturedBodies: string[] = [];
 
     const ctx: IssueContext = {
-      repo: "example-org/private-repo-22",
+      repo: "stSoftwareAU/private-repo-10",
       issueNumber: 2985,
       issueTitle: "Evidence image links in PR are broken",
       issueBody: "",
@@ -92,7 +92,7 @@ Deno.test(
             if (bodyIdx >= 0) capturedBodies.push(args[bodyIdx + 1]!);
           }
           return Promise.resolve(
-            "https://github.com/example-org/private-repo-22/pull/99",
+            "https://github.com/stSoftwareAU/private-repo-10/pull/99",
           );
         },
       },
@@ -129,7 +129,7 @@ Deno.test(
     // The in-repo relative path is rewritten to a commit-pinned raw URL.
     assertStringIncludes(
       body,
-      `https://github.com/example-org/private-repo-22/raw/${SHA}/docs/evidence/issue-2985-fix.png`,
+      `https://github.com/stSoftwareAU/private-repo-10/raw/${SHA}/docs/evidence/issue-2985-fix.png`,
     );
     // No relative evidence path survives in the body.
     assertEquals(body.includes("(docs/evidence/"), false);

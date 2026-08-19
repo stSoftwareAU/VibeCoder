@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: tj-actions/changed-files@0123456789012345678901234567890123456789
       - uses: ./.github/actions/local
-      - uses: example-org/private-repo-25@v1
+      - uses: stSoftwareAU/internal-action@v1
       - uses: docker://alpine:3.20
 `,
 );

@@ -50,7 +50,7 @@ Deno.test("extractUsesValue - handles list dash, quotes, and inline comments", (
 
 Deno.test("classifyUses - SHA pin, first-party, and local refs are exempt", () => {
   assertEquals(classifyUses(`actions/checkout@${SHA}`), null);
-  assertEquals(classifyUses("example-org/private-repo-54@v1"), null);
+  assertEquals(classifyUses("stSoftwareAU/some-action@v1"), null);
   assertEquals(classifyUses("./.github/actions/setup"), null);
   assertEquals(classifyUses("docker://alpine:3.19"), null);
   // Tag pin on a third-party action is flagged.
@@ -109,7 +109,7 @@ Deno.test("scanActionPins - stSoftwareAU/* carve-out is NOT flagged", () => {
   const files = [
     wf(
       ".github/workflows/ci.yml",
-      "jobs:\n  b:\n    steps:\n      - uses: example-org/private-repo-10@v2\n",
+      "jobs:\n  b:\n    steps:\n      - uses: stSoftwareAU/deploy-action@v2\n",
     ),
   ];
   assertEquals(scanActionPins(files), []);

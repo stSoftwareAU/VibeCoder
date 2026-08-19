@@ -222,7 +222,7 @@ export interface MaybeFileIdleTaskData {
  * `lib/run_core_production_deps.ts` also injects `log` here to route
  * the structured progress lines (`[idle-task] ...`) through the shared
  * worker Logger instead of letting them sink into the inherited tty —
- * the same visibility fix #2016 applied to the FLEET-health heartbeat.
+ * the same visibility fix #2016 applied to the private-repo-6 heartbeat.
  */
 interface TestDeps {
   /**
@@ -1334,7 +1334,7 @@ export const maybeFileIdleTaskCommand: Command = {
     // Issue #2130 / #2137 — verify the wrapper actually carries
     // `idle-task` after `gh issue create` returns. Production has
     // observed wrappers landing with no labels at all (e.g.
-    // NEAT-AI-Explore#180 and again #182, exhibit B for #2137), which
+    // private-repo-19#180 and again #182, exhibit B for #2137), which
     // makes them invisible to the priority queue and the cross-repo
     // dedup. Defence-in-depth: when the label is missing, re-apply via
     // the REST-primary helper, **with retry and exponential backoff**

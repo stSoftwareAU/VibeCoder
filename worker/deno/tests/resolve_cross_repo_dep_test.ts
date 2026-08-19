@@ -29,19 +29,19 @@ Deno.test("resolve-cross-repo-dep - internal reachable dep reports the canonical
   const runner: RunCommand = (_cmd) =>
     Promise.resolve(
       ok(JSON.stringify({
-        full_name: "example-org/private-repo-29",
+        full_name: "stSoftwareAU/private-repo-14",
         permissions: { push: true },
       })),
     );
   const result = await resolveCrossRepoDepCommand.execute(
-    { "package": "jsr:@stsoftware/neat-ai", "__testRunner": runner },
+    { "package": "jsr:@stsoftware/private-repo-14", "__testRunner": runner },
     config,
   );
   assertEquals(result.success, true);
   const data = result.data as ResolveCrossRepoDepData;
   assertEquals(data.target.kind, "internal-reachable");
   if (data.target.kind === "internal-reachable") {
-    assertEquals(data.target.repo, "example-org/private-repo-29");
+    assertEquals(data.target.repo, "stSoftwareAU/private-repo-14");
   }
   assertStringIncludes(result.message ?? "", "internal-reachable");
 });

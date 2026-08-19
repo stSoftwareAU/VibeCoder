@@ -466,7 +466,7 @@ Deno.test("ruleset - a failed ruleset write is reported as an error", async () =
 // Direct-push guard (Issue #4356)
 // ---------------------------------------------------------------------------
 
-/** The FLEET-FX shape: fleet refreshes pushed straight to `Develop`, no PR. */
+/** The private-repo-4 shape: fleet refreshes pushed straight to `Develop`, no PR. */
 const DIRECT_HISTORY: FakeCommit[] = [
   { sha: "3493677d", subject: "Refresh of history for 2026-08-15 on host-11" },
   { sha: "194e8c0d", subject: "Refresh of history for 2026-08-15 on host-11" },
@@ -479,7 +479,7 @@ Deno.test("ruleset - a direct-push branch is skipped and nothing is created (reg
   });
 
   const result = await ensureDefaultBranchRuleset(
-    "example-org/private-repo-16",
+    "stSoftwareAU/private-repo-4",
     { branch: "Develop", visibility: "private" },
     gh,
   );
@@ -517,7 +517,7 @@ Deno.test("ruleset - a direct-push branch loses the worker's own stale ruleset",
   });
 
   const result = await ensureDefaultBranchRuleset(
-    "example-org/private-repo-15",
+    "stSoftwareAU/private-repo-3",
     { branch: "Develop", visibility: "private" },
     gh,
   );
@@ -531,7 +531,7 @@ Deno.test("ruleset - a direct-push branch loses the worker's own stale ruleset",
   assertEquals(deletes.length, 1);
   assertEquals(
     deletes[0]?.endpoint,
-    "repos/example-org/private-repo-15/rulesets/99",
+    "repos/stSoftwareAU/private-repo-3/rulesets/99",
   );
   // Only the delete — never a create/update alongside it.
   assertEquals(rulesetWrites(calls).length, 1);

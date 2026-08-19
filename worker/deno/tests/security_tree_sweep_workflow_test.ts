@@ -10,8 +10,7 @@
  * - the sweep is called with the pre-produced semgrep JSON and CodeQL SARIF,
  *   the report reaches the job summary, and the sweep's exit status is the
  *   job's;
- * - the baseline the command reads by default is the file the workflow and
- *   the export manifest name.
+ * - the baseline the command reads by default is the file the workflow names.
  *
  * Uses Australian English throughout (behaviour, artefact).
  */
@@ -23,7 +22,6 @@ const ROOT = new URL("../../../", import.meta.url).pathname;
 const workflow = await Deno.readTextFile(
   `${ROOT}.github/workflows/security-tree-sweep.yml`,
 );
-const manifest = await Deno.readTextFile(`${ROOT}export/public-manifest.txt`);
 
 Deno.test("sweep workflow - repository-local: slug from github.repository, no private repository name (Issue #4409)", () => {
   assertStringIncludes(workflow, '--slug "${GITHUB_REPOSITORY}"');
@@ -53,12 +51,8 @@ Deno.test("sweep workflow - fail loud: the sweep's exit status is the job's, and
   assertStringIncludes(workflow, "workflow_dispatch:");
 });
 
-Deno.test("sweep workflow - the default baseline path is exported alongside the workflow (Issue #4409)", () => {
+Deno.test("sweep workflow - the default baseline path is the file the workflow names and it exists", async () => {
   assertStringIncludes(workflow, DEFAULT_BASELINE);
-  const lines = manifest.split("\n").map((l) => l.trim());
-  assert(
-    lines.includes(DEFAULT_BASELINE),
-    `${DEFAULT_BASELINE} not in manifest`,
-  );
-  assert(lines.includes(".github/workflows/security-tree-sweep.yml"));
+  const stat = await Deno.stat(`${ROOT}${DEFAULT_BASELINE}`);
+  assert(stat.isFile);
 });

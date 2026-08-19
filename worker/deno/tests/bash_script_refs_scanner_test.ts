@@ -290,9 +290,9 @@ Deno.test("scanBashScriptRefs - fail-loud when a shell file cannot be read", asy
 // ---------------------------------------------------------------------------
 
 Deno.test("extractRefs - flags a `cd <dir> && ./script.sh` reference as precededByCd", () => {
-  // NEAT-AI quality.sh:240 shape — the runtime cwd is a sibling checkout.
+  // private-repo-14 quality.sh:240 shape — the runtime cwd is a sibling checkout.
   const refs = extractRefs(
-    "(cd ../NEAT-AI-Discovery && ./scripts/runlib.sh)\n",
+    "(cd ../private-repo-17 && ./scripts/runlib.sh)\n",
     "quality.sh",
   );
   assertEquals(refs.length, 1);
@@ -325,7 +325,7 @@ Deno.test("findMissingReferences - a `cd <sibling> && ./run.sh` line is skipped,
     path: "quality.sh",
     // The target does not exist under this repo — but the `cd` makes it
     // dynamic, so it must be reported as skipped, not missing.
-    rawText: "(cd ../NEAT-AI-Discovery && ./scripts/runlib.sh)\n",
+    rawText: "(cd ../private-repo-17 && ./scripts/runlib.sh)\n",
   }];
   const { findings, skippedDynamic } = await findMissingReferences(
     files,

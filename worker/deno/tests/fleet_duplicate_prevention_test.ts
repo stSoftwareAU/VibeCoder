@@ -41,7 +41,7 @@ import type { WorkerConfig } from "../types.ts";
 // A three-account fleet. `stsvcbot` is a sibling declared in allowed_authors;
 // `fleet-worker` is a sibling declared ONLY in fleet_pr_authors — the exact
 // #3138 blind-spot shape. `alice` is the human who applies `work-on`.
-const HOST = "VibeCoderBot";
+const HOST = "vibecoderbot";
 const SIBLING_ALLOWED = "stsvcbot";
 const SIBLING_FLEET_ONLY = "fleet-worker";
 const ALICE = { login: "alice" };
@@ -383,7 +383,7 @@ Deno.test(
     // Aborting mirrors the claim_race=lost cleanup: release the assignment and
     // delete this worker's claim comment — leaving no trace and no PR.
     assertEquals(
-      calls.some((c) => c.join(" ").includes("--remove-assignee VibeCoderBot")),
+      calls.some((c) => c.join(" ").includes("--remove-assignee vibecoderbot")),
       true,
     );
     assertEquals(

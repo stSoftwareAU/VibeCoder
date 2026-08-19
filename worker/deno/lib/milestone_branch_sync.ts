@@ -394,7 +394,7 @@ export async function syncMilestoneBranches(
         // Verify the milestone branch exists on the remote. An EMPTY
         // answer reads as missing too (Issue #4260): a runGh-style
         // ghCommandFn returns "" on failure instead of throwing, and the
-        // deleted NEAT-AI-Lamarck milestone/69 branch was "synced" three
+        // deleted private-repo-21 milestone/69 branch was "synced" three
         // cycles running because its empty probe passed this check.
         try {
           const probe = await ghCommandFn([

@@ -402,8 +402,8 @@ Deno.test("nukeWorkDir - clears contents without removing the directory itself (
   // shape silently nuked nothing in a genuine disk emergency.
   const workDir = await Deno.makeTempDir({ prefix: "nuke_workdir_" });
   try {
-    await Deno.mkdir(`${workDir}/example-org/private-repo-56`, { recursive: true });
-    await Deno.writeTextFile(`${workDir}/example-org/private-repo-56/f.txt`, "x");
+    await Deno.mkdir(`${workDir}/stSoftwareAU/SomeRepo`, { recursive: true });
+    await Deno.writeTextFile(`${workDir}/stSoftwareAU/SomeRepo/f.txt`, "x");
     await Deno.writeTextFile(`${workDir}/.heartbeat_a_b_1`, "123");
     await Deno.mkdir(`${workDir}/lost+found`);
 

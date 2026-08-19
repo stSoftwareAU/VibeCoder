@@ -212,7 +212,7 @@ Deno.test(
 Deno.test(
   "collect_idle_task_candidates - accepts backfilled wrapper whose idle-task label was applied by a human operator",
   async () => {
-    // Reproduces the FLEET-validation #45-#48 bug: an operator ran the
+    // Reproduces the private-repo-10 #45-#48 bug: an operator ran the
     // idle-task-label backfill from their own gh auth, so the label
     // shows up as `actor=maintainer` instead of the worker. Before the
     // title-allowlist fix, the collector rejected the wrapper as

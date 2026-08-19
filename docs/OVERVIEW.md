@@ -211,7 +211,7 @@ iteration, then sleep and repeat:
   judge's reasoning attached. Human-applied only, and it hands the issue back
   with `needs-human` rather than picking the next phase itself. It costs roughly
   three agent invocations per plan, so it is for issues where the approach is
-  genuinely contested. Details: Quorum.
+  genuinely contested. Details: [Quorum](QUORUM.md).
 - **Planning mode:** Add the `planning` label → the worker breaks the issue into
   sub-issues and closes the parent. No code is written until you add labels to
   the sub-issues.
@@ -252,7 +252,7 @@ iteration, then sleep and repeat:
   security audit against the oldest-scanned repo and files findings as
   `security`-labelled issues. Triggers, state files, finding format, and
   overflow rollover are documented in
-  Security Scans — Operator Manual.
+  [Security Scans — Operator Manual](SECURITY-SCAN.md).
 - **Milestones:** Put issues in a GitHub milestone → the worker uses one branch
   per milestone. Each milestone-issue PR **auto-merges into the milestone
   branch** when the quality gate passes (no human review per issue), so the
@@ -287,7 +287,7 @@ The worker has multiple layers of resilience:
   scans may auto-unassign a stale assignee from *any* account when that
   account has posted worker claim/heartbeat markers on the issue —
   evidence-based, no configured allowlist — so an assignment leaked by one
-  worker account (e.g. `VibeCoderBot`) is recoverable by workers running as
+  worker account (e.g. `Vibecoderbot`) is recoverable by workers running as
   another account (e.g. `stsvcbot`). Assignees with no marker evidence
   (e.g. human teammates) are never auto-unassigned. Every existing safeguard
   is preserved (local heartbeat → skip; open linked PR → skip; live marker →
@@ -381,12 +381,12 @@ your phone to one final PR to review.
 | **User-facing usage**                                                              | [Usage Guide](USAGE.md)                     |
 | **Workflows (issue → PR, PR feedback, CI fix, planning, milestones, concurrency)** | [Workflows](workflows/README.md)            |
 | **Configuration**                                                                  | [Configuration Reference](CONFIGURATION.md) |
-| **Deployment (cron, launchd, systemd)**                                            | Deployment Guide           |
+| **Deployment (cron, launchd, systemd)**                                            | [Deployment Guide](DEPLOYMENT.md)           |
 | **Containment (what the worker can and cannot reach)**                             | [Containment](CONTAINMENT.md)               |
-| **Lessons learnt (unattended, concurrent, self-healing)**                          | Lessons learnt         |
+| **Lessons learnt (unattended, concurrent, self-healing)**                          | [Lessons learnt](LESSONS-LEARNT.md)         |
 | **Security controls, configuration, deployment security**                          | [SECURITY.md](../SECURITY.md)               |
 | **Threat model (assets, attacker capabilities, attack paths, residual risks)**      | [Threat Model](THREAT-MODEL.md)             |
-| **Agent accountability (tamper-evident GitHub-mutation audit log, identity delegation, Rule of Two)** | Agent Accountability |
+| **Agent accountability (tamper-evident GitHub-mutation audit log, identity delegation, Rule of Two)** | [Agent Accountability](AGENT-ACCOUNTABILITY.md) |
 | **Project overview**                                                               | [README](../README.md)                      |
 
 All of the above are linked from the main [README](../README.md#documentation).
@@ -401,7 +401,7 @@ agent that turns issues into PRs and runs 24/7 — you'll need to handle the sam
 kinds of issues: no blocking on UI, claim-before-work under concurrency, one PR
 per target branch, a module snapshot and repo reset so updates don't break a live run,
 and exit on repeated failure so the next cron run gets fresh code. We've
-documented what we did and why in Lessons learnt; it links
+documented what we did and why in [Lessons learnt](LESSONS-LEARNT.md); it links
 to the resilience, issue-processing, and deployment docs.
 
 ---

@@ -38,7 +38,7 @@ import type { Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
-const TARGET = "example-org/private-repo-23";
+const TARGET = "stSoftwareAU/private-repo-11";
 const ISSUE = 2578;
 
 function config(): WorkerConfig {

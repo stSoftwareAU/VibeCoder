@@ -26,7 +26,7 @@ export interface CooldownConfig {
 
 /** A single cooldown entry. */
 export interface CooldownEntry {
-  /** Repository identifier (e.g., "example-org/private-repo-13"). */
+  /** Repository identifier (e.g., "stSoftwareAU/private-repo-1"). */
   repo: string;
   /** Issue number. */
   issueNumber: number;

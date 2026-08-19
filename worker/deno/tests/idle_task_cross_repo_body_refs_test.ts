@@ -3,7 +3,7 @@
  * (Issue #3509).
  *
  * Every idle-task template files its prompt body verbatim as a GitHub issue
- * in the *target* repository (e.g. `example-org/private-repo-29`). A bare `#NNN` or
+ * in the *target* repository (e.g. `stSoftwareAU/private-repo-14`). A bare `#NNN` or
  * `Issue #NNN` reference in that body is auto-linked by GitHub to the target
  * repo's own unrelated issue — a mislink. VibeCoder-internal file paths
  * (`worker/deno/…`) are equally meaningless once the body lands in another

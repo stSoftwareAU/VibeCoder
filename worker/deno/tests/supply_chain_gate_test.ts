@@ -216,8 +216,8 @@ Deno.test("supply-chain-gate: findUnpinnedUses flags a tag ref with file, line a
 Deno.test("supply-chain-gate: findUnpinnedUses flags a branch ref and a first-party tag", () => {
   const text = [
     "  - uses: some/action@main",
-    "  # example-org/private-repo-59@v1",
-    "  - uses: example-org/private-repo-59@v1",
+    "  # stSoftwareAU/thing@v1",
+    "  - uses: stSoftwareAU/thing@v1",
   ].join("\n");
   const findings = findUnpinnedUses("wf.yml", text);
   assertEquals(rules(findings), ["action-sha-pin", "action-sha-pin"]);

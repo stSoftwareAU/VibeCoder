@@ -124,7 +124,7 @@ Deno.test("summarisePlanningRuns - inconclusive on a single mismatch", () => {
   const summary = summarisePlanningRuns([
     obs("fable", ["claude-opus-4-8"], {
       degraded: true,
-      repo: "example-org/private-repo-13",
+      repo: "stSoftwareAU/private-repo-1",
     }),
   ]);
   assertEquals(summary.verdict, "inconclusive");
@@ -135,12 +135,12 @@ Deno.test("summarisePlanningRuns - systemic when fable runs consistently served 
   const summary = summarisePlanningRuns([
     obs("fable", ["claude-opus-4-8"], {
       degraded: true,
-      repo: "example-org/private-repo-13",
+      repo: "stSoftwareAU/private-repo-1",
       issue: 2569,
     }),
     obs("fable", ["claude-opus-4-8"], {
       degraded: true,
-      repo: "example-org/private-repo-13",
+      repo: "stSoftwareAU/private-repo-1",
       issue: 2569,
     }),
     obs("fable", ["claude-opus-4-8"], {
@@ -154,7 +154,11 @@ Deno.test("summarisePlanningRuns - systemic when fable runs consistently served 
   assertEquals(summary.mismatched, 3);
   assertEquals(summary.fableServed, 0);
   assertEquals(summary.byServedFamily["opus"], 3);
-  assertEquals(summary.repos, ["example-org/private-repo-13", "stSoftwareAU/VibeCoder"]);
+  // Sorted: `V` (0x56) sorts before `p` (0x70).
+  assertEquals(summary.repos, [
+    "stSoftwareAU/VibeCoder",
+    "stSoftwareAU/private-repo-1",
+  ]);
 });
 
 Deno.test("summarisePlanningRuns - one-off when mismatch is isolated", () => {
@@ -189,11 +193,11 @@ Deno.test("formatPlanningRunSummary - renders verdict, counts and repos", () => 
   const summary = summarisePlanningRuns([
     obs("fable", ["claude-opus-4-8"], {
       degraded: true,
-      repo: "example-org/private-repo-13",
+      repo: "stSoftwareAU/private-repo-1",
     }),
     obs("fable", ["claude-opus-4-8"], {
       degraded: true,
-      repo: "example-org/private-repo-13",
+      repo: "stSoftwareAU/private-repo-1",
     }),
     obs("fable", ["claude-opus-4-8"], {
       degraded: true,
@@ -204,7 +208,7 @@ Deno.test("formatPlanningRunSummary - renders verdict, counts and repos", () => 
   assertStringIncludes(md, "## Planning-run mismatch aggregate");
   assertStringIncludes(md, "**Verdict:** systemic");
   assertStringIncludes(md, "`opus` ×3");
-  assertStringIncludes(md, "example-org/private-repo-13");
+  assertStringIncludes(md, "stSoftwareAU/private-repo-1");
   assertStringIncludes(md, "stSoftwareAU/VibeCoder");
 });
 
@@ -215,8 +219,8 @@ Deno.test("formatPlanningRunSummary - renders verdict, counts and repos", () => 
 Deno.test("parse + summarise - the three observed runs conclude systemic", () => {
   const bodies = [DEGRADED_COMMENT, DEGRADED_COMMENT, DEGRADED_COMMENT];
   const repos = [
-    "example-org/private-repo-13",
-    "example-org/private-repo-13",
+    "stSoftwareAU/private-repo-1",
+    "stSoftwareAU/private-repo-1",
     "stSoftwareAU/VibeCoder",
   ];
   const observations: PlanningRunObservation[] = bodies.map((b, i) => {

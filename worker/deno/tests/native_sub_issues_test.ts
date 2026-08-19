@@ -82,7 +82,7 @@ Deno.test("fetchNativeSubIssueNumbers — queries the sub_issues endpoint and re
   };
 
   const result = await fetchNativeSubIssueNumbers(
-    "example-org/private-repo-32",
+    "stSoftwareAU/private-repo-17",
     1418,
     gh,
   );
@@ -92,7 +92,7 @@ Deno.test("fetchNativeSubIssueNumbers — queries the sub_issues endpoint and re
   assertEquals(calls[0]?.[0], "api");
   assertEquals(
     calls[0]?.[1],
-    "repos/example-org/private-repo-32/issues/1418/sub_issues?per_page=100",
+    "repos/stSoftwareAU/private-repo-17/issues/1418/sub_issues?per_page=100",
   );
 });
 

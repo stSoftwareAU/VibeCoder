@@ -416,7 +416,10 @@ Deno.test("repo_config - parsePrFailureActions returns empty array for []", () =
 
 Deno.test("repo_config - parsePrFailureActions parses a valid fetch-jenkins-log action", () => {
   const result = parsePrFailureActions([
-    { type: "fetch-jenkins-log", jobPath: "example-org/private-repo-58/Develop" },
+    {
+      type: "fetch-jenkins-log",
+      jobPath: "stSoftwareAU/private-repo-25/Develop",
+    },
   ]);
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -424,7 +427,7 @@ Deno.test("repo_config - parsePrFailureActions parses a valid fetch-jenkins-log 
     const action = result.value[0];
     if (!action) throw new Error("expected one action");
     assertEquals(action.type, "fetch-jenkins-log");
-    assertEquals(action.jobPath, "example-org/private-repo-58/Develop");
+    assertEquals(action.jobPath, "stSoftwareAU/private-repo-25/Develop");
     assertEquals(action.checkNamePattern, undefined);
   }
 });
@@ -586,7 +589,7 @@ Deno.test("repo_config - parseCiProviders parses a jenkins entry", () => {
     {
       provider: "jenkins",
       jobPath: "org/job/Develop",
-      checkNamePattern: "ST-pipeline",
+      checkNamePattern: "private-repo-25",
     },
   ]);
   assertEquals(result.ok, true);
@@ -594,7 +597,7 @@ Deno.test("repo_config - parseCiProviders parses a jenkins entry", () => {
     assertEquals(result.value, [
       {
         provider: "jenkins",
-        checkNamePattern: "ST-pipeline",
+        checkNamePattern: "private-repo-25",
         jobPath: "org/job/Develop",
       },
     ]);

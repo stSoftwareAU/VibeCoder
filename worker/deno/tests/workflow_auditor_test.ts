@@ -660,10 +660,10 @@ Deno.test("workflow_auditor - invalid JSON from workflow listing returns error",
 });
 
 // ---------------------------------------------------------------------------
-// Detection patterns match real-world NEAT-AI-style YAML
+// Detection patterns match real-world private-repo-14-style YAML
 // ---------------------------------------------------------------------------
 
-Deno.test("workflow_auditor - detects workflows from NEAT-AI-style combined YAML", async () => {
+Deno.test("workflow_auditor - detects workflows from private-repo-14-style combined YAML", async () => {
   // A single combined workflow file containing multiple tools
   const combinedYaml = `name: Security
 on:
@@ -919,7 +919,7 @@ Deno.test(
 // the listing API call failed for ANY reason (rate limit, auth, 5xx, etc.).
 // That misclassified every required workflow as missing and caused
 // workflow-sync to raise duplicate "Add … workflow" issues against repos
-// where the workflows were in fact present (e.g. NEAT-AI-Discovery on
+// where the workflows were in fact present (e.g. private-repo-17 on
 // 2026-04-30 raised #1174–#1180 even though six of the seven workflows
 // were already on the default branch). The fix: only treat an explicit
 // "Not Found" / 404 as legitimately empty; propagate other failures as

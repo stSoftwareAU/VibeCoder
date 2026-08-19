@@ -260,11 +260,11 @@ Deno.test("releaseAllWorkerClaims - clears only the own account when alone", asy
 
 Deno.test("releaseAllWorkerClaims - clears a cross-account worker (marker evidence)", async () => {
   const logger = createWarnLogger();
-  // Current run is `stsvcbot`; an earlier round assigned `VibeCoderBot`
+  // Current run is `stsvcbot`; an earlier round assigned `Vibecoderbot`
   // which posted a claim marker — evidence it is a worker.
   const { client, unassignCalls } = makeAllAccountClient(
-    ["stsvcbot", "VibeCoderBot"],
-    [makeComment("VibeCoderBot", CLAIM_BODY)],
+    ["stsvcbot", "Vibecoderbot"],
+    [makeComment("Vibecoderbot", CLAIM_BODY)],
   );
 
   const result = await releaseAllWorkerClaims(
@@ -280,15 +280,15 @@ Deno.test("releaseAllWorkerClaims - clears a cross-account worker (marker eviden
   assertEquals(unassignCalls.length, 1);
   assertEquals(
     new Set(unassignCalls[0]),
-    new Set(["stsvcbot", "VibeCoderBot"]),
+    new Set(["stsvcbot", "Vibecoderbot"]),
   );
 });
 
 Deno.test("releaseAllWorkerClaims - clears via heartbeat marker evidence", async () => {
   const logger = createWarnLogger();
   const { client, unassignCalls } = makeAllAccountClient(
-    ["stsvcbot", "VibeCoderBot"],
-    [makeComment("VibeCoderBot", HEARTBEAT_BODY)],
+    ["stsvcbot", "Vibecoderbot"],
+    [makeComment("Vibecoderbot", HEARTBEAT_BODY)],
   );
 
   const result = await releaseAllWorkerClaims(
@@ -303,7 +303,7 @@ Deno.test("releaseAllWorkerClaims - clears via heartbeat marker evidence", async
   assert(result);
   assertEquals(
     new Set(unassignCalls[0]),
-    new Set(["stsvcbot", "VibeCoderBot"]),
+    new Set(["stsvcbot", "Vibecoderbot"]),
   );
 });
 
@@ -422,7 +422,7 @@ Deno.test("releaseAllWorkerClaims - falls back to own account when getIssue thro
 Deno.test("releaseAllWorkerClaims - clears only own account when comments fetch fails", async () => {
   const logger = createWarnLogger();
   const { client, unassignCalls } = makeAllAccountClient(
-    ["worker-bot", "VibeCoderBot"],
+    ["worker-bot", "Vibecoderbot"],
     [],
     { getCommentsThrows: true },
   );
@@ -437,6 +437,6 @@ Deno.test("releaseAllWorkerClaims - clears only own account when comments fetch 
   );
 
   assert(result);
-  // Cannot prove VibeCoderBot is a worker without comments — clear self only.
+  // Cannot prove Vibecoderbot is a worker without comments — clear self only.
   assertEquals(unassignCalls[0], ["worker-bot"]);
 });

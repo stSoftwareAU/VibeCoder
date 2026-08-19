@@ -150,7 +150,7 @@ export interface RunCoreResult {
   exitReason: string;
   /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
-   * passed. Used to gate the end-of-run FLEET-health report — a worker that
+   * passed. Used to gate the end-of-run private-repo-6 report — a worker that
    * could not authenticate must not report itself healthy.
    */
   lastHealthCheckPassed: boolean;
@@ -541,10 +541,10 @@ export interface RunCoreDeps {
   resetIterationCaches?: () => void;
 
   /**
-   * Report worker health to the FLEET-health repository (Issue #1935).
+   * Report worker health to the private-repo-6 repository (Issue #1935).
    *
    * Invoked at the top of every priority-loop iteration as a heartbeat,
-   * so the host's `last_commit_ts` row in `FLEET-health/docs/repos.json`
+   * so the host's `last_commit_ts` row in `private-repo-6/docs/repos.json`
    * advances at least once per iteration. The previous end-of-run-only
    * heartbeat in `commands/run_core.ts` was silently lost when the
    * parent shell sent SIGTERM during the post-loop best-effort block,
@@ -2326,7 +2326,7 @@ export async function runCoreLoop(
             // `[repo-access] host=… status=inaccessible repos=… consecutive=…`
             // — so the outage is recoverable from the log after the fact.
             // `logRepoAccessOnce` suppresses the identical line from the
-            // other call sites in the same iteration (the FLEET-health
+            // other call sites in the same iteration (the private-repo-6
             // report), and the iteration boundary resets it.
             logRepoAccessOnce(
               inaccessibleRepos,
@@ -2361,8 +2361,8 @@ export async function runCoreLoop(
             }
           }
 
-          // Issue #1935: emit a FLEET-health heartbeat once per iteration so the
-          // host's row in `FLEET-health/docs/repos.json` advances even when the
+          // Issue #1935: emit a private-repo-6 heartbeat once per iteration so the
+          // host's row in `private-repo-6/docs/repos.json` advances even when the
           // end-of-run path is killed by SIGTERM. `helpers/repos.sh`
           // rate-limits to one push/hour, so frequent invocations are cheap
           // no-ops.
@@ -2646,7 +2646,7 @@ export async function runCoreLoop(
             // sees claimable work somewhere in the monitored set, the
             // scan loop's `foundClaimableIssue=false` is almost
             // certainly mis-classification (see Issue #2106 and the
-            // FLEET-validation #45-#48 incident). Filing more `idle-task`
+            // private-repo-10 #45-#48 incident). Filing more `idle-task`
             // wrappers won't help and burns GraphQL budget the next
             // iteration needs to actually claim the existing ones, so
             // skip the filer this iteration. The next iteration's

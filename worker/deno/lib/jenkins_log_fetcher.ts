@@ -2,7 +2,7 @@
  * Jenkins HTTP client for fetching build status and console logs (Issue #1891).
  *
  * Mirrors the behaviour of the sibling repo's `scripts/fetch-jenkins-build.sh`
- * (see Migration_v21/docs/jenkins-access.md). The worker calls Jenkins
+ * (see private-repo-12/docs/jenkins-access.md). The worker calls Jenkins
  * directly so it can summarise CI failures without shelling out.
  *
  * Credentials are read only from the environment (`JENKINS_URL`,

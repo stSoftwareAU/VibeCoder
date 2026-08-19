@@ -421,7 +421,7 @@ Deno.test("assess-clarity - detectComplexity does not over-count with few reques
 
 Deno.test("assess-clarity - detectComplexity detects owner/repo#N cross-repo references", () => {
   const result = detectComplexity(
-    "This relates to example-org/private-repo-39#45 and also example-org/private-repo-43#12.",
+    "This relates to stSoftwareAU/private-repo-23#45 and also stSoftwareAU/OtherRepo#12.",
   );
 
   assertEquals(result.crossRepoRefs >= 2, true);
@@ -497,7 +497,7 @@ Could we find out if the database queries are optimised?`,
 Deno.test("assess-clarity - issue with cross-repo refs triggers complexity", () => {
   const result = analyseIssueClarity(
     "Coordinate dependency update",
-    `We need to update the shared library. This affects example-org/private-repo-39#100 and example-org/private-repo-42#55.
+    `We need to update the shared library. This affects stSoftwareAU/private-repo-23#100 and stSoftwareAU/OtherLib#55.
 Please check if https://github.com/external/lib/issues/30 is also relevant.`,
     [],
   );
@@ -574,7 +574,7 @@ Deno.test("assess-clarity - issue with 2 cross-repo refs is not complex (Issue #
   // Referencing 2 external issues for context is normal — not complex
   const result = analyseIssueClarity(
     "Fix shared utility bug",
-    "The shared utility has a bug. See example-org/private-repo-39#45 and example-org/private-repo-43#12 for related context.",
+    "The shared utility has a bug. See stSoftwareAU/private-repo-23#45 and stSoftwareAU/OtherRepo#12 for related context.",
     [],
   );
 
@@ -608,7 +608,7 @@ Deno.test("assess-clarity - truly complex issue with 5+ requests still detected 
 Deno.test("assess-clarity - issue with 3+ cross-repo refs still detected (Issue #872)", () => {
   const result = analyseIssueClarity(
     "Coordinate multi-repo update",
-    "This affects example-org/private-repo-50#1, example-org/private-repo-51#2, and example-org/private-repo-52#3. All must be updated together.",
+    "This affects stSoftwareAU/RepoA#1, stSoftwareAU/RepoB#2, and stSoftwareAU/RepoC#3. All must be updated together.",
     [],
   );
 

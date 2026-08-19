@@ -83,7 +83,7 @@ const gitleaks: WorkflowSpec = {
   capabilities: ["Secret scanning"],
   suggestedFilename: "gitleaks.yml",
   category: "security",
-  // Mirrors the canonical pattern in example-org/private-repo-29
+  // Mirrors the canonical pattern in stSoftwareAU/private-repo-14
   // (.github/workflows/quality.yml). gitleaks-action@v2 fails with
   // ErrLicense on organisation-owned repos when GITLEAKS_LICENSE is
   // unset (Issue #1636), so the licence env var is wired through.
@@ -100,8 +100,8 @@ const gitleaks: WorkflowSpec = {
 
 # Detect secrets in pull request diffs.
 #
-# Mirrors the canonical NEAT-AI pattern at
-# example-org/private-repo-29/.github/workflows/quality.yml. Third-party
+# Mirrors the canonical private-repo-14 pattern at
+# stSoftwareAU/private-repo-14/.github/workflows/quality.yml. Third-party
 # actions are pinned to 40-character commit SHAs (Issue #1756) so a
 # hijacked tag cannot exfiltrate CI secrets.
 #
@@ -136,7 +136,7 @@ jobs:
       # (\`<base_sha>..<head_sha>\`) resolves on the runner. Without this
       # step gitleaks fails with "fatal: Invalid revision range" because
       # the base ref is not in the shallow checkout (Issue #1756).
-      # Mirrors the NEAT-AI quality.yml pattern.
+      # Mirrors the private-repo-14 quality.yml pattern.
       - name: Fetch base branch
         if: github.event_name == 'pull_request'
         env:

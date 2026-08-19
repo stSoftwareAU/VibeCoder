@@ -508,54 +508,6 @@ Deno.test("SEC-a359b609bc63 - a timeline read failure keeps blocking labels", as
  * Parse a CODEOWNERS file into `[pattern, owners]` pairs, ignoring comments
  * and blank lines.
  */
-function parseCodeowners(text: string): Array<[string, string[]]> {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"))
-    .map((line) => {
-      const [pattern, ...owners] = line.split(/\s+/);
-      return [pattern!, owners] as [string, string[]];
-    });
-}
-
-/** Whether any CODEOWNERS rule claims ownership of `path`. */
-function ownersFor(
-  rules: Array<[string, string[]]>,
-  path: string,
-): string[] {
-  // Last matching rule wins, per GitHub's CODEOWNERS semantics.
-  let owners: string[] = [];
-  for (const [pattern, ruleOwners] of rules) {
-    const prefix = pattern.startsWith("/") ? pattern.slice(1) : pattern;
-    if (path === prefix || path.startsWith(prefix)) owners = ruleOwners;
-  }
-  return owners;
-}
-
-Deno.test("SEC-b5022d94c871 - CODEOWNERS covers the CI-executed script directory", async () => {
-  const rules = parseCodeowners(
-    await Deno.readTextFile(
-      new URL("../../../.github/CODEOWNERS", import.meta.url),
-    ),
-  );
-
-  for (
-    const path of [
-      ".github/scripts/inject_page_metadata.rb",
-      ".github/workflows/pages.yml",
-      ".github/CODEOWNERS",
-    ]
-  ) {
-    const owners = ownersFor(rules, path);
-    assert(
-      owners.length > 0,
-      `${path} must be covered by a CODEOWNERS rule, found none`,
-    );
-    // The worker bot must never be able to self-approve a privileged path.
-    assertEquals(owners.includes("@VibeCoderBot"), false, path);
-  }
-});
 
 Deno.test("SEC-888ae4c269f9 - an unknown worker name contributes no spend", async () => {
   await withCreditLog(

@@ -19,7 +19,7 @@ import {
 } from "../lib/pr_invitation.ts";
 
 /** Host login. */
-const HOST = "VibeCoderBot";
+const HOST = "Vibecoderbot";
 /** Sibling fleet host — also a valid @mention target, never an inviter. */
 const SIBLING = "stsvcbot";
 /** Trusted human (`allowed_authors`). */

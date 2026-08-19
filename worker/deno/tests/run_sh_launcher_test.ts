@@ -34,12 +34,14 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   BASH_LAUNCHER,
+  buildCount,
   type Harness,
   type LaunchOutcome,
   mountValues,
   recorded,
   removedImages,
   REPO_ROOT,
+  runCoreLog,
   runLauncher as runHarnessLauncher,
   setupHarness,
   spawnLauncher as spawnHarnessLauncher,
@@ -919,6 +921,103 @@ Deno.test("run.sh - stops the runtime's builder helper on Apple container, and a
       // arguments and the launcher must not invent a call.
       assertEquals(stop, null);
     }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Builder self-heal after a storage failure (Issue #4441)
+// ---------------------------------------------------------------------------
+
+/** The ENOSPC export failure host-23 produced, mid-build. */
+const ENOSPC_BUILD_FAILURE =
+  'Error: resourceExhausted: "failed to solve: write ' +
+  "/var/lib/container-builder-shim/exports/abc/out.tar: no space left on " +
+  'device"';
+
+/** True when the launcher restarted (or pruned) the runtime's builder. */
+async function builderHealed(harness: Harness): Promise<boolean> {
+  // Apple container restarts its builder VM; Docker and Podman prune the
+  // build cache instead. Either is the heal for this host's runtime.
+  return await recorded(harness, "builder-start") !== null ||
+    await recorded(harness, "builder-prune") !== null;
+}
+
+Deno.test("run.sh - heals the builder and retries once when the build dies on storage (Issue #4441)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: ENOSPC_BUILD_FAILURE,
+    // The retry succeeds, exactly as the hand-run builder restart did.
+    STUB_BUILD_RETRY_EXIT: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+
+    // The launch continued: the retry built the image and the worker ran.
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertEquals(await buildCount(harness), 2);
+    assert(await builderHealed(harness), `no builder heal: ${outcome.stderr}`);
+    assert(await recorded(harness, "run"), "the worker must still be launched");
+
+    // The outcome is on the worker's own host log, not only stderr.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "container-build-heal");
+    assertStringIncludes(log, "succeeded");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a build that failed for its own reasons is not healed or retried (Issue #4441)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: "E: Unable to locate package nosuchpackage",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+
+    assert(outcome.code !== 0, "an unhealable build failure must still fail");
+    assertEquals(await buildCount(harness), 1);
+    assertEquals(await builderHealed(harness), false);
+    assertEquals(await recorded(harness, "run"), null);
+    assertStringIncludes(outcome.stderr, "failed to build");
+    assertStringIncludes(
+      await runCoreLog(harness),
+      "does not cover",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - escalates to a builder recreate when the retry fails too, and never loops (Issue #4441)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_RETRY_EXIT: "1",
+    STUB_BUILD_STDERR: ENOSPC_BUILD_FAILURE,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+
+    assert(outcome.code !== 0, "a build that never succeeded must fail");
+    // Exactly one retry - the launcher must not loop on a broken builder.
+    assertEquals(await buildCount(harness), 2);
+    assertEquals(await recorded(harness, "run"), null);
+
+    // Apple container escalates to `builder delete`; Docker/Podman have no
+    // builder VM to recreate and repeat the cache prune.
+    if (Deno.build.os === "darwin") {
+      const deleted = await recorded(harness, "builder-delete");
+      assert(deleted, `no builder recreate: ${outcome.stderr}`);
+      assertEquals(deleted.slice(0, 2), ["builder", "delete"]);
+    } else {
+      assert(await recorded(harness, "builder-prune"));
+    }
+    assertStringIncludes(await runCoreLog(harness), "recreating the builder");
   } finally {
     await harness.cleanup();
   }

@@ -145,12 +145,12 @@ human re-opening the issue or re-applying a discovery label — prevention only,
 no auto-close (#3095 multi-account operation retained). The fleet-wide regression
 suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
-`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`.
+[`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)
 
 The fleet runs across machines, each authenticated as a different GitHub
-account (e.g. `VibeCoderBot` on one host, `stsvcbot` on another). PR-feedback
+account (e.g. `Vibecoderbot` on one host, `stsvcbot` on another). PR-feedback
 and CI-fix maintenance are scoped per-host by PR author (`listOpenPrs` →
 `gh pr list --author <login>` in `worker/deno/lib/pr_maintenance.ts`). On its
 own this strands a milestone PR raised by a host that is then busy elsewhere or
@@ -434,7 +434,7 @@ late: the deploy/publish workflows have already fired. Enforcement is
   swallowed. Review requests stay informational; only branch protection can
   require an approval.
 
-See `docs/MERGE.md` for the operator manual (the dual-layer
+See [`docs/MERGE.md`](docs/MERGE.md) for the operator manual (the dual-layer
 flow diagram, visibility-aware required checks, defer-and-retry sequence,
 trigger-classification table, and failure/recovery modes).
 
@@ -459,7 +459,7 @@ to `git clone`.
   falling back to `git fetch --unshallow` as a last resort. On a full clone the
   helper is a no-op.
 
-**Precedent:** FLEET-health already clones with `git clone --depth=1` successfully
+**Precedent:** private-repo-6 already clones with `git clone --depth=1` successfully
 (see `worker/deno/lib/fleet_health.ts`).
 
 **Implementation:** `buildShallowCloneArgs()` in
@@ -545,7 +545,7 @@ without cross-contamination.
 
 **Implementation:** `worker/deno/lib/session_manager.ts` provides
 `restoreSession()`, `saveSession()`, and `initialiseMilestoneSession()`. See
-Session Management for full
+[Session Management](docs/MODEL-AND-CACHING.md#session-management) for full
 details.
 
 ### Planning auto-milestone for sub-issues (Issue #2863)
@@ -625,7 +625,7 @@ Planning runs produce a stronger plan and surface silent model degradation.
   heading match keep it to one per issue, so cost visibility never becomes
   comment flooding, and the block carries an estimate disclaimer stating it
   covers only the posting worker's run(s). See
-  One cost/model stats comment per issue.
+  [One cost/model stats comment per issue](docs/MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-issue-issue-3756).
 - **Fable-unavailable auto-fallback + self-heal (Issue #2720).** When Fable 5 is
   globally unavailable (export-disabled / suspended / `403` / silently
   substituted), the top-tier phases fall back to **Opus 4.8** for that run —
@@ -634,13 +634,13 @@ Planning runs produce a stronger plan and surface silent model degradation.
   the `degraded-model` label + stats comment. The substitution is **per-run**:
   config keeps pointing at Fable, routing self-heals once Fable returns, and
   there is no persistent "Fable down" switch. See
-  Fable-unavailable auto-fallback + self-heal.
+  [Fable-unavailable auto-fallback + self-heal](docs/MODEL-AND-CACHING.md#fable-unavailable-auto-fallback--self-heal-issue-2720).
 
 **Implementation:** `worker/deno/lib/planning_run_stats.ts` (stats + verdict),
 `worker/deno/lib/planning_degraded_label.ts` (label application), and
 `worker/deno/lib/planning_processor.ts` (two-stage flow), with the prompt assets
 in `prompts/planning/`. See
-Planning-run stats + degraded-model detection
+[Planning-run stats + degraded-model detection](docs/MODEL-AND-CACHING.md#planning-run-stats--degraded-model-detection-issue-2649)
 for the operator detail.
 
 ### Per-repo configuration is operator-side only (Issue #2626)
@@ -857,15 +857,15 @@ list.
 not under `idle-task: security-scan`. A security scan **never raises a pull
 request**: each finding is filed as its own GitHub issue, the wrapper is closed
 with a summary comment, and nothing else. See
-`docs/IDLE-TASK-FRAMEWORK.md` → Skipping the per-template milestone
-and `docs/SECURITY-SCAN.md` → No PR, ever.
+[`docs/IDLE-TASK-FRAMEWORK.md` → Skipping the per-template milestone](docs/IDLE-TASK-FRAMEWORK.md#skipping-the-per-template-milestone)
+and [`docs/SECURITY-SCAN.md` → No PR, ever](docs/SECURITY-SCAN.md#no-pr-ever).
 
 **Dependency-update quarantine audit.** Phase 2 also inspects each repo's
 Renovate, Dependabot, and `bump-deps.sh` config and files
 `supply-chain:quarantine-missing` (no eligible quarantine for external deps) or
 `supply-chain:quarantine-misconfigured` (window shorter than
 `VIBE_BUMP_QUARANTINE_HOURS`, default 24h, or coverage gaps). See
-`docs/SECURITY-SCAN.md`.
+[`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md#dependency-update-quarantine-audit).
 
 **In-code suppression.** A finding can be suppressed in-source by adding the
 host language's existing ignore comment with the finding ID, an author, an
@@ -892,7 +892,7 @@ that run's scan report (`Active suppressions (N): …` /
 `Rejected suppressions (N): …`), so a live waiver is visible in the report and
 not only in the source it silences.
 
-See `docs/SECURITY-SCAN.md` for the operator manual
+See [`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md) for the operator manual
 (state files, finding-issue layout, overflow rollover, vulnerability taxonomy,
 idle-trigger sequence diagram).
 
@@ -983,7 +983,7 @@ The grammar lives in `worker/deno/lib/suppression_comments.ts` and matches the
 pre-substituted into the `{{SUPPRESSED_IDS}}` placeholder, so the LLM drops the
 finding in Phase 3 triage on the next run.
 
-See `docs/BEST-PRACTICES-SCAN.md` for the
+See [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md) for the
 operator manual (idle-trigger sequence diagram, per-bucket scope, label scheme,
 suppression syntax, CI-gate (linter + compile) rules).
 
@@ -1051,7 +1051,7 @@ same `best-practice-ignore: BP-…` grammar the best-practices scan uses
 into the `{{SUPPRESSED_IDS}}` placeholder so the LLM drops the finding in Phase
 3 triage on the next run.
 
-See `docs/TEST-AUDIT-SCAN.md` for the operator manual
+See [`docs/TEST-AUDIT-SCAN.md`](docs/TEST-AUDIT-SCAN.md) for the operator manual
 (idle-trigger sequence diagram, the ten audit checks, the coverage-gap
 pre-pass, label scheme, id recipe, suppression syntax, no-PR rule).
 
@@ -1164,7 +1164,7 @@ and nothing else.
 best-practices and test-audit scans (`worker/deno/lib/suppression_comments.ts`),
 typically as a YAML comment above the offending `uses:` line.
 
-See `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` for
+See [`docs/GITHUB-ACTIONS-AUDIT-SCAN.md`](docs/GITHUB-ACTIONS-AUDIT-SCAN.md) for
 the operator manual (idle-trigger sequence diagram, check catalogue, label
 scheme, id recipes, the two pre-filers, suppression syntax, no-PR rule).
 
@@ -1224,7 +1224,7 @@ best-practices, test-audit, and github-actions-audit scans
 into the `{{SUPPRESSED_IDS}}` placeholder so the LLM drops the finding in Phase
 3 triage on the next run.
 
-See `docs/SUPPLY-CHAIN-READINESS-SCAN.md`
+See [`docs/SUPPLY-CHAIN-READINESS-SCAN.md`](docs/SUPPLY-CHAIN-READINESS-SCAN.md)
 for the operator manual (idle-trigger sequence diagram, readiness check
 catalogue, label scheme, id recipe, suppression syntax, no-PR rule, weekly
 cadence).
@@ -1303,7 +1303,7 @@ the offending manifest line. Suppressed ids are pre-substituted into the
 `{{SUPPRESSED_IDS}}` placeholder so the LLM drops the finding in Phase 3 triage
 on the next run.
 
-See `docs/ORPHAN-DEPS-SCAN.md` for the operator
+See [`docs/ORPHAN-DEPS-SCAN.md`](docs/ORPHAN-DEPS-SCAN.md) for the operator
 manual (idle-trigger sequence diagram, orphan-signal catalogue, the
 sanctioned-network note, label scheme, id recipe, suppression syntax, no-PR
 rule, weekly cadence).
@@ -1365,7 +1365,7 @@ workflow label (`label_security.ts` strips accidents).
 wired into the claim handler, idle-task filer, wrapper-seeder, and backfill title
 map. Tests:
 `worker/deno/tests/bash_syntax_audit_template_test.ts`. See
-`docs/BASH-SYNTAX-AUDIT-SCAN.md` for the
+[`docs/BASH-SYNTAX-AUDIT-SCAN.md`](docs/BASH-SYNTAX-AUDIT-SCAN.md) for the
 operator manual (detector table, fail-safe / fail-loud rules, severity table, id
 recipe, suppression syntax, lifecycle diagram, no-PR rule).
 
@@ -1383,7 +1383,7 @@ the wrong path. Over repeated runs the docs **converge on one source of truth �
 the main README**.
 
 **PR summaries are the project's cross-machine memory.** They record which
-approaches worked **and which failed** (a NEAT-AI optimisation tried and
+approaches worked **and which failed** (a private-repo-14 optimisation tried and
 abandoned, say). The audit **unifies durable learnings — successes and negative
 results — from the PR-summary archive into the relevant existing docs/README
 sections, then deletes the now-obsolete summaries**. A summary is only ever
@@ -1400,7 +1400,7 @@ README, or delete when it adds nothing beyond it), (6) README not the source of
 truth (inaccurate, inlines detail that belongs in a linked doc, or fails to link
 off), (7) undefined terms/acronyms/playful names (define in plain English on
 first use, preferring an external link such as Wikipedia; e.g. glossing a
-NEAT-AI "creature" in boring terms), (8) broken/invalid links (internal
+private-repo-14 "creature" in boring terms), (8) broken/invalid links (internal
 strictly, external best-effort) plus places a Mermaid diagram would materially
 aid understanding, and (9) multiple/redundant agent instruction files — two or
 more substantive agent files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, near-miss
@@ -1444,7 +1444,7 @@ grammar (a `<!-- … -->` Markdown comment) suppresses a finding on future runs.
 [`worker/deno/lib/idle_task_templates/documentation_audit_template.ts`](worker/deno/lib/idle_task_templates/documentation_audit_template.ts),
 wired into the claim handler, idle-task filer, wrapper-seeder, and backfill title
 map. Tests: `worker/deno/tests/documentation_audit_template_test.ts`. See
-`docs/DOCUMENTATION-AUDIT-SCAN.md` for the
+[`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md) for the
 operator manual (twelve-check catalogue, idle-trigger diagram, severity table, id
 recipe, suppression syntax, no-PR rule, weekly cadence).
 
@@ -1496,7 +1496,7 @@ double-file** the same finding.
 `workflow-annotation-scan` template (wrapper wiring tracked in #3488). Findings
 carry `workflow-annotation-scan` + `severity:<level>` labels; **fail-loud** on a
 fetch/classify error; `cooldownHours: 168` (weekly). See the template row in
-`docs/IDLE-TASK-FRAMEWORK.md`.
+[`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md).
 
 ### Deno regression prevention (Issue #2204)
 
@@ -1770,29 +1770,29 @@ and claim handler.
   — Per-template implementations. Seventeen production templates:
   `security_scan_template.ts` (#1, security audit), `best_practices_template.ts`
   (#2, bucket-scoped best-practices review — see
-  `docs/BEST-PRACTICES-SCAN.md`),
+  [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md)),
   `test_audit_template.ts` (#3, language-agnostic static test-suite
   maintainability and coverage-gap audit — see
-  `docs/TEST-AUDIT-SCAN.md`),
+  [`docs/TEST-AUDIT-SCAN.md`](docs/TEST-AUDIT-SCAN.md)),
   `github_actions_audit_template.ts` (#4, weekly workflow-only GitHub Actions
   audit — see
-  `docs/GITHUB-ACTIONS-AUDIT-SCAN.md`),
+  [`docs/GITHUB-ACTIONS-AUDIT-SCAN.md`](docs/GITHUB-ACTIONS-AUDIT-SCAN.md)),
   `supply_chain_readiness_template.ts` (#5, weekly static supply-chain readiness
   audit — see
-  `docs/SUPPLY-CHAIN-READINESS-SCAN.md`),
+  [`docs/SUPPLY-CHAIN-READINESS-SCAN.md`](docs/SUPPLY-CHAIN-READINESS-SCAN.md)),
   `orphan_deps_template.ts` (#6, weekly orphan / unmaintained-dependency
   audit — the one sanctioned-network exception — see
-  `docs/ORPHAN-DEPS-SCAN.md`), and the four "Boy
+  [`docs/ORPHAN-DEPS-SCAN.md`](docs/ORPHAN-DEPS-SCAN.md)), and the four "Boy
   Scout" issue-only templates `dead_code_template.ts` (#7),
   `doc_coverage_template.ts` (#8), `format_drift_template.ts` (#9), and
   `deprecated_api_template.ts` (#10), wired into the production filer by Issue
   #2930; `bash_script_refs_template.ts` (#11, native layer-2 missing-script
   scan, Issue #3228); and `bash_syntax_audit_template.ts` (#12, native weekly bash `bash -n`
   + `shellcheck` + language-validity CI-gate audit — see
-  `docs/BASH-SYNTAX-AUDIT-SCAN.md`); and
+  [`docs/BASH-SYNTAX-AUDIT-SCAN.md`](docs/BASH-SYNTAX-AUDIT-SCAN.md)); and
   `documentation_audit_template.ts` (#13, LLM-only weekly prose-documentation
   audit — unify PR-summary learnings into the README, prune stale docs — see
-  `docs/DOCUMENTATION-AUDIT-SCAN.md`); and
+  [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md)); and
   `alert_feed_template.ts` (#14, native weekly Dependabot + code-scanning
   alert feed — one issue per new high/critical alert in the affected repo,
   Issue #3394); and `workflow_annotation_scan_template.ts` (#15, native weekly
@@ -1806,7 +1806,7 @@ and claim handler.
   textual repo-name mentions — with the public-only gate read from the GitHub
   API at scan time and enforced in both `shouldFile` and `runTask`, Issue
   #3549 — see
-  `docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md`);
+  [`docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md`](docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md));
   and `duplicated_knowledge_template.ts` (#17, LLM-only weekly scan for
   copy-pasted blocks of five or more lines that encode the **same knowledge** —
   one rule with more than one authoritative copy — where a call to an existing
@@ -1814,11 +1814,11 @@ and claim handler.
   `duplicate_block_scanner.ts` pre-pass and biased towards silence because
   duplicated text is not duplicated knowledge and the wrong abstraction is worse
   than duplication, Issue #3609 — see
-  `docs/DUPLICATED-KNOWLEDGE-SCAN.md`).
+  [`docs/DUPLICATED-KNOWLEDGE-SCAN.md`](docs/DUPLICATED-KNOWLEDGE-SCAN.md)).
   The idle-task filer picks uniformly at random (1/17 each) between the
   seventeen on every idle pass.
 
-See `docs/IDLE-TASK-FRAMEWORK.md` for the
+See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
 step-by-step instructions for adding a new template.
 
@@ -1826,7 +1826,7 @@ step-by-step instructions for adding a new template.
 
 An authorised human onboards a new repository to the monitored set by filing a
 `work-on` issue in `stSoftwareAU/VibeCoder` whose **title** is
-`add-repo: owner/repo` (e.g. `add-repo: example-org/private-repo-23` — the slug is
+`add-repo: owner/repo` (e.g. `add-repo: stSoftwareAU/private-repo-11` — the slug is
 never hardcoded; any reachable `owner/repo` works). The dispatch loop routes the
 claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
@@ -1874,7 +1874,7 @@ validation, monitored-list append), `worker/deno/commands/process_add_repo.ts`
 seeding), `worker/deno/setup/branch_protection_sync.ts`
 (`syncBranchProtectionForRepo` — single-repo default-branch ruleset), and
 `worker/deno/lib/add_repo_process_issue_route.ts` (dispatch
-routing). See `docs/ADD-REPO.md` for the operator manual,
+routing). See [`docs/ADD-REPO.md`](docs/ADD-REPO.md) for the operator manual,
 end-to-end flow diagram, timing/secrets caveats, and failure-path table.
 
 ### Release the claim on terminal failure (Issue #2731)

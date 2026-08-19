@@ -36,7 +36,7 @@ const DEFAULT_CHECK_NAME_PATTERN = /jenkins/i;
  * pair. A view suffix may follow it — GitHub's
  * `continuous-integration/jenkins/pr-head` status records
  * `.../job/PR-599/6/display/redirect` — and must be ignored rather than
- * read as the build (example-org/private-repo-27#585).
+ * read as the build (stSoftwareAU/private-repo-12#585).
  *
  * URLs with no `job` segment fall back to the trailing path segment.
  *
@@ -97,13 +97,13 @@ const SAFE_JOB_SEGMENT = /^[A-Za-z0-9._-]+$/;
  * Extract the Jenkins job path from a check `target_url`.
  *
  * Jenkins paths interleave `job` markers with job names
- * (`/job/example-org/private-repo-26/Migration_v21/job/PR-599/6/...`), so the job path
+ * (`/job/stSoftwareAU/job/private-repo-12/job/PR-599/6/...`), so the job path
  * is every segment following a `job` marker, joined with `/` —
- * `example-org/private-repo-27/PR-599` for that example.
+ * `stSoftwareAU/private-repo-12/PR-599` for that example.
  *
  * A multibranch PR check runs under a per-PR `PR-<n>` job, which the static
  * `jobPath` configuration cannot name; this recovers it from the URL
- * (example-org/private-repo-27#585). Segments are validated so a traversal
+ * (stSoftwareAU/private-repo-12#585). Segments are validated so a traversal
  * or encoded separator can never reach the Jenkins URL builder.
  */
 export function extractJenkinsJobPath(

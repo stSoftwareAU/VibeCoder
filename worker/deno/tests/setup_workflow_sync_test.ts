@@ -829,7 +829,7 @@ Deno.test("syncWorkflowsForAllRepos - one failing repo does not block others", a
 // Issue #1829 — Dedup must consider both open AND closed issues
 // ---------------------------------------------------------------------------
 //
-// On 2026-04-30 NEAT-AI-Discovery received duplicate "Add … workflow"
+// On 2026-04-30 private-repo-17 received duplicate "Add … workflow"
 // issues (#1174–#1180) for workflows that were already present on the
 // default branch. Earlier "Complete …" partial-match issues (#1151–#1153)
 // had been raised and closed for the same specs. The dedup query

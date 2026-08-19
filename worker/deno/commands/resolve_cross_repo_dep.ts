@@ -12,7 +12,7 @@
  * issue-fix flow, not the CLI.
  *
  * Usage:
- *   deno run … mod.ts resolve-cross-repo-dep --package jsr:@stsoftware/neat-ai
+ *   deno run … mod.ts resolve-cross-repo-dep --package jsr:@stsoftware/private-repo-14
  *
  * Australian English used throughout (behaviour, organisation).
  */
