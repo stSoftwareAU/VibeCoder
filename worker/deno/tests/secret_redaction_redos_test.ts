@@ -114,6 +114,56 @@ Deno.test("redactSecrets - a huge input is scanned whole, tail included (Issue #
   );
 });
 
+Deno.test("redactSecrets - a run of near-miss sk- prefixes is linear (openai-key, Issue #36)", () => {
+  // Adversarial shape for the OpenAI rule: every `sk-` is a candidate start
+  // and every run stops one character short of the 20-character minimum, so
+  // the rule must fail fast at each start rather than rescanning the tail.
+  const unit = "sk-" + "a".repeat(19) + "!";
+  const hostile = unit.repeat(Math.floor(HOSTILE_CHARS / unit.length));
+  let out = "";
+  const took = elapsedMs(() => {
+    out = redactSecrets(hostile);
+  });
+  assertEquals(out, hostile, "near-miss text must pass through unchanged");
+  assert(
+    took < BUDGET_MS,
+    `sk- near-miss run took ${took.toFixed(0)} ms (budget ${BUDGET_MS} ms)`,
+  );
+});
+
+Deno.test("redactSecrets - a run of near-miss AIzaSy prefixes is linear (google-api-key, Issue #36)", () => {
+  // One character short of Google's fixed 39-character key length.
+  const unit = "AIzaSy" + "b".repeat(32) + " ";
+  const hostile = unit.repeat(Math.floor(HOSTILE_CHARS / unit.length));
+  let out = "";
+  const took = elapsedMs(() => {
+    out = redactSecrets(hostile);
+  });
+  assertEquals(out, hostile, "near-miss text must pass through unchanged");
+  assert(
+    took < BUDGET_MS,
+    `AIzaSy near-miss run took ${took.toFixed(0)} ms (budget ${BUDGET_MS} ms)`,
+  );
+});
+
+Deno.test("redactSecrets - provider keys in the tail of a huge input are still masked (Issue #36)", () => {
+  const openai = "sk-proj-" + "9".repeat(60);
+  const google = "AIzaSy" + "7".repeat(33);
+  const oversized = "sk-".repeat(HOSTILE_CHARS / 3) + `\n${openai} ${google}\n`;
+
+  let out = "";
+  const took = elapsedMs(() => {
+    out = redactSecrets(oversized);
+  });
+
+  assert(
+    took < BUDGET_MS,
+    `oversized provider-key input took ${took.toFixed(0)} ms`,
+  );
+  assert(!out.includes(openai), "an OpenAI key in the tail must be masked");
+  assert(!out.includes(google), "a Google key in the tail must be masked");
+});
+
 Deno.test("redactSecrets - URL credentials are still masked after the anchoring fix (Issue #3942)", () => {
   const cases = [
     "https://nigel:ghp_secretvalue@github.com/org/repo.git",
