@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes self-h
 
 ## ⚡ TL;DR
 
-**Runs unattended and plays nice with others.** Each run: **PID (Process Identifier) check** (exit if another run is active; kill if stale), **reset repo** to `origin/Develop` (the running Deno driver is immune to its own mid-run reset because it loads its modules at process start — the property the old shadow-copy provided), then the main loop. **Claiming:** assign self to the issue, wait a moment, re-read assignees — if two workers claimed, alphabetical login wins and the other backs off. **One PR (Pull Request) per target branch:** don’t start a new issue for default (or a milestone) if there’s already an open PR for that branch. **Repeated failure** on the same item → exit so cron can restart with fresh code. **Defence in depth:** timeout wrappers on all operations, rate-limit aware retry, persistent failure/circuit-breaker/cooldown state that survives crashes, heartbeat tracking during Claude execution, crash cleanup handlers, orphan issue recovery, and crash notifications via issue comments and webhooks. **Self-assigning phases release their claim on every terminal exit — including failure** — so a stuck issue is freed immediately; **out-of-memory is terminal** (fast fail with a distinct `out_of_memory` diagnostic); **stale-assignment recovery runs every cycle**, not just at start-up; a **per-handler watchdog** stops a hung call freezing the loop; and **repeated failure escalates to a human** via `needs-human`, counted across the whole fleet.
+**Runs unattended and plays nice with others.** Each run: **PID (Process Identifier) check** (exit if another run is active; kill if stale), **reset repo** to its remote's default branch (`origin/HEAD`; the running Deno driver is immune to its own mid-run reset because it loads its modules at process start — the property the old shadow-copy provided), then the main loop. **Claiming:** assign self to the issue, wait a moment, re-read assignees — if two workers claimed, alphabetical login wins and the other backs off. **One PR (Pull Request) per target branch:** don’t start a new issue for default (or a milestone) if there’s already an open PR for that branch. **Repeated failure** on the same item → exit so cron can restart with fresh code. **Defence in depth:** timeout wrappers on all operations, rate-limit aware retry, persistent failure/circuit-breaker/cooldown state that survives crashes, heartbeat tracking during Claude execution, crash cleanup handlers, orphan issue recovery, and crash notifications via issue comments and webhooks. **Self-assigning phases release their claim on every terminal exit — including failure** — so a stuck issue is freed immediately; **out-of-memory is terminal** (fast fail with a distinct `out_of_memory` diagnostic); **stale-assignment recovery runs every cycle**, not just at start-up; a **per-handler watchdog** stops a hung call freezing the loop; and **repeated failure escalates to a human** via `needs-human`, counted across the whole fleet.
 
 ```mermaid
 flowchart TD
@@ -60,7 +60,7 @@ flowchart TD
 ### 🔄 Process and restart
 
 1. **run.sh** — Bootstrap PATH, locate Deno, and `exec` `deno run … run-entrypoint`. The driver's PID guard: if the PID file exists and its process is the worker driver and not stale, exit (another run active); if stale (age > threshold), terminate the process tree and remove the PID file. No bash script is shadow-copied — Deno loads its modules at process start, so the running driver is already immune to a mid-run `git reset`.
-2. **run-entrypoint driver** (`run_worker.ts`) — Claim PID file; bootstrap prelude (PATH, run-id, logging, reset repo to `origin/Develop`, software-update); validate config; resolve GitHub user; startup housekeeping (disk/temp/branch sweeps); enter the `run-core` loop.
+2. **run-entrypoint driver** (`run_worker.ts`) — Claim PID file; bootstrap prelude (PATH, run-id, logging, reset repo to the branch `origin/HEAD` names, software-update); validate config; resolve GitHub user; startup housekeeping (disk/temp/branch sweeps); enter the `run-core` loop.
 3. **Loop** — Each iteration: check work queues in priority order; process at most one item; on success reset failure count; on failure track (same item key); if consecutive failures ≥ threshold, exit. Sleep; repeat until run duration expires or exit. Repo scan order is randomised by default (`shuffle_repos`) for fairness — see [issue-processing.md § Repository scan order](issue-processing.md#repository-scan-order-fair-scanning-then-oldest-first). When a cycle ends with no claimable work in any monitored repo, the worker invokes the idle security scanner (gated on a global lock and an idle-cycle counter) before sleeping — see [Security Scans — Operator Manual](../SECURITY-SCAN.md).
 4. **Exit** — Cleanup (descendants, temp files, PID file, terminal title, GitHub status); exit. Next cron/launchd run starts a new process.
 
@@ -166,7 +166,7 @@ flowchart TD
   Kill["Terminate process tree"]
   Exec["exec deno run-entrypoint"]
   Exit0["Exit 0"]
-  Reset["Bootstrap: reset repo to origin/Develop"]
+  Reset["Bootstrap: reset repo to origin/HEAD branch"]
   Loop["Main loop"]
   Fail["Track failure"]
   ExitFail["Exit for restart"]

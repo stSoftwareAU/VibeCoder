@@ -64,11 +64,26 @@ and nothing else.
 | **Bash CI gate** | [`bash_ci_gate_scanner.ts`](../worker/deno/lib/bash_ci_gate_scanner.ts) | Discovers the repo's bash scripts (`*.sh` / `*.bash` and bash-shebang files), then checks `.github/workflows/*` for a `bash -n` / `sh -n` **syntax** gate and a `shellcheck` **lint** gate. A step invoking a committed gate script (e.g. `./quality.sh`, `quality/bash_syntax.sh`) counts — the script's committed contents are inspected. |
 | **Language validity** | [`language_validity_gate.ts`](../worker/deno/lib/language_validity_gate.ts) | For each other main language (Rust, TypeScript, React, Java, Python), checks a native basic-validity step is wired into CI — `cargo check`, `deno check` / `tsc --noEmit`, `mvn compile` / `gradle compileJava`, `python -m py_compile`. Basic validity only (does it compile / parse), not style or lint. |
 
+### What counts as a *main* language (Issue #3)
+
+Presence alone does not make a language a main language. A language is
+considered main only when it holds at least **5 %**
+(`MAIN_LANGUAGE_MIN_SHARE`) of the repository's measured bytes, taken from the
+same GitHub Languages API counts the best-practices bucket picker uses.
+
+A Rust repository whose only TypeScript is a single fixture-generation script
+(0.1 % of its bytes) has no TypeScript worth type-checking, so demanding a
+`deno check` gate there is a false positive — the audit asks for a gate on
+something that does not exist. The share threshold keeps genuine polyglot
+repositories in scope while excluding one-off helper scripts.
+
 ### Fail-safe (never a false positive)
 
 Both detectors distinguish **missing** from **unknown**:
 
 - A repo with **no bash scripts** is *not applicable* — no bash finding.
+- A language below the **main-language share threshold** above is *not
+  applicable* — no validity-gate finding for an incidental helper script.
 - A repo with **no loaded workflows** or an **unparseable workflow** leaves the
   affected gate *unknown* — no false "missing gate" finding (the #2881
   zero-workflow fail-safe).
