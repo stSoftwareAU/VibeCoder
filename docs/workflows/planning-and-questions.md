@@ -279,32 +279,51 @@ gate fast-fails again in seconds with **no model invocation** — the run stats
 then report "no served model observed" — and every subsequent retry repeats the
 same fast-fail.
 
-The repair (`worker/deno/lib/failure_detection_repair.ts`) runs once per
-offender: it invokes Claude (planning-phase model/effort, so a degraded run
-stays consistent with #2720/#3217) to draft a concrete `## Failure Detection`
-section from the sub-issue's title/body — a real test / CI gate / alert, or an
-explicit `N/A — <reason>` — patches it into the sub-issue body via `gh issue
-edit`, and re-runs the **pure** gate to confirm the drafted section actually
-passes. Each Claude call is recorded into the run's `invocations`, so stats no
-longer say "no served model observed" on the repair path.
+The repair (`worker/deno/lib/failure_detection_repair.ts`) drafts **every**
+offender in a **single** Claude call (planning-phase model/effort, so a degraded
+run stays consistent with #2720/#3217). The batched prompt asks for one
+delimited block per sub-issue number — a real test / CI gate / alert, or an
+explicit `N/A — <reason>` — and the repair splits that output, patches each
+section into its own sub-issue body via `gh issue edit`, and re-runs the **pure**
+gate to confirm the drafted section actually passes. Each Claude call is recorded
+into the run's `invocations`, so stats no longer say "no served model observed"
+on the repair path.
+
+**Batching (Issue #57)** is what makes the repair fit the Planning handler's
+budget: eight offenders at ~18 s per draft used to append ~2.5 min of tail to a
+run that had already spent ~5 min, and the cost grew linearly with a plan's
+fan-out. One call for N offenders turns that O(N) tail into O(1). The
+per-offender prompt is kept as the **fallback**: it is used when there is only
+one offender, and when the batched output cannot be split into blocks — so
+behaviour is never worse than the sequential loop it replaced. A batched call
+that outright fails or times out leaves its offenders un-repaired rather than
+retrying per offender, which would multiply the very cost batching removes.
 
 ```mermaid
 flowchart TD
-    A[Gate finds offenders] --> B{Self-repair each offender}
-    B -->|draft section, patch, re-gate passes| C[repaired]
-    B -->|read/draft/edit fails, or draft still fails gate| D[stillOffending]
-    C --> E{Any stillOffending?}
-    D --> E
-    E -->|no| F[Run completes successfully]
-    E -->|yes| G[handlePlanningFailure — loud, labelled hard-block]
+    A[Gate finds offenders] --> B[Read each offender's body]
+    B --> C{More than one readable offender?}
+    C -->|yes| D[One batched Claude call<br/>drafts every section]
+    C -->|no| E[Per-offender Claude call]
+    D -->|output unparseable| E
+    D --> F{Per offender: patch + re-gate}
+    E --> F
+    F -->|re-gate passes, edit succeeds| G[repaired]
+    F -->|absent from output, fails re-gate,<br/>or read/draft/edit fails| H[stillOffending]
+    G --> I{Any stillOffending?}
+    H --> I
+    I -->|no| J[Run completes successfully]
+    I -->|yes| K[handlePlanningFailure — loud, labelled hard-block]
 ```
 
 The repair is **best-effort and idempotent**: an offender whose body cannot be
-read, whose Claude call fails/times out/empties, whose draft still fails the
-gate, or whose `gh issue edit` throws stays in `stillOffending` and drives the
-loud, labelled `handlePlanningFailure` (repair impossible → hard-block remains
-the fallback, per #3270). The re-gate is performed on the constructed body
-*before* the patch, so a still-failing draft never overwrites the sub-issue.
+read, whose Claude call fails/times out/empties, that the batched output omits,
+whose draft still fails the gate, or whose `gh issue edit` throws stays in
+`stillOffending` and drives the loud, labelled `handlePlanningFailure` (repair
+impossible → hard-block remains the fallback, per #3270). Only a positively
+confirmed repair is reported as repaired. The re-gate is performed on the
+constructed body *before* the patch, so a still-failing draft never overwrites
+the sub-issue.
 
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
 
