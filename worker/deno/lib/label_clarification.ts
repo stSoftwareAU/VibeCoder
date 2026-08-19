@@ -15,7 +15,7 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { createLogger } from "./logger.ts";
 import type { ClarificationOptions, LabelManagerDeps } from "./label_types.ts";
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
-import { ensureLabelExists } from "./label_operations.ts";
+import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
@@ -50,29 +50,16 @@ export function ghClientFromCommandFn(
       return parseGhRawCommentsJson(raw);
     },
     async addLabel(repo, issueNumber, label) {
-      // Mirror createGitHubClient: REST POST with CLI fallback (Issue #976).
-      try {
-        await ghCommandFn([
-          "api",
-          "-X",
-          "POST",
-          `repos/${repo}/issues/${issueNumber}/labels`,
-          "-f",
-          `labels[]=${label}`,
-        ]);
-        return;
-      } catch {
-        // Fall back to the CLI path.
-      }
-      await ghCommandFn([
-        "issue",
-        "edit",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--add-label",
-        label,
-      ]);
+      // Issue #13: route through `addLabelToIssue` rather than reaching for
+      // the CLI directly, so the worker label allowlist guard
+      // (`assertWorkerCanApplyLabel`) covers this call site too. It keeps
+      // the same REST-POST-with-CLI-fallback behaviour (Issue #976) and
+      // returns a `Result`, so a refusal or a failed mutation is rethrown
+      // here to preserve the throwing `GitHubClient.addLabel` contract.
+      const result = await addLabelToIssue(repo, issueNumber, label, {
+        ghCommandFn,
+      });
+      if (!result.ok) throw result.error;
     },
     removeLabel: () => Promise.resolve(),
     async postComment(repo, issueNumber, body) {

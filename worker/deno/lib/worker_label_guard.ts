@@ -10,6 +10,12 @@
  * `planning` / `best-model` / `question` to an issue, the call would
  * never reach GitHub.
  *
+ * Call sites: `addLabelToIssue` (`label_operations.ts`) and
+ * `escalateToHuman` (`needs_human_escalation.ts`) both assert through this
+ * guard before any label mutation, so the invariant holds for every
+ * worker-applied label rather than only for callers who opted in
+ * (Issue #13).
+ *
  * Scope: this guard runs **in the worker's own process**. The agent
  * subprocess has its own `gh` and its own credentials, so it is covered
  * separately by the PATH shim in `gh_guard_shim.ts` (Issue #3643), which

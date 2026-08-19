@@ -61,8 +61,12 @@ set -euo pipefail
 #   (Issue #3234). A declined install, a failed install, or a tool with no plan
 #   leaves its check failed and setup exits non-zero.
 #
-#   Run without a terminal — cron, launchd, CI — nothing is offered and the
-#   output is exactly the report-and-fail of before.
+#   Run without a terminal — cron, launchd, CI — nothing is installed, and the
+#   report says which failed checks *could* have been auto-installed and why
+#   the offer was withheld (Issue #33). `./setup.sh --auto-install` consents to
+#   every offer in advance, so a scripted run installs what it can — the one
+#   sanctioned pre-consent, and deliberately a per-invocation flag rather than
+#   an environment variable.
 #
 #   The container runtime is offered per platform: macOS gets
 #   `brew install container` then `container system start` (Issue #4136);
@@ -986,8 +990,23 @@ prompt_launchagent_setup() {
 }
 
 main() {
+    # --auto-install consents in advance to every offered install (Issue #33),
+    # so a scripted `./setup.sh --auto-install` gets the container runtime
+    # installed without a terminal to prompt on. It is deliberately a flag the
+    # operator types on this invocation, never an environment variable.
+    local auto_install=false arg
+    for arg in "$@"; do
+        case "${arg}" in
+            --auto-install) auto_install=true ;;
+        esac
+    done
+
     # Prerequisites check via Deno
-    run_setup_cli prerequisites
+    if [[ "${auto_install}" == "true" ]]; then
+        run_setup_cli prerequisites --auto-install
+    else
+        run_setup_cli prerequisites
+    fi
 
     # Provision the dedicated credential directory non-interactively from
     # environment variables (Issue #4064). Runs before the prompts so the gh

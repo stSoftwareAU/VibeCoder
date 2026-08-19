@@ -24,6 +24,7 @@ import {
 } from "../lib/container_runtime.ts";
 import {
   type AppleKernelStatus,
+  consentSuppressionReason,
   ensureContainerRuntime,
   repairContainerRuntime,
 } from "../setup/container_runtime_install.ts";
@@ -302,6 +303,86 @@ Deno.test("ensureContainerRuntime - declining leaves the failure and the hint un
     outcome.hint ?? "",
     "https://github.com/apple/container",
   );
+});
+
+// ---------------------------------------------------------------------------
+// --auto-install and the withheld offer (Issue #33)
+// ---------------------------------------------------------------------------
+
+Deno.test("ensureContainerRuntime - --auto-install consents without a prompt and says so", async () => {
+  const ran: string[][] = [];
+  // No consent injected: --auto-install must supply the consent itself.
+  const outcome = await ensureContainerRuntime({
+    platform: "darwin",
+    autoInstall: true,
+    probe: scriptedProbe([
+      BINARY_ABSENT,
+      { available: true, path: "container" },
+    ]),
+    runStep: recordingRunner(ran),
+    packageManagerAvailable: brewPresent,
+    kernelStatus: kernelConfigured,
+  });
+
+  assert(outcome.ok, `auto-install failed: ${outcome.messages.join(" | ")}`);
+  assertEquals(outcome.status, "installed");
+  assertEquals(ran, [
+    ["brew", "install", "container"],
+    ["container", "system", "start", "--enable-kernel-install"],
+  ]);
+  // Pre-consent is never a silent yes: the approval is in the messages.
+  assert(
+    outcome.messages.some((m) => m.startsWith("--auto-install consented to:")),
+    `no approval message in: ${outcome.messages.join(" | ")}`,
+  );
+});
+
+Deno.test("ensureContainerRuntime - a withheld offer is reported, never silent", async () => {
+  // Pin the suppression to the environment variable rather than the ambient
+  // TTY, so the case is deterministic whether the suite runs under CI or an
+  // interactive terminal (where the default consent would otherwise prompt).
+  const original = Deno.env.get("VIBE_NO_AUTO_INSTALL");
+  Deno.env.set("VIBE_NO_AUTO_INSTALL", "true");
+  try {
+    const outcome = await ensureContainerRuntime({
+      platform: "darwin",
+      probe: scriptedProbe([BINARY_ABSENT]),
+      runStep: () => {
+        throw new Error("no step may run without consent");
+      },
+      packageManagerAvailable: brewPresent,
+    });
+
+    assertEquals(outcome.ok, false);
+    assertEquals(outcome.status, "declined");
+    const withheld = outcome.messages.find((m) =>
+      m.includes("offer was withheld")
+    );
+    assert(
+      withheld,
+      `no withheld-offer message in: ${outcome.messages.join(" | ")}`,
+    );
+    assertStringIncludes(withheld!, "Apple container");
+    assertStringIncludes(withheld!, "VIBE_NO_AUTO_INSTALL=true is set");
+    assertStringIncludes(withheld!, "--auto-install");
+  } finally {
+    if (original === undefined) Deno.env.delete("VIBE_NO_AUTO_INSTALL");
+    else Deno.env.set("VIBE_NO_AUTO_INSTALL", original);
+  }
+});
+
+Deno.test("consentSuppressionReason - names the environment opt-out", () => {
+  const original = Deno.env.get("VIBE_NO_AUTO_INSTALL");
+  Deno.env.set("VIBE_NO_AUTO_INSTALL", "true");
+  try {
+    assertEquals(
+      consentSuppressionReason(),
+      "VIBE_NO_AUTO_INSTALL=true is set",
+    );
+  } finally {
+    if (original === undefined) Deno.env.delete("VIBE_NO_AUTO_INSTALL");
+    else Deno.env.set("VIBE_NO_AUTO_INSTALL", original);
+  }
 });
 
 // ---------------------------------------------------------------------------

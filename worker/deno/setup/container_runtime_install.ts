@@ -165,6 +165,13 @@ export interface EnsureContainerRuntimeOptions {
   probe?: ContainerRuntimeProbe;
   /** Consent driver. Defaults to a TTY-gated `[y/N]` prompt. */
   consent?: ContainerInstallConsent;
+  /**
+   * Consent to every offer in advance (Issue #33). Set by the operator's
+   * explicit `--auto-install` flag — never by an environment variable — so a
+   * scripted setup run can install the runtime without a terminal to prompt
+   * on. Ignored when {@link consent} is supplied.
+   */
+  autoInstall?: boolean;
   /** Step runner. Defaults to spawning the step with streamed output. */
   runStep?: InstallStepRunner;
   /** Package-manager availability check, passed to the install-plan table. */
@@ -186,6 +193,23 @@ function renderCommand(step: InstallStep): string {
 }
 
 /**
+ * Why setup cannot ask the operator for install consent right now, or `null`
+ * when it can (Issue #33).
+ *
+ * The two suppression conditions in one place, so every consent gate names
+ * the same reason the operator is shown: `VIBE_NO_AUTO_INSTALL=true` (the
+ * operator opted out of offers) or a stdin that is not a terminal (an
+ * unattended run must never block on a prompt).
+ */
+export function consentSuppressionReason(): string | null {
+  if (Deno.env.get("VIBE_NO_AUTO_INSTALL") === "true") {
+    return "VIBE_NO_AUTO_INSTALL=true is set";
+  }
+  if (!Deno.stdin.isTerminal()) return "stdin is not a terminal";
+  return null;
+}
+
+/**
  * Ask the operator, defaulting to no.
  *
  * Declines outright when stdin is not a terminal or `VIBE_NO_AUTO_INSTALL` is
@@ -195,12 +219,45 @@ function renderCommand(step: InstallStep): string {
 export const defaultContainerInstallConsent: ContainerInstallConsent = (
   request,
 ) => {
-  if (Deno.env.get("VIBE_NO_AUTO_INSTALL") === "true") {
-    return Promise.resolve(false);
-  }
-  if (!Deno.stdin.isTerminal()) return Promise.resolve(false);
+  if (consentSuppressionReason() !== null) return Promise.resolve(false);
   return Promise.resolve(confirm(request.question));
 };
+
+/**
+ * The consent driver {@link ensureContainerRuntime} uses when none is
+ * injected (Issue #33).
+ *
+ * Three behaviours, none of them silent:
+ * - `--auto-install`: consent in advance — every offer is approved, and the
+ *   approval is recorded in the outcome's messages so the report says what
+ *   was consented to and why no prompt appeared.
+ * - suppressed (no TTY, or `VIBE_NO_AUTO_INSTALL=true`): declines, and says
+ *   so — a withheld offer must be distinguishable from a host that has no
+ *   offer at all, which is exactly the gap Issue #33 was raised over.
+ * - otherwise: the TTY `[y/N]` prompt, defaulting to no.
+ */
+function operatorConsent(
+  messages: string[],
+  autoInstall: boolean,
+): ContainerInstallConsent {
+  return (request) => {
+    if (autoInstall) {
+      messages.push(`--auto-install consented to: ${request.question}`);
+      return Promise.resolve(true);
+    }
+    const reason = consentSuppressionReason();
+    if (reason !== null) {
+      messages.push(
+        `${request.displayName} could be installed automatically, but the ` +
+          `offer was withheld: ${reason}. Re-run setup from an interactive ` +
+          `terminal to be asked, or pass --auto-install to consent in ` +
+          `advance.`,
+      );
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(confirm(request.question));
+  };
+}
 
 /**
  * Run one install step, streaming its output so a slow `brew install` or a
@@ -555,11 +612,13 @@ export async function ensureContainerRuntime(
   const detect = () =>
     detectContainerRuntime({ platform, ...(probe ? { probe } : {}) });
 
+  const consent = options.consent ??
+    operatorConsent(messages, options.autoInstall === true);
   const kernelContext: KernelPhaseContext = {
     messages,
     commandsRun,
     kernelStatus: options.kernelStatus ?? defaultAppleKernelStatus,
-    consent: options.consent ?? defaultContainerInstallConsent,
+    consent,
     runStep: options.runStep ?? defaultInstallStepRunner,
   };
 
@@ -607,7 +666,6 @@ export async function ensureContainerRuntime(
   const question = `${remedy.summary}. Run ${
     remedy.steps.map((step) => `\`${renderCommand(step)}\``).join(" then ")
   } now?`;
-  const consent = options.consent ?? defaultContainerInstallConsent;
   const allowed = await consent({
     displayName: candidate.displayName,
     reason: failure.reason,

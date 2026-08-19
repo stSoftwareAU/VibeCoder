@@ -15,11 +15,17 @@
  * enforces this and fails the build if a new caller bypasses the
  * chokepoint. See Issue #2202 (and #2212 for the guard itself).
  *
+ * **Label allowlist:** the label is asserted against
+ * `assertWorkerCanApplyLabel` (`worker_label_guard.ts`) before either
+ * label mutation, so this chokepoint cannot be used to apply a label
+ * outside the worker's allowlist (Issue #13).
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
 import type { GitHubClient, GitHubComment, Logger, Result } from "../types.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "./label_operations.ts";
+import { assertWorkerCanApplyLabel } from "./worker_label_guard.ts";
 
 /**
  * Result returned to callers — reports which side effects fired.
@@ -52,6 +58,12 @@ export interface EscalateToHumanDeps {
   };
   /** Override the current time (used by dedup window). Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Sink for the `[SECURITY] [WORKER_LABEL_REFUSED]` audit line emitted by
+   * {@link assertWorkerCanApplyLabel}. Defaults to `console.warn`; tests
+   * inject a recorder (Issue #13).
+   */
+  labelGuardLogFn?: (line: string) => void;
 }
 
 /** Options accepted by {@link escalateToHuman}. */
@@ -182,46 +194,75 @@ export async function escalateToHuman(
     defaultEnsureLabelExists;
 
   // ---------------------------------------------------------------------
-  // Step 1: ensure label exists (best-effort)
+  // Step 0: worker label allowlist guard (Issue #13)
   // ---------------------------------------------------------------------
-  try {
-    const ensureResult = await ensureLabel(
-      repo,
-      needsHumanLabel,
-      ensureLabelColour ?? DEFAULT_LABEL_COLOUR,
-      ensureLabelDescription ?? "",
-    );
-    if (!ensureResult.ok) {
-      logger.warn("escalateToHuman: ensureLabelExists failed", {
-        repo,
-        target: `#${target.number}`,
-        label: needsHumanLabel,
-        error: ensureResult.error.message,
-      });
-    }
-  } catch (err) {
-    logger.warn("escalateToHuman: ensureLabelExists threw", {
+  // `ghClient.addLabel` talks to the labels API directly, so without this
+  // check the guard invariant ("every worker-applied label passes through
+  // `assertWorkerCanApplyLabel`") would hold only for `addLabelToIssue`
+  // callers. Refusing here covers both label mutations below — the repo
+  // label creation and the issue label add — and emits a `[SECURITY]`
+  // audit line rather than failing quietly. The explanation comment is
+  // still posted: the escalation must stay visible to a human even when
+  // the label itself is refused.
+  const labelGuard = assertWorkerCanApplyLabel(needsHumanLabel, {
+    caller: `escalateToHuman(${repo}#${target.number})`,
+    logFn: deps?.labelGuardLogFn,
+  });
+  const labelAllowed = labelGuard.ok;
+  if (!labelAllowed) {
+    logger.warn("escalateToHuman: label refused by worker allowlist", {
       repo,
       target: `#${target.number}`,
       label: needsHumanLabel,
-      error: err instanceof Error ? err.message : String(err),
+      error: labelGuard.error.message,
     });
   }
 
   // ---------------------------------------------------------------------
-  // Step 2: add label (best-effort)
+  // Step 1: ensure label exists (best-effort)
+  // ---------------------------------------------------------------------
+  if (labelAllowed) {
+    try {
+      const ensureResult = await ensureLabel(
+        repo,
+        needsHumanLabel,
+        ensureLabelColour ?? DEFAULT_LABEL_COLOUR,
+        ensureLabelDescription ?? "",
+      );
+      if (!ensureResult.ok) {
+        logger.warn("escalateToHuman: ensureLabelExists failed", {
+          repo,
+          target: `#${target.number}`,
+          label: needsHumanLabel,
+          error: ensureResult.error.message,
+        });
+      }
+    } catch (err) {
+      logger.warn("escalateToHuman: ensureLabelExists threw", {
+        repo,
+        target: `#${target.number}`,
+        label: needsHumanLabel,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Step 2: add label (best-effort, skipped when the guard refused)
   // ---------------------------------------------------------------------
   let labelAdded = false;
-  try {
-    await ghClient.addLabel(repo, target.number, needsHumanLabel);
-    labelAdded = true;
-  } catch (err) {
-    logger.warn("escalateToHuman: addLabel failed", {
-      repo,
-      target: `#${target.number}`,
-      label: needsHumanLabel,
-      error: err instanceof Error ? err.message : String(err),
-    });
+  if (labelAllowed) {
+    try {
+      await ghClient.addLabel(repo, target.number, needsHumanLabel);
+      labelAdded = true;
+    } catch (err) {
+      logger.warn("escalateToHuman: addLabel failed", {
+        repo,
+        target: `#${target.number}`,
+        label: needsHumanLabel,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // ---------------------------------------------------------------------

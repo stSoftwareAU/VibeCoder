@@ -10,11 +10,16 @@
  *
  * Three contracts are non-negotiable:
  *
- * 1. **No TTY ⇒ no change whatsoever.** When stdin is not a terminal the
- *    driver returns the probe untouched and prints nothing, so unattended
- *    issue processing sees exactly today's report-and-fail behaviour.
+ * 1. **No TTY ⇒ no host change without prior consent.** When stdin is not a
+ *    terminal the driver returns the probe untouched — but never silently
+ *    (Issue #33): when a failed check had an install plan, the report says
+ *    the offer was withheld and why, so a withheld offer is distinguishable
+ *    from a host that has no offer at all.
  * 2. **Consent per tool, defaulting to no.** A bare Enter declines, and no
  *    timeout or environment variable ever answers on the operator's behalf.
+ *    The one sanctioned pre-consent is the explicit `--auto-install` flag
+ *    (Issue #33) — typed by the operator on this very invocation, it approves
+ *    every offer, and each approval is reported as it happens.
  * 3. **The re-probe decides.** A declined install, a failed install, or a tool
  *    with no plan leaves that check failed. A successful install flips the
  *    check to `✓` in the same setup run.
@@ -30,6 +35,7 @@
  */
 
 import {
+  candidatesForPlatform,
   type HostPlatform,
   normaliseHostPlatform,
 } from "../lib/container_runtime.ts";
@@ -95,6 +101,14 @@ export interface PrerequisiteInstallerOptions {
   isTerminal?: () => boolean;
   /** Suppress the offer. Defaults to `VIBE_NO_AUTO_INSTALL === "true"`. */
   noAutoInstall?: boolean;
+  /**
+   * Consent to every offer in advance (Issue #33). Set by the operator's
+   * explicit `--auto-install` flag — never by an environment variable — so a
+   * scripted setup run installs what it can without a terminal to prompt on.
+   * Outranks {@link noAutoInstall} and the TTY gate; every approval is
+   * reported as it happens.
+   */
+  autoInstall?: boolean;
   /** Ask the operator a yes/no question; must default to no. */
   confirm?: (question: string) => Promise<boolean>;
   /** Run one install step, streaming its output. */
@@ -283,6 +297,41 @@ function reportSummary(
 }
 
 /**
+ * The failed tools a withheld offer could have installed (Issue #33).
+ *
+ * Plan resolution is the same one the live offer uses, so the notice never
+ * names a tool the offer would not actually have covered. The container
+ * runtime is judged through its per-platform candidates — and skipped on
+ * macOS, where the runtime is repaired (and any withheld offer reported) by
+ * its own flow before this driver runs (Issue #4136).
+ */
+async function installableTools(
+  failures: readonly PrerequisiteResult[],
+  platform: HostPlatform | null,
+  resolvePlan: (
+    tool: string,
+    platform: HostPlatform,
+  ) => Promise<InstallPlan | null>,
+): Promise<string[]> {
+  if (!platform) return [];
+  const named: string[] = [];
+  for (const failure of failures) {
+    if (failure.tool === CONTAINER_RUNTIME_TOOL) {
+      if (platform === "darwin") continue;
+      const plans = await Promise.all(
+        candidatesForPlatform(platform).map((c) =>
+          resolvePlan(c.kind, platform)
+        ),
+      );
+      if (plans.some((plan) => plan !== null)) named.push(failure.tool);
+      continue;
+    }
+    if (await resolvePlan(failure.tool, platform)) named.push(failure.tool);
+  }
+  return named;
+}
+
+/**
  * Offer to install every failed prerequisite, one prompt per tool.
  *
  * @param probe - The result {@link checkAllPrerequisites} just produced
@@ -297,16 +346,16 @@ export async function offerMissingPrerequisites(
   const isTerminal = opts.isTerminal ?? (() => Deno.stdin.isTerminal());
   const noAutoInstall = opts.noAutoInstall ??
     (Deno.env.get("VIBE_NO_AUTO_INSTALL") === "true");
+  const autoInstall = opts.autoInstall === true;
 
+  const untouched: PrerequisiteInstallerResult = {
+    ok: probe.ok,
+    results: probe.results,
+    outcomes: [],
+    offered: false,
+  };
   const failures = probe.results.filter((r) => !r.ok);
-  if (noAutoInstall || !isTerminal() || failures.length === 0) {
-    return {
-      ok: probe.ok,
-      results: probe.results,
-      outcomes: [],
-      offered: false,
-    };
-  }
+  if (failures.length === 0) return untouched;
 
   const platform = resolvePlatform(opts.platform);
   const runMode = opts.runMode ?? opts.probeOptions?.runMode ??
@@ -314,7 +363,36 @@ export async function offerMissingPrerequisites(
   const resolvePlan = opts.resolvePlan ??
     ((tool: string, target: HostPlatform) =>
       resolveInstallPlan(tool, target, { runMode }));
-  const confirm = opts.confirm ?? defaultConfirm;
+
+  // A withheld offer is never silent (Issue #33): the report names what
+  // could have been installed and why it was not offered. `--auto-install`
+  // outranks both suppression conditions — that is its whole point.
+  const suppression = autoInstall
+    ? null
+    : noAutoInstall
+    ? "VIBE_NO_AUTO_INSTALL=true is set"
+    : !isTerminal()
+    ? "stdin is not a terminal"
+    : null;
+  if (suppression !== null) {
+    const installable = await installableTools(failures, platform, resolvePlan);
+    if (installable.length > 0) {
+      reporter.info(
+        `Auto-install is available for: ${installable.join(", ")} — the ` +
+          `offer was withheld because ${suppression}. Re-run setup from an ` +
+          `interactive terminal to be asked, or pass --auto-install to ` +
+          `consent in advance.`,
+      );
+    }
+    return untouched;
+  }
+
+  const confirm = opts.confirm ?? (autoInstall
+    ? (question: string) => {
+      reporter.info(`--auto-install consented to: ${question}`);
+      return Promise.resolve(true);
+    }
+    : defaultConfirm);
   const runStep = opts.runStep ?? defaultRunStep;
   const recheck = opts.recheck ??
     ((tool: string) =>

@@ -114,7 +114,7 @@ function outcomeFor(
 
 // ── Non-TTY parity — the highest-blast-radius guard ─────────────────────
 
-Deno.test("offerMissingPrerequisites - non-TTY changes nothing at all", async () => {
+Deno.test("offerMissingPrerequisites - non-TTY changes no check, and says the offer was withheld", async () => {
   const probe = probeOf(ok("git"), failed("deno"), failed("jq", true));
   const { lines, reporter } = recorder();
 
@@ -127,10 +127,40 @@ Deno.test("offerMissingPrerequisites - non-TTY changes nothing at all", async ()
   assertEquals(result.outcomes, []);
   assertEquals(result.ok, probe.ok);
   assertEquals(result.results, probe.results);
-  assertEquals(lines, [], "non-TTY must print nothing extra");
+  // The report is never silent about a withheld offer (Issue #33): it names
+  // every installable tool, the reason, and both remedies.
+  assertEquals(lines.length, 1);
+  assertStringIncludes(
+    lines[0]!,
+    "info: Auto-install is available for: deno, jq",
+  );
+  assertStringIncludes(lines[0]!, "stdin is not a terminal");
+  assertStringIncludes(lines[0]!, "--auto-install");
 });
 
-Deno.test("offerMissingPrerequisites - VIBE_NO_AUTO_INSTALL opts out of the offer", async () => {
+Deno.test("offerMissingPrerequisites - non-TTY with no plan for any failure stays silent", async () => {
+  const probe = probeOf(failed("deno"));
+  const { lines, reporter } = recorder();
+
+  const result = await offerMissingPrerequisites(
+    probe,
+    baseOptions({
+      isTerminal: () => false,
+      resolvePlan: () => Promise.resolve(null),
+      reporter,
+    }),
+  );
+
+  assertEquals(result.offered, false);
+  assertEquals(result.results, probe.results);
+  assertEquals(
+    lines,
+    [],
+    "nothing was installable, so there is nothing to say",
+  );
+});
+
+Deno.test("offerMissingPrerequisites - VIBE_NO_AUTO_INSTALL opts out of the offer, visibly", async () => {
   const probe = probeOf(failed("deno"));
   const { lines, reporter } = recorder();
 
@@ -142,7 +172,8 @@ Deno.test("offerMissingPrerequisites - VIBE_NO_AUTO_INSTALL opts out of the offe
   assertEquals(result.offered, false);
   assertEquals(result.results, probe.results);
   assertEquals(result.ok, false);
-  assertEquals(lines, []);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0]!, "VIBE_NO_AUTO_INSTALL=true is set");
 });
 
 Deno.test("offerMissingPrerequisites - reads VIBE_NO_AUTO_INSTALL from the environment", async () => {
@@ -150,15 +181,92 @@ Deno.test("offerMissingPrerequisites - reads VIBE_NO_AUTO_INSTALL from the envir
   Deno.env.set("VIBE_NO_AUTO_INSTALL", "true");
   try {
     const probe = probeOf(failed("deno"));
-    const opts = baseOptions();
+    const { lines, reporter } = recorder();
+    const opts = baseOptions({ reporter });
     delete opts.noAutoInstall;
     const result = await offerMissingPrerequisites(probe, opts);
     assertEquals(result.offered, false);
     assertEquals(result.results, probe.results);
+    assertEquals(lines.length, 1);
+    assertStringIncludes(lines[0]!, "VIBE_NO_AUTO_INSTALL=true is set");
   } finally {
     if (original === undefined) Deno.env.delete("VIBE_NO_AUTO_INSTALL");
     else Deno.env.set("VIBE_NO_AUTO_INSTALL", original);
   }
+});
+
+// ── --auto-install: the one sanctioned pre-consent (Issue #33) ──────────
+
+Deno.test("offerMissingPrerequisites - --auto-install installs without a terminal and reports each approval", async () => {
+  const probe = probeOf(failed("deno"));
+  const { lines, reporter } = recorder();
+  const commands: string[][] = [];
+
+  const opts = baseOptions({
+    isTerminal: () => false,
+    autoInstall: true,
+    runStep: (step) => {
+      commands.push([...step.command]);
+      return Promise.resolve({ ok: true, code: 0 });
+    },
+    recheck: (tool) =>
+      Promise.resolve({ ok: true, tool, message: `${tool} is installed` }),
+    reporter,
+  });
+  // No injected confirm: --auto-install must supply the consent itself.
+  delete opts.confirm;
+  const result = await offerMissingPrerequisites(probe, opts);
+
+  assertEquals(result.offered, true);
+  assertEquals(commands, [["brew", "update"], ["brew", "install", "deno"]]);
+  assertEquals(outcomeFor(result.outcomes, "deno").status, "installed");
+  assertEquals(result.ok, true);
+  // Each approval is visible — pre-consent is never a silent yes.
+  assert(
+    lines.some((line) => line.startsWith("info: --auto-install consented to:")),
+    `no approval line in: ${JSON.stringify(lines)}`,
+  );
+});
+
+Deno.test("offerMissingPrerequisites - --auto-install outranks VIBE_NO_AUTO_INSTALL", async () => {
+  const probe = probeOf(failed("deno"));
+  const { reporter } = recorder();
+
+  const opts = baseOptions({
+    isTerminal: () => false,
+    noAutoInstall: true,
+    autoInstall: true,
+    runStep: () => Promise.resolve({ ok: true, code: 0 }),
+    recheck: (tool) =>
+      Promise.resolve({ ok: true, tool, message: `${tool} is installed` }),
+    reporter,
+  });
+  delete opts.confirm;
+  const result = await offerMissingPrerequisites(probe, opts);
+
+  assertEquals(result.offered, true);
+  assertEquals(result.ok, true);
+});
+
+Deno.test("offerMissingPrerequisites - the withheld notice judges the runtime through its candidates", async () => {
+  const probe = probeOf(failed("container runtime"));
+  const { lines, reporter } = recorder();
+
+  const result = await offerMissingPrerequisites(
+    probe,
+    baseOptions({
+      platform: "linux",
+      isTerminal: () => false,
+      // Docker has a plan on this host; Podman does not — one is enough.
+      resolvePlan: (tool) =>
+        Promise.resolve(tool === "docker" ? brewPlan(tool) : null),
+      reporter,
+    }),
+  );
+
+  assertEquals(result.offered, false);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0]!, "container runtime");
 });
 
 // ── Consent ─────────────────────────────────────────────────────────────

@@ -185,7 +185,9 @@ The re-probe decides the outcome, never the steps: a `brew install` that exits
 zero but leaves the service unable to answer is still a failed check
 (Issue #3234). Without Homebrew nothing is offered and nothing is run — setup never
 downloads a `.pkg` or an installer script. `VIBE_NO_AUTO_INSTALL=true` keeps
-the report without the offer, and a non-interactive run (no TTY) never prompts.
+the report without the offer, and a non-interactive run (no TTY) never prompts —
+in both cases the report says the offer was withheld and why (Issue #33), and
+`./setup.sh --auto-install` consents in advance so a scripted run still installs.
 
 ### Linux: setup offers Docker, then Podman (Issue #4137)
 
