@@ -461,35 +461,36 @@ jobs:
           set -euo pipefail
           .github/scripts/deno-test-shard.sh $(( ${{ matrix.shard }} - 1 )) 4
 
-  # Issue #4150: native is first-class forever (Issue #4145), so both run
-  # modes are exercised on every pull request — a native-mode regression fails
-  # the same gate that guards containment, on `milestone/*`, `Develop` and
-  # `main` alike.
+  # Issues #4150, #4: containment is mandatory — container is the only run
+  # mode — and a mode nothing exercises rots, so the gate keeps one leg per
+  # proof on every pull request, on `milestone/*` and `main` alike.
   #
   # These legs are a separate job on purpose. `validate` above is a required
   # status check on the protected branches; turning it into a matrix would
-  # rename it to `validate (container)` / `validate (native)` and leave branch
-  # protection waiting forever on a check that never reports again. The legs
-  # take those names instead, so the failing check names the broken mode while
-  # `validate` keeps reporting under its own.
+  # rename it and leave branch protection waiting forever on a check that
+  # never reports again. The legs take their own names instead:
   #
-  # The container leg runs the run-mode tests on a runner with Docker present;
-  # the native leg runs the same tests on a runner with no container runtime at
-  # all, then drives `run.sh` end to end both ways — with the opt-in it starts
-  # the worker driver on the host, without it the launch fails loudly. Neither
-  # leg builds the image: `container-build.yml` stays the container-only gate.
+  # - `validate (container)` runs the launcher / worker tests on a runner with
+  #   Docker present.
+  # - `validate (no-runtime)` runs the same tests on a runner stripped of
+  #   every container runtime, then drives `run.sh` end to end and asserts it
+  #   fails loud — the no-host-fallback contract (Issue #3234). There is no
+  #   host mode to fall back to, and this is the proof.
+  #
+  # Neither leg builds the image: `container-build.yml` stays the
+  # container-only gate.
   run-mode:
     name: validate (${{ matrix.mode }})
     runs-on: ubuntu-latest
     # Well inside the `validate` budget above: the targeted task takes seconds,
-    # and the smoke steps are one Deno start-up each.
+    # and the smoke step is one Deno start-up.
     timeout-minutes: 10
     strategy:
-      # Both legs always report — a broken container mode must not hide the
-      # native result, or the other way round.
+      # Both legs always report — a broken container leg must not hide the
+      # no-runtime result, or the other way round.
       fail-fast: false
       matrix:
-        mode: [container, native]
+        mode: [container, no-runtime]
     env:
       # Issue #606: Opt into Node.js 24 to avoid deprecation warnings for
       # actions still bundled with Node.js 20 (e.g. denoland/setup-deno@v2)
@@ -526,109 +527,69 @@ jobs:
           # costs one cold fetch of a few small JSR modules, nothing more.
 
       - name: Take every container runtime off this runner
-        if: matrix.mode == 'native'
+        if: matrix.mode == 'no-runtime'
         run: |
           set -euo pipefail
-          echo "=== native leg: no container runtime on this host ==="
-          # The native path must work on a host that has no container runtime
-          # at all. ubuntu-latest ships Docker, so move every runtime the
-          # probe knows out of the way, then prove none of them answers.
+          echo "=== no-runtime leg: no container runtime on this host ==="
+          # ubuntu-latest ships Docker, so move every runtime the probe knows
+          # out of the way, then prove none of them answers.
           for runtime in container docker podman; do
             while path="$(command -v "${runtime}" 2>/dev/null)"; do
               echo "disabling ${path}"
-              sudo mv "${path}" "${path}.disabled-for-native-ci"
+              sudo mv "${path}" "${path}.disabled-for-no-runtime-ci"
               hash -r
             done
           done
           for runtime in container docker podman; do
             if command -v "${runtime}" > /dev/null 2>&1; then
-              echo "❌ ${runtime} is still reachable — the native leg must run with no container runtime" >&2
+              echo "❌ ${runtime} is still reachable — this leg must run with no container runtime" >&2
               exit 1
             fi
           done
           echo "✅ no supported container runtime is reachable"
 
-      - name: Launcher and worker tests (${{ matrix.mode }} mode)
+      - name: Launcher and worker tests (${{ matrix.mode }})
         run: |
           set -euo pipefail
           echo "=== deno task test:run-mode ==="
           cd worker/deno
           # What differs between the legs is the runner, not an exported
           # setting: this one either has a container runtime or it does not.
-          # `VIBE_RUN_MODE` is deliberately left unset here — it is a real
-          # per-run override, so exporting it job-wide would reach into the
-          # resolver tests that assert on its absence, and each test that
-          # needs a mode already selects one for itself.
+          # `VIBE_RUN_MODE` is deliberately left unset — it is a real per-run
+          # override, and the resolver tests assert on its absence.
           #
           # The file list lives in deno.json, beside the canonical `test` task,
           # so CI cannot drift from what a developer runs locally (Issue #2194).
           deno task test:run-mode
 
-      - name: Native smoke - the opt-in runs the worker driver on this host
-        if: matrix.mode == 'native'
+      - name: No-runtime smoke - the launch fails loud, nothing runs on the host
+        if: matrix.mode == 'no-runtime'
         env:
-          VIBE_RUN_MODE: native
           # This step supervises its own run: left to itself the launcher's
           # outcome recorder would count a deliberate CI failure against the
           # host and escalate it to GitHub (Issue #4072).
           VIBE_SUPERVISOR_RECORDS_OUTCOME: validate-scripts
         run: |
           set -euo pipefail
-          echo "=== native smoke: run.sh starts the Deno driver on this host ==="
-          # Hold the PID guard with a look-alike driver process, so the real
-          # driver starts, finds another instance and exits cleanly without
-          # doing any work. Everything up to that point is the genuine native
-          # path: run-mode resolution, the frozen Deno run, the phase record.
-          bash -c "exec -a 'deno run ${GITHUB_WORKSPACE}/worker/deno/mod.ts run-entrypoint --base-dir ${GITHUB_WORKSPACE}' sleep 300" &
-          holder=$!
-          trap 'kill "${holder}" 2> /dev/null || true' EXIT
-          printf '%s\n' "${holder}" > .run.pid
-
-          status=0
-          ./run.sh < /dev/null > native-smoke.log 2>&1 || status=$?
-          cat native-smoke.log
-          rm -f .run.pid
-
-          if [[ "${status}" -ne 0 ]]; then
-            echo "❌ the native opt-in must exit cleanly, got ${status}" >&2
-            exit 1
-          fi
-          if ! grep -q "BLOCKED" native-smoke.log; then
-            echo "❌ the worker driver never ran on this host" >&2
-            exit 1
-          fi
-          phase="$(cat "${HOME}/.vibe-coder/last-launch-phase")"
-          if [[ "${phase}" != "native_run" ]]; then
-            echo "❌ expected the native_run phase, got '${phase}'" >&2
-            exit 1
-          fi
-          echo "✅ the opt-in ran the worker driver on the host and exited 0"
-
-      - name: Native smoke - without the opt-in the same runner fails loud
-        if: matrix.mode == 'native'
-        env:
-          VIBE_SUPERVISOR_RECORDS_OUTCOME: validate-scripts
-        run: |
-          set -euo pipefail
-          echo "=== native smoke: no opt-in, no runtime, no silent fallback ==="
+          echo "=== no-runtime smoke: no runtime, no host fallback ==="
           rm -f .run.pid
           status=0
-          ./run.sh < /dev/null > no-opt-in.log 2>&1 || status=$?
-          cat no-opt-in.log
+          ./run.sh < /dev/null > no-runtime.log 2>&1 || status=$?
+          cat no-runtime.log
 
           if [[ "${status}" -eq 0 ]]; then
-            echo "❌ run.sh must not succeed with no container runtime and no opt-in" >&2
+            echo "❌ run.sh must not succeed with no container runtime" >&2
             exit 1
           fi
-          if ! grep -q "No supported container runtime is available on" no-opt-in.log; then
+          if ! grep -q "No supported container runtime is available on" no-runtime.log; then
             echo "❌ the missing runtime must be named in the failure" >&2
             exit 1
           fi
-          if ! grep -q "no host fallback" no-opt-in.log; then
+          if ! grep -q "no host fallback" no-runtime.log; then
             echo "❌ the failure must say there is no host fallback (Issue #3234)" >&2
             exit 1
           fi
-          # An absent runtime must never select the host path for itself.
+          # An absent runtime must never run anything on the host.
           phase="$(cat "${HOME}/.vibe-coder/last-launch-phase")"
           if [[ "${phase}" != "runtime_detection" ]]; then
             echo "❌ the launch reached '${phase}' — a missing runtime must stop at runtime_detection" >&2

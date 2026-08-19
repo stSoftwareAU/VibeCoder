@@ -26,6 +26,7 @@ import {
   DEFAULT_RUN_MODE,
   isRunMode,
   parseRunMode,
+  REMOVED_RUN_MODES,
   resolveRunMode,
   RUN_MODE_CONFIG_KEY,
   RUN_MODE_ENV,
@@ -86,31 +87,25 @@ async function removeConfigFile(path: string): Promise<void> {
 Deno.test("run mode - defaults to container with no configuration and no environment", () => {
   assertEquals(resolveRunMode({ env: envOf({}) }), "container");
   assertEquals(DEFAULT_RUN_MODE, "container");
-  assertEquals([...RUN_MODES], ["container", "native"]);
+  // Containment is mandatory (Issue #4): container is the only run mode.
+  assertEquals([...RUN_MODES], ["container"]);
 });
 
-Deno.test("run mode - .config.json run_mode selects native", () => {
+Deno.test("run mode - .config.json run_mode may name container explicitly", () => {
   assertEquals(
-    resolveRunMode({ configured: "native", env: envOf({}) }),
-    "native",
+    resolveRunMode({ configured: "container", env: envOf({}) }),
+    "container",
   );
 });
 
-Deno.test("run mode - VIBE_RUN_MODE selects native", () => {
+Deno.test("run mode - VIBE_RUN_MODE may name container explicitly", () => {
   assertEquals(
-    resolveRunMode({ env: envOf({ [RUN_MODE_ENV]: "native" }) }),
-    "native",
+    resolveRunMode({ env: envOf({ [RUN_MODE_ENV]: "container" }) }),
+    "container",
   );
 });
 
-Deno.test("run mode - the environment wins over .config.json, in both directions", () => {
-  assertEquals(
-    resolveRunMode({
-      configured: "container",
-      env: envOf({ [RUN_MODE_ENV]: "native" }),
-    }),
-    "native",
-  );
+Deno.test("run mode - the environment wins over .config.json: a valid override rescues a removed configured mode", () => {
   assertEquals(
     resolveRunMode({
       configured: "native",
@@ -122,17 +117,17 @@ Deno.test("run mode - the environment wins over .config.json, in both directions
 
 Deno.test("run mode - surrounding whitespace is tolerated, a blank value is not a selection", () => {
   assertEquals(
-    resolveRunMode({ env: envOf({ [RUN_MODE_ENV]: "  native  " }) }),
-    "native",
+    resolveRunMode({ env: envOf({ [RUN_MODE_ENV]: "  container  " }) }),
+    "container",
   );
   // A blank override falls through to the configured value rather than
   // overriding it with nothing.
   assertEquals(
     resolveRunMode({
-      configured: "native",
+      configured: "container",
       env: envOf({ [RUN_MODE_ENV]: "  " }),
     }),
-    "native",
+    "container",
   );
   assertEquals(
     resolveRunMode({ configured: "  ", env: envOf({}) }),
@@ -144,36 +139,59 @@ Deno.test("run mode - surrounding whitespace is tolerated, a blank value is not 
 // Fail loud — no silent coercion (Issue #3234)
 // ---------------------------------------------------------------------------
 
-Deno.test("run mode - an unrecognised .config.json value throws, naming both modes", () => {
+Deno.test("run mode - an unrecognised .config.json value throws, naming the only mode", () => {
   const error = assertThrows(
     () => resolveRunMode({ configured: "host", env: envOf({}) }),
     Error,
   );
   assertStringIncludes(error.message, "container");
-  assertStringIncludes(error.message, "native");
   assertStringIncludes(error.message, RUN_MODE_CONFIG_KEY);
 });
 
-Deno.test("run mode - an unrecognised VIBE_RUN_MODE value throws, naming the variable and both modes", () => {
+Deno.test("run mode - an unrecognised VIBE_RUN_MODE value throws, naming the variable", () => {
   const error = assertThrows(
     () => resolveRunMode({ env: envOf({ [RUN_MODE_ENV]: "docker" }) }),
     Error,
   );
   assertStringIncludes(error.message, RUN_MODE_ENV);
   assertStringIncludes(error.message, "container");
-  assertStringIncludes(error.message, "native");
+});
+
+Deno.test("run mode - the removed modes fail loud with the removal explained, wherever they were set (Issue #4)", () => {
+  for (const removed of REMOVED_RUN_MODES) {
+    const fromConfig = assertThrows(
+      () => resolveRunMode({ configured: removed, env: envOf({}) }),
+      Error,
+    );
+    assertStringIncludes(fromConfig.message, "removed");
+    assertStringIncludes(fromConfig.message, "Issue #4");
+    assertStringIncludes(fromConfig.message, RUN_MODE_CONFIG_KEY);
+    assertStringIncludes(fromConfig.message, removed);
+
+    const fromEnv = assertThrows(
+      () => resolveRunMode({ env: envOf({ [RUN_MODE_ENV]: removed }) }),
+      Error,
+    );
+    assertStringIncludes(fromEnv.message, RUN_MODE_ENV);
+    assertStringIncludes(fromEnv.message, "removed");
+    // Never coerced: a host that asked for a host-mode run must not be
+    // silently run in the container it did not know it was getting.
+    assert(!isRunMode(removed));
+  }
+  assertEquals([...REMOVED_RUN_MODES], ["native", "seatbelt"]);
 });
 
 Deno.test("run mode - case variants are rejected rather than normalised", () => {
-  assertThrows(() => resolveRunMode({ configured: "Native", env: envOf({}) }));
+  assertThrows(() =>
+    resolveRunMode({ configured: "Container", env: envOf({}) })
+  );
   assertThrows(() => parseRunMode("CONTAINER", "test"));
 });
 
 Deno.test("run mode - parseRunMode returns the mode and isRunMode guards it", () => {
-  assertEquals(parseRunMode("native", "test"), "native");
   assertEquals(parseRunMode("container", "test"), "container");
   assert(isRunMode("container"));
-  assert(isRunMode("native"));
+  assert(!isRunMode("native"));
   assert(!isRunMode("podman"));
   assert(!isRunMode(undefined));
 });
@@ -182,11 +200,11 @@ Deno.test("run mode - parseRunMode returns the mode and isRunMode guards it", ()
 // No auto-fallback — a missing runtime never selects native
 // ---------------------------------------------------------------------------
 
-Deno.test("run mode - an absent container runtime never flips the result to native", () => {
+Deno.test("run mode - an absent container runtime never changes the result", () => {
   // An environment with no runtime reachable at all: an empty PATH, no
   // DOCKER_HOST, no CONTAINER_HOST. Container mode stays selected, so the
-  // missing runtime stays the fatal error it is today rather than silently
-  // demoting the run to the host.
+  // missing runtime stays the fatal error it is rather than a demotion to
+  // any host-mode run (there is none).
   const noRuntime = envOf({ PATH: "", HOME: "/tmp" });
   assertEquals(resolveRunMode({ env: noRuntime }), "container");
   assertEquals(
@@ -214,7 +232,7 @@ Deno.test("run-mode command - prints exactly the resolved mode with no configura
 });
 
 Deno.test("run-mode command - reads run_mode out of the configuration file", async () => {
-  const path = await configFileWith({ run_mode: "native" });
+  const path = await configFileWith({ run_mode: "container" });
   try {
     await withEnv({ [RUN_MODE_ENV]: undefined }, async () => {
       const result = await runModeCommand.execute(
@@ -222,7 +240,24 @@ Deno.test("run-mode command - reads run_mode out of the configuration file", asy
         buildDefaultWorkerConfig(),
       );
       assertEquals(result.success, true);
-      assertEquals(result.message, "native");
+      assertEquals(result.message, "container");
+    });
+  } finally {
+    await removeConfigFile(path);
+  }
+});
+
+Deno.test("run-mode command - a configured removed mode fails loud with the removal explained (Issue #4)", async () => {
+  const path = await configFileWith({ run_mode: "native" });
+  try {
+    await withEnv({ [RUN_MODE_ENV]: undefined }, async () => {
+      const error = await assertRejects(
+        () =>
+          runModeCommand.execute({ config: path }, buildDefaultWorkerConfig()),
+        Error,
+      );
+      assertStringIncludes(error.message, "removed");
+      assertStringIncludes(error.message, "Issue #4");
     });
   } finally {
     await removeConfigFile(path);
@@ -245,16 +280,18 @@ Deno.test("run-mode command - VIBE_RUN_MODE overrides the configuration file", a
 });
 
 Deno.test("run-mode command - honours CONFIG_PATH when no --config is given", async () => {
+  // A removed mode in the file CONFIG_PATH names is what proves the file
+  // was read: the default alone would print container either way.
   const path = await configFileWith({ run_mode: "native" });
   try {
     await withEnv(
       { CONFIG_PATH: path, [RUN_MODE_ENV]: undefined },
       async () => {
-        const result = await runModeCommand.execute(
-          {},
-          buildDefaultWorkerConfig(),
+        const error = await assertRejects(
+          () => runModeCommand.execute({}, buildDefaultWorkerConfig()),
+          Error,
         );
-        assertEquals(result.message, "native");
+        assertStringIncludes(error.message, "removed");
       },
     );
   } finally {
@@ -276,7 +313,6 @@ Deno.test("run-mode command - an invalid configured value fails, leaving stdout 
         Error,
       );
       assertStringIncludes(error.message, "container");
-      assertStringIncludes(error.message, "native");
     });
   } finally {
     await removeConfigFile(path);
@@ -349,10 +385,20 @@ Deno.test("run mode - the default worker config carries the container default", 
 });
 
 Deno.test("run mode - loadConfig resolves run_mode from the configuration file", async () => {
-  const path = await configFileWith({ run_mode: "native" });
+  const path = await configFileWith({ run_mode: "container" });
   try {
     const config = await loadConfig(path);
-    assertEquals(config.runMode, "native");
+    assertEquals(config.runMode, "container");
+  } finally {
+    await removeConfigFile(path);
+  }
+});
+
+Deno.test("run mode - loadConfig rejects a removed run_mode rather than coercing it (Issue #4)", async () => {
+  const path = await configFileWith({ run_mode: "seatbelt" });
+  try {
+    const error = await assertRejects(() => loadConfig(path), Error);
+    assertStringIncludes(error.message, "removed");
   } finally {
     await removeConfigFile(path);
   }
@@ -370,7 +416,10 @@ Deno.test("run mode - loadConfig defaults to container when run_mode is absent",
 
 Deno.test("run mode - the worker logs the mode it resolved for the run", async () => {
   const lines: string[] = [];
-  const config = { ...buildDefaultWorkerConfig(), runMode: "native" as const };
+  const config = {
+    ...buildDefaultWorkerConfig(),
+    runMode: "container" as const,
+  };
 
   const result = await runWorker(
     {
@@ -413,14 +462,14 @@ Deno.test("run mode - the worker logs the mode it resolved for the run", async (
 
   assertEquals(result.outcome, "completed");
   assert(
-    lines.some((line) => line.includes("run mode: native")),
+    lines.some((line) => line.includes("run mode: container")),
     `expected the resolved run mode in the startup log, got: ${
       lines.join(" | ")
     }`,
   );
 });
 
-Deno.test("run mode - validateConfigFileJson accepts both modes and rejects anything else", () => {
+Deno.test("run mode - validateConfigFileJson accepts container and rejects anything else, naming a removed mode as removed", () => {
   for (const mode of RUN_MODES) {
     const result = validateConfigFileJson({ run_mode: mode });
     assertEquals(result.ok, true, `${mode} must be accepted`);
@@ -431,7 +480,14 @@ Deno.test("run mode - validateConfigFileJson accepts both modes and rejects anyt
   if (!invalid.ok) {
     assertEquals(invalid.error.field, RUN_MODE_CONFIG_KEY);
     assertStringIncludes(invalid.error.message, "container");
-    assertStringIncludes(invalid.error.message, "native");
+  }
+
+  const removed = validateConfigFileJson({ run_mode: "native" });
+  assertEquals(removed.ok, false);
+  if (!removed.ok) {
+    assertEquals(removed.error.field, RUN_MODE_CONFIG_KEY);
+    assertStringIncludes(removed.error.message, "removed");
+    assertStringIncludes(removed.error.message, "Issue #4");
   }
 
   const wrongType = validateConfigFileJson({ run_mode: 3 });

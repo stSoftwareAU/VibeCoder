@@ -50,18 +50,15 @@ export const LAUNCH_PHASE_MARKER_FILENAME = "last-launch-phase";
 /**
  * What a launcher writes to the marker file as it progresses.
  *
- * `runtime_detection` and `image_build` are container-only. `native_run` is
- * the host-native equivalent of `container_run` (Issue #4148): the worker is
- * running, so a failure belongs to the worker rather than to the host's
- * container plumbing.
+ * Container is the only run mode (Issue #4): the three phases are the
+ * container launch's own. A marker from a removed mode (`native_run`,
+ * `seatbelt_*`, from a checkout older than the removal) is simply
+ * unrecognised and attributed to the worker run.
  */
 export type LaunchPhaseMarker =
   | "runtime_detection"
   | "image_build"
-  | "container_run"
-  | "native_run"
-  | "seatbelt_profile"
-  | "seatbelt_run";
+  | "container_run";
 
 /** The phase a launcher failure is attributed to. */
 export type ContainerFailurePhase =
@@ -188,16 +185,6 @@ export function resolveFailurePhase(
       return CONTAINER_START_EXIT_CODES.includes(exitStatus)
         ? "container_start"
         : "worker_run";
-    case "native_run":
-    case "seatbelt_run":
-      // No container was started, so the runtime CLI's 125/126/127 codes carry
-      // no meaning here - the exit status is the worker's own (Issue #4148;
-      // seatbelt mode is native under a Seatbelt profile, Issue #4300).
-      return "worker_run";
-    case "seatbelt_profile":
-      // Building the profile is host plumbing, like runtime detection: a
-      // failure here means the launcher could not confine the worker at all.
-      return "runtime_detection";
     default:
       // An absent or unrecognised marker means the launcher is older than
       // this contract, or never got far enough to write one; the worker run

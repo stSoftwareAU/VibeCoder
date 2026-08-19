@@ -5,7 +5,8 @@
  * native one, but nothing measured it: every tuning decision (VM sizing,
  * virtiofs, Deno cache, scan batching) needs a before/after number on the
  * same host. This module runs a representative, network-free workload and
- * reports wall times so both modes can be compared with one command:
+ * reports wall times so hosts (and, historically, run modes) can be compared
+ * with one command:
  *
  *   - `deno-check-cold`: type-check the worker entry with an empty
  *     DENO_DIR (module resolution + full check from zero — the
@@ -40,7 +41,7 @@ export interface BenchmarkStep {
 export interface BenchmarkReport {
   /** ISO timestamp of the run. */
   timestamp: string;
-  /** "container" | "native" | whatever the caller labels it. */
+  /** "container", or whatever label the caller gives the run. */
   mode: string;
   host: string;
   steps: BenchmarkStep[];

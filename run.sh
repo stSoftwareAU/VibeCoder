@@ -11,22 +11,15 @@ set -euo pipefail
 # running inside the container cannot broaden its own mounts or capabilities
 # by editing shell here.
 #
-# There are two run modes, resolved once up front by the Deno "run-mode"
-# command (Issue #4146) so no shell parses .config.json:
+# Containment is mandatory (Issue #4): container is the only run mode. The
+# Deno "run-mode" command (Issue #4146) is still consulted once up front, so a
+# .config.json (or VIBE_RUN_MODE) naming a removed mode - the former native
+# and macOS seatbelt opt-ins - fails loud with the removal explained, rather
+# than being silently run in a container the operator did not know they were
+# getting. An absent container runtime is a loud failure, never a fallback to
+# the host (Issue #3234): there is no host path to fall back to.
 #
-#   container (default) - build the launch plan and run the worker inside the
-#                         Vibe Coder container.
-#   native (opt-in)     - run the worker driver directly on this host. Only a
-#                         host that explicitly asks for it gets it: an absent
-#                         container runtime is still a loud failure, never a
-#                         silent fallback to the host (Issue #3234).
-#   seatbelt (opt-in)   - native, but with the filesystem confined by a macOS
-#                         Seatbelt profile (`sandbox-exec`, Issue #4300): the
-#                         host's full CPU/GPU/memory with deny-by-default file
-#                         access — the agent cannot read outside the same set
-#                         of paths container mode mounts. macOS only.
-#
-# Container steps:
+# Steps:
 #   1. Locate Deno on the host (the only host tool this script needs).
 #   2. Build the launch plan (runtime detection, image reference, mounts).
 #   3. Build the image when the content-derived reference is absent.
@@ -41,9 +34,9 @@ set -euo pipefail
 # Issue #4072: Record the phase reached, so the supervisor's self-heal backoff
 #              can tell a host that cannot rebuild its environment from a
 #              worker that crashed inside a perfectly good container.
-# Issue #4148: Restored the host-native path from before #4065, reachable only
-#              through the explicit #4146 opt-in. Neither branch execs, so the
-#              EXIT trap still records the launcher's outcome.
+# Issue #4148: Restored the host-native path from before #4065 behind the #4146
+#              opt-in; Issue #4 removed it again (and the #4300 seatbelt mode)
+#              - containment is mandatory.
 # Issue #4173: Outer kill-and-reap watchdog. A wedged container VM leaves the
 #              host-side `container run` client waiting for ever, which blocked
 #              this launcher - and loop.sh behind it - for three hours on
@@ -93,7 +86,7 @@ if [[ -z "${DENO_CMD}" ]]; then
 fi
 
 CONTAINER_NAME="vibe-coder-$$"
-# Set only on the container path; the native path builds no launch plan.
+# Set once the launch plan is built, so the EXIT trap can clean it up.
 PLAN_FILE=""
 # Marker the watchdog writes before it reaps, so the exit status can name the
 # reason (Issue #4173). Set only once the container path starts the container.
@@ -192,10 +185,9 @@ forward_signal() {
     return
   fi
   kill -s "${signal}" "${CHILD_PID}" 2>/dev/null || true
-  # Belt and braces for the container path: the runtime CLI proxies signals to
-  # the container, and this covers one that does not. Best-effort by design -
-  # the container may not have started yet. RUNTIME is empty in native mode,
-  # where the signal above already reached the worker directly.
+  # Belt and braces: the runtime CLI proxies signals to the container, and
+  # this covers one that does not. Best-effort by design - the container may
+  # not have started yet, and RUNTIME is empty until the plan resolved it.
   if [[ -n "${RUNTIME}" ]]; then
     "${RUNTIME}" stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
   fi
@@ -218,11 +210,11 @@ wait_for_child() {
   return "${status}"
 }
 
-# Which mode this host runs in. Resolved by Deno, not parsed here, so the
-# precedence (VIBE_RUN_MODE, then .config.json "run_mode", then container)
-# cannot drift between the launchers. An unrecognised value exits non-zero
-# there and leaves the capture empty, which is fatal here rather than a silent
-# default (Issue #3234).
+# The run mode - container, the only one (Issue #4). Still resolved by Deno
+# rather than parsed here, so a .config.json (or VIBE_RUN_MODE) that names a
+# removed mode fails loud in one place with the removal explained, and never
+# silently becomes a container run the operator did not know they were
+# getting (Issue #3234).
 if ! RUN_MODE="$("${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
   --allow-env --allow-read \
@@ -230,73 +222,13 @@ if ! RUN_MODE="$("${DENO_CMD}" run \
   echo "Error: cannot resolve the run mode (see above)" >&2
   exit 1
 fi
-
-if [[ "${RUN_MODE}" == "seatbelt" ]]; then
-  # Seatbelt-confined native run (Issue #4300). The containment goal is a
-  # filesystem boundary; the VM bought it by partitioning compute. Here the
-  # kernel enforces the boundary and the worker keeps the whole machine.
-  # The profile is generated by the driver from the same host paths the
-  # container plan mounts, so the two allowlists cannot drift apart.
-  if [[ "$(uname -s)" != "Darwin" ]]; then
-    echo "Error: run_mode seatbelt is macOS-only (sandbox-exec); use container or native" >&2
-    exit 1
-  fi
-  if ! command -v sandbox-exec >/dev/null 2>&1; then
-    echo "Error: sandbox-exec not found — run_mode seatbelt needs macOS Seatbelt" >&2
-    exit 1
-  fi
-  record_phase seatbelt_profile
-  if ! SEATBELT_PROFILE="$("${DENO_CMD}" run \
-    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-    --allow-env --allow-read --allow-write \
-    "${BASE_DIR}/worker/deno/mod.ts" seatbelt-profile \
-    --base-dir "${BASE_DIR}" </dev/null)"; then
-    echo "Error: cannot build the Seatbelt profile (see above)" >&2
-    exit 1
-  fi
-  echo "Seatbelt profile: ${SEATBELT_PROFILE}"
-  record_phase seatbelt_run
-
-  sandbox-exec -f "${SEATBELT_PROFILE}" \
-    "${DENO_CMD}" run \
-    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-    --allow-env --allow-read --allow-write --allow-run \
-    --allow-net --allow-sys=hostname \
-    "${BASE_DIR}/worker/deno/mod.ts" run-entrypoint \
-    --base-dir "${BASE_DIR}" "$@" </dev/null &
-  CHILD_PID=$!
-
-  seatbelt_status=0
-  wait_for_child || seatbelt_status=$?
-  exit "${seatbelt_status}"
+# Container is the only run mode (Issue #4): a removed or unrecognised value
+# has already failed loud above, so this is the contract check, not a branch -
+# the plan, the build and the launch below are the whole launcher.
+if [[ "${RUN_MODE}" != "container" ]]; then
+  echo "Error: unrecognised run mode: ${RUN_MODE}" >&2
+  exit 1
 fi
-
-if [[ "${RUN_MODE}" == "native" ]]; then
-  # Host-native run (Issue #4148), the pre-#4065 contract. Reached only when
-  # the operator asked for it - nothing above may select this branch because a
-  # container runtime is missing.
-  #
-  # The driver runs the whole worker in-process, so it needs the same
-  # permission set worker/shared/deno_bridge.sh granted the run-core loop:
-  # env/read/write/run plus --allow-net (GitHub API, webhooks, FLEET health) and
-  # --allow-sys=hostname (worker identity, Issue #1058).
-  #
-  # --frozen + --lock fail closed on dependency drift (Issue #2896).
-  record_phase native_run
-
-  "${DENO_CMD}" run \
-    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-    --allow-env --allow-read --allow-write --allow-run \
-    --allow-net --allow-sys=hostname \
-    "${BASE_DIR}/worker/deno/mod.ts" run-entrypoint \
-    --base-dir "${BASE_DIR}" "$@" </dev/null &
-  CHILD_PID=$!
-
-  native_status=0
-  wait_for_child || native_status=$?
-  exit "${native_status}"
-fi
-
 # The plan resolves and validates the container runtime, computes the
 # content-derived image reference, and constructs the fixed least-privilege
 # mount set. A missing runtime, config file or credential directory exits

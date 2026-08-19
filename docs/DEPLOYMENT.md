@@ -10,7 +10,7 @@ runs itself and is steered entirely through GitHub. See
 ## 📋 Table of Contents
 
 - [Requirements](#requirements)
-- [Run modes: container by default, native by opt-in](#-run-modes-container-by-default-native-by-opt-in)
+- [Run mode: container only](#-run-mode-container-only)
 - [Upgrading an existing host — the hard cutover](#upgrading-an-existing-host--the-hard-cutover)
 - [Installation](#installation)
 - [Initial Setup](#initial-setup)
@@ -28,11 +28,10 @@ runs itself and is steered entirely through GitHub. See
 
 ## 📋 Requirements
 
-The worker runs inside the container image by default (Issue #4060), so a
-container-mode host needs a **container runtime** and the **launcher**, not the
-worker's own toolchain. A host that has opted into the `native` run mode needs
-the reverse — see [Run modes](#-run-modes-container-by-default-native-by-opt-in)
-below.
+The worker runs inside the container image (Issue #4060) — container is the
+only run mode (Issue #4) — so every host needs a **container runtime** and the
+**launcher**, not the worker's own toolchain. See
+[Run mode](#-run-mode-container-only) below.
 
 **Container runtime — one per platform:**
 
@@ -46,8 +45,8 @@ Presence is not availability: each candidate is validated with a read-only
 probe, so a binary whose daemon is unreachable is reported unavailable.
 **Container mode never falls back to the host** — with no supported runtime,
 `run.sh` / `run.ps1` exit non-zero naming the platform, every runtime probed
-and how to install one (Issues #4063, #4065). Running natively is a separate,
-explicit choice (`run_mode`), never something a missing runtime makes for you.
+and how to install one (Issues #4063, #4065). There is no host mode to fall
+back to (Issue #4).
 
 **Installing it by hand is one option, not the only one.** Run `./setup.sh`
 (`.\setup.ps1` on Windows) in a terminal and it offers to install and start the
@@ -72,8 +71,8 @@ so it also needs [Git](https://git-scm.com/) and an authenticated
 split to match containment (Issue #4117): in container mode `git`, `gh`, `deno`
 **and a working container runtime with a built-or-buildable worker image** are
 host-fatal, while the coding-agent CLI, `jq` and `timeout` are reported for
-information only because the image owns them. Native mode swaps those two
-groups over (Issue #4149). No skip flag is needed on a container-only host.
+information only because the image owns them. No skip flag is needed on a
+correctly provisioned host.
 
 Everything the *worker* uses — the coding-agent CLI, `git`, `gh`, `jq`,
 coreutils `timeout`, Playwright with headless Chromium, and the monitored
@@ -81,52 +80,44 @@ repositories' build and test toolchains — is baked into the image and pinned
 there. **Do not install them on the host**; see
 [Container Image](CONTAINER.md) and [Containment](CONTAINMENT.md).
 
-## 🧭 Run modes: container by default, native by opt-in
+## 🧭 Run mode: container only
 
-The worker has two run modes, selected by the `run_mode` setting (Issue #4146,
-documented in [Configuration](CONFIGURATION.md#-run-mode-issue-4146)):
+Containment is mandatory (Issue #4): the worker has one run mode, `container`,
+and the `run_mode` setting (Issue #4146, documented in
+[Configuration](CONFIGURATION.md#-run-mode-issue-4146)) exists only so a
+configuration can be checked, not so a host can choose otherwise.
 
-| Mode        | How it is selected                                            | Where the worker runs                                     |
-| ----------- | ------------------------------------------------------------- | --------------------------------------------------------- |
-| `container` | the default — nothing to set                                   | inside the Vibe Coder image, behind the [containment boundary](CONTAINMENT.md) |
-| `native`    | explicit: `"run_mode": "native"` in `.config.json`, or `VIBE_RUN_MODE=native` for one run | directly on the host, with host access                     |
+| Mode        | How it is selected                       | Where the worker runs                                                          |
+| ----------- | ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `container` | the default — nothing to set             | inside the Vibe Coder image, behind the [containment boundary](CONTAINMENT.md) |
 
-Four rules go with them:
+Three rules go with it:
 
-- **Container is the default and native is opt-in.** `VIBE_RUN_MODE` wins over
-  `.config.json`, which wins over the default; an unrecognised value fails
-  loudly naming both modes.
-- **There is no auto-fallback.** Nothing selects `native` because a container
-  runtime is missing — that stays the loud non-zero exit it is today
-  (Issue #3234). Equally, a native host never silently launches a container.
-- **Native is first-class and supported indefinitely** (Issue #4145), not a
-  transitional escape hatch. `run.sh` serves it on macOS and Linux
-  (Issue #4148); `run.ps1` / Windows is container-only by design (Issue #4147).
-- **Native is outside the #4060 containment boundary.** An operator choosing it
-  accepts that the worker runs with host access, as the fleet ran before
-  containment — see [Containment](CONTAINMENT.md).
-
-**When native is the right answer.** A host monitoring a repository whose build
-shells out to `docker` cannot build inside the container: the image ships no
-docker client ([`container/tools.json`](../container/tools.json)) and
-[`container_launch.ts`](../worker/deno/lib/container_launch.ts) refuses
-runtime-socket mounts and `--privileged` by design. Native mode is the
-sanctioned answer for such a host — mounting the runtime socket into the
-container is not.
-
-A native host's prerequisites are the mirror image of the table above: it needs
-the coding-agent CLI, `jq` and `timeout` on the host, and no container runtime
-(Issue #4149). `./setup.sh` probes whichever set the resolved mode calls for.
+- **`VIBE_RUN_MODE` wins over `.config.json`, which wins over the default**;
+  either may name `container` explicitly. An unrecognised value fails loudly
+  naming the only mode.
+- **The removed modes fail loud.** Two host-mode opt-ins once existed —
+  `native` (Issues #4145, #4148) and the macOS `seatbelt` profile (Issue #4300)
+  — and both sat outside the #4060 boundary. A configuration that still names
+  one is refused with the removal explained (Issue #4); it is never coerced
+  into a container run the operator did not know they were getting.
+- **There is no auto-fallback.** A missing container runtime is a loud
+  non-zero exit (Issue #3234) — there is no host path to fall back to. A
+  repository whose build genuinely needs a container runtime of its own cannot
+  be served from inside the worker container: `container_launch.ts` refuses
+  runtime-socket mounts and `--privileged` by design, and the answer is to
+  change the build, not to run the worker on the host.
 
 ```mermaid
 flowchart TD
     L["run.sh / run.ps1"] --> M{"run_mode<br/>(VIBE_RUN_MODE → .config.json → container)"}
-    M -->|"native (opt-in, macOS/Linux)"| N["🖥️ worker on the host<br/>outside the containment boundary"]
-    M -->|"container (default)"| R{"supported runtime<br/>available?"}
+    M -->|"native / seatbelt (removed, Issue #4)"| X1["❌ exit non-zero<br/>removal explained"]
+    M -->|"container"| R{"supported runtime<br/>available?"}
     R -->|yes| C["🐳 worker in the image<br/>least-privilege mounts"]
-    R -->|no| X["❌ exit non-zero<br/>never switches to native"]
+    R -->|no| X["❌ exit non-zero<br/>no host fallback"]
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
     style X fill:#c9184a,stroke:#800f2f,color:#fff
+    style X1 fill:#c9184a,stroke:#800f2f,color:#fff
 ```
 
 ## 🚚 Upgrading an existing host — the hard cutover
@@ -229,39 +220,32 @@ If you want the Vibe Coder to authenticate as a service account instead of your 
 
 See the [Configuration Reference](CONFIGURATION.md#service-account-authentication-ssh--gh-auth) for details on generating the SSH key and setting up the gh config dir.
 
-The setup script's prerequisite probe matches containment (Issue #4117) and
-follows the resolved [`run_mode`](CONFIGURATION.md) (Issue #4149) — the report
-names the mode it probed for, so a wrong-mode probe is visible immediately:
+The setup script's prerequisite probe matches containment (Issue #4117) —
+container is the only run mode (Issue #4), and the report names it:
 
-| Set                                                | Container mode (default) | Native mode   |
-| -------------------------------------------------- | ------------------------ | ------------- |
-| `git`, authenticated `gh`, `deno`                   | host-fatal               | host-fatal    |
-| container runtime + worker image                    | host-fatal               | informational |
-| the coding-agent CLI, `jq`, `timeout`               | informational            | host-fatal    |
+| Set                                                | Classification |
+| -------------------------------------------------- | -------------- |
+| `git`, authenticated `gh`, `deno`, the `claude` CLI | host-fatal     |
+| container runtime + worker image                    | host-fatal     |
+| `jq`, `timeout`                                     | informational  |
 
 A host-fatal gap exits 1; an informational one is reported and never fails
-setup. So a correctly provisioned container-only host runs `./setup.sh` as-is —
-the `VIBE_SKIP_PREREQ_CHECK=true` workaround is no longer needed, and skipping
-the probe now also hides the checks setup genuinely depends on. A native host
-passes with no container runtime installed at all, and fails when the
-coding-agent CLI, `jq` or `timeout` is missing from the host.
+setup. So a correctly provisioned host runs `./setup.sh` as-is — the
+`VIBE_SKIP_PREREQ_CHECK=true` workaround is no longer needed, and skipping the
+probe now also hides the checks setup genuinely depends on. The `claude` CLI
+stays host-fatal because setup mints and validates the worker's OAuth token
+with it (Issue #4161).
 
 Installing a tool never reclassifies it: the classification follows the mode,
 not what happens to be present.
 
 ```mermaid
 flowchart TD
-    S["./setup.sh"] --> M{"resolved run_mode"}
-    M -->|container| CP["Host-fatal:<br/>git · gh (auth) · deno<br/>container runtime + worker image"]
-    M -->|native| NP["Host-fatal:<br/>git · gh (auth) · deno<br/>coding-agent CLI · jq · timeout"]
-    CP -.->|informational| CI["coding-agent CLI · jq · timeout"]
-    NP -.->|informational| NI["container runtime<br/>(container mode is available)"]
-    CP -->|missing| X["exit 1 — named gap + fix,<br/>and the mode probed for"]
-    NP -->|missing| X
+    S["./setup.sh"] --> CP["Host-fatal:<br/>git · gh (auth) · deno · claude<br/>container runtime + worker image"]
+    CP -.->|informational| CI["jq · timeout<br/>(the image provides them)"]
+    CP -->|missing| X["exit 1 — named gap + fix"]
     CP -->|ok| G["configure, sync labels, branch protection"]
-    NP -->|ok| G
     CI -.-> G
-    NI -.-> G
     style X fill:#9d0208,stroke:#6a040f,color:#fff
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
@@ -275,9 +259,8 @@ plan is offered to you one at a time, defaulting to no:
 ?  jq is not installed. Install it now with Homebrew? [y/N]
 ```
 
-The offer covers the tools the resolved run mode needs on the host: a native
-host is offered `jq`, coreutils and the coding-agent CLI and is never offered a
-container runtime (Issue #4149). The prompt names the package manager the plan
+The offer covers the tools the host needs, the container runtime included
+(Issue #4149). The prompt names the package manager the plan
 uses; the container-runtime prompts go further and name the exact argv, `sudo`
 included, before anything runs. Consent runs the plan's commands with their output streamed (so a slow
 `brew install` or a `sudo` password prompt is visible), then **re-runs the
@@ -720,7 +703,7 @@ For environments without Task Scheduler (e.g., containers), use the convenience 
 .\loop.ps1
 ```
 
-> **📝 Note:** `run.ps1` is a thin launcher that locates Deno, asks the `container-launch-plan` Deno command what to run, and launches the worker container — the same contract `run.sh` follows, with the same mounts and privilege flags (Issue #4066). **Windows stays container-only by deliberate choice** (Issue #4147): `run.ps1` has no host-native branch, so with neither Docker nor Podman available it exits non-zero with an actionable message rather than running the worker on the host. Asking for the native run mode there — `"run_mode": "native"` in `.config.json`, or `VIBE_RUN_MODE=native` — also exits non-zero with an actionable message rather than quietly launching a container instead; run native mode on a macOS/Linux host. It exits with the container's exit status, so Task Scheduler and `loop.ps1` observe real failures.
+> **📝 Note:** `run.ps1` is a thin launcher that locates Deno, asks the `container-launch-plan` Deno command what to run, and launches the worker container — the same contract `run.sh` follows, with the same mounts and privilege flags (Issue #4066). Container is the only run mode on every platform (Issue #4; Windows always was, Issue #4147): with neither Docker nor Podman available `run.ps1` exits non-zero with an actionable message rather than running the worker on the host, and a configuration naming a removed mode (`native`, `seatbelt`) exits non-zero with the removal explained. It exits with the container's exit status, so Task Scheduler and `loop.ps1` observe real failures.
 
 ## ♻️ Container restart self-healing
 

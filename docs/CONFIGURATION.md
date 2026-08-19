@@ -128,7 +128,7 @@ explicitly overridden.
 | `question_label`             | `question`                | Label for question answering mode (Issue #287). After answering, the worker removes `question` and adds `needs-human` (Issue #2030) — the user re-adds `question` to ask a follow-up. The retired `answered_label` config key is no longer accepted.                                             |
 | `quorum_label`               | `quorum`                  | Label for the Quorum plan-off (Issue #4112). Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
 | `needs_human_label`          | `needs-human`             | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel (Issues #1468–#1471). |
-| `run_mode`                   | `container`               | Where the worker runs (Issue #4146) — `container` (the default) launches it inside the Vibe Coder container; `native` is an explicit opt-in for a host that cannot be contained, e.g. one monitoring a repo whose build shells out to `docker`. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. `seatbelt` (macOS only) is native under a Seatbelt filesystem profile (Issue #4300). Any other value fails loudly naming the modes; a missing container runtime never silently selects `native`. |
+| `run_mode`                   | `container`               | Where the worker runs (Issue #4146). The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
 | `agent_provider`             | `claude`                  | Coding-agent provider id — `claude`, `codex` or `gemini` (Issues #4067, #4106, #4107). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
 | `agent_providers`            | `["claude"]`              | Coding-agent providers enabled for a run (Issue #4108). Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
@@ -303,52 +303,40 @@ identically ($5 / $25 per MTok), so cost tracking is unaffected.
 
 ### 🧭 Run Mode (Issue #4146)
 
-`run_mode` selects where the worker runs. `container` — the default — launches
-it inside the Vibe Coder image; `native` runs it directly on the host.
+`run_mode` names where the worker runs, and there is one answer: `container`
+launches it inside the Vibe Coder image. Containment is mandatory (Issue #4).
 
 ```json
 {
-  "run_mode": "native"
+  "run_mode": "container"
 }
 ```
 
 - **Precedence.** `VIBE_RUN_MODE` (one run) → `run_mode` in `.config.json` →
-  the `container` default. Any other value fails loudly naming both modes, so a
-  typo never runs a host in a mode it did not ask for.
-- **No auto-fallback.** Nothing selects `native` because a container runtime is
-  missing — that stays a loud non-zero exit (Issue #3234) — and a native host
-  never quietly launches a container instead.
-- **Native is first-class** (Issue #4145), supported indefinitely rather than
-  as a transitional escape hatch. `run.sh` serves it on macOS and Linux
-  (Issue #4148); `run.ps1` / Windows is container-only by design (Issue #4147),
-  and asking for `native` there exits non-zero rather than silently
-  containerising.
-- **Native is outside the #4060 containment boundary.** An operator choosing it
-  accepts that the worker runs with host access — see
-  [Containment](CONTAINMENT.md).
-- **`seatbelt` (macOS only, Issue #4300)** is native execution with the
-  filesystem confined by a generated Seatbelt profile — full CPU/GPU, no VM
-  tax, deny-by-default file access limited to the same paths container mode
-  mounts. Refused with an actionable message off macOS. See
-  [Containment — Seatbelt mode](CONTAINMENT.md#seatbelt-mode-the-boundary-without-the-vm-issue-4300).
-  `VIBE_SEATBELT_EXTRA_WRITABLE` (colon-separated) grants extra writable
-  paths when a repo's tooling needs one.
-- **Prerequisites follow the mode** (Issue #4149): container mode needs a
-  working runtime on the host and treats the agent CLI, `jq` and `timeout` as
-  container-owned; native mode needs those tools on the host and no runtime.
-
-**When native is the right choice.** A host monitoring a repository whose build
-shells out to `docker` cannot build inside the container: the image ships no
-docker client ([`container/tools.json`](../container/tools.json)), and
-[`container_launch.ts`](../worker/deno/lib/container_launch.ts) refuses
-runtime-socket mounts and `--privileged` by design. Native mode is the
-sanctioned answer for such a host — mounting the runtime socket is not.
+  the `container` default. Leaving the key unset is the normal configuration.
+- **Removed modes fail loud.** `native` (the worker run directly on the host,
+  Issues #4145, #4148) and the macOS `seatbelt` profile (Issue #4300) were
+  removed by Issue #4 — both sat outside the #4060 containment boundary. A
+  configuration that still names one is refused with the removal explained;
+  it is never coerced into a container run the operator did not know they
+  were getting. Any other value fails loudly naming the only mode, so a typo
+  never runs a host in a mode it did not ask for.
+- **No auto-fallback.** A missing container runtime is a loud non-zero exit
+  (Issue #3234); there is no host mode for it to fall back to. A repository
+  whose build needs a container runtime of its own cannot be served from
+  inside the worker container — [`container_launch.ts`](../worker/deno/lib/container_launch.ts)
+  refuses runtime-socket mounts and `--privileged` by design — and the answer
+  is to change the build, not to run the worker on the host.
+- **Prerequisites** (Issue #4149): the host needs a working container runtime
+  and the worker image; the agent CLI, `jq` and `timeout` are
+  container-owned (`claude` stays on the host for setup's token minting,
+  Issue #4161).
 
 Both launchers and `setup.sh` read the resolved value from one command rather
 than parsing `.config.json`, so the precedence cannot drift between hosts:
 
 ```bash
-deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container | native
+deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 ```
 
 ### 🧠 Phase Model Overrides (Issue #1265)

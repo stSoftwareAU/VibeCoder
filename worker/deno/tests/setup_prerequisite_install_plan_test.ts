@@ -359,28 +359,27 @@ Deno.test("resolveInstallPlan - only probes winget on Windows", async () => {
   assertEquals(probed, ["winget"]);
 });
 
-// ── Run-mode awareness (Issue #4149) ────────────────────────────────────
+// ── Run mode (Issues #4149, #4): container, and only container ───────────
 
 /** Every container runtime the table knows how to install. */
 const RUNTIME_TOOLS = ["apple-container", "docker", "podman"];
 
-Deno.test("resolveInstallPlan - native mode never offers a container runtime", async () => {
+Deno.test("resolveInstallPlan - the container runtimes are always offered: containment is mandatory (Issue #4)", async () => {
   for (const tool of RUNTIME_TOOLS) {
-    for (const platform of PLATFORMS) {
-      assertEquals(
-        await resolveInstallPlan(tool, platform, {
+    const offered = await Promise.all(
+      PLATFORMS.map((platform) =>
+        resolveInstallPlan(tool, platform, {
           packageManagerAvailable: allAvailable,
-          runMode: "native",
-        }),
-        null,
-        `${tool} on ${platform} must not be offered in native mode`,
-      );
-    }
+          runMode: "container",
+        })
+      ),
+    );
+    assert(
+      offered.some((plan) => plan !== null),
+      `${tool} must be offered on at least one platform`,
+    );
   }
-});
 
-Deno.test("resolveInstallPlan - container mode still offers the runtimes", async () => {
-  // The inverse of the case above: the default mode is unchanged by #4149.
   const mac = await resolveInstallPlan("apple-container", "darwin", {
     packageManagerAvailable: allAvailable,
     runMode: "container",
@@ -400,9 +399,7 @@ Deno.test("resolveInstallPlan - container mode still offers the runtimes", async
   ]);
 });
 
-Deno.test("resolveInstallPlan - native mode keeps the host tools' own plans", async () => {
-  // jq, coreutils (`timeout`) and the agent CLI are host-fatal in native mode,
-  // so their entries must still resolve.
+Deno.test("resolveInstallPlan - the host tools keep their own plans", async () => {
   const expected: [string, HostPlatform, string[]][] = [
     ["jq", "darwin", ["brew", "install", "jq"]],
     ["jq", "linux", ["sudo", "apt-get", "install", "-y", "jq"]],
@@ -413,23 +410,11 @@ Deno.test("resolveInstallPlan - native mode keeps the host tools' own plans", as
   for (const [tool, platform, command] of expected) {
     const plan = await resolveInstallPlan(tool, platform, {
       packageManagerAvailable: allAvailable,
-      runMode: "native",
+      runMode: "container",
     });
-    assert(plan, `${tool} on ${platform} must resolve in native mode`);
+    assert(plan, `${tool} on ${platform} must resolve`);
     assertEquals(plan.steps[0]?.command, command);
   }
-});
-
-Deno.test("resolveInstallPlan - a native runtime lookup probes no package manager", async () => {
-  const probed: string[] = [];
-  await resolveInstallPlan("docker", "linux", {
-    packageManagerAvailable: (name) => {
-      probed.push(name);
-      return Promise.resolve(true);
-    },
-    runMode: "native",
-  });
-  assertEquals(probed, [], "native mode must not even check for apt");
 });
 
 Deno.test("PLAN_TOOLS - covers every tool the prerequisite probe reports", () => {

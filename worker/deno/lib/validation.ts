@@ -5,7 +5,12 @@
  * returning typed results or explicit errors (Issue #214).
  */
 
-import { isRunMode, RUN_MODE_CONFIG_KEY, RUN_MODES } from "./run_mode.ts";
+import {
+  isRunMode,
+  REMOVED_RUN_MODES,
+  RUN_MODE_CONFIG_KEY,
+  RUN_MODES,
+} from "./run_mode.ts";
 
 /**
  * Validation error with the field that failed and a human-readable message.
@@ -494,17 +499,25 @@ export function validateConfigFileJson(
     if (!result.ok) return result as ValidationResult<never>;
   }
 
-  // run_mode accepts only the two run modes (Issue #4146) — a typo must fail
-  // here rather than be coerced to the container default (Issue #3234).
+  // run_mode accepts only container (Issues #4146, #4) — a typo must fail
+  // here rather than be coerced to the default (Issue #3234), and a removed
+  // mode (native, seatbelt) is named as removed so the operator learns why.
   if (
     data[RUN_MODE_CONFIG_KEY] !== undefined &&
     !isRunMode(data[RUN_MODE_CONFIG_KEY])
   ) {
+    const raw = data[RUN_MODE_CONFIG_KEY];
+    if (typeof raw === "string" && REMOVED_RUN_MODES.includes(raw.trim())) {
+      return fail(
+        RUN_MODE_CONFIG_KEY,
+        `Run mode ${JSON.stringify(raw)} was removed (Issue #4): containment ` +
+          `is mandatory, the worker runs only inside the container. Remove ` +
+          `the key.`,
+      );
+    }
     return fail(
       RUN_MODE_CONFIG_KEY,
-      `Expected one of ${RUN_MODES.join(", ")}, got ${
-        JSON.stringify(data[RUN_MODE_CONFIG_KEY])
-      }`,
+      `Expected one of ${RUN_MODES.join(", ")}, got ${JSON.stringify(raw)}`,
     );
   }
 

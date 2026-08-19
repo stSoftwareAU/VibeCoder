@@ -77,8 +77,7 @@ export interface ResolveInstallPlanOptions {
   packageManagerAvailable?: (name: string) => Promise<boolean>;
   /**
    * Run mode the plan is resolved for (Issue #4149). Defaults to the mode
-   * {@link resolveRunMode} reports. Native mode never offers a container
-   * runtime — nothing on a native host uses one.
+   * {@link resolveRunMode} reports. Container is the only mode (Issue #4).
    */
   runMode?: RunMode;
 }
@@ -262,18 +261,6 @@ const INSTALL_TABLE: Readonly<
   },
 };
 
-/**
- * Runtimes that exist only to make container mode work (Issues #4136, #4137).
- *
- * A native host runs the worker itself, so offering to install one of these
- * would be offering software the resolved mode has no use for (Issue #4149).
- */
-const CONTAINER_MODE_ONLY_TOOLS: ReadonlySet<string> = new Set([
-  "apple-container",
-  "docker",
-  "podman",
-]);
-
 /** Every tool the install table has an answer for, auto-installable or not. */
 export const PLAN_TOOLS: readonly string[] = Object.freeze(
   Object.keys(INSTALL_TABLE),
@@ -337,10 +324,11 @@ export async function resolveInstallPlan(
   opts: ResolveInstallPlanOptions = {},
 ): Promise<InstallPlan | null> {
   const key = tool.trim().toLowerCase();
-  const runMode = opts.runMode ?? resolveRunMode();
-  // Checked before the package manager is probed: a native host must not even
-  // be asked about a container runtime.
-  if (runMode === "native" && CONTAINER_MODE_ONLY_TOOLS.has(key)) return null;
+  // Containment is mandatory (Issue #4): container is the only run mode, so
+  // every tool in the table — the container runtimes included — is offered.
+  // The mode is still resolved so a configuration naming a removed mode
+  // fails loud here too rather than at launch.
+  opts.runMode ?? resolveRunMode();
 
   const entry = INSTALL_TABLE[key]?.[platform];
   if (!entry) return null;

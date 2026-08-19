@@ -386,45 +386,7 @@ Deno.test("checkAllPrerequisites - a failed informational jq keeps the aggregate
   assertEquals(result.ok, true);
 });
 
-// ── Run-mode awareness (Issue #4149) ────────────────────────────────────
-
-Deno.test("offerMissingPrerequisites - native mode never offers the container runtime", async () => {
-  const probe = probeOf(
-    ok("git"),
-    { ...failed("container runtime"), informational: true },
-    failed("jq"),
-  );
-  const { lines, reporter } = recorder();
-  const installed: string[] = [];
-
-  const result = await offerMissingPrerequisites(
-    probe,
-    baseOptions({
-      runMode: "native",
-      confirm: () => Promise.resolve(true),
-      runStep: (step) => {
-        installed.push(step.command.join(" "));
-        return Promise.resolve({ ok: true, code: 0 });
-      },
-      recheck: (tool) => Promise.resolve(ok(tool)),
-      reporter,
-    }),
-  );
-
-  // jq is host-fatal in native mode, so it is offered and installed…
-  assertEquals(installed, ["brew update", "brew install jq"]);
-  assertEquals(outcomeFor(result.outcomes, "jq").status, "installed");
-  // …while the runtime is not offered at all — not even as "no plan".
-  assertEquals(
-    result.outcomes.some((o) => o.tool === "container runtime"),
-    false,
-  );
-  assert(
-    !lines.some((l) => l.includes("container runtime")),
-    `the runtime must not be mentioned, got: ${lines.join(" | ")}`,
-  );
-  assertEquals(result.ok, true, "a native host needs no container runtime");
-});
+// ── Run mode (Issues #4149, #4): container is the only one ───────────────
 
 Deno.test("offerMissingPrerequisites - container mode still offers the runtime", async () => {
   const probe = probeOf(failed("container runtime"));
@@ -480,24 +442,25 @@ Deno.test("offerMissingPrerequisites - the install offer follows the mode, not t
   assertEquals(result.ok, true);
 });
 
-Deno.test("offerMissingPrerequisites - the re-probe still decides in native mode", async () => {
+Deno.test("offerMissingPrerequisites - the re-probe still decides: an image-owned tool that stays missing is failed but not fatal", async () => {
   // The #4135 invariant: every step exited zero, yet the fresh probe says the
-  // tool is still missing, so the check stays failed — and in native mode that
-  // failure is fatal.
+  // tool is still missing, so the check stays failed; jq is image-owned in
+  // container mode, so setup still passes.
   const probe = probeOf(failed("jq"));
 
   const result = await offerMissingPrerequisites(
     probe,
     baseOptions({
-      runMode: "native",
+      runMode: "container",
       confirm: () => Promise.resolve(true),
       runStep: () => Promise.resolve({ ok: true, code: 0 }),
-      recheck: (tool) => Promise.resolve(failed(tool)),
+      recheck: (tool) =>
+        Promise.resolve({ ...failed(tool), informational: true }),
     }),
   );
 
   assertEquals(outcomeFor(result.outcomes, "jq").status, "failed");
-  assertEquals(result.ok, false, "a missing jq is fatal on a native host");
+  assertEquals(result.ok, true, "an image-owned tool never fails setup");
 });
 
 // ── Multiple tools ──────────────────────────────────────────────────────

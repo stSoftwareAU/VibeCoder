@@ -39,9 +39,9 @@ const TERMINATE_GRACE_SECONDS = 30;
 /**
  * The current boot's unique id, or null where the platform has none.
  *
- * Linux (every container) regenerates this per VM boot; macOS has no such
- * file, so native mode degrades to pure PID semantics — which are valid
- * there, because PIDs are host-wide.
+ * Linux (every container) regenerates this per VM boot; a platform without
+ * the file (a host-side invocation on macOS) degrades to pure PID semantics
+ * — which are valid there, because PIDs are host-wide.
  */
 export async function readBootId(): Promise<string | null> {
   try {

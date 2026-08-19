@@ -1,27 +1,28 @@
 /**
- * What the CI gate must prove about both run modes (Issue #4150).
+ * What the CI gate must prove about the run mode (Issues #4150, #4).
  *
- * Milestone #4060 settled that native is first-class forever (#4145) — equal
- * support, documented, and CI-tested. A mode nothing exercises rots: #4065 was
- * able to delete the native path outright precisely because no job would have
- * gone red. This module reads a workflow file and reports which run modes its
- * jobs actually exercise, so the `Validate Scripts` gate cannot quietly lose a
- * mode leg.
+ * Containment is mandatory (Issue #4): container is the only run mode, and a
+ * mode nothing exercises rots — #4065 was able to delete a whole launcher path
+ * precisely because no job would have gone red. This module reads a workflow
+ * file and reports what its jobs actually prove, so the `Validate Scripts`
+ * gate cannot quietly lose the leg that guards containment.
  *
- * The rules are the acceptance criteria of #4150, one function:
+ * The rules, one function:
  *
- * - **Every mode is covered.** A job exercises a mode when its matrix (or its
- *   `VIBE_RUN_MODE` job environment) names it.
- * - **The failing check names the mode.** Two legs that report the same check
- *   name leave a reviewer guessing which mode broke.
- * - **Each leg runs the tests**, so a regression in either path fails the gate.
- * - **The native leg owes two extra proofs**: that no container runtime is
- *   reachable on that runner, and the pair of end-to-end behaviours #4145
- *   asked for — the opt-in launches the worker driver on the host, and without
- *   the opt-in the same runner fails loudly with the runtime message. No
- *   silent fallback in either direction (Issue #3234).
+ * - **The mode is covered.** A job exercises container mode when its matrix
+ *   (or its `VIBE_RUN_MODE` job environment) names it.
+ * - **The failing check names the mode.** A leg that reports a bare name
+ *   leaves a reviewer guessing what broke.
+ * - **The leg runs the tests**, so a regression in the launcher path fails
+ *   the gate.
  * - **The budget is deliberate.** A mode job with no `timeout-minutes` can run
  *   until the runner's own ceiling.
+ * - **No host fallback is proven.** Somewhere in the workflow a job takes
+ *   every container runtime off its runner (and proves none answers), then
+ *   launches `run.sh` and asserts the loud "no supported container runtime"
+ *   failure — the one end-to-end proof that a runtime-less host never runs
+ *   the worker on the host (Issue #3234). The former native opt-in smoke went
+ *   with native mode.
  *
  * The loud-failure marker is derived from the real
  * {@link ContainerRuntimeUnavailableError} message rather than restated, so a
@@ -58,10 +59,8 @@ function commonPrefix(left: string, right: string): string {
 }
 
 /**
- * The part of the "no runtime" failure every supported platform prints.
- *
- * Derived from the real error on each platform, so it is exactly the text a
- * host without a runtime emits — whatever the wording becomes.
+ * The text a runtime-less launch prints, whatever the platform: the common
+ * prefix of the real {@link ContainerRuntimeUnavailableError} messages.
  */
 export const CONTAINER_RUNTIME_UNAVAILABLE_MARKER: string =
   SUPPORTED_HOST_PLATFORMS
@@ -81,21 +80,20 @@ export interface RunModeCiJob {
   checkName: string;
   /** True when the job runs the Deno test suite (whole or targeted). */
   runsModeTests: boolean;
-  /** True when the job proves no container runtime is reachable. */
-  provesNoContainerRuntime: boolean;
-  /** True when the job launches the worker through the native opt-in. */
-  runsNativeOptInSmoke: boolean;
-  /** True when the job asserts the loud failure without the opt-in. */
-  runsLoudFailureSmoke: boolean;
   /** The job's declared `timeout-minutes`, or null when it declares none. */
   timeoutMinutes: number | null;
 }
 
-/** What a workflow proves about the two run modes. */
+/** What a workflow proves about the run mode. */
 export interface RunModeCiCoverage {
   /** One entry per (job, mode) pair the workflow exercises. */
   jobs: RunModeCiJob[];
-  /** Everything #4150 requires and this workflow does not do. */
+  /**
+   * Job ids that take every container runtime off the runner and assert the
+   * loud failure of a launch without one — the no-host-fallback proof.
+   */
+  noHostFallbackProofs: string[];
+  /** Everything #4150 / #4 requires and this workflow does not do. */
   problems: string[];
 }
 
@@ -176,22 +174,15 @@ function invokesLauncher(step: WorkflowStep): boolean {
   return /(^|[^\w./])\.?\/?run\.sh(\s|$)/m.test(step.run ?? "");
 }
 
-/** True when the step selects native mode, by step environment or inline. */
-function optsIntoNative(step: WorkflowStep): boolean {
-  if (isRunMode(step.env?.[RUN_MODE_ENV])) {
-    return step.env?.[RUN_MODE_ENV] === "native";
-  }
-  return new RegExp(`${RUN_MODE_ENV}=(["']?)native\\1`).test(step.run ?? "");
-}
-
 /**
  * Audit one workflow's run-mode coverage.
  *
  * @param workflowYaml - Raw workflow YAML.
- * @returns The mode legs found, and every #4150 requirement they miss. A
- *   workflow with no mode job at all (a container-only workflow such as
- *   `container-build.yml`) reports no jobs and no problems — this audit says
- *   what a *mode* gate owes, not that every workflow must be one.
+ * @returns The mode legs found, the no-host-fallback proofs, and every
+ *   requirement they miss. A workflow with no mode job at all (a
+ *   container-only workflow such as `container-build.yml`) reports no jobs
+ *   and no problems — this audit says what a *mode* gate owes, not that every
+ *   workflow must be one.
  */
 export function auditRunModeCiCoverage(
   workflowYaml: string,
@@ -200,6 +191,7 @@ export function auditRunModeCiCoverage(
     | { jobs?: Record<string, WorkflowJob> }
     | null;
   const jobs: RunModeCiJob[] = [];
+  const noHostFallbackProofs: string[] = [];
 
   for (const [jobId, job] of Object.entries(parsed?.jobs ?? {})) {
     const modes = modesOf(job);
@@ -214,29 +206,40 @@ export function auditRunModeCiCoverage(
         mode,
         checkName: checkNameFor(jobId, job, mode, fromMatrix),
         runsModeTests: /\bdeno\s+(task\s+)?test\b/.test(runs),
-        provesNoContainerRuntime: steps.some((step) =>
-          /command\s+-v/.test(step.run ?? "") &&
-          CONTAINER_RUNTIME_EXECUTABLES.every((executable) =>
-            mentionsWord(step.run ?? "", executable)
-          )
-        ),
-        runsNativeOptInSmoke: steps.some((step) =>
-          invokesLauncher(step) && optsIntoNative(step)
-        ),
-        runsLoudFailureSmoke: steps.some((step) =>
-          invokesLauncher(step) && !optsIntoNative(step) &&
-          (step.run ?? "").includes(CONTAINER_RUNTIME_UNAVAILABLE_MARKER)
-        ),
         timeoutMinutes: typeof timeout === "number" ? timeout : null,
       });
     }
+
+    // The no-host-fallback proof: every runtime taken off the runner and
+    // proven absent, then a launch asserted to fail with the real
+    // runtime-unavailable message.
+    const provesNoRuntime = steps.some((step) =>
+      /command\s+-v/.test(step.run ?? "") &&
+      CONTAINER_RUNTIME_EXECUTABLES.every((executable) =>
+        mentionsWord(step.run ?? "", executable)
+      )
+    );
+    const runsLoudFailureSmoke = steps.some((step) =>
+      invokesLauncher(step) &&
+      (step.run ?? "").includes(CONTAINER_RUNTIME_UNAVAILABLE_MARKER)
+    );
+    if (provesNoRuntime && runsLoudFailureSmoke) {
+      noHostFallbackProofs.push(jobId);
+    }
   }
 
-  return { jobs, problems: problemsWith(jobs) };
+  return {
+    jobs,
+    noHostFallbackProofs,
+    problems: problemsWith(jobs, noHostFallbackProofs),
+  };
 }
 
-/** Everything #4150 requires of the legs found, and they do not do. */
-function problemsWith(jobs: RunModeCiJob[]): string[] {
+/** Everything #4150 / #4 requires of the legs found, and they do not do. */
+function problemsWith(
+  jobs: RunModeCiJob[],
+  noHostFallbackProofs: string[],
+): string[] {
   if (jobs.length === 0) return [];
   const problems: string[] = [];
 
@@ -246,6 +249,14 @@ function problemsWith(jobs: RunModeCiJob[]): string[] {
         `no job exercises ${mode} mode — a mode nothing runs cannot fail CI`,
       );
     }
+  }
+
+  if (noHostFallbackProofs.length === 0) {
+    problems.push(
+      `no job proves the no-host-fallback contract: take every container ` +
+        `runtime off a runner and assert the loud ` +
+        `"${CONTAINER_RUNTIME_UNAVAILABLE_MARKER}" failure of run.sh`,
+    );
   }
 
   for (const job of jobs) {
@@ -270,23 +281,6 @@ function problemsWith(jobs: RunModeCiJob[]): string[] {
     }
     if (job.timeoutMinutes === null) {
       problems.push(`${where} declares no timeout-minutes budget`);
-    }
-    if (job.mode !== "native") continue;
-    if (!job.provesNoContainerRuntime) {
-      problems.push(
-        `${where} does not prove the runner has no container runtime`,
-      );
-    }
-    if (!job.runsNativeOptInSmoke) {
-      problems.push(
-        `${where} never launches the worker through the native opt-in`,
-      );
-    }
-    if (!job.runsLoudFailureSmoke) {
-      problems.push(
-        `${where} never asserts the loud "${CONTAINER_RUNTIME_UNAVAILABLE_MARKER}" ` +
-          `failure without the opt-in`,
-      );
     }
   }
 

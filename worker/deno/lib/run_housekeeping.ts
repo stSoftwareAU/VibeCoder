@@ -167,7 +167,9 @@ export async function sweepVolatileCliState(
   env: (name: string) => string | undefined,
 ): Promise<string> {
   if (env("VIBE_IMAGE_AGENT_PROVIDERS") === undefined) {
-    return "skipped (native mode keeps CLI state host-scoped)";
+    // Not inside the worker image (a host-side invocation of the housekeeping
+    // command): the volatile CLI state is not this process's to sweep.
+    return "skipped (not inside the worker container)";
   }
   const configDir = `${workDir}/.claude-config`;
   const removed: string[] = [];

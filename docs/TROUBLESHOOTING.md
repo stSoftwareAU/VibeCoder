@@ -5,25 +5,26 @@ Common issues and their solutions. For a quick overview, see the
 
 ## 🐳 The worker runs in a container — where to look first
 
-The worker runs inside the container image in the default `container` run mode,
-so host-level diagnosis starts with the runtime, the image and the mounted log
+The worker runs inside the container image — `container` is the default and
+the only run mode (Issue #4) — so host-level diagnosis starts with the runtime,
+the image and the mounted log
 directory ([Containment](CONTAINMENT.md), [Container Image](CONTAINER.md)).
 Everything below is run on the host, from the checkout — no `exec` into the
 container is needed.
 
-**Check the mode first.** A host that opted into the `native` mode
-(`"run_mode": "native"` in `.config.json`, or `VIBE_RUN_MODE=native`) has no
-container to inspect: the worker's own logs in `~/logs` are the whole story,
-and the host's `jq`, `timeout` and coding-agent CLI are the toolchain in play.
-Ask the launcher which mode this host resolves to:
+**Check the run-mode setting first.** A `.config.json` (or `VIBE_RUN_MODE`)
+that still names one of the removed host modes — `native` or `seatbelt`, gone
+since Issue #4 — stops every launch before anything runs, with the removal
+explained. Ask the launcher what this host resolves to; the only good answer
+is `container`:
 
 ```bash
-deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container | native
+deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 ```
 
-Nothing switches between the modes on its own — container mode never falls back
-to a native run, and a native host never quietly launches a container — so a
-surprising answer here means the setting says so.
+Nothing is ever coerced: a removed or misspelled mode is a loud failure, never
+a container run the operator did not know they were getting — and a missing
+container runtime never falls back to the host.
 
 ```mermaid
 flowchart TD
@@ -124,9 +125,9 @@ deno run worker/deno/mod.ts self-heal-summary | grep container_wedged
 
 ### What a runtime-detection failure looks like
 
-In container mode, with no supported runtime, the launcher exits non-zero
-**before** doing anything else — it never switches to a host-native run
-(Issue #4065), so the worker does not run at all:
+With no supported runtime, the launcher exits non-zero **before** doing
+anything else — there is no host mode to switch to (Issues #4065, #4), so the
+worker does not run at all:
 
 ```text
 No supported container runtime is available on darwin.
@@ -137,7 +138,7 @@ Probed:
 To fix this, install and start one of:
   - Apple container: install Apple container from https://github.com/apple/container and run `container system start`
 
-Container mode has no host fallback (Issue #4060): this fails rather than running the worker on the host. Native mode is an explicit opt-in - set "run_mode": "native" in .config.json, or VIBE_RUN_MODE=native - never something a missing runtime selects for you (Issue #4145).
+Container mode has no host fallback (Issues #4060, #4): containment is mandatory, so this fails rather than running the worker on the host. Install a supported runtime (./setup.sh offers to) and launch again.
 Error: cannot launch the Vibe Coder container (see above)
 ```
 

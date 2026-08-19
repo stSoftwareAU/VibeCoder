@@ -329,9 +329,6 @@ export async function offerMissingPrerequisites(
     // The container runtime has two candidates on Linux and an absent/stopped
     // split, so its offer lives in its own module (Issue #4137).
     if (result.tool === CONTAINER_RUNTIME_TOOL) {
-      // A native host does not run the worker in a container, so there is
-      // nothing to offer and nothing to report as unhandled (Issue #4149).
-      if (runMode === "native") continue;
       if (!platform) {
         outcomes.push({ tool: result.tool, status: "no-plan" });
         continue;

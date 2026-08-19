@@ -217,11 +217,11 @@ function Exit-Launcher {
     exit $Code
 }
 
-# Run mode (Issues #4146, #4147). Windows is container-only by design
-# (Issue #4145): there is no native execution path here, so an explicit native
-# opt-in must fail loudly rather than quietly launching a container the
-# operator never asked for (Issue #3234). The mode is resolved by the Deno
-# "run-mode" command, so no shell parses .config.json.
+# Run mode (Issues #4146, #4). Container is the only run mode everywhere now,
+# as Windows always was (Issue #4145): a configuration naming a removed mode
+# (native, seatbelt) must fail loudly rather than quietly launching a
+# container the operator never asked for (Issue #3234). The mode is resolved
+# by the Deno "run-mode" command, so no shell parses .config.json.
 $mode = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
     "run",
     "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
@@ -234,14 +234,8 @@ if ($mode.ExitCode -ne 0) {
     Exit-Launcher 1
 }
 $RunMode = $mode.StdOut.Trim()
-if ($RunMode -eq "native") {
-    [Console]::Error.WriteLine(
-        'Error: run mode "native" is not supported on Windows - run.ps1 is ' +
-        'container-only (Issue #4145). Set "run_mode" to "container" in ' +
-        '.config.json and unset VIBE_RUN_MODE to launch the worker in its ' +
-        'container, or run native mode on a macOS/Linux host instead.')
-    Exit-Launcher 1
-}
+# Container is the only run mode (Issue #4); a removed or unrecognised value
+# has already failed loud above, so this is a contract check, not a branch.
 if ($RunMode -ne "container") {
     [Console]::Error.WriteLine("Error: unrecognised run mode: $RunMode")
     Exit-Launcher 1

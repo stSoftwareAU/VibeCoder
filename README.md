@@ -219,17 +219,15 @@ are minimal shell/PowerShell scripts that delegate to Deno for all business
 logic. Cross-platform: macOS, Linux, and Windows.
 
 `run.sh` (Issue #4065) and `run.ps1` (Issue #4066) launch the worker inside the
-container image by default: both ask the same Deno `container-launch-plan`
-command what to run, so the mounts and privilege flags are identical on every
-host. A host may instead opt into the `native` run mode — `"run_mode":
-"native"` in `.config.json`, or `VIBE_RUN_MODE=native` — and `run.sh` then runs
-the worker directly on macOS/Linux (Issues #4145, #4148); `run.ps1` / Windows
-stays container-only by design. The opt-in is the only route to native: a
-missing container runtime never selects it, and container mode never falls back
-to the host. See [Container Image](docs/CONTAINER.md) for the mount set and
-privilege flags, [Containment](docs/CONTAINMENT.md) for what native mode gives
-up, and [Configuration](docs/CONFIGURATION.md#-run-mode-issue-4146) for the
-setting.
+container image: both ask the same Deno `container-launch-plan` command what to
+run, so the mounts and privilege flags are identical on every host. Containment
+is mandatory (Issue #4): container is the only run mode — the former `native`
+and macOS `seatbelt` opt-ins were removed, a `run_mode` (or `VIBE_RUN_MODE`)
+that still names one fails loud with the removal explained, and a missing container runtime is a
+loud failure with no host fallback (Issue #3234). See
+[Container Image](docs/CONTAINER.md) for the mount set and privilege flags,
+[Containment](docs/CONTAINMENT.md) for the boundary, and
+[Configuration](docs/CONFIGURATION.md#-run-mode-issue-4146) for the setting.
 
 ```mermaid
 graph TD
@@ -264,16 +262,16 @@ state, and multi-worker coordination. For the full detail see
 
 ## 📋 Requirements
 
-The worker runs inside the container image in the default `container` run mode,
-so the host needs a container runtime and the launcher — not the worker's
-toolchain:
+The worker runs inside the container image — `container` is the default and
+the only run mode (Issue #4) — so the host needs a container runtime and the
+launcher, not the worker's toolchain:
 
 - A supported **container runtime**: Apple
   [`container`](https://github.com/apple/container) on macOS,
   [Docker](https://docs.docker.com/get-docker/) or
   [Podman](https://podman.io/docs/installation) on Linux and Windows. Container
   mode never falls back to the host — with none available the launcher exits
-  non-zero rather than switching to native. You do not have to install it by
+  non-zero (there is no host mode to switch to). You do not have to install it by
   hand: `./setup.sh` (`.\setup.ps1` on Windows) run in a terminal offers to
   install and start it (see
   [Deployment](docs/DEPLOYMENT.md#interactive-install-offer-issue-4135)).
@@ -285,10 +283,9 @@ toolchain:
 
 The coding-agent CLI, `gh`, `jq`, `timeout`, headless Chromium and the
 monitored repositories' build toolchains are baked into the image — do not
-install them on the host. A host that has opted into the `native` run mode
-needs the mirror image: those tools on the host, and no container runtime
-(Issue #4149). See the [Deployment Guide](docs/DEPLOYMENT.md#-run-modes-container-by-default-native-by-opt-in)
-and [Containment](docs/CONTAINMENT.md).
+install them on the host. See the
+[Deployment Guide](docs/DEPLOYMENT.md#-run-mode-container-only) and
+[Containment](docs/CONTAINMENT.md).
 
 Optional: [shellcheck](https://github.com/koalaman/shellcheck) is **not** run by
 `./quality.sh` — bash linting is owned by each repo's own CI (Issue #3129), and

@@ -1230,7 +1230,7 @@ What follows is what an **operator** does about them:
 | Novel prompt injection techniques | Keep the worker updated; periodically review the suspicious-pattern rules; report novel injection attempts via the responsible disclosure process |
 | Trusted account compromise (R4) | Enable two-factor authentication on every `allowed_authors` account; use fine-grained GitHub tokens with expiration; monitor GitHub's security log for anomalous activity |
 | The agent guard is containment, not a sandbox (R1) | Watch for `[WRITE_REPO_BLOCKED]` and `[GH_GUARD_SHIM_UNAVAILABLE]` in the security log; never set `VIBE_ALLOW_UNGUARDED_AGENT_GH` on a host that processes public repositories |
-| Native run mode is outside the containment boundary (R5) | Leave the default container run mode in place unless you have a specific reason; a missing runtime never selects native for you |
+| A stale checkout can still run a removed host mode (R5) | Keep every fleet host on current code: container is the only run mode (Issue #4), a configuration naming `native` or `seatbelt` fails loud, and the green-gate report flags any host-mode launch record |
 | Repository-supplied build scripts execute (R6) | Only monitor repositories whose quality gate you are willing to run on your host |
 | Context window pressure from trusted comments | Keep discussion focused; use separate channels for extended conversations about implementation details |
 

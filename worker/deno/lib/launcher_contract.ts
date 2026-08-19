@@ -8,34 +8,24 @@
  * reads a launcher's source and reports what it does, so the parity test can
  * fail the moment one of them starts deciding for itself: hardcoding a mount,
  * adding a privilege-broadening flag, dropping a plan key it must honour, or
- * running the worker on the host without an explicit opt-in.
+ * running the worker on the host at all.
  *
  * A Windows host must not be quietly less contained than a macOS one.
  *
- * **Native execution (Issue #4147).** The contract used to ban a native path
- * outright. Milestone #4060 (parent #4145) settled a different invariant:
- * container is the default, and native is reachable only through the explicit
- * run-mode opt-in (#4146). So native-execution markers are data, and the fault
- * is *ungated* native execution — a launcher that can run the worker on the
- * host without consulting the run-mode resolver, or outside an explicit native
- * branch. Nothing about containment is relaxed: every broadening, mount and
- * plan-key rule is exactly as strict as before.
- *
- * **The one intended asymmetry.** Windows stays container-only, so `run.ps1`
- * legitimately differs from `run.sh` on the run-mode fields. That is recorded
- * as a named exception ({@link LAUNCHER_PARITY_EXCEPTIONS}) and reported, not
- * silently tolerated — and it lapses the moment `run.ps1` gains a native path
- * of its own.
+ * **Host execution (Issues #4147, #4).** For a while the contract gated a
+ * native path behind the run-mode opt-in (#4146). Containment is mandatory
+ * now (Issue #4): the `native` and `seatbelt` modes are gone, so a
+ * host-execution marker in a launcher is a fault outright — there is no
+ * opt-in to gate it behind — and both launchers consult the run-mode resolver
+ * only so a configuration naming a removed mode fails loud in one place.
+ * Nothing about containment is relaxed: every broadening, mount and plan-key
+ * rule is exactly as strict as before.
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
 import type { ContainerLaunchPlanKey } from "./container_launch.ts";
-import {
-  executableLines,
-  type LauncherDialect,
-  nativeBranchGatedLines,
-} from "./launcher_source.ts";
+import { executableLines, type LauncherDialect } from "./launcher_source.ts";
 
 export type { LauncherDialect };
 
@@ -83,7 +73,11 @@ export const LAUNCHER_BROADENING_MARKERS: readonly string[] = [
   "docker_engine",
 ];
 
-/** Source markers of a native, non-container worker execution path. */
+/**
+ * Source markers of a host (non-container) worker execution path. Containment
+ * is mandatory (Issue #4): any of these in a launcher's executable lines is a
+ * fault.
+ */
 export const LAUNCHER_NATIVE_EXECUTION_MARKERS: readonly string[] = [
   "run-entrypoint",
   "run_entrypoint.ts",
@@ -94,7 +88,8 @@ export const LAUNCHER_NATIVE_EXECUTION_MARKERS: readonly string[] = [
  *
  * A launcher consults the resolver through the `run-mode` Deno sub-command, so
  * no shell parses `.config.json`; `VIBE_RUN_MODE` is the per-run override the
- * same resolver reads.
+ * same resolver reads. With container the only mode (Issue #4) the
+ * consultation exists so a removed or misspelled mode fails loud in one place.
  */
 export const LAUNCHER_RUN_MODE_MARKERS: readonly string[] = [
   "run-mode",
@@ -119,21 +114,10 @@ export interface LauncherContract {
   /** Broadening markers found — empty is the only acceptable result. */
   broadeningMarkers: string[];
   /**
-   * Native-execution markers found. Data, not a verdict (Issue #4147): a
-   * launcher may run the worker natively when the run mode says so.
+   * Host-execution markers found in the launcher's executable lines. Empty
+   * is the only acceptable result (Issue #4).
    */
   nativeExecutionMarkers: string[];
-  /**
-   * Native-execution markers reachable without the explicit opt-in — either
-   * the launcher never consults the run-mode resolver, or the marker sits
-   * outside a native branch. Empty is the only acceptable result.
-   */
-  ungatedNativeExecution: string[];
-  /**
-   * True when the launch-plan delegation itself sits inside a native branch,
-   * which would make the container path the opt-in rather than the default.
-   */
-  containerPathGatedOnNative: boolean;
   /** Mount flags the launcher passes itself rather than reading from the plan. */
   hardcodedMountFlags: string[];
 }
@@ -190,14 +174,9 @@ export function extractLauncherContract(
   // Execution is judged on the code alone: a comment naming `run-entrypoint`
   // cannot start the worker, and must not be read as if it could.
   const code = executableLines(source, dialect);
-  const gated = nativeBranchGatedLines(source, dialect);
   const consultsRunMode = LAUNCHER_RUN_MODE_MARKERS.some((marker) =>
     code.some((line) => line.includes(marker))
   );
-
-  /** Lines where `marker` can execute, and whether each one is gated. */
-  const occurrences = (marker: string): boolean[] =>
-    code.flatMap((line, index) => line.includes(marker) ? [gated[index]!] : []);
 
   return {
     name,
@@ -211,34 +190,12 @@ export function extractLauncherContract(
       source.includes(marker)
     ),
     nativeExecutionMarkers: LAUNCHER_NATIVE_EXECUTION_MARKERS.filter((marker) =>
-      source.includes(marker)
-    ),
-    // Without the resolver there is no opt-in to gate on, so every executable
-    // occurrence is reachable by default.
-    ungatedNativeExecution: LAUNCHER_NATIVE_EXECUTION_MARKERS.filter((marker) =>
-      occurrences(marker).some((isGated) => !consultsRunMode || !isGated)
-    ),
-    containerPathGatedOnNative: occurrencesGatedThroughout(
-      code,
-      gated,
-      "container-launch-plan",
+      code.some((line) => line.includes(marker))
     ),
     hardcodedMountFlags: LAUNCHER_MOUNT_FLAGS.filter((flag) =>
       source.includes(flag)
     ),
   };
-}
-
-/** Does `marker` execute only inside native branches, and at least once? */
-function occurrencesGatedThroughout(
-  code: string[],
-  gated: boolean[],
-  marker: string,
-): boolean {
-  const found = code.flatMap((line, index) =>
-    line.includes(marker) ? [gated[index]!] : []
-  );
-  return found.length > 0 && found.every((isGated) => isGated);
 }
 
 /** Describe a list for a divergence message. */
@@ -265,67 +222,10 @@ const COMPARED_FIELDS: Record<LauncherComparedField, string> = {
   hardcodedMountFlags: "hardcoded mount flags",
 };
 
-/**
- * A divergence the two launchers are allowed to keep, and why.
- *
- * An exception is granted to one named launcher, covers named fields, and
- * carries the reason in operator-facing words — so an intended asymmetry is
- * recorded and reviewable rather than silently tolerated (Issue #4147).
- */
-export interface LauncherParityException {
-  /** Short name the report quotes. */
-  name: string;
-  /** Launcher the exception is granted to. */
-  launcher: string;
-  /** Fields the exception covers. */
-  fields: readonly LauncherComparedField[];
-  /** Why the asymmetry is intended. */
-  reason: string;
-}
-
-/**
- * Windows stays container-only (Issue #4145).
- *
- * `run.ps1` never gains a native execution path; it consults the run mode only
- * to refuse an explicit native opt-in loudly, so it may differ from `run.sh` on
- * the run-mode fields. The exception lapses the moment `run.ps1` carries a
- * native execution path of its own — at which point the divergence is real.
- */
-export const WINDOWS_CONTAINER_ONLY: LauncherParityException = {
-  name: "windows-container-only",
-  launcher: "run.ps1",
-  fields: ["consultsRunMode", "nativeExecutionMarkers"],
-  reason:
-    "Windows stays container-only (Issue #4145): run.ps1 carries no native " +
-    "execution path and consults the run mode only to refuse an explicit " +
-    "native opt-in with a non-zero exit",
-};
-
-/** Every intended asymmetry between the two launchers. */
-export const LAUNCHER_PARITY_EXCEPTIONS: readonly LauncherParityException[] = [
-  WINDOWS_CONTAINER_ONLY,
-];
-
 /** How two launchers compare. */
 export interface LauncherParityReport {
-  /** Unintended divergences — empty is the only acceptable result. */
+  /** Divergences — empty is the only acceptable result. */
   divergences: string[];
-  /** Divergences covered by a named exception, each quoting it. */
-  excepted: string[];
-}
-
-/** Is this divergence covered by a named, still-valid exception? */
-function exceptionFor(
-  field: LauncherComparedField,
-  contracts: LauncherContract[],
-): LauncherParityException | undefined {
-  return LAUNCHER_PARITY_EXCEPTIONS.find((exception) => {
-    if (!exception.fields.includes(field)) return false;
-    const granted = contracts.find((one) => one.name === exception.launcher);
-    // Granted only while the named launcher is the more contained side.
-    return granted !== undefined &&
-      granted.nativeExecutionMarkers.length === 0;
-  });
 }
 
 /** Render one contract value for a divergence message. */
@@ -338,13 +238,14 @@ function render(value: boolean | string[]): string {
  *
  * @param left - One launcher's contract
  * @param right - The other launcher's contract
- * @returns Unintended divergences, and those covered by a named exception
+ * @returns Every divergence — there are no intended asymmetries left (Issue
+ *   #4: both launchers are container-only and consult the run-mode resolver)
  */
 export function compareLauncherContracts(
   left: LauncherContract,
   right: LauncherContract,
 ): LauncherParityReport {
-  const report: LauncherParityReport = { divergences: [], excepted: [] };
+  const report: LauncherParityReport = { divergences: [] };
 
   for (const [field, label] of Object.entries(COMPARED_FIELDS)) {
     const key = field as LauncherComparedField;
@@ -357,50 +258,13 @@ export function compareLauncherContracts(
       continue;
     }
 
-    const message = `${label} diverge: ${left.name} has ` +
-      `${render(leftValue)}, ${right.name} has ${render(rightValue)}`;
-    const exception = exceptionFor(key, [left, right]);
-    if (exception) {
-      report.excepted.push(
-        `[${exception.name}] intended: ${message} — ${exception.reason}`,
-      );
-    } else {
-      report.divergences.push(message);
-    }
-  }
-
-  report.divergences.push(...lapsedExceptions([left, right]));
-  return report;
-}
-
-/**
- * Exceptions whose premise no longer holds (Issue #4150).
- *
- * An exception is a promise about one launcher — `windows-container-only` says
- * `run.ps1` carries no native execution path — not a fact about the pair. Once
- * `run.sh` legitimately carries one (Issue #4148), the two launchers agree on
- * the marker set and the field comparison above sees nothing to except, so a
- * native `run.ps1` would slip through in silence. Report the lapse against the
- * exception itself instead.
- *
- * @param contracts - Both launchers' contracts
- * @returns One message per lapsed exception
- */
-function lapsedExceptions(contracts: LauncherContract[]): string[] {
-  const lapsed: string[] = [];
-
-  for (const exception of LAUNCHER_PARITY_EXCEPTIONS) {
-    if (!exception.fields.includes("nativeExecutionMarkers")) continue;
-    const granted = contracts.find((one) => one.name === exception.launcher);
-    if (!granted || granted.nativeExecutionMarkers.length === 0) continue;
-    lapsed.push(
-      `${COMPARED_FIELDS.nativeExecutionMarkers} diverge: ${granted.name} now ` +
-        `carries ${describe(granted.nativeExecutionMarkers)}, so the ` +
-        `[${exception.name}] exception has lapsed — ${exception.reason}`,
+    report.divergences.push(
+      `${label} diverge: ${left.name} has ` +
+        `${render(leftValue)}, ${right.name} has ${render(rightValue)}`,
     );
   }
 
-  return lapsed;
+  return report;
 }
 
 /**
@@ -409,8 +273,8 @@ function lapsedExceptions(contracts: LauncherContract[]): string[] {
  * Parity alone is not enough: two launchers that both mount a runtime socket
  * agree with each other and are both wrong.
  *
- * Native execution is a fault only when it is *ungated* (Issue #4147) — every
- * other rule here is exactly as strict as it was.
+ * Host execution is a fault outright (Issue #4): containment is mandatory
+ * and there is no opt-in to gate it behind.
  *
  * @param contract - The contract read from a launcher's source
  * @returns One message per fault; empty when the launcher is sound
@@ -438,20 +302,19 @@ export function launcherContractFaults(contract: LauncherContract): string[] {
         describe(contract.broadeningMarkers),
     );
   }
-  if (contract.ungatedNativeExecution.length > 0) {
+  if (contract.nativeExecutionMarkers.length > 0) {
     faults.push(
-      `${contract.name} can run the worker on the host without the explicit ` +
-        `run-mode opt-in: ${describe(contract.ungatedNativeExecution)}. ` +
-        `Gate native execution behind a branch on the run mode (the ` +
-        `${LAUNCHER_RUN_MODE_MARKERS[0]} command), so container stays the ` +
-        `default (Issues #4146, #4147)`,
+      `${contract.name} can run the worker on the host: ` +
+        `${describe(contract.nativeExecutionMarkers)}. Containment is ` +
+        `mandatory (Issue #4) — the launcher runs the container and nothing ` +
+        `else`,
     );
   }
-  if (contract.containerPathGatedOnNative) {
+  if (!contract.consultsRunMode) {
     faults.push(
-      `${contract.name} reaches container-launch-plan only inside a native ` +
-        `branch, which makes the container path the opt-in rather than the ` +
-        `default (Issue #4147)`,
+      `${contract.name} never consults the run-mode resolver (the ` +
+        `${LAUNCHER_RUN_MODE_MARKERS[0]} command), so a configuration naming ` +
+        `a removed mode would not fail loud (Issues #4146, #4)`,
     );
   }
   if (contract.hardcodedMountFlags.length > 0) {
