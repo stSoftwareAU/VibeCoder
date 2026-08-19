@@ -105,6 +105,18 @@ export interface FleetHealthDeps {
 // ---------------------------------------------------------------------------
 
 /**
+ * The directory name a health repository's checkout takes: the last path
+ * segment of its URL without `.git` (`git@github.com:org/GRQ-health.git` and
+ * `https://github.com/org/GRQ-health` both give `GRQ-health`).
+ */
+export function healthRepoCheckoutName(repoUrl: string): string {
+  const trimmed = repoUrl.trim().replace(/\/+$/, "");
+  const last = trimmed.split(/[/:]/).pop() ?? "";
+  const name = last.replace(/\.git$/, "");
+  return name.length > 0 ? name : "fleet-health";
+}
+
+/**
  * Build a FleetHealthConfig from environment variables and defaults.
  *
  * @param repoDir - Base repository directory for default healthDir
@@ -118,11 +130,18 @@ export function buildFleetHealthConfig(repoDir: string): FleetHealthConfig {
   const inContainer = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
   const workDir = Deno.env.get("WORK_DIR") ??
     `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+  const healthRepo = Deno.env.get("FLEET_HEALTH_REPO") || undefined;
+  // The checkout is named after the repository (git@host:org/GRQ-health.git
+  // -> GRQ-health), so the operator sees the name they know and no name is
+  // assumed. With no repository configured there is nothing to clone and the
+  // default only ever appears in the "tracking is off" line.
+  const checkoutName = healthRepo
+    ? healthRepoCheckoutName(healthRepo)
+    : "private-repo-6";
   const healthDir = Deno.env.get("FLEET_HEALTH_DIR") ??
     (inContainer
-      ? `${workDir}/private-repo-6`
-      : `${repoDir}/../private-repo-6`);
-  const healthRepo = Deno.env.get("FLEET_HEALTH_REPO") || undefined;
+      ? `${workDir}/${checkoutName}`
+      : `${repoDir}/../${checkoutName}`);
 
   // Host identity. Inside the container `Deno.hostname()` is the ephemeral
   // container name (a fresh one every cycle), which would leave the real

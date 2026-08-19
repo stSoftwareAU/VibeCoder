@@ -256,16 +256,38 @@ Deno.test("checkHealthTrackingAvailable - returns true when FLEET_HEALTH_DIR is 
   }
 });
 
+Deno.test("checkHealthTrackingAvailable - a repository alone is enough (container mode has no host directory)", () => {
+  const savedDir = Deno.env.get("FLEET_HEALTH_DIR");
+  const savedRepo = Deno.env.get("FLEET_HEALTH_REPO");
+  try {
+    Deno.env.delete("FLEET_HEALTH_DIR");
+    Deno.env.set("FLEET_HEALTH_REPO", "git@github.com:org/h.git");
+    assertEquals(checkHealthTrackingAvailable(), true);
+    Deno.env.delete("FLEET_HEALTH_REPO");
+    assertEquals(checkHealthTrackingAvailable(), false);
+  } finally {
+    if (savedDir !== undefined) Deno.env.set("FLEET_HEALTH_DIR", savedDir);
+    else Deno.env.delete("FLEET_HEALTH_DIR");
+    if (savedRepo !== undefined) Deno.env.set("FLEET_HEALTH_REPO", savedRepo);
+    else Deno.env.delete("FLEET_HEALTH_REPO");
+  }
+});
+
 Deno.test("checkHealthTrackingAvailable - returns false when FLEET_HEALTH_DIR is empty", () => {
   const original = Deno.env.get("FLEET_HEALTH_DIR");
+  const originalRepo = Deno.env.get("FLEET_HEALTH_REPO");
   try {
     Deno.env.set("FLEET_HEALTH_DIR", "");
+    Deno.env.delete("FLEET_HEALTH_REPO");
     assertEquals(checkHealthTrackingAvailable(), false);
   } finally {
     if (original !== undefined) {
       Deno.env.set("FLEET_HEALTH_DIR", original);
     } else {
       Deno.env.delete("FLEET_HEALTH_DIR");
+    }
+    if (originalRepo !== undefined) {
+      Deno.env.set("FLEET_HEALTH_REPO", originalRepo);
     }
   }
 });
