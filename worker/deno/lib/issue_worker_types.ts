@@ -47,6 +47,15 @@ export interface IssueContext {
    * Absent (tests, CLI single-issue runs): the configured timeout stands.
    */
   cycleDeadlineEpochMs?: number;
+  /**
+   * Epoch-millisecond deadline at which the dispatch watchdog will abandon the
+   * handler running this issue (Issue #58). Set by the priority dispatcher from
+   * the very budget the watchdog arms, so the two cannot drift. Consumed by
+   * post-publication work (the Failure-Detection self-repair) to stop cleanly
+   * and defer what it cannot finish, instead of being killed mid-way. Absent
+   * (tests, CLI single-issue runs): that work is unbounded, as before.
+   */
+  handlerDeadlineEpochMs?: number;
 }
 
 /** Mutable state set by early phases, consumed by later phases. */

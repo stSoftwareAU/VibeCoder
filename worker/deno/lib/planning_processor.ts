@@ -934,6 +934,7 @@ async function _processPlanningWithHeartbeat(
       [],
       issueTitle,
       ctx.milestoneTitle,
+      ctx.handlerDeadlineEpochMs,
     );
   }
 
@@ -964,6 +965,7 @@ async function _processPlanningWithHeartbeat(
       [],
       issueTitle,
       ctx.milestoneTitle,
+      ctx.handlerDeadlineEpochMs,
     );
   }
 
@@ -1138,6 +1140,7 @@ async function _processPlanningWithHeartbeat(
         invocations,
         issueTitle,
         ctx.milestoneTitle,
+        ctx.handlerDeadlineEpochMs,
       );
     }
   }
@@ -1424,6 +1427,7 @@ async function _processPlanningWithHeartbeat(
     invocations,
     issueTitle,
     ctx.milestoneTitle,
+    ctx.handlerDeadlineEpochMs,
   );
 }
 
@@ -1556,6 +1560,12 @@ async function closePlanningIssue(
   invocations: PlanningInvocationStats[] = [],
   parentIssueTitle = "",
   parentMilestoneTitle: string | undefined = undefined,
+  /**
+   * Epoch-ms instant the dispatch watchdog will abandon this handler at
+   * (Issue #58), threaded from `IssueContext.handlerDeadlineEpochMs`. Bounds
+   * the Failure-Detection self-repair below. Undefined: unbounded, as before.
+   */
+  handlerDeadlineEpochMs: number | undefined = undefined,
 ): Promise<Result<PlanningResult>> {
   // Per-run model stats + degraded-model verdict (Issue #2649). The configured
   // best planning model (Issue #2654, per-repo override aware) is the model the
@@ -1618,9 +1628,19 @@ async function closePlanningIssue(
       // `## Failure Detection` section for each offender, patch it in, and
       // re-gate. Only the sub-issues that genuinely could not be repaired drive
       // the loud, labelled `handlePlanningFailure` (hard-block fallback, #3270).
+      //
+      // Issue #58: the repair is deadline-aware. `handlerDeadlineEpochMs` is
+      // the instant the dispatcher's watchdog will abandon this handler —
+      // derived from the watchdog's own budget, never a fresh constant, so the
+      // two cannot drift. Offenders the budget cannot fit are reported as
+      // `deferred` (never attempted) instead of the repair being killed
+      // mid-flight and its in-flight calls mislabelled as model timeouts.
       const repair = await repairFailureDetectionSections({
         repo,
         offenders,
+        ...(handlerDeadlineEpochMs !== undefined
+          ? { deadlineMs: handlerDeadlineEpochMs }
+          : {}),
         ghCommandFn: deps.github.runGhCommand,
         runClaude: (repairPrompt: string) =>
           deps.claude.runClaudeWithRetry(
@@ -1657,23 +1677,40 @@ async function closePlanningIssue(
         );
       }
 
-      if (repair.stillOffending.length > 0) {
+      if (repair.deferred.length > 0) {
         logger.warn(
-          "Failure-Detection gate: sub-issue(s) could not be repaired — failing the planning run (Issue #3246/#3272)",
+          "Failure-Detection self-repair: sub-issue(s) deferred un-attempted — the handler budget could not fit their repair (Issue #58)",
+          {
+            repo,
+            issueNumber,
+            deferred: repair.deferred.map((o) => o.number).join(","),
+          },
+        );
+      }
+
+      // A deferred offender was never attempted, so it is not evidence that a
+      // repair is impossible — but its criterion is still missing, so it must
+      // never pass silently. Both sets block the run (Issue #58).
+      const unresolved = [...repair.stillOffending, ...repair.deferred];
+
+      if (unresolved.length > 0) {
+        logger.warn(
+          "Failure-Detection gate: sub-issue(s) still missing the criterion after self-repair — failing the planning run (Issue #3246/#3272)",
           {
             repo,
             issueNumber,
             stillOffending: repair.stillOffending.map((o) => o.number).join(
               ",",
             ),
+            deferred: repair.deferred.map((o) => o.number).join(","),
           },
         );
 
-        // Post a short comment on each un-repairable sub-issue so the signal is
+        // Post a short comment on each unresolved sub-issue so the signal is
         // actionable at the sub-issue, not only on the parent. Best-effort — a
         // per-sub-issue comment failure must not swallow the loud parent
         // failure.
-        for (const offender of repair.stillOffending) {
+        for (const offender of unresolved) {
           try {
             await ghClient.postComment(
               repo,
@@ -1692,15 +1729,15 @@ async function closePlanningIssue(
           }
         }
 
-        // Drive the existing loud-failure path: names each un-repairable
-        // offender on the parent, runs the failed-once/failed label
-        // progression, posts run stats, and releases the claim. The run is NOT
-        // recorded as a success.
+        // Drive the existing loud-failure path: names each unresolved offender
+        // on the parent, runs the failed-once/failed label progression, posts
+        // run stats, and releases the claim. The run is NOT recorded as a
+        // success.
         await handlePlanningFailure(
           repo,
           issueNumber,
           githubUser,
-          buildParentGateFailureComment(repair.stillOffending),
+          buildParentGateFailureComment(unresolved),
           config,
           deps,
           logger,
@@ -1708,10 +1745,13 @@ async function closePlanningIssue(
           invocations,
         );
 
+        const deferredNote = repair.deferred.length > 0
+          ? `, ${repair.deferred.length} deferred un-attempted on the handler budget`
+          : "";
         return {
           ok: false,
           error: new Error(
-            `Planning failed: ${repair.stillOffending.length} published sub-issue(s) missing the \`## Failure Detection\` criterion (self-repair could not fix them)`,
+            `Planning failed: ${unresolved.length} published sub-issue(s) missing the \`## Failure Detection\` criterion (self-repair could not fix them${deferredNote})`,
           ),
         };
       }

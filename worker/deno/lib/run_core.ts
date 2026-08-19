@@ -109,6 +109,17 @@ export interface PriorityHandlerResult {
   rateLimited?: boolean;
 }
 
+/** What the dispatcher tells a handler about its own watchdog bound (#58). */
+export interface HandlerExecuteOptions {
+  /**
+   * Epoch-millisecond instant at which the watchdog will abandon this handler.
+   * A handler doing bounded post-work (e.g. the Failure-Detection self-repair)
+   * uses it to stop cleanly rather than be killed mid-way. Optional: a handler
+   * that ignores it behaves exactly as before.
+   */
+  deadlineEpochMs: number;
+}
+
 /** A single entry in the priority dispatch table. */
 export interface PriorityHandler {
   /** Numeric priority (lower = higher priority). */
@@ -116,7 +127,9 @@ export interface PriorityHandler {
   /** Human-readable name for logging. */
   name: string;
   /** Execute this priority level's work. */
-  execute: () => Promise<Result<PriorityHandlerResult | void>>;
+  execute: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult | void>>;
   /**
    * The handler may spawn a coding agent (Issue #4369). Its watchdog is
    * bounded by the cycle deadline rather than the flat handler timeout — an
@@ -315,7 +328,13 @@ export interface RunCoreDeps {
   findAndProcessQuorum?: () => Promise<Result<PriorityHandlerResult>>;
 
   // Priority 1.80: Planning mode
-  findAndProcessPlanning: () => Promise<Result<PriorityHandlerResult>>;
+  /**
+   * Issue #58: receives the dispatcher's watchdog deadline so the planning
+   * run's post-publication self-repair can defer work it cannot finish.
+   */
+  findAndProcessPlanning: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
 
   // Priority 1.85: Question answering
   findAndProcessQuestion: () => Promise<Result<PriorityHandlerResult>>;
@@ -2448,14 +2467,22 @@ export async function runCoreLoop(
               // it at 600 s left it running detached (observed live: it was
               // then SIGTERMed at run end, misread as a rate limit, and
               // relaunched after "Run complete").
+              const dispatchNowMs = deps.now();
               const hardTimeoutMs = handlerHardTimeoutMs(
                 config.handlerTimeoutSeconds,
                 handler.agentBacked === true,
                 endTime,
-                deps.now(),
+                dispatchNowMs,
               );
+              // Issue #58: hand the handler the instant the watchdog will
+              // abandon it, derived from the very budget armed below so the
+              // two cannot drift. A handler doing bounded post-work (the
+              // Failure-Detection self-repair) stops cleanly and defers what it
+              // cannot finish instead of being killed mid-way.
+              const handlerDeadlineEpochMs = dispatchNowMs + hardTimeoutMs;
               const watch = await runWithWatchdog(
-                () => handler.execute(),
+                () =>
+                  handler.execute({ deadlineEpochMs: handlerDeadlineEpochMs }),
                 {
                   hardTimeoutMs,
                   softTimeoutMs: config.handlerSoftTimeoutSeconds * 1000,
