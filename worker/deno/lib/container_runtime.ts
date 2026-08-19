@@ -95,6 +95,23 @@ export interface ContainerRuntimeDialect {
    */
   builderStopArgs: readonly string[];
   /**
+   * Sub-commands that restart the runtime's build helper, in order (Issue
+   * #4441). Each entry is one complete invocation.
+   *
+   * Apple container's BuildKit builder VM remounts its own filesystem
+   * read-only after an ENOSPC and stays that way until it is restarted, so
+   * every later launch failed with `read-only file system` before it built
+   * anything. Docker and Podman build in-process and have no VM to bounce;
+   * pruning the build cache is the equivalent remedy for a builder store that
+   * ran out of room.
+   */
+  builderRestartArgs: readonly (readonly string[])[];
+  /**
+   * Sub-commands that recreate the build helper from scratch, in order
+   * (Issue #4441) — the escalation when a restart did not clear the failure.
+   */
+  builderRecreateArgs: readonly (readonly string[])[];
+  /**
    * Sub-command that lists the local images (Issue #4162).
    *
    * Read by the image prune, which deletes every `vibe-coder` tag other than
@@ -237,6 +254,12 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   imageListArgs: ["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"],
   imageRemoveArgs: ["image", "rm"],
   builderStopArgs: [],
+  // No builder VM to bounce (Issue #4441): the equivalent remedy for a build
+  // that died on storage is to drop the build cache, which is what fills the
+  // builder store. The escalation is the same command — there is nothing
+  // further to recreate.
+  builderRestartArgs: [["builder", "prune", "-f"]],
+  builderRecreateArgs: [["builder", "prune", "-f"]],
   listArgs: ["ps", "--format", "json"],
 };
 
@@ -269,6 +292,13 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   // next `container build`, so stopping costs nothing but a cold builder
   // on the next definition change.
   builderStopArgs: ["builder", "stop"],
+  // The builder VM remounts its filesystem read-only after an ENOSPC and
+  // stays that way until it is restarted (Issue #4441): a stop/start is what
+  // a human ran by hand on host-23 to end a launch loop that had already
+  // backed off to 960 s. `builder delete` + `builder start` is the
+  // escalation, for a builder whose backing volume is itself damaged.
+  builderRestartArgs: [["builder", "stop"], ["builder", "start"]],
+  builderRecreateArgs: [["builder", "delete"], ["builder", "start"]],
   // Apple container spells the listing `container list`; `ps` is not a
   // sub-command there (Issue #4173).
   listArgs: ["list", "--format", "json"],

@@ -430,6 +430,17 @@ export interface CommandResult<T = unknown> {
   success: boolean;
   message: string;
   data?: T;
+  /**
+   * Process exit status when this result is the CLI's own outcome
+   * (Issue #4441).
+   *
+   * Almost every command wants the default — 0 on success, 1 on failure — and
+   * leaves this undefined. It exists for commands whose caller must tell two
+   * *correct* outcomes apart: `container-build-heal` exits 3 to say "this
+   * build failure is not one I heal", which is a different instruction to the
+   * launcher than either "healed, retry" (0) or "the heal itself failed" (1).
+   */
+  exitCode?: number;
 }
 
 /**

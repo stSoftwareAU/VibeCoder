@@ -27,6 +27,7 @@ import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
+  buildCount,
   type Harness,
   type LaunchOutcome,
   mountValues,
@@ -35,6 +36,7 @@ import {
   recorded,
   removedImages,
   REPO_ROOT,
+  runCoreLog,
   runLauncher as runHarnessLauncher,
   setupHarness,
   spawnLauncher as spawnHarnessLauncher,
@@ -406,6 +408,65 @@ Deno.test({
       const outcome = await runLauncher(harness);
       assert(outcome.code !== 0, "a missing credential directory must fail");
       assertStringIncludes(outcome.stderr, "credentials");
+      assertEquals(await recorded(harness, "run"), null);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - heals the builder and retries once when the build dies on storage (Issue #4441)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+      STUB_BUILD_STDERR:
+        'Error: resourceExhausted: "failed to solve: write /out.tar: no ' +
+        'space left on device"',
+      // The retry succeeds once the builder is usable again.
+      STUB_BUILD_RETRY_EXIT: "0",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+
+      assertEquals(outcome.code, 0, outcome.stderr);
+      assertEquals(await buildCount(harness), 2);
+      // Docker and Podman - what run.ps1 launches - prune the build cache
+      // rather than bouncing a builder VM.
+      assert(
+        await recorded(harness, "builder-prune"),
+        `no builder heal was performed: ${outcome.stderr}`,
+      );
+      assert(await recorded(harness, "run"), "the worker must still launch");
+      assertStringIncludes(
+        await runCoreLog(harness),
+        "container-build-heal",
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a build that failed for its own reasons is not healed or retried (Issue #4441)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "9",
+      STUB_BUILD_STDERR: "E: Unable to locate package nosuchpackage",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+
+      assertEquals(outcome.code, 9, outcome.stderr);
+      assertEquals(await buildCount(harness), 1);
+      assertEquals(await recorded(harness, "builder-prune"), null);
       assertEquals(await recorded(harness, "run"), null);
     } finally {
       await harness.cleanup();

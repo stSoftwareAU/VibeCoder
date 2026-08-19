@@ -181,7 +181,8 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issues #4196/#4197 added `export-scrub-gate` + `export-branding` (132 → 134).
   // Issues #4196/#4197 added `export-redact` (134 → 135).
   // Issues #4197/#4198 added `export-links` (135 → 136).
-  assertEquals(commands.length, 136);
+  // Issue #4441 added `container-build-heal` (count 136 → 137).
+  assertEquals(commands.length, 137);
   assertEquals(commands.includes("security-tree-sweep"), true);
   assertEquals(commands.includes("green-gate-report"), true);
   assertEquals(commands.includes("security-tabletop"), true);
@@ -194,6 +195,7 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   assertEquals(commands.includes("container-restart-backoff"), true);
   assertEquals(commands.includes("container-reap"), true);
   assertEquals(commands.includes("container-image-prune"), true);
+  assertEquals(commands.includes("container-build-heal"), true);
   assertEquals(commands.includes("run-mode"), true);
   assertEquals(commands.includes("idle-task-freshness"), true);
   assertEquals(commands.includes("process-seed-idle-tasks"), true);

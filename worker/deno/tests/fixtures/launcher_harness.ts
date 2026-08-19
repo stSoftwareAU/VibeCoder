@@ -88,6 +88,17 @@ case "\${sub}" in
       fi
       prev="\${a}"
     done
+    # Count the builds (Issue #4441), so a test can tell a launch that
+    # retried after a builder heal from one that built once, and can make the
+    # retry behave differently from the first attempt.
+    count=\$(( \$(cat "\${record_dir}/build.count" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "\${count}" > "\${record_dir}/build.count"
+    if [[ -n "\${STUB_BUILD_STDERR:-}" ]]; then
+      printf '%s\\n' "\${STUB_BUILD_STDERR}" >&2
+    fi
+    if [[ "\${count}" -ge 2 ]]; then
+      exit "\${STUB_BUILD_RETRY_EXIT:-0}"
+    fi
     exit "\${STUB_BUILD_EXIT:-0}"
     ;;
   stop)
@@ -315,6 +326,37 @@ export async function removedImages(harness: Harness): Promise<string[]> {
     );
   } catch {
     return [];
+  }
+}
+
+/**
+ * How many image builds the launcher ran (Issue #4441).
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The build count, or 0 when no build was attempted
+ */
+export async function buildCount(harness: Harness): Promise<number> {
+  try {
+    const text = await Deno.readTextFile(`${harness.recordDir}/build.count`);
+    return Number(text.trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The lines the launcher appended to the worker's host log (Issue #4441).
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The `run_core.log` contents, or an empty string when there is none
+ */
+export async function runCoreLog(harness: Harness): Promise<string> {
+  try {
+    return await Deno.readTextFile(
+      `${harness.tmpDir}/home/logs/run_core.log`,
+    );
+  } catch {
+    return "";
   }
 }
 

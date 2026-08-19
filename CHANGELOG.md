@@ -13,6 +13,20 @@ This changelog is a human-readable digest grouped by version.
 
 ### Added
 
+- **The launcher heals a builder that ran out of storage (Issue #4441).** An
+  ENOSPC during `container build` leaves Apple container's BuildKit builder VM
+  with a read-only filesystem, and it stays that way after the host disk is
+  freed — on host-23 every later launch died with "read-only file system"
+  before it built anything and `loop.sh` backed off to 960 s with no human
+  coming. `run.sh` and `run.ps1` now capture the build's output and call the
+  new `container-build-heal` command on failure: a build that carries a
+  builder-storage signature (`no space left on device`, `read-only file
+  system`, `ENOSPC`, BuildKit's `ResourceExhausted`) restarts the builder and
+  is retried **once**; a second failure in the same launch recreates the
+  builder so the next launch starts clean. A build that failed for its own
+  reasons fails exactly as it always has — the command exits 3 to say so — and
+  every decision is recorded in `~/logs/run_core.log`.
+
 - **Supply-chain posture gate (Issue #4192).** New `supply-chain-gate`
   command and a `supply-chain-gate` job in `validate-scripts.yml` that fail on
   a `uses:` not pinned to a full commit SHA (only local `./` actions exempt),
