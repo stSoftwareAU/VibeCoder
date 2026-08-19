@@ -214,7 +214,9 @@ Deno.test("prompt builder - issue prompt includes milestone targeting", async ()
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value.prompt, "milestone/oidc");
-    assertStringIncludes(result.value.prompt, "--base milestone/oidc");
+    // The branch name is fenced as untrusted data, so the imperative
+    // instructions carry the `<branch>` placeholder instead (Issue #16).
+    assertStringIncludes(result.value.prompt, '--base "<milestone-branch>"');
     assertStringIncludes(result.value.prompt, "Closes #10");
   }
 });
