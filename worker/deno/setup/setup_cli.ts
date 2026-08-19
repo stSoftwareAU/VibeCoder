@@ -119,12 +119,15 @@ export interface ContainerRepairDeps {
  * @param probe - The report `checkAllPrerequisites` just produced
  * @param probeOptions - The options that produced it, reused for the re-run
  * @param deps - Repair and re-probe overrides (testing)
+ * @param autoInstall - Consent to the install in advance (`--auto-install`,
+ *                      Issue #33)
  * @returns The report to carry forward
  */
 export async function repairMacOsContainerRuntime(
   probe: AllPrerequisitesResult,
   probeOptions: PrerequisiteOptions,
   deps: ContainerRepairDeps = {},
+  autoInstall = false,
 ): Promise<AllPrerequisitesResult> {
   const runtimeFailed = probe.results.some((r) =>
     r.tool === CONTAINER_RUNTIME_TOOL && !r.ok
@@ -134,7 +137,7 @@ export async function repairMacOsContainerRuntime(
   const repair = deps.repair ?? repairContainerRuntime;
   const recheckAll = deps.recheckAll ?? checkAllPrerequisites;
 
-  const repaired = await repair(probe, { log: printInfo });
+  const repaired = await repair(probe, { log: printInfo, autoInstall });
   const runtimeOk = repaired.results.some((r) =>
     r.tool === CONTAINER_RUNTIME_TOOL && r.ok
   );
@@ -174,6 +177,7 @@ export function prerequisiteSummaryLines(
 async function runPrerequisites(
   scriptDir: string,
   configPath: string,
+  autoInstall = false,
 ): Promise<boolean> {
   const skipPrereq = Deno.env.get("VIBE_SKIP_PREREQ_CHECK") === "true";
   const skipAuth = Deno.env.get("VIBE_SKIP_AUTH_CHECK") === "true";
@@ -215,13 +219,17 @@ async function runPrerequisites(
   const probe = await repairMacOsContainerRuntime(
     await checkAllPrerequisites(probeOptions),
     probeOptions,
+    {},
+    autoInstall,
   );
 
   // Interactive hosts are offered the installs, one prompt per tool
   // (Issue #4135). With no TTY — or VIBE_NO_AUTO_INSTALL=true — the offer is
-  // suppressed and the report below is byte-for-byte today's.
+  // withheld and the report says so (Issue #33); --auto-install consents to
+  // every offer in advance, so a scripted run can still install.
   const result = await offerMissingPrerequisites(probe, {
     probeOptions: { ...probeOptions, skipPrereqCheck: false },
+    autoInstall,
     reporter: {
       info: printInfo,
       success: printSuccess,
@@ -848,9 +856,13 @@ async function runBackfillIdleTaskLabels(configPath: string): Promise<boolean> {
   }
 }
 
-async function runAll(scriptDir: string, configPath: string): Promise<boolean> {
+async function runAll(
+  scriptDir: string,
+  configPath: string,
+  autoInstall = false,
+): Promise<boolean> {
   // 1. Prerequisites
-  const prereqOk = await runPrerequisites(scriptDir, configPath);
+  const prereqOk = await runPrerequisites(scriptDir, configPath, autoInstall);
   if (!prereqOk) return false;
 
   // 2. Config
@@ -901,10 +913,11 @@ async function runAll(scriptDir: string, configPath: string): Promise<boolean> {
 
 function usage(): void {
   console.log(
-    `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run]
+    `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
 
 Subcommands:
-  prerequisites   Check all prerequisites
+  prerequisites   Check all prerequisites (--auto-install consents in advance
+                  to every offered install — Issue #33)
   config          Write config from VIBE_* env vars
   launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
   screenshot      Setup Playwright MCP for screenshots
@@ -933,6 +946,7 @@ if (import.meta.main) {
   let powershell = "";
   let uninstall = false;
   let status = false;
+  let autoInstall = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--script-dir" && args[i + 1]) {
@@ -950,6 +964,8 @@ if (import.meta.main) {
       uninstall = true;
     } else if (args[i] === "--status") {
       status = true;
+    } else if (args[i] === "--auto-install") {
+      autoInstall = true;
     }
   }
 
@@ -961,7 +977,7 @@ if (import.meta.main) {
 
   switch (subcommand) {
     case "prerequisites":
-      ok = await runPrerequisites(scriptDir, configPath);
+      ok = await runPrerequisites(scriptDir, configPath, autoInstall);
       break;
     case "config":
       ok = await runConfig(configPath);
@@ -1011,7 +1027,7 @@ if (import.meta.main) {
       ok = await runHooks(scriptDir);
       break;
     case "all":
-      ok = await runAll(scriptDir, configPath);
+      ok = await runAll(scriptDir, configPath, autoInstall);
       break;
     case "--help":
     case "-h":

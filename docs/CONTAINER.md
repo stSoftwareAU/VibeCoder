@@ -388,7 +388,10 @@ found, with the exact commands shown before they run:
 | Windows | — | — |
 
 The offer needs a package manager the plan table knows (Homebrew or apt) and a
-terminal; without either, nothing runs and the manual instructions above stand.
+terminal — or the explicit `--auto-install` flag (Issue #33), which consents to
+every offer in advance so a scripted setup run installs the runtime with no
+terminal to prompt on. Without either, nothing runs, the manual instructions
+above stand, and the report says the offer was withheld and why.
 The runtime is re-probed in the same setup run, so a step that exits zero while
 the runtime still cannot answer keeps the check failed. See
 Deployment for the full

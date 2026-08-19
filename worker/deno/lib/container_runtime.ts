@@ -665,7 +665,8 @@ function buildUnavailableMessage(
     "",
     "Container mode has no host fallback (Issues #4060, #4): containment " +
     "is mandatory, so this fails rather than running the worker on the host. " +
-    "Install a supported runtime (./setup.sh offers to) and launch again.",
+    "Install a supported runtime (./setup.sh offers to, and " +
+    "./setup.sh --auto-install consents in advance) and launch again.",
   ].join("\n");
 }
 
