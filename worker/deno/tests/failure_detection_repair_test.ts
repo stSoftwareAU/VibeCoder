@@ -14,7 +14,9 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { Result } from "../types.ts";
 import {
   applyFailureDetectionSection,
+  buildBatchRepairPrompt,
   extractDraftedContent,
+  parseBatchRepairOutput,
   type RepairClaudeResult,
   repairFailureDetectionSections,
 } from "../lib/failure_detection_repair.ts";
@@ -233,21 +235,27 @@ Deno.test("repair - gh issue edit failure is caught, offender stays in stillOffe
   assertEquals(result.invocations.length, 1);
 });
 
+// Business-logic change (Issue #57): the repair now drafts every offender in a
+// single batched Claude call, so this mixed-outcome case is expressed as one
+// batched output carrying a good block and a placeholder block rather than two
+// sequential per-offender calls.
 Deno.test("repair - mixed batch: one repaired, one un-repairable", async () => {
   const { ghCommandFn, edits } = ghMock({
     500: bodyMissingSection(),
     501: bodyMissingSection(),
   });
-  let call = 0;
+  let calls = 0;
   const runClaude = () => {
-    call++;
-    // First offender gets a real criterion; second gets an empty draft.
-    const output = call === 1
-      ? "## Failure Detection\n\nTest `a_test.ts` covers it."
-      : "## Failure Detection\n\n[placeholder]";
+    calls++;
     return Promise.resolve({
       ok: true as const,
-      value: { output, timedOut: false },
+      value: {
+        output: [
+          batchBlock(500, "Test `a_test.ts` covers it."),
+          batchBlock(501, "[placeholder]"),
+        ].join("\n"),
+        timedOut: false,
+      },
     });
   };
 
@@ -259,10 +267,326 @@ Deno.test("repair - mixed batch: one repaired, one un-repairable", async () => {
     logger: silentLogger(),
   });
 
+  assertEquals(calls, 1);
   assertEquals(result.repaired, [500]);
   assertEquals(result.stillOffending.map((o) => o.number), [501]);
   assertEquals(edits.map((e) => e.number), [500]);
-  assertEquals(result.invocations.length, 2);
+  assertEquals(result.invocations.length, 1);
+});
+
+// --- (d) batched drafting: one Claude call for N offenders (Issue #57) ---
+
+/** Render one batched-output block in the format the prompt asks Claude for. */
+function batchBlock(number: number, criterion: string): string {
+  return [
+    `<<<SUB_ISSUE_${number}>>>`,
+    "## Failure Detection",
+    "",
+    criterion,
+    `<<<END_SUB_ISSUE_${number}>>>`,
+  ].join("\n");
+}
+
+Deno.test("repair - eight offenders are drafted in a single Claude call", async () => {
+  const numbers = [601, 602, 603, 604, 605, 606, 607, 608];
+  const bodies: Record<number, string> = {};
+  for (const n of numbers) bodies[n] = bodyMissingSection();
+  const { ghCommandFn, edits } = ghMock(bodies);
+
+  let calls = 0;
+  const prompts: string[] = [];
+  const runClaude = (prompt: string) => {
+    calls++;
+    prompts.push(prompt);
+    return Promise.resolve({
+      ok: true as const,
+      value: {
+        output: numbers
+          .map((n) => batchBlock(n, `Test \`sub_${n}_test.ts\` covers it.`))
+          .join("\n\n"),
+        timedOut: false,
+      },
+    });
+  };
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: numbers.map(offender),
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  // One invocation for eight offenders — the O(N) tail is gone.
+  assertEquals(calls, 1);
+  assertEquals(result.invocations.length, 1);
+  assertEquals(result.repaired, numbers);
+  assertEquals(result.stillOffending, []);
+  assertEquals(edits.map((e) => e.number), numbers);
+  // Each sub-issue got its own drafted criterion, not another's.
+  for (const edit of edits) {
+    assertStringIncludes(edit.body, `sub_${edit.number}_test.ts`);
+    assertEquals(
+      validateFailureDetectionCriteria([
+        { number: edit.number, title: "Add the widget", body: edit.body },
+      ]),
+      [],
+    );
+  }
+  // Every sub-issue appears in the one prompt.
+  for (const n of numbers) {
+    assertStringIncludes(prompts[0]!, `Sub-issue #${n}:`);
+  }
+});
+
+Deno.test("repair - offender absent from the batched output stays in stillOffending", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    701: bodyMissingSection(),
+    702: bodyMissingSection(),
+    703: bodyMissingSection(),
+  });
+  let calls = 0;
+  const runClaude = () => {
+    calls++;
+    return Promise.resolve({
+      ok: true as const,
+      value: {
+        output: [
+          batchBlock(701, "Test `a_test.ts` covers it."),
+          batchBlock(703, "Test `c_test.ts` covers it."),
+        ].join("\n\n"),
+        timedOut: false,
+      },
+    });
+  };
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(701), offender(702), offender(703)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  assertEquals(calls, 1);
+  assertEquals(result.repaired, [701, 703]);
+  assertEquals(result.stillOffending.map((o) => o.number), [702]);
+  assertEquals(edits.map((e) => e.number), [701, 703]);
+});
+
+Deno.test("repair - batched draft that fails the re-gate writes no body", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    711: bodyMissingSection(),
+    712: bodyMissingSection(),
+  });
+  const runClaude = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: {
+        output: [
+          batchBlock(711, "Test `a_test.ts` covers it."),
+          // Bracketed placeholder — fails the pure gate.
+          batchBlock(712, "[describe how a regression is detected]"),
+        ].join("\n\n"),
+        timedOut: false,
+      },
+    });
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(711), offender(712)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  assertEquals(result.repaired, [711]);
+  assertEquals(result.stillOffending.map((o) => o.number), [712]);
+  // The non-conforming draft must never be written.
+  assertEquals(edits.map((e) => e.number), [711]);
+});
+
+Deno.test("repair - unparseable batched output falls back to the per-offender path", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    801: bodyMissingSection(),
+    802: bodyMissingSection(),
+  });
+  const prompts: string[] = [];
+  const runClaude = (prompt: string) => {
+    prompts.push(prompt);
+    const output = prompts.length === 1
+      // No block markers at all — the batched output cannot be split.
+      ? "Sorry, here is one section:\n\n## Failure Detection\n\nSomething."
+      : "## Failure Detection\n\nTest `fallback_test.ts` covers it.";
+    return Promise.resolve({ ok: true as const, value: { output } });
+  };
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(801), offender(802)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  // One batched attempt, then one call per offender.
+  assertEquals(prompts.length, 3);
+  assertEquals(result.repaired, [801, 802]);
+  assertEquals(result.stillOffending, []);
+  assertEquals(edits.map((e) => e.number), [801, 802]);
+  // The batched call is recorded alongside the two fallback calls.
+  assertEquals(result.invocations.length, 3);
+});
+
+Deno.test("repair - a single offender uses the single-offender prompt", async () => {
+  const { ghCommandFn } = ghMock({ 900: bodyMissingSection() });
+  const prompts: string[] = [];
+  const runClaude = (prompt: string) => {
+    prompts.push(prompt);
+    return Promise.resolve({
+      ok: true as const,
+      value: { output: "## Failure Detection\n\nTest `s_test.ts` covers it." },
+    });
+  };
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(900)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  assertEquals(result.repaired, [900]);
+  assertEquals(prompts.length, 1);
+  assertStringIncludes(prompts[0]!, "Output ONLY the markdown section");
+  assertEquals(prompts[0]!.includes("<<<SUB_ISSUE_"), false);
+});
+
+Deno.test("repair - batched call failure leaves every offender un-repaired, no invocation", async () => {
+  const { ghCommandFn, edits } = ghMock({
+    910: bodyMissingSection(),
+    911: bodyMissingSection(),
+  });
+  let calls = 0;
+  const runClaude = () => {
+    calls++;
+    return Promise.resolve({
+      ok: false as const,
+      error: new Error("rate limited"),
+    });
+  };
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(910), offender(911)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  assertEquals(calls, 1);
+  assertEquals(result.repaired, []);
+  assertEquals(result.stillOffending.map((o) => o.number), [910, 911]);
+  assertEquals(result.invocations.length, 0);
+  assertEquals(edits.length, 0);
+});
+
+Deno.test("repair - batched invocation records runStats, fallbackModel and preflightDegraded", async () => {
+  const { ghCommandFn } = ghMock({
+    920: bodyMissingSection(),
+    921: bodyMissingSection(),
+  });
+  const runClaude = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: {
+        output: [
+          batchBlock(920, "Test `a_test.ts` covers it."),
+          batchBlock(921, "Test `b_test.ts` covers it."),
+        ].join("\n\n"),
+        runStats: {
+          servedModels: ["claude-fable-5-20250101"],
+          effort: "high",
+        } as RepairClaudeResult["runStats"],
+        fallbackModel: "claude-haiku-4-5",
+        preflightDegraded: true,
+        preflightDegradedReason: "pre-flight reroute",
+      },
+    });
+
+  const result = await repairFailureDetectionSections({
+    repo: "o/r",
+    offenders: [offender(920), offender(921)],
+    runClaude,
+    ghCommandFn,
+    logger: silentLogger(),
+  });
+
+  assertEquals(result.invocations.length, 1);
+  const invocation = result.invocations[0]!;
+  assertEquals(invocation.phase, "planning");
+  assertEquals(invocation.runStats?.servedModels, ["claude-fable-5-20250101"]);
+  assertEquals(invocation.fallbackModel, "claude-haiku-4-5");
+  assertEquals(invocation.preflightDegraded, true);
+  assertEquals(invocation.preflightDegradedReason, "pre-flight reroute");
+});
+
+// --- batched prompt and parser unit tests ---
+
+Deno.test("buildBatchRepairPrompt - names every sub-issue and asks for one block each", () => {
+  const prompt = buildBatchRepairPrompt([
+    { number: 11, title: "Add A", body: "Body A" },
+    { number: 12, title: "Add B", body: "Body B" },
+  ]);
+  assertStringIncludes(prompt, "Sub-issue #11: Add A");
+  assertStringIncludes(prompt, "Sub-issue #12: Add B");
+  assertStringIncludes(prompt, "<<<SUB_ISSUE_11>>>");
+  assertStringIncludes(prompt, "<<<END_SUB_ISSUE_11>>>");
+  assertStringIncludes(prompt, "<<<SUB_ISSUE_12>>>");
+  assertStringIncludes(prompt, "## Failure Detection");
+});
+
+Deno.test("parseBatchRepairOutput - maps each block to its sub-issue number", () => {
+  const parsed = parseBatchRepairOutput(
+    [
+      batchBlock(11, "Test `a_test.ts` covers it."),
+      batchBlock(12, "N/A — docs-only."),
+    ].join("\n\n"),
+  );
+  assertEquals(parsed.size, 2);
+  assertStringIncludes(parsed.get(11)!, "a_test.ts");
+  assertStringIncludes(parsed.get(12)!, "docs-only");
+});
+
+Deno.test("parseBatchRepairOutput - tolerates a missing end marker", () => {
+  const parsed = parseBatchRepairOutput(
+    [
+      "<<<SUB_ISSUE_11>>>",
+      "## Failure Detection",
+      "",
+      "Test `a_test.ts` covers it.",
+      "<<<SUB_ISSUE_12>>>",
+      "## Failure Detection",
+      "",
+      "N/A — docs-only.",
+    ].join("\n"),
+  );
+  assertEquals(parsed.size, 2);
+  assertStringIncludes(parsed.get(11)!, "a_test.ts");
+  assertEquals(parsed.get(11)!.includes("SUB_ISSUE_12"), false);
+});
+
+Deno.test("parseBatchRepairOutput - unmarked or empty output yields no entries", () => {
+  assertEquals(
+    parseBatchRepairOutput("## Failure Detection\n\nSomething").size,
+    0,
+  );
+  assertEquals(parseBatchRepairOutput("").size, 0);
+  assertEquals(
+    parseBatchRepairOutput("<<<SUB_ISSUE_11>>>\n\n<<<END_SUB_ISSUE_11>>>").size,
+    0,
+  );
 });
 
 // --- helper unit tests ---
