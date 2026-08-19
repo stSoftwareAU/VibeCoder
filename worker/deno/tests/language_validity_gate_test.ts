@@ -8,7 +8,9 @@
  *   - net-new Python `py_compile` / `compileall` detection;
  *   - a multi-language repo returns correct per-language results;
  *   - a shell-only repo yields no language findings;
- *   - the language enumerator honours the shared React decision.
+ *   - the language enumerator honours the shared React decision;
+ *   - an incidental language below the main-language share threshold is not
+ *     treated as a main language (Issue #3).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -16,6 +18,7 @@ import {
   checkLanguageValidityGates,
   detectValidityGateLanguages,
   type LanguageValidityResult,
+  MAIN_LANGUAGE_MIN_SHARE,
   type ValidityGateLanguage,
 } from "../lib/language_validity_gate.ts";
 import type { RepoLanguages } from "../lib/language_detector.ts";
@@ -109,6 +112,60 @@ Deno.test("detectValidityGateLanguages — TypeScript without React markers stay
 
 Deno.test("detectValidityGateLanguages — shell-only repo yields no languages", () => {
   assertEquals(detectValidityGateLanguages(langs({ Shell: 500 })), []);
+});
+
+// ---------------------------------------------------------------------------
+// Main-language share threshold (Issue #3)
+// ---------------------------------------------------------------------------
+
+Deno.test("detectValidityGateLanguages — incidental TypeScript in a Rust repo is not a main language", () => {
+  // Real byte counts from stSoftwareAU/NEAT-AI-Lamarck: a Rust repo whose
+  // only TypeScript is one fixture-generation script (0.1% of the repo).
+  assertEquals(
+    detectValidityGateLanguages(
+      langs({ Rust: 1390142, Shell: 65940, TypeScript: 1407 }),
+    ),
+    ["rust"],
+  );
+});
+
+Deno.test("detectValidityGateLanguages — language exactly on the share threshold is a main language", () => {
+  const total = 10_000;
+  const onThreshold = total * MAIN_LANGUAGE_MIN_SHARE;
+  assertEquals(
+    detectValidityGateLanguages(
+      langs({ Rust: total - onThreshold, Python: onThreshold }),
+    ).sort(),
+    ["python", "rust"],
+  );
+});
+
+Deno.test("detectValidityGateLanguages — language just under the share threshold is ignored", () => {
+  const total = 10_000;
+  const underThreshold = total * MAIN_LANGUAGE_MIN_SHARE - 1;
+  assertEquals(
+    detectValidityGateLanguages(
+      langs({ Rust: total - underThreshold, Python: underThreshold }),
+    ),
+    ["rust"],
+  );
+});
+
+Deno.test("detectValidityGateLanguages — incidental TypeScript with React markers is still ignored", () => {
+  assertEquals(
+    detectValidityGateLanguages(
+      langs({ Java: 100_000, TypeScript: 100 }, {
+        hasReactDependency: true,
+        hasJsxFiles: true,
+      }),
+    ),
+    ["java"],
+  );
+});
+
+Deno.test("detectValidityGateLanguages — repo with no measured bytes yields no languages", () => {
+  assertEquals(detectValidityGateLanguages(langs({})), []);
+  assertEquals(detectValidityGateLanguages(langs({ TypeScript: 0 })), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -335,6 +392,24 @@ Deno.test("multi-language repo returns correct per-language results", async () =
       assertEquals(results.length, 2);
       assertEquals(byLang(results, "rust").present, true);
       assertEquals(byLang(results, "python").present, false);
+    },
+  );
+});
+
+Deno.test("Rust repo with an incidental .ts script yields no TypeScript finding", async () => {
+  await withTempRepo(
+    {
+      "Cargo.toml": '[package]\nname = "x"\n',
+      "scripts/generate_fixtures.ts": "console.log('fixtures');\n",
+      ".github/workflows/ci.yml": workflow("cargo check --all-targets"),
+    },
+    async (tmp) => {
+      const results = await checkLanguageValidityGates(
+        tmp,
+        langs({ Rust: 1390142, Shell: 65940, TypeScript: 1407 }),
+      );
+      assertEquals(results.map((r) => r.language), ["rust"]);
+      assertEquals(byLang(results, "rust").present, true);
     },
   );
 });

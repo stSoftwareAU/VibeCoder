@@ -1333,6 +1333,10 @@ The prompt at `prompts/bash_syntax_audit/` is the human-style wrapper body only
   other main language (Rust, TypeScript, React, Java, Python) checks a native
   basic-validity step is wired into CI (`cargo check`, `deno check` /
   `tsc --noEmit`, `mvn compile` / `gradle compileJava`, `python -m py_compile`).
+  **Main means material, not merely present** (#3): a language qualifies only
+  when it holds ≥ 5% (`MAIN_LANGUAGE_MIN_SHARE`) of the repo's measured bytes,
+  so a Rust repo carrying one incidental `.ts` helper script is never asked for
+  a TypeScript gate it has nothing to run against.
 
 **Absolutely isolated.** There is no shared cross-repo reusable Action — each
 repository owns and commits its own gate (the FLEET `quality/bash_syntax.sh`
