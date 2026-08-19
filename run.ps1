@@ -377,10 +377,20 @@ $reaped = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
     "--runtime", $Runtime,
     "--stale",
     "--max-age-seconds", $WatchdogSeconds,
-    "--exclude", $ContainerName
+    "--exclude", $ContainerName,
+    "--refuse-live"
 )
 if ($reaped.StdOut) { [Console]::Error.Write($reaped.StdOut) }
 if ($reaped.StdErr) { [Console]::Error.Write($reaped.StdErr) }
+# One worker per host (Issue #26): the work volumes are per-host singletons,
+# so a worker container somebody else is running stops this launch here,
+# plainly, rather than in the runtime's storage-attachment error. Kept in
+# step with ANOTHER_WORKER_RUNNING_EXIT in container_reap.ts.
+if ($reaped.ExitCode -eq 4) {
+    [Console]::Error.WriteLine(
+        "[run.ps1] another worker is already running on this host - one worker per host; not launching (Issue #26)")
+    exit 1
+}
 if ($reaped.ExitCode -ne 0) {
     [Console]::Error.WriteLine(
         "[run.ps1] warning: the pre-launch container reaper did not complete")

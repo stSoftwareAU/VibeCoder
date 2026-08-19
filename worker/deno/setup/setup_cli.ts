@@ -44,8 +44,16 @@ import {
   runConfigSetup,
   updateGitInfoExclude,
 } from "./config_writer.ts";
-import { setupLaunchAgent } from "./launchagent.ts";
-import { setupScheduledTask } from "./scheduled_task.ts";
+import {
+  isLaunchAgentInstalled,
+  removeLaunchAgent,
+  setupLaunchAgent,
+} from "./launchagent.ts";
+import {
+  isScheduledTaskRegistered,
+  removeScheduledTask,
+  setupScheduledTask,
+} from "./scheduled_task.ts";
 import { setupPlaywrightMcp } from "./screenshot.ts";
 import { syncLabelsForAllRepos } from "./label_sync.ts";
 import { syncWorkflowsForAllRepos } from "./workflow_sync.ts";
@@ -275,6 +283,49 @@ async function runHooks(scriptDir: string): Promise<boolean> {
   if (excludeResult.ok) printSuccess(excludeResult.message);
 
   return hookResult.ok;
+}
+
+/**
+ * `launchagent --status`: print `installed` or `not-installed`, nothing else,
+ * so setup.sh can read the answer (Issue #26).
+ */
+async function runLaunchAgentStatus(): Promise<boolean> {
+  const installed = await isLaunchAgentInstalled(
+    Deno.env.get("VIBE_LAUNCHAGENT_DIR"),
+  );
+  console.log(installed ? "installed" : "not-installed");
+  return true;
+}
+
+/** `launchagent --uninstall`: unload the agent and delete its plist. */
+async function runLaunchAgentRemoval(): Promise<boolean> {
+  printInfo("Removing the macOS LaunchAgent...");
+  const result = await removeLaunchAgent({
+    launchAgentDir: Deno.env.get("VIBE_LAUNCHAGENT_DIR"),
+    skipLaunchctl: Deno.env.get("VIBE_SKIP_LAUNCHCTL") === "true",
+  });
+  if (result.ok) printSuccess(result.message);
+  else printError(result.message);
+  return result.ok;
+}
+
+/** `scheduled-task --status`: `registered` or `not-registered`, nothing else. */
+async function runScheduledTaskStatus(): Promise<boolean> {
+  console.log(
+    (await isScheduledTaskRegistered()) ? "registered" : "not-registered",
+  );
+  return true;
+}
+
+/** `scheduled-task --uninstall`: unregister the task. */
+async function runScheduledTaskRemoval(): Promise<boolean> {
+  printInfo("Unregistering the Windows scheduled task...");
+  const result = await removeScheduledTask({
+    skipSchtasks: Deno.env.get("VIBE_SKIP_SCHTASKS") === "true",
+  });
+  if (result.ok) printSuccess(result.message);
+  else printError(result.message);
+  return result.ok;
 }
 
 async function runLaunchAgentSetup(scriptDir: string): Promise<boolean> {
@@ -862,7 +913,7 @@ function usage(): void {
 Subcommands:
   prerequisites   Check all prerequisites
   config          Write config from VIBE_* env vars
-  launchagent     Setup macOS LaunchAgent
+  launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
   screenshot      Setup Playwright MCP for screenshots
   label-sync      Synchronise labels across repos
   workflow-sync   Audit workflows and raise issues for missing protections
@@ -873,7 +924,7 @@ Subcommands:
   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
   backfill-idle-task-labels  Apply idle-task label to existing security-scan wrappers
   hooks           Install pre-commit hook and git exclude patterns
-  scheduled-task  Register the Windows Task Scheduler entry
+  scheduled-task  Register the Windows Task Scheduler entry (--status / --uninstall to query or remove it)
   all             Run full setup (default)`,
   );
 }
@@ -887,6 +938,8 @@ if (import.meta.main) {
   let configPath = "";
   let dryRun = false;
   let powershell = "";
+  let uninstall = false;
+  let status = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--script-dir" && args[i + 1]) {
@@ -900,6 +953,10 @@ if (import.meta.main) {
       i++;
     } else if (args[i] === "--dry-run") {
       dryRun = true;
+    } else if (args[i] === "--uninstall") {
+      uninstall = true;
+    } else if (args[i] === "--status") {
+      status = true;
     }
   }
 
@@ -917,10 +974,18 @@ if (import.meta.main) {
       ok = await runConfig(configPath);
       break;
     case "launchagent":
-      ok = await runLaunchAgentSetup(scriptDir);
+      ok = status
+        ? await runLaunchAgentStatus()
+        : uninstall
+        ? await runLaunchAgentRemoval()
+        : await runLaunchAgentSetup(scriptDir);
       break;
     case "scheduled-task":
-      ok = await runScheduledTaskSetup(scriptDir, powershell);
+      ok = status
+        ? await runScheduledTaskStatus()
+        : uninstall
+        ? await runScheduledTaskRemoval()
+        : await runScheduledTaskSetup(scriptDir, powershell);
       break;
     case "screenshot":
       ok = await runScreenshotSetup(scriptDir);

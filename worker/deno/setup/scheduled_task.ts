@@ -171,6 +171,77 @@ export function encodeTaskXmlUtf16(xml: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Unregister the scheduled task (Issue #26) — the LaunchAgent removal's twin,
+ * for the operator who answers "no" on a host where an earlier setup
+ * registered it. Idempotent: a task that is not registered is not an error.
+ *
+ * @param config - Task name and the injectable schtasks driver
+ * @returns Whether the task is gone, and what happened
+ */
+export async function removeScheduledTask(config: {
+  taskName?: string;
+  os?: string;
+  skipSchtasks?: boolean;
+  runSchtasks?: (
+    args: readonly string[],
+  ) => Promise<{ success: boolean; output: string }>;
+}): Promise<ScheduledTaskResult> {
+  const os = config.os ?? Deno.build.os;
+  if (os !== "windows") {
+    return {
+      ok: true,
+      message: "Scheduled task removal is only relevant on Windows — skipped",
+    };
+  }
+  const taskName = config.taskName ?? SCHEDULED_TASK_NAME;
+  if (config.skipSchtasks) {
+    return { ok: true, message: `Would unregister task ${taskName}` };
+  }
+  const runSchtasks = config.runSchtasks ?? defaultRunSchtasks;
+  const query = await runSchtasks(["/Query", "/TN", taskName]);
+  if (!query.success) {
+    return { ok: true, message: `No scheduled task ${taskName} is registered` };
+  }
+  const { success, output } = await runSchtasks([
+    "/Delete",
+    "/TN",
+    taskName,
+    "/F",
+  ]);
+  if (!success) {
+    return {
+      ok: false,
+      message: `schtasks /Delete failed for ${taskName}: ${
+        output.trim() || "no output"
+      }`,
+    };
+  }
+  return { ok: true, message: `Scheduled task ${taskName} unregistered` };
+}
+
+/**
+ * Whether the scheduled task is registered (Issue #26) — what setup asks
+ * before offering to remove it. Off Windows, or with no schtasks, false.
+ */
+export async function isScheduledTaskRegistered(config: {
+  taskName?: string;
+  os?: string;
+  runSchtasks?: (
+    args: readonly string[],
+  ) => Promise<{ success: boolean; output: string }>;
+} = {}): Promise<boolean> {
+  const os = config.os ?? Deno.build.os;
+  if (os !== "windows") return false;
+  const runSchtasks = config.runSchtasks ?? defaultRunSchtasks;
+  const query = await runSchtasks([
+    "/Query",
+    "/TN",
+    config.taskName ?? SCHEDULED_TASK_NAME,
+  ]);
+  return query.success;
+}
+
 /** Run `schtasks.exe` and capture what it said. */
 async function defaultRunSchtasks(
   args: readonly string[],

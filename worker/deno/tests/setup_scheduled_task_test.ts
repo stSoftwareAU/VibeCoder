@@ -14,6 +14,8 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   encodeTaskXmlUtf16,
   generateScheduledTaskXml,
+  isScheduledTaskRegistered,
+  removeScheduledTask,
   SCHEDULED_TASK_NAME,
   setupScheduledTask,
 } from "../setup/scheduled_task.ts";
@@ -253,4 +255,57 @@ Deno.test("setupScheduledTask - skipSchtasks writes the XML but registers nothin
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
+});
+
+// ── Removal (Issue #26) ─────────────────────────────────────────────────
+
+Deno.test("removeScheduledTask - unregisters a registered task, and a missing one is not an error", async () => {
+  const recorded: Recorded = { args: [] };
+  const gone = await removeScheduledTask({
+    os: "windows",
+    runSchtasks: recordingSchtasks(recorded),
+  });
+  assertEquals(gone.ok, true, gone.message);
+  assertEquals(recorded.args, [
+    ["/Query", "/TN", SCHEDULED_TASK_NAME],
+    ["/Delete", "/TN", SCHEDULED_TASK_NAME, "/F"],
+  ]);
+  assertStringIncludes(gone.message, "unregistered");
+
+  const none: Recorded = { args: [] };
+  const absent = await removeScheduledTask({
+    os: "windows",
+    runSchtasks: recordingSchtasks(none, false, "ERROR: not found"),
+  });
+  assertEquals(absent.ok, true);
+  assertEquals(
+    none.args.length,
+    1,
+    "nothing to delete is queried, not deleted",
+  );
+  assertStringIncludes(absent.message, "No scheduled task");
+});
+
+Deno.test("removeScheduledTask / isScheduledTaskRegistered - off Windows there is nothing to remove", async () => {
+  const recorded: Recorded = { args: [] };
+  const result = await removeScheduledTask({
+    os: "linux",
+    runSchtasks: recordingSchtasks(recorded),
+  });
+  assertEquals(result.ok, true);
+  assertEquals(recorded.args, []);
+  assertEquals(
+    await isScheduledTaskRegistered({
+      os: "linux",
+      runSchtasks: recordingSchtasks(recorded),
+    }),
+    false,
+  );
+  assertEquals(
+    await isScheduledTaskRegistered({
+      os: "windows",
+      runSchtasks: recordingSchtasks(recorded),
+    }),
+    true,
+  );
 });

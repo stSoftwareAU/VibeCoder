@@ -108,6 +108,13 @@ BUILD_LOG=""
 # worker/deno/commands/container_build_heal.ts by the launcher tests.
 BUILD_NOT_HEALABLE_EXIT=3
 
+# Exit status container-reap reports when another worker is already running on
+# this host (Issue #26) - one worker per host, so this launch stops before it
+# builds or launches anything, saying so plainly. Kept in step with
+# ANOTHER_WORKER_RUNNING_EXIT in worker/deno/commands/container_reap.ts by the
+# launcher tests.
+ANOTHER_WORKER_RUNNING_EXIT=4
+
 # A wedged helper must never wedge this launcher: the helpers below run under
 # a time bound where the host has one (gtimeout on macOS, timeout on Linux).
 TIMEOUT_CMD=""
@@ -388,14 +395,26 @@ done
 # killed here. Best-effort by design: a reaper that cannot run says so and the
 # launch continues, because a leaked container from a previous cycle must not
 # stop this one.
-if ! bounded 300 "${DENO_CMD}" run \
+#
+# What does stop this one is a worker container somebody else is legitimately
+# running (Issue #26): the work volumes are per-host singletons, so a second
+# worker would only fail on its storage attachment with a VM-internals error
+# that names nothing. --refuse-live has the reaper say "already running"
+# instead, and this launcher exits on that status alone.
+reap_status=0
+bounded 300 "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
   --allow-env --allow-read --allow-write --allow-run \
   "${BASE_DIR}/worker/deno/mod.ts" container-reap \
   --runtime "${RUNTIME}" \
   --stale \
   --max-age-seconds "${WATCHDOG_SECONDS}" \
-  --exclude "${CONTAINER_NAME}" </dev/null >&2; then
+  --exclude "${CONTAINER_NAME}" \
+  --refuse-live </dev/null >&2 || reap_status=$?
+if ((reap_status == ANOTHER_WORKER_RUNNING_EXIT)); then
+  echo "[run.sh] another worker is already running on this host - one worker per host; not launching (Issue #26)" >&2
+  exit 1
+elif ((reap_status != 0)); then
   echo "[run.sh] warning: the pre-launch container reaper did not complete" >&2
 fi
 

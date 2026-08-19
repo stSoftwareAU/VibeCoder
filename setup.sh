@@ -1014,6 +1014,25 @@ prompt_launchagent_setup() {
     read -r install_launchagent
     if [[ "$install_launchagent" != "n" && "$install_launchagent" != "N" ]]; then
         run_setup_cli launchagent
+        return 0
+    fi
+
+    # Declined. An agent an earlier setup installed is still there, still
+    # launching the worker every five minutes beside whatever the operator
+    # starts by hand - and two workers on one host collide on the work
+    # volumes (Issue #26). Say so, and offer to remove it; "no" here must
+    # never silently mean "keep the one you have".
+    local plist_dir="${VIBE_LAUNCHAGENT_DIR:-$HOME/Library/LaunchAgents}"
+    if [[ -f "${plist_dir}/com.vibe.auto-issue-worker.plist" ]]; then
+        print_warning "The LaunchAgent is currently installed: launchd starts the worker every 5 minutes on this machine."
+        print_info "Starting the worker by hand (./loop.sh) as well would run two workers on this host - one worker per host."
+        echo -n "  Remove the installed LaunchAgent now? [Y/n] "
+        read -r remove_launchagent
+        if [[ "$remove_launchagent" != "n" && "$remove_launchagent" != "N" ]]; then
+            run_setup_cli launchagent --uninstall
+        else
+            print_info "Keeping the LaunchAgent - do not also start the worker by hand on this machine."
+        fi
     else
         print_info "Skipping LaunchAgent — continue starting the worker manually (e.g. ./loop.sh)."
     fi

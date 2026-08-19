@@ -203,6 +203,76 @@ export async function setupLaunchAgent(
   return { ok: true, message: `LaunchAgent setup complete: ${plistPath}` };
 }
 
+/**
+ * Remove the LaunchAgent: unload it and delete its plist (Issue #26).
+ *
+ * The counterpart of {@link setupLaunchAgent} for the operator who answers
+ * "no" to the install prompt on a host where an earlier setup left the agent
+ * installed — otherwise it keeps launching the worker every five minutes
+ * beside whatever they start by hand, and two workers on one host collide on
+ * the work volumes. Idempotent: an agent that is not installed is not an
+ * error.
+ *
+ * @param config - Where the plist lives and whether to drive launchctl
+ * @returns Whether the agent is gone, and what happened
+ */
+export async function removeLaunchAgent(config: {
+  launchAgentDir?: string;
+  skipLaunchctl?: boolean;
+}): Promise<LaunchAgentResult> {
+  if (Deno.build.os !== "darwin") {
+    return {
+      ok: true,
+      message: "LaunchAgent removal is only relevant on macOS — skipped",
+    };
+  }
+  const homeDir = Deno.env.get("HOME") ?? "~";
+  const launchAgentDir = config.launchAgentDir ??
+    `${homeDir}/Library/LaunchAgents`;
+  const plistPath = `${launchAgentDir}/${LAUNCHAGENT_LABEL}.plist`;
+
+  // Unload first: a plist deleted from under a loaded agent leaves the job
+  // running until logout. bootout of a job that is not loaded fails, and
+  // that is fine — the plist may be a leftover from a session ago.
+  if (!config.skipLaunchctl) {
+    const uid = await getUid();
+    await runLaunchctl(["bootout", `gui/${uid}/${LAUNCHAGENT_LABEL}`]);
+  }
+
+  try {
+    await Deno.remove(plistPath);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { ok: true, message: "No LaunchAgent is installed" };
+    }
+    return {
+      ok: false,
+      message: `Could not remove ${plistPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  return { ok: true, message: `LaunchAgent removed: ${plistPath}` };
+}
+
+/**
+ * Whether the LaunchAgent plist is present (Issue #26) — what setup asks
+ * before offering to remove it. Presence of the file is the test: a loaded
+ * job always has one, and an unloaded leftover still reloads at next login.
+ */
+export async function isLaunchAgentInstalled(
+  launchAgentDir?: string,
+): Promise<boolean> {
+  const homeDir = Deno.env.get("HOME") ?? "~";
+  const dir = launchAgentDir ?? `${homeDir}/Library/LaunchAgents`;
+  try {
+    await Deno.stat(`${dir}/${LAUNCHAGENT_LABEL}.plist`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function getUid(): Promise<string> {
   const cmd = new Deno.Command("id", { args: ["-u"], stdout: "piped" });
   const output = await cmd.output();

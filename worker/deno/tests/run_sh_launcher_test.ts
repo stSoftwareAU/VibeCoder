@@ -483,6 +483,35 @@ Deno.test("run.sh - a healthy run is never reaped", async () => {
   }
 });
 
+Deno.test("run.sh - refuses to launch when another worker is already running on this host (Issue #26)", async () => {
+  // A worker container whose launcher is alive: this very test process.
+  const live = `vibe-coder-${Deno.pid}`;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_LIST_JSON: JSON.stringify([{ Names: live }]),
+  });
+  try {
+    const outcome = await runLauncher(harness);
+
+    // Loud, early, and plain: exit non-zero naming the container and the
+    // launcher pid, before anything is built or launched - never the
+    // runtime's storage-attachment error a second worker would die on.
+    assert(outcome.code !== 0, "a second worker must not launch");
+    assertStringIncludes(outcome.stderr, "another worker is already running");
+    assertStringIncludes(outcome.stderr, live);
+    assertStringIncludes(outcome.stderr, `launcher pid ${Deno.pid}`);
+    assertEquals(
+      await recorded(harness, "kill"),
+      null,
+      "a live worker is never reaped",
+    );
+    assertEquals(await recorded(harness, "build"), null);
+    assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - reaps a leaked worker container before launching (Issue #4173)", async () => {
   const orphan = `vibe-coder-${await deadPid()}`;
   const harness = await setupHarness({

@@ -37,6 +37,7 @@ import {
   resolveGraceSeconds,
   resolveWatchdogSeconds,
   selectContainerProcesses,
+  selectLiveWorkerContainers,
   selectStaleContainers,
   WATCHDOG_MARGIN_SECONDS,
   WATCHDOG_SECONDS_ENV,
@@ -263,6 +264,32 @@ Deno.test("selectStaleContainers - reaps a container older than the deadline", (
 
   assertEquals(stale.map((entry) => entry.name), ["vibe-coder-1"]);
   assertEquals(stale[0]!.reason, "age");
+});
+
+Deno.test("selectLiveWorkerContainers - the complement of the stale scan: young, launcher alive, not this run's own (Issue #26)", () => {
+  const now = 1_800_000_000_000;
+  const live = selectLiveWorkerContainers({
+    records: [
+      { name: "vibe-coder-1", createdAt: now - 4_000_000 }, // stale by age
+      { name: "vibe-coder-2", createdAt: now - 1_000 }, // live
+      { name: "vibe-coder-3" }, // no age reported (Apple container), live
+      { name: "vibe-coder-4", createdAt: now - 2_000 }, // launcher gone
+      { name: "vibe-coder-5-init", createdAt: now - 500 }, // helper, not a worker
+      { name: "vibe-coder-6", createdAt: now - 3_000 }, // this run's own
+      { name: "postgres" }, // not ours
+    ],
+    maxAgeSeconds: 3_600,
+    now,
+    excludeNames: ["vibe-coder-6"],
+    isProcessAlive: (pid) => pid !== 4,
+  });
+
+  assertEquals(
+    live.map((entry) => `${entry.name}:${entry.launcherPid}`),
+    ["vibe-coder-2:2", "vibe-coder-3:3"],
+  );
+  assertEquals(live[0]!.ageSeconds, 1);
+  assertEquals(live[1]!.ageSeconds, undefined);
 });
 
 Deno.test("selectStaleContainers - reaps an orphan whose launcher is gone", () => {
