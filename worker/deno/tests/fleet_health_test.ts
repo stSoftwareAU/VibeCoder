@@ -26,6 +26,7 @@ import {
   DEFAULT_FLEET_HEALTH_TIMEOUT_MS,
   ensureFleetHealthRepo,
   FleetHealthNotConfiguredError,
+  healthRepoCheckoutName,
   MAX_FAILURE_STREAM_CHARS,
   reportFleetHealth,
   runFleetHealthReporting,
@@ -1035,4 +1036,52 @@ Deno.test("production captureCommand returns the command's stdout (Issue #4252)"
   const result = await deps.captureCommand(["echo", "captured-4252"]);
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value, "captured-4252");
+});
+
+Deno.test("healthRepoCheckoutName - the checkout is named after the repository, whatever the URL form", () => {
+  assertEquals(
+    healthRepoCheckoutName("git@github.com:stSoftwareAU/GRQ-health.git"),
+    "GRQ-health",
+  );
+  assertEquals(
+    healthRepoCheckoutName("https://github.com/stSoftwareAU/GRQ-health"),
+    "GRQ-health",
+  );
+  assertEquals(healthRepoCheckoutName("ssh://git@host/org/h.git/"), "h");
+});
+
+Deno.test("buildFleetHealthConfig - with a repository configured, the default directory carries its name (host and container)", () => {
+  const saved = {
+    dir: Deno.env.get("FLEET_HEALTH_DIR"),
+    repo: Deno.env.get("FLEET_HEALTH_REPO"),
+    stamp: Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS"),
+    work: Deno.env.get("WORK_DIR"),
+  };
+  try {
+    Deno.env.delete("FLEET_HEALTH_DIR");
+    Deno.env.set("FLEET_HEALTH_REPO", "git@github.com:org/GRQ-health.git");
+    Deno.env.delete("VIBE_IMAGE_AGENT_PROVIDERS");
+    assertEquals(
+      buildFleetHealthConfig("/home/user/VibeCoder").healthDir,
+      "/home/user/VibeCoder/../GRQ-health",
+    );
+    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
+    Deno.env.set("WORK_DIR", "/home/vibe/auto-issue-work");
+    assertEquals(
+      buildFleetHealthConfig("/workspace").healthDir,
+      "/home/vibe/auto-issue-work/GRQ-health",
+    );
+  } finally {
+    for (
+      const [name, value] of [
+        ["FLEET_HEALTH_DIR", saved.dir],
+        ["FLEET_HEALTH_REPO", saved.repo],
+        ["VIBE_IMAGE_AGENT_PROVIDERS", saved.stamp],
+        ["WORK_DIR", saved.work],
+      ] as const
+    ) {
+      if (value === undefined) Deno.env.delete(name);
+      else Deno.env.set(name, value);
+    }
+  }
 });

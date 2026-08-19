@@ -98,6 +98,20 @@ This changelog is a human-readable digest grouped by version.
 
 ### Fixed
 
+- **The optional-feature keys in `.config.json` reach the worker again, and
+  FLEET health needs only the repository URL.** `imgbb_api_key`,
+  `fleet_health_dir`, `fleet_health_repo` and `update_gh_user_status` were
+  turned into environment variables only by the bash-era `load-config`
+  export script, which the Deno driver never applied — natively and in the
+  container the worker logged `FLEET_HEALTH_REPO is not set` (and
+  `health-tracking: degraded`, `github-status: degraded`) beside a config that
+  set them. The driver now applies them at start (environment wins, as
+  `${VAR:-config}` did; a host `fleet_health_dir` is not applied inside the
+  container). Setup asks only for the health repository's git URL; the worker
+  clones it on first run into a checkout named after the repository —
+  `../GRQ-health` natively, `~/auto-issue-work/GRQ-health` in the container —
+  so no directory is asked for and no placeholder name appears. Health
+  tracking counts as available with the repository alone.
 - **The worker no longer assumes its own default branch is `Develop`.** The
   bootstrap prelude (and startup housekeeping's branch clean-up) reset the
   worker checkout to a fixed `origin/Develop`; a checkout of a repository

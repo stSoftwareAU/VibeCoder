@@ -183,6 +183,30 @@ Deno.test("runWorker - proceed runs the full sequence in order", async () => {
   assertEquals(rec.setEnv["CONFIG_PATH"], "/repo/.config.json");
 });
 
+Deno.test("runWorker - applies the optional-feature settings of .config.json before the bootstrap (Issue #535 keys)", async () => {
+  const rec = newRecorder();
+  const seen: string[] = [];
+  await runWorker(
+    baseOptions(),
+    stubDeps(rec, {
+      applyOptionalFeatureEnv: (configPath) => {
+        seen.push(configPath);
+        rec.calls.push("optional-env");
+        return Promise.resolve({});
+      },
+    }),
+  );
+  // The config path is the one the driver established for every later Deno
+  // command, and the step precedes the bootstrap so the worker sees the
+  // variables from its first line.
+  assertEquals(seen, ["/repo/.config.json"]);
+  assertEquals(
+    rec.calls.indexOf("optional-env") < rec.calls.indexOf("bootstrap"),
+    true,
+    rec.calls.join(","),
+  );
+});
+
 Deno.test("runWorker - a failing loop surfaces exit 1 but still cleans up", async () => {
   const rec = newRecorder();
   const result = await runWorker(
