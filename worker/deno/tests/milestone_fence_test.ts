@@ -53,7 +53,7 @@ Deno.test("milestone fence - the issue prompt fences the milestone branch (Issue
   // …but only inside an untrusted fence, never in the trusted instruction text.
   assertEquals(outsideUntrustedFences(prompt).includes(HOSTILE_BRANCH), false);
   // The imperative instructions reference it through a placeholder instead.
-  assertStringIncludes(prompt, "--base <milestone-branch>");
+  assertStringIncludes(prompt, '--base "<milestone-branch>"');
 });
 
 Deno.test("milestone fence - the issue prompt names the milestone branch as untrusted (Issue #16)", async () => {

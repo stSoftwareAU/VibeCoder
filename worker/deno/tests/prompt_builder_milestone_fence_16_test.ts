@@ -142,9 +142,9 @@ Deno.test("issue prompt - a milestone branch carrying an imperative payload stay
   );
 });
 
-Deno.test("issue prompt - the targeting instructions use the <branch> placeholder", async () => {
+Deno.test("issue prompt - the targeting instructions use the <milestone-branch> placeholder", async () => {
   const prompt = await issuePrompt("milestone/oidc");
-  assertStringIncludes(prompt, "--base <branch>");
+  assertStringIncludes(prompt, '--base "<milestone-branch>"');
   assertEquals(prompt.includes("--base milestone/oidc"), false);
 });
 
