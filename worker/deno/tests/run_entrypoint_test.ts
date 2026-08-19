@@ -205,6 +205,7 @@ Deno.test("run-entrypoint command - blocked guard yields exit 0 without a shadow
               LOG_FILE: "",
             },
             stepsRun: [],
+            defaultBranch: "main",
           });
         },
         runMainLoop: () => {

@@ -133,7 +133,7 @@ The coding guidelines (embedded in the issue, PR feedback, and other prompts) an
 **What we did:**
 
 - **Module snapshot (formerly shadow-copy):** The launcher `exec`s Deno directly on the `run-entrypoint` driver, which loads all its modules at process start. A mid-run `git reset` (or update) therefore cannot change the code the running worker is executing — the next scheduled run picks up the new code. This superseded the old shadow-copy of `worker/run_core.sh` to `worker/.run_core.sh` when the bash conductor was migrated to Deno (Issue #3504).
-- **Repo reset:** At the start of each run, the repo is reset to `origin/Develop` (or the configured default branch). That clears partial commits, stray branches, or corrupted state from a previous run.
+- **Repo reset:** At the start of each run, the repo is reset to its default branch, resolved from `origin/HEAD` (or the one named with `--default-branch`). That clears partial commits, stray branches, or corrupted state from a previous run.
 - **Pre-Claude validation (Issue #621):** Before spending Claude credits, validate that the repository is in a good state — no uncommitted changes, no detached HEAD, no divergence from remote. Catches problems early and cheaply.
 - **PID guard:** Only one run_core process per worker directory at a time. If a PID file exists and the process is still running, we exit. If the PID is stale (process gone or hung), we terminate it and remove the PID file before starting a new run.
 - **Timeout wrappers (Issue #619):** Every GitHub CLI and git operation has a configurable timeout. A hung `git push` or `gh api` call can’t block the worker indefinitely — it times out, logs the failure, and moves on.

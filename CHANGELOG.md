@@ -98,6 +98,15 @@ This changelog is a human-readable digest grouped by version.
 
 ### Fixed
 
+- **The worker no longer assumes its own default branch is `Develop`.** The
+  bootstrap prelude (and startup housekeeping's branch clean-up) reset the
+  worker checkout to a fixed `origin/Develop`; a checkout of a repository
+  whose default branch is `main` failed every cycle with
+  `git checkout Develop failed … pathspec 'Develop' did not match`. The
+  branch is now resolved from the checkout's own `origin/HEAD` (recorded with
+  `git remote set-head origin --auto` first when an older clone lacks it);
+  `--default-branch` still overrides, and an unresolvable default fails loud
+  naming that escape hatch rather than guessing.
 - **Setup asks where the FLEET-health repository is (optional) instead of
   cloning an assumed URL, and no longer warns about its own cache.** `setup.sh`
   / `setup.ps1` used to `git clone` a fixed fleet-health URL on every first run

@@ -14,9 +14,11 @@ import {
   type BootstrapDeps,
   type BootstrapOptions,
   PRELUDE_STEPS,
+  resolveOriginDefaultBranch,
   runBootstrap,
   toShellExports,
 } from "../lib/run_bootstrap.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
 import type { Result } from "../types.ts";
 import type { GzipWorkerLogsResult } from "../lib/worker_log_gzip.ts";
 
@@ -75,6 +77,10 @@ function recordingDeps(
       order.push(`log:${message}`);
       return Promise.resolve();
     },
+    resolveDefaultBranch: (_repoDir) => {
+      order.push("resolveDefaultBranch");
+      return Promise.resolve({ ok: true, value: "main" } as Result<string>);
+    },
     resetToDefaultBranch: (_repoDir, _branch, _logDir) => {
       order.push("resetToDefaultBranch");
       return Promise.resolve({ ok: true, value: undefined } as Result<void>);
@@ -130,6 +136,8 @@ Deno.test("runBootstrap - runs prelude steps in canonical order", async () => {
     "resolveRunId",
     "initWorkerLog",
     "gzipPriorWorkerLogs",
+    // No branch named: the checkout's own origin/HEAD is consulted first.
+    "resolveDefaultBranch",
     "resetToDefaultBranch",
     // A successful reset ends any bootstrap-failure streak (Issue #4204).
     "writeStreak:0",
@@ -241,7 +249,7 @@ Deno.test("runBootstrap - a clean on-branch checkout failure keeps the plain git
     resetToDefaultBranch: failingReset(order),
     describeCheckoutState: (_repoDir) => {
       order.push("describeCheckoutState");
-      return Promise.resolve({ branch: "Develop", dirtyFiles: 0 });
+      return Promise.resolve({ branch: "main", dirtyFiles: 0 });
     },
   });
 
@@ -362,19 +370,95 @@ Deno.test("runBootstrap - resets to the supplied default branch", async () => {
   assertEquals(resetBranch, "main");
 });
 
-Deno.test("runBootstrap - defaults the reset branch to Develop", async () => {
+Deno.test("runBootstrap - with no branch named, resets to the checkout's own origin/HEAD — no repository or branch name is assumed", async () => {
   const order: string[] = [];
   const env: Record<string, string> = {};
   let resetBranch = "";
   const deps = recordingDeps(order, env, {
+    resolveDefaultBranch: (_repoDir) =>
+      Promise.resolve({ ok: true, value: "release" } as Result<string>),
     resetToDefaultBranch: (_repoDir, branch, _logDir) => {
       resetBranch = branch;
       return Promise.resolve({ ok: true, value: undefined } as Result<void>);
     },
   });
 
-  await runBootstrap(baseOptions(), deps);
-  assertEquals(resetBranch, "Develop");
+  const result = await runBootstrap(baseOptions(), deps);
+  assertEquals(resetBranch, "release");
+  assertEquals(result.defaultBranch, "release");
+  assertStringIncludes(order.join(","), "log:Resetting repo to origin/release");
+});
+
+Deno.test("runBootstrap - a named branch is used as given and origin/HEAD is not consulted", async () => {
+  const order: string[] = [];
+  const env: Record<string, string> = {};
+  const deps = recordingDeps(order, env);
+
+  const result = await runBootstrap(
+    baseOptions({ defaultBranch: "main" }),
+    deps,
+  );
+  assertEquals(result.defaultBranch, "main");
+  assertEquals(order.includes("resolveDefaultBranch"), false);
+});
+
+Deno.test("runBootstrap - an unresolvable default branch fails the prelude loud, naming the escape hatch", async () => {
+  const order: string[] = [];
+  const env: Record<string, string> = {};
+  const deps = recordingDeps(order, env, {
+    resolveDefaultBranch: (_repoDir) =>
+      Promise.resolve({
+        ok: false,
+        error: new Error("refs/remotes/origin/HEAD is unset"),
+      } as Result<string>),
+  });
+
+  const result = await runBootstrap(baseOptions(), deps);
+  assertEquals(result.ok, false);
+  assertEquals(result.defaultBranch, "");
+  assertEquals(order.includes("resetToDefaultBranch"), false);
+  assertStringIncludes(
+    result.error ?? "",
+    "cannot resolve the checkout's default branch",
+  );
+  assertStringIncludes(result.error ?? "", "origin/HEAD is unset");
+  assertStringIncludes(result.error ?? "", "--default-branch");
+});
+
+Deno.test("resolveOriginDefaultBranch - reads origin/HEAD, and records it first when the clone lacks it", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    // A bare remote whose default branch is deliberately not one of the
+    // usual names, cloned twice: once as git leaves it (origin/HEAD set),
+    // once with origin/HEAD removed as an older or hand-made clone would be.
+    const remote = `${tmp}/remote.git`;
+    const seed = `${tmp}/seed`;
+    await runGitCommand(["init", "--bare", "--initial-branch=trunk", remote]);
+    await runGitCommand(["init", "--initial-branch=trunk", seed]);
+    await Deno.writeTextFile(`${seed}/f`, "x");
+    await runGitCommand(["add", "f"], { cwd: seed });
+    await runGitCommand(
+      ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "i"],
+      { cwd: seed },
+    );
+    await runGitCommand(["push", remote, "trunk"], { cwd: seed });
+
+    const clone = `${tmp}/clone`;
+    await runGitCommand(["clone", "--quiet", remote, clone]);
+    const withHead = await resolveOriginDefaultBranch(clone);
+    assertEquals(withHead.ok, true);
+    if (withHead.ok) assertEquals(withHead.value, "trunk");
+
+    await runGitCommand(
+      ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+      { cwd: clone },
+    );
+    const recovered = await resolveOriginDefaultBranch(clone);
+    assertEquals(recovered.ok, true, JSON.stringify(recovered));
+    if (recovered.ok) assertEquals(recovered.value, "trunk");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
 });
 
 Deno.test("runBootstrap - initWorkerLog writes a timestamp-named log with a relative symlink (Issue #4227)", async () => {
@@ -399,7 +483,15 @@ Deno.test("runBootstrap - initWorkerLog writes a timestamp-named log with a rela
     };
 
     const result = await runBootstrap(
-      baseOptions({ logDir: tmpDir, pid: 777, skipSoftwareUpdate: true }),
+      baseOptions({
+        logDir: tmpDir,
+        pid: 777,
+        skipSoftwareUpdate: true,
+        // /tmp/repo is not a clone; name the branch so the real resolver
+        // (the only default dep left in place besides initWorkerLog) is
+        // not consulted.
+        defaultBranch: "main",
+      }),
       deps,
     );
 
