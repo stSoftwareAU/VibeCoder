@@ -1,0 +1,356 @@
+/**
+ * Configuration file generation for VibeCoder setup.
+ *
+ * Delegates the core "overrides only" logic to the config_setup module.
+ * This module adds:
+ *   - Pre-commit hook installation
+ *   - Git info/exclude pattern management
+ *   - Retired hook cleanup
+ *
+ * Issue #923: Migrate setup scripts to Deno TypeScript.
+ */
+
+import {
+  applyServiceAccountDefault,
+  loadExistingConfig,
+  mergeNonInteractive,
+  pruneOrphanRepoConfig,
+  writeConfigFile,
+} from "./config_setup.ts";
+
+export {
+  applyServiceAccountDefault,
+  buildOverridesOnly,
+  loadExistingConfig,
+  mergeNonInteractive,
+  parseCsv,
+  pruneOrphanRepoConfig,
+  runNonInteractive,
+  writeConfigFile,
+} from "./config_setup.ts";
+
+export type {
+  RepoConfigPruneResult,
+  ServiceAccountDefaultResult,
+  SetupConfig,
+} from "./config_setup.ts";
+
+const VIBE_HOOK_MARKER = "# VibeCoder config file protection";
+
+/** Env var an operator sets deliberately to bypass a missing tracked hook. */
+const HOOK_BYPASS_ENV = "VIBE_ALLOW_MISSING_PRECOMMIT_HOOK";
+
+/**
+ * Shell body of the installed shim: invoke the tracked hook, and fail closed
+ * when it is absent (Issue #3956). A missing hook must reject the commit — the
+ * shim is the final safety net against `git add -f` of a config file, so
+ * skipping it silently would let secrets through. The bypass env var is the
+ * documented, explicit escape hatch.
+ */
+function buildShimBody(scriptDir: string): string {
+  const hook = `${scriptDir}/hooks/pre-commit`;
+  return `if [[ -f "${hook}" ]]; then
+    "${hook}" || exit $?
+elif [[ -n "\${${HOOK_BYPASS_ENV}:-}" ]]; then
+    echo "WARNING: VibeCoder pre-commit hook missing at ${hook} — bypass allowed by ${HOOK_BYPASS_ENV}." >&2
+else
+    echo "ERROR: VibeCoder pre-commit hook missing at ${hook}." >&2
+    echo "Commit rejected: config file protection cannot run (see SECURITY.md)." >&2
+    echo "Restore the hook and re-run ./setup.sh, or set ${HOOK_BYPASS_ENV}=1 to bypass deliberately." >&2
+    exit 1
+fi`;
+}
+
+/** Result type for config writer operations. */
+export interface ConfigWriterResult {
+  ok: boolean;
+  message: string;
+  /** Non-blocking notices the caller must surface (Issue #4033). */
+  warnings?: string[];
+}
+
+/** Injectable side effects for {@link runConfigSetup} (Issue #4030). */
+export interface ConfigSetupDeps {
+  /** Resolve the login `gh` is authenticated as; tests inject a fixed value. */
+  resolveWorkerLogin?: (ghConfigDir?: string) => Promise<string | undefined>;
+}
+
+/** Expand a leading `~` to $HOME so `gh` reads the right config dir. */
+function expandHome(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  return path.replace(/^~/, Deno.env.get("HOME") ?? "~");
+}
+
+/**
+ * Resolve the authenticated worker login via `gh api user` (Issue #4030).
+ *
+ * Mirrors the lookup the collaborator precheck does. Returns undefined on any
+ * failure — the caller must warn loudly, because an unresolved login leaves
+ * the identity guard inactive.
+ */
+async function resolveWorkerLoginViaGh(
+  ghConfigDir?: string,
+): Promise<string | undefined> {
+  try {
+    const env = ghConfigDir
+      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
+      : undefined;
+    const output = await new Deno.Command("gh", {
+      args: ["api", "user", "--jq", ".login"],
+      stdout: "piped",
+      stderr: "piped",
+      env,
+    }).output();
+    if (!output.success) return undefined;
+    const login = new TextDecoder().decode(output.stdout).trim();
+    return login.length > 0 ? login : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Run non-interactive config setup from environment variables.
+ *
+ * Reads VIBE_* env vars, merges with existing config, and writes
+ * only overridden values to .config.json.
+ */
+export async function runConfigSetup(
+  configPath: string,
+  env?: (name: string) => string | undefined,
+  deps: ConfigSetupDeps = {},
+): Promise<ConfigWriterResult> {
+  try {
+    const existing = await loadExistingConfig(configPath);
+    const merged = mergeNonInteractive(existing, env);
+    // Issue #4033: drop dead per-repo config, reporting every removal.
+    const { config: pruned, removed } = pruneOrphanRepoConfig(merged);
+    const warnings = removed.map((repo) =>
+      `Removed repo_config entry for '${repo}' — not in repos`
+    );
+
+    // Issue #4030: never leave the #3528 identity guard inactive. Resolve the
+    // worker login only when the allowlist is empty — one `gh` call at most.
+    const configured = (pruned.service_accounts ?? [])
+      .filter((account) => account.trim().length > 0);
+    const login = configured.length > 0 ? undefined : await (
+      deps.resolveWorkerLogin ?? resolveWorkerLoginViaGh
+    )(expandHome(pruned.gh_config_dir));
+    const { config: final, defaulted } = applyServiceAccountDefault(
+      pruned,
+      login,
+    );
+    if (defaulted) {
+      warnings.push(
+        `Set service_accounts to ['${
+          final.service_accounts?.[0]
+        }'] (the resolved worker login) — the identity guard now enforces on ` +
+          `this host. Add every service account this fleet uses with ` +
+          `VIBE_SERVICE_ACCOUNTS.`,
+      );
+    } else if (configured.length === 0) {
+      warnings.push(
+        `[SECURITY] Could not resolve the worker GitHub login, so ` +
+          `'service_accounts' is still empty and the worker identity guard ` +
+          `stays INACTIVE. Set VIBE_SERVICE_ACCOUNTS and re-run ./setup.sh.`,
+      );
+    }
+
+    await writeConfigFile(configPath, final);
+    return {
+      ok: true,
+      message: `Configuration written to: ${configPath}`,
+      warnings,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Failed to write config: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
+
+/**
+ * Install the pre-commit hook to prevent accidental config file commits.
+ *
+ * @param scriptDir - Root directory of the VibeCoder project
+ * @returns Result indicating success or skip reason
+ */
+export async function installPreCommitHook(
+  scriptDir: string,
+): Promise<ConfigWriterResult> {
+  const gitDir = `${scriptDir}/.git`;
+  try {
+    const stat = await Deno.stat(gitDir);
+    if (!stat.isDirectory) {
+      return {
+        ok: true,
+        message:
+          "Not in a git repository, skipping pre-commit hook installation",
+      };
+    }
+  } catch {
+    return {
+      ok: true,
+      message: "Not in a git repository, skipping pre-commit hook installation",
+    };
+  }
+
+  const hookSource = `${scriptDir}/hooks/pre-commit`;
+  try {
+    await Deno.stat(hookSource);
+  } catch {
+    return {
+      ok: true,
+      message: `Pre-commit hook source not found at ${hookSource}`,
+    };
+  }
+
+  const hookDir = `${gitDir}/hooks`;
+  const hookDest = `${hookDir}/pre-commit`;
+
+  // Ensure hooks directory exists
+  try {
+    await Deno.mkdir(hookDir, { recursive: true });
+  } catch {
+    // Directory may already exist
+  }
+
+  // Check if hook already exists
+  try {
+    const existing = await Deno.readTextFile(hookDest);
+
+    if (existing.includes(VIBE_HOOK_MARKER)) {
+      return { ok: true, message: "Pre-commit hook already installed" };
+    }
+
+    if (existing.includes("hooks/pre-commit")) {
+      return {
+        ok: true,
+        message: "Existing hook already includes VibeCoder protection",
+      };
+    }
+
+    // Append our hook invocation to the existing hook
+    const addition = `
+${VIBE_HOOK_MARKER}
+# Added by VibeCoder setup - prevents accidental config file commits
+${buildShimBody(scriptDir)}
+`;
+    await Deno.writeTextFile(hookDest, existing + addition);
+    return {
+      ok: true,
+      message: "Integrated VibeCoder protection into existing pre-commit hook",
+    };
+  } catch {
+    // No existing hook — create a new one
+    const hookContent = `#!/bin/bash
+${VIBE_HOOK_MARKER}
+# This hook prevents accidental commits of sensitive configuration files.
+# See SECURITY.md for more information.
+
+# Call the VibeCoder pre-commit hook
+${buildShimBody(scriptDir)}
+
+exit 0
+`;
+    await Deno.writeTextFile(hookDest, hookContent);
+    // Make executable
+    if (Deno.build.os !== "windows") {
+      await new Deno.Command("chmod", { args: ["+x", hookDest] }).output();
+    }
+    return {
+      ok: true,
+      message: "Installed pre-commit hook for config file protection",
+    };
+  }
+}
+
+/**
+ * Remove the retired pre-push hook if it was installed by VibeCoder.
+ */
+export async function removePrePushHook(
+  scriptDir: string,
+): Promise<ConfigWriterResult> {
+  const hookDest = `${scriptDir}/.git/hooks/pre-push`;
+
+  try {
+    const content = await Deno.readTextFile(hookDest);
+    if (content.includes("# VibeCoder pre-push quality gate")) {
+      await Deno.remove(hookDest);
+      return {
+        ok: true,
+        message: "Removed retired pre-push quality gate hook",
+      };
+    }
+  } catch {
+    // File doesn't exist — nothing to do
+  }
+
+  return { ok: true, message: "No retired pre-push hook to remove" };
+}
+
+/**
+ * Update .git/info/exclude with config file patterns.
+ */
+export async function updateGitInfoExclude(
+  scriptDir: string,
+): Promise<ConfigWriterResult> {
+  const gitDir = `${scriptDir}/.git`;
+  try {
+    const stat = await Deno.stat(gitDir);
+    if (!stat.isDirectory) {
+      return { ok: true, message: "Not in a git repository" };
+    }
+  } catch {
+    return { ok: true, message: "Not in a git repository" };
+  }
+
+  const infoDir = `${gitDir}/info`;
+  const excludeFile = `${infoDir}/exclude`;
+
+  // Ensure info directory exists
+  try {
+    await Deno.mkdir(infoDir, { recursive: true });
+  } catch {
+    // Directory may already exist
+  }
+
+  // Check if patterns are already present
+  try {
+    const content = await Deno.readTextFile(excludeFile);
+    if (content.includes(VIBE_HOOK_MARKER)) {
+      return {
+        ok: true,
+        message: ".git/info/exclude already contains VibeCoder patterns",
+      };
+    }
+    // Append patterns
+    const addition = `
+${VIBE_HOOK_MARKER}
+# These patterns provide local protection that cannot be overridden
+.config.json
+.config*.json
+*.secret.json
+.secrets/
+`;
+    await Deno.writeTextFile(excludeFile, content + addition);
+  } catch {
+    // File doesn't exist — create it
+    const content = `${VIBE_HOOK_MARKER}
+# These patterns provide local protection that cannot be overridden
+.config.json
+.config*.json
+*.secret.json
+.secrets/
+`;
+    await Deno.writeTextFile(excludeFile, content);
+  }
+
+  return {
+    ok: true,
+    message: "Added config file patterns to .git/info/exclude",
+  };
+}

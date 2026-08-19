@@ -1,0 +1,1716 @@
+/**
+ * Tests for the software updates module (Issue #906, #1496, #3655).
+ *
+ * Covers scheduling logic (shouldCheckForUpdates, recordUpdateCheck),
+ * self-healing retry with exponential backoff (runUpdateWithRetry,
+ * classifyUpdateError), per-tool successful-update timestamps
+ * (recordSuccessfulUpdate, getLastSuccessfulUpdate), and the release-age
+ * quarantine that now gates every upgrade (Issue #3655).
+ *
+ * Real update commands are not executed — tests inject a fake command
+ * runner and sleep so retries are deterministic and fast.
+ *
+ * **Documented behaviour change (Issue #3655).** Every updater now consults a
+ * release-age gate before running an upgrade, and the production default fails
+ * closed. Pre-existing updater tests therefore inject `openGate()` so they keep
+ * exercising the retry and timestamp behaviour they were written for; no test
+ * was removed or weakened. The gate's own behaviour is covered by the new
+ * quarantine tests below and by `tool_release_age_test.ts`.
+ */
+
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  checkSoftwareUpdates,
+  classifyUpdateError,
+  compareSemver,
+  DEFAULT_UPDATE_INTERVAL_SECONDS,
+  DEFAULT_UPDATE_RETRY_BACKOFF_SECONDS,
+  DEFAULT_UPDATE_RETRY_MAX_ATTEMPTS,
+  DEFAULT_UPDATE_TIMEOUT_SECONDS,
+  getLastSuccessfulUpdate,
+  isVersionBelowFloor,
+  parseSemver,
+  recordFloorUpdateAttempt,
+  recordSuccessfulUpdate,
+  recordUpdateCheck,
+  runUpdateWithRetry,
+  runWithTimeout,
+  shouldAttemptFloorUpdate,
+  shouldCheckForUpdates,
+  skipSoftwareUpdateFromEnv,
+  softwareUpdateOptionsFromEnv,
+  updateClaudeCli,
+  updateDeno,
+  updateGhCli,
+} from "../lib/software_updates.ts";
+import {
+  describeChannel,
+  type ReleaseAgeGate,
+  type ReleaseChannel,
+} from "../lib/tool_release_age.ts";
+import type { LogContext, Logger, Result } from "../types.ts";
+
+/**
+ * Gate that approves every channel, resolving a fixed candidate version.
+ *
+ * The verdict also carries the `ref` the gate dated (Issue #3952) — a `gh`
+ * extension upgrade installs exactly that ref, so a verdict without one is
+ * skipped rather than upgraded.
+ */
+function openGate(version = "9.9.9", ref: string | null = version) {
+  return {
+    quarantineHours: 24,
+    check: (channel: ReleaseChannel) =>
+      Promise.resolve({
+        source: describeChannel(channel),
+        version,
+        ref,
+        eligible: true,
+        indeterminate: false,
+        ageHours: 100,
+        publishedAt: "2026-07-01T00:00:00Z",
+        reason: `${describeChannel(channel)}@${version} is 100.0h old.`,
+      }),
+  } satisfies ReleaseAgeGate;
+}
+
+/** Gate that blocks every channel, either as too new or as unverifiable. */
+function closedGate(indeterminate = false): ReleaseAgeGate {
+  return {
+    quarantineHours: 24,
+    check: (channel: ReleaseChannel) =>
+      Promise.resolve({
+        source: describeChannel(channel),
+        version: indeterminate ? null : "9.9.9",
+        eligible: false,
+        indeterminate,
+        ageHours: indeterminate ? null : 2,
+        publishedAt: indeterminate ? null : "2026-08-02T00:00:00Z",
+        reason: indeterminate
+          ? `Could not resolve the newest release of ${
+            describeChannel(channel)
+          }; the upgrade is skipped.`
+          : `${describeChannel(channel)} is only 2.0h old (< 24h quarantine).`,
+      }),
+  };
+}
+
+/** Collect logger calls for assertions. */
+function testLogger(): {
+  logger: Logger;
+  infos: string[];
+  warns: string[];
+  errors: string[];
+} {
+  const infos: string[] = [];
+  const warns: string[] = [];
+  const errors: string[] = [];
+  const logger: Logger = {
+    info: (m: string, _c?: LogContext) => {
+      infos.push(m);
+    },
+    warn: (m: string, _c?: LogContext) => {
+      warns.push(m);
+    },
+    error: (m: string, _c?: LogContext) => {
+      errors.push(m);
+    },
+    debug: () => {},
+    security: () => {},
+    skipReason: () => {},
+    timing: () => {},
+    scanSummary: () => {},
+    workerSummary: () => {},
+  };
+  return { logger, infos, warns, errors };
+}
+
+// ---------- Scheduling (pre-existing behaviour) ----------
+
+Deno.test("software_updates - DEFAULT_UPDATE_INTERVAL_SECONDS is 7 days", () => {
+  assertEquals(DEFAULT_UPDATE_INTERVAL_SECONDS, 604800);
+});
+
+Deno.test("software_updates - DEFAULT_UPDATE_TIMEOUT_SECONDS is 120", () => {
+  assertEquals(DEFAULT_UPDATE_TIMEOUT_SECONDS, 120);
+});
+
+Deno.test("software_updates - DEFAULT_UPDATE_RETRY_MAX_ATTEMPTS is 3", () => {
+  assertEquals(DEFAULT_UPDATE_RETRY_MAX_ATTEMPTS, 3);
+});
+
+Deno.test("software_updates - DEFAULT_UPDATE_RETRY_BACKOFF_SECONDS is [30, 90, 300]", () => {
+  assertEquals([...DEFAULT_UPDATE_RETRY_BACKOFF_SECONDS], [30, 90, 300]);
+});
+
+Deno.test("software_updates - shouldCheckForUpdates returns true when no timestamp file", () => {
+  const result = shouldCheckForUpdates("/tmp/nonexistent_dir_test");
+  assertEquals(result, true);
+});
+
+Deno.test("software_updates - shouldCheckForUpdates returns true after interval elapsed", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const fixedTime = 1700000000;
+    recordUpdateCheck(tmpDir, () => fixedTime);
+    const result = shouldCheckForUpdates(
+      tmpDir,
+      604800,
+      () => fixedTime + 691200,
+    );
+    assertEquals(result, true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - shouldCheckForUpdates returns false within interval", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const fixedTime = 1700000000;
+    recordUpdateCheck(tmpDir, () => fixedTime);
+    const result = shouldCheckForUpdates(
+      tmpDir,
+      604800,
+      () => fixedTime + 259200,
+    );
+    assertEquals(result, false);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - shouldCheckForUpdates returns true at exact interval boundary", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const fixedTime = 1700000000;
+    recordUpdateCheck(tmpDir, () => fixedTime);
+    const result = shouldCheckForUpdates(
+      tmpDir,
+      604800,
+      () => fixedTime + 604800,
+    );
+    assertEquals(result, true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - shouldCheckForUpdates returns true for garbage data", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    Deno.writeTextFileSync(
+      `${tmpDir}/.last_software_update_check`,
+      "not-a-number",
+    );
+    const result = shouldCheckForUpdates(tmpDir, 604800, () => 1700000000);
+    assertEquals(result, true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - shouldCheckForUpdates returns true for empty file", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    Deno.writeTextFileSync(`${tmpDir}/.last_software_update_check`, "");
+    const result = shouldCheckForUpdates(tmpDir, 604800, () => 1700000000);
+    assertEquals(result, true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - recordUpdateCheck creates timestamp file", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const fixedTime = 1700000000;
+    const result = recordUpdateCheck(tmpDir, () => fixedTime);
+    assertEquals(result.ok, true);
+    const content = Deno.readTextFileSync(
+      `${tmpDir}/.last_software_update_check`,
+    );
+    assertEquals(content, "1700000000");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - recordUpdateCheck overwrites previous timestamp", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    recordUpdateCheck(tmpDir, () => 1700000000);
+    recordUpdateCheck(tmpDir, () => 1700100000);
+    const content = Deno.readTextFileSync(
+      `${tmpDir}/.last_software_update_check`,
+    );
+    assertEquals(content, "1700100000");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - custom interval is respected", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const fixedTime = 1700000000;
+    recordUpdateCheck(tmpDir, () => fixedTime);
+    assertEquals(
+      shouldCheckForUpdates(tmpDir, 3600, () => fixedTime + 1800),
+      false,
+    );
+    assertEquals(
+      shouldCheckForUpdates(tmpDir, 3600, () => fixedTime + 3660),
+      true,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+// ---------- Per-tool successful-update timestamps (Issue #1496) ----------
+
+Deno.test("software_updates - recordSuccessfulUpdate creates per-tool file", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const result = recordSuccessfulUpdate(tmpDir, "claude", () => 1700000000);
+    assertEquals(result.ok, true);
+    const content = Deno.readTextFileSync(
+      `${tmpDir}/.last_successful_update_claude`,
+    );
+    assertEquals(content, "1700000000");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - recordSuccessfulUpdate is isolated per tool", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    recordSuccessfulUpdate(tmpDir, "claude", () => 1700000000);
+    recordSuccessfulUpdate(tmpDir, "gh", () => 1700100000);
+    recordSuccessfulUpdate(tmpDir, "deno", () => 1700200000);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), 1700000000);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "gh"), 1700100000);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "deno"), 1700200000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - getLastSuccessfulUpdate returns null when missing", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("software_updates - getLastSuccessfulUpdate returns null for garbage data", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    Deno.writeTextFileSync(
+      `${tmpDir}/.last_successful_update_claude`,
+      "not-a-number",
+    );
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+// ---------- classifyUpdateError (Issue #1496) ----------
+
+Deno.test("classifyUpdateError - timeout exit codes are transient", () => {
+  assertEquals(classifyUpdateError(124, "Timed out after 120s"), "transient");
+  assertEquals(classifyUpdateError(137, ""), "transient");
+});
+
+Deno.test("classifyUpdateError - network errors are transient", () => {
+  assertEquals(
+    classifyUpdateError(1, "could not resolve host: registry.example.com"),
+    "transient",
+  );
+  assertEquals(classifyUpdateError(1, "Connection refused"), "transient");
+  assertEquals(classifyUpdateError(1, "Connection reset by peer"), "transient");
+  assertEquals(classifyUpdateError(1, "Network is unreachable"), "transient");
+});
+
+Deno.test("classifyUpdateError - rate limits are transient", () => {
+  assertEquals(classifyUpdateError(1, "API rate limit exceeded"), "transient");
+  assertEquals(
+    classifyUpdateError(1, "HTTP 429 Too Many Requests"),
+    "transient",
+  );
+});
+
+Deno.test("classifyUpdateError - 5xx errors are transient", () => {
+  assertEquals(
+    classifyUpdateError(1, "HTTP 503 Service Unavailable"),
+    "transient",
+  );
+  assertEquals(classifyUpdateError(1, "HTTP 502 Bad Gateway"), "transient");
+});
+
+Deno.test("classifyUpdateError - exit 127 is permanent (missing binary)", () => {
+  assertEquals(classifyUpdateError(127, ""), "permanent");
+});
+
+Deno.test("classifyUpdateError - auth failures are permanent", () => {
+  assertEquals(
+    classifyUpdateError(1, "Authentication failed: invalid token"),
+    "permanent",
+  );
+  assertEquals(classifyUpdateError(1, "Unauthorized"), "permanent");
+  assertEquals(classifyUpdateError(1, "Permission denied"), "permanent");
+  assertEquals(classifyUpdateError(1, "You are not logged in"), "permanent");
+  assertEquals(classifyUpdateError(1, "403 Forbidden"), "permanent");
+});
+
+Deno.test("classifyUpdateError - unsupported platform is permanent", () => {
+  assertEquals(
+    classifyUpdateError(1, "Unsupported platform: freebsd"),
+    "permanent",
+  );
+  assertEquals(
+    classifyUpdateError(1, "Architecture not supported"),
+    "permanent",
+  );
+});
+
+Deno.test("classifyUpdateError - missing binary output is permanent", () => {
+  assertEquals(
+    classifyUpdateError(1, "bash: claude: command not found"),
+    "permanent",
+  );
+  assertEquals(
+    classifyUpdateError(1, "/usr/local/bin/claude: No such file or directory"),
+    "permanent",
+  );
+});
+
+Deno.test("classifyUpdateError - unknown failures default to transient", () => {
+  // An unrecognised non-zero exit with no known signal — allow self-heal.
+  assertEquals(classifyUpdateError(1, "Something odd happened"), "transient");
+});
+
+// ---------- runUpdateWithRetry (Issue #1496) ----------
+
+interface RunCall {
+  cmd: string[];
+  timeoutSeconds: number;
+}
+
+function makeFakeRunner(
+  responses: Array<{ exitCode: number; output: string } | Error>,
+  calls: RunCall[],
+): (
+  cmd: string[],
+  timeoutSeconds: number,
+) => Promise<Result<{ exitCode: number; output: string }>> {
+  return (cmd, timeoutSeconds) => {
+    calls.push({ cmd, timeoutSeconds });
+    const next = responses.shift();
+    if (next === undefined) {
+      return Promise.resolve({
+        ok: false,
+        error: new Error("fake runner: no more responses"),
+      });
+    }
+    if (next instanceof Error) {
+      return Promise.resolve({ ok: false, error: next });
+    }
+    return Promise.resolve({ ok: true, value: next });
+  };
+}
+
+Deno.test("runUpdateWithRetry - happy path succeeds on first attempt", async () => {
+  const { logger } = testLogger();
+  const calls: RunCall[] = [];
+  const sleeps: number[] = [];
+  const result = await runUpdateWithRetry(
+    logger,
+    "test-tool",
+    ["test-tool", "update"],
+    {
+      runFn: makeFakeRunner([{ exitCode: 0, output: "up to date" }], calls),
+      sleepFn: (s: number) => {
+        sleeps.push(s);
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result.success, true);
+  assertEquals(result.attempts, 1);
+  assertEquals(result.finalExitCode, 0);
+  assertEquals(calls.length, 1);
+  assertEquals(sleeps, []);
+});
+
+Deno.test("runUpdateWithRetry - transient retry succeeds on attempt 2", async () => {
+  const { logger } = testLogger();
+  const calls: RunCall[] = [];
+  const sleeps: number[] = [];
+  const result = await runUpdateWithRetry(
+    logger,
+    "test-tool",
+    ["test-tool", "update"],
+    {
+      runFn: makeFakeRunner(
+        [
+          { exitCode: 1, output: "network timeout" },
+          { exitCode: 0, output: "updated" },
+        ],
+        calls,
+      ),
+      sleepFn: (s: number) => {
+        sleeps.push(s);
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result.success, true);
+  assertEquals(result.attempts, 2);
+  assertEquals(calls.length, 2);
+  // Waited the first backoff between attempt 1 and 2.
+  assertEquals(sleeps, [30]);
+});
+
+Deno.test("runUpdateWithRetry - permanent failure does not retry", async () => {
+  const { logger, warns } = testLogger();
+  const calls: RunCall[] = [];
+  const sleeps: number[] = [];
+  const result = await runUpdateWithRetry(
+    logger,
+    "test-tool",
+    ["test-tool", "update"],
+    {
+      runFn: makeFakeRunner(
+        [{ exitCode: 1, output: "Authentication failed" }],
+        calls,
+      ),
+      sleepFn: (s: number) => {
+        sleeps.push(s);
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.attempts, 1);
+  assertEquals(result.classification, "permanent");
+  assertEquals(calls.length, 1);
+  assertEquals(sleeps, []);
+  assertEquals(warns.some((m) => m.includes("permanently")), true);
+});
+
+Deno.test("runUpdateWithRetry - all attempts fail returns gracefully (worker not blocked)", async () => {
+  const { logger, warns } = testLogger();
+  const calls: RunCall[] = [];
+  const sleeps: number[] = [];
+  const result = await runUpdateWithRetry(
+    logger,
+    "test-tool",
+    ["test-tool", "update"],
+    {
+      runFn: makeFakeRunner(
+        [
+          { exitCode: 1, output: "network timeout" },
+          { exitCode: 1, output: "network timeout" },
+          { exitCode: 1, output: "network timeout" },
+        ],
+        calls,
+      ),
+      sleepFn: (s: number) => {
+        sleeps.push(s);
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.attempts, 3);
+  assertEquals(result.classification, "transient");
+  assertEquals(calls.length, 3);
+  // Two sleeps between three attempts, using the first two backoff entries.
+  assertEquals(sleeps, [30, 90]);
+  assertEquals(warns.some((m) => m.includes("after 3 attempts")), true);
+});
+
+Deno.test("runUpdateWithRetry - respects custom backoff schedule", async () => {
+  const { logger } = testLogger();
+  const calls: RunCall[] = [];
+  const sleeps: number[] = [];
+  const result = await runUpdateWithRetry(
+    logger,
+    "test-tool",
+    ["test-tool", "update"],
+    {
+      maxAttempts: 3,
+      backoffSeconds: [5, 10, 20],
+      runFn: makeFakeRunner(
+        [
+          { exitCode: 1, output: "rate limit" },
+          { exitCode: 1, output: "rate limit" },
+          { exitCode: 0, output: "ok" },
+        ],
+        calls,
+      ),
+      sleepFn: (s: number) => {
+        sleeps.push(s);
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result.success, true);
+  assertEquals(result.attempts, 3);
+  assertEquals(sleeps, [5, 10]);
+});
+
+Deno.test("runUpdateWithRetry - spawn error is treated as transient and retried", async () => {
+  const { logger } = testLogger();
+  const calls: RunCall[] = [];
+  const sleeps: number[] = [];
+  const result = await runUpdateWithRetry(
+    logger,
+    "test-tool",
+    ["test-tool", "update"],
+    {
+      runFn: makeFakeRunner(
+        [
+          new Error("spawn failed: ENOMEM"),
+          { exitCode: 0, output: "ok" },
+        ],
+        calls,
+      ),
+      sleepFn: (s: number) => {
+        sleeps.push(s);
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result.success, true);
+  assertEquals(result.attempts, 2);
+  assertEquals(calls.length, 2);
+});
+
+Deno.test("runUpdateWithRetry - passes timeout through to runner", async () => {
+  const { logger } = testLogger();
+  const calls: RunCall[] = [];
+  await runUpdateWithRetry(
+    logger,
+    "test-tool",
+    ["test-tool", "update"],
+    {
+      timeout: 42,
+      runFn: makeFakeRunner([{ exitCode: 0, output: "" }], calls),
+      sleepFn: () => Promise.resolve(),
+    },
+  );
+  assertEquals(calls[0]?.timeoutSeconds, 42);
+});
+
+// ---------- Per-tool update integration (Issue #1496) ----------
+
+Deno.test("updateClaudeCli - skip does not invoke runner", async () => {
+  const { logger, infos } = testLogger();
+  const calls: RunCall[] = [];
+  await updateClaudeCli(logger, {
+    skip: true,
+    retry: {
+      runFn: makeFakeRunner([], calls),
+      sleepFn: () => Promise.resolve(),
+    },
+  });
+  assertEquals(calls.length, 0);
+  assertEquals(infos.some((m) => m.includes("skipped")), true);
+});
+
+Deno.test("updateClaudeCli - success records per-tool timestamp", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateClaudeCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: {
+        runFn: makeFakeRunner([{ exitCode: 0, output: "" }], calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), 1700000000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateClaudeCli - transient retry succeeds and persists timestamp", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateClaudeCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "timeout" },
+            { exitCode: 0, output: "ok" },
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 2);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), 1700000000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateClaudeCli - all-fail does not record timestamp and does not throw", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, warns } = testLogger();
+    const calls: RunCall[] = [];
+    await updateClaudeCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "network error" },
+            { exitCode: 1, output: "network error" },
+            { exitCode: 1, output: "network error" },
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 3);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+    assertEquals(warns.length > 0, true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateClaudeCli - permanent failure does not retry and does not persist", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateClaudeCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [{ exitCode: 1, output: "Authentication failed" }],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 1);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateDeno - absent binary skips without retry", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, infos } = testLogger();
+    const calls: RunCall[] = [];
+    // First response is the `which deno` probe reporting exit 1 (not installed).
+    await updateDeno(logger, {
+      timestampDir: tmpDir,
+      retry: {
+        runFn: makeFakeRunner([{ exitCode: 1, output: "" }], calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]?.cmd, ["which", "deno"]);
+    assertEquals(infos.some((m) => m.includes("not installed")), true);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "deno"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateDeno - present binary runs upgrade with retry", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateDeno(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate("2.9.0"),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 0, output: "/usr/local/bin/deno" }, // which deno
+            { exitCode: 1, output: "timeout" }, // attempt 1
+            { exitCode: 0, output: "upgraded" }, // attempt 2
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 3);
+    // Issue #3655: the upgrade is pinned to the version the gate approved.
+    assertEquals(calls[1]?.cmd, ["deno", "upgrade", "2.9.0"]);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "deno"), 1700000000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - brew missing skips binary upgrade but still upgrades extensions", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew
+            { exitCode: 0, output: "gh dash\tdlvhdr/gh-dash\tv4.6.0" }, // list
+            { exitCode: 0, output: "upgraded" }, // pinned extension install
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 3);
+    assertEquals(calls[0]?.cmd, ["which", "brew"]);
+    // Issue #3655: extensions are enumerated and upgraded individually so each
+    // can be age-checked, instead of a wholesale `upgrade --all`.
+    assertEquals(calls[1]?.cmd, ["gh", "extension", "list"]);
+    // Issue #3952: the install is pinned to the ref the gate dated.
+    assertEquals(calls[2]?.cmd, [
+      "gh",
+      "extension",
+      "install",
+      "dlvhdr/gh-dash",
+      "--pin",
+      "9.9.9",
+      "--force",
+    ]);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "gh"), 1700000000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+// ---------- Version floor: semver parsing & comparison (Issue #2622) ----------
+
+Deno.test("parseSemver - parses Claude --version output", () => {
+  assertEquals(parseSemver("2.1.170 (Claude Code)"), [2, 1, 170]);
+});
+
+Deno.test("parseSemver - parses leading v prefix", () => {
+  assertEquals(parseSemver("v1.2.3"), [1, 2, 3]);
+});
+
+Deno.test("parseSemver - parses gh version output", () => {
+  assertEquals(parseSemver("gh version 2.40.0 (2024-01-01)"), [2, 40, 0]);
+});
+
+Deno.test("parseSemver - returns null for unparseable output", () => {
+  assertEquals(parseSemver("not a version"), null);
+});
+
+Deno.test("compareSemver - numeric per segment (2.1.170 > 2.1.9)", () => {
+  // String comparison would wrongly order "2.1.170" < "2.1.9".
+  assertEquals(compareSemver([2, 1, 170], [2, 1, 9]) > 0, true);
+});
+
+Deno.test("compareSemver - equal triples compare to zero", () => {
+  assertEquals(compareSemver([2, 1, 170], [2, 1, 170]), 0);
+});
+
+Deno.test("compareSemver - lower major compares negative", () => {
+  assertEquals(compareSemver([1, 9, 9], [2, 0, 0]) < 0, true);
+});
+
+Deno.test("isVersionBelowFloor - true when below floor", () => {
+  assertEquals(isVersionBelowFloor("2.1.9 (Claude Code)", "2.1.170"), true);
+});
+
+Deno.test("isVersionBelowFloor - false when equal to floor", () => {
+  assertEquals(isVersionBelowFloor("2.1.170 (Claude Code)", "2.1.170"), false);
+});
+
+Deno.test("isVersionBelowFloor - false when above floor", () => {
+  assertEquals(isVersionBelowFloor("2.2.0 (Claude Code)", "2.1.170"), false);
+});
+
+Deno.test("isVersionBelowFloor - null when output unparseable", () => {
+  assertEquals(isVersionBelowFloor("garbage", "2.1.170"), null);
+});
+
+// ---------- Floor-attempt backoff timestamps (Issue #2622) ----------
+
+Deno.test("shouldAttemptFloorUpdate - true when no record exists", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    assertEquals(
+      shouldAttemptFloorUpdate(tmpDir, "claude", 604800, () => 1700000000),
+      true,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("shouldAttemptFloorUpdate - false within interval, true after", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const t = 1700000000;
+    recordFloorUpdateAttempt(tmpDir, "claude", () => t);
+    assertEquals(
+      shouldAttemptFloorUpdate(tmpDir, "claude", 604800, () => t + 1000),
+      false,
+    );
+    assertEquals(
+      shouldAttemptFloorUpdate(tmpDir, "claude", 604800, () => t + 604800),
+      true,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+// ---------- checkSoftwareUpdates floor orchestration (Issue #2622) ----------
+
+/** Fake runner that always succeeds, recording the commands it was given. */
+function alwaysOkRunner(
+  calls: RunCall[],
+): (
+  cmd: string[],
+  timeoutSeconds: number,
+) => Promise<Result<{ exitCode: number; output: string }>> {
+  return (cmd, timeoutSeconds) => {
+    calls.push({ cmd, timeoutSeconds });
+    return Promise.resolve({ ok: true, value: { exitCode: 0, output: "ok" } });
+  };
+}
+
+Deno.test("checkSoftwareUpdates - below floor triggers update despite recent interval", async () => {
+  const { logger } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now); // interval NOT elapsed
+    const calls: RunCall[] = [];
+    let reads = 0;
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      minVersions: { claude: "2.1.170" },
+      readVersion: (tool) => {
+        reads++;
+        if (tool !== "claude") return Promise.resolve(null);
+        // First read: below floor; post-update read: at floor.
+        return Promise.resolve(
+          reads === 1 ? "2.1.9 (Claude Code)" : "2.1.170 (Claude Code)",
+        );
+      },
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    // Claude update ran even though the interval said "not yet".
+    assertEquals(
+      calls.some((c) => c.cmd[0] === "claude" && c.cmd[1] === "update"),
+      true,
+    );
+    // gh and deno did NOT run (interval not elapsed, no floor).
+    assertEquals(calls.some((c) => c.cmd[0] === "gh"), false);
+    assertEquals(calls.some((c) => c.cmd[0] === "deno"), false);
+    // A floor attempt was recorded → backoff now blocks an immediate re-trigger.
+    assertEquals(
+      shouldAttemptFloorUpdate(tmpDir, "claude", 604800, () => now + 200),
+      false,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - at/above floor preserves interval skip", async () => {
+  const { logger, infos } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now); // interval NOT elapsed
+    const calls: RunCall[] = [];
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      minVersions: { claude: "2.1.170" },
+      readVersion: () => Promise.resolve("2.1.170 (Claude Code)"),
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    // No updates ran; existing skip behaviour preserved.
+    assertEquals(calls.length, 0);
+    assertEquals(infos.some((m) => m.includes("checked recently")), true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - interval elapsed runs all three tools", async () => {
+  const { logger } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    // No timestamp recorded → interval elapsed.
+    const calls: RunCall[] = [];
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now,
+      minVersions: { claude: "2.1.170" },
+      readVersion: () => Promise.resolve("2.5.0 (Claude Code)"), // above floor
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    assertEquals(
+      calls.some((c) => c.cmd[0] === "claude" && c.cmd[1] === "update"),
+      true,
+    );
+    assertEquals(calls.some((c) => c.cmd[0] === "gh"), true);
+    assertEquals(calls.some((c) => c.cmd[0] === "deno"), true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - unparseable version falls back to interval with warning", async () => {
+  const { logger, warns } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now); // interval NOT elapsed
+    const calls: RunCall[] = [];
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      minVersions: { claude: "2.1.170" },
+      readVersion: () => Promise.resolve("totally unparseable output"),
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    // Never blocks: no update, falls back to interval (which says skip).
+    assertEquals(calls.length, 0);
+    assertEquals(warns.some((m) => m.includes("Could not parse")), true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - unreadable version falls back to interval with warning", async () => {
+  const { logger, warns } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now);
+    const calls: RunCall[] = [];
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      minVersions: { claude: "2.1.170" },
+      readVersion: () => Promise.resolve(null),
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    assertEquals(calls.length, 0);
+    assertEquals(warns.some((m) => m.includes("Could not read")), true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - floor still unmet after update logs warning", async () => {
+  const { logger, warns } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now); // interval NOT elapsed
+    const calls: RunCall[] = [];
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      minVersions: { claude: "2.1.170" },
+      // Always below floor — update cannot reach it.
+      readVersion: () => Promise.resolve("2.1.9 (Claude Code)"),
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    assertEquals(
+      calls.some((c) => c.cmd[0] === "claude" && c.cmd[1] === "update"),
+      true,
+    );
+    assertEquals(
+      warns.some((m) => m.includes("still below the required version floor")),
+      true,
+    );
+    // Floor attempt recorded → no retry-loop on the next iteration.
+    assertEquals(
+      shouldAttemptFloorUpdate(tmpDir, "claude", 604800, () => now + 200),
+      false,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - recent floor attempt defers re-trigger (no loop)", async () => {
+  const { logger, infos } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now); // interval NOT elapsed
+    recordFloorUpdateAttempt(tmpDir, "claude", () => now); // recent attempt
+    const calls: RunCall[] = [];
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      minVersions: { claude: "2.1.170" },
+      readVersion: () => Promise.resolve("2.1.9 (Claude Code)"), // below floor
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    // Deferred: no update ran this iteration.
+    assertEquals(calls.length, 0);
+    assertEquals(infos.some((m) => m.includes("deferring")), true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - skipClaude wins but logs unmet floor", async () => {
+  const { logger, warns } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now); // interval NOT elapsed
+    const calls: RunCall[] = [];
+    await checkSoftwareUpdates(logger, {
+      // Host context: the suite also runs inside the worker image, where
+      // the container stamp would otherwise suppress the update under test.
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      minVersions: { claude: "2.1.170" },
+      skipClaude: true,
+      readVersion: () => Promise.resolve("2.1.9 (Claude Code)"), // below floor
+      ageGate: openGate(),
+      retry: { runFn: alwaysOkRunner(calls), sleepFn: () => Promise.resolve() },
+    });
+    // Update suppressed: the runner was never asked to run `claude update`.
+    assertEquals(
+      calls.some((c) => c.cmd[0] === "claude" && c.cmd[1] === "update"),
+      false,
+    );
+    assertEquals(
+      warns.some((m) =>
+        m.includes("suppressed") && m.includes("SKIP_CLAUDE_UPDATE")
+      ),
+      true,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+// =============================================================================
+// runWithTimeout — timer-leak regression (Issue #3167)
+// =============================================================================
+
+Deno.test("runWithTimeout - success path returns output and leaks no timer", async () => {
+  // A fast command under a large timeout. If the timeout timer were left
+  // queued (the pre-#3167 bug), Deno's default op sanitiser would fail this
+  // test with a leaked-timer error.
+  const result = await runWithTimeout(["echo", "hello"], 300);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.exitCode, 0);
+    assertEquals(result.value.output, "hello");
+  }
+});
+
+Deno.test("runWithTimeout - captures non-zero exit code", async () => {
+  const result = await runWithTimeout(["sh", "-c", "exit 7"], 300);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.exitCode, 7);
+  }
+});
+
+Deno.test("runWithTimeout - returns exitCode 124 on timeout", async () => {
+  const result = await runWithTimeout(["sh", "-c", "sleep 30"], 1);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.exitCode, 124);
+    assertEquals(result.value.output.includes("Timed out"), true);
+  }
+});
+
+Deno.test("runWithTimeout - returns error for non-existent executable", async () => {
+  const result = await runWithTimeout(["nonexistent_cmd_3167_xyz"], 300);
+  assertEquals(result.ok, false);
+});
+
+// ---------- Release-age quarantine (Issue #3655) ----------
+
+Deno.test("updateClaudeCli - a release inside the quarantine window is not installed", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, infos } = testLogger();
+    const calls: RunCall[] = [];
+    await updateClaudeCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: closedGate(),
+      retry: {
+        runFn: makeFakeRunner([{ exitCode: 0, output: "" }], calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 0);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+    assertEquals(infos.some((m) => m.includes("deferred")), true);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateClaudeCli - an unverifiable release age fails closed and warns", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, warns } = testLogger();
+    const calls: RunCall[] = [];
+    await updateClaudeCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: closedGate(true),
+      retry: {
+        runFn: makeFakeRunner([{ exitCode: 0, output: "" }], calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 0);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+    assertStringIncludes(warns.join("\n"), "Claude CLI upgrade skipped");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateDeno - a release inside the quarantine window is not installed", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateDeno(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: closedGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [{ exitCode: 0, output: "/usr/local/bin/deno" }],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    // Only the `which deno` presence probe ran — no upgrade.
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]?.cmd, ["which", "deno"]);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "deno"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - a quarantined gh release skips the brew upgrade", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: closedGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 0, output: "/opt/homebrew/bin/brew" }, // which brew
+            { exitCode: 0, output: "gh dash\tdlvhdr/gh-dash\tv4.6.0" }, // list
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.map((c) => c.cmd[0]), ["which", "gh"]);
+    assertEquals(calls.some((c) => c.cmd[0] === "brew"), false);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - a quarantined extension is not upgraded", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, infos } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: closedGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            { exitCode: 0, output: "gh dash\tdlvhdr/gh-dash\tv4.6.0" }, // list
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 2);
+    assertEquals(
+      calls.some((c) => c.cmd.includes("upgrade")),
+      false,
+    );
+    assertStringIncludes(infos.join("\n"), "gh extension dlvhdr/gh-dash");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - only the aged extension of a mixed pair is upgraded", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    /** Approves `gh-dash`, quarantines `gh-poi`. */
+    const mixedGate: ReleaseAgeGate = {
+      quarantineHours: 24,
+      check: (channel: ReleaseChannel) => {
+        const source = describeChannel(channel);
+        const eligible = source.includes("gh-dash");
+        return Promise.resolve({
+          source,
+          version: "1.0.0",
+          ref: "v1.0.0",
+          eligible,
+          indeterminate: false,
+          ageHours: eligible ? 100 : 1,
+          publishedAt: "2026-07-01T00:00:00Z",
+          reason: `${source} age verdict`,
+        });
+      },
+    };
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: mixedGate,
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            {
+              exitCode: 0,
+              output: "gh dash\tdlvhdr/gh-dash\tv4.6.0\n" +
+                "gh poi\tseachicken/gh-poi\tv0.11.1",
+            },
+            { exitCode: 0, output: "upgraded" }, // pinned install of gh-dash
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 3);
+    assertEquals(calls[2]?.cmd, [
+      "gh",
+      "extension",
+      "install",
+      "dlvhdr/gh-dash",
+      "--pin",
+      "v1.0.0",
+      "--force",
+    ]);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+// ---------- gh extension refs are installed as dated (Issue #3952) ----------
+
+Deno.test("updateGhCli - a binary extension is installed at the dated tag", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      // The gate dated release v4.25.2; the upgrade must install that same ref.
+      ageGate: openGate("4.25.2", "v4.25.2"),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            { exitCode: 0, output: "gh dash\tdlvhdr/gh-dash\tv4.25.1" },
+            { exitCode: 0, output: "upgraded from v4.25.1 to v4.25.2" },
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls[2]?.cmd, [
+      "gh",
+      "extension",
+      "install",
+      "dlvhdr/gh-dash",
+      "--pin",
+      "v4.25.2",
+      "--force",
+    ]);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "gh"), 1700000000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - a script extension is installed at the dated HEAD sha", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    const sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(sha.slice(0, 12), sha),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            { exitCode: 0, output: "gh branch\tmislav/gh-branch\t7ed0aff7" },
+            { exitCode: 0, output: "installed" },
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls[2]?.cmd, [
+      "gh",
+      "extension",
+      "install",
+      "mislav/gh-branch",
+      "--pin",
+      sha,
+      "--force",
+    ]);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - an extension whose HEAD cannot be dated is skipped, not upgraded", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, warns } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: closedGate(true), // indeterminate — no datable ref
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            { exitCode: 0, output: "gh branch\tmislav/gh-branch\t7ed0aff7" },
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 2);
+    assertEquals(calls.some((c) => c.cmd.includes("install")), false);
+    assertStringIncludes(warns.join("\n"), "gh extension mislav/gh-branch");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - an approved verdict without a ref is reported, not installed", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, warns } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      // Eligible, but nothing to pin to — installing would fetch an undated ref.
+      ageGate: openGate("9.9.9", null),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            { exitCode: 0, output: "gh dash\tdlvhdr/gh-dash\tv4.6.0" },
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 2);
+    assertStringIncludes(warns.join("\n"), "no dated ref to pin");
+    // Nothing was upgraded, so the run is not recorded as a clean success.
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "gh"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - unenumerable extensions upgrade nothing and warn", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, warns } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            { exitCode: 1, output: "gh: not logged in" }, // list fails
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 2);
+    assertStringIncludes(warns.join("\n"), "Could not enumerate gh extensions");
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "gh"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - no installed extensions still records success", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, infos } = testLogger();
+    const calls: RunCall[] = [];
+    await updateGhCli(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: {
+        runFn: makeFakeRunner(
+          [
+            { exitCode: 1, output: "" }, // which brew — absent
+            { exitCode: 0, output: "" }, // no extensions installed
+          ],
+          calls,
+        ),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls.length, 2);
+    assertStringIncludes(infos.join("\n"), "No gh extensions installed");
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "gh"), 1700000000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+// ---------- Environment-derived options (Issue #3655) ----------
+
+Deno.test("softwareUpdateOptionsFromEnv - reads the documented skip flags", () => {
+  const env: Record<string, string> = {
+    HOME: "/home/worker",
+    SKIP_CLAUDE_UPDATE: "true",
+    SKIP_GH_UPDATE: "true",
+    SKIP_DENO_UPDATE: "true",
+  };
+  const options = softwareUpdateOptionsFromEnv({}, (n) => env[n]);
+  assertEquals(options.skipClaude, true);
+  assertEquals(options.skipGh, true);
+  assertEquals(options.skipDeno, true);
+  assertEquals(options.timestampDir, "/home/worker");
+});
+
+Deno.test("softwareUpdateOptionsFromEnv - unset skip flags default to false", () => {
+  const options = softwareUpdateOptionsFromEnv({}, () => undefined);
+  assertEquals(options.skipClaude, false);
+  assertEquals(options.skipGh, false);
+  assertEquals(options.skipDeno, false);
+  assertEquals(options.quarantineHours, undefined);
+});
+
+Deno.test("softwareUpdateOptionsFromEnv - carries config floors and retry policy", () => {
+  const options = softwareUpdateOptionsFromEnv(
+    {
+      softwareMinVersions: { claude: "2.1.170" },
+      updateRetryMaxAttempts: 5,
+      updateRetryBackoffSeconds: [1, 2],
+    },
+    () => undefined,
+  );
+  assertEquals(options.minVersions, { claude: "2.1.170" });
+  assertEquals(options.retry?.maxAttempts, 5);
+  assertEquals([...(options.retry?.backoffSeconds ?? [])], [1, 2]);
+});
+
+Deno.test("softwareUpdateOptionsFromEnv - reads the quarantine window and interval", () => {
+  const env: Record<string, string> = {
+    VIBE_BUMP_QUARANTINE_HOURS: "72",
+    SOFTWARE_UPDATE_CHECK_INTERVAL_SECONDS: "3600",
+    CLAUDE_UPDATE_TIMEOUT: "240",
+    SOFTWARE_UPDATE_TIMESTAMP_DIR: "/var/state",
+  };
+  const options = softwareUpdateOptionsFromEnv({}, (n) => env[n]);
+  assertEquals(options.quarantineHours, 72);
+  assertEquals(options.intervalSeconds, 3600);
+  assertEquals(options.timeout, 240);
+  assertEquals(options.timestampDir, "/var/state");
+});
+
+Deno.test("softwareUpdateOptionsFromEnv - rejects non-numeric env values", () => {
+  const env: Record<string, string> = { VIBE_BUMP_QUARANTINE_HOURS: "0.5" };
+  const options = softwareUpdateOptionsFromEnv({}, (n) => env[n]);
+  assertEquals(options.quarantineHours, undefined);
+});
+
+Deno.test("skipSoftwareUpdateFromEnv - honours SKIP_SOFTWARE_UPDATE", () => {
+  assertEquals(
+    skipSoftwareUpdateFromEnv((n) =>
+      n === "SKIP_SOFTWARE_UPDATE" ? "true" : undefined
+    ),
+    true,
+  );
+  assertEquals(skipSoftwareUpdateFromEnv(() => undefined), false);
+  assertEquals(
+    skipSoftwareUpdateFromEnv((n) =>
+      n === "SKIP_SOFTWARE_UPDATE" ? "false" : undefined
+    ),
+    false,
+  );
+});
+
+Deno.test("skipSoftwareUpdateFromEnv - the contained worker never self-updates", () => {
+  // Issue #4062: the image is the update mechanism. An in-container update
+  // installs unpinned packages at run time into an ephemeral VM — repeated
+  // every run, lost on exit, and outside the image's supply-chain pins
+  // (observed live: claude 2.1.223→2.1.233 npm-installed into the VM, and a
+  // deno self-update retry loop). The container stamp suppresses the step.
+  assertEquals(
+    skipSoftwareUpdateFromEnv((n) =>
+      n === "VIBE_IMAGE_AGENT_PROVIDERS" ? "claude" : undefined
+    ),
+    true,
+  );
+});
+
+Deno.test("checkSoftwareUpdates - the container stamp suppresses every caller", async () => {
+  // Defence in depth for Issue #4062: the bootstrap consults
+  // skipSoftwareUpdateFromEnv before calling, but run-core's periodic path
+  // called this entry directly — observed live running the weekly check
+  // inside the container. The gate inside the entry covers every caller,
+  // present and future.
+  const commands: string[][] = [];
+  const logs: string[] = [];
+  const logger = {
+    info: (m: string) => logs.push(m),
+    error: (m: string) => logs.push(m),
+    warn: (m: string) => logs.push(m),
+    debug: (m: string) => logs.push(m),
+  } as unknown as Parameters<typeof checkSoftwareUpdates>[0];
+
+  const dir = await Deno.makeTempDir();
+  try {
+    await checkSoftwareUpdates(logger, {
+      timestampDir: dir,
+      env: (name) =>
+        name === "VIBE_IMAGE_AGENT_PROVIDERS" ? "claude" : undefined,
+      retry: {
+        runFn: (cmd) => {
+          commands.push(cmd);
+          return Promise.resolve({
+            ok: true as const,
+            value: { exitCode: 0, output: "" },
+          });
+        },
+      },
+    });
+    assertEquals(commands, []);
+    assertEquals(
+      logs.some((line) => /container.*image|image.*container/i.test(line)),
+      true,
+      logs.join("\n"),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -1,0 +1,211 @@
+{
+  "note": "Baseline for the whole-tree security sweep (Issue #4193). Run `deno task security-tree-sweep` from worker/deno (or `deno run --allow-read --allow-write --allow-run --allow-env worker/deno/mod.ts security-tree-sweep --slug stSoftwareAU/VibeCoder` from the repository root). Every deduplicated finding the sweep reports must either be fixed or appear in exactly one list here. `falsePositives` entries need a `reason` explaining why the match is benign. `accepted` entries are real but tolerated risks: they need a `reason` and should carry the tracking `issue` number. Entries match on `path` plus `rule` (a rule family such as `command-injection`, or a tool-native rule id) and, optionally, a `line` anchor within the sweep's 10-line window. The sweep exits non-zero while any finding is unlisted; a stale entry (matching nothing) is reported so it can be removed.",
+  "falsePositives": [
+    {
+      "path": "worker/deno/lib/issue_dependencies.ts",
+      "rule": "unsafe-regex",
+      "line": 177,
+      "reason": "The interpolated repository slug is escaped with the standard metacharacter replace immediately above the `new RegExp`, so no pattern syntax can reach the compiler (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/issue_dependencies.ts",
+      "rule": "unsafe-regex",
+      "line": 216,
+      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/issue_query.ts",
+      "rule": "unsafe-regex",
+      "line": 2108,
+      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/planning_processor.ts",
+      "rule": "unsafe-regex",
+      "line": 162,
+      "reason": "The interpolated repository slug is escaped with the standard metacharacter replace immediately above the `new RegExp`, so no pattern syntax can reach the compiler (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/pr_body.ts",
+      "rule": "unsafe-regex",
+      "line": 28,
+      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/pr_issue_linking.ts",
+      "rule": "unsafe-regex",
+      "line": 366,
+      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/pr_issue_linking.ts",
+      "rule": "unsafe-regex",
+      "line": 425,
+      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/quality_helpers.ts",
+      "rule": "unsafe-regex",
+      "line": 375,
+      "reason": "`tool` comes from the worker's own constant list of expected quality tools (deno, shellcheck, ...), never from repository or issue content (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/repo_config.ts",
+      "rule": "unsafe-regex",
+      "line": 351,
+      "reason": "Validate-only compile of the operator-side `checkNamePattern` from .config.json inside a try/catch; the pattern is operator-trusted and is length- and nested-quantifier-guarded again in ci_log_provider.ts before any match runs (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/unused_config_detector.ts",
+      "rule": "unsafe-regex",
+      "line": 71,
+      "reason": "`field` iterates the worker's own config-schema field names (identifier characters only), matched against the worker's own source tree — no untrusted input reaches the pattern (Issue #4193 triage of semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/auto_fix_attempt_tracker.ts",
+      "rule": "incomplete-sanitization",
+      "line": 425,
+      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
+    },
+    {
+      "path": "worker/deno/lib/default_branch_ruleset_audit.ts",
+      "rule": "incomplete-sanitization",
+      "line": 148,
+      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
+    },
+    {
+      "path": "worker/deno/lib/github_actions_catalogue.ts",
+      "rule": "incomplete-sanitization",
+      "line": 259,
+      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
+    },
+    {
+      "path": "worker/deno/lib/security_tree_sweep.ts",
+      "rule": "incomplete-sanitization",
+      "line": 1139,
+      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
+    },
+    {
+      "path": "worker/deno/lib/tabletop_report.ts",
+      "rule": "incomplete-sanitization",
+      "line": 21,
+      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
+    },
+    {
+      "path": "worker/deno/lib/heartbeat_storage.ts",
+      "rule": "incomplete-sanitization",
+      "line": 314,
+      "reason": "The value escaped is the module's own constant heading (`ATTEMPTS_HEADING`), not input; the regex is fixed-shape (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/lib/heartbeat_storage.ts",
+      "rule": "bad-tag-filter",
+      "line": 454,
+      "reason": "Global replace of `<!--`/`-->` with tokens (`<!- -`, `- ->`) that cannot re-form the pattern with their neighbours; the result is a comment-safe excerpt, and the check that matters is `assert(!out.includes(\"-->\"))` in the tests (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/lib/run_failure_issue.ts",
+      "rule": "bad-tag-filter",
+      "line": 187,
+      "reason": "Global replace of `<!--`/`-->` with `<!- -`/`- ->` — replacements that cannot re-form the token; the excerpt is bounded and fenced (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/lib/github.ts",
+      "rule": "incomplete-multi-character-sanitization",
+      "line": 243,
+      "reason": "The comment strip only decides whether a body has visible text; the worst case for an unusual comment form is treating a comment-only body as visible, which is the safe direction (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/lib/llm_usage_detection.ts",
+      "rule": "unsafe-regex",
+      "line": 108,
+      "reason": "Detection heuristics for LLM API hosts in scanned code (both host patterns in this window): an unanchored host pattern over-matches (`api.anthropic.com.evil`), and over-matching is the safe direction for a detector that only flags for review (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
+    },
+    {
+      "path": "worker/deno/lib/planning_processor.ts",
+      "rule": "unsafe-regex",
+      "line": 110,
+      "reason": "The pattern requires `/` immediately after `github.com`, so a look-alike host (`github.com.evil/`) does not match; the extracted URLs are then validated against the repository slug downstream (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
+    },
+    {
+      "path": "worker/deno/lib/tabletop_harness.ts",
+      "rule": "weak-crypto",
+      "line": 76,
+      "reason": "The canary is a detection marker planted for one harness run, not key material: a slight modulo bias in its characters does not weaken what it proves (whether the literal reaches an outbound artefact) (Issue #4409 CodeQL js/biased-cryptographic-random)."
+    },
+    {
+      "path": "worker/deno/lib/export_scrub_gate.ts",
+      "rule": "unsafe-regex",
+      "line": 178,
+      "reason": "The pattern comes from the operator's private identifiers file, and a plain literal is metacharacter-escaped before compilation; a `/regex/` entry is the operator's own expression (Issue #4409 semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/lib/repo_settings_harden.ts",
+      "rule": "unsafe-regex",
+      "line": 121,
+      "reason": "The pattern is a GitHub allow-list glob whose only wildcard is `*`; every other character is escaped before compilation and the glob comes from the repository's own settings (Issue #4409 semgrep detect-non-literal-regexp)."
+    },
+    {
+      "path": "worker/deno/tests/batch_api_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "reason": "Test assertions that a string contains a host name are not sanitisation (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/tests/planning_processor_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "reason": "Test assertions that generated text contains issue URLs are not sanitisation (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/tests/security_scan_prompt_v16_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "reason": "Test assertions that prompt text mentions a host are not sanitisation (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/tests/security_scan_prompt_v17_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "reason": "Test assertions that prompt text mentions a host are not sanitisation (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/tests/claim_pr_comment_test.ts",
+      "rule": "incomplete-multi-character-sanitization",
+      "reason": "A test fixture builder, not production sanitisation (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/tests/github_actions_audit_prompt_v17_test.ts",
+      "rule": "incomplete-sanitization",
+      "reason": "A test-only string normalisation before an assertion, not production sanitisation (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/tests/export_branding_test.ts",
+      "rule": "missing-space-in-concatenation",
+      "reason": "Deliberate: fixtures are assembled from halves (`\"Vibe\" + \"Coding\"`) so the exported test file never carries the private name it tests for (Issue #4197); the missing space is the point (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/tests/export_scrub_gate_test.ts",
+      "rule": "missing-space-in-concatenation",
+      "reason": "Deliberate: fixtures are assembled from halves so the exported test file never carries the identifiers it tests for (Issue #4196) (Issue #4409 CodeQL triage)."
+    },
+    {
+      "path": "worker/deno/lib/suspicious_image_handoff.ts",
+      "rule": "bad-tag-filter",
+      "line": 112,
+      "reason": "Global replace of `-->`/`<!--` with `- ->`/`<!- -` — tokens that cannot re-form the pattern with their neighbours (the earlier `->` replacement that could was fixed under Issue #4409 and is covered by a hostile-dash-run test); the field is then bounded and fenced (Issue #4409 CodeQL triage)."
+    }
+  ],
+  "accepted": [
+    {
+      "path": ".github/dependabot.yml",
+      "rule": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
+      "line": 24,
+      "reason": "A cooldown IS configured (default-days: 1, semver-major-days: 7); the rule wants a longer default. One day deliberately mirrors renovate.json's 24h minimumReleaseAge and deno.json's P1D minimumDependencyAge so the three quarantines agree (Issue #4400). Revisit if the fleet-wide quarantine is lengthened.",
+      "issue": 4400
+    },
+    {
+      "path": "renovate.json",
+      "rule": "package_managers.renovate.renovate-missing-minimum-release-age.renovate-missing-minimum-release-age",
+      "line": 69,
+      "reason": "The `minimumReleaseAge: \"0\"` the rule flags is the documented first-party exemption for stSoftwareAU/* packages only (Issue #2124); every third-party ecosystem keeps the 24 hours set at the top of the file. Not the emergency override path (docs/security-advisory-triage.md).",
+      "issue": 2124
+    }
+  ]
+}

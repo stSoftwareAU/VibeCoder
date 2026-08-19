@@ -1,0 +1,553 @@
+name: Container Build
+
+# Builds the Vibe Coder container image (container/Containerfile) and runs
+# the repository quality gate inside it (Issue #4061), so a broken container
+# definition is caught on the pull request rather than on an unattended host.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue #2123)
+# so a hijacked tag cannot inject code into the workflow. The version tag
+# each SHA corresponds to is captured in a leading comment.
+
+on:
+  push:
+    branches: [Develop, main]
+    paths:
+      - 'container/**'
+      - '.github/workflows/container-build.yml'
+      - 'quality.sh'
+      - 'worker/**'
+  pull_request:
+    # Issue #3360 — milestone sub-issue PRs target a shared
+    # `milestone/<name>` branch (Issue #1300); include it so the container
+    # gate runs before those PRs merge, not only on Develop/main PRs.
+    branches: [Develop, main, milestone/*]
+
+# Issue #2382 — Rule of Two: this job only builds an image and runs checks
+# inside it; nothing pushes, comments, or labels.
+permissions:
+  contents: read
+
+# Issue #2972: cancel superseded PR/push runs — only the latest commit's
+# result matters for a check.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Issue #4334: decide whether this change can affect the image at all.
+  # The 11-minute build ran on EVERY pull request — docs-only, workflow-only,
+  # a one-line worker fix — and held a runner each time. On a pull request
+  # only the image definition (container/**: Containerfile, entrypoint,
+  # tools manifest, provider scripts) and this workflow can change the
+  # outcome; a PR touching neither gets a pass without a build. This is a job rather than a `paths:` filter on the trigger
+  # because `container` is a REQUIRED status check: a filtered-out required
+  # check never reports and leaves the PR blocked on "expected" for ever.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect image-affecting changes
+        id: filter
+        run: |
+          set -euo pipefail
+          # Pushes always build (the definition may have changed upstream of
+          # this commit range in a way a diff would miss); pull requests
+          # build only when an image-affecting path changed.
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+            echo "push event: image checks run"
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          # Pull requests: only the image DEFINITION and this workflow. The
+          # worker tree is type-checked and tested on the same commit by
+          # `validate` / `validate (tests N/4)` with the same Deno major,
+          # so a worker-only PR does not need a 3-minute image build to
+          # prove it; pushes to Develop/main still build on worker/** (see
+          # the `on.push.paths` list) so image/worker drift is caught the
+          # moment it lands rather than on every PR.
+          changed="$(git diff --name-only "${base}" "${head}" -- \
+            'container/**' \
+            '.github/workflows/container-build.yml' || true)"
+          if [[ -n "${changed}" ]]; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+            echo "image-affecting changes:"
+            while IFS= read -r f; do echo "  ${f}"; done <<< "${changed}"
+          else
+            echo "image=false" >> "$GITHUB_OUTPUT"
+            echo "no image-affecting changes — the image checks are skipped and reported as passed"
+          fi
+
+  container:
+    needs: changes
+    # Always runs so the required check reports; the build steps inside are
+    # gated on the change detection and skip cleanly when nothing relevant
+    # moved.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: vibe-coder:ci
+      IMAGE_CHANGED: ${{ needs.changes.outputs.image }}
+
+    steps:
+      - name: Skip notice
+        if: env.IMAGE_CHANGED != 'true'
+        run: |
+          set -euo pipefail
+          echo "No image-affecting changes in this pull request - Container Build passes without a build (Issue #4334)."
+
+      - name: Checkout code
+        if: env.IMAGE_CHANGED == 'true'
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install Deno (strips the Containerfile; runs the containment tests later)
+        if: env.IMAGE_CHANGED == 'true'
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      - name: Strip the Containerfile the image is built from
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          # Issue #4393: Apple container caps a Dockerfile at 16 KB, so every
+          # build — launcher and CI alike — reads a comment-stripped copy
+          # written by the same command; the committed file keeps its
+          # comments. The context stays container/.
+          echo "=== strip-containerfile ==="
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-read --allow-write --allow-env \
+            worker/deno/mod.ts strip-containerfile --out /tmp/Containerfile.stripped
+          wc -c /tmp/Containerfile.stripped
+
+      - name: Build image with Docker
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== docker build ==="
+          docker build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
+
+      - name: Verify the baked toolchain
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== toolchain versions ==="
+          # --entrypoint bash overrides the worker entrypoint; every tool
+          # must resolve from the image's own PATH, with no host fallback.
+          docker run --rm --entrypoint bash "${IMAGE}" -c '
+            set -euo pipefail
+            deno --version
+            git --version
+            gh --version
+            jq --version
+            timeout --version
+            ruby --version
+          '
+
+      - name: Verify the base-image version floors
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== base-image version floors ==="
+          # Issue #4090: ./quality.sh needs git >= 2.41 (or the literal
+          # --end-of-options survives into argv, Issue #3714) and ruby >= 3.1
+          # (Psych.safe_load_file, Issue #3661). The floors live once, in
+          # container/tools.json, so a base-image downgrade fails loudly here
+          # instead of resurfacing as a puzzling test failure.
+          while read -r tool floor; do
+            raw=$(docker run --rm --entrypoint "${tool}" "${IMAGE}" --version < /dev/null)
+            actual=$(printf '%s' "${raw}" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1 || true)
+            if [[ -z "${actual}" ]]; then
+              echo "FAILED: no version found in '${tool} --version': ${raw}" >&2
+              exit 1
+            fi
+            echo "${tool}: ${actual} (floor ${floor})"
+            if [[ "$(printf '%s\n%s\n' "${floor}" "${actual}" | sort -V | head -n1)" != "${floor}" ]]; then
+              echo "FAILED: ${tool} ${actual} is older than the required ${floor}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.images[] | (.minVersions // {}) | to_entries[] | "\(.key) \(.value)"' container/tools.json)
+
+      - name: Verify the monitored-repository toolchains
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== monitored-repository toolchains (Issue #4068) ==="
+          # Every command container/tools.json declares must resolve on the
+          # image's own PATH as the default (non-root) worker user, and each
+          # toolchain's representative command must report the pinned version.
+          # A missing or drifted toolchain fails here rather than leaving a
+          # monitored repository unbuildable on an unattended host.
+          while read -r id version version_command commands; do
+            read -r -a command_list <<< "${commands}"
+            for command in "${command_list[@]}"; do
+              if ! docker run --rm --entrypoint bash "${IMAGE}" \
+                  -c "command -v ${command}" < /dev/null; then
+                echo "FAILED: ${id} toolchain command '${command}' is not on the image PATH" >&2
+                exit 1
+              fi
+            done
+            reported=$(docker run --rm --entrypoint "${version_command}" "${IMAGE}" --version < /dev/null)
+            echo "${id}: ${version_command} -> ${reported}"
+            if [[ "${reported}" != *"${version}"* ]]; then
+              echo "FAILED: ${version_command} reports '${reported}', expected ${version}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.toolchains[] | "\(.id) \(.version) \(.versionCommand) \(.commands | join(" "))"' container/tools.json)
+
+      - name: Verify the baked Playwright and headless Chromium
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== baked browser (Issue #4069) ==="
+          # The browser must be in the image, at the pinned version, and
+          # readable by the non-root worker user — not downloaded on first use.
+          version=$(jq -r '.tools[] | select(.name == "playwright-core") | .version' container/tools.json)
+          browsers=$(jq -r '.tools[] | select(.name == "playwright-core") | .browsersPath' container/tools.json)
+          reported=$(docker run --rm --entrypoint playwright-core "${IMAGE}" --version < /dev/null)
+          echo "playwright-core: ${reported} (pinned ${version}), browsers at ${browsers}"
+          if [[ "${reported}" != *"${version}"* ]]; then
+            echo "FAILED: playwright-core reports '${reported}', expected ${version}" >&2
+            exit 1
+          fi
+          docker run --rm --entrypoint bash "${IMAGE}" -c '
+            set -euo pipefail
+            test "${PLAYWRIGHT_BROWSERS_PATH}" = "'"${browsers}"'"
+            ls -1 "${PLAYWRIGHT_BROWSERS_PATH}" | grep -q "^chromium"
+          ' < /dev/null
+
+      - name: Capture a screenshot with headless Chromium inside the image
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== headless navigation + screenshot, no host GUI (Issue #4069) ==="
+          # --network none proves the acceptance criterion that nothing is
+          # downloaded at run time: a browser fetch would fail outright.
+          # Loopback still works, so the page really is served by the
+          # container and really is fetched over HTTP.
+          docker run --rm --network none --entrypoint bash "${IMAGE}" -c '
+            set -euo pipefail
+            work=$(mktemp -d)
+            cd "${work}"
+            printf "%s\n" "<!doctype html><html><head><meta charset=utf-8><title>Vibe Coder</title></head><body><h1 id=probe>Headless Chromium in the image</h1></body></html>" > index.html
+            cat > serve.ts <<"TS"
+          const html = await Deno.readTextFile("index.html");
+          Deno.serve({ hostname: "127.0.0.1", port: 8931 }, () =>
+            new Response(html, {
+              headers: { "content-type": "text/html; charset=utf-8" },
+            }));
+          TS
+            deno run --allow-net=127.0.0.1:8931 --allow-read=. serve.ts &
+            server=$!
+            trap "kill ${server} 2>/dev/null || true" EXIT
+            for _ in $(seq 1 60); do
+              if curl -fsS -o /dev/null http://127.0.0.1:8931/; then break; fi
+              sleep 0.5
+            done
+            curl -fsS -o /dev/null http://127.0.0.1:8931/
+            cat > shot.js <<"JS"
+          const { chromium } = require("playwright-core");
+          (async () => {
+            const browser = await chromium.launch({ args: ["--no-sandbox"] });
+            const page = await browser.newPage();
+            const response = await page.goto("http://127.0.0.1:8931/", { waitUntil: "load" });
+            if (!response || !response.ok()) {
+              throw new Error("navigation failed: " + (response && response.status()));
+            }
+            const heading = await page.textContent("#probe");
+            if (!heading || !heading.includes("Headless Chromium")) {
+              throw new Error("unexpected page content: " + heading);
+            }
+            await page.screenshot({ path: "shot.png", fullPage: true });
+            await browser.close();
+          })().catch((err) => { console.error(err); process.exit(1); });
+          JS
+            NODE_PATH="$(npm root -g)" node shot.js
+            test -s shot.png
+            magic=$(od -An -tx1 -N8 shot.png | tr -d " \n")
+            if [ "${magic}" != "89504e470d0a1a0a" ]; then
+              echo "FAILED: shot.png is not a PNG (magic ${magic})" >&2
+              exit 1
+            fi
+            echo "captured $(stat -c %s shot.png) bytes of PNG as $(id -un)"
+          ' < /dev/null
+
+      - name: Verify the in-container MCP configuration points at the image browser
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== generated .mcp.json resolves the in-image browser ==="
+          # Generated inside the image, so the resolution the worker performs
+          # at run time is the one asserted here.
+          cat > "${GITHUB_WORKSPACE}/mcp-config-probe.ts" <<'EOF'
+          import { generateMcpConfig } from "./worker/deno/setup/screenshot.ts";
+          console.log(generateMcpConfig({ scriptDir: "/workspace" }));
+          EOF
+          docker run --rm \
+            --env HOME=/tmp/vibe \
+            --env DENO_DIR=/tmp/vibe/deno \
+            --volume "${GITHUB_WORKSPACE}:/workspace" \
+            --workdir /workspace \
+            --entrypoint bash \
+            "${IMAGE}" -c 'mkdir -p "${DENO_DIR}" && deno run --allow-env --allow-read mcp-config-probe.ts' \
+            < /dev/null > /tmp/mcp-config.json
+          rm -f "${GITHUB_WORKSPACE}/mcp-config-probe.ts"
+          cat /tmp/mcp-config.json
+          browsers=$(jq -r '.tools[] | select(.name == "playwright-core") | .browsersPath' container/tools.json)
+          jq -e --arg browsers "${browsers}" \
+            '.mcpServers.playwright.env.PLAYWRIGHT_BROWSERS_PATH == $browsers' /tmp/mcp-config.json
+          # The browser profile must land somewhere disposable, never in the
+          # mounted checkout at /workspace.
+          jq -e '.mcpServers.playwright.args | index("--user-data-dir") as $i
+                 | .[$i + 1] | startswith("/tmp/")' /tmp/mcp-config.json
+
+      - name: Drive the Playwright MCP server from the generated config (navigate + screenshot)
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== the MCP server the agent is handed can take a screenshot (Issue #4355) ==="
+          # The playwright-core step above proves the browser; this proves the
+          # server the worker actually hands the agent (--mcp-config): spawn it
+          # exactly as the generated config says, then initialize → tools/list
+          # → browser_navigate → browser_take_screenshot over stdio and require
+          # a PNG on disk. The @playwright/mcp default `chrome` channel escaped
+          # the browser-only probe and failed every screenshot in production.
+          cat > "${GITHUB_WORKSPACE}/mcp-server-probe.mjs" <<'EOF'
+          import { spawn } from "node:child_process";
+          import { readFileSync, statSync, existsSync } from "node:fs";
+          const cfg = JSON.parse(readFileSync("/tmp/mcp-config.json", "utf8")).mcpServers.playwright;
+          const child = spawn(cfg.command, cfg.args, { env: { ...process.env, ...(cfg.env ?? {}) }, stdio: ["pipe", "pipe", "inherit"], cwd: "/tmp/mcp-cwd" });
+          let buf = ""; const pending = new Map(); let nextId = 1;
+          child.stdout.on("data", (d) => { buf += d.toString(); let i; while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue; try { const m = JSON.parse(line); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } } catch {} } });
+          const call = (method, params) => new Promise((res, rej) => { const id = nextId++; pending.set(id, res); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); setTimeout(() => rej(new Error("timeout " + method)), 180000); });
+          const fail = (m) => { console.error("FAILED: " + m); child.kill("SIGTERM"); process.exit(1); };
+          const init = await call("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "probe", version: "0" } });
+          if (init.error) fail("initialize: " + JSON.stringify(init.error));
+          child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+          const tools = await call("tools/list", {});
+          const names = (tools.result?.tools ?? []).map((t) => t.name);
+          for (const t of ["browser_navigate", "browser_take_screenshot"]) if (!names.includes(t)) fail("tool missing: " + t);
+          const nav = await call("tools/call", { name: "browser_navigate", arguments: { url: "http://127.0.0.1:8931/" } });
+          if (nav.error || nav.result?.isError) fail("navigate: " + JSON.stringify(nav.error ?? nav.result));
+          const shot = await call("tools/call", { name: "browser_take_screenshot", arguments: { filename: "docs/evidence/probe.png" } });
+          const text = (shot.result?.content ?? []).map((c) => c.text ?? "").join("\n");
+          if (shot.error || shot.result?.isError || /### Error/.test(text)) fail("screenshot: " + JSON.stringify(shot.error ?? text));
+          await new Promise((r) => setTimeout(r, 1500));
+          const png = "/tmp/mcp-cwd/docs/evidence/probe.png";
+          if (!existsSync(png) || statSync(png).size < 100) fail("no PNG at " + png);
+          console.log("MCP screenshot ok: " + statSync(png).size + " bytes; tools=" + names.length);
+          child.kill("SIGTERM"); process.exit(0);
+          EOF
+          # Networking OFF (Issue #4392): the MCP server and its playwright-core
+          # must come from the image's pre-warmed Deno cache, seeded into
+          # DENO_DIR exactly as the entrypoint seeds the durable volume —
+          # a run-time npm or jsr.io round trip fails this step. Loopback
+          # stays available for the probe's own local HTTP server.
+          docker run --rm \
+            --network none \
+            --env HOME=/tmp/vibe \
+            --env DENO_DIR=/tmp/vibe/deno \
+            --volume "${GITHUB_WORKSPACE}:/workspace" \
+            --volume /tmp/mcp-config.json:/tmp/mcp-config.json:ro \
+            --workdir /workspace \
+            --entrypoint bash \
+            "${IMAGE}" -c '
+              set -euo pipefail
+              mkdir -p "${DENO_DIR}" /tmp/mcp-cwd/docs/evidence
+              cp -R "${VIBE_DENO_SEED_DIR}/." "${DENO_DIR}/"
+              cd /tmp/mcp-cwd
+              printf "%s\n" "<!doctype html><html><body><h1 id=probe>MCP probe</h1></body></html>" > index.html
+              cat > serve.ts <<"TS"
+          const html = await Deno.readTextFile("index.html");
+          Deno.serve({ hostname: "127.0.0.1", port: 8931 }, () =>
+            new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }));
+          TS
+              deno run --allow-net=127.0.0.1:8931 --allow-read=. serve.ts &
+              server=$!
+              trap "kill ${server} 2>/dev/null || true" EXIT
+              for _ in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:8931/ && break; sleep 0.5; done
+              node /workspace/mcp-server-probe.mjs
+            ' < /dev/null
+          rm -f "${GITHUB_WORKSPACE}/mcp-server-probe.mjs"
+
+      - name: Run a representative Rust quality gate inside the image
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== Rust gate stages, no run-time install (Issue #4068) ==="
+          # The monitored Rust crates are private, so CI cannot check one out.
+          # This runs the same stages their quality.sh does — fmt, clippy with
+          # -D warnings, test, and cargo-deny — against a crate created inside
+          # the container as the non-root worker user. Nothing is installed at
+          # run time: a missing component fails the step.
+          docker run --rm --entrypoint bash "${IMAGE}" -c '
+            set -euo pipefail
+            cd "$(mktemp -d)"
+            cargo init --name gate_probe --vcs none > /dev/null
+            printf "[bans]\nmultiple-versions = \"allow\"\n" > deny.toml
+            cargo fmt --all -- --check
+            cargo clippy --all-targets --all-features -- -D warnings
+            cargo test
+            cargo deny check bans
+          ' < /dev/null
+
+      - name: Verify every installed coding-agent provider
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== coding-agent provider layer (Issues #4067, #4105) ==="
+          # The providers are a separable layer installed as a set: the build
+          # runs one container/providers/<id>.sh fragment per requested id.
+          # Assert every binary the installed set names is present, reports
+          # its pinned version, and is stamped into the image — so a broken
+          # fragment fails here rather than mid-run on a host.
+          installed=$(jq -r '.installedProviders | join(",")' container/tools.json)
+          echo "installed set: ${installed}"
+          stamped=$(docker run --rm --entrypoint bash "${IMAGE}" \
+            -c 'printf "%s" "${VIBE_IMAGE_AGENT_PROVIDERS}"' < /dev/null)
+          if [[ "${stamped}" != "${installed}" ]]; then
+            echo "FAILED: image stamps '${stamped}', manifest installs '${installed}'" >&2
+            exit 1
+          fi
+          while read -r id binary version; do
+            reported=$(docker run --rm --entrypoint "${binary}" "${IMAGE}" --version < /dev/null)
+            echo "${id}: ${binary} -> ${reported}"
+            if [[ "${reported}" != *"${version}"* ]]; then
+              echo "FAILED: ${binary} reports '${reported}', expected ${version}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.installedProviders[] as $id
+                          | .providers[] | select(.id == $id)
+                          | "\(.id) \(.binary) \(.version)"' container/tools.json)
+
+      - name: Reject an unusable provider set
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== a bad provider set fails the build (Issue #3234) ==="
+          # An unknown id, a duplicate id and an empty set must each abort the
+          # build naming the fragments that do exist, rather than quietly
+          # producing an image without the agents it claims (Issue #4105).
+          fails_with() {
+            local set_value="$1" expected="$2" log="/tmp/provider-set.log"
+            if docker build -f /tmp/Containerfile.stripped \
+                --build-arg "AGENT_PROVIDERS=${set_value}" \
+                -t "vibe-coder:bad-provider-set" container/ > "${log}" 2>&1; then
+              echo "FAILED: AGENT_PROVIDERS='${set_value}' built successfully" >&2
+              exit 1
+            fi
+            if ! grep -q "${expected}" "${log}"; then
+              echo "FAILED: AGENT_PROVIDERS='${set_value}' did not report '${expected}'" >&2
+              tail -n 20 "${log}" >&2
+              exit 1
+            fi
+            echo "AGENT_PROVIDERS='${set_value}' failed loudly: ${expected}"
+          }
+          default_set=$(jq -r '.installedProviders | join(",")' container/tools.json)
+          first=$(jq -r '.installedProviders[0]' container/tools.json)
+          fails_with "not-a-provider" "Unsupported coding-agent provider"
+          fails_with "${default_set},${first}" "Duplicate coding-agent provider"
+          fails_with "" "Empty AGENT_PROVIDERS"
+
+      - name: Verify the default user is not root
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          uid=$(docker run --rm --entrypoint id "${IMAGE}" -u)
+          name=$(docker run --rm --entrypoint id "${IMAGE}" -un)
+          echo "default user: ${name} (uid ${uid})"
+          if [[ "${uid}" == "0" ]]; then
+            echo "FAILED: the image defaults to root" >&2
+            exit 1
+          fi
+          if [[ "${name}" != "vibe" ]]; then
+            echo "FAILED: expected default user 'vibe', got '${name}'" >&2
+            exit 1
+          fi
+
+      # Issue #4334: this used to run the ENTIRE quality gate (~940 tests,
+      # lint, check, markdown, mermaid) inside the image — 5 minutes per PR,
+      # serial, duplicating what `validate` and the sharded `validate (tests
+      # N/4)` legs already prove on the same commit. What this step is FOR is
+      # the property those cannot cover: the image's own toolchain runs our
+      # worker. So it now type-checks the worker graph with the image's deno
+      # and runs the container-specific test files — the entrypoint, the
+      # containment plan, and the run-mode/launcher contract — inside the
+      # image. Same uid/HOME/DENO_DIR arrangement as before.
+      - name: Run the worker's container-specific checks inside the image
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== in-image: deno check + container-specific tests ==="
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp/vibe \
+            --env DENO_DIR=/tmp/vibe/deno \
+            --volume "${GITHUB_WORKSPACE}:/workspace" \
+            --workdir /workspace/worker/deno \
+            --entrypoint bash \
+            "${IMAGE}" -c '
+              set -euo pipefail
+              mkdir -p "${DENO_DIR}"
+              deno check --frozen --lock=deno.lock mod.ts
+              deno task test \
+                tests/container_entrypoint_test.ts \
+                tests/container_launch_test.ts \
+                tests/container_runtime_test.ts \
+                tests/container_manifest_test.ts \
+                tests/run_mode_test.ts \
+                tests/launcher_source_test.ts \
+                tests/claude_env_test.ts < /dev/null
+            '
+
+      - name: Verify containment from inside the running container
+        if: env.IMAGE_CHANGED == 'true'
+        env:
+          # The image built above, so the tests probe this commit's container.
+          VIBE_CONTAINMENT_IMAGE: ${{ env.IMAGE }}
+          # Turns "no runtime / no image" from a skip into a failure, so the
+          # containment suite cannot be silently skipped everywhere.
+          VIBE_CONTAINMENT_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          echo "=== containment integration tests (Issue #4071) ==="
+          # Starts the real container from the launcher's own plan and asks it
+          # what it can reach: prohibited host locations, container-runtime
+          # sockets, the host home directory, the four intended mounts and
+          # their read-only/read-write modes, and the published-port set the
+          # runtime reports.
+          cd worker/deno
+          deno test --frozen --lock=deno.lock \
+            --allow-read --allow-env --allow-run --allow-write \
+            tests/container_containment_test.ts < /dev/null
+
+      # The second-engine build stays an acceptance criterion, but on the
+      # push to Develop/main rather than every pull request (Issue #4334):
+      # it is a full 3-minute rebuild of the same definition that just built
+      # under Docker, and a Docker-only extension is caught the moment it
+      # lands rather than on every PR that touches nothing near it.
+      - name: Build image with Podman
+        if: env.IMAGE_CHANGED == 'true' && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          # Acceptance criterion: the definition must build under both
+          # engines, so a Docker-only extension cannot slip in unnoticed.
+          echo "=== podman build ==="
+          podman build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/

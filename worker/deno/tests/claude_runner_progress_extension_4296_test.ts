@@ -1,0 +1,447 @@
+/**
+ * Tests for the re-armable hard deadline (Issue #4296, part of #4290).
+ *
+ * The hard-timeout watchdog used to be a one-shot kill at `timeoutSeconds`.
+ * With the opt-in `progressExtension` option it becomes a deadline that is
+ * re-armed while both progress signals hold — recent tool activity in the
+ * stream-json (#4293) and a working tree that actually advanced (#4294).
+ *
+ * The contract these tests pin:
+ *
+ * - a progressing run has its deadline extended repeatedly and is not killed;
+ * - a run that stalls after extensions is killed within one grant increment,
+ *   with `timeoutReason: "hard-timeout"`;
+ * - an `unknown` probe verdict kills on schedule — no fail-open;
+ * - **without** the option the behaviour is bit-for-bit unchanged: one kill
+ *   at `timeoutSeconds`, zero probe calls (the guard for PR-feedback, CI-fix,
+ *   planning, grill-me and health-check timeouts);
+ * - the #4254 wall-clock backstop compares against the *current* deadline, so
+ *   a chunk arriving after the original budget does not kill an extended run;
+ * - the #1825 silence watchdog is untouched — a silent run still dies at
+ *   `noOutputTimeout` no matter how many extensions were granted.
+ *
+ * The agent is a stub script on PATH; the tree probe is injected, so no test
+ * needs a git repository.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import { assert, assertEquals } from "@std/assert";
+import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import type { TreeProgressState } from "../lib/progress_extension.ts";
+import type { Logger } from "../types.ts";
+
+/** One stream-json line carrying a tool call, so the activity signal moves. */
+const TOOL_LINE =
+  `{"type":"assistant","message":{"content":[{"type":"tool_use",` +
+  `"name":"Edit","input":{"file_path":"worker/deno/lib/x.ts"}}]}}`;
+
+/** A stub agent on PATH plus the temp dir holding it. */
+interface StubAgent {
+  dir: string;
+  restore: () => Promise<void>;
+}
+
+/**
+ * Install a stub `claude` on PATH.
+ *
+ * The stub re-execs itself into its own session so the watchdog's
+ * process-group kill (`pid_guard.terminateProcessTree`) lands on the stub
+ * alone. Without that the group signal would reach the `deno test` process
+ * that spawned it. `exec setsid` keeps the PID, so the runner still tracks
+ * the right child; where `setsid` is unavailable the stub runs in place.
+ *
+ * @param body - Bash body of the stub, after the shebang.
+ */
+async function installStub(body: string): Promise<StubAgent> {
+  const dir = await Deno.makeTempDir({ prefix: "claude_progress_ext_" });
+  const stubPath = `${dir}/claude`;
+  await Deno.writeTextFile(
+    `${dir}/claude.impl`,
+    `#!/usr/bin/env bash\n${body}`,
+  );
+  await Deno.writeTextFile(
+    stubPath,
+    `#!/usr/bin/env bash\n` +
+      `impl="$(dirname "$0")/claude.impl"\n` +
+      `if command -v setsid >/dev/null 2>&1; then exec setsid bash "$impl"; fi\n` +
+      `exec bash "$impl"\n`,
+  );
+  await Deno.chmod(stubPath, 0o755);
+  const originalPath = Deno.env.get("PATH") ?? "";
+  Deno.env.set("PATH", `${dir}:${originalPath}`);
+  return {
+    dir,
+    restore: async () => {
+      Deno.env.set("PATH", originalPath);
+      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+    },
+  };
+}
+
+/** A stub that emits a tool call every `gapSeconds` for `count` iterations. */
+function chattyStub(count: number, gapSeconds: string): string {
+  return `for i in $(seq 1 ${count}); do\n` +
+    `  printf '%s\\n' '${TOOL_LINE}'\n` +
+    `  sleep ${gapSeconds}\n` +
+    `done\n` +
+    `printf '%s\\n' '{"type":"result","result":"done"}'\n`;
+}
+
+/** Collect log lines so the mandated extension line can be asserted on. */
+function recordingLogger(): { logger: Logger; lines: string[] } {
+  const lines: string[] = [];
+  const logger = {
+    info: (m: string) => lines.push(m),
+    warn: (m: string) => lines.push(m),
+    error: (m: string) => lines.push(m),
+  } as unknown as Logger;
+  return { logger, lines };
+}
+
+/** A probe that counts its calls and replays a scripted verdict sequence. */
+function scriptedProbe(verdicts: TreeProgressState[]) {
+  const calls: number[] = [];
+  return {
+    calls,
+    probe: (): Promise<TreeProgressState> => {
+      const verdict = verdicts[calls.length] ?? verdicts.at(-1) ?? "unknown";
+      calls.push(Date.now());
+      return Promise.resolve(verdict);
+    },
+  };
+}
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - a progressing run has its deadline extended repeatedly and is not killed (Issue #4296)",
+  fn: async () => {
+    // ~3 s of steady tool calls against a 1 s budget: without extensions this
+    // run would be killed at 1 s.
+    const stub = await installStub(chattyStub(30, "0.1"));
+    const { logger, lines } = recordingLogger();
+    const { calls, probe } = scriptedProbe(["advanced"]);
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: {
+            enabled: true,
+            grantSeconds: 1,
+            activityStallSeconds: 60,
+          },
+          treeProbe: probe,
+        },
+      });
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(
+        result.value.timedOut,
+        false,
+        "a progressing run must not be killed",
+      );
+      assert(
+        calls.length >= 2,
+        `the deadline must be re-armed and re-checked (probe calls: ${calls.length})`,
+      );
+      const extensions = lines.filter((l) =>
+        l.includes("[progress-extension]")
+      );
+      assert(
+        extensions.length >= 2,
+        `each grant must log one line, got: ${JSON.stringify(extensions)}`,
+      );
+      const first = extensions[0] ?? "";
+      assert(first.includes("advanced"), `the reason must be named: ${first}`);
+      assert(first.includes("elapsed"), `elapsed must be named: ${first}`);
+      assert(
+        first.includes("extension 1"),
+        `the extension count must be named: ${first}`,
+      );
+      assert(
+        first.includes("new deadline"),
+        `the new deadline must be named: ${first}`,
+      );
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - a run that stalls after two extensions is killed within one grant increment (Issue #4296)",
+  fn: async () => {
+    const stub = await installStub(chattyStub(120, "0.1"));
+    const { logger } = recordingLogger();
+    // Two grants, then the tree stops moving — the third check must kill.
+    const { calls, probe } = scriptedProbe([
+      "advanced",
+      "advanced",
+      "unchanged",
+    ]);
+    try {
+      const started = Date.now();
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: {
+            enabled: true,
+            grantSeconds: 1,
+            activityStallSeconds: 60,
+          },
+          treeProbe: probe,
+        },
+      });
+      const elapsedSeconds = (Date.now() - started) / 1000;
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(result.value.timedOut, true);
+      assertEquals(result.value.timeoutReason, "hard-timeout");
+      assertEquals(
+        calls.length,
+        3,
+        "the stall must be caught on the 3rd check",
+      );
+      assert(
+        elapsedSeconds < 3 + 3,
+        `the kill must land within one grant of the stall (took ${elapsedSeconds}s)`,
+      );
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - an unknown probe verdict kills on schedule, never extends (Issue #4296)",
+  fn: async () => {
+    const stub = await installStub(chattyStub(120, "0.1"));
+    const { logger } = recordingLogger();
+    const { calls, probe } = scriptedProbe(["unknown"]);
+    try {
+      const started = Date.now();
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: {
+            enabled: true,
+            grantSeconds: 5,
+            activityStallSeconds: 60,
+          },
+          treeProbe: probe,
+        },
+      });
+      const elapsedSeconds = (Date.now() - started) / 1000;
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(result.value.timedOut, true);
+      assertEquals(result.value.timeoutReason, "hard-timeout");
+      assertEquals(calls.length, 1, "a broken probe is asked exactly once");
+      assert(
+        elapsedSeconds < 4,
+        `an unverifiable run dies on schedule (took ${elapsedSeconds}s)`,
+      );
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - without the option there is exactly one kill at timeoutSeconds and zero probe calls (Issue #4296)",
+  fn: async () => {
+    const stub = await installStub(chattyStub(120, "0.1"));
+    const { logger, lines } = recordingLogger();
+    const { calls, probe } = scriptedProbe(["advanced"]);
+    // The probe is built but never handed to the runner: non-execute callers
+    // (PR feedback, CI fix, planning, grill-me, health checks) pass no option
+    // and must keep their unconditional timeouts.
+    void probe;
+    try {
+      const started = Date.now();
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+      });
+      const elapsedSeconds = (Date.now() - started) / 1000;
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(result.value.timedOut, true);
+      assertEquals(result.value.timeoutReason, "hard-timeout");
+      assertEquals(calls.length, 0, "no probe may run without the option");
+      assertEquals(
+        lines.filter((l) => l.includes("[progress-extension]")).length,
+        0,
+        "no extension may be logged without the option",
+      );
+      assert(
+        elapsedSeconds < 4,
+        `the kill must land at the configured budget (took ${elapsedSeconds}s)`,
+      );
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - the wall-clock backstop follows the extended deadline (Issues #4254, #4296)",
+  fn: async () => {
+    // Chunks keep arriving after the original 1 s budget has passed. If the
+    // #4254 backstop still compared against `timeoutMs`, the first of those
+    // chunks would kill a run the policy had just extended.
+    const stub = await installStub(chattyStub(20, "0.15"));
+    const { logger } = recordingLogger();
+    const { calls, probe } = scriptedProbe(["advanced"]);
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: {
+            enabled: true,
+            grantSeconds: 10,
+            activityStallSeconds: 60,
+          },
+          treeProbe: probe,
+        },
+      });
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(
+        result.value.timedOut,
+        false,
+        "a chunk after the original budget must not kill an extended run",
+      );
+      assertEquals(calls.length, 1, "one grant covers the rest of the run");
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - the silence watchdog still kills an extended run (Issues #1825, #4296)",
+  fn: async () => {
+    // Talks for ~1.4 s — long enough to earn a grant — then goes silent.
+    const stub = await installStub(
+      `for i in $(seq 1 14); do\n` +
+        `  printf '%s\\n' '${TOOL_LINE}'\n` +
+        `  sleep 0.1\n` +
+        `done\n` +
+        `sleep 60\n`,
+    );
+    const { logger, lines } = recordingLogger();
+    const { probe } = scriptedProbe(["advanced"]);
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        noOutputTimeout: 2,
+        logger,
+        progressExtension: {
+          policy: {
+            enabled: true,
+            grantSeconds: 30,
+            activityStallSeconds: 60,
+          },
+          treeProbe: probe,
+        },
+      });
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(result.value.timedOut, true);
+      assertEquals(
+        result.value.timeoutReason,
+        "no-output",
+        "silence kills regardless of how far the hard deadline was extended",
+      );
+      assert(
+        lines.some((l) => l.includes("[progress-extension]")),
+        "the run must actually have been extended before it fell silent",
+      );
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - every grant is reported to the deadline reporter, and a reporter that throws does not kill the run (Issue #4297)",
+  fn: async () => {
+    // The drain path (#4182) only sees an extended run as in-flight if the
+    // runner surfaces each grant; this pins that contract end to end.
+    const stub = await installStub(chattyStub(30, "0.1"));
+    const { logger } = recordingLogger();
+    const { probe } = scriptedProbe(["advanced"]);
+    const reported: { deadlineMs: number; extensionsGranted: number }[] = [];
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
+          treeProbe: probe,
+          onExtension: (state) => {
+            reported.push(state);
+            // A faulty consumer must not decide whether the run lives.
+            throw new Error("reporter blew up");
+          },
+        },
+      });
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(
+        result.value.timedOut,
+        false,
+        "a throwing reporter must not kill a progressing run",
+      );
+      assert(
+        reported.length >= 2,
+        `every grant must be reported, got ${reported.length}`,
+      );
+      assertEquals(
+        reported.map((r) => r.extensionsGranted),
+        reported.map((_, i) => i + 1),
+        "the extension count must increase by one per grant",
+      );
+      for (let i = 1; i < reported.length; i++) {
+        assert(
+          reported[i]!.deadlineMs > reported[i - 1]!.deadlineMs,
+          "each report must carry a later deadline",
+        );
+      }
+    } finally {
+      await stub.restore();
+    }
+  },
+});

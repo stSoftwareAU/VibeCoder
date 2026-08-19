@@ -1,0 +1,111 @@
+name: Security Tabletop
+
+# Runs the malicious-issue tabletop harness (Issue #4194) against the real
+# container image on a schedule: hostile fixtures on every untrusted surface,
+# a planted canary credential, and an assertion that the canary never appears
+# in an outbound artefact.
+#
+# Two runs, and both must hold:
+#
+#  1. the straight run — every fixture must report CONTAINED;
+#  2. the negative control — with `sink-redaction` switched off the harness
+#     MUST report a breach. A weakened run that still reports green means the
+#     harness cannot detect a breach, and a permanently-green harness would be
+#     mistaken for a secure worker.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue #2123).
+
+on:
+  schedule:
+    # Weekly, Monday 03:17 UTC — off the hour so it does not collide with the
+    # scheduled sweeps everyone else runs on the hour.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+# Issue #2382 — Rule of Two: this job builds an image and runs checks inside
+# it; nothing pushes, comments, or labels.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tabletop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      IMAGE: vibe-coder:tabletop
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install Deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          deno-version-file: .deno-version
+
+      - name: Strip the Containerfile the image is built from
+        run: |
+          set -euo pipefail
+          # Issue #4393: every build reads the comment-stripped copy.
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-read --allow-write --allow-env \
+            worker/deno/mod.ts strip-containerfile --out /tmp/Containerfile.stripped
+
+      - name: Build the image the fixtures run against
+        run: |
+          set -euo pipefail
+          docker build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
+
+      - name: Run the hostile fixtures, then the negative control
+        run: |
+          set -euo pipefail
+          cd worker/deno
+          straight_out="../../docs/evidence/tabletop-ci-${GITHUB_RUN_ID}.md"
+          negative_out="../../docs/evidence/tabletop-negative-control-ci-${GITHUB_RUN_ID}.md"
+
+          # Both runs must complete before either is judged, so -e is lifted
+          # around them and their exit statuses are read explicitly.
+          echo "=== straight run: every fixture must be contained ==="
+          set +e
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run \
+            --allow-sys=hostname mod.ts security-tabletop \
+            --image "${IMAGE}" --out "${straight_out}" < /dev/null
+          straight=$?
+
+          echo "=== negative control: a weakened control MUST be detected ==="
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run \
+            --allow-sys=hostname mod.ts security-tabletop \
+            --image "${IMAGE}" --weaken sink-redaction --out "${negative_out}" \
+            < /dev/null
+          negative=$?
+          set -e
+
+          if [[ "${negative}" -ne 0 ]]; then
+            echo "FAILED: with sink-redaction disabled the harness still reported no breach — it cannot detect one." >&2
+            exit 1
+          fi
+          if [[ "${straight}" -ne 0 ]]; then
+            echo "FAILED: a fixture breached containment. File a security issue with the fixture attached as its regression test (Issue #4194)." >&2
+            exit 1
+          fi
+          echo "Contained on every fixture, and the negative control detected the weakened run."
+
+      - name: Upload the evidence
+        if: always()
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tabletop-evidence
+          path: docs/evidence/tabletop-*ci-*.md
+          if-no-files-found: warn
+          retention-days: 7

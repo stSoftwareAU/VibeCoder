@@ -1,0 +1,244 @@
+/**
+ * Runtime validation for add-repo targets (Issue #2576).
+ *
+ * When a candidate `owner/repo` is proposed for the monitored set, the worker
+ * must confirm at runtime that the repo exists, that the worker account has
+ * collaborator (triage) access, and what the repo's visibility is. This module
+ * answers those questions and returns a structured outcome the orchestrator
+ * (a separate sub-issue) can act on — it does NOT gate on visibility.
+ *
+ * The add request does not declare visibility — it is determined here at
+ * runtime. All public-vs-private gating is deferred to #2571; this module only
+ * detects and returns the visibility.
+ *
+ * Reuses existing helpers rather than re-rolling gh calls:
+ * - {@link classifyRepoAccess} for the access/permission check.
+ * - {@link getRepoVisibility} for visibility (REST, fail-safe to `private`).
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation).
+ */
+
+import type { Result } from "../types.ts";
+import {
+  classifyRepoAccess,
+  type CommandOutput,
+  type RunCommand,
+} from "../setup/collaborator_precheck.ts";
+import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
+import { REPO_SLUG_PATTERN } from "./config.ts";
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated outcome of validating an add-repo target.
+ *
+ * `not_found` and `no_access` are returned (not thrown) so the orchestrator
+ * can comment back and escalate rather than crashing.
+ */
+export type AddRepoTargetStatus =
+  | { kind: "ok"; visibility: RepoVisibility }
+  | { kind: "not_found" }
+  | { kind: "no_access" };
+
+/** Injected dependencies for {@link validateAddRepoTarget}. */
+export interface AddRepoDeps {
+  /** Injected `gh` command runner (overridable so tests script responses). */
+  runCommand: RunCommand;
+}
+
+export type { CommandOutput };
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a candidate add-repo target.
+ *
+ * Confirms the repo exists and the worker has triage access, then determines
+ * its visibility. Returns:
+ * - `{ kind: "ok", visibility }` when readable with triage access.
+ * - `{ kind: "not_found" }` when `gh api repos/{owner}/{repo}` reports the repo
+ *   is missing/unreadable (404/403).
+ * - `{ kind: "no_access" }` when the repo is visible but the worker lacks
+ *   triage permission.
+ *
+ * Returns `Result.err` only when access is confirmed but the follow-up
+ * visibility lookup itself fails (e.g. a transient gh/network error) — that is
+ * the one case where we cannot honestly produce a status.
+ *
+ * @param repo - Repository in `"owner/repo"` format.
+ * @param deps - Injected dependencies (the gh command runner).
+ */
+export async function validateAddRepoTarget(
+  repo: string,
+  deps: AddRepoDeps,
+): Promise<Result<AddRepoTargetStatus, string>> {
+  const access = await classifyRepoAccess(repo, deps.runCommand);
+
+  if (access === "not_visible") {
+    return { ok: true, value: { kind: "not_found" } };
+  }
+  if (access === "not_assignable") {
+    return { ok: true, value: { kind: "no_access" } };
+  }
+
+  // access === "ok": repo is readable with triage access. Determine visibility.
+  const visibility = await getRepoVisibility(repo, {
+    runCommand: deps.runCommand,
+  });
+  if (!visibility.ok) {
+    return { ok: false, error: visibility.error };
+  }
+
+  return { ok: true, value: { kind: "ok", visibility: visibility.value } };
+}
+
+// ---------------------------------------------------------------------------
+// Add-repo title parsing + monitored-list mutation (Issue #2575)
+// ---------------------------------------------------------------------------
+
+/**
+ * Title prefix that marks an issue as an add-repo request, e.g.
+ * `add-repo: example-org/private-repo-23`. Matched case-insensitively in the
+ * same `.startsWith()` style as `IDLE_TASK_MILESTONE_PREFIX`.
+ */
+export const ADD_REPO_PREFIX = "add-repo:";
+
+/**
+ * Parse an `add-repo:`-prefixed issue title into a validated slug.
+ *
+ * Returns `{ repo }` when the title carries the prefix and the suffix is
+ * a valid `owner/repo` slug. Returns `null` (never throws) for any title
+ * without the prefix, with an empty slug, or with a slug failing
+ * `REPO_SLUG_PATTERN`. The slug is untrusted input — strict validation
+ * happens here before it can reach any `gh`/git call or the config file.
+ *
+ * @param title - The raw issue title.
+ * @returns The parsed slug, or `null` when the title does not qualify.
+ */
+export function parseAddRepoTitle(title: string): { repo: string } | null {
+  const trimmed = title.trim();
+  if (!trimmed.toLowerCase().startsWith(ADD_REPO_PREFIX)) {
+    return null;
+  }
+  const slug = trimmed.slice(ADD_REPO_PREFIX.length).trim();
+  if (slug.length === 0) {
+    return null;
+  }
+  if (!REPO_SLUG_PATTERN.test(slug)) {
+    return null;
+  }
+  return { repo: slug };
+}
+
+/**
+ * Filesystem functions injected into {@link addRepoToMonitoredList} so
+ * tests need no real filesystem. Defaults to the real Deno calls.
+ */
+export interface AddRepoFsDeps {
+  readTextFile: (path: string) => Promise<string>;
+  writeTextFile: (path: string, data: string) => Promise<void>;
+}
+
+const defaultFsDeps: AddRepoFsDeps = {
+  readTextFile: (path) => Deno.readTextFile(path),
+  writeTextFile: (path, data) => Deno.writeTextFile(path, data),
+};
+
+/**
+ * Idempotently append a validated `owner/repo` slug to the monitored
+ * `repos` list in `.config.json`.
+ *
+ * The whole config object is read, merged, and written back so unknown
+ * keys (phase overrides, idle-task weights, etc.) are preserved — unlike
+ * `writeConfigFile`, which strips any key outside the known `SetupConfig`
+ * shape. The merge uses the `[...new Set([...existing, repo])]` dedup
+ * approach from `config_setup.ts`'s `VIBE_ADD_REPOS` block, so a repo
+ * already present yields `{ added: false }` and no duplicate is written.
+ *
+ * @param repo - The `owner/repo` slug to add (untrusted; re-validated).
+ * @param configPath - Path to the `.config.json` file.
+ * @param deps - Injected filesystem functions (defaults to real Deno I/O).
+ * @returns `Result` carrying `{ added }` — `true` when newly appended,
+ *   `false` when already present.
+ */
+export async function addRepoToMonitoredList(
+  repo: string,
+  configPath: string,
+  deps: AddRepoFsDeps = defaultFsDeps,
+): Promise<Result<{ added: boolean }>> {
+  const slug = repo.trim();
+
+  // Untrusted input — reject anything not in strict owner/repo form
+  // before it reaches the config file.
+  if (!REPO_SLUG_PATTERN.test(slug)) {
+    return {
+      ok: false,
+      error: new Error(
+        `Invalid repository slug "${repo}": expected owner/repo format.`,
+      ),
+    };
+  }
+
+  // Read the existing config. A missing file is treated as an empty
+  // config so the first add bootstraps the repos list.
+  let raw = "";
+  try {
+    raw = await deps.readTextFile(configPath);
+  } catch {
+    raw = "";
+  }
+
+  let config: Record<string, unknown> = {};
+  if (raw.trim() !== "") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {
+        ok: false,
+        error: new Error(`Config file ${configPath} contains invalid JSON.`),
+      };
+    }
+    if (
+      typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
+    ) {
+      return {
+        ok: false,
+        error: new Error(`Config file ${configPath} is not a JSON object.`),
+      };
+    }
+    config = parsed as Record<string, unknown>;
+  }
+
+  const existing = Array.isArray(config.repos)
+    ? (config.repos as unknown[]).filter(
+      (r): r is string => typeof r === "string",
+    )
+    : [];
+
+  // Idempotent: already present means no rewrite and no duplicate.
+  if (existing.includes(slug)) {
+    return { ok: true, value: { added: false } };
+  }
+
+  config.repos = [...new Set([...existing, slug])];
+
+  try {
+    await deps.writeTextFile(
+      configPath,
+      JSON.stringify(config, null, 2) + "\n",
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: new Error(`Failed to write ${configPath}: ${message}`),
+    };
+  }
+
+  return { ok: true, value: { added: true } };
+}

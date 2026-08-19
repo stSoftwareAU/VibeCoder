@@ -1,0 +1,16 @@
+# zizmor configuration (Issue #4399, GHA-MONITOR-002).
+#
+# The CI gate (`validate-scripts.yml`, "zizmor") fails on any finding of
+# LOW severity or above that is not justified here. Every ignore names the
+# reason; loosen the tool never, suppress with a reason only.
+rules:
+  adhoc-packages:
+    ignore:
+      # Each `npm install -g … pkg@X.Y.Z` / `gem install … -v X.Y.Z` in these
+      # steps is an exact-version pin installed with --ignore-scripts where
+      # npm allows it, tracked by renovate.json's custom managers under the
+      # 24h quarantine (Issue #3642). A lockfile would add nothing the pin
+      # does not already fix.
+      - dependency-audit.yml
+      - markdown-lint.yml
+      - pages.yml

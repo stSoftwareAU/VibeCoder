@@ -1,0 +1,51 @@
+name: Semgrep
+
+# Third-party actions are pinned to 40-character commit SHAs (Issue
+# #2123) so a hijacked tag cannot exfiltrate CI secrets such as
+# SEMGREP_APP_TOKEN. The version tag each SHA corresponds to is
+# captured in the leading comment for human readability.
+
+on:
+  pull_request:
+    # Issue #3940 — this was `["*"]`, which reads as "every branch" but a
+    # GitHub `*` never matches `/`, so SAST never ran on milestone
+    # sub-issue PRs. Those PRs target a shared `milestone/<name>` branch
+    # (Issue #1300) and are the dominant merge path, so the glob is listed
+    # explicitly (Issue #3360).
+    branches: [Develop, main, milestone/*]
+
+permissions:
+  contents: read
+
+# Issue #2972: cancel superseded PR runs. Only the latest commit's
+# result matters for a PR check, so a per-ref group with cancellation
+# stops rapid pushes spawning parallel, redundant runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Issue #4404 (GHA-SECRETS-012): the job that consumes SEMGREP_APP_TOKEN
+    # targets a GitHub Environment so the secret can be moved there and
+    # gated (required reviewers / deployment branches) by an admin.
+    # Repository-level secrets keep working meanwhile — the environment is
+    # created on first use and adds gating, never removes access.
+    environment: scanning-secrets
+    container:
+      # Pinned to an immutable digest so a hijacked tag cannot run with
+      # SEMGREP_APP_TOKEN in scope, AND carrying the release tag so an updater
+      # can resolve a bump against it (Issue #4403, GHA-SUPPLY-011): a bare
+      # digest froze at `latest`-of-2026-06-20 with nothing able to move it.
+      # Manifest-list digest of semgrep/semgrep:1.173.0 (released 2026-08-13).
+      image: semgrep/semgrep:1.173.0@sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: semgrep ci --config p/default
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}

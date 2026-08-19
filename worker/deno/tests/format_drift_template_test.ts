@@ -1,0 +1,371 @@
+/**
+ * Tests for the formatting & lint-drift idle-task template
+ * (Issue #2915, template #7, one of the #2903 "Boy Scout" checks).
+ *
+ * Coverage:
+ *   - registration: the template is registered at module load and
+ *     `getTemplate("format-drift")` / `listTemplates()` find it.
+ *   - contract flags: cooldownHours === 168, skipMilestone === true,
+ *     outputLabel === "format-drift", requiresStructuredOutput === true.
+ *   - title is the literal "Run a formatting & lint-drift scan"
+ *     (used for dispatch).
+ *   - buildIssueBody output is recognised by BOTH the title match and
+ *     the body fingerprint, and leaves no raw `{{...}}` placeholders.
+ *   - assembleFormatDriftPrompt substitutes placeholders / `(none)`
+ *     sentinel / attribution footer.
+ *   - runTask happy path: ensures the `format-drift` label before the
+ *     scan, and returns the before/after diff summary.
+ *   - runTask error path: runScanFn failure → ok:false summary.
+ *   - runTask edge case: empty before/after diff → "no findings"
+ *     (the already-enforcing repo where Claude files nothing).
+ *   - runTask passes known-open finding ids to the scan runner so
+ *     Claude does not re-emit them (suppression-on-re-run path).
+ *   - shouldFile vetoes while an open wrapper exists / allows otherwise.
+ *   - claim handler dispatches a "Run a formatting & lint-drift scan"
+ *     wrapper to runTask.
+ *
+ * Australian English spelling used throughout.
+ */
+
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+
+import {
+  assembleFormatDriftPrompt,
+  createFormatDriftTemplate,
+  FORMAT_DRIFT_BODY_FINGERPRINT,
+  FORMAT_DRIFT_ISSUE_TITLE,
+  FORMAT_DRIFT_LABEL,
+  formatDriftTemplate,
+  renderFormatDriftSummary,
+} from "../lib/idle_task_templates/format_drift_template.ts";
+import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
+import {
+  handleIdleTaskIssue,
+  type HandleIdleTaskIssueDeps,
+} from "../lib/idle_task_claim_handler.ts";
+import { IDLE_TASK_LABEL } from "../lib/idle_task_issue.ts";
+import type { Logger, Result } from "../types.ts";
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+/** Stub prompt body — H1 matches the production fingerprint. */
+const STUB_PROMPT = [
+  "# Formatting & lint-drift — Toolchain Drift Audit (v1)",
+  "",
+  "Suppressed ids:",
+  "{{SUPPRESSED_IDS}}",
+  "",
+  "Known open finding ids:",
+  "{{KNOWN_OPEN_FINDING_IDS}}",
+  "",
+  "Footer:",
+  "{{ATTRIBUTION_FOOTER}}",
+].join("\n");
+
+const okPrompt = (): Promise<Result<string>> =>
+  Promise.resolve({ ok: true, value: STUB_PROMPT });
+
+/**
+ * gh stub. Distinguishes the snapshot calls (`--json number`), the
+ * known-open lookup (`--json number,body`), and the wrapper-veto title
+ * search (`--json number,title`). Snapshot calls return the first/second
+ * entry of `snapshots`.
+ */
+function makeGhStub(scenario: {
+  snapshots?: [number[], number[]];
+  knownOpen?: Array<{ number: number; body: string }>;
+  /** Open wrapper titles returned by the `--json number,title` query. */
+  openWrapperTitles?: string[];
+}): { gh: (args: string[]) => Promise<string>; calls: string[][] } {
+  const calls: string[][] = [];
+  let snapshotCount = 0;
+  const gh = (args: string[]): Promise<string> => {
+    calls.push([...args]);
+    const jsonIdx = args.indexOf("--json");
+    const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
+    if (jsonField === "number") {
+      const snap = scenario.snapshots ?? [[], []];
+      const result = snapshotCount === 0 ? snap[0] : snap[1];
+      snapshotCount += 1;
+      return Promise.resolve(
+        JSON.stringify(result.map((n) => ({ number: n }))),
+      );
+    }
+    if (jsonField === "number,body") {
+      return Promise.resolve(JSON.stringify(scenario.knownOpen ?? []));
+    }
+    if (jsonField === "number,title") {
+      const titles = scenario.openWrapperTitles ?? [];
+      return Promise.resolve(
+        JSON.stringify(titles.map((title, i) => ({ number: i + 1, title }))),
+      );
+    }
+    return Promise.resolve("[]");
+  };
+  return { gh, calls };
+}
+
+function makeLogger(): { logger: Logger; records: string[] } {
+  const records: string[] = [];
+  const noop = () => {};
+  const logger: Logger = {
+    info: (m) => records.push(`info:${m}`),
+    warn: (m) => records.push(`warn:${m}`),
+    error: (m) => records.push(`error:${m}`),
+    debug: (m) => records.push(`debug:${m}`),
+    security: noop,
+    skipReason: noop,
+    timing: noop,
+    scanSummary: noop,
+    workerSummary: noop,
+  };
+  return { logger, records };
+}
+
+// ---------------------------------------------------------------------------
+// Registration + contract
+// ---------------------------------------------------------------------------
+
+Deno.test("format-drift - registered at module load", () => {
+  const t = getTemplate("format-drift");
+  assert(t !== undefined, "expected format-drift template to be registered");
+  assertEquals(t, formatDriftTemplate);
+  assert(
+    listTemplates().some((x) => x.name === "format-drift"),
+    "expected listTemplates() to include format-drift",
+  );
+});
+
+Deno.test("format-drift - contract flags", () => {
+  assertEquals(formatDriftTemplate.cooldownHours, 168);
+  assertEquals(formatDriftTemplate.skipMilestone, true);
+  assertEquals(formatDriftTemplate.outputLabel, FORMAT_DRIFT_LABEL);
+  assertEquals(formatDriftTemplate.requiresStructuredOutput, true);
+  assertEquals(
+    formatDriftTemplate.buildIssueTitle("acme/widget"),
+    FORMAT_DRIFT_ISSUE_TITLE,
+  );
+});
+
+Deno.test("format-drift - buildIssueBody matches title and fingerprint", async () => {
+  const t = createFormatDriftTemplate({ loadPromptFn: okPrompt });
+  const body = await Promise.resolve(
+    t.buildIssueBody({
+      repo: "acme/widget",
+      pickedAt: "2026-06-07T00:00:00Z",
+      workerUser: "vibe",
+    }),
+  );
+  // Title match (dispatch signal #2).
+  assertEquals(t.buildIssueTitle("acme/widget"), FORMAT_DRIFT_ISSUE_TITLE);
+  // Body fingerprint (dispatch signal #3).
+  assert(
+    t.matchesIdleTaskBody?.(body) === true,
+    "expected buildIssueBody output to match the body fingerprint",
+  );
+  assert(FORMAT_DRIFT_BODY_FINGERPRINT.test(body));
+  // No raw placeholders survive — they collapse to the (none) sentinel.
+  assert(!body.includes("{{"), "expected no raw placeholders in body");
+  assertStringIncludes(body, "(none)");
+});
+
+// ---------------------------------------------------------------------------
+// Prompt assembly
+// ---------------------------------------------------------------------------
+
+Deno.test("assembleFormatDriftPrompt - empty lists render (none)", () => {
+  const out = assembleFormatDriftPrompt(STUB_PROMPT, {
+    suppressedIds: [],
+    knownOpenFindingIds: [],
+  });
+  assert(!out.includes("{{SUPPRESSED_IDS}}"));
+  assert(!out.includes("{{KNOWN_OPEN_FINDING_IDS}}"));
+  assertStringIncludes(out, "(none)");
+});
+
+Deno.test("assembleFormatDriftPrompt - populated lists are joined", () => {
+  const out = assembleFormatDriftPrompt(STUB_PROMPT, {
+    suppressedIds: ["BP-aaaaaaaaaaaa"],
+    knownOpenFindingIds: ["BP-bbbbbbbbbbbb", "BP-cccccccccccc"],
+  });
+  assertStringIncludes(out, "BP-aaaaaaaaaaaa");
+  assertStringIncludes(out, "BP-bbbbbbbbbbbb\nBP-cccccccccccc");
+});
+
+Deno.test("assembleFormatDriftPrompt - attribution footer substituted", () => {
+  const out = assembleFormatDriftPrompt(STUB_PROMPT, {
+    suppressedIds: [],
+    knownOpenFindingIds: [],
+    attributionFooter: "🏷️ Filed by idle-task template: `format-drift`",
+  });
+  assert(!out.includes("{{ATTRIBUTION_FOOTER}}"));
+  assertStringIncludes(out, "🏷️ Filed by idle-task template: `format-drift`");
+});
+
+Deno.test("renderFormatDriftSummary - wording", () => {
+  assertEquals(renderFormatDriftSummary([]), "no findings");
+  assertEquals(
+    renderFormatDriftSummary([12, 3]),
+    "Format-drift scan complete. Filed 2 issues: #3, #12",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// runTask
+// ---------------------------------------------------------------------------
+
+Deno.test("runTask - happy path ensures label and diffs snapshot", async () => {
+  const { gh, calls } = makeGhStub({
+    snapshots: [[1, 2], [1, 2, 7]],
+    knownOpen: [{ number: 2, body: "<!-- finding-id: BP-existing0001 -->" }],
+  });
+  const ensureCalls: string[] = [];
+  const scanCalls: { knownOpenFindingIds: string[] }[] = [];
+  const t = createFormatDriftTemplate({
+    ghCommandFn: gh,
+    loadPromptFn: okPrompt,
+    ensureLabelFn: (repo) => {
+      ensureCalls.push(repo);
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+    runScanFn: (opts) => {
+      scanCalls.push({ knownOpenFindingIds: opts.knownOpenFindingIds });
+      return Promise.resolve({ ok: true, value: true });
+    },
+  });
+
+  const result = await t.runTask({
+    repo: "acme/widget",
+    workDir: "/tmp/widget",
+    idleTaskIssueNumber: 100,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(
+    result.summary,
+    "Format-drift scan complete. Filed 1 issues: #7",
+  );
+  // Label ensured before the scan.
+  assertEquals(ensureCalls, ["acme/widget"]);
+  // Known-open ids flow into the scan runner — drives the
+  // "suppression drops a finding on re-run" expectation.
+  assertEquals(scanCalls.length, 1);
+  assertEquals(scanCalls[0]!.knownOpenFindingIds, ["BP-existing0001"]);
+  // The label-scoped snapshot query was issued.
+  assert(
+    calls.some((c) =>
+      c.includes("--label") && c.includes(FORMAT_DRIFT_LABEL) &&
+      c.includes("number")
+    ),
+  );
+});
+
+Deno.test("runTask - scan failure surfaces ok:false", async () => {
+  const { gh } = makeGhStub({ snapshots: [[], []] });
+  const t = createFormatDriftTemplate({
+    ghCommandFn: gh,
+    loadPromptFn: okPrompt,
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    runScanFn: () =>
+      Promise.resolve({
+        ok: false,
+        error: { kind: "claude", message: "boom" },
+      }),
+  });
+
+  const result = await t.runTask({
+    repo: "acme/widget",
+    workDir: "/tmp/widget",
+    idleTaskIssueNumber: 100,
+  });
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(result.summary, "format-drift failed");
+  assertStringIncludes(result.summary, "claude");
+  assertStringIncludes(result.summary, "boom");
+});
+
+Deno.test("runTask - empty diff reports no findings (already-enforcing repo)", async () => {
+  const { gh } = makeGhStub({ snapshots: [[5], [5]] });
+  const t = createFormatDriftTemplate({
+    ghCommandFn: gh,
+    loadPromptFn: okPrompt,
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    runScanFn: () => Promise.resolve({ ok: true, value: true }),
+  });
+
+  const result = await t.runTask({
+    repo: "acme/widget",
+    workDir: "/tmp/widget",
+    idleTaskIssueNumber: 100,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(result.summary, "no findings");
+});
+
+// ---------------------------------------------------------------------------
+// shouldFile veto
+// ---------------------------------------------------------------------------
+
+Deno.test("shouldFile - vetoes while an open wrapper exists", async () => {
+  const { gh } = makeGhStub({
+    openWrapperTitles: [FORMAT_DRIFT_ISSUE_TITLE],
+  });
+  const t = createFormatDriftTemplate({
+    ghCommandFn: gh,
+    loadPromptFn: okPrompt,
+  });
+  const allowed = await t.shouldFile!({ repo: "acme/widget" });
+  assertEquals(allowed, false);
+});
+
+Deno.test("shouldFile - allows filing when no open wrapper exists", async () => {
+  const { gh } = makeGhStub({ openWrapperTitles: [] });
+  const t = createFormatDriftTemplate({
+    ghCommandFn: gh,
+    loadPromptFn: okPrompt,
+  });
+  const allowed = await t.shouldFile!({ repo: "acme/widget" });
+  assertEquals(allowed, true);
+});
+
+// ---------------------------------------------------------------------------
+// Claim-handler dispatch
+// ---------------------------------------------------------------------------
+
+Deno.test("claim handler - dispatches a format-drift wrapper to runTask", async () => {
+  const { gh } = makeGhStub({ snapshots: [[], [11]] });
+  const template = createFormatDriftTemplate({
+    ghCommandFn: gh,
+    loadPromptFn: okPrompt,
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    runScanFn: () => Promise.resolve({ ok: true, value: true }),
+  });
+  const { logger } = makeLogger();
+  const deps: HandleIdleTaskIssueDeps = {
+    logger,
+    listTemplatesFn: () => [template],
+  };
+
+  const result = await handleIdleTaskIssue(
+    {
+      repo: "acme/widget",
+      issueNumber: 100,
+      issueTitle: FORMAT_DRIFT_ISSUE_TITLE,
+      issueLabels: [IDLE_TASK_LABEL],
+      issueBody: "irrelevant",
+      workDir: "/tmp/widget",
+    },
+    deps,
+  );
+
+  assertEquals(result.handled, true);
+  assertEquals(result.ok, true);
+  assertEquals(
+    result.summary,
+    "Format-drift scan complete. Filed 1 issues: #11",
+  );
+});

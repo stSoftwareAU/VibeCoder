@@ -1,0 +1,65 @@
+# Gitleaks configuration for VibeCoder.
+#
+# Extends the upstream default rule set and allowlists ONLY test files
+# that exist to exercise secret redaction against synthetic credentials:
+#
+#  - secret_redaction_test.ts (Issue #3203): fake PEM "private key"
+#    blocks fed to `redactSecrets()`.
+#  - handle_no_changes_phase_test.ts (Issue #3636): fake ghp_/ghs_/
+#    sk-ant- tokens asserting the publish paths redact leaked
+#    credentials.
+#  - security_scan_overflow_3648_test.ts (Issue #3648): a fake hex API
+#    key asserting space-separated CLI secret flags are redacted.
+#  - security_scan_overflow_3707_test.ts (Issue #3707): fake Jenkins/
+#    ImgBB values for the child-env denylist, plus fake JSON secret
+#    values asserting `redactSecrets()` handles arbitrary spacing.
+#  - unfenced_untrusted_text_test.ts (Issue #3705): a fake ghp_ token in
+#    an x-access-token clone URL asserting the quality-fix prompt
+#    redacts secrets echoed by the quality script.
+#  - secret_redaction_redos_test.ts (Issue #3942): fake ghp_ tokens, a
+#    fake hex API key and a fake JSON `api_key` value asserting the
+#    bounded `redactSecrets()` regexes still mask credentials.
+#
+# None of these are real credentials. An inline `gitleaks:allow` comment
+# could not clear the findings because gitleaks scans every commit in a
+# PR range and the commits that introduced the fixtures predate the
+# comment. Scoping the allowlist to these fixture files keeps full
+# secret scanning everywhere else.
+#
+# The allowlist uses the singular `[allowlist]` table, NOT the plural
+# `[[allowlists]]` array form. The licensed `gitleaks-action` pins gitleaks
+# 8.24.3, which does not honour a top-level `[[allowlists]]` entry when
+# `useDefault = true` (the extended default config shadows it), so the
+# fixture file was still flagged. The singular `[allowlist]` table is
+# honoured by both 8.24.3 (the action) and 8.30.1 (the CLI fallback), so
+# both scan paths agree.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196)"
+paths = [
+  '''worker/deno/tests/secret_redaction_test\.ts''',
+  # Fake GH_TOKEN / ANTHROPIC_API_KEY / x-access-token strings feeding
+  # `assertRedacted()` — the test asserts these never reach a PR body.
+  '''worker/deno/tests/handle_no_changes_phase_test\.ts''',
+  # Fake 32-hex value passed to `redactSecrets()` as a `--imgbb-api-key` arg.
+  '''worker/deno/tests/security_scan_overflow_3648_test\.ts''',
+  # Fake Jenkins token, ImgBB key and JSON secret values fed to
+  # `buildClaudeChildEnv()` / `redactSecrets()`.
+  '''worker/deno/tests/security_scan_overflow_3707_test\.ts''',
+  # Fake ghp_ token in a clone URL asserting `buildQualityFixPrompt()`
+  # redacts secrets echoed by the quality script.
+  '''worker/deno/tests/unfenced_untrusted_text_test\.ts''',
+  # Fake ghp_ tokens, hex API key and JSON `api_key` value fed to
+  # `redactSecrets()` to prove the bounded regexes still mask credentials.
+  '''worker/deno/tests/secret_redaction_redos_test\.ts''',
+  # Fake 32-hex "imgbb key" (assembled from short halves at runtime) fed to
+  # the export scrub gate to prove the api-key class blocks and is redacted
+  # (Issue #4196). Earlier commits carried the literal in one piece.
+  '''worker/deno/tests/export_scrub_gate_test\.ts''',
+  '''worker/deno/tests/export_public_test\.ts''',
+  # Fake AKIA/ghp_ values inside the gitleaks/trufflehog JSON fixtures the
+  # full-history scanner tests parse and classify (Issue #4190).
+  '''worker/deno/tests/secrets_history_scan_test\.ts''',
+]

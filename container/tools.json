@@ -1,0 +1,223 @@
+{
+  "description": "Pinned tool manifest for the Vibe Coder container image (Issue #4061). Every version the image installs is recorded here; container/Containerfile only restates these values as build ARGs, and worker/deno/tests/container_manifest_test.ts fails the quality gate when the two disagree. `providers` is the catalogue of pinned coding-agent providers and `installedProviders` is the set a default image build actually installs, which the Containerfile restates as the AGENT_PROVIDERS default (Issue #4105).",
+  "workdir": "/workspace",
+  "user": {
+    "name": "vibe",
+    "uid": 1000,
+    "gid": 1000
+  },
+  "images": [
+    {
+      "name": "ruby",
+      "tag": "3.4-trixie",
+      "digest": "sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b",
+      "arg": "BASE_IMAGE",
+      "provides": [
+        "bash",
+        "coreutils",
+        "git",
+        "curl",
+        "ca-certificates",
+        "ruby"
+      ],
+      "minVersions": {
+        "git": "2.41",
+        "ruby": "3.1"
+      },
+      "notes": "Digest-pinned official Ruby image, itself built on buildpack-deps:trixie, so it ships bash, GNU coreutils (timeout), git 2.47, curl, ca-certificates and ruby 3.4 — still no apt install step to rot (Issue #4090). The floors are load-bearing: git < 2.41 keeps a literal --end-of-options in argv (Issue #3714) and Psych.safe_load_file (Issue #3661) needs Psych 4, i.e. ruby >= 3.1."
+    },
+    {
+      "name": "denoland/deno",
+      "tag": "bin-2.9.5",
+      "digest": "sha256:0d1262facd139e815217c001945eb822c7a78584cf660142c34a6b53effec1aa",
+      "arg": "DENO_IMAGE",
+      "provides": ["deno"],
+      "notes": "Scratch image containing only the deno binary; copied in via a build stage so no archive extractor is needed."
+    }
+  ],
+  "providers": [
+    {
+      "id": "claude",
+      "binary": "claude",
+      "fragment": "providers/claude.sh",
+      "version": "2.1.223",
+      "source": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases",
+      "sha256": {
+        "amd64": "98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7",
+        "arm64": "60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac"
+      },
+      "notes": "Coding-agent provider layer (Issue #4067). container/providers/claude.sh reads these pins with jq and verifies the download before installing it; the base Containerfile only selects the fragments via the set-valued AGENT_PROVIDERS build argument (Issue #4105), so a second provider adds a fragment and an entry here."
+    },
+    {
+      "id": "codex",
+      "binary": "codex",
+      "fragment": "providers/codex.sh",
+      "version": "0.147.0",
+      "source": "https://github.com/openai/codex/releases",
+      "sha256": {
+        "amd64": "0246e2e773834e07f0fb5249ed6ebad12e4591e608f8c7bb97dd6a9690544c36",
+        "arm64": "eb677c80f666b1ab8b4b1d083b66e8d614b1281d960bb6f9fd8ca98f58b38b90"
+      },
+      "notes": "The second registered coding-agent provider (Issue #4106) — the first addition made purely through the seam. Checksums are of the static musl release archives codex-<target>-unknown-linux-musl.tar.gz from tag rust-v<version>, which run on the glibc base image. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex\"` is what puts both CLIs in one image."
+    },
+    {
+      "id": "gemini",
+      "binary": "gemini",
+      "fragment": "providers/gemini.sh",
+      "version": "0.55.1",
+      "source": "https://registry.npmjs.org/@google/gemini-cli",
+      "sha256": {
+        "noarch": "4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e"
+      },
+      "notes": "The third registered coding-agent provider (Issue #4107) — Quorum's judge rather than a planner. The checksum is of the published package @google/gemini-cli-<version>.tgz, which declares no dependencies and ships the whole CLI as a JavaScript bundle: one artefact for every architecture, hence a single noarch checksum. That bundle runs on Node, which is why the Node toolchain layer is built before the provider layer. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex,gemini\"` is what puts all three CLIs in one image."
+    }
+  ],
+  "installedProviders": ["claude"],
+  "toolchains": [
+    {
+      "id": "shellcheck",
+      "version": "0.11.0",
+      "versionArg": "SHELLCHECK_VERSION",
+      "commands": ["shellcheck"],
+      "versionCommand": "shellcheck",
+      "source": "https://github.com/koalaman/shellcheck/releases",
+      "sha256": {
+        "amd64": "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198",
+        "arm64": "12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588"
+      },
+      "repos": [
+        "example-org/private-repo-21",
+        "example-org/private-repo-30",
+        "example-org/private-repo-32",
+        "example-org/private-repo-33",
+        "example-org/private-repo-34",
+        "example-org/private-repo-36",
+        "example-org/private-repo-31",
+        "example-org/private-repo-37"
+      ],
+      "notes": "Each of these repos commits its own shellcheck gate (quality/shellcheck.sh or an inline loop) and hard-fails without the binary — previously satisfied by a Homebrew install on the host."
+    },
+    {
+      "id": "actionlint",
+      "version": "1.7.12",
+      "versionArg": "ACTIONLINT_VERSION",
+      "commands": ["actionlint"],
+      "versionCommand": "actionlint",
+      "source": "https://github.com/rhysd/actionlint/releases",
+      "sha256": {
+        "amd64": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+        "arm64": "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
+      },
+      "repos": ["example-org/private-repo-37"],
+      "notes": "NEAT-AI-scorer's quality.sh lints its workflows with actionlint. Remove this toolchain if that repo leaves the fleet."
+    },
+    {
+      "id": "cargo-deny",
+      "version": "0.20.2",
+      "versionArg": "CARGO_DENY_VERSION",
+      "commands": ["cargo-deny"],
+      "versionCommand": "cargo-deny",
+      "source": "https://github.com/EmbarkStudios/cargo-deny/releases",
+      "sha256": {
+        "amd64": "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f",
+        "arm64": "995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d"
+      },
+      "repos": [
+        "example-org/private-repo-21",
+        "example-org/private-repo-30",
+        "example-org/private-repo-32",
+        "example-org/private-repo-36",
+        "example-org/private-repo-31",
+        "example-org/private-repo-37"
+      ],
+      "notes": "`cargo deny check` is not optional in these gates: NEAT-AI-core exits non-zero when the binary is absent and NEAT-AI-Discovery runs it unguarded. The linux release is a static musl build, so it runs on the glibc base image."
+    },
+    {
+      "id": "node",
+      "version": "24.19.0",
+      "versionArg": "NODE_VERSION",
+      "commands": ["node", "npm"],
+      "versionCommand": "node",
+      "source": "https://nodejs.org/dist",
+      "sha256": {
+        "amd64": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647",
+        "arm64": "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "The runtime markdownlint-cli2, Playwright and the Gemini CLI provider need; the worker itself is Deno. Node 24 is the current LTS line. Its Containerfile layer sits before the coding-agent provider layer because a provider fragment whose CLI is a JavaScript bundle needs it at install time (Issue #4107)."
+    },
+    {
+      "id": "markdownlint-cli2",
+      "version": "0.23.2",
+      "versionArg": "MARKDOWNLINT_CLI2_VERSION",
+      "commands": ["markdownlint-cli2"],
+      "versionCommand": "markdownlint-cli2",
+      "source": "https://registry.npmjs.org/markdownlint-cli2",
+      "sha256": {
+        "noarch": "b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "Drives the check-markdownlint gate stage against .markdownlint-cli2.jsonc; without it the stage SKIPs and structural Markdown breakage reaches merge. Pure JavaScript, so one noarch checksum covers both architectures — the pin matches .github/workflows/markdown-lint.yml so the container and CI report identical findings."
+    },
+    {
+      "id": "rust",
+      "version": "1.95.0",
+      "versionArg": "RUST_VERSION",
+      "commands": ["cargo", "rustc", "cargo-clippy", "rustfmt"],
+      "versionCommand": "cargo",
+      "source": "https://static.rust-lang.org/dist",
+      "sha256": {
+        "amd64": "a47ac940abd12399d59ad15c877e7113fa35f2b9ec7e6a8a045d4fd8b9741dea",
+        "arm64": "3b9385d3144ac57616befa0ccbac524f857ba1b4ab074226e73a24d43568a98e",
+        "rustfmt_amd64": "6d3e64adc505ad4bef6935f6e6f5e4c6956d9782607fb8394df3a5d2b30d2733",
+        "rustfmt_arm64": "ee169a16fb2a415aef71fba78fb279b7e0bb875dfecd56cdb80bdb95ba29a559",
+        "clippy_amd64": "5230c92fb0ae1346ee30a1b4e01413cc3e1ead8ded20391fb2826619775f1ccb",
+        "clippy_arm64": "84480abfbfed89616b1e0b35acb9db84766f0353b671766638084f4e9b1d1143"
+      },
+      "repos": [
+        "example-org/private-repo-17",
+        "example-org/private-repo-21",
+        "example-org/private-repo-22",
+        "example-org/private-repo-30",
+        "example-org/private-repo-32",
+        "example-org/private-repo-36",
+        "example-org/private-repo-31",
+        "example-org/private-repo-37"
+      ],
+      "notes": "Standalone rust-lang distribution installed into /usr/local, so no rustup and nothing to update at run time. The combined rust-<version> package carries only rustc/cargo/rust-std/rust-docs, so rustfmt and clippy are fetched as their own component packages — hence the rustfmt_/clippy_ checksum keys, one per architecture. 1.95.0 is the channel NEAT-AI-scorer, NEAT-AI-Lamarck and NEAT-AI-Backpropagation pin in rust-toolchain.toml — bump those repos and this pin together, or a new stable's clippy lints break their -D warnings gates."
+    }
+  ],
+  "tools": [
+    {
+      "name": "gh",
+      "version": "2.97.0",
+      "versionArg": "GH_VERSION",
+      "source": "https://github.com/cli/cli/releases",
+      "sha256": {
+        "amd64": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
+        "arm64": "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5"
+      }
+    },
+    {
+      "name": "jq",
+      "version": "1.8.2",
+      "versionArg": "JQ_VERSION",
+      "source": "https://github.com/jqlang/jq/releases",
+      "sha256": {
+        "amd64": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+        "arm64": "8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309"
+      }
+    },
+    {
+      "name": "playwright-core",
+      "version": "1.61.0-alpha-1778188671000",
+      "versionArg": "PLAYWRIGHT_VERSION",
+      "source": "https://registry.npmjs.org/playwright-core",
+      "sha256": {
+        "noarch": "d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516"
+      },
+      "browsersPath": "/opt/playwright-browsers",
+      "notes": "Installs headless Chromium into browsersPath at build time (Issue #4069), so the worker captures PR evidence with no host browser and no download mid-run. The version is not a free choice: it is exactly what @playwright/mcp@<PLAYWRIGHT_MCP_VERSION> depends on, because Playwright resolves browsers as chromium-<revision> and each release pins its own revision — worker/deno/tests/container_manifest_test.ts fails the gate when this drifts from PLAYWRIGHT_INSTALLER_VERSION in worker/deno/setup/screenshot.ts. Pure JavaScript, so one noarch checksum covers both architectures; the Chromium system libraries come from `playwright-core install --with-deps`, which resolves the package set Playwright itself declares for this distribution."
+    }
+  ]
+}

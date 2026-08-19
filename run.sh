@@ -1,0 +1,538 @@
+#!/bin/bash
+set -euo pipefail
+
+# Cron entrypoint - thin, trusted, host-side launcher.
+#
+# The worker runs inside a container by default (Issue #4060). This script is
+# the containment boundary, so it is deliberately small enough to audit: it
+# asks the Deno "container-launch-plan" command what to run, then runs exactly
+# that. Every decision - which runtime, which image, which mounts, which
+# privilege flags - is made in worker/deno/lib/container_launch.ts, so code
+# running inside the container cannot broaden its own mounts or capabilities
+# by editing shell here.
+#
+# There are two run modes, resolved once up front by the Deno "run-mode"
+# command (Issue #4146) so no shell parses .config.json:
+#
+#   container (default) - build the launch plan and run the worker inside the
+#                         Vibe Coder container.
+#   native (opt-in)     - run the worker driver directly on this host. Only a
+#                         host that explicitly asks for it gets it: an absent
+#                         container runtime is still a loud failure, never a
+#                         silent fallback to the host (Issue #3234).
+#   seatbelt (opt-in)   - native, but with the filesystem confined by a macOS
+#                         Seatbelt profile (`sandbox-exec`, Issue #4300): the
+#                         host's full CPU/GPU/memory with deny-by-default file
+#                         access — the agent cannot read outside the same set
+#                         of paths container mode mounts. macOS only.
+#
+# Container steps:
+#   1. Locate Deno on the host (the only host tool this script needs).
+#   2. Build the launch plan (runtime detection, image reference, mounts).
+#   3. Build the image when the content-derived reference is absent.
+#   4. Launch the container, propagate SIGTERM/SIGINT, and exit with the
+#      container's exit status so loop.sh / launchd / cron / systemd see real
+#      failures.
+#
+# Issue #919:  Simplified from inline bash to a thin Deno launcher.
+# Issue #3504: Dropped the run_core.sh shadow-copy.
+# Issue #4065: Cut over to a containerised launch - no supported runtime is a
+#              loud non-zero exit, never a fallback to running on the host.
+# Issue #4072: Record the phase reached, so the supervisor's self-heal backoff
+#              can tell a host that cannot rebuild its environment from a
+#              worker that crashed inside a perfectly good container.
+# Issue #4148: Restored the host-native path from before #4065, reachable only
+#              through the explicit #4146 opt-in. Neither branch execs, so the
+#              EXIT trap still records the launcher's outcome.
+# Issue #4173: Outer kill-and-reap watchdog. A wedged container VM leaves the
+#              host-side `container run` client waiting for ever, which blocked
+#              this launcher - and loop.sh behind it - for three hours on
+#              host-23. The wait now runs under the plan's `watchdog` deadline,
+#              and a stale worker container is reaped before the launch.
+
+BASE_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "${BASE_DIR}"
+
+# Phase marker for the supervisor (loop.sh / loop.ps1 read this alongside the
+# exit status). Best-effort by design: an unwritable marker degrades the
+# supervisor's attribution, it must not stop the worker from launching - but it
+# says so on stderr rather than failing quietly (Issue #3234).
+VIBE_STATE_DIR="${VIBE_STATE_DIR:-${HOME:-/tmp}/.vibe-coder}"
+LAUNCH_PHASE_FILE="${VIBE_LAUNCH_PHASE_FILE:-${VIBE_STATE_DIR}/last-launch-phase}"
+record_phase() {
+  if ! { mkdir -p "$(dirname "${LAUNCH_PHASE_FILE}")" &&
+    printf '%s\n' "$1" >"${LAUNCH_PHASE_FILE}"; } 2>/dev/null; then
+    echo "[run.sh] warning: cannot record launch phase to ${LAUNCH_PHASE_FILE}" >&2
+  fi
+}
+
+record_phase runtime_detection
+
+# PATH bootstrap for cron/launchd environments. The caller's PATH stays
+# authoritative and the usual install locations are appended, so an operator
+# who installed Deno or the container runtime somewhere unusual still wins.
+FALLBACK_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [[ -n "${PATH:-}" ]]; then
+  export PATH="${PATH}:${FALLBACK_PATH}"
+else
+  export PATH="${FALLBACK_PATH}"
+fi
+
+# Locate Deno
+DENO_CMD=""
+for candidate in deno "${HOME}/.deno/bin/deno" /opt/homebrew/bin/deno /usr/local/bin/deno; do
+  if command -v "${candidate}" >/dev/null 2>&1; then
+    DENO_CMD="${candidate}"
+    break
+  fi
+done
+
+if [[ -z "${DENO_CMD}" ]]; then
+  echo "Error: Deno not found" >&2
+  exit 1
+fi
+
+CONTAINER_NAME="vibe-coder-$$"
+# Set only on the container path; the native path builds no launch plan.
+PLAN_FILE=""
+# Marker the watchdog writes before it reaps, so the exit status can name the
+# reason (Issue #4173). Set only once the container path starts the container.
+WEDGE_MARKER=""
+
+# A wedged helper must never wedge this launcher: the helpers below run under
+# a time bound where the host has one (gtimeout on macOS, timeout on Linux).
+TIMEOUT_CMD=""
+for candidate in timeout gtimeout; do
+  if command -v "${candidate}" >/dev/null 2>&1; then
+    TIMEOUT_CMD="${candidate}"
+    break
+  fi
+done
+
+# Run a command under a time bound, where the host has one.
+# Usage: bounded <seconds> <command> [args...]
+bounded() {
+  local seconds="$1"
+  shift
+  if [[ -n "${TIMEOUT_CMD}" ]]; then
+    "${TIMEOUT_CMD}" "${seconds}" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Self-heal accounting (Issue #4072). Under cron / launchd / systemd / Task
+# Scheduler there is no supervising process between runs, so the launcher
+# records its own outcome: consecutive failures grow the backoff and, past the
+# phase's threshold, escalate through GitHub. loop.sh and loop.ps1 set
+# VIBE_SUPERVISOR_RECORDS_OUTCOME because they record the same outcome
+# themselves - one failure must be counted once, not twice. Best-effort: a
+# recorder that cannot run says so on stderr and never changes this launcher's
+# exit status.
+# Invoked from the EXIT trap below; shellcheck cannot see that call and reports
+# it as never-invoked (SC2317 on older versions, SC2329 on newer ones).
+# shellcheck disable=SC2317,SC2329
+record_outcome() {
+  local status="$1"
+  if [[ -n "${VIBE_SUPERVISOR_RECORDS_OUTCOME:-}" ]]; then
+    return 0
+  fi
+  if ! bounded 120 "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write --allow-run --allow-net \
+    "${BASE_DIR}/worker/deno/mod.ts" container-restart-backoff \
+    --exit-status "${status}" </dev/null >/dev/null; then
+    echo "[run.sh] warning: could not record launcher outcome ${status}" >&2
+  fi
+}
+
+# shellcheck disable=SC2317,SC2329
+on_exit() {
+  local status=$?
+  if [[ -n "${PLAN_FILE}" ]]; then
+    rm -f "${PLAN_FILE}" "${PLAN_FILE}.Containerfile"
+  fi
+  if [[ -n "${WEDGE_MARKER}" ]]; then
+    rm -f "${WEDGE_MARKER}"
+  fi
+  record_outcome "${status}"
+}
+trap on_exit EXIT
+
+# Both branches run their child in the background rather than exec-ing, so this
+# shell survives to forward termination to it: the Deno driver's
+# graceful-shutdown handling only runs if it gets the signal, and an exec'd
+# shell would take the EXIT trap - and with it the outcome record above - away.
+CHILD_PID=""
+RUNTIME=""
+# Invoked indirectly by the traps below; shellcheck cannot see that call, and
+# reports it as unreachable/never-invoked (SC2317 on older versions, SC2329 on
+# newer ones).
+# shellcheck disable=SC2317,SC2329
+forward_signal() {
+  local signal="$1"
+  if [[ -z "${CHILD_PID}" ]]; then
+    # Nothing has been launched yet, so there is nothing to forward to. Take
+    # the signal's default disposition rather than swallowing it: a launcher
+    # that ignored a shutdown request while building an image would look hung.
+    trap - "${signal}"
+    kill -s "${signal}" $$
+    return
+  fi
+  kill -s "${signal}" "${CHILD_PID}" 2>/dev/null || true
+  # Belt and braces for the container path: the runtime CLI proxies signals to
+  # the container, and this covers one that does not. Best-effort by design -
+  # the container may not have started yet. RUNTIME is empty in native mode,
+  # where the signal above already reached the worker directly.
+  if [[ -n "${RUNTIME}" ]]; then
+    "${RUNTIME}" stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  fi
+}
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+
+# wait returns 128+signum when a trap interrupts it without reaping the child,
+# so keep waiting until the child process is really gone.
+# shellcheck disable=SC2317,SC2329
+wait_for_child() {
+  local status=0
+  while true; do
+    set +e
+    wait "${CHILD_PID}"
+    status=$?
+    set -e
+    kill -0 "${CHILD_PID}" 2>/dev/null || break
+  done
+  return "${status}"
+}
+
+# Which mode this host runs in. Resolved by Deno, not parsed here, so the
+# precedence (VIBE_RUN_MODE, then .config.json "run_mode", then container)
+# cannot drift between the launchers. An unrecognised value exits non-zero
+# there and leaves the capture empty, which is fatal here rather than a silent
+# default (Issue #3234).
+if ! RUN_MODE="$("${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read \
+  "${BASE_DIR}/worker/deno/mod.ts" run-mode </dev/null)"; then
+  echo "Error: cannot resolve the run mode (see above)" >&2
+  exit 1
+fi
+
+if [[ "${RUN_MODE}" == "seatbelt" ]]; then
+  # Seatbelt-confined native run (Issue #4300). The containment goal is a
+  # filesystem boundary; the VM bought it by partitioning compute. Here the
+  # kernel enforces the boundary and the worker keeps the whole machine.
+  # The profile is generated by the driver from the same host paths the
+  # container plan mounts, so the two allowlists cannot drift apart.
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Error: run_mode seatbelt is macOS-only (sandbox-exec); use container or native" >&2
+    exit 1
+  fi
+  if ! command -v sandbox-exec >/dev/null 2>&1; then
+    echo "Error: sandbox-exec not found — run_mode seatbelt needs macOS Seatbelt" >&2
+    exit 1
+  fi
+  record_phase seatbelt_profile
+  if ! SEATBELT_PROFILE="$("${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write \
+    "${BASE_DIR}/worker/deno/mod.ts" seatbelt-profile \
+    --base-dir "${BASE_DIR}" </dev/null)"; then
+    echo "Error: cannot build the Seatbelt profile (see above)" >&2
+    exit 1
+  fi
+  echo "Seatbelt profile: ${SEATBELT_PROFILE}"
+  record_phase seatbelt_run
+
+  sandbox-exec -f "${SEATBELT_PROFILE}" \
+    "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write --allow-run \
+    --allow-net --allow-sys=hostname \
+    "${BASE_DIR}/worker/deno/mod.ts" run-entrypoint \
+    --base-dir "${BASE_DIR}" "$@" </dev/null &
+  CHILD_PID=$!
+
+  seatbelt_status=0
+  wait_for_child || seatbelt_status=$?
+  exit "${seatbelt_status}"
+fi
+
+if [[ "${RUN_MODE}" == "native" ]]; then
+  # Host-native run (Issue #4148), the pre-#4065 contract. Reached only when
+  # the operator asked for it - nothing above may select this branch because a
+  # container runtime is missing.
+  #
+  # The driver runs the whole worker in-process, so it needs the same
+  # permission set worker/shared/deno_bridge.sh granted the run-core loop:
+  # env/read/write/run plus --allow-net (GitHub API, webhooks, FLEET health) and
+  # --allow-sys=hostname (worker identity, Issue #1058).
+  #
+  # --frozen + --lock fail closed on dependency drift (Issue #2896).
+  record_phase native_run
+
+  "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write --allow-run \
+    --allow-net --allow-sys=hostname \
+    "${BASE_DIR}/worker/deno/mod.ts" run-entrypoint \
+    --base-dir "${BASE_DIR}" "$@" </dev/null &
+  CHILD_PID=$!
+
+  native_status=0
+  wait_for_child || native_status=$?
+  exit "${native_status}"
+fi
+
+# The plan resolves and validates the container runtime, computes the
+# content-derived image reference, and constructs the fixed least-privilege
+# mount set. A missing runtime, config file or credential directory exits
+# non-zero here with an actionable message (Issue #3234).
+#
+# --frozen + --lock fail closed on dependency drift (Issue #2896).
+#
+# The plan is written to a file rather than stdout because the worker's
+# console secret redaction (Issue #3661) would mangle a mount value that
+# looks like a credential; --allow-write is scoped to that file plus the
+# read-only config staging directory the plan mounts (Apple container cannot
+# mount a single file, so the command stages a copy there).
+PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/vibe-launch-plan.XXXXXX")"
+CONFIG_STAGE_DIR="${HOME}/.vibe-coder/run-config"
+# --allow-sys=hostname: the plan resolves the host identity it passes into
+# the container as VIBE_HOST_ID (fleet telemetry). Without it Deno.hostname()
+# throws and heartbeats silently report the ephemeral container name.
+if ! "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-run --allow-sys=hostname,systemMemoryInfo \
+  --allow-write="${PLAN_FILE},${PLAN_FILE}.Containerfile,${CONFIG_STAGE_DIR}" \
+  "${BASE_DIR}/worker/deno/mod.ts" container-launch-plan \
+  --base-dir "${BASE_DIR}" \
+  --container-name "${CONTAINER_NAME}" \
+  --out "${PLAN_FILE}" </dev/null >&2; then
+  echo "Error: cannot launch the Vibe Coder container (see above)" >&2
+  exit 1
+fi
+
+# Read the NUL-delimited "key=value" plan into the argument lists it names.
+IMAGE=""
+WATCHDOG_SECONDS=""
+ensure_dirs=()
+volume_names=()
+init_args=()
+exists_args=()
+build_args=()
+builder_stop_args=()
+run_args=()
+
+while IFS= read -r -d '' token; do
+  key="${token%%=*}"
+  value="${token#*=}"
+  case "${key}" in
+    runtime) RUNTIME="${value}" ;;
+    image) IMAGE="${value}" ;;
+    name) CONTAINER_NAME="${value}" ;;
+    watchdog) WATCHDOG_SECONDS="${value}" ;;
+    ensure) ensure_dirs+=("${value}") ;;
+    volume) volume_names+=("${value}") ;;
+    init) init_args+=("${value}") ;;
+    exists) exists_args+=("${value}") ;;
+    build) build_args+=("${value}") ;;
+    builder-stop) builder_stop_args+=("${value}") ;;
+    run) run_args+=("${value}") ;;
+    *)
+      echo "Error: unrecognised launch-plan key: ${key}" >&2
+      exit 1
+      ;;
+  esac
+done <"${PLAN_FILE}"
+
+if [[ -z "${RUNTIME}" || -z "${IMAGE}" ]] || [[ ${#run_args[@]} -eq 0 ]] ||
+  [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
+  [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]]; then
+  echo "Error: incomplete container launch plan - refusing to launch" >&2
+  exit 1
+fi
+
+# The watchdog deadline is what stops a wedged container VM blocking this
+# launcher for ever (Issue #4173), so a plan without a usable one is a loud
+# failure rather than a launch with no deadline at all.
+if ! [[ "${WATCHDOG_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: launch plan carries no usable watchdog deadline" \
+    "(got \"${WATCHDOG_SECONDS}\") - refusing to launch" >&2
+  exit 1
+fi
+
+# Only the read/write mounts are created here; a missing config file or
+# credential directory already failed the plan above.
+for dir in ${ensure_dirs[@]+"${ensure_dirs[@]}"}; do
+  mkdir -p "${dir}"
+done
+
+# Pre-launch reaper (Issue #4173), before the image build so a leaked 1 GB VM
+# is not still holding the host's memory through it. Any `vibe-coder-*`
+# container older than the watchdog deadline - or with no live launcher process
+# behind it, which is how a wedge that outlived a host reboot is caught - is
+# killed here. Best-effort by design: a reaper that cannot run says so and the
+# launch continues, because a leaked container from a previous cycle must not
+# stop this one.
+if ! bounded 300 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-write --allow-run \
+  "${BASE_DIR}/worker/deno/mod.ts" container-reap \
+  --runtime "${RUNTIME}" \
+  --stale \
+  --max-age-seconds "${WATCHDOG_SECONDS}" \
+  --exclude "${CONTAINER_NAME}" </dev/null >&2; then
+  echo "[run.sh] warning: the pre-launch container reaper did not complete" >&2
+fi
+
+# Content-derived identity: a changed container definition is a different
+# reference, so an absent reference is exactly the rebuild signal (#4062).
+if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
+  echo "[run.sh] building ${IMAGE}" >&2
+  record_phase image_build
+  "${RUNTIME}" "${build_args[@]}" </dev/null
+fi
+
+# Prune the tags this reference superseded (Issue #4162). The content-derived
+# tag rebuilds on every container-definition change and nothing used to delete
+# the tag it replaced: on host-23 four multi-gigabyte images filled the store and
+# the next build died mid-export with "No space left on device". ${IMAGE} is the
+# only reference a future launch of this checkout can use, so every other
+# vibe-coder tag goes - a rollback rebuilds from the builder cache, which is
+# deliberately left alone. Runs on every launch, not only after a build, so a
+# host already carrying a backlog reclaims it now. Best-effort by design: a
+# prune that cannot run says so and the launch continues, because reclaiming
+# disk must never block the worker.
+if ! bounded 600 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-run \
+  "${BASE_DIR}/worker/deno/mod.ts" container-image-prune \
+  --runtime "${RUNTIME}" \
+  --keep "${IMAGE}" </dev/null >&2; then
+  echo "[run.sh] warning: could not prune superseded ${IMAGE} tags" >&2
+fi
+
+# Container-store telemetry (Issue #4331): the store lives on the host, so
+# only the launcher can see it. One line per launch in run_core.log names
+# the size per component; a fleet host that starts growing shows it here
+# long before "No space left on device". Best-effort, macOS/Apple container
+# only (Docker/Podman keep their stores elsewhere and prune themselves).
+container_store="${HOME:-}/Library/Application Support/com.apple.container"
+if [[ -d "${container_store}" ]] && command -v du >/dev/null 2>&1; then
+  store_line="$(cd "${container_store}" 2>/dev/null && du -sh -- * 2>/dev/null | awk '{printf "%s=%s ", $2, $1}')"
+  store_total="$(du -sh "${container_store}" 2>/dev/null | cut -f1)"
+  printf '%s container-store: total=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${store_total:-?}" "${store_line}" \
+    >>"${HOME}/logs/run_core.log" 2>/dev/null || true
+fi
+
+# Stop the runtime's persistent build helper (Issue #4331). Apple container
+# starts a `buildkit` builder VM for `container build` and leaves it running
+# for ever — 2 CPUs, 2 GB and a 13 GB rootfs on every fleet host, observed
+# still up 25 hours after the build it served. The image exists at this
+# point (built above or already present), so the builder has nothing to do
+# until the next definition change, when `container build` restarts it
+# implicitly. Runtimes without a builder container carry no arguments here.
+# Best-effort: an idle builder is waste, not a launch failure.
+if [[ ${#builder_stop_args[@]} -gt 0 ]]; then
+  if ! bounded 120 "${RUNTIME}" "${builder_stop_args[@]}" </dev/null >/dev/null 2>&1; then
+    echo "[run.sh] warning: could not stop the ${RUNTIME} builder helper" >&2
+  fi
+fi
+
+# Named volumes (Issue #4186): the work dir and its approval-state sibling
+# live on runtime-managed volumes, not host directories. `volume inspect` /
+# `volume create` are spelled identically on every supported runtime; the
+# plan supplies the names. The ownership init runs on every launch — it is
+# an idempotent root chown of the mount roots, so a first launch that dies
+# between create and chown heals on the next one.
+for volume in ${volume_names[@]+"${volume_names[@]}"}; do
+  if ! "${RUNTIME}" volume inspect "${volume}" >/dev/null 2>&1; then
+    echo "[run.sh] creating volume ${volume}" >&2
+    "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
+  fi
+done
+"${RUNTIME}" "${init_args[@]}" </dev/null >/dev/null
+
+# Exit status this launcher reports after reaping a wedged container - a named
+# reason rather than a bare failure, and deliberately outside the runtime CLI's
+# own 125/126/127 range. Kept in step with CONTAINER_WEDGED_EXIT_STATUS in
+# worker/deno/lib/container_watchdog.ts by the launcher tests (Issue #4173).
+CONTAINER_WEDGED_EXIT_STATUS=87
+
+# The outer watchdog (Issue #4173). The runtime client is waited on under the
+# plan's deadline instead of for ever: on expiry the reaper kills the container
+# and, when the runtime refuses ("running and can not be deleted"), SIGKILLs
+# the client and the runtime helper process holding the VM. Runs as a child of
+# this shell so the wait below is untouched - `wait` still reports the client's
+# own status - and writes the marker before reaping so the exit status can name
+# the reason.
+# shellcheck disable=SC2317,SC2329
+watchdog_reap_on_deadline() {
+  local client_pid="$1"
+  local poll=15
+  if ((WATCHDOG_SECONDS < poll)); then
+    poll=1
+  fi
+
+  local waited=0
+  while ((waited < WATCHDOG_SECONDS)); do
+    kill -0 "${client_pid}" 2>/dev/null || return 0
+    # The sleep's own streams are detached: when this watchdog is stopped after
+    # a clean run, an orphaned sleep must not hold the launcher's stdout pipe
+    # open and stall whoever is reading it.
+    sleep "${poll}" >/dev/null 2>&1
+    waited=$((waited + poll))
+  done
+  kill -0 "${client_pid}" 2>/dev/null || return 0
+
+  echo "[run.sh] watchdog: ${CONTAINER_NAME} is still running after" \
+    "${WATCHDOG_SECONDS}s - reaping it (Issue #4173)" >&2
+  printf 'container_wedged\n' >"${WEDGE_MARKER}"
+
+  if ! bounded 300 "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write --allow-run \
+    "${BASE_DIR}/worker/deno/mod.ts" container-reap \
+    --runtime "${RUNTIME}" \
+    --name "${CONTAINER_NAME}" \
+    --client-pid "${client_pid}" \
+    --reason "the launcher's ${WATCHDOG_SECONDS}s watchdog deadline expired" \
+    </dev/null >&2; then
+    echo "[run.sh] warning: the container reaper did not clear" \
+      "${CONTAINER_NAME}" >&2
+  fi
+
+  # Last resort, whatever the reaper managed: the client must not outlive its
+  # own reaping, or this launcher - and the supervisor behind it - waits for
+  # ever, which is the failure this watchdog exists to end.
+  kill -KILL "${client_pid}" 2>/dev/null || true
+}
+
+# Created before the container starts: a launcher that cannot write its own
+# marker must fail here, not after it has a container to look after.
+WEDGE_MARKER="$(mktemp "${TMPDIR:-/tmp}/vibe-wedge.XXXXXX")"
+
+record_phase container_run
+
+"${RUNTIME}" "${run_args[@]}" "$@" </dev/null &
+CHILD_PID=$!
+
+watchdog_reap_on_deadline "${CHILD_PID}" &
+WATCHDOG_PID=$!
+
+status=0
+wait_for_child || status=$?
+
+# The client is gone, so the watchdog has nothing left to guard.
+kill "${WATCHDOG_PID}" 2>/dev/null || true
+
+if [[ -s "${WEDGE_MARKER}" ]]; then
+  echo "Error: container ${CONTAINER_NAME} wedged past the" \
+    "${WATCHDOG_SECONDS}s watchdog deadline and was reaped - exiting" \
+    "${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle runs (Issue #4173)" >&2
+  status="${CONTAINER_WEDGED_EXIT_STATUS}"
+fi
+
+exit "${status}"

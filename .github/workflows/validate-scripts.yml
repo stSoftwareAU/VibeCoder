@@ -1,0 +1,678 @@
+name: Validate Scripts
+
+# Third-party actions are pinned to 40-character commit SHAs (Issue
+# #2123) so a hijacked tag cannot inject code into the workflow. The
+# version tag each SHA corresponds to is captured in a leading
+# comment for human readability.
+
+# Issue #3333 — pull-request only. `validate` is a required status check, so
+# every change reaches `Develop` through a PR this workflow has already gated;
+# re-running it on the post-merge push duplicated that run with no enforcement
+# value (see docs/MERGE.md — "No post-merge re-run of required checks").
+# Deploy/publish workflows are different and keep firing on push.
+on:
+  pull_request:
+    # Issue #3360 — milestone sub-issue PRs target a shared
+    # `milestone/<name>` branch (Issue #1300); include it so the quality
+    # gate runs before those PRs merge, not only on Develop/main PRs.
+    branches: [Develop, main, milestone/*]
+
+# Issue #2382 — Rule of Two: minimise workflow token capability. This
+# job only runs static checks (bash -n, shellcheck, actionlint, deno
+# check / lint / test); none of the steps need to push, comment, or
+# label, so the default GITHUB_TOKEN is narrowed to read-only contents.
+permissions:
+  contents: read
+
+# Issue #2972: cancel superseded PR runs. Only the latest commit's
+# result matters for a check, so a per-ref group with cancellation
+# stops rapid pushes spawning parallel, redundant runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Issue #606: Opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno@v2)
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check bash syntax
+        run: |
+          set -euo pipefail
+          echo "=== Checking bash syntax ==="
+          errors=0
+          # Issue #2315: use a while-read loop with NUL delimiters so the
+          # script set survives filenames with spaces or newlines — and
+          # to silence shellcheck SC2044 ("for over find output").
+          while IFS= read -r -d '' script; do
+            echo "Checking: $script"
+            if ! bash -n "$script"; then
+              echo "SYNTAX ERROR in $script"
+              errors=$((errors + 1))
+            fi
+          done < <(find . -name "*.sh" -type f -print0)
+          if [[ $errors -gt 0 ]]; then
+            echo "Found $errors script(s) with syntax errors"
+            exit 1
+          fi
+          echo "All scripts have valid syntax"
+
+      - name: Check for non-ASCII characters
+        run: |
+          set -euo pipefail
+          echo "=== Checking for non-ASCII characters ==="
+          while IFS= read -r -d '' script; do
+            if LC_ALL=C grep -n '[^\x00-\x7F]' "$script" 2>/dev/null; then
+              echo "WARNING: Non-ASCII characters found in $script"
+            fi
+          done < <(find . -name "*.sh" -type f -print0)
+          echo "Non-ASCII check complete"
+
+      - name: Check for unsafe empty array expansions (bash 3.2 compat)
+        run: |
+          set -euo pipefail
+          echo "=== Checking for unsafe empty array expansions ==="
+          echo "Under set -u (nounset), bash 3.2 (macOS) treats \${arr[@]} on an"
+          echo "empty array as an unbound variable. Use \${arr[@]+\"\${arr[@]}\"} instead,"
+          echo "or guard with a length check before access."
+          echo ""
+          # Only check files changed in this PR (or all files on push)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            mapfile -t changed_scripts < <(git diff --name-only --diff-filter=ACM "${{ github.event.pull_request.base.sha }}" -- '*.sh' || true)
+          else
+            mapfile -t changed_scripts < <(find . -name "*.sh" -type f)
+          fi
+          errors=0
+          for script in "${changed_scripts[@]+"${changed_scripts[@]}"}"; do
+            while IFS=: read -r _ decl_line; do
+              arr_name=$(echo "$decl_line" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*=\(\)' | sed 's/=()//' | head -1 || true)
+              [[ -z "$arr_name" ]] && continue
+              while IFS=: read -r lineno line; do
+                echo "$line" | grep -qE '^\s*#' && continue
+                echo "$line" | grep -qF "\${${arr_name}[@]+" && continue
+                echo "$line" | grep -qE "${arr_name}=\(" && continue
+                echo "$line" | grep -qE "${arr_name}\+=" && continue
+                if echo "$line" | grep -qE "\\\$\{#${arr_name}\[@\]\}"; then
+                  bare=$(echo "$line" | grep -oE "\\\$\{${arr_name}\[@\]\}" | head -1 || true)
+                  [[ -z "$bare" ]] && continue
+                fi
+                echo "WARNING: $script:$lineno: $line"
+                echo "  Array '${arr_name}' is declared empty — use \${${arr_name}[@]+\"\${${arr_name}[@]}\"} or guard with length check"
+                errors=$((errors + 1))
+              done < <(grep -nE "\\\$\{${arr_name}\[@\]\}" "$script" 2>/dev/null || true)
+            done < <(grep -nE '[a-zA-Z_][a-zA-Z0-9_]*=\(\)' "$script" 2>/dev/null || true)
+          done
+          if [[ $errors -gt 0 ]]; then
+            echo ""
+            echo "Found $errors potentially unsafe empty array expansion(s)."
+            echo "Review each warning — if the array is guaranteed non-empty by control flow,"
+            echo "this is a false positive. Otherwise, use the safe pattern."
+          fi
+          echo "Empty array expansion check complete"
+
+      - name: Check for zero-length files
+        run: |
+          set -euo pipefail
+          echo "=== Checking for zero-length files ==="
+          fail=0
+          while IFS= read -r f; do
+            if [[ ! -s "$f" ]]; then
+              echo "❌ Zero-length file detected: $f" >&2
+              fail=1
+            fi
+          done < <(find . -type f \( -name "*.json" -o -name "*.ts" -o -name "*.js" -o -name "*.sh" \) ! -path "*/node_modules/*" ! -path "*/.git/*")
+          if [[ $fail -eq 1 ]]; then
+            echo "❌ Zero-length files found. All files must have content." >&2
+            exit 1
+          fi
+          echo "✅ No zero-length files found"
+
+      - name: Check for merge conflict markers
+        run: |
+          set -euo pipefail
+          echo "=== Checking for merge conflict markers ==="
+          fail=0
+          while IFS= read -r f; do
+            if grep -qE '^(<{7}|={7}|>{7})' "$f" 2>/dev/null; then
+              echo "❌ Merge conflict markers found in: $f" >&2
+              fail=1
+            fi
+          done < <(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.json" -o -name "*.sh" \) ! -path "*/node_modules/*" ! -path "*/.git/*")
+          if [[ $fail -eq 1 ]]; then
+            echo "❌ Merge conflict markers detected. Please resolve conflicts." >&2
+            exit 1
+          fi
+          echo "✅ No merge conflict markers found"
+
+      - name: Validate JSON files
+        run: |
+          set -euo pipefail
+          echo "=== Validating JSON files ==="
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          fail=0
+          while IFS= read -r f; do
+            if ! jq empty "$f" > /dev/null 2>&1; then
+              echo "❌ Invalid JSON: $f" >&2
+              jq empty "$f" 2>&1 || true
+              fail=1
+            fi
+          done < <(find . -name "*.json" -type f ! -path "*/node_modules/*" ! -path "*/.git/*" ! -name "deno.lock")
+          if [[ $fail -eq 1 ]]; then
+            echo "❌ JSON validation failed." >&2
+            exit 1
+          fi
+          echo "✅ All JSON files are valid"
+
+      - name: Check for large files
+        run: |
+          set -euo pipefail
+          echo "=== Checking for unexpectedly large files ==="
+          fail=0
+          while IFS= read -r f; do
+            size=$(stat -c%s "$f" 2>/dev/null || echo "0")
+            if [[ $size -gt 10485760 ]]; then  # 10MB
+              echo "❌ Unexpectedly large file: $f (${size} bytes)" >&2
+              fail=1
+            fi
+          done < <(find . -type f ! -path "*/node_modules/*" ! -path "*/.git/*" ! -path "*/docs/evidence/*")
+          if [[ $fail -eq 1 ]]; then
+            echo "❌ Unexpectedly large files found." >&2
+            exit 1
+          fi
+          echo "✅ No unexpectedly large files found"
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      # Issue #4334: warm Deno cache across runs. Every run used to download
+      # every dependency and type-check the whole ~1,600-file worker graph
+      # from zero. Keyed on the lockfile so a dependency bump invalidates it.
+      - name: Cache Deno modules
+        # actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+          # Issue #4404 (GHA-SUPPLY-010): exact-key only. A prefix fallback
+          # would restore ANY older Deno cache regardless of lockfile — the
+          # shape a poisoned entry needs to be selected. A lockfile change now
+          # costs one cold fetch of a few small JSR modules, nothing more.
+
+      # ShellCheck — upstream: https://github.com/koalaman/shellcheck
+      # Alternative GitHub Action: ludeeus/action-shellcheck (wraps koalaman/shellcheck)
+      # Pinned release binary, not apt (Issue #4334): `apt-get update` hung
+      # for 13+ minutes on a runner mirror and stalled the whole check. The
+      # version and SHA-256 are the same pin container/tools.json uses for
+      # the image, so CI and the container never drift.
+      - name: Install shellcheck
+        timeout-minutes: 3
+        env:
+          SHELLCHECK_VERSION: "0.11.0"
+          SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+        run: |
+          set -euo pipefail
+          echo "=== Installing shellcheck ${SHELLCHECK_VERSION} ==="
+          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          url="https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
+          curl -sSfL --retry 3 --max-time 120 "$url" -o "$archive"
+          echo "${SHELLCHECK_SHA256}  ${archive}" | sha256sum -c -
+          tar -xJf "$archive" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          sudo mv "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Run shellcheck (koalaman/shellcheck)
+        run: |
+          set -euo pipefail
+          echo "=== Running shellcheck (koalaman/shellcheck) ==="
+          find . -name "*.sh" -type f -exec shellcheck -e SC1091 -e SC2034 {} +
+
+      # Issue #2315: actionlint is the standard linter for GitHub Actions
+      # workflow YAML.
+      # Issue #3418: the release binary is pinned to an in-repo SHA-256 and
+      # verified before it runs, mirroring the gitleaks CLI install in
+      # .github/workflows/gitleaks.yml. This closes the release-substitution
+      # gap — a tampered rhysd/actionlint v1.7.12 release asset cannot execute
+      # in CI because the download must match the committed hash rather than
+      # trusting the upstream release assets. ACTIONLINT_SHA256 is the
+      # linux_amd64 tarball hash from the published
+      # actionlint_1.7.12_checksums.txt (the runner is ubuntu-latest / amd64).
+      - name: Install actionlint
+        timeout-minutes: 3
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          echo "=== Installing actionlint ==="
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          curl -sSfL --retry 3 --max-time 120 "$url" -o "$archive"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" actionlint
+          sudo mv ./actionlint /usr/local/bin/actionlint
+          actionlint -version
+
+      - name: Run actionlint
+        run: |
+          set -euo pipefail
+          echo "=== Running actionlint ==="
+          actionlint -color
+
+
+      # Issue #4399 (GHA-MONITOR-002): zizmor is the workflow-YAML SECURITY
+      # analyser (template injection, dangerous triggers, credential
+      # persistence, cache poisoning, …) — actionlint is correctness only,
+      # Semgrep/CodeQL do not cover workflow YAML. Pinned by version and
+      # verified against the release's SHA-256, the same download-then-verify
+      # shape as shellcheck/actionlint above. --offline keeps the run
+      # deterministic (no GitHub API lookups); .github/zizmor.yml holds the
+      # justified exceptions; anything LOW or above that is not justified fails.
+      - name: Install zizmor
+        env:
+          ZIZMOR_VERSION: "1.29.0"
+          ZIZMOR_SHA256: "dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839"
+        run: |
+          set -euo pipefail
+          echo "=== Installing zizmor ${ZIZMOR_VERSION} ==="
+          archive="zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          url="https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/${archive}"
+          curl -fsSL -o "${archive}" "${url}"
+          echo "${ZIZMOR_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}" zizmor
+          sudo mv ./zizmor /usr/local/bin/zizmor
+          zizmor --version
+
+      - name: Run zizmor (workflow security analysis)
+        run: |
+          set -euo pipefail
+          echo "=== Running zizmor over .github/workflows ==="
+          zizmor --offline --no-progress --min-severity low \
+            --config .github/zizmor.yml .github/workflows/
+
+      - name: Deno type check
+        run: |
+          set -euo pipefail
+          echo "=== Running deno check ==="
+          cd worker/deno
+          # Issue #2569: quote the glob so Deno expands it internally
+          # (recursively, incl. top-level entrypoints like quality.ts). An
+          # unquoted glob in a non-globstar shell would only match one level
+          # deep and silently skip the standalone entrypoints.
+          deno check --frozen --lock=deno.lock '**/*.ts'
+
+      # Issue #2940: enforce formatting drift at the pull request. Without
+      # this gate a contributor can merge `deno fmt` drift that CI never
+      # catches. Run in check mode (never writes) from worker/deno, the
+      # Deno project root, alongside the existing lint gate (Issue #2222 —
+      # Deno-native tooling only, never Node).
+      - name: Deno fmt check
+        run: |
+          set -euo pipefail
+          echo "=== Running deno fmt --check ==="
+          cd worker/deno
+          deno fmt --check
+
+      - name: Deno lint
+        run: |
+          set -euo pipefail
+          echo "=== Running deno lint ==="
+          cd worker/deno
+          deno lint
+
+      # Issue #4066: the run.ps1 launcher tests only run where PowerShell
+      # exists, and a skipped test is not a passed one. The runner image ships
+      # PowerShell 7 — fail loud here if that ever changes, rather than letting
+      # the Windows launcher's containment go unverified.
+      - name: Check PowerShell is available
+        run: |
+          set -euo pipefail
+          if ! command -v pwsh > /dev/null 2>&1; then
+            echo "❌ pwsh not found — the run.ps1 launcher tests would skip" >&2
+            exit 1
+          fi
+          pwsh --version
+
+      # The full Deno test suite moved to the sharded `tests` job below (Issue
+      # #4325): it was ~5.5 of this job's ~7 minutes, serial, in one process.
+      # `validate` stays the fast static gate its name promises.
+
+      # Issue #583: same gate as quality.sh — unit tests must not be named like benchmarks.
+      # Issue #970: rewritten as inline Deno after benchmark_audit.sh was deleted.
+      # Issue #2249: Bats has been fully migrated to Deno, so the audit now
+      # scans only the Deno test tree (no more .bats files in this repo).
+      - name: Benchmark audit (no benchmarks in test names)
+        run: |
+          set -euo pipefail
+          echo "=== Benchmark audit (Issue #583) ==="
+          deno eval '
+            const benchmarkPattern = /Deno\.test\s*\(\s*"[^"]*bench(?:mark|_)[^"]*"/i;
+            const violations: string[] = [];
+
+            async function scanDir(dir: string, pattern: RegExp, ext: string): Promise<void> {
+              try { await Deno.stat(dir); } catch { return; }
+              for await (const entry of Deno.readDir(dir)) {
+                if (!entry.isFile || !entry.name.endsWith(ext)) continue;
+                const filePath = dir + "/" + entry.name;
+                const content = await Deno.readTextFile(filePath);
+                const lines = content.split("\n");
+                for (let i = 0; i < lines.length; i++) {
+                  const line = lines[i];
+                  if (line !== undefined && pattern.test(line)) {
+                    violations.push("VIOLATION: " + filePath + ":" + (i + 1) + ": " + line.trim());
+                  }
+                }
+              }
+            }
+
+            const workspace = Deno.env.get("GITHUB_WORKSPACE") ?? ".";
+            await scanDir(workspace + "/worker/deno/tests", benchmarkPattern, "_test.ts");
+
+            if (violations.length > 0) {
+              violations.forEach(v => console.error(v));
+              console.error("\nBenchmarks must NOT be disguised as unit tests (Issue #583).");
+              console.error("Unit tests verify correctness; benchmarks measure performance.");
+              console.error("Move benchmark logic to dedicated benchmark files instead.");
+              Deno.exit(1);
+            }
+            console.log("benchmark audit: PASSED");
+          '
+
+  # Issue #4334: the Deno test suite, sharded by FILE across parallel jobs.
+  #
+  # ~940 test files ran serially in one process and took ~5.5 minutes of the
+  # `validate` check. Deno's --parallel is not an option here: ~60 test files
+  # mutate the process environment (15 swap PATH to inject stub binaries) and
+  # --parallel shares Deno.env across threads. Separate jobs are separate
+  # processes, so the suite's semantics are unchanged; only wall time shrinks.
+  # Every shard runs the same `deno task test` the local quality gate runs
+  # (Issue #2194), so the permission set can never drift.
+  #
+  # A separate job for the same reason as `run-mode`: `validate` is a required
+  # status check by name and must keep reporting under it.
+  tests:
+    name: validate (tests ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      - name: Cache Deno modules
+        # actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+          # Issue #4404 (GHA-SUPPLY-010): exact-key only. A prefix fallback
+          # would restore ANY older Deno cache regardless of lockfile — the
+          # shape a poisoned entry needs to be selected. A lockfile change now
+          # costs one cold fetch of a few small JSR modules, nothing more.
+
+      # Issue #4066: the run.ps1 launcher tests only run where PowerShell
+      # exists, and a skipped test is not a passed one.
+      - name: Check PowerShell is available
+        run: |
+          set -euo pipefail
+          if ! command -v pwsh > /dev/null 2>&1; then
+            echo "❌ pwsh not found — the run.ps1 launcher tests would skip" >&2
+            exit 1
+          fi
+          pwsh --version
+
+      - name: Deno tests (shard ${{ matrix.shard }} of 4)
+        run: |
+          set -euo pipefail
+          .github/scripts/deno-test-shard.sh $(( ${{ matrix.shard }} - 1 )) 4
+
+  # Issue #4150: native is first-class forever (Issue #4145), so both run
+  # modes are exercised on every pull request — a native-mode regression fails
+  # the same gate that guards containment, on `milestone/*`, `Develop` and
+  # `main` alike.
+  #
+  # These legs are a separate job on purpose. `validate` above is a required
+  # status check on the protected branches; turning it into a matrix would
+  # rename it to `validate (container)` / `validate (native)` and leave branch
+  # protection waiting forever on a check that never reports again. The legs
+  # take those names instead, so the failing check names the broken mode while
+  # `validate` keeps reporting under its own.
+  #
+  # The container leg runs the run-mode tests on a runner with Docker present;
+  # the native leg runs the same tests on a runner with no container runtime at
+  # all, then drives `run.sh` end to end both ways — with the opt-in it starts
+  # the worker driver on the host, without it the launch fails loudly. Neither
+  # leg builds the image: `container-build.yml` stays the container-only gate.
+  run-mode:
+    name: validate (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    # Well inside the `validate` budget above: the targeted task takes seconds,
+    # and the smoke steps are one Deno start-up each.
+    timeout-minutes: 10
+    strategy:
+      # Both legs always report — a broken container mode must not hide the
+      # native result, or the other way round.
+      fail-fast: false
+      matrix:
+        mode: [container, native]
+    env:
+      # Issue #606: Opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno@v2)
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      # Issue #4334: warm Deno cache across runs. Every run used to download
+      # every dependency and type-check the whole ~1,600-file worker graph
+      # from zero. Keyed on the lockfile so a dependency bump invalidates it.
+      - name: Cache Deno modules
+        # actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+          # Issue #4404 (GHA-SUPPLY-010): exact-key only. A prefix fallback
+          # would restore ANY older Deno cache regardless of lockfile — the
+          # shape a poisoned entry needs to be selected. A lockfile change now
+          # costs one cold fetch of a few small JSR modules, nothing more.
+
+      - name: Take every container runtime off this runner
+        if: matrix.mode == 'native'
+        run: |
+          set -euo pipefail
+          echo "=== native leg: no container runtime on this host ==="
+          # The native path must work on a host that has no container runtime
+          # at all. ubuntu-latest ships Docker, so move every runtime the
+          # probe knows out of the way, then prove none of them answers.
+          for runtime in container docker podman; do
+            while path="$(command -v "${runtime}" 2>/dev/null)"; do
+              echo "disabling ${path}"
+              sudo mv "${path}" "${path}.disabled-for-native-ci"
+              hash -r
+            done
+          done
+          for runtime in container docker podman; do
+            if command -v "${runtime}" > /dev/null 2>&1; then
+              echo "❌ ${runtime} is still reachable — the native leg must run with no container runtime" >&2
+              exit 1
+            fi
+          done
+          echo "✅ no supported container runtime is reachable"
+
+      - name: Launcher and worker tests (${{ matrix.mode }} mode)
+        run: |
+          set -euo pipefail
+          echo "=== deno task test:run-mode ==="
+          cd worker/deno
+          # What differs between the legs is the runner, not an exported
+          # setting: this one either has a container runtime or it does not.
+          # `VIBE_RUN_MODE` is deliberately left unset here — it is a real
+          # per-run override, so exporting it job-wide would reach into the
+          # resolver tests that assert on its absence, and each test that
+          # needs a mode already selects one for itself.
+          #
+          # The file list lives in deno.json, beside the canonical `test` task,
+          # so CI cannot drift from what a developer runs locally (Issue #2194).
+          deno task test:run-mode
+
+      - name: Native smoke - the opt-in runs the worker driver on this host
+        if: matrix.mode == 'native'
+        env:
+          VIBE_RUN_MODE: native
+          # This step supervises its own run: left to itself the launcher's
+          # outcome recorder would count a deliberate CI failure against the
+          # host and escalate it to GitHub (Issue #4072).
+          VIBE_SUPERVISOR_RECORDS_OUTCOME: validate-scripts
+        run: |
+          set -euo pipefail
+          echo "=== native smoke: run.sh starts the Deno driver on this host ==="
+          # Hold the PID guard with a look-alike driver process, so the real
+          # driver starts, finds another instance and exits cleanly without
+          # doing any work. Everything up to that point is the genuine native
+          # path: run-mode resolution, the frozen Deno run, the phase record.
+          bash -c "exec -a 'deno run ${GITHUB_WORKSPACE}/worker/deno/mod.ts run-entrypoint --base-dir ${GITHUB_WORKSPACE}' sleep 300" &
+          holder=$!
+          trap 'kill "${holder}" 2> /dev/null || true' EXIT
+          printf '%s\n' "${holder}" > .run.pid
+
+          status=0
+          ./run.sh < /dev/null > native-smoke.log 2>&1 || status=$?
+          cat native-smoke.log
+          rm -f .run.pid
+
+          if [[ "${status}" -ne 0 ]]; then
+            echo "❌ the native opt-in must exit cleanly, got ${status}" >&2
+            exit 1
+          fi
+          if ! grep -q "BLOCKED" native-smoke.log; then
+            echo "❌ the worker driver never ran on this host" >&2
+            exit 1
+          fi
+          phase="$(cat "${HOME}/.vibe-coder/last-launch-phase")"
+          if [[ "${phase}" != "native_run" ]]; then
+            echo "❌ expected the native_run phase, got '${phase}'" >&2
+            exit 1
+          fi
+          echo "✅ the opt-in ran the worker driver on the host and exited 0"
+
+      - name: Native smoke - without the opt-in the same runner fails loud
+        if: matrix.mode == 'native'
+        env:
+          VIBE_SUPERVISOR_RECORDS_OUTCOME: validate-scripts
+        run: |
+          set -euo pipefail
+          echo "=== native smoke: no opt-in, no runtime, no silent fallback ==="
+          rm -f .run.pid
+          status=0
+          ./run.sh < /dev/null > no-opt-in.log 2>&1 || status=$?
+          cat no-opt-in.log
+
+          if [[ "${status}" -eq 0 ]]; then
+            echo "❌ run.sh must not succeed with no container runtime and no opt-in" >&2
+            exit 1
+          fi
+          if ! grep -q "No supported container runtime is available on" no-opt-in.log; then
+            echo "❌ the missing runtime must be named in the failure" >&2
+            exit 1
+          fi
+          if ! grep -q "no host fallback" no-opt-in.log; then
+            echo "❌ the failure must say there is no host fallback (Issue #3234)" >&2
+            exit 1
+          fi
+          # An absent runtime must never select the host path for itself.
+          phase="$(cat "${HOME}/.vibe-coder/last-launch-phase")"
+          if [[ "${phase}" != "runtime_detection" ]]; then
+            echo "❌ the launch reached '${phase}' — a missing runtime must stop at runtime_detection" >&2
+            exit 1
+          fi
+          echo "✅ the launch failed loud, with nothing run on the host"
+
+  # Issue #4192: supply-chain posture gate. Fails on any `uses:` that is not
+  # a full commit SHA, any shipped `deno` invocation that resolves
+  # dependencies without --frozen, a container base image referenced by tag
+  # rather than digest, a Renovate policy that would auto-merge beyond
+  # pin-class updates, or a docs/audits/dependency-inventory.md that no
+  # longer matches the tree. Every finding names the file, line and rule.
+  # Its own job so a posture failure reads as exactly that in the checks
+  # list, not as a generic `validate` failure.
+  supply-chain-gate:
+    name: supply-chain-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Issue #606: Opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno@v2)
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      - name: Supply-chain gate
+        run: |
+          set -euo pipefail
+          echo "=== supply-chain-gate (Issue #4192) ==="
+          cd worker/deno
+          deno run --frozen --lock=deno.lock --allow-read --allow-env \
+            mod.ts supply-chain-gate --repo ../..

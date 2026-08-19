@@ -1,0 +1,272 @@
+<p align="center">
+  <img src="../social/vibe-coder-social-preview.png"
+       alt="Vibe Coder — a smiling purple robot mascot between two code brackets"
+       width="640">
+</p>
+
+# 📋 Workflow — Vibe Coder (user manual)
+
+This section is the **user manual** for the Vibe Coder: how to use it and what
+to expect. It describes the workflow from a user’s perspective — how the
+appliance behaves, how you interact with it via GitHub (issues, labels,
+comments, PRs), and how it self-heals and runs alongside other workers and
+humans. For implementation details (scripts, modules, internals), see **Further
+reading** at the end of each workflow doc; those are for a different audience.
+
+---
+
+## 👤 For repo owners and developers (e.g. ST)
+
+If your repository is monitored by the Vibe Coder — for example
+[example-org/private-repo-57](https://github.com/example-org/private-repo-57/issues) or any other repo
+in the worker's config — this manual is for you. You want to **get the Vibe
+Coder to work on your issues** (e.g. over the weekend) so you can **come in on
+Monday and see lots of work done** in your repos. You care about **how to assign
+work** and **how to set up pseudo-projects**, not how the worker is implemented
+under the hood (that is documented elsewhere). **Nothing reaches the default
+branch without your review** — the worker opens PRs; you approve. It is
+instructed to follow TDD (Test-Driven Development), KISS (Keep It Simple), DRY
+(Don't Repeat Yourself) and the full quality gate; see
+[AGENTS.md](../../AGENTS.md) for the coding standards.
+
+**How to get work done:**
+
+| Goal                              | What to do                                                                                                                                                                                                                                                                                                | Where it's explained                                                                   |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **Understand the label flow**     | Read the journey map: `grill-me` ↔ `needs-human`, then `planning` or a work tier, then PRs / milestones / auto-merge — with coloured diagrams.                                                                                                                                                            | **[Label Flows](label-flows.md)**                                                      |
+| **Get issues picked up**          | Add a configured label to an issue and leave it unassigned. Label tiers in priority order: `top-priority` > `work-on` (allowed authors only) > `low-priority` (fallback) > `idle-task` (worker-filed only). The deprecated `help wanted` and `claude` labels were retired in Issue #2022.                  | [Issue processing](issue-processing.md)                                                |
+| **Group issues into a feature**   | Create a GitHub milestone, add it to each issue. Per-issue PRs auto-merge into the milestone branch (quality gate passes), so the worker can **safely** run 24/7 (e.g. overnight/weekend). **No code reaches default without your review** — you approve the **one final PR** with many issues completed. | [Projects and dependencies](projects-and-dependencies.md), [Milestones](milestones.md) |
+| **Order work (dependencies)**     | In the issue body, add `Depends on #123` or `Blocked by #123`. The worker only picks issues whose dependencies are closed.                                                                                                                                                                                | [Projects and dependencies](projects-and-dependencies.md)                              |
+| **Break down a big issue**        | Add the `planning` label; the worker will create sub-issues and close the parent.                                                                                                                                                                                                                         | [Planning and questions](planning-and-questions.md)                                    |
+| **Get answers without code**      | Add the `question` label; the worker posts an answer in a comment, removes `question`, and adds `needs-human` to mark your turn (Issue #2030). Re-add `question` to ask a follow-up.                                                                                                                       | [Planning and questions](planning-and-questions.md)                                    |
+| **Refine an issue with feedback** | Add the `refine-issue` label and comment; the worker will update the issue from your feedback.                                                                                                                                                                                                            | [Planning and questions](planning-and-questions.md)                                    |
+| **PRs stay mergeable**            | The worker monitors PRs it opens (by author), fixes spelling/quality and merge issues, and enables auto-merge when mergeable.                                                                                                                                                                             | [PR feedback and upkeep](pr-feedback.md)                                               |
+
+**How it's done internally** (run loop, issue selection, claiming, PR
+monitoring, milestone handling) is **not** the focus of these documents. That is
+documented in the project's internal/architecture docs — see the main
+[README](../../README.md#documentation) and **Further reading** at the end of
+each workflow page.
+
+---
+
+## ⚡ TL;DR
+
+**One loop, many queues.** Cron (or launchd) starts the worker; it runs a single
+loop that checks work in **priority order**: PR (Pull Request) feedback (1),
+spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6), CI nudges
+and the blocking-PR watchdog (1.62, 1.63), auto-merge (1.65), issue closure
+(1.67), closed-PR recovery (1.68), milestone completion and branch sync (1.7,
+1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
+questions (1.85), stale-workflow detection (1.9), and finally new issues (2,
+oldest first across all repos). The table below is the canonical ladder; the
+dispatch table in `worker/deno/lib/run_core.ts` is the source of truth and a
+test keeps the two in step (Issue #3348). One work item per iteration, then sleep and repeat. All
+interaction is via GitHub — no local UI (User Interface). When the same item
+fails repeatedly, the process exits so the next cron run gets fresh code.
+
+```mermaid
+flowchart TD
+  Cron["Cron / launchd"] --> Core["run-entrypoint driver (Deno)"]
+  Core --> P1["PR feedback"]
+  P1 --> P2["Spelling & quality"]
+  P2 --> P25["CI checks"]
+  P25 --> P3["Branch sync"]
+  P3 --> P4["Auto-merge"]
+  P4 --> P5["Milestone done?"]
+  P5 --> P6["Refine / Question / Plan"]
+  P6 --> P7["New issue"]
+  P7 --> Sleep["Sleep"]
+  Sleep --> P1
+  style Cron fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Core fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P1 fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style P2 fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style P3 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P4 fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style P5 fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style P6 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P7 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Sleep fill:#707070,stroke:#333,color:#fff
+```
+
+**Short attention span?** Every doc in this folder starts with a **TL;DR** and a
+diagram — scroll to the table below, pick a topic, and you’ll get the gist in
+seconds. The rest of each doc is the full detail when you need it.
+
+For configuration, deployment, and security, see the
+[main documentation](../../README.md#documentation). For how the worker is
+implemented internally, see **Further reading** in each workflow doc.
+
+## 📋 Table of Contents
+
+- [For repo owners and developers (e.g. ST)](#for-repo-owners-and-developers-eg-st)
+- [TL;DR](#tldr)
+- [Workflow document set](#workflow-document-set)
+- [Lifecycle overview](#lifecycle-overview)
+- [Shared invariants](#shared-invariants)
+- [Related documentation](#related-documentation)
+
+## 📚 Workflow document set
+
+Each workflow or topic is assigned to a dedicated document:
+
+| Topic                                              | Document                                                       | Description                                                                                                                                              |
+| -------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Overview and lifecycle**                         | This file (`README.md`)                                        | Canonical overview, shared concepts, lifecycle map, terminology                                                                                          |
+| **Label flows (which label when)**                 | [label-flows.md](label-flows.md)                               | Shareable journey guide: grill-me, needs-human, planning, work tiers, milestones, auto-merge — coloured diagrams                                         |
+| **Issue → PR implementation**                      | [issue-processing.md](issue-processing.md)                     | Flow from issue discovery through branch, Claude, quality gate, and PR creation                                                                          |
+| **PR feedback and upkeep**                         | [pr-feedback.md](pr-feedback.md)                               | Review feedback loop, spelling fixes, branch updates, auto-merge catch-up                                                                                |
+| **CI fix**                                         | [ci-fix.md](ci-fix.md)                                         | Automatic diagnosis and fix of CI check failures on open PRs                                                                                             |
+| **Planning, questions, refinement, clarification** | [planning-and-questions.md](planning-and-questions.md)         | Clarification phase (clear? small enough? too large → planning): question label, planning label, refine-issue                                            |
+| **Grill-me clarification (vague issues)**          | [grill-me.md](grill-me.md)                                     | Iterative, mobile-friendly back-and-forth that scopes vague issues into a clean requirement, then recommends the developer apply `planning` or `work-on` |
+| **Resilience and concurrency**                     | [resilience-and-concurrency.md](resilience-and-concurrency.md) | Self-healing, restart model, issue claiming, multi-worker coexistence, one PR per target branch                                                          |
+| **Projects and dependencies**                      | [projects-and-dependencies.md](projects-and-dependencies.md)   | Milestones as projects, issue relationships, dependencies, sub-issues, corner cases (e.g. deadlock)                                                      |
+| **Milestones**                                     | [milestones.md](milestones.md)                                 | One PR per target branch, milestone branch flow, final consolidation PR                                                                                  |
+| **Worked example (storyboard)**                    | [WORKED-EXAMPLE.md](WORKED-EXAMPLE.md)                         | End-to-end storyboard: planning → `work-on` → milestone → final consolidation PR, with screenshots                                                       |
+
+## 🔄 Lifecycle overview
+
+The worker runs a single long-lived loop per process. Each iteration checks work
+queues in **priority order** and processes at most one item; then it sleeps and
+repeats until the run duration expires or the process exits (e.g. after
+consecutive failures).
+
+```mermaid
+flowchart TD
+  Cron["Cron / launchd"] --> Run["run.sh"]
+  Run --> Core["run-entrypoint driver (Deno)"]
+  Core --> P1["1: PR feedback"]
+  P1 --> P15["1.5: Spelling"]
+  P15 --> P155["1.55: CI checks"]
+  P155 --> P16["1.6: Branch updates"]
+  P16 --> P162["1.62: Nudge stalled CI"]
+  P162 --> P163["1.63: Blocking-PR watchdog"]
+  P163 --> P165["1.65: Auto-merge"]
+  P165 --> P167["1.67: Issue closure"]
+  P167 --> P168["1.68: Closed-PR recovery"]
+  P168 --> P17["1.7: Milestone completion"]
+  P17 --> P172["1.72: Milestone branch sync"]
+  P172 --> P175["1.75: Refinement"]
+  P175 --> P178["1.78: Grill-me"]
+  P178 --> P179["1.79: Quorum plan-off"]
+  P179 --> P18["1.80: Planning"]
+  P18 --> P185["1.85: Question"]
+  P185 --> P19["1.9: Stale workflows"]
+  P19 --> P2["2: New issues"]
+  P2 --> Sleep["Sleep"]
+  Sleep --> P1
+  style Cron fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Run fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Core fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P1 fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style P15 fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style P16 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P165 fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style P166 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P17 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P175 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P18 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P185 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style P2 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Sleep fill:#707070,stroke:#333,color:#fff
+```
+
+**Priority order (highest to lowest):**
+
+| Priority | Task                                                  | Details                                                                                                                                  |
+| -------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | PR feedback and reviews                               | Authorised commenters or thumbs-up                                                                                                       |
+| 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
+| 1.55     | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs (Issue #562)                                                                                             |
+| 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
+| 1.62     | Nudge stalled CI                                      | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing (Issue #2100)                                              |
+| 1.63     | Blocking-PR stall watchdog                            | Detect and escalate PRs that block `work-on` issues; the fixes stay with 1.55 and 1 (Issue #4025)                                       |
+| 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
+| 1.66     | Branch cleanup                                        | Delete branches for merged PRs — runs once at start-up, not every cycle                                                                 |
+| 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                   |
+| 1.68     | Closed-PR recovery                                    | Recover assigned issues with closed-without-merge PRs (Issue #787)                                                                       |
+| 1.7      | Milestone completion                                  | Final consolidation PR                                                                                                                   |
+| 1.72     | Milestone branch sync                                 | Merge the default branch into open `milestone/*` branches; claims nothing                                                                |
+| 1.75     | Issue refinement                                      | `refine-issue` label                                                                                                                     |
+| 1.78     | Grill-me clarification                                | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass (Issue #1619)                   |
+| 1.79     | Quorum plan-off                                       | `quorum` label — decides what the plan is before planning splits it (Issue #4112)                                                        |
+| 1.80     | Planning                                              | `planning` label                                                                                                                         |
+| 1.85     | Question answering                                    | `question` label                                                                                                                         |
+| 1.9      | Stale workflow detection                              | Flag `planning` / `question` labels left in place with no progress                                                                       |
+| 2        | New implementation issues                             | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (Issue #2022 — `help wanted` / `claude` retired)       |
+| 2.5      | Low-priority backlog                                  | `low-priority` label (Issue #1721) — only consulted when no eligible higher-tier candidate exists in any scanned repo                    |
+| 2.9      | Idle-task framework                                   | `idle-task` label (Issue #1959) — strictly below low-priority; the only label the Vibe Coder may self-apply                              |
+| Idle     | Security scan                                         | Fired after a full cycle ends with no claimable work in any monitored repo. See Security Scans — Operator Manual. |
+
+## 📏 Shared invariants
+
+These behaviours are required for the workflow:
+
+- **GitHub-only interaction** — All user interaction is via GitHub: issues,
+  comments, labels, reviews, PRs. The worker never waits on local or manual UI.
+- **Unattended operation** — The worker runs on unattended machines; no human is
+  present to intervene during a run. Reporting to users must happen on GitHub
+  (comments, labels), not only in logs.
+- **Self-healing** — The system must recover from: crashed runs, stale repo
+  state, partial edits, disk pressure, stuck processes, and repeated failures on
+  the same work item (exit for restart).
+- **Safe concurrency** — Multiple workers and humans may act on the same repos.
+  Claiming, tie-breaking, idempotency, and back-off rules are documented and
+  followed.
+- **Shared GitHub user, one Vibe Coder per host** — The same GitHub user (e.g.
+  stsvcbot) is often used by **many** Vibe Coders; there is **one Vibe Coder
+  per hostname**. PRs are identified by **author** (that user); any worker using
+  that account sees the same set of open PRs. See
+  [pr-feedback.md](pr-feedback.md#which-prs-are-monitored).
+- **Distinct workflow types** — Implementation, planning, question answering,
+  refinement, clarification, PR feedback, spelling/quality fixes, and milestones
+  each have defined semantics and do not substitute for one another.
+- **Workflow labels auto-created** — All workflow labels (e.g. `failed-once`,
+  `failed`, `needs-human`, `circular-dependency`) are
+  **automatically created** when first needed, with **consistent colours and
+  descriptions** across repositories. See
+  [projects-and-dependencies.md](projects-and-dependencies.md#workflow-labels).
+- **Worker escalation via `needs-human`** — When the worker hits an
+  unrecoverable blocker (e.g. a decision only a human can make, or a missing
+  credential), it adds the `needs-human` label, posts an explanatory comment,
+  and stops. Discovery **skips any issue with `needs-human`** on every
+  subsequent scan until a human removes the label. The worker **never**
+  self-applies `top-priority`, `work-on`, or any other reserved workflow label —
+  `needs-human` is its only escalation channel. See
+  [issue-processing.md](issue-processing.md#-worker-escalation-via-needs-human)
+  and [USAGE.md](../USAGE.md#-worker-escalation-via-needs-human).
+
+### 🤖 Invariants for agents
+
+When implementing or validating the worker, enforce:
+
+1. **No local UI** — Never block on stdin, dialogs, or local user input; all
+   triggers come from GitHub API state.
+2. **Unattended-safe** — Startup and loop must complete without human presence;
+   config from `.config.json` and env only.
+3. **Self-heal on failure** — Repo reset on start; disk cleanup at threshold;
+   consecutive same-item failures cause process exit for external restart.
+4. **Claim before work** — For issue-based work (implementation, planning,
+   question, refinement), the worker must claim the issue (assign self, verify,
+   resolve contention) before performing work.
+5. **One workflow type per item** — An issue is either implementation,
+   refinement, planning, or question; PRs are feedback or spelling or upkeep; do
+   not mix semantics.
+
+## 📖 Related documentation
+
+These existing docs remain the source of truth for their areas:
+
+| Area                                             | Document                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------- |
+| Configuration                                    | [CONFIGURATION.md](../CONFIGURATION.md)                       |
+| Deployment (cron, systemd, launchd, logs)        | DEPLOYMENT.md                             |
+| Usage (labels, clarification, failure handling)  | [USAGE.md](../USAGE.md)                                       |
+| Security (threat model, tokens)                  | [SECURITY.md](../../SECURITY.md)                              |
+| Worker label policy (worker-added vs human-only) | [README.md](../../README.md#-supported-labels)              |
+| Extending (Deno, prompts)                        | [EXTENDING.md](../EXTENDING.md)                               |
+| Worker internals (run loop, selection, PRs)      | [INTERNALS.md](../INTERNALS.md)                               |
+| Troubleshooting                                  | TROUBLESHOOTING.md                   |
+| Security scans (idle)                            | SECURITY-SCAN.md                       |
+| Upstream CVE/GHSA triage                         | security-advisory-triage.md |

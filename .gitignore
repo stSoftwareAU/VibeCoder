@@ -1,0 +1,43 @@
+# Ignore all hidden files
+.*
+
+# Except .gitignore itself
+!.gitignore
+
+# Except .github directory (for GitHub Actions workflows)
+!.github
+
+# Except .markdownlint-cli2.jsonc (markdownlint quality gate config — Issue #1685)
+!.markdownlint-cli2.jsonc
+
+# Except .vscode (editor workspace settings — Deno language server for worker/deno)
+!.vscode
+
+# Except the toolchain pins the workflows install from (Issue #4403): one
+# source of truth for the exact Deno and Node versions, tied to the container
+# image's own pins by test.
+!.deno-version
+!.node-version
+
+# Explicitly ignore config files that may contain secrets
+.config.json
+.config*.json
+*.secret.json
+
+# Secrets directory
+.secrets/
+
+# Private key material and credential files (Issue #3660) — none of these
+# begin with a dot, so the `.*` rule above does not cover them.
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+credentials.json
+service-account*.json
+
+# Generated for GitHub Pages (README copy used as site index by .github/workflows/pages.yml)
+/index.md
+

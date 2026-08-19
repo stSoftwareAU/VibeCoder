@@ -1,0 +1,243 @@
+/**
+ * Canonical label definitions for all monitored repositories.
+ *
+ * Single source of truth for label names, colours, and descriptions.
+ * Labels are organised into categories:
+ *   - workflow: Core workflow labels used by the worker (apply to all repos)
+ *   - ui: Labels related to UI/screenshot evidence (only for repos with UI)
+ *
+ * Issue #864: Standardise labels across repos we monitor.
+ * Issue #923: Migrate to Deno TypeScript.
+ * Issue #1748: Add the discovery/watch labels (claude, help wanted) and the
+ *   low-priority backlog label so their colours and descriptions are
+ *   standardised by the same sync pass as the rest of the workflow labels.
+ * Issue #2022: Retire the `claude` and `help wanted` discovery/watch labels.
+ *   The hardwired priority order is now
+ *   `top-priority` > `work-on` > `low-priority` > `idle-task`. `idle-task`
+ *   is the only label the Vibe Coder may self-apply.
+ * Issue #2029: Retire the `refined` completion label. The refinement
+ *   workflow now signals handoff by adding `needs-human` (the existing
+ *   worker-to-human escalation label).
+ */
+
+/** Category for a label definition. */
+export type LabelCategory = "workflow" | "ui";
+
+/** A single label definition. */
+export interface LabelDefinition {
+  /** Label name as shown on GitHub. */
+  name: string;
+  /** Hex colour code without # prefix. */
+  colour: string;
+  /** Human-readable description. */
+  description: string;
+  /** Category determines which repos receive this label. */
+  category: LabelCategory;
+}
+
+/**
+ * All canonical label definitions.
+ * Order matches the original shell script for consistency.
+ */
+export const LABEL_DEFINITIONS: readonly LabelDefinition[] = [
+  // Workflow labels — apply to all repos
+  {
+    name: "failed",
+    colour: "d73a4a",
+    description: "Issue failed permanently after two attempts",
+    category: "workflow",
+  },
+  {
+    name: "failed-once",
+    colour: "fbca04",
+    description: "Issue failed once - will be retried",
+    category: "workflow",
+  },
+  // Issue #2031: needs-clarification retired — see DEPRECATED_LABELS below.
+  {
+    name: "refine-issue",
+    colour: "0366d6",
+    description: "Issue being refined collaboratively before implementation",
+    category: "workflow",
+  },
+  {
+    name: "planning",
+    colour: "1d76db",
+    description:
+      "Issue in planning mode - creating sub-issues and task breakdown",
+    category: "workflow",
+  },
+  {
+    name: "question",
+    colour: "cc317c",
+    description: "Issue has a question to be answered",
+    category: "workflow",
+  },
+  // Issue #2030: `answered` retired — question workflow now signals handoff
+  // with `needs-human`. See DEPRECATED_LABELS below.
+  {
+    name: "work-on",
+    colour: "5319e7",
+    description: "Signal to work on this issue",
+    category: "workflow",
+  },
+  {
+    name: "documentation",
+    colour: "0075ca",
+    description: "Documentation only change",
+    category: "workflow",
+  },
+  {
+    name: "needs-revision",
+    colour: "e99695",
+    description: "Issue needs revision based on review",
+    category: "workflow",
+  },
+  {
+    name: "needs-human",
+    colour: "fbca04",
+    description: "Worker has escalated this issue to a human",
+    category: "workflow",
+  },
+  {
+    name: "grill-me",
+    colour: "fbca04",
+    description:
+      "Issue being grilled — interactive back-and-forth scoping before planning",
+    category: "workflow",
+  },
+  // Issue #4112: quorum — a human applies it to run a three-agent plan-off
+  // ahead of planning. Reserved: the worker never self-applies it.
+  {
+    name: "quorum",
+    colour: "5319e7",
+    description:
+      "Apply by hand to run a Quorum plan-off — two agents draft a plan, a third judges, ahead of planning",
+    category: "workflow",
+  },
+  {
+    name: "top-priority",
+    colour: "b60205",
+    description: "Highest-priority issue — pick this up before other work",
+    category: "workflow",
+  },
+  {
+    name: "low-priority",
+    colour: "c2e0c6",
+    description:
+      "Backlog work — picked up only when no other eligible work exists",
+    category: "workflow",
+  },
+  // Idle-task label — worker-filed busywork. Lowest priority in the queue (Issue #1961).
+  {
+    name: "idle-task",
+    colour: "cccccc",
+    description:
+      "Worker-filed task to run when no claimable work exists. Lowest priority.",
+    category: "workflow",
+  },
+  // Issue #2077: `idle-task-pending` retired — `idle-task` is already
+  // the lowest priority in the queue, so the separate approval gate
+  // added no value. See DEPRECATED_LABELS below.
+  // Issue #2650: degraded-model — worker-appliable (non-reserved) signal that a
+  // planning run was served by a model other than the configured planning model.
+  // `best-model` is reserved and cannot carry this signal — this is its
+  // non-reserved replacement. Humans clear it after investigating.
+  {
+    name: "degraded-model",
+    colour: "e99695",
+    description:
+      "Generated by a model other than the configured planning model",
+    category: "workflow",
+  },
+  // Issue #2904: orphan-deps — label carried by orphan-dependency idle-task
+  // findings (the sixth idle-task template). Seeded on monitored repos so
+  // onboarding / label-sync create it ahead of the first scan.
+  {
+    name: "orphan-deps",
+    colour: "0e8a16",
+    description:
+      "Orphan / unmaintained dependency finding from the orphan-deps idle-task scan",
+    category: "workflow",
+  },
+  // UI labels — only for repos with UI/screenshot capability
+  {
+    name: "needs-screenshot",
+    colour: "d93f0b",
+    description: "Previous attempt was blocked for missing screenshot evidence",
+    category: "ui",
+  },
+] as const;
+
+/**
+ * Labels that have been deprecated and should be removed from repos.
+ * Add entries here when retiring a label.
+ */
+export const DEPRECATED_LABELS: readonly string[] = [
+  "best-model", // Removed: opus is always used, label had no effect
+  "good first issue", // Removed: unnecessary workflow complexity
+  "skip-clarification", // Removed: redundant — documentation label provides identical bypass (Issue #1155)
+  "needs-clarification", // Removed: handoff signal consolidated onto `needs-human` (Issue #2031)
+  "answered", // Removed: question workflow signals handoff with `needs-human` (Issue #2030)
+  "claude", // Removed: replaced by hardwired top-priority/work-on/low-priority/idle-task tiers (Issue #2022)
+  "help wanted", // Removed: replaced by hardwired top-priority/work-on/low-priority/idle-task tiers (Issue #2022)
+  "refined", // Removed: refinement workflow now signals completion via needs-human (Issue #2029)
+  "idle-task-pending", // Removed: approval gate retired — `idle-task` is already lowest priority (Issue #2077)
+] as const;
+
+/**
+ * UI languages used to detect repos with frontend components.
+ */
+const UI_LANGUAGES = [
+  "JavaScript",
+  "TypeScript",
+  "HTML",
+  "CSS",
+  "Vue",
+  "Svelte",
+] as const;
+
+/** Get all label definitions. */
+export function getAllLabels(): readonly LabelDefinition[] {
+  return LABEL_DEFINITIONS;
+}
+
+/** Get labels for a specific category. */
+export function getLabelsByCategory(
+  category: LabelCategory,
+): LabelDefinition[] {
+  return LABEL_DEFINITIONS.filter((l) => l.category === category);
+}
+
+/** Get a label by name (returns undefined if not found). */
+export function getLabelByName(name: string): LabelDefinition | undefined {
+  return LABEL_DEFINITIONS.find((l) => l.name === name);
+}
+
+/** Get the number of defined labels. */
+export function getLabelCount(): number {
+  return LABEL_DEFINITIONS.length;
+}
+
+/**
+ * Check if a repository has UI components based on its languages.
+ *
+ * @param languages - Object mapping language names to byte counts (from GitHub API)
+ * @returns true if the repo has any UI-related languages
+ */
+export function repoHasUi(languages: Record<string, number>): boolean {
+  return UI_LANGUAGES.some((lang) => lang in languages);
+}
+
+/**
+ * Get the labels applicable to a given repo.
+ *
+ * @param hasUi - Whether the repo has UI components
+ * @returns Array of applicable label definitions
+ */
+export function getApplicableLabels(hasUi: boolean): LabelDefinition[] {
+  if (hasUi) {
+    return [...LABEL_DEFINITIONS];
+  }
+  return LABEL_DEFINITIONS.filter((l) => l.category !== "ui");
+}

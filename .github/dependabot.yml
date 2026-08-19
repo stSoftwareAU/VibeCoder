@@ -1,0 +1,33 @@
+# Automated GitHub Actions pin updates (Issue #4400, GHA-SUPPLY-002).
+#
+# renovate.json is present but the Renovate app has never opened a PR here
+# (no Dependency Dashboard, no renovate[bot] author in the last 100 PRs), and
+# four SHA-pinned actions had drifted a major or more. Dependabot's
+# github-actions ecosystem is native, needs no app install, rewrites the SHA
+# pin AND the trailing version comment, and honours a cooldown that mirrors
+# the 24h quarantine Renovate would have applied.
+#
+# Deno/JSR and Ruby dependencies stay with their own mechanisms
+# (deno.json minimumDependencyAge; dependency-audit.yml) — only the actions
+# ecosystem is enabled here, so the two updaters cannot overlap.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Supply-chain quarantine: never take a release younger than a day, and
+    # give majors a week (Issue #4400; same intent as renovate.json's
+    # minimumReleaseAge).
+    cooldown:
+      default-days: 1
+      semver-major-days: 7
+    commit-message:
+      prefix: "chore(actions)"
+    labels:
+      - "dependencies"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

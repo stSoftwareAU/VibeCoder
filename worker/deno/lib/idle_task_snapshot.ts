@@ -1,0 +1,265 @@
+/**
+ * Shared GitHub-issue snapshot helpers for idle-task scan templates
+ * (Issue #2408, sub-issue #2410).
+ *
+ * The five outcome-only scan templates (security-scan, best-practices,
+ * test-audit, github-actions-audit, supply-chain-readiness) all verify a scan
+ * the same way: snapshot the repo's open scan-labelled issues before the run,
+ * snapshot again afterwards, and treat the difference as the newly-filed
+ * findings. Four of them also build a known-open finding-id skip-list from the
+ * `<!-- finding-id: … -->` body marker so Claude does not re-emit a finding the
+ * repo already tracks.
+ *
+ * Before this module each template carried its own private, copy-pasted version
+ * of those helpers (#2410). Centralising them means a sixth template consumes
+ * the shared helpers instead of copy-pasting a sixth time, and the gh-failure /
+ * malformed-JSON handling lives in exactly one place.
+ *
+ * Robustness (sub-issue #2411): a malformed `gh … --json` payload is no longer
+ * silently swallowed — the parse error is logged with a label before the safe
+ * empty result is returned, so an operator can tell a genuinely-empty repo
+ * apart from a transient gh hiccup that produced unparseable output.
+ *
+ * Australian English used throughout (behaviour, organisation, authorised).
+ */
+
+/**
+ * Parse a `gh … --json` payload into an array of entries.
+ *
+ * Returns `[]` when the payload is not valid JSON or is not an array. Unlike
+ * the per-template copies this replaces, a JSON parse failure is logged (not
+ * swallowed) with `label` so the failure is visible in operator logs.
+ *
+ * Exported (Issue #2411) so scan templates that have not yet migrated their
+ * before/after snapshot to {@link listOpenIssueNumbersByLabel} can still route
+ * their own bare `JSON.parse` issue-list parses through one place — keeping the
+ * defensive empty-return while making a swallowed parse failure visible.
+ */
+export function parseGhJsonArray(raw: string, label: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[idle-task-snapshot] ${label}: failed to parse gh JSON payload: ${message}`,
+    );
+    return [];
+  }
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+/**
+ * Return the set of open issue numbers carrying `label` in `repo`.
+ *
+ * Used as the before/after snapshot for the newly-filed diff. A gh failure or
+ * malformed payload returns an empty set so a transient lookup hiccup never
+ * crashes the run — the worst case is a summary that reports zero newly-filed
+ * findings.
+ */
+export async function listOpenIssueNumbersByLabel(
+  repo: string,
+  label: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<Set<number>> {
+  const out = new Set<number>();
+  let raw: string;
+  try {
+    raw = await ghCommandFn([
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--label",
+      label,
+      "--json",
+      "number",
+      "--limit",
+      "200",
+    ]);
+  } catch {
+    return out;
+  }
+  for (const item of parseGhJsonArray(raw, `list ${label} numbers`)) {
+    if (item === null || typeof item !== "object") continue;
+    const n = (item as { number?: unknown }).number;
+    if (typeof n === "number" && Number.isFinite(n)) out.add(n);
+  }
+  return out;
+}
+
+/**
+ * Return the issue numbers present in `after` but not in `before` — the
+ * findings filed during a scan run — sorted ascending so callers render a
+ * deterministic summary.
+ */
+export function diffNewlyFiled(
+  before: ReadonlySet<number>,
+  after: ReadonlySet<number>,
+): number[] {
+  const newlyFiled: number[] = [];
+  for (const n of after) {
+    if (!before.has(n)) newlyFiled.push(n);
+  }
+  newlyFiled.sort((a, b) => a - b);
+  return newlyFiled;
+}
+
+/**
+ * Return the known-open finding ids in `repo`, read from the
+ * `<!-- finding-id: <idPrefix>… -->` body marker every filed finding carries.
+ *
+ * Four templates share the `BP-` id prefix (best-practices, test-audit,
+ * github-actions-audit, supply-chain-readiness — the per-template
+ * discriminator keeps the hashes distinct), so `idPrefix` defaults to `"BP-"`.
+ * A gh failure or malformed payload returns an empty array — the worst case is
+ * Claude re-files a finding, which the snapshot diff still catches.
+ */
+export async function listKnownOpenFindingIds(
+  repo: string,
+  label: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  idPrefix = "BP-",
+): Promise<string[]> {
+  let raw: string;
+  try {
+    raw = await ghCommandFn([
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--label",
+      label,
+      "--json",
+      "number,body",
+      "--limit",
+      "200",
+    ]);
+  } catch {
+    return [];
+  }
+  // Hardcoded regex — no dynamic RegExp, no ReDoS risk.
+  // Prefix filtering is done via startsWith() below.
+  const FINDING_ID_RE = /<!--\s*finding-id:\s*([A-Za-z0-9-]+)\s*-->/gi;
+  const ids: string[] = [];
+  for (const item of parseGhJsonArray(raw, `list ${label} finding ids`)) {
+    if (item === null || typeof item !== "object") continue;
+    const body = (item as { body?: unknown }).body;
+    if (typeof body !== "string") continue;
+    for (const m of body.matchAll(FINDING_ID_RE)) {
+      const id = m[1];
+      if (id && id.startsWith(idPrefix)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Return the number of an **open** issue in `repo` carrying both `label` and
+ * the `<!-- finding-id: <findingId> -->` body marker, or `null` when none
+ * exists.
+ *
+ * This is the pre-file dedup look-up (Issue #2882): the pre-filers call
+ * `gh issue create` directly, so without it the same `finding-id` could yield
+ * two open issues (observed for `BP-LINTER-typescript` — NEAT-AI#2990/#2991).
+ *
+ * Dedup is against **open** issues only: a finding whose prior issue was
+ * **closed** (fixed) may legitimately re-file if it recurs, so a closed match
+ * is intentionally ignored. A gh failure or malformed payload returns `null`
+ * (treated as "no existing issue") so a transient lookup hiccup never aborts a
+ * scan — the worst case is the pre-existing duplicate this guard normally
+ * prevents.
+ */
+export async function findOpenIssueByFindingId(
+  repo: string,
+  label: string,
+  findingId: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<number | null> {
+  let raw: string;
+  try {
+    raw = await ghCommandFn([
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--label",
+      label,
+      "--json",
+      "number,body",
+      "--limit",
+      "200",
+    ]);
+  } catch {
+    return null;
+  }
+  // Hardcoded regex — no dynamic RegExp, no ReDoS risk.
+  const FINDING_ID_RE = /<!--\s*finding-id:\s*([A-Za-z0-9-]+)\s*-->/gi;
+  for (const item of parseGhJsonArray(raw, `find ${label} ${findingId}`)) {
+    if (item === null || typeof item !== "object") continue;
+    const body = (item as { body?: unknown }).body;
+    const n = (item as { number?: unknown }).number;
+    if (typeof body !== "string") continue;
+    if (typeof n !== "number" || !Number.isFinite(n)) continue;
+    for (const m of body.matchAll(FINDING_ID_RE)) {
+      if (m[1] === findingId) return n;
+    }
+  }
+  return null;
+}
+
+/** Result of a {@link fileFindingOnce} call. */
+export interface FileFindingOnceResult {
+  /** The issue number — newly filed, or the pre-existing open issue. */
+  number: number;
+  /** The finding id the call was keyed on. */
+  findingId: string;
+  /** `true` when an open issue with this id already existed (no new file). */
+  skipped: boolean;
+}
+
+/**
+ * Shared pre-file dedup wrapper (Issue #2882) for the idle-task pre-filers.
+ *
+ * Looks up an existing **open** issue carrying `findingId` first; when one
+ * exists it returns that issue's number with `skipped: true` and never calls
+ * `fileFn`, so one `finding-id` never yields two open issues. Otherwise it
+ * invokes `fileFn` (the template's real `gh issue create` path) and returns the
+ * freshly-filed issue with `skipped: false`.
+ *
+ * Closed prior issues are not matched (open-only look-up), so a genuinely
+ * recurring finding whose previous issue was fixed/closed re-files normally.
+ *
+ * Returns `null` only when no open duplicate existed **and** `fileFn` returned
+ * `null` (a gh create failure) — the caller logs and continues, matching the
+ * existing pre-filer contract. This is a best-effort look-up-then-file: it
+ * closes the routine duplicate window, not a distributed lock.
+ */
+export async function fileFindingOnce(
+  params: {
+    repo: string;
+    label: string;
+    findingId: string;
+    ghCommandFn: (args: string[]) => Promise<string>;
+    fileFn: () => Promise<{ number: number; findingId: string } | null>;
+  },
+): Promise<FileFindingOnceResult | null> {
+  const existing = await findOpenIssueByFindingId(
+    params.repo,
+    params.label,
+    params.findingId,
+    params.ghCommandFn,
+  );
+  if (existing !== null) {
+    return { number: existing, findingId: params.findingId, skipped: true };
+  }
+  const filed = await params.fileFn();
+  if (filed === null) return null;
+  return { number: filed.number, findingId: filed.findingId, skipped: false };
+}

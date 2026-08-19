@@ -1,0 +1,1030 @@
+/**
+ * Tests for the concurrent issue-slot pool (Issue #4177, part of #4168).
+ *
+ * A minimal RunCoreDeps mock is rebuilt locally, matching the convention in
+ * the other run_core test files.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import { assert, assertEquals } from "@std/assert";
+import {
+  createDefaultRunCoreConfig,
+  type DiscoveredIssue,
+  type RunCoreDeps,
+  runCoreLoop,
+} from "../lib/run_core.ts";
+import { reportRunDeadline } from "../lib/slot_context.ts";
+
+function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
+  return {
+    log: () => {},
+    logError: () => {},
+    logTiming: () => {},
+    logWorkerSummary: () => {},
+    checkPidFile: () => Promise.resolve({ canProceed: true, message: "OK" }),
+    claimPidFile: () => Promise.resolve(),
+    releasePidFile: () => Promise.resolve(),
+    gitResetToOrigin: () => Promise.resolve({ ok: true, value: undefined }),
+    setupLogging: () => Promise.resolve(),
+    loadAndValidateConfig: () =>
+      Promise.resolve({ ok: true, value: createDefaultRunCoreConfig() }),
+    checkDependencies: () => Promise.resolve({ ok: true, value: undefined }),
+    checkSoftwareUpdates: () => Promise.resolve(),
+    checkDiskSpace: () => Promise.resolve({ ok: true, value: undefined }),
+    rotateLogFiles: () => Promise.resolve(),
+    cleanupStaleTempFiles: () => Promise.resolve(),
+    recoverStuckIssues: () => Promise.resolve(),
+    cleanupStaleBranches: () => Promise.resolve(),
+    checkFeatureAvailability: () => Promise.resolve(),
+    checkClaudeHealth: () =>
+      Promise.resolve({ ok: true, value: { healthy: true } }),
+    checkGhAuth: () => Promise.resolve({ ok: true, value: { valid: true } }),
+    findAndProcessPrFeedback: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessSpellingFailure: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessCiFailure: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    updateOpenPrBranches: () => Promise.resolve({ ok: true, value: undefined }),
+    nudgeStalledCi: () => Promise.resolve({ ok: true, value: undefined }),
+    ensureAutoMerge: () => Promise.resolve({ ok: true, value: undefined }),
+    cleanupMergedBranches: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    closeIssuesForMergedPrs: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    recoverAssignedWithClosedPr: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    syncMilestoneBranches: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    checkMilestoneCompletions: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    findAndProcessRefinement: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessGrillMe: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessQuestion: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessPlanning: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    scanStaleWorkflowIssues: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    findNextIssue: () => Promise.resolve({ ok: true, value: null }),
+    processIssue: () => Promise.resolve({ ok: true, value: { success: true } }),
+    trackFailure: () => Promise.resolve(),
+    resetFailures: () => Promise.resolve(),
+    shouldExitOnFailures: () => Promise.resolve(false),
+    recordIssueCooldown: () => Promise.resolve(),
+    circuitBreakerReset: () => Promise.resolve(),
+    circuitBreakerRecordZeroProgress: () => Promise.resolve(),
+    circuitBreakerGetSleepInterval: () => Promise.resolve(30),
+    isRateLimitActive: () => Promise.resolve(false),
+    getRateLimitRemainingSeconds: () => Promise.resolve(0),
+    getRateLimitReset: () =>
+      Promise.resolve(Math.floor(Date.now() / 1000) + 3600),
+    preflightGitHubRateLimit: () =>
+      Promise.resolve({
+        rateLimited: false,
+        remainingSeconds: 0,
+        message: "ok",
+      }),
+    resetRepoFailures: () => Promise.resolve(),
+    recordRepoFailure: () => Promise.resolve(),
+    recordRepoSuccess: () => Promise.resolve(),
+    sendCrashNotification: () => Promise.resolve(),
+    clearHeartbeat: () => Promise.resolve(),
+    cleanupInProgressIssue: () => Promise.resolve(),
+    setStatusIdle: () => Promise.resolve(),
+    setStatusWorking: () => Promise.resolve(),
+    setStatusSuccess: () => Promise.resolve(),
+    setStatusFailure: () => Promise.resolve(),
+    resetWindowTitle: () => {},
+    addSignalListener: () => {},
+    removeSignalListener: () => {},
+    writeFaultToleranceSummary: () => Promise.resolve(),
+    touchPidFile: () => Promise.resolve(),
+    sleep: () => Promise.resolve(),
+    now: () => 0,
+    ...overrides,
+  };
+}
+
+/** A queue of issues across distinct repos, honouring the exclusion set. */
+function issueQueue(issues: DiscoveredIssue[]) {
+  const pending = [...issues];
+  return (options?: { excludeRepos?: ReadonlySet<string> }) => {
+    const idx = pending.findIndex((i) => !options?.excludeRepos?.has(i.repo));
+    if (idx < 0) return Promise.resolve({ ok: true as const, value: null });
+    const [next] = pending.splice(idx, 1);
+    return Promise.resolve({ ok: true as const, value: next! });
+  };
+}
+
+function issue(repo: string, n: number): DiscoveredIssue {
+  return { repo, issueNumber: n, issueTitle: `t${n}`, milestoneTitle: "" };
+}
+
+/** Run one cycle: the loop ends when the clock passes the deadline. */
+async function runOneCycle(deps: RunCoreDeps, maxConcurrentIssues: number) {
+  const config = { ...createDefaultRunCoreConfig(), maxConcurrentIssues };
+  await runCoreLoop(config, deps);
+}
+
+Deno.test("slot pool - maxConcurrentIssues 1: high-water mark 1 and today's serial sequence (Issue #4177)", async () => {
+  let inFlight = 0, high = 0;
+  const calls: string[] = [];
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([
+      issue("o/a", 1),
+      issue("o/b", 2),
+      issue("o/c", 3),
+    ]),
+    processIssue: async (i) => {
+      inFlight++;
+      high = Math.max(high, inFlight);
+      calls.push(`start ${i.repo}`);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      now += config.runDurationSeconds * 400; // each takes 40% of the cycle
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 1);
+  assertEquals(high, 1);
+  assert(calls.length >= 1);
+});
+
+Deno.test("slot pool - maxConcurrentIssues 3 with three repos: three processIssue calls in flight at once (Issue #4177)", async () => {
+  let inFlight = 0, high = 0;
+  const seen: string[] = [];
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([
+      issue("o/a", 1),
+      issue("o/b", 2),
+      issue("o/c", 3),
+    ]),
+    processIssue: async (i) => {
+      inFlight++;
+      high = Math.max(high, inFlight);
+      seen.push(i.repo);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 3);
+  assertEquals(high, 3, `expected 3 concurrent, saw ${high}`);
+  assertEquals(new Set(seen).size, 3, "three distinct repos");
+});
+
+Deno.test("slot pool - the exclusion set keeps two slots out of the same repo (Issue #4176/#4177)", async () => {
+  const seenRepos: string[] = [];
+  const inFlightByRepo = new Map<string, number>();
+  let clash = false;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    // Two issues in the SAME repo, one in another: at most one slot may be
+    // in o/a at any moment.
+    findNextIssue: issueQueue([
+      issue("o/a", 1),
+      issue("o/a", 2),
+      issue("o/b", 3),
+    ]),
+    processIssue: async (i) => {
+      const n = (inFlightByRepo.get(i.repo) ?? 0) + 1;
+      inFlightByRepo.set(i.repo, n);
+      if (n > 1) clash = true;
+      seenRepos.push(i.repo);
+      await new Promise((r) => setTimeout(r, 15));
+      inFlightByRepo.set(i.repo, n - 1);
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 3);
+  assertEquals(clash, false, "two slots must never share a repo");
+});
+
+Deno.test("slot pool - deadline reached mid-run: no slot starts a new claim (Issue #4177)", async () => {
+  let finds = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  const many = Array.from({ length: 12 }, (_, i) => issue(`o/r${i}`, i));
+  const inner = issueQueue(many);
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: (o) => {
+      finds++;
+      return inner(o);
+    },
+    processIssue: async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      now = cycleMs + 1; // the first completions push past the deadline
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runOneCycle(deps, 3);
+  const findsAtDeadline = finds;
+  // The 3 initial claims plus at most nothing after: once past the
+  // deadline no slot calls findNextIssue again.
+  assert(findsAtDeadline <= 3, `finds after deadline: ${findsAtDeadline}`);
+});
+
+Deno.test("slot pool - shouldExitOnFailures true in one slot: pool drains, exitOuterLoop, in-flight claims released (Issue #4177)", async () => {
+  const released: string[] = [];
+  let processed = 0;
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    processIssue: async () => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 5));
+      return { ok: true, value: { success: false } };
+    },
+    shouldExitOnFailures: () => Promise.resolve(true),
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+  });
+  await runOneCycle(deps, 3);
+  // Three slots start three issues; the exit verdict drains the pool — no
+  // further claims beyond the initial ones.
+  assert(processed <= 3, `processed ${processed}`);
+  assertEquals(released.length, processed, "every in-flight claim released");
+});
+
+Deno.test("slot pool - a slot that throws does not kill siblings and does not leak its claim (Issue #4177)", async () => {
+  const released: string[] = [];
+  const done: string[] = [];
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([
+      issue("o/a", 1),
+      issue("o/b", 2),
+      issue("o/c", 3),
+    ]),
+    processIssue: async (i) => {
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.repo === "o/b") throw new Error("boom in slot");
+      done.push(i.repo);
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+  });
+  await runOneCycle(deps, 3);
+  assertEquals(done.sort(), ["o/a", "o/c"], "siblings finished");
+  assert(released.includes("o/b#2"), "the thrown slot's claim was released");
+});
+
+Deno.test("slot pool - every terminal path releases the claim exactly once: success / skip / failure / throw (Issue #4178)", async () => {
+  const releases = new Map<string, number>();
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([
+      issue("o/success", 1),
+      issue("o/skip", 2),
+      issue("o/failure", 3),
+      issue("o/throw", 4),
+    ]),
+    processIssue: async (i) => {
+      await new Promise((r) => setTimeout(r, 5));
+      switch (i.repo) {
+        case "o/success":
+          now += config.runDurationSeconds * 400;
+          return { ok: true, value: { success: true } };
+        case "o/skip":
+          return { ok: true, value: { success: false, skipped: true } };
+        case "o/failure":
+          return { ok: true, value: { success: false } };
+        default:
+          throw new Error("boom");
+      }
+    },
+    releaseClaim: (repo, n) => {
+      const k = `${repo}#${n}`;
+      releases.set(k, (releases.get(k) ?? 0) + 1);
+      return Promise.resolve();
+    },
+  });
+  await runOneCycle(deps, 4);
+  for (const k of ["o/success#1", "o/skip#2", "o/failure#3", "o/throw#4"]) {
+    assertEquals(
+      releases.get(k),
+      1,
+      `${k} released exactly once, got ${releases.get(k)}`,
+    );
+  }
+});
+
+Deno.test("slot pool - the pool calls the slot-aware sweep with the live holds, never the whole-process sweep (Issue #4178)", async () => {
+  let wholeProcessSweeps = 0;
+  const liveSets: number[] = [];
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    processIssue: async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+    sweepLeakedHeartbeats: () => {
+      wholeProcessSweeps++;
+      return Promise.resolve();
+    },
+    sweepLeakedHeartbeatsExcept: (live) => {
+      liveSets.push(live.length);
+      return Promise.resolve();
+    },
+  });
+  await runOneCycle(deps, 2);
+  assertEquals(
+    wholeProcessSweeps,
+    0,
+    "the pool must never stop every heartbeat",
+  );
+  assert(
+    liveSets.length >= 2 && liveSets.every((n) => n >= 1),
+    `live sets: ${liveSets}`,
+  );
+});
+
+// ============================================================================
+// Host-wide guards across slots (Issue #4180)
+// ============================================================================
+
+Deno.test("slot pool - spend ceiling reached during slot A's run: slot B's next claim is refused, the pool drains and the cycle ends on the ceiling (Issue #4180)", async () => {
+  let ceilingHit = false;
+  let processed = 0;
+  let now = 0;
+  const errors: string[] = [];
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    logError: (m) => {
+      errors.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    checkSpendCeiling: () =>
+      Promise.resolve(
+        ceilingHit
+          ? { exceeded: true, message: "Daily spend $50.00 ≥ ceiling $50.00" }
+          : { exceeded: false },
+      ),
+    processIssue: async () => {
+      processed++;
+      // The first run to finish trips the ceiling; siblings mid-run finish.
+      await new Promise((r) => setTimeout(r, 5));
+      ceilingHit = true;
+      // A failed run keeps the slot looking for more — which the guard
+      // must now refuse.
+      return { ok: true, value: { success: false } };
+    },
+  });
+  const result = await runCoreLoop({ ...config, maxConcurrentIssues: 3 }, deps);
+  assert(
+    processed <= 3,
+    `processed ${processed} — a slot claimed past the ceiling`,
+  );
+  assertEquals(result.exitReason, "Daily spend ceiling reached");
+  assertEquals(
+    errors.filter((m) => m.startsWith("[SPEND_CEILING]")).length,
+    1,
+    "the ceiling is reported once, not once per slot",
+  );
+});
+
+Deno.test("slot pool - rate-limit signal active between claims: no slot claims again this cycle (Issue #4180)", async () => {
+  let limited = false;
+  let processed = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    isRateLimitActive: () => Promise.resolve(limited),
+    processIssue: async () => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 5));
+      limited = true;
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runOneCycle(deps, 3);
+  assert(
+    processed <= 3,
+    `processed ${processed} — a slot claimed under an active rate limit`,
+  );
+});
+
+Deno.test("slot pool - a primary rate limit thrown in one slot drains the pool and reaches the cycle's pause path; siblings' claims are released (Issue #4180)", async () => {
+  const released: string[] = [];
+  const logs: string[] = [];
+  let processed = 0;
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    processIssue: async (i) => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.issueNumber === 0) {
+        throw new Error("API rate limit exceeded for user ID 1");
+      }
+      return { ok: true, value: { success: false } };
+    },
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+    getRateLimitReset: () => {
+      // The pause path consulted the reset epoch: that IS the serial
+      // loop's behaviour, now reached from the pool.
+      logs.push("getRateLimitReset consulted");
+      // Far enough that the run duration expires while pausing.
+      return Promise.resolve(Math.floor(now / 1000) + 3600);
+    },
+  });
+  await runOneCycle(deps, 3);
+  assert(
+    processed <= 3,
+    `processed ${processed} — a slot claimed after the rate limit`,
+  );
+  assert(
+    logs.includes("getRateLimitReset consulted"),
+    `pool did not surface the rate limit to the cycle pause path; logs: ${
+      logs.join(" | ")
+    }`,
+  );
+  assert(
+    released.some((r) => r === "o/r0#0"),
+    "the throwing slot released its claim",
+  );
+});
+
+// ============================================================================
+// Memory-pressure slot ceiling (Issue #4179)
+// ============================================================================
+
+Deno.test("slot pool - simulated high pressure with maxConcurrentIssues 4: fewer than 4 slots start; the ceiling never exceeds configured (Issue #4179)", async () => {
+  let inFlight = 0, high = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const asked: number[] = [];
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 6 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    slotCeiling: {
+      effectiveSlots: (configured) => {
+        asked.push(configured);
+        // A reading that "would imply 6 slots" — the pool clamps to
+        // configured on its side too.
+        return Promise.resolve(2);
+      },
+    },
+    processIssue: async () => {
+      inFlight++;
+      high = Math.max(high, inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 4);
+  assertEquals(
+    high,
+    2,
+    `expected at most 2 concurrent under pressure, saw ${high}`,
+  );
+  assert(
+    asked.every((c) => c === 4),
+    "the governor is asked with the configured count",
+  );
+});
+
+Deno.test("slot pool - a ceiling above configured is clamped: configured 2 stays 2 (Issue #4179)", async () => {
+  let inFlight = 0, high = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 6 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    slotCeiling: { effectiveSlots: () => Promise.resolve(6) },
+    processIssue: async () => {
+      inFlight++;
+      high = Math.max(high, inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 2);
+  assertEquals(high, 2);
+});
+
+Deno.test("slot pool - pressure spike while 3 slots run: 0 cancellations, 0 new starts (Issue #4179)", async () => {
+  let ceiling = 3;
+  let inFlight = 0, high = 0, started = 0, completed = 0;
+  let postSpikeInFlight = 0, postSpikeHigh = 0;
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    slotCeiling: { effectiveSlots: () => Promise.resolve(ceiling) },
+    processIssue: async () => {
+      started++;
+      inFlight++;
+      high = Math.max(high, inFlight);
+      const postSpike = started > 3;
+      if (postSpike) {
+        postSpikeInFlight++;
+        postSpikeHigh = Math.max(postSpikeHigh, postSpikeInFlight);
+      }
+      await new Promise((r) => setTimeout(r, 10));
+      // Spike lands while all three are mid-run.
+      ceiling = 1;
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      if (postSpike) postSpikeInFlight--;
+      completed++;
+      // A failed run keeps the slot looking — which the ceiling must stop.
+      return { ok: true, value: { success: false } };
+    },
+    // Keep the loop from finding "no work" for other reasons.
+    shouldExitOnFailures: () => Promise.resolve(false),
+  });
+  await runOneCycle(deps, 3);
+  assertEquals(high, 3, "three ran concurrently before the spike");
+  assertEquals(completed, started, "no run was cancelled by the spike");
+  // After the spike only slot s1 may claim again; s2/s3 stop before their
+  // next claim, so nothing started after the spike ever overlaps.
+  assertEquals(postSpikeHigh, 1, `post-spike concurrency ${postSpikeHigh}`);
+});
+
+Deno.test("slot pool - a slot ceiling that throws → configured count runs (Issue #4179)", async () => {
+  let inFlight = 0, high = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 6 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    slotCeiling: { effectiveSlots: () => Promise.reject(new Error("boom")) },
+    processIssue: async () => {
+      inFlight++;
+      high = Math.max(high, inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 3);
+  assertEquals(high, 3);
+});
+
+// ============================================================================
+// Slot-attributed lines and aggregate status (Issue #4181)
+// ============================================================================
+
+Deno.test("slot pool - every pool line for a claim carries [sN repo#issue]; slot A finishing leaves slot B's status intact (Issue #4181)", async () => {
+  const logs: string[] = [];
+  const status: string[] = [];
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  let finished = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    setStatusWorking: (d) => {
+      status.push(`working:${d}`);
+      return Promise.resolve();
+    },
+    setStatusSuccess: () => {
+      status.push("success");
+      return Promise.resolve();
+    },
+    setStatusIdle: () => {
+      status.push("idle");
+      return Promise.resolve();
+    },
+    processIssue: async (i) => {
+      // A finishes well before B.
+      await new Promise((r) => setTimeout(r, i.repo === "o/a" ? 5 : 40));
+      finished++;
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 2);
+  assertEquals(finished, 2);
+
+  // Attribution: every claim-scoped line names its slot and work item.
+  const claimLines = logs.filter((l) =>
+    /Processing issue|Successfully processed/.test(l)
+  );
+  assertEquals(claimLines.length, 4, logs.join("\n"));
+  const groups = new Set(
+    claimLines.map((l) =>
+      /^\[(s\d+ [^\]]+)\]/.exec(l)?.[1] ?? `UNATTRIBUTED: ${l}`
+    ),
+  );
+  assertEquals([...groups].sort(), ["s1 o/a#1", "s2 o/b#2"]);
+
+  // Status: while both run the line shows both; when A finishes the line
+  // still reports B, and only B's finish settles to success.
+  assert(
+    status.some((s) => s === "working:s1 o/a#1 | s2 o/b#2"),
+    status.join(" ; "),
+  );
+  const afterA = status.indexOf("working:o/b#2");
+  assert(afterA >= 0, `A's finish did not re-render B: ${status.join(" ; ")}`);
+  assert(
+    !status.slice(0, afterA + 1).includes("success"),
+    `status settled while B was still working: ${status.join(" ; ")}`,
+  );
+  assertEquals(status.filter((s) => s === "success").length, 1);
+});
+
+// ============================================================================
+// Shutdown / deadline / drain across slots (Issue #4182)
+// ============================================================================
+
+Deno.test("slot pool - deadline with 3 slots of staggered durations: all three complete (none truncated), 3 releases, no new claims (Issue #4182)", async () => {
+  const released: string[] = [];
+  let started = 0, completed = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+    processIssue: async (i) => {
+      started++;
+      // Slot ages differ: 5 ms, 25 ms, 60 ms. The deadline passes while
+      // the slowest is still running.
+      await new Promise((r) => setTimeout(r, 5 + i.issueNumber * 25));
+      now += config.runDurationSeconds * 1000; // past the deadline
+      completed++;
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runOneCycle(deps, 3);
+  assertEquals(started, 3, "no slot claimed again past the deadline");
+  assertEquals(completed, 3, "every slot completed — none truncated");
+  assertEquals(released.length, 3);
+});
+
+Deno.test("slot pool - SIGTERM mid-run: no new claims, in-flight slots finish, every claim released (Issue #4182)", async () => {
+  const released: string[] = [];
+  const handlers: Record<string, () => void> = {};
+  let started = 0, completed = 0;
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    addSignalListener: (signal, handler) => {
+      handlers[signal] = handler;
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+    processIssue: async () => {
+      started++;
+      await new Promise((r) => setTimeout(r, 10));
+      // The signal lands while all three are mid-run.
+      handlers["SIGTERM"]?.();
+      await new Promise((r) => setTimeout(r, 10));
+      completed++;
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runOneCycle(deps, 3);
+  assertEquals(started, 3, "a slot claimed after SIGTERM");
+  assertEquals(completed, 3, "in-flight slots were allowed to finish");
+  assertEquals(released.sort(), ["o/r0#0", "o/r1#1", "o/r2#2"]);
+});
+
+Deno.test("slot pool - a slot that hangs past the shutdown grace is abandoned and its claim is still released (Issue #4182)", async () => {
+  const released: string[] = [];
+  const errors: string[] = [];
+  const handlers: Record<string, () => void> = {};
+  let now = 0;
+  let clock: ReturnType<typeof setInterval> | undefined;
+  let hangResolve: (() => void) | undefined;
+  const deps = createMockDeps({
+    now: () => now,
+    logError: (m) => {
+      errors.push(m);
+    },
+    slotDrainGraceSeconds: 30,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    addSignalListener: (signal, handler) => {
+      handlers[signal] = handler;
+    },
+    findNextIssue: issueQueue([issue("o/fast", 1), issue("o/hang", 2)]),
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+    processIssue: async (i) => {
+      if (i.repo === "o/fast") {
+        await new Promise((r) => setTimeout(r, 5));
+        handlers["SIGTERM"]?.();
+        // Let the grace elapse on the injected clock while o/hang hangs:
+        // keep advancing so the watcher's first observation of the
+        // shutdown (real-timer cadence) is followed by ≥ 30 s more.
+        clock = setInterval(() => {
+          now += 31_000;
+        }, 20);
+        return { ok: true, value: { success: true } };
+      }
+      await new Promise<void>((r) => {
+        hangResolve = r;
+      });
+      return { ok: true, value: { success: true } };
+    },
+  });
+  await runOneCycle(deps, 2);
+  if (clock !== undefined) clearInterval(clock);
+  assert(
+    released.includes("o/hang#2"),
+    `hung slot's claim not released: ${released}`,
+  );
+  assert(released.includes("o/fast#1"));
+  assert(
+    errors.some((e) =>
+      e.includes("Shutdown grace elapsed") && e.includes("o/hang#2")
+    ),
+    errors.join("\n"),
+  );
+  hangResolve?.(); // let the abandoned promise settle so nothing dangles
+  await new Promise((r) => setTimeout(r, 5));
+});
+
+// ============================================================================
+// Run outcome reaches the claim release (Issue #4325, part of #4291)
+// ============================================================================
+
+Deno.test("run outcome - success and failure releases pass the run's outcome; a skip-after-claim release passes none (Issue #4325)", async () => {
+  const released: { key: string; outcome: unknown }[] = [];
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const prOutcome = {
+    kind: "pr" as const,
+    prUrl: "https://github.com/o/a/pull/1",
+    prNumber: 1,
+  };
+  const failOutcome = {
+    kind: "no_pr" as const,
+    category: "timeout" as const,
+    phase: "execute",
+    elapsedSeconds: 3600,
+    message: "Claude timed out after 3600s",
+  };
+  const runAt = async (concurrency: number) => {
+    released.length = 0;
+    now = 0;
+    const deps = createMockDeps({
+      now: () => now,
+      sleep: (ms?: number) => {
+        now += ms ?? 30_000;
+        return Promise.resolve();
+      },
+      findNextIssue: issueQueue([
+        issue("o/a", 1),
+        issue("o/b", 2),
+        issue("o/c", 3),
+      ]),
+      releaseClaim: (repo, n, outcome) => {
+        released.push({ key: `${repo}#${n}`, outcome });
+        return Promise.resolve();
+      },
+      processIssue: (i) => {
+        if (i.repo === "o/a") {
+          now += config.runDurationSeconds * 400;
+          return Promise.resolve({
+            ok: true,
+            value: { success: true, outcome: prOutcome },
+          });
+        }
+        if (i.repo === "o/b") {
+          return Promise.resolve({
+            ok: true,
+            value: { success: false, skipped: true },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { success: false, outcome: failOutcome },
+        });
+      },
+    });
+    await runOneCycle(deps, concurrency);
+  };
+  for (const concurrency of [1, 3]) {
+    await runAt(concurrency);
+    const byKey = new Map(released.map((r) => [r.key, r.outcome]));
+    assertEquals(byKey.get("o/a#1"), prOutcome, `c=${concurrency} success`);
+    assertEquals(byKey.get("o/c#3"), failOutcome, `c=${concurrency} failure`);
+    assert(byKey.has("o/b#2"), `c=${concurrency} skip released`);
+    assertEquals(
+      byKey.get("o/b#2"),
+      undefined,
+      `c=${concurrency} skip must carry no outcome`,
+    );
+  }
+});
+
+// ============================================================================
+// A progress-extended run is in-flight to the drain path (Issue #4297)
+// ============================================================================
+
+Deno.test("slot pool - a run extended past its original budget is drained as in-flight, named with its extension count, and released exactly once (Issue #4297)", async () => {
+  const released: string[] = [];
+  const logs: string[] = [];
+  const handlers: Record<string, () => void> = {};
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    addSignalListener: (signal, handler) => {
+      handlers[signal] = handler;
+    },
+    findNextIssue: issueQueue([issue("o/long", 7)]),
+    releaseClaim: (repo, n) => {
+      released.push(`${repo}#${n}`);
+      return Promise.resolve();
+    },
+    processIssue: async () => {
+      // What the execute phase does: publish the deadline at run start,
+      // then again on every progress extension (Issue #4297).
+      reportRunDeadline({ deadlineMs: now + 3600_000, extensionsGranted: 0 });
+      reportRunDeadline({ deadlineMs: now + 4500_000, extensionsGranted: 1 });
+      reportRunDeadline({ deadlineMs: now + 5400_000, extensionsGranted: 2 });
+      // The run is now past the hour the drain path was written against.
+      now += 3900_000;
+      handlers["SIGTERM"]?.();
+      // Long enough for the drain watcher (50 ms real-timer cadence) to
+      // observe the shutdown while this run is still in flight.
+      await new Promise((r) => setTimeout(r, 150));
+      return { ok: true, value: { success: true } };
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  const drainLine = logs.find((l) => l.includes("Shutdown requested"));
+  assert(drainLine !== undefined, `no drain line logged: ${logs.join("\n")}`);
+  assert(
+    drainLine.includes("draining 1 in-flight slot(s)"),
+    `the extended run must count as in-flight: ${drainLine}`,
+  );
+  assert(
+    drainLine.includes("o/long#7") && drainLine.includes("extended 2×"),
+    `the drain line must name the extended run: ${drainLine}`,
+  );
+  assertEquals(
+    released,
+    ["o/long#7"],
+    "the extended run's slot must be released exactly once",
+  );
+  assert(
+    !logs.some((l) => l.includes("Shutdown grace elapsed")),
+    "an extended run must be drained, not abandoned",
+  );
+});

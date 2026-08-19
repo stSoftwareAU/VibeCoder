@@ -1,0 +1,226 @@
+# Dependency-vulnerability scan (Issue #2507 — SCR-VULN-SCAN) plus
+# SBOM generation (Issue #2687 — SCR-SBOM).
+#
+# semgrep.yml (SAST) and gitleaks.yml (secret detection) already run on
+# every PR, but neither inspects the dependency graph for known
+# advisories. This workflow closes that gap: it scans the committed
+# dependency trees for known-vulnerable packages.
+#
+# Two ecosystems are present and each gets its native scanner:
+#   - Deno (worker/deno/deno.lock) -> `deno audit`
+#   - Ruby/Jekyll site (Gemfile.lock) -> `bundle-audit`
+#
+# The `generate-sbom` job emits a machine-readable CycloneDX Software
+# Bill of Materials and uploads it as a build artefact (Issue #2687 —
+# SCR-SBOM). When a supply-chain compromise is announced, a responder
+# can grep a stable artefact to answer "are we exposed, and where?"
+# instead of reconstructing the dependency graph by hand. This is the
+# detect-and-react posture gap the supply-chain readiness audit measures,
+# distinct from the active-vulnerability scans above.
+#
+# The weekly `schedule:` trigger is the important half — a package can
+# turn known-vulnerable after it lands in a lockfile, so a PR-only check
+# would never re-examine an unchanged tree. The schedule re-audits the
+# existing dependencies against freshly-published advisories; a failing
+# scheduled run notifies the repo.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue
+# #2123) so a hijacked tag cannot inject code into the workflow. The
+# version tag each SHA corresponds to is captured in a leading comment.
+
+name: Dependency Audit
+
+on:
+  pull_request:
+    # Issue #3360 — milestone sub-issue PRs target a shared
+    # `milestone/<name>` branch (Issue #1300); include it so the quality
+    # gate runs before those PRs merge, not only on Develop/main PRs.
+    branches: [Develop, main, milestone/*]
+    paths:
+      - 'worker/deno/deno.json'
+      - 'worker/deno/deno.lock'
+      - 'Gemfile'
+      - 'Gemfile.lock'
+      - '.github/workflows/dependency-audit.yml'
+  push:
+    branches: [Develop, main]
+    paths:
+      - 'worker/deno/deno.json'
+      - 'worker/deno/deno.lock'
+      - 'Gemfile'
+      - 'Gemfile.lock'
+      - '.github/workflows/dependency-audit.yml'
+  schedule:
+    # Weekly, Mondays 04:17 UTC — re-audit unchanged trees against newly
+    # published advisories. Off-the-hour to avoid the cron rush.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+# Rule of Two (Issue #2382): the scans are read-only static checks; no
+# step needs to push, comment, or label, so the token is narrowed to
+# read-only contents.
+permissions:
+  contents: read
+
+# Issue #2972: cancel superseded PR/push runs. Only the latest commit's
+# result matters for a check, so a per-ref group with cancellation
+# stops rapid pushes spawning parallel, redundant runs. Scheduled and
+# manual runs key off a distinct ref, so the weekly re-audit is unaffected.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deno-audit:
+    name: Audit Deno dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Issue #2691 (SCR-AUTO-UPDATE): a *scheduled* audit failure must
+    # raise an actionable item, so this job alone is granted `issues:
+    # write` to file a tracking issue when the audit fails. The other
+    # jobs keep the repository-default read-only token.
+    permissions:
+      contents: read
+      issues: write
+    env:
+      # Issue #606: opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno).
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      - name: Run deno audit
+        run: |
+          set -euo pipefail
+          echo "=== Auditing Deno dependencies (deno.lock) ==="
+          cd worker/deno
+          # Invoke the canonical `audit` task from deno.json so CI can
+          # never drift from the local command. A known-vulnerable
+          # dependency fails the job.
+          #
+          # Fail-closed (Issue #3955): the task carries no
+          # --ignore-registry-errors, which returns exit code 0 when the
+          # advisory service errors. An unreachable service means "did not
+          # audit", not "audited, clean" — and on the weekly run nothing
+          # else re-examines an unchanged deno.lock (Renovate's deno
+          # manager is disabled, #2536), so a masked outage is an audit
+          # that silently never happened.
+          #
+          # `pipefail` keeps deno's exit status through the tee; the log
+          # lets the notify step below tell an outage from an advisory.
+          deno task audit 2>&1 | tee "$RUNNER_TEMP/deno-audit.log"
+
+      # Issue #2691 (SCR-AUTO-UPDATE): turn the detection above into a
+      # notification channel. On a *scheduled* run only (a fresh advisory
+      # against an already-committed dep — not a PR introducing one), file
+      # a single tracking issue so the failure surfaces as an actionable
+      # item rather than a silent red cron. Renovate's deno manager is
+      # deliberately disabled (#2536), so this is the security-update
+      # channel for the Deno ecosystem. Trusted GitHub-controlled context
+      # values are passed through `env:` rather than interpolated into the
+      # shell, per the workflow-hardening convention.
+      #
+      # Issue #3955: --audit-log lets the notifier classify the failure, so
+      # the tracking issue says whether the audit found an advisory or
+      # could not run at all.
+      - name: Notify on scheduled audit failure
+        if: ${{ failure() && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUDIT_LOG: ${{ runner.temp }}/deno-audit.log
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-run --allow-env --allow-read \
+            worker/deno/mod.ts notify-audit-failure \
+            --repo "$REPO" --ecosystem deno --run-url "$RUN_URL" \
+            --audit-log "$AUDIT_LOG"
+
+  bundler-audit:
+    name: Audit Ruby dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Setup Ruby
+        # ruby/setup-ruby@v1.310.0
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f
+        with:
+          ruby-version: "3.1"
+
+      - name: Run bundler-audit
+        run: |
+          set -euo pipefail
+          echo "=== Auditing Ruby dependencies (Gemfile.lock) ==="
+          # Issue #3642: pinned to an exact version so the auditing tool
+          # itself sits inside the 24h dependency quarantine (the
+          # `renovate.json` custom manager bumps this pin under
+          # `minimumReleaseAge`). An unpinned install let a hijacked release
+          # both execute on the runner and report a clean scan.
+          gem install --no-document bundler-audit -v 0.9.3
+          # --update refreshes the ruby-advisory-db before checking, so the
+          # scan uses the latest advisories. A known-vulnerable gem in
+          # Gemfile.lock fails the job.
+          bundle-audit check --update
+
+  generate-sbom:
+    name: Generate CycloneDX SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Issue #606: opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # Trivy reads the committed lockfiles (worker/deno/deno.lock,
+      # Gemfile.lock) directly — no `deno`/`bundle` install needed — and
+      # writes a CycloneDX SBOM of every detected component.
+      - name: Generate CycloneDX SBOM
+        # aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+
+      # Upload the SBOM so an incident responder can download a stable
+      # snapshot of what shipped at this commit and grep it for a
+      # compromised package + version.
+      - name: Upload SBOM artefact
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          # Issue #4404 (GHA-SECRETS-007): a short, explicit window — the SBOM is
+          # a snapshot; the repository default (up to 90 days) only widens the
+          # time an artefact stays downloadable.
+          retention-days: 7
+          if-no-files-found: error

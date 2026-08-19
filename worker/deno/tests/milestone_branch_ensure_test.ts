@@ -1,0 +1,235 @@
+/**
+ * Tests for ensureMilestoneBranchExists and the `ensure-milestone-branch`
+ * git-operations command (Issue #3910).
+ *
+ * A milestone-assigned issue must be based on its milestone branch. These
+ * tests use real git repositories to prove two things: a missing milestone
+ * branch is recreated from the default branch, and every failure comes back
+ * as a failure carrying the underlying git stderr — never as a quiet success
+ * that would let the caller fall back to the default branch.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
+import { gitOperationsCommand } from "../commands/git_operations.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+
+const config = buildDefaultWorkerConfig();
+
+async function git(
+  args: string[],
+  cwd: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  return {
+    code: out.code,
+    stdout: new TextDecoder().decode(out.stdout),
+    stderr: new TextDecoder().decode(out.stderr),
+  };
+}
+
+async function gitOk(args: string[], cwd: string): Promise<string> {
+  const r = await git(args, cwd);
+  if (r.code !== 0) {
+    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr}`);
+  }
+  return r.stdout;
+}
+
+interface Fixture {
+  root: string;
+  remote: string;
+  clone: string;
+  cleanup: () => Promise<void>;
+}
+
+/** A bare remote seeded with `main`, plus a clone acting as the work tree. */
+async function setupRepo(): Promise<Fixture> {
+  const root = await Deno.makeTempDir({ prefix: "issue-3910-" });
+  const remote = `${root}/remote.git`;
+  const clone = `${root}/clone`;
+
+  await gitOk(["init", "--bare", "-b", "main", remote], root);
+  await gitOk(["clone", remote, clone], root);
+  await gitOk(["config", "user.email", "t@example.com"], clone);
+  await gitOk(["config", "user.name", "Test"], clone);
+  await Deno.writeTextFile(`${clone}/README.md`, "seed\n");
+  await gitOk(["add", "README.md"], clone);
+  await gitOk(["commit", "-m", "seed"], clone);
+  await gitOk(["push", "-u", "origin", "main"], clone);
+
+  return {
+    root,
+    remote,
+    clone,
+    cleanup: async () => {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    },
+  };
+}
+
+Deno.test(
+  "ensureMilestoneBranchExists - recreates a missing milestone branch from the default branch",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      const result = await ensureMilestoneBranchExists(
+        "milestone/3906-example",
+        "main",
+        { cwd: fx.clone },
+      );
+
+      assert(
+        result.ok,
+        `expected ok, got: ${!result.ok && result.error.message}`,
+      );
+
+      // The branch now exists on the remote, at the default branch's tip.
+      const remoteSha =
+        (await gitOk(["rev-parse", "milestone/3906-example"], fx.remote))
+          .trim();
+      const mainSha = (await gitOk(["rev-parse", "main"], fx.remote)).trim();
+      assertEquals(remoteSha, mainSha);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "ensureMilestoneBranchExists - already-present remote branch is reported as existing",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      await gitOk(["checkout", "-b", "milestone/existing"], fx.clone);
+      await gitOk(["push", "-u", "origin", "milestone/existing"], fx.clone);
+      await gitOk(["checkout", "main"], fx.clone);
+
+      const result = await ensureMilestoneBranchExists(
+        "milestone/existing",
+        "main",
+        { cwd: fx.clone },
+      );
+
+      assert(
+        result.ok,
+        `expected ok, got: ${!result.ok && result.error.message}`,
+      );
+      assertStringIncludes(result.value, "already exists on remote");
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "ensureMilestoneBranchExists - create failure reports the underlying git error",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      // The default branch does not exist, so neither the create nor the
+      // fallback checkout can succeed.
+      const result = await ensureMilestoneBranchExists(
+        "milestone/unbuildable",
+        "no-such-default",
+        { cwd: fx.clone },
+      );
+
+      assertEquals(result.ok, false);
+      if (result.ok) return;
+      const message = result.error.message;
+      assertStringIncludes(message, "milestone/unbuildable");
+      assertStringIncludes(message, "no-such-default");
+      // The git command and its stderr are propagated, not collapsed.
+      assertStringIncludes(message, "git checkout");
+      assertStringIncludes(message, "exited");
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "ensureMilestoneBranchExists - push failure reports the underlying git error",
+  async () => {
+    const fx = await setupRepo();
+    const missingRemote = `${fx.root}/gone.git`;
+    try {
+      // Point origin at a path that is not a repository so the push fails
+      // the way branch protection or an auth failure would.
+      await gitOk(["remote", "set-url", "origin", missingRemote], fx.clone);
+
+      const result = await ensureMilestoneBranchExists(
+        "milestone/unpushable",
+        "main",
+        { cwd: fx.clone },
+      );
+
+      assertEquals(result.ok, false);
+      if (result.ok) return;
+      const message = result.error.message;
+      assertStringIncludes(message, "Failed to push milestone branch");
+      assertStringIncludes(message, "milestone/unpushable");
+      assertStringIncludes(message, missingRemote);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "git operations command - ensure-milestone-branch fails loud instead of falling back",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      const result = await gitOperationsCommand.execute(
+        {
+          operation: "ensure-milestone-branch",
+          "milestone-branch": "milestone/unbuildable",
+          "default-branch": "no-such-default",
+          cwd: fx.clone,
+        },
+        config,
+      );
+
+      assertEquals(result.success, false);
+      assertStringIncludes(result.message, "milestone/unbuildable");
+      assertStringIncludes(result.message, "git checkout");
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "git operations command - ensure-milestone-branch recreates a missing branch",
+  async () => {
+    const fx = await setupRepo();
+    try {
+      const result = await gitOperationsCommand.execute(
+        {
+          operation: "ensure-milestone-branch",
+          "milestone-branch": "milestone/recreated",
+          "default-branch": "main",
+          cwd: fx.clone,
+        },
+        config,
+      );
+
+      assertEquals(result.success, true);
+      const remoteSha =
+        (await gitOk(["rev-parse", "milestone/recreated"], fx.remote)).trim();
+      const mainSha = (await gitOk(["rev-parse", "main"], fx.remote)).trim();
+      assertEquals(remoteSha, mainSha);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);

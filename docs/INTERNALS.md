@@ -1,0 +1,2470 @@
+# 🏗️ Worker Internals
+
+This document describes **how the Vibe Coder worker is implemented** — the Deno
+module architecture, run loop, issue selection, PR monitoring, and
+milestone/dependency handling. It is aimed at implementers and contributors who
+need to understand the worker's behaviour under the hood.
+
+For the **user manual** (how to use the worker as a repo owner), see
+[docs/workflows/](workflows/README.md). For coding guidelines, see
+[AGENTS.md](../AGENTS.md).
+
+## 🔤 Acronyms used in this document
+
+| Acronym | Meaning                                                                                    |
+| ------- | ------------------------------------------------------------------------------------------ |
+| API     | Application Programming Interface                                                          |
+| CI      | Continuous Integration — automated build/test pipelines triggered on code changes          |
+| CLI     | Command-Line Interface                                                                     |
+| DFS     | Depth-First Search                                                                         |
+| PID     | Process Identifier — a unique number assigned to a running process by the operating system |
+| PR      | Pull Request — a GitHub mechanism for proposing and reviewing code changes                 |
+| TDD     | Test-Driven Development — write failing tests first, then implement code to make them pass |
+| TTL     | Time To Live — how long a cached value remains valid before expiry                         |
+
+---
+
+## 📋 Table of Contents
+
+- [0. Deno module architecture](#0-deno-module-architecture)
+- [1. Worker run loop and process lifecycle](#1-worker-run-loop-and-process-lifecycle)
+- [2. Issue selection and claiming](#2-issue-selection-and-claiming)
+- [3. PR monitoring](#3-pr-monitoring)
+- [4. Milestone and dependency handling](#4-milestone-and-dependency-handling)
+- [5. Question answering](#5-question-answering)
+- [6. Recent features](#6-recent-features)
+
+---
+
+## 🦕 0. Deno module architecture
+
+The Vibe Coder has been fully migrated from shell-based business logic to **Deno
+TypeScript**. The architecture follows a **thin launcher + command registry**
+pattern:
+
+### Architecture overview
+
+```mermaid
+graph TD
+    subgraph Launchers["Thin launchers"]
+        runsh["run.sh / run.ps1"]
+        qualsh["quality.sh"]
+    end
+
+    subgraph DenoWorker["worker/deno/"]
+        mod["mod.ts — Command registry + CLI entry point"]
+        qualts["quality.ts — Quality gate entry point"]
+        subgraph Commands["commands/ — 88 command modules"]
+            cmd1["run_entrypoint, pid_guard, path_bootstrap"]
+            cmd2["claude_runner, claude_auth, prompt_builder"]
+            cmd3["git_operations, pr_manager, branch_cleanup"]
+            cmd4["find_issues, claim_issue, fetch_issue_data"]
+            cmd5["failure_tracker, circuit_breaker, crash_cleanup"]
+        end
+        subgraph Libs["lib/ — 199 library modules"]
+            lib1["config, config_defaults, validation"]
+            lib2["github, gh_wrapper, gh_auth"]
+            lib3["logger, retry, security"]
+            lib4["issue_dependencies, quality_gate"]
+        end
+    end
+
+    subgraph Shell["worker/shared/ — 2 remaining scripts"]
+        bridge["deno_bridge.sh — Shell↔Deno bridge"]
+        configdef["config_defaults.sh"]
+    end
+
+    subgraph Tests["worker/deno/tests/ — 305 test files"]
+        tests["All tests use deno test + @std/assert"]
+    end
+
+    runsh --> mod
+    qualsh --> qualts
+    Shell --> bridge --> mod
+
+    style Launchers fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
+    style DenoWorker fill:#74c69d,stroke:#52b788,color:#081c15
+    style Shell fill:#3a506b,stroke:#1c2541,color:#d8f3dc
+    style Tests fill:#6a040f,stroke:#370617,color:#ffd6d6
+```
+
+### Command pattern
+
+Every Deno command implements the `Command` interface from `types.ts`:
+
+```typescript
+interface Command {
+  name: string;
+  description: string;
+  execute(
+    args: Record<string, unknown>,
+    config: WorkerConfig,
+  ): Promise<CommandResult>;
+}
+```
+
+Commands are registered in `mod.ts` via `createDefaultRegistry()` and invoked by
+name. Registry methods return `Result<T>` types — no exceptions for control
+flow.
+
+### Shell↔Deno bridge
+
+Shell scripts call Deno via `deno_bridge.sh`:
+
+```bash
+deno_run_command "command-name" --arg1 value1 --arg2 value2
+```
+
+This executes:
+`deno run --allow-X worker/deno/mod.ts command-name --arg1 value1 --arg2 value2`
+
+### Quality gate
+
+The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
+`worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
+launcher that locates Deno and delegates. The gate runs: prompt immutability,
+benchmark audit, `deno test`, `deno lint`, `deno check`, `deno fmt --check`,
+plus mermaid, markdownlint, and the docs prompt-version checks. Shell-script
+linting is **not** run by the worker — it is delegated to each target repo's own
+CI (Issue #3129).
+
+### Testing
+
+All tests use Deno's built-in test framework with `@std/assert`. There are no
+BATS tests — the migration from BATS to Deno tests is complete. Run tests via:
+
+```bash
+cd worker/deno && deno task test
+# Or from the repo root:
+./quality.sh < /dev/null
+```
+
+### Cross-platform support
+
+The worker runs on **macOS**, **Linux**, and **Windows**:
+
+- `run.sh` / `loop.sh` — Bash launchers (macOS, Linux)
+- `run.ps1` / `loop.ps1` — PowerShell launchers (Windows)
+- `worker/deno/` — Cross-platform TypeScript (all platforms)
+
+---
+
+## 🔄 1. Worker run loop and process lifecycle
+
+### 🚀 Entry point: `run.sh` / `run.ps1`
+
+[run.sh](../run.sh) (or [run.ps1](../run.ps1) on Windows) is the
+cron/launchd/Task Scheduler entry point — a thin launcher that delegates to
+Deno. Both launchers follow the same steps (Issues #4065, #4066):
+
+1. **Locates Deno** — `run.sh` also bootstraps PATH for minimal cron/launchd
+   environments (common Homebrew and Deno locations).
+2. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
+   resolves and validates the container runtime, computes the content-derived
+   image reference, and constructs the fixed least-privilege mount set. No
+   supported runtime is a loud non-zero exit; container mode never falls back
+   to a host-native run, which is reached only through the explicit `run_mode`
+   opt-in (Issues #4145, #4146).
+3. **Builds the image** when that reference is absent locally, and skips the
+   build when it is present, then **prunes every other `vibe-coder` tag** —
+   the reference this checkout resolves to is the only one a future launch of
+   it can use, so the tags it superseded are deleted rather than left to fill
+   the disk (Issue #4162).
+4. **Reaps a leaked container** — before the build, any `vibe-coder-*`
+   container older than the watchdog deadline, or with no live launcher process
+   behind it, is killed (Issue #4173).
+5. **Launches the container**, propagates termination to it so the Deno
+   driver's graceful shutdown still runs (`run.sh` forwards `SIGTERM`/`SIGINT`;
+   on Windows the console control event reaches the runtime CLI directly and
+   `run.ps1` stops the container by name when its own pipeline is stopped), and
+   exits with the container's exit status.
+6. **Waits under a deadline** — the plan carries a `watchdog` value (the
+   worker's own maximum run duration plus a margin). A container that outlives
+   it is reaped by `container-reap` and the launcher exits `87`, so a wedged
+   container VM cannot block the supervisor indefinitely (Issue #4173).
+
+Inside the container, `container/entrypoint.sh` `exec`s
+`deno run … worker/deno/mod.ts run-entrypoint`. There is no bash on the runtime
+path (Issue #3504), and because Deno loads its modules at process start the
+running driver is immune to the mid-run `git reset` its bootstrap performs —
+the property the old `worker/.run_core.sh` shadow-copy provided, now for free.
+The two launchers are held to one contract by
+`worker/deno/tests/launcher_parity_test.ts`, which fails when their mount sets,
+read-only flags, network settings or privilege flags diverge, or when either
+can run the worker on the host without the explicit run-mode opt-in. Native
+execution is not banned outright (Issue #4147): container is the default, and a
+native path is a fault only when it is *ungated* — reachable without consulting
+the [run mode](CONFIGURATION.md) (Issue #4146) or outside an explicit native
+branch. The one intended asymmetry is named in the contract: `run.ps1` stays
+container-only (`windows-container-only`) and exits non-zero with an actionable
+message when native mode is requested on Windows. See
+[Container Image](CONTAINER.md) for the mount set and the privilege flags.
+
+### 🔄 Worker driver: Deno `run-entrypoint` → `run-core`
+
+The `run-entrypoint` command drives the whole run in a single Deno process via
+[run_worker.ts](../worker/deno/lib/run_worker.ts) (Issue #3504), which replaced
+the deleted bash `worker/run_core.sh` conductor. It sequences:
+
+1. **PID guard** — `evaluateRunGuard` detects a still-running previous instance;
+   a blocked guard exits 0 cleanly. On proceed it **claims the PID file** with
+   this Deno process's PID.
+2. **Bootstrap prelude** —
+   [run_bootstrap.ts](../worker/deno/lib/run_bootstrap.ts) (Issue #3501)
+   performs, in-process, PATH bootstrap → run-id / `VIBE_RUN_ID` → worker log
+   init (plus gzip of prior runs' logs, Issue #4027) → git reset to
+   `origin/Develop` (self-healing) → software-update check. A failed git reset
+   aborts the run rather than run on stale code (fail-loud, Issue #3234).
+3. **Config validation + GitHub-user resolution + gh-scope publication** —
+   fail-loud on invalid config or an unresolvable user; the active token's OAuth
+   scopes are logged with a `[SECURITY]` tag.
+4. **Startup housekeeping** — the one-time disk-space reclaim, log rotation,
+   worker-log retention (Issue #4027), stale temp-file / work-dir / worktree /
+   Claude-session sweeps, and orphaned local + stale remote branch cleanup run
+   as a single in-order Deno sequence
+   ([run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts), Issue #3502);
+   each step is best-effort — a failure is logged loud but never blocks start.
+5. **Main loop** — invokes the `run-core` command
+   ([run_core.ts](../worker/deno/commands/run_core.ts)), which builds production
+   deps via `createProductionRunCoreDeps()` and runs `runCoreLoop()` with the
+   full priority dispatch table. It iterates until `runDurationSeconds` (default
+   3,600 = 1 hour) expires, processing at most one item per iteration in strict
+   **priority order**. The loop installs its own SIGINT/SIGTERM handlers for a
+   graceful shutdown.
+6. **Exit cleanup** — a `finally` block runs `runSignalCleanup`
+   ([run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts), Issue #3502),
+   which removes the PID file first (so it is reliably gone even if descendant
+   termination interrupts the cleanup) and then tears down the orphan-prone
+   `claude` / `deno test` subtree via the shared pid-guard logic.
+
+Per-PID logging: each process writes to its own log file with automatic
+size-based rotation (keeps 10 log files via
+[log_rotation.ts](../worker/deno/lib/log_rotation.ts)).
+
+Worker-log lifecycle (Issue #4027): the running process's `worker-<PID>.log`
+stays plain text; every prior run's log is gzipped at the next worker start
+([worker_log_gzip.ts](../worker/deno/lib/worker_log_gzip.ts)) and both forms are
+deleted by the age-based retention pass
+([worker_log_cleanup.ts](../worker/deno/lib/worker_log_cleanup.ts)) once older
+than `WORKER_LOG_MAX_AGE_DAYS` (default 3).
+
+```mermaid
+flowchart LR
+    A["worker-PID.log<br/>(current run, plain)"] -->|next worker start| B["worker-PID.log.gz<br/>(prior run, gzipped)"]
+    B -->|older than 3 days| C["🗑 deleted"]
+    A -->|older than 3 days| C
+    B -.->|zcat| D["📖 readable"]
+```
+
+### 🔄 Software auto-update (interval-OR-floor, Issues #1496, #2622)
+
+[software_updates.ts](../worker/deno/lib/software_updates.ts) checks for Claude
+CLI, GH CLI, and Deno updates each iteration. Each tool updates at most once per
+interval (default 7 days, tracked via `.last_software_update_check` and per-tool
+`.last_successful_update_<tool>` timestamps), with self-healing retry and
+exponential backoff on transient failures (Issue #1496).
+
+Issue #2622 adds a **minimum-version floor**: a tool also updates when its
+installed version is below a configured floor (`software_min_versions`, default
+`{ claude: "2.1.170" }`), bypassing the timestamp gate. The rule is **run when
+interval elapsed OR installed version < floor**:
+
+1. `readVersion(tool)` reads the installed version (`claude --version` →
+   `2.1.170 (Claude Code)`) and `parseSemver()` extracts the leading triple.
+2. `isVersionBelowFloor()` compares numerically per segment (`compareSemver()` —
+   `2.1.170` > `2.1.9`); an unparseable version falls back to interval behaviour
+   with a warning.
+3. Below floor → the tool is force-updated this iteration even when the interval
+   says "not yet"; the global weekly timestamp is only reset when the interval
+   actually elapsed, so a floor-only trigger does not skip the next weekly
+   `gh`/`deno` check.
+4. After a floor-triggered update the version is re-read
+   (`verifyFloorAfterUpdate`); still-below-floor is a permanent-failure signal —
+   logged once and not retried until the interval elapses. A
+   `.last_floor_update_attempt_<tool>` timestamp
+   (`recordFloorUpdateAttempt`/`shouldAttemptFloorUpdate`) provides the backoff
+   so an unreachable floor never retry-loops every iteration.
+5. A skip flag (`SKIP_CLAUDE_UPDATE` and the `gh`/`deno` equivalents) still
+   wins, but logs that a version floor is unmet when it suppresses a
+   floor-triggered update.
+
+The version reader and clock are injected (the existing `nowFn`/injected-runner
+style), so the floor logic is unit-tested with no real spawn or sleep.
+
+### 📊 Priority order
+
+Each loop iteration checks work queues top-to-bottom and processes the **first
+match**:
+
+| Priority | Task                                            | Deno module                                                             |
+| -------- | ----------------------------------------------- | ----------------------------------------------------------------------- |
+| 1        | PR feedback (thumbs-up or authorised comments)  | [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts) |
+| 1.5      | Spelling/quality check failures on open PRs     | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts) |
+| 1.55     | CI/integration test failures on open PRs        | [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts)             |
+| 1.6      | Update open PR branches (rebase onto base)      | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)           |
+| 1.65     | Auto-merge catch-up (retry transient failures)  | [pr_auto_merge.ts](../worker/deno/lib/pr_auto_merge.ts)                 |
+| 1.66     | Branch cleanup (delete branches for merged PRs) | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)               |
+| 1.67     | Issue closure (close issues for merged PRs)     | [issue_lifecycle.ts](../worker/deno/lib/issue_lifecycle.ts)             |
+| 1.7      | Milestone completion (final consolidation PR)   | [milestone_completion.ts](../worker/deno/lib/milestone_completion.ts)   |
+| 1.75     | Issue refinement (`refine-issue` label)         | [refinement_processor.ts](../worker/deno/lib/refinement_processor.ts)   |
+| 1.8      | Question answering (`question` label)           | [question_processor.ts](../worker/deno/lib/question_processor.ts)       |
+| 1.85     | Planning (`planning` label)                     | [planning_processor.ts](../worker/deno/lib/planning_processor.ts)       |
+| 2        | New implementation issues (globally oldest)     | [issue_worker.ts](../worker/deno/lib/issue_worker.ts)                   |
+
+#### 🧭 Scan cursor — resume near where a rate limit fired (Issue #2427)
+
+A primary GraphQL rate limit that fires mid-cycle pauses the worker until the
+quota refreshes, then re-enters the dispatch loop. Without a cursor that resume
+restarts at Priority 1 and burns the freshly-refreshed quota on PR feedback,
+spelling, CI, auto-merge, etc. before reaching Priority 2 issue scanning.
+
+[scan_cursor.ts](../worker/deno/lib/scan_cursor.ts) persists the priority in
+flight to a per-host file `scan_cursor_<hostname>.json` in `WORK_DIR` (schema
+`{ priority, repoIndex, savedAt }`, written tempfile-then-rename so a crash
+mid-write cannot truncate the live cursor). `runCoreLoop()`:
+
+- **Saves** the cursor as each priority is entered (a cheap integer overwrite).
+- **Reads** the cursor when the dispatch loop (re)starts — a fresh process and
+  after every rate-limit resume. When the cursor is younger than 60s the first
+  sweep skips priorities below `cursor.priority`; the skip applies **once**, so
+  the next iteration dispatches from Priority 1 as normal.
+- **Resets** the cursor to `{ priority: 1, repoIndex: 0 }` after a successful
+  claim.
+
+The filename embeds the hostname (not the PID), so the cursor survives a worker
+restart and two workers on different hosts never trample each other. A cursor at
+or beyond 60s old is treated as absent — a stale snapshot left by a SIGTERM or
+crash never drives a wrong resume.
+
+When the priority dispatch completes a full cycle without processing any work
+(`tracker.scanHadSuccess === false`), `runCoreLoop()` invokes the optional
+`runIdleTaskFiler` hook before sleeping. The production wiring in
+[run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)
+delegates to the `maybe-file-idle-task` Deno command
+([maybe_file_idle_task.ts](../worker/deno/commands/maybe_file_idle_task.ts)),
+which checks every monitored repo for claimable work, shuffles the repo list,
+and files a single `idle-task` issue against the first repo with no open
+`idle-task` issue. The next iteration claims that issue through the standard
+priority dispatch and the idle-task claim handler routes it to the registered
+template (today, only `security-scan`). Issue #2023 retired the previous
+in-process `runIdleSecurityScan` hook and its three state files
+(`security_scan_idle.json`, `security-scan-state.json`, `security_scan.lock`).
+Full details and the four-phase pipeline are documented in
+Security Scans — Operator Manual.
+
+### 🔐 PID guard (`worker/deno/commands/pid_guard.ts`)
+
+The PID guard (migrated to Deno TypeScript) provides single-instance locking:
+
+- **Safe command verification** before killing — confirms the PID belongs to a
+  VibeCoder process.
+- **Cross-platform elapsed time parsing** — handles both BSD (macOS) and Linux
+  `ps` output formats.
+- **Graceful termination** — sends SIGTERM first, waits a configurable grace
+  period (default 30 seconds), then escalates to SIGKILL.
+- **Descendant cleanup** — traverses up to 20 levels of child processes to
+  prevent orphans, using process groups where available.
+
+### 📉 Failure tracking (`worker/deno/commands/failure_tracker.ts`)
+
+The failure tracker (migrated to Deno TypeScript) tracks consecutive failures on
+the same work item:
+
+- **Counter** — increments on failure, resets on any success.
+- **Threshold** — after `MAX_CONSECUTIVE_FAILURES` (default 3) failures on the
+  same item, the process exits. This allows the next cron run to start fresh
+  with updated code.
+- **Failure keys** — format: `"type|repo|issue_number"`, ensuring failures are
+  tracked per work item.
+- **Persistent state (Issue #633)** — failure counts, circuit breaker state, and
+  cooldown timers are persisted to disk (`.failure_state`,
+  `.circuit_breaker_state`, `.cooldown_state` files). State survives worker
+  restarts and expires automatically (1 hour default), preventing crash-restart
+  loops where a worker forgets its failure history.
+
+### ⚡ Circuit breaker (`worker/deno/commands/circuit_breaker.ts`)
+
+The circuit breaker (migrated to Deno TypeScript) prevents the worker from
+hammering a failing resource:
+
+- **Open/closed model** — after repeated failures, the circuit "opens" and
+  short-circuits further attempts for a cooldown period.
+- **Persistent state (Issue #633)** — circuit breaker state is saved to
+  `.circuit_breaker_state` and restored on restart, so a crash doesn't reset the
+  breaker.
+
+### 🔔 Crash notifications (`worker/deno/commands/crash_notification.ts`)
+
+The crash notification module (migrated to Deno TypeScript) alerts operators
+when the worker exits unexpectedly (Issue #634):
+
+- **`is_crash_exit()`** — determines whether an exit was unexpected (non-zero,
+  not a planned exit).
+- **`notify_crash_via_issue_comment()`** — posts a comment on the GitHub issue
+  being worked on, so the operator sees the crash in context.
+- **`notify_crash_via_webhook()`** — POSTs JSON to `CRASH_WEBHOOK_URL` (5-second
+  timeout) for integration with Slack, PagerDuty, etc.
+- **Rate limiting** — `should_rate_limit_crash_notification()` enforces a
+  600-second cooldown (configurable) to prevent notification spam during rapid
+  crash-restart loops.
+- **Work stage tracking (Issue #751)** — the global `_CURRENT_WORK_STAGE`
+  variable records which phase the worker was in when it crashed (e.g.,
+  `cloning_repo`, `assessing_clarity`, `running_claude`,
+  `running_quality_checks`, `posting_pr`). Included in crash notifications so
+  operators can see exactly what was happening.
+- **Elapsed time formatting (Issue #751)** — `format_elapsed_time()` converts
+  the duration since `_CURRENT_WORK_START_TIME` to a human-readable format
+  (e.g., "12m 34s" or "1h 2m 3s") for inclusion in crash notifications.
+- **System context collection (Issue #751)** — `collect_system_context()`
+  gathers system diagnostics at crash time: uptime, disk free, and memory
+  pressure. Platform-aware (uses `memory_pressure` on macOS, `/proc/meminfo` on
+  Linux). All commands wrapped with 3-second timeouts to prevent hangs during
+  crash handling.
+- **Worker log tail (Issue #749)** — `capture_worker_log_tail()` reads the last
+  N lines from the worker log file for inclusion in crash notifications, with
+  key error lines highlighted. Output is auto-truncated to
+  `CRASH_LOG_TAIL_MAX_BYTES` (default 50,000 bytes).
+- **Claude output tail (Issue #750)** — `capture_claude_output_tail()` reads the
+  last N lines from Claude's output file, appended as a collapsible section in
+  crash notifications.
+
+### 🧹 Crash cleanup (`worker/deno/commands/crash_cleanup.ts`)
+
+The crash cleanup module (migrated to Deno TypeScript) minimises the blast
+radius of unexpected exits (Issue #631):
+
+- Registered as a trap handler, it runs on unexpected exit to clean up
+  in-progress issue state — removing heartbeat files and unassigning the worker
+  from claimed issues.
+- Closes the crash window between claim and heartbeat recording by moving
+  `record_heartbeat()` into the setup phase immediately after claiming.
+
+### 🔐 Claude authentication detection (`worker/deno/lib/claude_auth.ts`)
+
+`claude_auth.ts` detects when the Claude CLI needs re-authentication
+(Issue #617, #913):
+
+- **`isClaudeAuthError()`** — pattern-matches Claude CLI output for
+  authentication failures.
+- **`claudeAuthActionableMessage()`** — returns clear, actionable instructions
+  ("run `claude login`") so operators can fix the problem quickly.
+
+Implemented in Deno TypeScript (Issue #913).
+
+### 🔄 Unified workflow handler (Deno TypeScript)
+
+The workflow handler provides consistent logging, failure tracking, and GitHub
+status updates across all priority workflow handlers (PR feedback, spelling
+fixes, CI fixes, refinement, questions, and planning). Implemented in Deno
+TypeScript (Issues #624, #970).
+
+### 🩺 Per-iteration health gate
+
+Every priority-loop iteration checks three conditions before it reports the host
+healthy (`worker/deno/lib/run_core.ts`). The first two skip the cycle; the third
+does not.
+
+| Condition                             | Failure behaviour                                              |
+| ------------------------------------- | -------------------------------------------------------------- |
+| Claude health (Issue #2602)           | Unhealthy; **skip the cycle**                                  |
+| GitHub auth (Issue #2602)             | Unhealthy; **skip the cycle**                                  |
+| Monitored-repo access (Issue #4038)   | Unhealthy; **cycle continues** for the repos still accessible  |
+
+The access condition reads the per-repo access store (Issue #4036), which only
+reports a repo inaccessible after two consecutive access-denied probes, so a
+transient blip cannot flip the fleet. An unhealthy iteration suppresses the
+FLEET-health heartbeat, so the host goes stale on the dashboard instead of
+reporting green while its repos 404 (the Issue #4028 signature). Recovery is
+automatic: one successful probe clears the store and the next iteration reports
+healthy again — no operator action, no restart.
+
+#### Naming the inaccessible repos (Issue #4039)
+
+"This host is unhealthy" is not actionable on its own — the fix depends on
+_which_ repos went dark (in the host-3 incident both were `TitlePage/*`, an
+identity drift rather than a Claude or `gh` outage). Two surfaces therefore name
+them:
+
+- **Worker log** — one structured, greppable line per iteration while the
+  condition holds:
+
+  ```text
+  [repo-access] host=host-3 status=inaccessible repos=TitlePage/bar,TitlePage/foo consecutive=2
+  ```
+
+  `consecutive` is the highest consecutive access-denied count across the named
+  repos. The line is emitted at most once per iteration: `logRepoAccessOnce()`
+  suppresses a byte-identical repeat from another call site, and the iteration
+  boundary (`resetIterationCaches`) re-arms it. A changed repo set is new
+  information and logs immediately.
+
+- **FLEET-health report payload** — `reportFleetHealth` appends
+  `--message "repos inaccessible: TitlePage/bar, TitlePage/foo"` to the
+  `helpers/repos.sh` invocation. Additive only: the identity argument is
+  unchanged, no `docs/repos.json` field is repurposed, and on a healthy host the
+  flag is omitted entirely so the invocation is byte-identical to the historical
+  one. Repos are listed in the store's stable lexicographic order, so the string
+  cannot churn between ticks.
+
+Healthy hosts stay silent — no log line, no extra payload field. The operator
+runbook for this condition — what it means, what the worker keeps doing, and the
+identity checks to run first — is
+Host reports unhealthy — `repos inaccessible`.
+The whole chain is covered end to end by
+`worker/deno/tests/worker_health_fleet3_e2e_test.ts` (Issue #4040), including the
+inverse guard that a rate-limit storm must stay healthy.
+
+```mermaid
+flowchart TD
+    C{Claude healthy?} -->|no| S1[unhealthy → skip cycle]
+    C -->|yes| G{gh auth valid?}
+    G -->|no| S2[unhealthy → skip cycle]
+    G -->|yes| A{any monitored repo<br/>inaccessible?}
+    A -->|yes| U["unhealthy → keep working accessible repos,<br/>no heartbeat, log [repo-access] naming them"]
+    A -->|no| H[healthy → heartbeat]
+    U --> W[scan + priority dispatch]
+    H --> W
+```
+
+### 🚪 Exit conditions
+
+The worker exits when any of these occur:
+
+| Condition                               | Behaviour                                                         |
+| --------------------------------------- | ----------------------------------------------------------------- |
+| Run duration expired (1 hour)           | Normal exit; cron restarts with fresh code                        |
+| Claude CLI unresponsive or rate-limited | Health check failure; exit for retry                              |
+| Claude CLI authentication expired       | Detected by `claude_auth.ts` (Deno); exit with actionable message |
+| 3 consecutive failures on same item     | Self-healing exit via failure tracker                             |
+| Configuration validation failure        | Immediate exit                                                    |
+| Deno missing (required dependency)      | Immediate exit                                                    |
+| Git reset failure                       | Cannot sync with repo; exit                                       |
+
+### 🩹 Self-healing mechanisms
+
+The worker is built to recover from just about anything — crashes, stale state,
+network hiccups, and even its own mistakes:
+
+- **Repo reset** — on startup, resets to `origin/Develop` to recover from
+  crashed partial edits.
+- **Shadow-copy execution** — protects against mid-run `git pull` corruption.
+- **Pre-Claude validation (Issue #621)** — `validate_repo_format()` catches
+  broken repository states (uncommitted changes, detached HEAD, divergence)
+  before invoking Claude, avoiding wasted Claude credits on a doomed run.
+- **Disk space cleanup** — the `disk-space` Deno command reclaims space when the
+  disk nears capacity.
+- **Stuck issue detection** — the `stuck-issue-detector` Deno command detects
+  issues that have been assigned but not progressed, using heartbeat tracking.
+  Enhanced (Issue #632) with `detect_assigned_without_heartbeat()` to recover
+  issues assigned to the worker but with no heartbeat file at all (e.g., after a
+  crash between claim and first heartbeat). Uses a 30-minute grace period before
+  unassigning.
+- **Heartbeat during Claude execution (Issue #622)** — background heartbeat
+  updates run while Claude is working, so stuck-issue detection can react within
+  minutes rather than waiting for the full timeout.
+- **Heartbeat marker adoption (Issue #3751)** — the marker comment is owned by
+  the **work item**, not the run. `publishOrRefreshMarker()`
+  (`worker/deno/lib/heartbeat_storage.ts`) used to decide POST-vs-PATCH purely
+  from the local `.heartbeat-marker_<repo>_<n>` state file, so every run that
+  started without that file (new host, cleared claim, wiped `/tmp`) posted a
+  fresh comment — NEAT-AI PR #3644 collected nine markers in ~70 minutes. When
+  the state file is missing, `findExistingMarkerComment()` now looks for the
+  newest **fleet-authored** `VIBE_CODER_HEARTBEAT` comment and PATCHes it
+  instead. A **cleared** marker (`epoch 0` + `cleared:`) is a valid adoption
+  target — it is revived for the next claim rather than left as litter — while a
+  marker still live on **another** machine is never adopted (that is contention:
+  logged, then POST, unchanged race detection). Non-fleet authors are filtered
+  with the same union `scanHeartbeatMarkers()` uses, so a forged marker can
+  never be adopted (Issue #3164 semantics). `clearHeartbeat()` keeps the state
+  file with `released: true` so a re-claim on the same host revives its comment
+  without an API call; the GitHub-side finder is the cold-host fallback. Every
+  adoption failure is non-fatal and degrades to the old POST path.
+
+  ```mermaid
+  flowchart TD
+      S["publishOrRefreshMarker()"] --> F{"local marker<br/>state file?"}
+      F -- "yes, released" --> R["PATCH — revive comment"]
+      F -- "yes, live" --> W{"inside refresh<br/>window?"}
+      W -- yes --> N["no-op"]
+      W -- no --> R
+      F -- no --> L["findExistingMarkerComment()<br/>fleet-authored only"]
+      L -- "none / lookup failed" --> P["POST new comment"]
+      L -- "live, other machine" --> P
+      L -- "own or cleared marker" --> A["PATCH — adopt comment"]
+      A -- "PATCH failed" --> P
+      style A fill:#2d6a4f,stroke:#1b4332,color:#fff
+      style P fill:#adb5bd,stroke:#6c757d,color:#000
+  ```
+
+- **Heartbeat comment sweep (Issue #3755)** — adoption fixes future behaviour;
+  it does not remove the litter already on GitHub. Two kinds accumulate:
+  **orphaned live markers** (POSTed by a run that died before `clearHeartbeat()`
+  reached them, so their epoch keeps reading as a live claim until it ages out)
+  and **blanked, abandoned markers** (every released claim leaves one more
+  near-empty comment). `sweepHeartbeatComments()`
+  (`worker/deno/lib/heartbeat_sweep.ts`) collapses a thread down to at most one
+  marker comment. Only **fleet-authored, marker-only** comments are candidates —
+  `isHeartbeatOnlyBody()` strips the markers, the visible status line (#3752),
+  and the **Progress** log (#3753), and anything left over is prose, so a claim
+  comment (`CLAIM_LOCK` + "Claimed by …") or a human comment is never touched.
+  The survivor is the adopted comment (`keepCommentId`) or the newest comment
+  carrying a live marker; when every marker has been released the thread
+  legitimately ends with **zero**.
+
+  Deletion is gated on _not changing any recovery decision_: a **cleared**
+  marker is only deleted once the thread has been quiet longer than
+  `CLEARED_MARKER_GRACE_SECONDS` (past that point `shouldHonourClearedMarker()`
+  already stops honouring it, so recovery reads it exactly as it reads an absent
+  comment), a marker from **another live machine** is only deleted once its
+  epoch has aged past `stuckIssueTimeout` — and that case is counted as
+  `orphanedLiveMarkers`, because a spike means runs are dying before they
+  release. This machine's own duplicate markers are always sweepable. A DELETE
+  is confirmed from the HTTP status line (`gh api -X DELETE … -i`) so a silent
+  `gh` failure can never be counted as a success, and one failure never aborts
+  the rest of the sweep.
+
+  The sweep runs automatically from the adoption path, so a thread self-heals as
+  it is worked, and on demand via the `sweep-heartbeat-comments` Deno command:
+
+  ```bash
+  deno run mod.ts sweep-heartbeat-comments --dry-run
+  deno run mod.ts sweep-heartbeat-comments --repos org/repo --issue 3644
+  ```
+
+  ```mermaid
+  flowchart TD
+      L["list comments"] --> F{"fleet author<br/>AND marker-only?"}
+      F -- no --> K["never touched"]
+      F -- yes --> C{"marker state"}
+      C -- "cleared, aged past grace" --> D["DELETE"]
+      C -- "cleared, still fresh" --> R["retain"]
+      C -- "own machine" --> D
+      C -- "other machine, aged out" --> O["DELETE + count orphan"]
+      C -- "other machine, live" --> R
+      C -- "the keep target" --> S["survivor"]
+      style D fill:#9d0208,stroke:#6a040f,color:#fff
+      style O fill:#9d0208,stroke:#6a040f,color:#fff
+      style S fill:#2d6a4f,stroke:#1b4332,color:#fff
+      style K fill:#adb5bd,stroke:#6c757d,color:#000
+  ```
+
+- **Milestone progress log (Issue #3753)** — a beating marker still says nothing
+  about _what_ the worker is doing. `recordMilestone()`
+  (`worker/deno/lib/heartbeat_storage.ts`) appends a short, worker-authored line
+  to a rolling log persisted in the `.heartbeat-marker_<repo>_<n>` state file
+  and rendered as a **Progress** block inside the _same_ heartbeat comment — a
+  milestone never posts a new comment. It publishes through
+  `publishOrRefreshMarker()` with `minRefreshSeconds: 0`, so progress appears
+  immediately instead of up to five minutes later; ordinary periodic beats keep
+  honouring the refresh window. The log is capped at `MAX_MILESTONES` (10,
+  oldest evicted) and each entry is flattened to one line and truncated to
+  `MILESTONE_TEXT_MAX_LENGTH` (120 chars), so the machine-readable
+  `<!-- VIBE_CODER_HEARTBEAT:… -->` line — and therefore
+  `parseHeartbeatMarker()`, `scanHeartbeatMarkers()` and the recovery classifier
+  — is never disturbed. The log survives beats, a state-file reload, comment
+  adoption, and release (`clearHeartbeat()` keeps it beside the `cleared:`
+  signal). Every failure is swallowed: `recordMilestone()` always returns
+  `{ ok: true }` so progress reporting can never abort the work it describes.
+  Processors reach it through `deps.crashHandling.recordMilestone`; the PR CI
+  fix path (`pr_ci_processor.ts`) emits claim → diagnosis (fix attempt N of M) →
+  fix pushed (short SHA) → released.
+
+  ```mermaid
+  sequenceDiagram
+      participant P as pr_ci_processor
+      participant H as heartbeat_storage
+      participant G as GitHub comment
+      P->>H: recordMilestone("Claimed PR #3644 …")
+      H->>G: PATCH (immediate, gate bypassed)
+      P->>H: recordMilestone("Diagnosing `test` — attempt 1 of 3")
+      H->>G: PATCH
+      Note over H,G: periodic beat inside window → no call
+      P->>H: recordMilestone("Fix pushed (`a1b2c3d`) …")
+      H->>G: PATCH
+      P->>H: clearHeartbeat()
+      H->>G: PATCH epoch 0 + cleared + Progress log
+  ```
+
+- **Unified claim release (Issue #2670)** — every scan-loop path that releases a
+  claim (success, failure, skip-after-claim) calls the single `releaseClaim()`
+  helper (`worker/deno/lib/heartbeat_storage.ts`), which unassigns the worker
+  **and** clears the heartbeat/marker. Both steps are best-effort and
+  independent — a failure in one never blocks the other, and a double-unassign
+  is a harmless no-op. This fixes incident #2648, where the failure path cleared
+  the marker but left the issue permanently assigned, blocking all future
+  pickup.
+- **Release the claim on terminal failure (Issue #2731)** — the same invariant
+  applies to the self-assigning **phase processors** (grill-me, clarity,
+  planning, refinement, question, revision), not just the scan loop. Every such
+  processor must release its claim on **every** terminal exit — success _and_
+  failure — via the shared `releaseClaim()` helper
+  ([`claim_release.ts`](../worker/deno/lib/claim_release.ts), Issue #2728),
+  best-effort and after posting its failure marker. A claim left dangling on a
+  terminal failure path otherwise trips the assigned-without-heartbeat recovery
+  above (Issues #1830, #632) ~30 minutes later and blocks another worker from
+  taking over; the consecutive-failure → `needs-human` escalation (Issue #2729)
+  is the loop's terminating backstop. See the **Release the claim on terminal
+  failure** design-principle entry in
+  [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md) for the full rationale and
+  the implementing files.
+- **All-account claim release for grill-me (Issue #3109)** — `releaseClaim()`
+  only removes the **current run's** account, but a grill-me cycle spans several
+  runs across different fleet accounts (e.g. Round 1 as `VibeCoderBot`, Round 2
+  as `stsvcbot`). An earlier round's assignee therefore lingered until the
+  ~30-minute cross-account recovery cleared it. The grill-me processor's
+  hand-off paths (Ready hand-off **and** between rounds) now call
+  `releaseAllWorkerClaims()`
+  ([`claim_release.ts`](../worker/deno/lib/claim_release.ts)), which clears the
+  own account **plus** any **other** assignee that has posted a worker claim
+  (`CLAIM_LOCK`) or heartbeat (`VIBE_CODER_HEARTBEAT`) marker — the same
+  evidence the cross-account recovery uses (Issue #2671) — so a human teammate
+  assignee is never auto-cleared. A bounded retry (default 2 extra attempts)
+  stops a single flaky API call from falling straight through to the slow
+  recovery; if every attempt still fails the helper is best-effort (logged,
+  swallowed, never throws) and the ~30-minute auto-recovery remains the silent
+  backstop — no human is ever flagged.
+- **Cross-identity round verification for grill-me (Issue #3768)** — the same
+  multi-account fleet means a peer (`VibeCoderBot`) can post
+  `## Grill-Me Round N` moments before another identity (`stsvcbot`) claims the
+  issue. `countGrillMeRounds` / `hasReadyMarkerBeenPosted` only see the current
+  identity's comments, so the post-run verification declared a false
+  `## Grill-Me Failed — Claude did not post a Grill-Me round comment`
+  immediately below the round it could not see (incident #3767). Before posting
+  that marker the processor now calls `hasGrillMeRoundAwaitingReply()`
+  ([`grill_me_processor.ts`](../worker/deno/lib/grill_me_processor.ts)), which
+  matches the round/final/ready marker from **any** author — the same
+  marker-not-account keying as the Issue #2729 failure-marker fix. A round that
+  is still unanswered makes the run a no-op success; once a human has replied to
+  it the round really is missing and the failure is still reported loudly.
+- **Crash cleanup (Issue #631)** — trap handler (Deno `crash-cleanup` command)
+  cleans up heartbeat files and unassigns the worker from claimed issues on
+  unexpected exit, closing the crash window between claim and heartbeat
+  recording.
+- **Crash notifications (Issue #634)** — alerts operators via GitHub issue
+  comments and optional webhooks when the worker exits unexpectedly (Deno
+  `crash-notification` command). Rate-limited to prevent spam. Enhanced (Issues
+  #749–751) with worker log tail, Claude output tail, work stage tracking,
+  elapsed time, and system context (uptime, disk free, memory pressure).
+- **Persistent failure state (Issue #633)** — failure counts, circuit breaker
+  state, and cooldown timers survive restarts, preventing crash-restart loops.
+- **Pre-flight quality baseline (Issue #732)** — the `quality-helpers` Deno
+  command runs `./quality.sh` on the clean repository before making changes.
+  This establishes a baseline of pre-existing quality failures, so failure
+  comments can distinguish pre-existing issues from ones introduced by the
+  worker.
+- **PR blocking alerts (Issue #745)** — the `repo-blocked-alert` Deno command
+  alerts operators when open PRs block all eligible issues in a repository for
+  an extended period (default 24 hours, configurable via
+  `REPO_BLOCKED_ALERT_HOURS`). Posts a warning comment on the blocking PR(s)
+  suggesting actions: merge, close, or add `ignore-open-prs` label. State
+  tracked in `$WORK_DIR/.repo_blocked_state`.
+- **Software updates** — the Deno `software-updates` command performs weekly
+  checks for Claude CLI and GitHub CLI updates.
+
+---
+
+## 🔍 2. Issue selection and claiming
+
+### 🔍 Issue discovery: modular issue finder
+
+The issue finder was refactored (Issue #694) from a monolithic module into
+focused Deno TypeScript sub-modules in
+[issue_finder.ts](../worker/deno/lib/issue_finder.ts):
+
+| Module                                                    | Purpose                                                                                                  |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [issue_finder.ts](../worker/deno/lib/issue_finder.ts)     | Issue finder orchestration — `find_oldest_issue()`, `find_refinement_issues()`, `find_question_issues()` |
+| [issue_query.ts](../worker/deno/lib/issue_query.ts)       | GitHub API queries — issue listing, PR blocking checks, label verification                               |
+| [issue_filter.ts](../worker/deno/lib/issue_filter.ts)     | Filtering and sorting — assignee filtering, label filtering, stale label cleanup                         |
+| [issue_priority.ts](../worker/deno/lib/issue_priority.ts) | Candidate ranking — label-priority ordering, oldest candidate selection                                  |
+| [issue_cache.ts](../worker/deno/lib/issue_cache.ts)       | API response caching — issue and PR list caching (Issues #596, #626, #649)                               |
+| [issue_data.ts](../worker/deno/lib/issue_data.ts)         | Consolidated data fetching — single API call for issue body, labels, comments, state (Issue #652)        |
+
+The system is optimised with batch GitHub API calls (Issue #626) to reduce API
+usage from N×M calls to N calls per scan cycle, and structured logging
+(Issue #627) for operator visibility into skip reasons and timing.
+
+#### 📊 Selection flow
+
+```
+find_oldest_issue(github_user)
+  |
+  +-- maybe_shuffle_repos(REPOS[])
+  |     Randomise repo order for fairness (Issue #271)
+  |
+  +-- FOR EACH repo:               [issue_query.ts + issue_filter.ts]
+  |   +-- _collect_label_candidates_for_repo()
+  |   |     Query issues by each configured label (ISSUE_LABELS[])
+  |   |     No author restriction — the label itself is authorisation
+  |   |     Filter: assignee, blocking labels, open PRs, dependencies
+  |   |
+  |   +-- _collect_work_on_candidates_for_repo()
+  |   |     Query issues with work-on label
+  |   |     SECURITY: verify label was added by ALLOWED_AUTHOR
+  |   |     Filter: same as above
+  |   |
+  |   +-- collectLowPriorityCandidates()       (Issue #1721)
+  |         Query issues with low-priority label
+  |         SECURITY: verify label was added by ALLOWED_AUTHOR
+  |         Filter: same as above
+  |
+  +-- _select_highest_priority()    [issue_priority.ts]
+  |     Tier 1 configured-label > Tier 2 work-on > Tier 3 low-priority
+  |     A lower tier fires only when every higher tier is empty
+  |     across ALL scanned repos (cross-repo global guarantee)
+  |     If configured-label search FAILED (API error): no fallback
+  |     If configured-labels PR-BLOCKED: use work-on from unblocked repos
+  |
+  +-- select_oldest_candidate()     [issue_priority.ts]
+        Sort all candidates by createdAt ascending
+        Return the globally oldest
+```
+
+#### 🏷️ Label priority
+
+1. **Configured labels** (`ISSUE_LABELS[]` from `.config.json`) — highest
+   priority. No author restriction; the label itself is authorisation. **Array
+   order determines priority (Issue #755):** the first label in the array has
+   the highest priority. Since Issue #2022 the canonical configured set is
+   `["top-priority"]` — the legacy `help wanted` and `claude` labels were
+   retired. Within the same label, the oldest issue wins. This is implemented
+   via zero-padded label index prefixes during candidate collection
+   (`_collect_label_candidates_for_repo()`), enabling lexicographic sort to
+   respect label order.
+2. **Work-on label** — medium priority. Must be added by an allowed author
+   (verified via the GitHub timeline API by `wasLabelAddedByAllowedAuthor()` in
+   [issue_query.ts](../worker/deno/lib/issue_query.ts)). **Fleet-worker
+   exclusion (Issue #3416):** in a multi-account fleet the worker's own login is
+   required in `allowed_authors` for PR-dedup (Issue #3138), so the discovery
+   collectors pass their `fleetWorkerLogins` set into the gate and any reserved
+   discovery label (`top-priority`/`work-on`/`low-priority`) whose most-recent
+   adder is a fleet worker is treated as untrusted and stripped — mirroring the
+   operational-label backstop (`verifyOperationalLabels`, Issue #3225). **Cache
+   may deny, never grant (Issue #3709):** the file-backed timeline cache can
+   short-circuit the gate only to a `false` (untrusted) result. A cached entry
+   that _would_ grant trust is re-confirmed against a freshly paginated
+   timeline, so a tampered-with cache file under `TMPDIR` can never make an
+   attacker-applied `work-on` look trusted. The same exhaustive read backs the
+   untrusted-`work-on` strip (`strip_untrusted_work_on.ts`), which both removes
+   a label and names the adder publicly.
+3. **Low-priority label** (Issue #1721) — idle-time tier. Selected only when
+   **no** eligible configured-label or `work-on` candidate exists in **any**
+   scanned repo. Implemented in
+   [collect_low_priority_candidates.ts](../worker/deno/lib/collect_low_priority_candidates.ts)
+   and integrated by
+   [find_oldest_issue.ts](../worker/deno/lib/find_oldest_issue.ts) and
+   [issue_priority.ts](../worker/deno/lib/issue_priority.ts). Same
+   allowed-author check as `work-on`. See
+   [Issue selection priority](workflows/issue-processing.md#-issue-selection-priority).
+4. **Idle-task label** (Issue #2006) — lowest tier. Implemented in
+   [collect_idle_task_candidates.ts](../worker/deno/lib/collect_idle_task_candidates.ts).
+   **Origin trust (Issue #3641):** unlike the three tiers above, `idle-task` is
+   the one discovery label the worker may self-apply (Issue #2022), so fleet
+   logins stay _trusted_ here instead of being excluded. The claim is honoured
+   under the standard OR gate — the most recent `idle-task` add was by a trusted
+   login (`allowed_authors` ∪ own login ∪ `fleet_pr_authors`) **or** the issue
+   was filed by one — followed by the same `verifyWorkOnContentIntegrity()`
+   TOCTOU check the lower tiers run. An untrusted actor with triage permission
+   applying `idle-task` to an issue they authored themselves is rejected, so
+   attacker-supplied content can no longer start a billed issue→PR run.
+
+**Operational dispatch labels require a trusted label adder (Issue #3083).** The
+label-based discovery path
+([find_issues_by_label.ts](../worker/deno/lib/find_issues_by_label.ts)) drives
+the privileged refinement, grill-me, quorum, planning, question, and revision
+phases. For these operational dispatch labels (`refine-issue`, `grill-me`,
+`quorum`, `planning`, `question`, `needs-revision`) the label **adder** must
+always be on the
+allowlist — a trusted issue author is **not** sufficient (AND gate). Otherwise a
+non-allowlisted actor with triage (label-applying) permission could apply an
+operational label to a trusted-authored issue and steer the worker into a
+privileged automation phase (broken access control, A01:2025). For any other
+label the original OR gate applies (trusted issue author **or** trusted label
+adder). The set is resolved from config by `requiresLabelAdderTrust()` in
+[operational_dispatch_labels.ts](../worker/deno/lib/operational_dispatch_labels.ts).
+
+Issues are **excluded** from selection if they carry any of: `failed`,
+`refine-issue`, `planning`, `question`, `needs-human`. Issue #2031 retired the
+standalone `needs-clarification` label and folded the clarification handoff onto
+`needs-human`.
+
+The `needs-human` label is the worker's escalation signal: when Claude
+determines an issue cannot be completed autonomously (e.g. it needs credentials
+only a human can grant, or a product decision only a human can make), it adds
+`needs-human` and a comment, then stops. Discovery skips the issue on every
+subsequent scan until a human removes the label. The worker **never**
+self-applies `top-priority`, `work-on`, or any other reserved workflow label for
+this purpose — `needs-human` is its only escalation channel. See
+[issue-processing.md — Worker escalation via `needs-human`](workflows/issue-processing.md#-worker-escalation-via-needs-human).
+
+#### 🔎 Filtering criteria
+
+Each candidate issue is checked by functions in
+[issue_filter.ts](../worker/deno/lib/issue_filter.ts) and
+[issue_query.ts](../worker/deno/lib/issue_query.ts):
+
+| Filter                           | Function                                        | Module             | Behaviour                                                                                                           |
+| -------------------------------- | ----------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **Assignee**                     | `filter_issues_by_assignee()`                   | issue_filter       | Must be unassigned or assigned to the current worker (multi-worker safe)                                            |
+| **Blocking labels**              | `build_issue_filter_jq()`                       | issue_filter       | Exclude `failed`, `refine-issue`, `planning`, `question`, `needs-human` (Issue #2031 retired `needs-clarification`) |
+| **Open PR blocking**             | `get_blocking_pr_for_issue()`                   | issue_query        | Milestone-aware: only blocked by PRs targeting the same milestone branch                                            |
+| **Ignore-open-prs bypass**       | `has_ignore_open_prs_label_by_allowed_author()` | issue_query        | Bypass open PR blocking when label added by allowed author                                                          |
+| **One issue per repo/milestone** | `is_milestone_occupied()`                       | issue_filter       | Only one issue per repo/milestone can be in-progress at a time (Issue #678)                                         |
+| **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open                                                            |
+| **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items)                                                           |
+| **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues()`      | issue_filter       | Removes `failed`, `failed-once` from reopened issues (Issue #2031 retired the `needs-clarification` cleanup)        |
+
+#### 🎯 Milestone-aware PR blocking
+
+For **milestone issues**, only PRs targeting the same milestone branch are
+blocking. This allows parallel work on different milestones within the same
+repository. For **non-milestone issues**, only PRs targeting the default branch
+are blocking.
+
+#### 🔒 One issue per repo/milestone enforcement (Issue #678)
+
+The `isMilestoneOccupied()` function in
+[issue_filter.ts](../worker/deno/lib/issue_filter.ts) ensures that only one
+issue per repository (or per milestone within a repository) is being worked on
+at any given time. This prevents conflicts from concurrent changes to the same
+codebase area. The check is **fleet-aware** (Issue #3099): a work stream is
+occupied when an issue in it is assigned to **any** fleet account — the current
+host's login plus every fleet login in `config.allowedAuthors` — so in a
+multi-account fleet (`VibeCoderBot`, `stsvcbot`, …) a sibling host's assignment
+also occupies the stream and a second host will not start the same issue.
+Non-fleet human assignees are ignored.
+
+#### 📦 Issue data consolidation (Issue #652)
+
+[issue_data.ts](../worker/deno/lib/issue_data.ts) fetches issue body, labels,
+comments, and state in a single API call instead of 9–12 separate calls. Helper
+functions extract individual fields from the cached response.
+
+#### 🗄️ Issue caching (Issues #596, #626, #649, #651)
+
+[issue_cache.ts](../worker/deno/lib/issue_cache.ts) caches GitHub issue and PR
+list API responses to reduce API call volume during scan cycles. Functions like
+`cached_gh_issue_list_all()` and `cached_gh_pr_list_all()` serve cached results
+when available, falling back to live API calls when the cache has expired.
+
+#### 🔄 Repo scanning order
+
+Repositories are shuffled by default (`SHUFFLE_REPOS=true` via
+[array_utils.ts](../worker/deno/lib/array_utils.ts)) to prevent starvation. When
+`SHUFFLE_REPOS=false`, the configured order is preserved.
+
+### 🤝 Issue claiming: `worker/deno/lib/claim_issue.ts`
+
+[claim_issue.ts](../worker/deno/lib/claim_issue.ts) implements atomic issue
+claiming with verification:
+
+1. **Assign** — `gh issue edit --add-assignee $github_user`.
+2. **Wait** — 2-second delay for GitHub's eventual consistency.
+3. **Verify** — re-read assignees via `gh issue view --json assignees`.
+4. **Decide:**
+   - **No assignees** → claim failed (assignment may have failed silently).
+   - **Single assignee = current worker** → claim succeeded (exclusive
+     ownership).
+   - **Single assignee = someone else** → claim failed (another worker won).
+   - **Multiple assignees (contested)** → alphabetical tie-break: sort all
+     assignees alphabetically; the first wins. The loser unassigns itself and
+     backs off.
+
+This deterministic tie-breaking ensures exactly one worker processes each issue,
+even when multiple workers claim simultaneously.
+
+---
+
+## 👀 3. PR monitoring
+
+### 🔍 PR discovery
+
+PRs are discovered by **author** — the worker queries for open PRs authored by
+its configured GitHub user (`gh pr list --state open --author $github_user`).
+Every worker sharing the same GitHub account sees the same set of open PRs.
+
+The discovery scan iterates through all configured repositories (shuffled for
+fairness).
+
+### ⏱️ Timeout wrappers (`worker/deno/lib/gh_wrapper.ts`, `worker/deno/lib/git_timeout.ts`)
+
+All GitHub CLI and git operations are wrapped with configurable timeouts
+(Issue #619) to prevent indefinite hangs:
+
+| Wrapper           | Default timeout             | Source                                                         |
+| ----------------- | --------------------------- | -------------------------------------------------------------- |
+| `runGitCommand()` | 60s (120s for merge/rebase) | [git_timeout.ts](../worker/deno/lib/git_timeout.ts)            |
+| `safeGhCommand()` | 60s                         | [gh_wrapper.ts](../worker/deno/lib/gh_wrapper.ts) (Issue #905) |
+
+Helper functions let callers distinguish timeouts from other failures. This
+prevents a single hung `git push` or `gh api` call from blocking the entire
+worker run.
+
+### 🚦 Rate-limit aware retry (`worker/deno/lib/retry.ts`)
+
+[retry.ts](../worker/deno/lib/retry.ts) provides intelligent retry logic
+(Issue #620):
+
+- **`is_rate_limit_error()`** — detects HTTP 429, `X-RateLimit-Remaining: 0`,
+  and "rate limit exceeded" messages.
+- **`extract_retry_after()`** — reads the `Retry-After` header and caps the wait
+  at 3,600 seconds.
+- **Distinct exit code** — returns exit code 223 for rate-limit exhaustion
+  (distinct from transient errors), so callers can take appropriate action
+  (e.g., exit the run loop rather than burning retries).
+
+### 💬 Feedback detection: `worker/deno/lib/pr_comments.ts`
+
+[pr_comments.ts](../worker/deno/lib/pr_comments.ts) checks three types of
+feedback:
+
+| Type                               | API endpoint                        | Authorisation                                                                                                                                                                                 |
+| ---------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Inline review comments**         | `repos/{repo}/pulls/{pr}/comments`  | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (Issue #2484 — a bare `+1` count is not trusted, since any user can self-react). |
+| **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments.                                                                                                                                                                      |
+| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | All CHANGES_REQUESTED reviews are processed (no thumbs-up needed).                                                                                                                            |
+
+**Processed-comment tracking** — comments are marked as processed by adding an
+"eyes" (👀) reaction. The discovery query filters for `.reactions.eyes == 0` to
+avoid reprocessing. PR reviews use dismissal instead of reactions.
+
+**Staleness check** — review commit IDs are compared against the PR's current
+HEAD SHA. If the review was left on an older commit, it is skipped (the worker
+has already pushed new commits since the review).
+
+**Self-loop prevention** — comments by the PR author (the worker's own account)
+are skipped to prevent infinite feedback loops.
+
+### 🔄 Feedback processing flow
+
+When a comment is found:
+
+1. **Set up** — update GitHub status, set terminal title, validate comment body
+   size.
+2. **Sync branch** — `sync_feature_branch_with_default()` rebases the feature
+   branch onto the base branch to prevent merge conflicts.
+3. **Build prompt** — assemble a `pr_feedback` prompt template with the comment
+   body, repo quality instructions, and custom instructions.
+4. **Run Claude** — `run_claude_with_retry()` with timeout and rate-limit
+   handling.
+5. **Quality check** — if changes were made, run `./quality.sh`; retry via
+   Claude if it fails.
+6. **Push** — `push_unpushed_commits()` with self-healing for push rejections.
+7. **Mark processed** — add eyes reaction (or dismiss review) and post a reply
+   comment.
+
+### 🔤 Spelling and quality fix flow
+
+`find_failed_pr_checks()` discovers spelling check failures on open PRs:
+
+1. Lists open PRs authored by the worker.
+2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
+3. Filters for failed checks matching `spell|cspell|typo|codespell`.
+4. Fetches check annotations (file paths and messages).
+5. Passes annotations to `work_on_spelling_failure()`, which uses the
+   `spelling_fix` prompt template.
+
+### 🔧 CI/integration test failure detection (Issue #562)
+
+`find_failed_ci_checks()` discovers general CI failures on open PRs:
+
+1. Lists open PRs authored by the worker (with `baseRefName` for priority
+   sorting).
+2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
+3. Filters for failed checks, **excluding** spelling patterns
+   (`spell|cspell|typo|codespell`).
+4. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
+   over-retried failures.
+5. Prioritises PRs targeting the default branch (where integration tests run).
+6. Fetches check annotations and returns the highest-priority failure.
+
+**Retry tracking** — uses local state files in `$CI_CHECK_STATE_DIR` (default
+`$WORK_DIR/.ci_check_state`). Each check run ID has a `.retries` file recording
+how many times it has been attempted. `record_ci_check_retry()` increments the
+counter before each fix attempt.
+
+**Priority** — runs at priority 1.55 in the main loop, after spelling fixes
+(1.5) but before branch updates (1.6).
+
+### 🌿 Branch sync and updates: `worker/deno/lib/git_branch.ts`
+
+The Deno git modules ([git_branch.ts](../worker/deno/lib/git_branch.ts),
+[git_push.ts](../worker/deno/lib/git_push.ts),
+[git_pull.ts](../worker/deno/lib/git_pull.ts)) manage branch operations:
+
+| Function                             | Purpose                                         | Strategy                                                                |
+| ------------------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------- |
+| `sync_feature_branch_with_default()` | Sync feature branch with base before work       | Rebase; recreate fresh if conflicts                                     |
+| `update_pr_branch()`                 | Keep PR branch current with base                | Rebase + force-with-lease push; never recreate (preserves PR commits)   |
+| `update_open_pr_branches()`          | Bulk update all open PRs                        | Per-PR `update_pr_branch()` with actual `baseRefName` from GitHub API   |
+| `ensure_pr_mergeable()`              | Proactive conflict resolution before auto-merge | Rebase + auto-resolve conflicts + force-with-lease push                 |
+| `resolve_rebase_conflicts()`         | Automatic conflict resolution                   | Accept remote version for each conflicted file; iterate up to 10 rounds |
+
+**Protected branch safety** — `is_protected_branch()` prevents force-push on
+`main`, `master`, `develop`, `release`, `production`, `staging`, and
+`milestone/*` branches.
+
+**Lease baselines** (Issue #3723) — a recovery path that fetches or pulls before
+its last-resort force push must capture `refs/remotes/origin/<branch>` _before_
+that refresh and push `--force-with-lease=<branch>:<sha>`. A bare
+`--force-with-lease` leases against the ref the fetch just updated, so it can
+never fail and silently behaves as a plain `--force`.
+`recover_from_push_rejection()` falls back to the bare lease only when no
+remote-tracking ref exists yet.
+
+### 🔀 Auto-merge: `worker/deno/lib/pr_auto_merge.ts`
+
+`enable_auto_merge()` enables squash auto-merge on a PR:
+
+- **Config-aware** — skips repos with `skip_auto_merge=true`.
+- **Retry** — up to `AUTO_MERGE_MAX_RETRIES` (default 3) with delay between
+  attempts. Transient errors (5xx, timeouts, rate limits) are retried; permanent
+  errors ("auto-merge not enabled") are accepted.
+- **Ordering** — `finalise_pr()` calls `ensure_pr_mergeable()` **before**
+  `enable_auto_merge()` to prevent silent auto-merge failures due to unresolved
+  conflicts.
+
+`ensure_auto_merge_on_open_prs()` performs a catch-up scan for PRs that should
+have auto-merge enabled but don't (e.g. due to transient API failures).
+
+#### 🚧 Milestone open-children merge gate (Issue #3909)
+
+Merging a **milestone summary PR** is irreversible: the repo has
+`delete_branch_on_merge: true`, so the merge deletes the milestone branch, and
+GitHub auto-closes every PR based on it. Milestone 53 lost in-flight child
+PR #3901 exactly that way, 36 minutes after the summary PR was raised — so a
+completeness check made only when the summary PR is _created_ is not enough.
+
+`enableAutoMerge()` therefore calls
+[`decideSummaryPrMerge()`](../worker/deno/lib/milestone_children_gate.ts)
+immediately before `gh pr merge`:
+
+- **Cheap for ordinary PRs** — a head branch outside `milestone/*` is allowed
+  with no extra `gh` call at all. Callers that already know the head branch pass
+  `headRefName` so even the lookup is skipped.
+- **Authoritative and uncached** — the milestone's open children are re-read at
+  merge time: open non-tracking issues assigned to the milestone, _plus_ open
+  PRs whose base is the milestone branch (the in-flight children the branch
+  deletion would auto-close, which are usually not milestone-assigned).
+- **Blocks, never closes** — a block returns `blocked_open_children`, logs a
+  warning naming the milestone, the summary PR and the blocking children, and
+  posts exactly one explanatory PR comment (de-duplicated on a hidden marker, so
+  repeated scans do not spam the thread). The PR is left open; a human may still
+  merge it deliberately.
+- **Unverifiable state blocks too** — once the PR is known to be a summary PR, a
+  failed children read blocks the merge rather than being read as "no children".
+  The maintenance scan treats the block as a deferral (`await_checks`), not an
+  escalation.
+
+```mermaid
+flowchart TD
+    A[enableAutoMerge] --> B{head is milestone/*?}
+    B -- No --> M[gh pr merge --auto]
+    B -- Yes --> C[Re-read open children<br/>issues + PRs based on branch]
+    C -- none --> M
+    C -- some --> D[Warn + one comment<br/>PR left open]
+    C -- read failed --> E[Warn, no comment<br/>PR left open]
+```
+
+### 📝 PR creation
+
+The PR creation modules ([pr_body.ts](../worker/deno/lib/pr_body.ts),
+[pr_evidence.ts](../worker/deno/lib/pr_evidence.ts),
+[pr_issue_linking.ts](../worker/deno/lib/pr_issue_linking.ts)) handle PR
+creation:
+
+- **Idempotent creation (Issue #623)** — before creating a PR, the worker checks
+  for existing PRs on the same branch. If a duplicate is found (e.g., from a
+  retry after a partial failure), the existing PR is reused rather than creating
+  a second one. This prevents the confusing scenario of multiple open PRs for
+  the same work.
+- **Screenshot processing** — `process_screenshot_evidence()` converts local
+  screenshot paths to accessible URLs (via imgbb upload or GitHub raw URLs).
+- **Evidence validation** — `validate_pr_evidence()` blocks UI-related PRs
+  without screenshots and adds the `needs-screenshot` label.
+- **Issue linking** — `ensure_pr_references_issue()` appends `Closes #N` if the
+  PR body lacks a closing keyword, preventing issues from staying open after
+  merge.
+
+### ⚠️ Failure handling
+
+PR comment processing uses a two-attempt system:
+
+1. **First failure** — adds a "confused" reaction; posts "will retry on next
+   scan".
+2. **Second failure** — marks as processed (eyes reaction); posts "Permanently
+   Failed". No further retries.
+
+---
+
+## 🎯 4. Milestone and dependency handling
+
+### 🌿 Milestone branch lifecycle: `worker/deno/lib/git_branch.ts`
+
+[git_branch.ts](../worker/deno/lib/git_branch.ts) manages milestone branches:
+
+| Function                               | Purpose                                                                                                                                                                                                                                                                                              |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_milestone_branch_name()`       | Convert title to branch name: lowercase, replace special chars with hyphens, cap the slug at 50 chars (stripping any trailing hyphen), prepend `milestone/`. Single source of truth in `git_branch.ts`; `issue_query.ts` re-exports it so PR-blocking and branch creation always agree (Issue #2900) |
+| `ensure_milestone_branch_exists()`     | Create milestone branch from default branch if not present (idempotent)                                                                                                                                                                                                                              |
+| `sync_milestone_branch_with_default()` | Keep milestone branch current with default branch using **merge** (not rebase) to preserve commit history                                                                                                                                                                                            |
+| `create_feature_branch_from_base()`    | Create feature branch from the milestone branch (not default) for milestone issues                                                                                                                                                                                                                   |
+
+When a milestone issue is selected for work, the worker:
+
+1. Creates the milestone branch if it doesn't exist.
+2. Syncs the milestone branch with the default branch (merge, not rebase).
+3. Creates the feature branch from the milestone branch.
+4. After work, creates a PR targeting the milestone branch.
+
+**No default-branch fallback (Issue #3910)** — if the milestone branch cannot be
+created or fetched, the setup phase fails the run and escalates to a human
+(`needs-human` label plus a comment naming the underlying git error). It never
+retargets the work at the default branch: the milestone branch exists so a
+milestone lands behind **one** human-reviewed merge, and basing the PR on the
+default branch would remove that gate rather than degrade it.
+`ensure_milestone_branch_exists()` propagates the failing git command and its
+stderr (branch protection, non-fast-forward, auth) so the handoff says _why_.
+
+**Stale local branches self-heal (Issue #4002)** — escalation is for faults that
+genuinely need a human, not for local state the worker can repair. Two rules
+keep the milestone branch pushable on unattended hosts:
+
+- `ensure_milestone_branch_exists()` recreates the local branch from the default
+  branch (`git checkout -B`) whenever the **remote** milestone ref is absent.
+  The remote holds no history to preserve in that state, so a stale local branch
+  of the same name — for example one carrying a merge commit the repository's
+  rules forbid — is discarded rather than pushed.
+- `sync_milestone_branch_with_default()` takes the remote milestone branch with
+  `git merge --ff-only origin/<branch>` instead of a plain `git pull`, and
+  resets to `origin/<branch>` when the two have diverged. A plain pull
+  manufactures a local merge commit on divergence, which the same rules then
+  reject on push.
+
+```mermaid
+flowchart TD
+    A[Milestone issue picked up] --> B[ensureMilestoneBranchExists]
+    B -->|branch exists| C[Base = milestone branch]
+    B -->|branch missing| D[Recreate from default, push]
+    D -->|pushed| C
+    D -->|git error| E[Fail run + needs-human comment<br/>with git stderr]
+    E -.->|never| F[Base = default branch]
+    style E fill:#a4161a,stroke:#6a040f,color:#fff
+    style F fill:#adb5bd,stroke:#6c757d,color:#000
+```
+
+**Branch cleanup never deletes a milestone branch (Issue #3913)** —
+`cleanup_merged_pr_branches()` deletes the head branch of every merged worker
+PR, and a milestone summary PR's head branch _is_ the shared `milestone/<slug>`
+branch. The repository already has `delete_branch_on_merge` enabled, so GitHub
+removes that branch when the summary PR merges; the only way the cleanup scan
+can still see it is when the branch was recreated for the milestone's remaining
+open children. Deleting it there strands those children and auto-closes any
+child PR based on it, because the open-PR safety check (Issue #386) matches on
+_head_ branch, not _base_. `cleanup_merged_pr_branches()` therefore skips any
+branch `is_protected_branch()` reports as protected, which covers `milestone/*`.
+
+**One deletion chokepoint, fail closed (Issue #3931)** — the head-only guard was
+the general hole behind that milestone symptom: deleting _any_ branch that open
+PRs are based on makes GitHub close them (verified — `milestone/3872-…` was
+deleted at 04:12:05Z and PR #3928 closed in the same second). Every remote
+deletion now goes through
+[`assessRemoteBranchDeletion()`](../worker/deno/lib/remote_branch_delete.ts),
+which refuses four ways and authorises one:
+
+| Verdict                 | Meaning                                              |
+| ----------------------- | ---------------------------------------------------- |
+| `PROTECTED_BRANCH`      | Default line or `milestone/*` — long-lived by design |
+| `HAS_OPEN_PR:<n>`       | An open PR still has the branch as its **head**      |
+| `HAS_OPEN_CHILD_PR:<n>` | An open PR is **based** on the branch                |
+| `UNDECIDABLE: <reason>` | The branch's state could not be read                 |
+| `SAFE_TO_DELETE`        | The only verdict that authorises a deletion          |
+
+An unreadable check is not permission: `handle_issue_failure()` in
+[deno_bridge.sh](../worker/shared/deno_bridge.sh) previously deleted the remote
+branch on anything that was not `HAS_OPEN_PR:*`, so a failed check fell through
+to the delete. It now deletes only on an exact `SAFE_TO_DELETE`, and every
+refusal is logged and recorded as a `skipped` self-heal event.
+
+```mermaid
+flowchart TD
+    A[Candidate branch] --> B{Protected?}
+    B -->|yes| R[Refuse: PROTECTED_BRANCH]
+    B -->|no| C{Open PR with branch as head?}
+    C -->|query failed| U[Refuse: UNDECIDABLE]
+    C -->|yes| H[Refuse: HAS_OPEN_PR]
+    C -->|no| D{Open PR based on branch?}
+    D -->|query failed| U
+    D -->|yes| K[Refuse: HAS_OPEN_CHILD_PR]
+    D -->|no| S[SAFE_TO_DELETE → delete]
+    style S fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style U fill:#a4161a,stroke:#6a040f,color:#fff
+```
+
+### ✅ Milestone completion (Deno TypeScript)
+
+The milestone completion logic detects and handles completed milestones
+(previously in `worker/shared/milestone_completion.sh`, migrated to Deno as part
+of Issue #970):
+
+```
+check_and_handle_milestone_completions(github_user)
+  |
+  +-- FOR EACH repo:
+  |   +-- List merged PRs by worker targeting milestone/* branches
+  |   +-- Extract unique milestone branches
+  |   +-- Match branch names to milestone titles via GitHub API
+  |   +-- check_milestone_complete() — all issues closed?
+  |   +-- IF complete AND no existing summary PR:
+  |         +-- create_milestone_tracking_issue() — tracking issue (Issue #561)
+  |         +-- build_milestone_summary_body() — list all closed issues
+  |         +-- create_milestone_summary_pr() — milestone branch → default
+  |         +-- enable_auto_merge()
+  |
+  +-- close_milestone_issue_after_merge()
+        Manually close issues after milestone PR merges
+        (GitHub auto-close only works for default branch targets)
+```
+
+**Tracking issue (Issue #561)** — when a milestone completes,
+`create_milestone_tracking_issue()` creates a GitHub issue titled "Merge
+milestone '&lt;name&gt;' to &lt;default&gt;". This provides a visible record of
+the milestone completion lifecycle. The tracking issue is labelled with the
+first configured issue label for automatic discovery.
+`has_existing_milestone_tracking_issue()` prevents duplicates by searching for
+existing issues with the same title (across all states — open + closed). The
+summary PR body includes a `Closes #N` reference so the tracking issue is
+automatically closed when the PR merges.
+
+**Idempotency** — `has_existing_milestone_summary_pr()` prevents duplicate final
+PRs by checking for PRs with the milestone branch as head ref across all states
+(open, merged, closed — Issue #568).
+
+**Deadlock avoidance + tracker self-heal (Issue #3214)** — the tracking issue
+lives _inside_ the milestone it tracks. If the summary-PR step then failed —
+most commonly `branch_missing` on an issue-only milestone — the tracker was left
+open, and on every later pass `checkMilestoneComplete()` counted that open
+tracker as an open issue → "not complete" → the milestone was skipped before any
+close/retry logic ran. Tracker, summary PR and milestone froze forever. Four
+guards in `processRepoMilestones()` break the cycle:
+
+1. **Completeness ignores trackers.** `checkMilestoneComplete()` filters out
+   tracking-shaped titles (`isMilestoneTrackingTitle`) before counting open
+   issues, so a tracker can never block its own milestone. Applied at the
+   completion-check call path only — `milestone_health.ts` /
+   `milestone_progress.ts` consumers of `fetchOpenIssuesByMilestone` are
+   unchanged.
+2. **Nothing-to-merge closes directly.** `hasNothingToMerge()` is checked
+   _before_ creating a tracker. When the milestone branch is missing, or exists
+   but is 0 commits ahead of the default branch, no tracker/PR is created — any
+   open trackers are closed and the milestone is closed directly with a one-line
+   log. Fails safe: an ambiguous compare leaves the milestone open.
+3. **Duplicate-tracker self-heal.** Each pass,
+   `selectDuplicateTrackersToClose()` keeps the canonical (lowest-numbered)
+   tracker and closes the rest.
+4. **Premature-tracker disposal.** When a milestone is _not_ complete but
+   carries an open tracker (filed when it momentarily hit 0 open before new
+   issues were added), the tracker is closed.
+
+**Authoritative open-children veto (Issue #3908)** — completeness used to be
+decided _solely_ from the locally filtered, cached projection
+(`fetchOpenIssuesByMilestone` → `fetchAllIssues`, cache key `issues_all`, then a
+milestone-title string match). Every layer of that projection — cache freshness,
+the `--limit` window, the exact-string title match, and the JSON projection — is
+a way for the open count to silently read zero, and on 7 Aug 2026 milestone 53
+was declared complete with 12 open children: a tracker and a summary PR were
+raised, the merge deleted the milestone branch, and in-flight child PR #3901 was
+auto-closed.
+
+GitHub publishes the authoritative number, so `processRepoMilestones()` now asks
+it directly via
+[milestone_open_children.ts](../worker/deno/lib/milestone_open_children.ts):
+
+- **Fresh, uncached, at the moment of the decision.** Two reads —
+  `repos/<repo>/milestones/<n>` for `open_issues`, and
+  `repos/<repo>/issues?milestone=<n>&state=open` for the child list. A counter
+  read minutes earlier is not evidence about now.
+- **Non-zero is a hard veto.** No tracking issue, no summary PR, no milestone
+  close — regardless of what the cached list says.
+- **Open child PRs veto too.** `open_issues` counts open PRs assigned to the
+  milestone, and the `/issues` endpoint returns them; that is deliberate,
+  because merging the summary PR deletes the milestone branch and auto-closes
+  any child PR still based on it.
+- **Trackers are still excluded**, exactly as guard 1 above does, so #3214's
+  self-blocking fix is preserved.
+- **The cached list stays as a second opinion.** When the two counts disagree, a
+  `WARNING: Open-children disagreement …` line names the repo, the milestone,
+  both counts and both issue-number sets — the diagnostic that will identify the
+  still-unexplained cache mechanism if it recurs.
+- **Fails loud.** A failed or malformed authoritative read vetoes finalisation
+  for that pass rather than reading as "nothing open"; an unreadable child list
+  falls back to the unadjusted `open_issues` count with a warning.
+
+```mermaid
+flowchart TD
+    A[Milestone] --> T[Fetch open trackers]
+    T --> C{Complete?<br/>cached list,<br/>trackers excluded}
+    C -- No --> P[Close premature trackers] --> Z[Next milestone]
+    C -- Yes --> V{"GitHub open_issues<br/>fresh, trackers excluded<br/>(Issue #3908)"}
+    V -- "> 0 or unreadable" --> W[Log veto + disagreement] --> Z
+    V -- 0 --> D[Close duplicate trackers,<br/>keep canonical]
+    D --> E{Closed issues?}
+    E -- No --> Z
+    E -- Yes --> N{Nothing to merge?<br/>branch missing / 0 ahead}
+    N -- Yes --> F[Close tracker + milestone directly] --> Z
+    N -- No --> G[Create tracker + summary PR] --> Z
+```
+
+**Completion-path open-children re-check (Issue #3909)** — the completeness
+check above reads a cached issue list, and children can appear (or simply
+remain) between that read and the closes. Both completion paths — the
+nothing-to-merge direct close and the post-summary-PR close — therefore re-read
+the milestone's authoritative open children (via `fetchOpenMilestoneChildren()`)
+immediately before `closeMilestoneTrackingIssue` and `closeGitHubMilestone`, and
+skip both closes while any remain. An unreadable count blocks the closes too,
+and logs a warning — nothing is marked done on incomplete information.
+
+### 🔗 Forward dependencies: `worker/deno/lib/issue_dependencies.ts`
+
+[issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts) implements
+dependency checking (previously in `worker/shared/dependency_checker.sh`,
+migrated to Deno as part of Issue #970):
+
+| Function                           | Purpose                                                                                                |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `extract_dependencies_from_body()` | Parse `Depends on #N` and `Blocked by #N` patterns (case-insensitive), including cross-repo references |
+| `has_unmet_dependencies()`         | Returns blocked if any dependency issue is open                                                        |
+| `get_blocking_issues_list()`       | Returns comma-separated list of open blockers for diagnostics                                          |
+
+**Fail-open design** — if API calls fail during dependency checking, the issue
+is treated as **not blocked** to avoid stalling the entire queue.
+
+### 👪 Parent-child relationships: `worker/deno/lib/issue_dependencies.ts`
+
+| Function                             | Purpose                                             |
+| ------------------------------------ | --------------------------------------------------- |
+| `extract_sub_issue_refs_from_body()` | Parse task list items: `- [ ] #N`, `- [x] #N`       |
+| `has_open_sub_issues()`              | Returns blocked if parent has any open child issues |
+| `get_open_sub_issues_list()`         | Returns comma-separated list of open sub-issues     |
+
+### 🦕 TypeScript dependency resolution: `worker/deno/lib/issue_dependencies.ts`
+
+[issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts) provides
+type-safe dependency analysis:
+
+- **`extractSubIssueReferences(body, repo?)`** — extracts task list items and
+  "Parent of #N" patterns.
+- **`extractDependencyReferences(body)`** — extracts `Depends on #N` and
+  `Blocked by #N` patterns.
+- **`checkParentBlocked()`** — checks if a parent issue is blocked by open
+  children. Fails closed (treats unreachable children as open for safety).
+- **`buildDependencyGraph()`** — constructs a full graph of forward dependencies
+  and parent-child relationships.
+- **`resolveWorkOrder()`** — topological sort with DFS cycle detection.
+  Classifies issues as:
+  - **Ready** — no unmet dependencies or open children.
+  - **Blocked** — has open dependencies or children (with list of blockers).
+  - **Circular** — part of a dependency cycle.
+
+#### 🔄 Circular dependency detection
+
+The algorithm uses depth-first search with an "in-stack" set:
+
+```
+hasCycle(node):
+  if node in inStack → cycle found
+  if node in visited → already checked, no cycle
+
+  visited.add(node)
+  inStack.add(node)
+
+  for each dependency of node:
+    if hasCycle(dependency) → cycle found
+
+  inStack.delete(node)
+  return no cycle
+```
+
+Issues detected as circular are reported separately and excluded from the
+ready/blocked classification.
+
+#### 🚨 Escalating unworkable `work-on` issues (Issue #2752)
+
+A `work-on` issue that can never be progressed is escalated rather than left to
+dangle. `collectWorkOnCandidates`
+([collect_work_on_candidates.ts](../worker/deno/lib/collect_work_on_candidates.ts))
+detects two classes and routes both through one shared action:
+
+- **Dependency cycle** — an issue that (transitively) blocks itself (A→B→A).
+  Every cycle member is, by definition, dependency-blocked, so the cycle is
+  detected _after_ the per-issue dependency-blocking gate using only the
+  body/sub-issue reads that gate already made (shared via a memoising fetcher —
+  `memoiseIssueFetcher`), adding no extra `gh` calls. `detectDependencyCycles` /
+  `findCyclePath`
+  ([issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)) flag the
+  members and render the loop.
+- **Self-suppressing dead label** — a milestone-tracking issue carrying the
+  `work-on` label, which the worker never actions (`filterAndSort` drops it).
+
+The shared action (`escalateUnworkableWorkOn` in
+[escalate_unworkable_work_on.ts](../worker/deno/lib/escalate_unworkable_work_on.ts))
+applies `needs-human` and posts exactly one explanatory comment naming the
+blocker, routed through the `escalateToHuman` chokepoint, then drops the issue
+and continues — escalate, don't stall. Idempotence comes from two independent
+mechanisms: the applied `needs-human` label drops the issue from `filterAndSort`
+on the next scan, and a stable per-issue dedup key suppresses a duplicate
+comment within 24 hours.
+
+```mermaid
+flowchart TD
+    A[work-on issue] --> B{progressable?}
+    B -->|yes| C[normal candidate]
+    B -->|dependency cycle A→B→A| E[escalate]
+    B -->|dead-label milestone-tracker| E
+    E --> F[apply needs-human]
+    F --> G[post ONE comment naming blocker]
+    G --> H[drop from candidates + continue]
+    H -. idempotent re-scan: no-op .-> H
+```
+
+### 🔗 Sub-issue relationship tracking: `worker/deno/lib/planning_processor.ts`
+
+[planning_processor.ts](../worker/deno/lib/planning_processor.ts) tracks
+relationships created during planning (previously in
+`worker/shared/relationship_manager.sh`, migrated to Deno as part of
+Issue #970):
+
+- **`extract_sub_issue_numbers_from_output()`** — parses GitHub issue URLs from
+  Claude's planning output.
+- **`get_sub_issue_dependencies()`** — fetches inter-sibling dependencies and
+  returns `child:parent` pairs.
+- **`build_relationship_summary()`** — converts dependency pairs to
+  human-readable `#child depends on #parent` format for summary comments.
+
+---
+
+## ❓ 5. Question answering
+
+The worker can answer questions posted as GitHub issues with the `question`
+label (priority 1.8 in the main loop). Several modules support this workflow:
+
+### 💬 Comment filtering (`worker/deno/commands/comment_filter.ts`)
+
+The comment filter (migrated to Deno TypeScript) prepares issue comments for
+follow-up question prompts (Issue #664). The `prepareQuestionComments()`
+function trims prior bot answers to avoid context bloat when the same issue
+receives multiple follow-up questions.
+
+### 🔍 Question clarification (Issue #665)
+
+The question clarification module (migrated to Deno TypeScript,
+`worker/deno/commands/question_clarification.ts`) detects when Claude determines
+a question is too broad or ambiguous to answer directly:
+
+- **`detectQuestionClarificationRequest()`** — scans Claude's output for
+  clarification markers.
+- **`extractClarificationBody()`** — extracts the clarification text to post
+  back to the issue as a comment, prompting the author to refine their question.
+
+When a clarification request is detected, the worker posts the clarification
+comment and adds the `needs-human` label instead of posting an answer
+(Issue #2031 — the standalone `needs-clarification` label was retired and the handoff
+signal consolidated onto `needs-human`).
+
+### ⏱️ Partial answers on timeout (Issue #661)
+
+`partial_answer.ts` (Deno) handles the case where Claude times out before
+completing a full answer. Rather than posting nothing, `postPartialAnswer()`
+extracts whatever useful content Claude produced and posts it as a partial
+answer with a note explaining the timeout. This ensures the question author gets
+some value even when the full answer cannot be completed in time. Migrated from
+`worker/shared/partial_answer.sh` (Issue #913).
+
+### 🧹 Answer sanitisation
+
+`answer_sanitiser.ts` (Deno) cleans up Claude's output before posting
+(Issue #332, #913). The `sanitiseAnswerOutput()` function strips meta-commentary about
+inability to post or lacking permissions — artefacts of Claude's tendency to
+narrate its own limitations rather than simply providing the answer. Migrated
+from `worker/shared/answer_sanitiser.sh` (Issue #913).
+
+### ❌ Question failure handling (Issue #663)
+
+The question failure module (migrated to Deno TypeScript) produces actionable,
+user-friendly failure comments when question answering fails:
+
+- **`get_question_failure_reason()`** — categorises the failure (timeout, rate
+  limit, authentication, etc.).
+- **`build_question_failure_comment()`** — generates a comment with
+  category-specific advice so the question author knows what happened and what
+  to do next.
+
+---
+
+## 🆕 6. Recent features
+
+### 🏥 Periodic health checks during scan cycles (Issue #635)
+
+The health check cache (migrated to Deno TypeScript,
+`worker/deno/commands/health_check_cache.ts`) caches the results of expensive
+health checks (Claude CLI responsiveness, GitHub authentication) so they are not
+repeated on every loop iteration:
+
+- **`cached_check_claude_health()`** — returns the cached result if still valid
+  (configurable TTL), otherwise runs a fresh health check.
+- **`cached_check_gh_auth()`** — same pattern for GitHub authentication checks.
+- **`invalidate_health_cache()`** — forces a fresh check on the next call (used
+  after errors that suggest auth may have expired).
+
+This reduces unnecessary API calls during long scan cycles while still detecting
+problems promptly.
+
+### 📝 Atomic file writes for state and cache files (Issue #693)
+
+The `atomic-write` Deno command provides atomic file write utilities to prevent
+corruption from interrupted writes (e.g., a crash mid-write leaving a
+half-written state file). The rename operation is atomic on POSIX file systems,
+so the target file is either the old version or the new version — never a
+partial write.
+
+Used by failure tracker, circuit breaker, cooldown state, and issue cache
+modules.
+
+### ⚙️ Centralised operational defaults (Issue #692, #904)
+
+`worker/deno/lib/config_defaults.ts` is the single source of truth for
+operational constants — timeouts, TTLs, retry limits, backoff thresholds, and
+other values that are not user-configurable. Previously these were hardcoded
+across multiple modules. Centralising them in Deno TypeScript makes behaviour
+easier to audit and adjust.
+
+### 📊 Per-repo failure tracking (Issue #586)
+
+The `repo-failure-tracker` Deno command tracks failures within a scan cycle on a
+per-repository basis. If one repository's API calls repeatedly fail, it is
+deprioritised for the remainder of the cycle rather than starving other healthy
+repositories of processing time.
+
+### 🔍 Feature availability (Issue #196)
+
+The `feature-availability` Deno command provides a centralised registry for
+optional features with graceful degradation. This allows the worker to adapt its
+behaviour based on the environment — for example, skipping Mermaid diagram
+validation if the validator is not installed.
+
+### 🔍 Repository diagnostic tool (`diagnose-repo` Deno command) (Issue #743)
+
+The `diagnose-repo` Deno command
+([diagnose_repo.ts](../worker/deno/commands/diagnose_repo.ts)) analyses a
+repository and reports why issues are blocked from being selected. Operators can
+run it directly to debug issue pickup problems:
+
+```bash
+cd worker/deno && deno run --allow-all mod.ts diagnose-repo --repo owner/repo --github-user github_user
+```
+
+The report includes:
+
+- Open PRs by the worker in the repository
+- Per-issue diagnostics with blocking reasons (assignment, labels, cooldown, PR
+  blocking, dependencies, sub-issues, milestone occupancy)
+- Overall assessment with a breakdown of blocking reasons and actionable
+  suggestions
+
+### 🚨 PR blocking alerts (`repo_blocked_alert.ts`) (Issue #745)
+
+[repo_blocked_alert.ts](../worker/deno/lib/repo_blocked_alert.ts) (migrated to
+Deno TypeScript) alerts operators when open PRs block all eligible issues in a
+repository for an extended period:
+
+- **`recordRepoBlocked(repo, issueCount, prsJson)`** — records when all issues
+  in a repo are blocked. State tracked in `$WORK_DIR/.repo_blocked_state`.
+- **`clearRepoBlocked(repo)`** — removes blocking state when at least one issue
+  becomes eligible again.
+- **`checkRepoBlockedAlert(repo, issueCount, prsJson)`** — posts a warning
+  comment on blocking PRs when the blocking duration exceeds
+  `REPO_BLOCKED_ALERT_HOURS` (default 24). Alerts include the number of blocked
+  issues, duration, and suggested actions (merge/close PR, or add
+  `ignore-open-prs` label). Each repo is only alerted once per blocking period.
+
+The module excludes milestone-merge PRs from blocking consideration
+(Issue #744), preventing consolidation PRs from blocking unrelated issues.
+
+### 🔬 Pre-flight quality baseline check (Issue #732)
+
+The `quality-helpers` Deno command
+([quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)) runs
+`./quality.sh` on the clean repository before the worker starts making changes.
+This establishes a baseline of pre-existing quality failures, allowing failure
+comments to distinguish between pre-existing issues and worker-introduced
+regressions. It formats the baseline output as a markdown note appended to
+failure comments, and formats comprehensive quality failure messages
+(Issue #730) with prominent error display and collapsed full output, including baseline
+context.
+
+#### Content-keyed baseline reuse (Issue #4283)
+
+A single issue used to run the full gate up to three times — the worker's
+baseline gate, the agent's own `./quality.sh`, and the worker's post-Claude
+gate. On the worker's 13k-test suite the baseline run alone costs minutes and
+is pure duplicate work whenever consecutive issues start from the same
+freshly-reset checkout.
+
+[baseline_quality_cache.ts](../worker/deno/lib/baseline_quality_cache.ts)
+records the baseline outcome (pass/fail, output tail, and the diffable
+findings from Issue #2604) in `${WORK_DIR}/.vibe-cache/baseline-quality-cache.json` (moved off the root-owned `~/.vibe-coder` in Issue #4318),
+keyed by `<repo>@<HEAD SHA>`. The key is only issued when the tree content is
+provably identical: `git status --porcelain` empty (which also rules out
+untracked files) and a well-formed HEAD SHA. Entries expire after 24 hours and
+the file is bounded to the 20 newest entries. "Newest" is decided by a
+monotonic per-entry write sequence, not by `storedAt`: on a host fast enough to
+write several entries within one millisecond the timestamps tie and the prune
+kept an arbitrary subset (Issue #4342).
+
+```mermaid
+flowchart TD
+    A[Baseline quality phase] --> B{Clean tree<br/>and HEAD SHA?}
+    B -- no --> G[Run full gate]
+    B -- yes --> C{Cached entry<br/>within TTL?}
+    C -- no --> G
+    C -- yes --> D{Baseline-aware gate on<br/>and findings missing?}
+    D -- yes --> G
+    D -- no --> E[Reuse recorded outcome]
+    G --> F[Record outcome for the next issue]
+```
+
+Reuse removes duplicate work, not coverage: a cached PASS makes the
+post-Claude gate stricter (every failure counts as new), and a cached FAIL
+carries exactly the findings a re-run of byte-identical content would produce.
+Any ambiguity — dirty tree, git failure, corrupt cache, expired entry, or an
+entry lacking the diffable findings the baseline-aware gate needs — falls back
+to the full gate. Set `VIBE_CODER_BASELINE_QUALITY_CACHE=0` to disable reuse.
+
+### 🏷️ Label-priority ordering (Issue #755)
+
+The `ISSUE_LABELS` array order now determines label priority during issue
+selection. The first label in the array has the highest priority — since
+Issue #2022 the hardwired set is `["top-priority"]` (the legacy `help wanted` and
+`claude` labels were retired). Implemented via zero-padded label index prefixes
+in [issue_priority.ts](../worker/deno/lib/issue_priority.ts). Within the same
+label, the globally oldest issue is selected.
+
+### 📐 Mermaid diagram validation (Issue #525)
+
+[mermaid_validator.ts](../worker/deno/lib/mermaid_validator.ts) (migrated to
+Deno TypeScript) validates Mermaid gitGraph syntax in documentation files,
+ensuring diagrams are well-formed before they are committed.
+
+### 🔬 Benchmark audit (Issue #583)
+
+The benchmark audit (implemented in
+[quality_gate.ts](../worker/deno/lib/quality_gate.ts)) scans Deno test files for
+benchmarks masquerading as unit tests. This ensures proper separation of
+concerns — unit tests should verify correctness, not measure performance.
+
+### 🦕 Deno run-core as primary executor (Issue #1124)
+
+The main event loop has been migrated from shell to Deno TypeScript. The whole
+runtime path is now Deno: the `run-entrypoint` driver
+([run_worker.ts](../worker/deno/lib/run_worker.ts), Issue #3504) owns
+orchestration (PID guard, bootstrap, housekeeping, cleanup) and invokes the Deno
+`run-core` command for the loop — the bash `worker/run_core.sh` conductor was
+deleted. The Deno side creates production deps via
+`createProductionRunCoreDeps()` in
+[run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)
+and runs `runCoreLoop()` with the full priority dispatch table. FLEET health
+reporting was also migrated to
+[fleet_health.ts](../worker/deno/lib/fleet_health.ts).
+
+### 🔄 Shell business logic migrated to Deno (Issues #1119–#1123)
+
+Multiple shell modules had their embedded business logic migrated to Deno
+TypeScript:
+
+- **Comment processing & feedback workflows** (Issue #1119) — PR feedback
+  detection, spelling failure processing, and CI failure processing now live in
+  [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts),
+  [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts), and
+  [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts).
+- **CI failure detection & retry logic** (Issue #1120) — CI check failure
+  detection, annotation extraction, and retry tracking moved to Deno.
+- **Planning validation & Claude output analysis** (Issue #1121) — Planning
+  workflow processing and output validation migrated to Deno.
+- **Issue worker utility functions** (Issue #1122) — Issue processing
+  orchestration migrated to
+  [issue_worker.ts](../worker/deno/lib/issue_worker.ts) with dependency wiring
+  in [issue_worker_wiring.ts](../worker/deno/lib/issue_worker_wiring.ts).
+- **deno_bridge.sh business logic** (Issue #1123) — Circuit breaker state
+  management, GitHub status GraphQL mutations, auth error detection, and
+  complexity checking moved to Deno commands.
+
+### 🤖 Model fallback on rate limit (Issues #1112, #1113, #1114)
+
+When the Claude API hits rate limits, the worker now falls back to lower-tier
+models rather than failing.
+[model_fallback.ts](../worker/deno/lib/model_fallback.ts) defines the model tier
+hierarchy and fallback mapping.
+[credit_tracker.ts](../worker/deno/lib/credit_tracker.ts) logs model fallback
+events for cost tracking and observability.
+
+### 🧠 Out-of-memory is terminal (Issues #2740, #2741, #2742)
+
+An out-of-memory (OOM / V8 heap-exhaustion) failure is **terminal** — the worker
+errors out fast instead of pausing or retrying, because waiting cannot reclaim
+memory.
+
+- **Detection.** [`detectOutOfMemory()`](../worker/deno/lib/claude_executor.ts)
+  (Issue #2740) classifies the output tail against a narrow, memory-anchored
+  regex (`javascript heap out of memory`,
+  `reached heap limit allocation
+  failed`, `cannot allocate memory`,
+  `std::bad_alloc`, a word-bounded `out of
+  memory`, …). The "heap limit"
+  wording would otherwise match the secondary rate-limit pattern, so OOM must be
+  classified separately.
+- **Runner short-circuit.**
+  [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts) (Issue #2741) checks
+  OOM **before** the timeout and rate-limit branches and returns immediately
+  with `outOfMemory: true` and `exitCode` set to `OOM_EXIT_CODE` (137) — no
+  wait, no retry, no model fallback. A genuine watchdog timeout still wins
+  (`timedOut === true`), so a `137` SIGKILL becomes OOM only when memory
+  evidence is present.
+- **Phase classification.**
+  [`execute_claude_phase.ts`](../worker/deno/lib/execute_claude_phase.ts) (Issue
+  #2742) branches on that `outOfMemory` flag — again **before** the
+  timeout/rate-limit branch — and returns `action: "failure"` with
+  `failureType: "out_of_memory"` and a dedicated diagnostic
+  (`buildOutOfMemoryMessage()`) that names OOM as the cause and includes the
+  output tail. OOM is therefore **never** reported as `"timeout"` or
+  `"rate_limit"`. The self-healing PR check (`attemptPrSelfHealing`) still runs,
+  so a run that pushed a PR before the OOM is credited as `self_healed`.
+
+### 🏁 Milestone completion improvements (Issues #1133, #1134)
+
+- Milestone tracking issues are now closed immediately after the summary PR is
+  created (Issue #1133).
+- Milestone tracking issues are filtered from worker issue discovery to prevent
+  the worker from trying to implement them (Issue #1134).
+
+### 🔒 Claim race improvements (Issues #1086–#1090)
+
+Multiple improvements to prevent duplicate work when multiple workers race to
+claim the same issue:
+
+- **Pre-claim freshness re-check** (Issue #1086) — re-verifies issue eligibility
+  immediately before claiming to narrow the race window.
+- **Shared cooldown state** (Issue #1087) — cooldown state is shared across
+  workers via GitHub issue comments, so all workers respect the same cooldowns.
+- **Randomised candidate selection** (Issue #1089) — among equal-priority
+  issues, candidates are randomised to reduce contention.
+- **Claim race metrics** (Issue #1090) — diagnostic logging for claim race
+  events.
+- **Atomic PR comment claiming** (Issue #1061) — prevents duplicate PR responses
+  with reaction-based claiming in
+  [claim_pr_comment.ts](../worker/deno/lib/claim_pr_comment.ts).
+
+#### 🛡️ Trusted claim markers (Issues #3164, #3664)
+
+A `CLAIM_LOCK` marker is plain text in a comment body, so **any** GitHub user
+can post one — only the comment _author_ is authenticated. Every marker-driven
+decision in [claim_issue.ts](../worker/deno/lib/claim_issue.ts) is therefore
+gated on the author belonging to the fleet:
+
+- **Trusted author set** (`resolveTrustedClaimAuthors`) — the caller-supplied
+  `fleetAuthors` union (`resolveFleetAuthors`) when available, otherwise the
+  claiming account itself, which covers the shared-username fleet deployment
+  comment-based claiming was built for (Issue #604).
+- **Pre-claim check** (Issue #3164) — a recent `CLAIM_LOCK` only blocks the
+  claim when a fleet account posted it.
+- **Race resolution** (Issue #3664) — the Step-5 re-read requests
+  `author: .user.login` and discards non-fleet markers before the earliest-wins
+  comparison, so an outsider cannot make the worker unassign itself and abandon
+  the issue.
+- **Stale cleanup** (Issue #3664) — only deletes fleet-authored markers that are
+  at least 60 s old. An outsider's comment is not the fleet's to delete, and a
+  younger marker is a live claim (possibly a sibling's in-flight one), not the
+  leftover of a crashed run.
+
+Both filters fail toward _claiming_ the issue rather than abandoning it, so a
+forged marker can never starve an issue of work.
+
+```mermaid
+flowchart TD
+    R["Step 5: re-read CLAIM_LOCK comments<br/>(id, body, created_at, author)"] --> F{"author in<br/>trusted set?"}
+    F -- no --> D["discard forged marker<br/>(warn log)"]
+    F -- yes --> S["sort by created_at<br/>earliest wins"]
+    S --> W{"winner == this worker?"}
+    W -- yes --> C["claim confirmed"]
+    W -- no --> L["claim_race=lost<br/>unassign + delete own claim"]
+    D --> S
+    style D fill:#c9184a,stroke:#800f2f,color:#fff
+    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+### 🔍 Issue refinement improvements (Issues #1137, #1138, #1150, #1151)
+
+- JSON parse failures during refinement now properly remove the `refine-issue`
+  label and mark comments as processed (Issue #1137).
+- The `needs-human` label is added as a handoff signal after successful
+  refinement (Issue #2029 — supersedes the retired `refined` label originally
+  added by Issue #1138).
+- Top-level error handling and failure comments added to the refinement
+  processor (Issue #1150).
+- Periodic heartbeat tracking during refinement prevents stuck-issue detection
+  from interfering (Issue #1151).
+
+### 🔬 Diagnose issue command (Issue #1063)
+
+The `diagnose-issue` Deno command
+([diagnose_issue.ts](../worker/deno/lib/diagnose_issue.ts)) provides detailed
+diagnostics for why a specific issue is or isn't being picked up by the worker,
+complementing the `diagnose-repo` Deno command.
+
+### 🦕 Complete Deno migration (Issues #1225–#1234)
+
+The final wave of the Deno migration moved all remaining business logic from
+shell to TypeScript:
+
+- **Clarity assessment and issue routing** (Issue #1225) — migrated to Deno with
+  structured routing logic.
+- **Planning and question processors** (Issue #1226) — migrated to
+  [planning_processor.ts](../worker/deno/lib/planning_processor.ts) and
+  [question_processor.ts](../worker/deno/lib/question_processor.ts).
+- **Claude execution phase** (Issue #1227) — migrated to
+  [claude_executor.ts](../worker/deno/lib/claude_executor.ts).
+- **Quality gate phase** (Issue #1228) — migrated to Deno quality gate
+  integration.
+- **PR completion phase** (Issue #1229) — migrated to Deno PR completion logic.
+- **PR feedback, spelling, and CI failure handlers** (Issue #1230) — migrated to
+  [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts),
+  [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts), and
+  [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts).
+- **`work_on_issue()` main orchestrator** (Issue #1231) — migrated to
+  [issue_worker.ts](../worker/deno/lib/issue_worker.ts).
+- **ImgBB screenshot upload** (Issue #1232) — HTTP client for screenshot uploads
+  implemented in Deno.
+- **`update_open_pr_branches()`** (Issue #1233) — migrated to
+  [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts).
+- **`ensure_auto_merge_on_open_prs()`** (Issue #1234) — migrated to
+  [pr_auto_merge.ts](../worker/deno/lib/pr_auto_merge.ts).
+
+### 📊 Regression test suite (Issue #1235)
+
+A comprehensive regression test suite validates functional parity between the
+original shell implementations and the new Deno TypeScript modules, ensuring the
+migration introduced no behavioural regressions.
+
+### 🏷️ Stale workflow label detection (Issue #1240)
+
+The worker now detects and cleans up stale workflow labels (e.g.,
+`refine-issue`, `planning`) that were left on issues due to previous processing
+failures, preventing issues from being stuck in limbo.
+
+### 📋 Configurable milestone issue ordering (Issue #1237)
+
+Issues within milestones can now be ordered by configuration, allowing repo
+owners to control the sequence in which milestone issues are processed.
+
+### 🔔 Milestone progress notifications (Issue #1236)
+
+When milestone issues are completed, the worker posts progress notifications to
+the milestone tracking issue, providing visibility into overall milestone
+completion status.
+
+### 🏥 Milestone health diagnostics (Issue #1239)
+
+The `milestone-health` Deno command diagnoses milestone configuration and
+processing issues, helping operators identify and fix problems with milestone
+workflows.
+
+### 🔄 Periodic milestone branch sync (Issue #1238)
+
+Milestone branches are now periodically synchronised with the default branch,
+ensuring they stay up-to-date and reducing merge conflicts when the milestone is
+consolidated.
+
+### 🩹 Milestone branch self-heal (Issue #3912)
+
+A milestone can gain open children **after** its summary PR merged and
+`delete_branch_on_merge` destroyed the milestone branch — milestone 53 gained
+nine children nine minutes after its branch was deleted, leaving 21 open
+children with no branch to work on.
+[milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)
+runs on the same maintenance cycle as the periodic sync (immediately before it)
+and repairs both halves of that state:
+
+1. an **open** milestone with at least one open child and no branch on the
+   remote has its branch recreated from the default branch via
+   `ensureMilestoneBranchExists`; and
+2. an open child PR still based on the default branch is retargeted at the
+   milestone branch via `retargetPrToMilestone`, with one explanatory comment.
+
+A PR is treated as a child of the milestone when it carries the milestone
+itself, or when GitHub's own `closingIssuesReferences` links it to an open child
+issue.
+
+```mermaid
+flowchart TD
+    A[Open milestone] --> B{Open children?}
+    B -- no --> Z[No action]
+    B -- yes --> C{Branch on remote?}
+    C -- yes --> E
+    C -- no --> D[Recreate from default branch]
+    D --> E{Child PR based on<br/>default branch?}
+    E -- no --> Z
+    E -- yes --> F{Retarget marker<br/>already on the PR?}
+    F -- yes --> Z
+    F -- no --> G[Retarget + explanatory comment]
+```
+
+Both halves are idempotent. The branch check is the remote itself, so the next
+cycle is a no-op once the branch is back; the retarget is guarded by the
+`<!-- vibe-coder:milestone-retarget -->` marker in the explanatory comment, so a
+PR is retargeted **at most once** and a human who points it back at the default
+branch is never overruled. Closed milestones and milestones with zero open
+children are never touched, so a finished milestone's branch is not resurrected
+on every scan cycle. Merged PRs are never touched, and PRs auto-closed by a past
+branch deletion are not reopened.
+
+### 📊 Token usage tracking (Issue #1260)
+
+[credit_tracker.ts](../worker/deno/lib/credit_tracker.ts) now logs token usage
+alongside credit entries, providing detailed observability into Claude API
+consumption per issue.
+
+### 🎯 Phase-based model selection (Issues #1265, #1270)
+
+The worker now selects Claude model tiers (Sonnet, Haiku) based on the current
+processing phase. Lower-priority phases (spelling fixes, branch updates) use
+cost-effective Haiku, while complex phases (implementation, PR feedback) use
+Sonnet. Model tier assignments are configurable and audited.
+
+### 🔧 Prompt structure optimisation for caching (Issue #1262)
+
+Prompt templates are restructured to maximise Claude prompt caching
+effectiveness by placing stable content (coding guidelines, repository context)
+at the beginning and variable content (issue details) at the end.
+
+### 🔑 SHA-based prompt compilation cache (Issues #1271, #1272, #1278)
+
+A per-repository prompt compilation cache uses SHA-256 content hashing to avoid
+recompiling unchanged prompt templates.
+[prompt_hash.ts](../worker/deno/lib/prompt_hash.ts) computes content hashes, and
+the cache is invalidated only when prompt content actually changes, reducing
+redundant template processing.
+
+### 📦 Batch API: considered and not wired (Issues #1264, #2951, #2952)
+
+[batch_api.ts](../worker/deno/lib/batch_api.ts) was built during Issue #1264 as
+a Batch API client, but the live submission lifecycle (`submitBatch`,
+`pollBatchUntilComplete`, `fetchBatchResults`) was **never wired into the run
+loop** and was removed as dead code (Issues #2951, #2952). The module now
+exports only **pure offline helpers** — phase-eligibility assessment and
+cost-savings estimation — with no network I/O. The worker runs on the Claude CLI
+exclusively and submits no work to the Batch API. The path was rejected because
+the Batch API's up-to-24h async turnaround is incompatible with the worker's
+bounded interactive run; see
+Model, Caching & Batching § Batch API for the
+full negative-result note.
+
+### 📁 In-repo `.vibecoder.json` configuration removed (Issues #1278, #2626)
+
+The in-repo `.vibecoder.json` mechanism (Issue #1278) was removed by Issue #2626
+— a config channel from repo content into worker behaviour is an attack/steering
+surface. Per-repo configuration is operator-side only, in `.config.json`
+`repo_config`. A leftover file is ignored with one informative warning
+([legacy_in_repo_config_warning.ts](../worker/deno/lib/legacy_in_repo_config_warning.ts)).
+
+### 🔒 Distributed lock for PR branch updates (Issue #1281)
+
+PR branch update operations now use a distributed lock to prevent concurrent
+update attempts across multiple workers, avoiding race conditions and redundant
+work.
+
+### 🏥 Per-repository timeout tracking (Issue #1172)
+
+[repo_failure_tracker.ts](../worker/deno/lib/repo_failure_tracker.ts) now tracks
+per-repository timeouts separately from other failures, enabling more granular
+failure management and deprioritisation.
+
+### ⚡ Heartbeat and fault tolerance improvements (Issues #1171, #1173, #1204)
+
+- **Heartbeat failure counting** (Issue #1171) — heartbeat failures are counted
+  and tracked, with try-catch protection to prevent heartbeat errors from
+  interrupting processing.
+- **Structured fault tolerance event counters** (Issue #1173) — observability
+  counters for fault tolerance events (retries, fallbacks, circuit breaker
+  trips).
+- **Periodic heartbeat in all processors** (Issue #1204) — all workflow
+  processors now emit periodic heartbeats, preventing stuck-issue detection
+  false positives.
+
+### 🔁 Session resume (Issue #1324)
+
+CLI-level session continuity across multi-phase issue processing using
+`--session-id` and `--resume` flags.
+[session_resume.ts](../worker/deno/lib/session_resume.ts) generates a
+deterministic session ID from the repository name, issue number, and timestamp,
+then builds the appropriate CLI flags for each phase:
+
+- **First phase** — passes `--session-id <id>` to establish a new session.
+- **Subsequent phases** — adds `--resume` so Claude continues from the previous
+  conversation.
+- **Phase counting** — `recordPhaseCompletion()` increments the phase counter so
+  the flag builder knows whether to include `--resume`.
+
+This complements the per-repository `.claude/` directory persistence
+(Issue #1321) by enabling conversation-level continuity within a single issue's
+lifecycle.
+
+### 🗜️ Session compaction (Issue #1328)
+
+Progressive three-tier compaction keeps the per-repo session store
+(`.claude-sessions/`) within the configured size and age limits.
+[session_compaction.ts](../worker/deno/lib/session_compaction.ts) is triggered
+before session restore in
+[git_operations.ts](../worker/deno/commands/git_operations.ts) and escalates
+automatically until the directory is under `maxSessionSizeBytes` (default 50
+MB):
+
+| Tier         | Action                                                                                             |
+| ------------ | -------------------------------------------------------------------------------------------------- |
+| **Soft**     | Removes cache directories (`tmp/`, `cache/`, `.cache/`, `.tmp/`, `tool-outputs/`, `intermediate/`) |
+| **Moderate** | Soft + removes oldest files first + trims by size                                                  |
+| **Hard**     | Deletes the entire session directory                                                               |
+
+Additional behaviours:
+
+- **Age-based expiry** — sessions older than `maxSessionAgeDays` (default 7
+  days, checked via newest file mtime) are removed entirely.
+- **Empty directory cleanup** — recursively removes empty directories bottom-up
+  after compaction.
+- **Bulk compaction** — `compactAllSessions()` applies age and size limits
+  across the entire session store hierarchy (`owner/repo/work-stream/`).
+
+### 📊 Context window budget monitoring (Issue #1327)
+
+[context_budget.ts](../worker/deno/lib/context_budget.ts) estimates prompt token
+usage across components (system prompt, dynamic context, issue content) and
+compares the total against the model's context window (1M tokens for
+Opus/Sonnet, 200k for Haiku — Issue #1399):
+
+- **Heuristic estimation** — `estimateComponentTokens()` approximates token
+  count as `Math.floor(text.length / 4)`.
+- **Threshold warnings** — `checkContextBudget()` emits a warning at 50%
+  utilisation and an error at 80% (both configurable via
+  `contextBudgetWarningPercent` / `contextBudgetErrorPercent` in
+  [config_defaults.ts](../worker/deno/lib/config_defaults.ts)).
+- **Hard ceiling (Issue #3713)** — at or above `contextBudgetBlockPercent`
+  (default 95%, `0` disables) `checkContextBudget()` returns `ok: false` with a
+  `blockReason`. Both execution phases honour it: the phase stops **before** the
+  billed Claude invocation, applies `needs-human` through the shared
+  `escalateToHuman` chokepoint, and posts an explanation. Without it a
+  non-converging issue was bounded only by wall-clock while `loop.sh` restarted
+  the worker forever. `context_budget_guard.ts` holds the shared component
+  breakdown and escalation wording used by both phases.
+- **Human-readable breakdown** — `formatBudgetBreakdown()` produces a summary
+  such as
+  `"Context budget: system=12,450 dynamic=3,200 issue=1,800 total=17,450/200,000 (8.7%)"`,
+  prefixed `Context budget BLOCKED:` when the ceiling fired.
+- **Daily budget logging** — `logContextBudget()` appends JSON-line entries to a
+  daily log file (`.context_budget_YYYY-MM-DD.json`), and
+  `aggregateBudgetStats()` computes average/max tokens, usage percentages, and
+  warning/error counts for integration with the daily credit summary.
+
+### 🔊 Verbosity configuration (Issues #1329–#1333)
+
+Four verbosity levels control Claude's response style, reducing token usage for
+mechanical tasks while preserving detailed reasoning for complex ones.
+[verbosity.ts](../worker/deno/lib/verbosity.ts) resolves the effective level and
+returns instruction text injected into prompts:
+
+Each level is stated as the output shape to produce, not as a prohibition, and
+every level emits a `## Response Verbosity` block (Issue #3813):
+
+| Level        | Behaviour                                            | Example phases                                       |
+| ------------ | ---------------------------------------------------- | ---------------------------------------------------- |
+| **minimal**  | One sentence naming the change; that is the response | `spelling_fix`, `summarise`                          |
+| **concise**  | 2–3 sentences: what changed and why                  | `ci_fix`, `pr_feedback`, `quality_fix`, `refinement` |
+| **standard** | End-of-run summary; no running commentary            | `issue` (general implementation)                     |
+| **verbose**  | Standard summary plus the genuinely close decisions  | `planning`, `question`                               |
+
+Resolution priority chain:
+
+1. **Per-repo override** — set via the `verbosity` field in `.config.json`
+   `repo_config` (highest priority).
+2. **Phase default** — from `PHASE_VERBOSITY_DEFAULTS` in
+   [config_defaults.ts](../worker/deno/lib/config_defaults.ts).
+3. **Global default** — `"standard"`, preserving existing behaviour.
+
+### 📅 April 2026 additions
+
+The following features and changes have landed since the previous addendum. Each
+links to its issue for the full rationale.
+
+- **`top-priority` label tier (Issues #1622, #1623, #1624, #1625, #1644):**
+  Added a new highest-priority configured label that supersedes `help wanted`,
+  `claude`, and `work-on`. Documented in [USAGE.md](USAGE.md),
+  [CONFIGURATION.md](CONFIGURATION.md) and
+  [workflows/issue-processing.md](workflows/issue-processing.md). Also added to
+  `DEFAULT_ISSUE_LABELS` and `RESERVED_LABELS` so the worker never self-applies
+  it.
+- **`low-priority` label tier (Issues #1721, #1748):** Fallback tier (priority
+  2.5) consulted only when no eligible higher-tier candidate exists in any
+  scanned repo. Standardised across discovery and label-sync.
+- **Issue selection priority order docs (Issues #1719, #1745, #2022):**
+  Canonical order is now `top-priority` > `work-on` > `low-priority` >
+  `idle-task`. Issue #2022 retired the legacy `help wanted` and `claude`
+  discovery labels; only `idle-task` is self-appliable by the Vibe Coder.
+  Selection-reasoning diagnostic added for blocked top-priority issues (Issue
+  #1718).
+- **`grill-me` workflow (Issues #1647, #1648, #1658, #1666, #1693, #1695):**
+  Refines under-specified issues by asking multiple-choice questions one round
+  at a time. Developer-driven label transition, task-list checkbox question
+  choices, cross-issue consistency check, and `needs-human` after Round N.
+  Prompt versions v2–v5; documented in
+  [workflows/grill-me.md](workflows/grill-me.md).
+- **`ci_fix` v4 + failure classifier (Issues #1690, #1691, #1692, #1743):** New
+  `ci_failure_classifier.ts` library categorises failures (test, build, lint,
+  infrastructure, transient). The v4 prompt and the no-change reply path are
+  classifier-aware, replacing the old generic "transient or infrastructure"
+  fallback.
+- **`bump-deps` phase + supply-chain hardening (Issues #1613, #1614, #1652,
+  #1756, #2536):** New phase bumps dependencies and runs the per-tool audit gate
+  before the substantive change is built. Quarantine is split by ecosystem so
+  the two mechanisms never overlap. **Deno deps (JSR / `deno.land/x`)** use
+  Deno's **native** `deno.json` `minimumDependencyAge` (canonical object form
+  from Issue #2539:
+  `{ "age": "P1D", "exclude": ["jsr:@stsoftware/*",
+  "npm:@stsoftware/*"] }`)
+  plus `deno update` / `deno outdated --minimum-dependency-age` — external Deno
+  deps wait the **24h** (`P1D`) floor, internal `stSoftwareAU` deps update at
+  **0h**; `renovate.json` disables Renovate's `deno` manager so it never
+  double-gates them. **npm / cargo / GitHub Actions** keep the existing 24h
+  quarantine via Renovate's `minimumReleaseAge` and `VIBE_BUMP_QUARANTINE_HOURS`
+  (numbers unchanged), and GitHub Actions are pinned to commit SHAs. The
+  coding-guidelines prompt (`prompts/coding_guidelines/`) documents the bump
+  pattern.
+- **Quality gate additions:** `pages-liquid` (Issue #1601, #1603),
+  `markdownlint-cli2` (Issue #1685, #1714), `mermaid_validator` integration
+  (Issue #1683, #1713), and the `tail -f | head` foot-gun detector (Issue #1681,
+  #1715).
+- **Standard workflow templates (Issues #1581, #1596, #1656, #1703):**
+  `workflow_setup` v2/v3 provisions Gitleaks, Semgrep SAST, NEAT-AI scorer
+  hardening, Dependency Review and markdown-lint with commit-SHA-pinned actions.
+- **Combined claim + heartbeat comment (Issue #1628):** First claim and first
+  heartbeat are merged into a single comment, reducing notification noise and
+  saving a GitHub API call per issue.
+- **Push gated on git state, not Claude stdout (Issue #1643):** PR-feedback push
+  decisions consult `git status`/`git log` instead of parsing Claude's textual
+  output, eliminating "forgotten push" bugs.
+- **`needs-human` after content modified post-approval (Issue #1740):** When an
+  issue's content changes after a human approval, the worker stops and adds
+  `needs-human` instead of silently re-implementing.
+- **Self-healing duplicate-PR race (Issue #1589):** Recovery path detects when
+  an external PR closed the issue and abandons the worker's branch cleanly.
+- **Phase 0 merged-PR pre-flight (Issue #1560):** Skips already-resolved issues
+  without invoking Claude.
+- **Worker quality-gate baseline-aware push (Issue #1549, generalised in
+  #2604):** Pre-existing failures captured by the baseline are not blamed on the
+  current change. The bypass reasons over every diffable check at once —
+  mermaid, markdownlint, and the docs prompt-version check (`baseline_gate.ts`)
+  — so a pre-existing failure in an untouched mermaid/markdownlint/docs artefact
+  no longer forces a remediation loop, while a genuinely-new failure is never
+  waved through.
+- **Pre-flight rate-limit check at startup (PR #1553):** the worker driver
+  aborts cleanly when GitHub rate-limit headroom is too low to complete a scan
+  cycle.
+
+---
+
+## 📂 Source file index
+
+### Shell entry points and orchestration
+
+| Module              | Path                                                                              | Purpose                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Entry point         | [run.sh](../run.sh) / [run.ps1](../run.ps1)                                       | Cron/launchd/Task Scheduler entry — both launch the worker container from the same launch plan by default; `run.sh` also serves the opt-in native run mode on macOS/Linux (Issues #4065, #4066, #4148) |
+| Worker driver       | [run_worker.ts](../worker/deno/lib/run_worker.ts)                                 | PID guard → bootstrap → housekeeping → `run-core` loop → cleanup (Issue #3504)                        |
+| Issue orchestration | [issue_worker.ts](../worker/deno/lib/issue_worker.ts)                             | Issue processing orchestration in Deno (the bash `worker/issue_worker.sh` was deleted in Issue #3661) |
+| Repo diagnostics    | [worker/deno/commands/diagnose_repo.ts](../worker/deno/commands/diagnose_repo.ts) | Analyse why issues are blocked in a repo (Issue #743)                                                 |
+
+### Shell orchestration scripts (`worker/shared/` — 2 remaining, Issue #1177)
+
+After the Deno migration cleanup, only two thin wrapper scripts remain in
+`worker/shared/`. All business logic has been migrated to Deno TypeScript.
+Functions previously in deleted scripts were either inlined into their callers
+or replaced by Deno commands.
+
+| Module          | Path                                                      | Purpose                                                                |
+| --------------- | --------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Deno bridge     | [deno_bridge.sh](../worker/shared/deno_bridge.sh)         | Shell-to-Deno command execution bridge, logging, and wrapper functions |
+| Config defaults | [config_defaults.sh](../worker/shared/config_defaults.sh) | Default configuration values (shell fallback for Deno load-config)     |
+
+### Deno TypeScript modules (`worker/deno/lib/` — 132 modules)
+
+All business logic lives here. Shell scripts call these via `deno_bridge.sh`.
+
+| Category                                      | Module                                                                                                            | Purpose                                                                                                                                                                                      |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Issue selection**                           |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [issue_query.ts](../worker/deno/lib/issue_query.ts)                                                               | GitHub API queries for issue discovery                                                                                                                                                       |
+|                                               | [issue_filter.ts](../worker/deno/lib/issue_filter.ts)                                                             | Issue filtering and sorting logic                                                                                                                                                            |
+|                                               | [issue_priority.ts](../worker/deno/lib/issue_priority.ts)                                                         | Candidate ranking and priority selection                                                                                                                                                     |
+|                                               | [issue_cache.ts](../worker/deno/lib/issue_cache.ts)                                                               | API response caching for issues and PRs                                                                                                                                                      |
+|                                               | [issue_data.ts](../worker/deno/lib/issue_data.ts)                                                                 | Consolidated issue data fetching                                                                                                                                                             |
+|                                               | [issue_finder.ts](../worker/deno/lib/issue_finder.ts)                                                             | Issue finder Deno logic                                                                                                                                                                      |
+|                                               | [claim_issue.ts](../worker/deno/lib/claim_issue.ts)                                                               | Atomic claiming with tie-break                                                                                                                                                               |
+|                                               | [diagnose_issue.ts](../worker/deno/lib/diagnose_issue.ts)                                                         | Issue pickup diagnostics (Issue #1063)                                                                                                                                                       |
+|                                               | [issue_finder_logger.ts](../worker/deno/lib/issue_finder_logger.ts)                                               | Diagnostic logging for issue finder pipeline (Issue #1062)                                                                                                                                   |
+|                                               | [issue_lifecycle.ts](../worker/deno/lib/issue_lifecycle.ts)                                                       | Issue closure for merged PRs                                                                                                                                                                 |
+|                                               | [label_manager.ts](../worker/deno/lib/label_manager.ts)                                                           | Label management and failure progression                                                                                                                                                     |
+|                                               | [issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)                                                 | Dependency resolution and cycle detection                                                                                                                                                    |
+| **PR management**                             |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                         |
+|                                               | [pr_comments.ts](../worker/deno/lib/pr_comments.ts)                                                               | PR comment/feedback detection and processing                                                                                                                                                 |
+|                                               | [pr_evidence.ts](../worker/deno/lib/pr_evidence.ts)                                                               | Screenshot processing and evidence validation                                                                                                                                                |
+|                                               | [pr_issue_linking.ts](../worker/deno/lib/pr_issue_linking.ts)                                                     | Ensure PRs reference closing issues                                                                                                                                                          |
+|                                               | [pr_auto_merge.ts](../worker/deno/lib/pr_auto_merge.ts)                                                           | Auto-merge enablement and catch-up                                                                                                                                                           |
+|                                               | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)                                                     | PR branch update operations                                                                                                                                                                  |
+|                                               | [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts)                                                       | CI failure processing workflow (Issue #1120)                                                                                                                                                 |
+|                                               | [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts)                                           | PR feedback processing workflow (Issue #1119)                                                                                                                                                |
+|                                               | [pr_maintenance.ts](../worker/deno/lib/pr_maintenance.ts)                                                         | PR maintenance operations (branch updates, auto-merge, cleanup)                                                                                                                              |
+|                                               | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts)                                           | Spelling failure processing workflow (Issue #1119)                                                                                                                                           |
+|                                               | [claim_pr_comment.ts](../worker/deno/lib/claim_pr_comment.ts)                                                     | Atomic PR comment claiming to prevent duplicates (Issue #1061)                                                                                                                               |
+|                                               | [pr_ci_checks.ts](../worker/deno/lib/pr_ci_checks.ts)                                                             | CI check monitoring                                                                                                                                                                          |
+|                                               | [pr_retarget.ts](../worker/deno/lib/pr_retarget.ts)                                                               | PR retargeting                                                                                                                                                                               |
+|                                               | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)                                                         | Stale branch cleanup after PR merge                                                                                                                                                          |
+|                                               | [remote_branch_delete.ts](../worker/deno/lib/remote_branch_delete.ts)                                             | Remote-branch deletion chokepoint — refuses protected, head-PR, base-PR and unreadable branches (Issue #3931)                                                                                |
+| **Git operations**                            |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [git_branch.ts](../worker/deno/lib/git_branch.ts)                                                                 | Branch management and sync                                                                                                                                                                   |
+|                                               | [git_push.ts](../worker/deno/lib/git_push.ts)                                                                     | Push operations                                                                                                                                                                              |
+|                                               | [git_pull.ts](../worker/deno/lib/git_pull.ts)                                                                     | Pull operations                                                                                                                                                                              |
+|                                               | [git_push_recovery.ts](../worker/deno/lib/git_push_recovery.ts)                                                   | Push rejection recovery                                                                                                                                                                      |
+|                                               | [git_conflict_resolution.ts](../worker/deno/lib/git_conflict_resolution.ts)                                       | Automatic conflict resolution                                                                                                                                                                |
+|                                               | [git_state_recovery.ts](../worker/deno/lib/git_state_recovery.ts)                                                 | Git state recovery                                                                                                                                                                           |
+|                                               | [git_repo_validation.ts](../worker/deno/lib/git_repo_validation.ts)                                               | Repository validation                                                                                                                                                                        |
+|                                               | [git_timeout.ts](../worker/deno/lib/git_timeout.ts)                                                               | Timeout wrappers for git operations                                                                                                                                                          |
+| **GitHub integration**                        |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [gh_wrapper.ts](../worker/deno/lib/gh_wrapper.ts)                                                                 | Timeout wrappers for `gh` CLI (Issue #905)                                                                                                                                                   |
+|                                               | [gh_auth.ts](../worker/deno/lib/gh_auth.ts)                                                                       | GitHub CLI authentication checks (Issue #905)                                                                                                                                                |
+|                                               | [github_status.ts](../worker/deno/lib/github_status.ts)                                                           | GitHub user status updates (Issue #905)                                                                                                                                                      |
+|                                               | [github.ts](../worker/deno/lib/github.ts)                                                                         | GitHub API utilities                                                                                                                                                                         |
+|                                               | [github_app_auth.ts](../worker/deno/lib/github_app_auth.ts)                                                       | GitHub App authentication                                                                                                                                                                    |
+|                                               | [github_errors.ts](../worker/deno/lib/github_errors.ts)                                                           | GitHub error handling                                                                                                                                                                        |
+| **Claude integration**                        |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [claude_executor.ts](../worker/deno/lib/claude_executor.ts)                                                       | Low-level Claude CLI subprocess execution (Issue #913)                                                                                                                                       |
+|                                               | [claude_runner.ts](../worker/deno/lib/claude_runner.ts)                                                           | Claude execution, retry, timeout, health (Issue #913)                                                                                                                                        |
+|                                               | [claude_auth.ts](../worker/deno/lib/claude_auth.ts)                                                               | Claude CLI authentication detection (Issue #913)                                                                                                                                             |
+|                                               | [prompt_builder.ts](../worker/deno/lib/prompt_builder.ts)                                                         | Prompt assembly from templates and context                                                                                                                                                   |
+|                                               | [prompt_manager.ts](../worker/deno/lib/prompt_manager.ts)                                                         | Prompt template versioning and selection                                                                                                                                                     |
+|                                               | [model_fallback.ts](../worker/deno/lib/model_fallback.ts)                                                         | Model tier hierarchy and fallback mapping on rate limit (Issue #1112)                                                                                                                        |
+|                                               | [credit_tracker.ts](../worker/deno/lib/credit_tracker.ts)                                                         | Credit tracking, model fallback events, and token usage logging (Issues #1114, #1260)                                                                                                        |
+|                                               | [token_usage.ts](../worker/deno/lib/token_usage.ts)                                                               | Token usage tracking utilities                                                                                                                                                               |
+|                                               | [answer_sanitiser.ts](../worker/deno/lib/answer_sanitiser.ts)                                                     | Strip meta-commentary from Claude answers (Issue #332, #913)                                                                                                                                 |
+|                                               | [prompt_builder_cache.ts](../worker/deno/lib/prompt_builder_cache.ts)                                             | SHA-based prompt compilation cache (Issue #1272)                                                                                                                                             |
+|                                               | [prompt_cache.ts](../worker/deno/lib/prompt_cache.ts)                                                             | Per-repo prompt caching with content hashing (Issue #1272)                                                                                                                                   |
+|                                               | [prompt_hash.ts](../worker/deno/lib/prompt_hash.ts)                                                               | SHA-256 prompt content hashing (Issue #1271)                                                                                                                                                 |
+|                                               | [batch_api.ts](../worker/deno/lib/batch_api.ts)                                                                   | Offline Batch API estimation helpers only — live submission never wired in, removed as dead code (Issues #1264, #2951, #2952)                                                                |
+|                                               | [context_budget.ts](../worker/deno/lib/context_budget.ts)                                                         | Context window budget estimation, monitoring, and hard ceiling (Issues #1327, #3713)                                                                                                         |
+|                                               | [context_budget_guard.ts](../worker/deno/lib/context_budget_guard.ts)                                             | Shared prompt component breakdown and needs-human copy for the context ceiling (Issue #3713)                                                                                                 |
+|                                               | [verbosity.ts](../worker/deno/lib/verbosity.ts)                                                                   | Verbosity level resolution and prompt injection (Issues #1329–#1333)                                                                                                                         |
+|                                               | [session_resume.ts](../worker/deno/lib/session_resume.ts)                                                         | CLI session continuity with `--session-id` / `--resume` (Issue #1324)                                                                                                                        |
+|                                               | [session_compaction.ts](../worker/deno/lib/session_compaction.ts)                                                 | Progressive three-tier session compaction (Issue #1328)                                                                                                                                      |
+| **Question answering**                        |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [comment_filter.ts](../worker/deno/lib/comment_filter.ts)                                                         | Comment filtering for follow-up questions (Issue #664)                                                                                                                                       |
+|                                               | [question_clarification.ts](../worker/deno/lib/question_clarification.ts)                                         | Clarification request detection (Issue #665)                                                                                                                                                 |
+|                                               | [partial_answer.ts](../worker/deno/lib/partial_answer.ts)                                                         | Post partial answers on timeout (Issue #661, #913)                                                                                                                                           |
+|                                               | [question_processor.ts](../worker/deno/lib/question_processor.ts)                                                 | Question answering workflow processing                                                                                                                                                       |
+|                                               | [planning_processor.ts](../worker/deno/lib/planning_processor.ts)                                                 | Planning workflow and sub-issue relationship tracking                                                                                                                                        |
+|                                               | [refinement_processor.ts](../worker/deno/lib/refinement_processor.ts)                                             | Issue refinement workflow processing (Issue #1138)                                                                                                                                           |
+|                                               | [revision_processor.ts](../worker/deno/lib/revision_processor.ts)                                                 | PR revision processing workflow                                                                                                                                                              |
+| **Resilience and recovery**                   |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [failure_tracker.ts](../worker/deno/lib/failure_tracker.ts)                                                       | Consecutive failure tracking with persistent state                                                                                                                                           |
+|                                               | [repo_failure_tracker.ts](../worker/deno/lib/repo_failure_tracker.ts)                                             | Per-repo failure tracking within scan cycles (Issue #586)                                                                                                                                    |
+|                                               | [repo_blocked_alert.ts](../worker/deno/lib/repo_blocked_alert.ts)                                                 | Alert when open PRs block all repo issues (Issue #745)                                                                                                                                       |
+|                                               | [circuit_breaker.ts](../worker/deno/lib/circuit_breaker.ts)                                                       | Circuit breaker with persistent state                                                                                                                                                        |
+|                                               | [cooldown_state.ts](../worker/deno/lib/cooldown_state.ts)                                                         | Issue retry cooldown with persistent state                                                                                                                                                   |
+|                                               | [crash_notification.ts](../worker/deno/lib/crash_notification.ts)                                                 | Operator alerts via issue comments and webhooks                                                                                                                                              |
+|                                               | [crash_cleanup.ts](../worker/deno/lib/crash_cleanup.ts)                                                           | Trap handler for unexpected exit cleanup                                                                                                                                                     |
+|                                               | [failure_diagnosis.ts](../worker/deno/lib/failure_diagnosis.ts)                                                   | Failure root cause analysis                                                                                                                                                                  |
+|                                               | [stuck_issue_detector.ts](../worker/deno/lib/stuck_issue_detector.ts)                                             | Heartbeat-based stuck detection with orphan recovery                                                                                                                                         |
+|                                               | [retry.ts](../worker/deno/lib/retry.ts)                                                                           | Rate-limit aware retry with backoff (Deno)                                                                                                                                                   |
+|                                               | [rate_limit_jitter.ts](../worker/deno/lib/rate_limit_jitter.ts)                                                   | Jitter for rate-limit retry intervals                                                                                                                                                        |
+|                                               | [rate_limit_signal.ts](../worker/deno/lib/rate_limit_signal.ts)                                                   | Rate-limit signal coordination                                                                                                                                                               |
+|                                               | [shared_cooldown.ts](../worker/deno/lib/shared_cooldown.ts)                                                       | Shared cooldown state across workers via GitHub issue comments (Issue #1087)                                                                                                                 |
+|                                               | [health_check_cache.ts](../worker/deno/lib/health_check_cache.ts)                                                 | Periodic health check caching (Issue #635)                                                                                                                                                   |
+|                                               | [fault_tolerance_counters.ts](../worker/deno/lib/fault_tolerance_counters.ts)                                     | Structured event counters for observability (Issue #1173)                                                                                                                                    |
+|                                               | [timeout_tracker.ts](../worker/deno/lib/timeout_tracker.ts)                                                       | Per-repository timeout tracking (Issue #1172)                                                                                                                                                |
+|                                               | [stale_workflow_detector.ts](../worker/deno/lib/stale_workflow_detector.ts)                                       | Stale workflow label detection and cleanup (Issue #1240)                                                                                                                                     |
+|                                               | [pr_branch_lock.ts](../worker/deno/lib/pr_branch_lock.ts)                                                         | Distributed lock for PR branch updates and CI fixes — acquire, renew, release (Issues #1281, #3754)                                                                                          |
+| **Security scan** (Issues #1933–#1944, #2097) |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [security_scanner.ts](../worker/deno/lib/security_scanner.ts)                                                     | Four-phase scan executor — loads + substitutes the prompt, runs Claude with Write/Edit disallowed and Bash allowed so Claude can call `gh issue create` (outcome-only contract, Issue #2097) |
+|                                               | [idle_task_templates/security_scan_template.ts](../worker/deno/lib/idle_task_templates/security_scan_template.ts) | Idle-task template wrapper — snapshots open `security`-labelled issues before and after the scan, diffs to compute newly-filed issues, renders the close-comment summary                     |
+|                                               | [security_finding_id.ts](../worker/deno/lib/security_finding_id.ts)                                               | Finding-id hashing for the dedup marker comment                                                                                                                                              |
+|                                               | [suppression_comments.ts](../worker/deno/lib/suppression_comments.ts)                                             | In-source `security-scan-ignore` marker grammar (`noqa`, `eslint-disable-next-line`, …) with mandatory `author=` / `expires=` / reason governance and the per-run suppression report         |
+|                                               | [label_security.ts](../worker/deno/lib/label_security.ts)                                                         | Strips workflow labels from filed `security` issues on each scan                                                                                                                             |
+|                                               | [security_fix_gate.ts](../worker/deno/lib/security_fix_gate.ts)                                                   | Patch-verification gate for PRs closing a `security` finding — diff-asserted test evidence plus prose linkage (Issues #3540, #3652)                                                          |
+|                                               | [security_fix_gate_feedback.ts](../worker/deno/lib/security_fix_gate_feedback.ts)                                 | States the gate's evidence contract in the prompt and carries a blocked verdict into the next attempt via run state (Issue #4057)                                                            |
+| **Configuration**                             |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [config.ts](../worker/deno/lib/config.ts)                                                                         | Configuration loading                                                                                                                                                                        |
+|                                               | [config_defaults.ts](../worker/deno/lib/config_defaults.ts)                                                       | Single source of truth for operational constants (Issue #904)                                                                                                                                |
+|                                               | [config_mapping.ts](../worker/deno/lib/config_mapping.ts)                                                         | Configuration mapping                                                                                                                                                                        |
+|                                               | [config_validator.ts](../worker/deno/lib/config_validator.ts)                                                     | Configuration validation                                                                                                                                                                     |
+|                                               | [operational_defaults.ts](../worker/deno/lib/operational_defaults.ts)                                             | Centralised operational constants                                                                                                                                                            |
+|                                               | [feature_availability.ts](../worker/deno/lib/feature_availability.ts)                                             | Feature detection and graceful degradation (Issue #196)                                                                                                                                      |
+|                                               | [repo_config.ts](../worker/deno/lib/repo_config.ts)                                                               | Per-repo configuration                                                                                                                                                                       |
+|                                               | [legacy_in_repo_config_warning.ts](../worker/deno/lib/legacy_in_repo_config_warning.ts)                           | Warns on a leftover `.vibecoder.json` — in-repo config removed (Issue #2626)                                                                                                                 |
+| **Infrastructure**                            |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [pid_guard.ts](../worker/deno/lib/pid_guard.ts)                                                                   | Single-instance locking                                                                                                                                                                      |
+|                                               | [logger.ts](../worker/deno/lib/logger.ts)                                                                         | Structured logging with skip reasons and timing metrics                                                                                                                                      |
+|                                               | [log_rotation.ts](../worker/deno/lib/log_rotation.ts)                                                             | Size-based log rotation                                                                                                                                                                      |
+|                                               | [worker_log_gzip.ts](../worker/deno/lib/worker_log_gzip.ts)                                                       | Gzips prior runs' worker logs at worker start (Issue #4027)                                                                                                                                  |
+|                                               | [worker_log_cleanup.ts](../worker/deno/lib/worker_log_cleanup.ts)                                                 | Age-based worker-log retention, plain and gzipped (Issues #1902, #4027)                                                                                                                      |
+|                                               | [disk_space.ts](../worker/deno/lib/disk_space.ts)                                                                 | Disk space management                                                                                                                                                                        |
+|                                               | [run_core.ts](../worker/deno/lib/run_core.ts)                                                                     | Main loop and priority dispatch (Issue #1124)                                                                                                                                                |
+|                                               | [run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)                                     | Production dependency wiring for run-core (Issue #1124)                                                                                                                                      |
+|                                               | [run_entrypoint.ts](../worker/deno/lib/run_entrypoint.ts)                                                         | Run entrypoint logic                                                                                                                                                                         |
+|                                               | [fleet_health.ts](../worker/deno/lib/fleet_health.ts)                                                                 | FLEET health reporting (Issue #1124)                                                                                                                                                           |
+|                                               | [heartbeat.ts](../worker/deno/lib/heartbeat.ts)                                                                   | Heartbeat tracking for stuck-issue detection                                                                                                                                                 |
+|                                               | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file) (Issue #3502)                                                                          |
+|                                               | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                                     |
+|                                               | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                               |
+| **Utilities**                                 |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [array_utils.ts](../worker/deno/lib/array_utils.ts)                                                               | Array shuffling and manipulation                                                                                                                                                             |
+|                                               | [file_utils.ts](../worker/deno/lib/file_utils.ts)                                                                 | Atomic file writes (Issue #693)                                                                                                                                                              |
+|                                               | [temp_utils.ts](../worker/deno/lib/temp_utils.ts)                                                                 | Safe temporary file creation and cleanup                                                                                                                                                     |
+|                                               | [path_bootstrap.ts](../worker/deno/lib/path_bootstrap.ts)                                                         | PATH setup for cross-platform tool discovery                                                                                                                                                 |
+|                                               | [run_bootstrap.ts](../worker/deno/lib/run_bootstrap.ts)                                                           | Worker bootstrap prelude orchestration — PATH, run-id, log init, git reset, updates (Issue #3501)                                                                                            |
+|                                               | [security.ts](../worker/deno/lib/security.ts)                                                                     | Input validation and sanitisation                                                                                                                                                            |
+|                                               | [validation.ts](../worker/deno/lib/validation.ts)                                                                 | General validation utilities                                                                                                                                                                 |
+|                                               | [command_args.ts](../worker/deno/lib/command_args.ts)                                                             | Command argument parsing                                                                                                                                                                     |
+|                                               | [commands.ts](../worker/deno/lib/commands.ts)                                                                     | Command registry utilities                                                                                                                                                                   |
+|                                               | [direct_merge.ts](../worker/deno/lib/direct_merge.ts)                                                             | Direct merge utilities                                                                                                                                                                       |
+|                                               | [repo_availability.ts](../worker/deno/lib/repo_availability.ts)                                                   | Milestone-aware repo availability checking                                                                                                                                                   |
+|                                               | [mermaid_validator.ts](../worker/deno/lib/mermaid_validator.ts)                                                   | Mermaid gitGraph syntax validation (Issue #525)                                                                                                                                              |
+|                                               | [software_updates.ts](../worker/deno/lib/software_updates.ts)                                                     | Software update checks (Deno)                                                                                                                                                                |
+|                                               | [terminal_title.ts](../worker/deno/lib/terminal_title.ts)                                                         | Terminal title updates (Deno)                                                                                                                                                                |
+|                                               | [worker_identity.ts](../worker/deno/lib/worker_identity.ts)                                                       | Worker identity (Deno)                                                                                                                                                                       |
+|                                               | [issue_worker.ts](../worker/deno/lib/issue_worker.ts)                                                             | Issue processing orchestration in Deno (Issue #1122)                                                                                                                                         |
+|                                               | [issue_worker_wiring.ts](../worker/deno/lib/issue_worker_wiring.ts)                                               | Issue worker dependency wiring (Issue #1122)                                                                                                                                                 |
+|                                               | [shell_helpers.ts](../worker/deno/lib/shell_helpers.ts)                                                           | Shell integration helper utilities                                                                                                                                                           |
+| **Milestone management**                      |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [milestone_completion.ts](../worker/deno/lib/milestone_completion.ts)                                             | Milestone completion detection and consolidation PR                                                                                                                                          |
+|                                               | [milestone_open_children.ts](../worker/deno/lib/milestone_open_children.ts)                                       | Authoritative (fresh, uncached) open-children count that vetoes milestone finalisation (Issue #3908)                                                                                         |
+|                                               | [milestone_progress.ts](../worker/deno/lib/milestone_progress.ts)                                                 | Milestone progress notifications (Issue #1236)                                                                                                                                               |
+|                                               | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones (Issue #1237)                                                                                                                                  |
+|                                               | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch (Issue #1238)                                                                                                                             |
+|                                               | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs (Issue #3912)                                                                            |
+|                                               | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics (Issue #1239)                                                                                                                                                   |
+| **Issue processing phases**                   |                                                                                                                   |                                                                                                                                                                                              |
+|                                               | [clarity_assessment.ts](../worker/deno/lib/clarity_assessment.ts)                                                 | Issue clarity assessment logic                                                                                                                                                               |
+|                                               | [clarity_phase.ts](../worker/deno/lib/clarity_phase.ts)                                                           | Clarity assessment phase (Issue #1225)                                                                                                                                                       |
+|                                               | [execute_claude_phase.ts](../worker/deno/lib/execute_claude_phase.ts)                                             | Claude execution phase (Issue #1227)                                                                                                                                                         |
+|                                               | [quality_gate_phase.ts](../worker/deno/lib/quality_gate_phase.ts)                                                 | Quality gate phase (Issue #1228)                                                                                                                                                             |
+|                                               | [phases/completion_phase.ts](../worker/deno/lib/phases/completion_phase.ts)                                       | PR completion phase — push, PR creation, screenshot and security-fix gates (Issues #1527, #3939)                                                                                             |
+|                                               | [pr_summary_loader.ts](../worker/deno/lib/pr_summary_loader.ts)                                                   | PR summary file loading                                                                                                                                                                      |
+|                                               | [screenshot_validation.ts](../worker/deno/lib/screenshot_validation.ts)                                           | Screenshot evidence validation                                                                                                                                                               |
+|                                               | [imgbb_upload.ts](../worker/deno/lib/imgbb_upload.ts)                                                             | ImgBB screenshot upload client (Issue #1232)                                                                                                                                                 |
+|                                               | [failure_message.ts](../worker/deno/lib/failure_message.ts)                                                       | Failure message formatting                                                                                                                                                                   |
+|                                               | [subprocess_timeout.ts](../worker/deno/lib/subprocess_timeout.ts)                                                 | Subprocess timeout management                                                                                                                                                                |

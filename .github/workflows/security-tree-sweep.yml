@@ -1,0 +1,142 @@
+name: Security Tree Sweep
+
+# Whole-tree scanner sweep (Issue #4193) on a schedule and on demand
+# (Issue #4409): semgrep in its digest-pinned image, CodeQL from the pinned
+# CodeQL action with the SARIF kept local (`upload: never`, so it does not
+# collide with the repository's default-setup CodeQL), and the worker's own
+# open security findings — normalised, deduplicated and classified against the
+# committed baseline (`.github/security-tree-sweep-baseline.json`).
+#
+# The report goes to the job summary and an artefact. The job fails loudly
+# when a scanner cannot run, when a scanner exits abnormally, or when any
+# deduplicated finding is unbaselined — a missing tool is never a clean sweep
+# (Issue #3234).
+#
+# Repository-local by construction: the slug comes from `github.repository`,
+# so the same workflow runs unchanged after the clean-publish cut-over.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue #2123).
+
+on:
+  schedule:
+    # Weekly, Tuesday 03:41 UTC — off the hour, and a day after the tabletop.
+    - cron: '41 3 * * 2'
+  workflow_dispatch:
+  pull_request:
+    branches: [Develop, main, milestone/*]
+    paths:
+      - '.github/workflows/security-tree-sweep.yml'
+      - '.github/security-tree-sweep-baseline.json'
+      - 'worker/deno/lib/security_tree_sweep.ts'
+      - 'worker/deno/commands/security_tree_sweep.ts'
+
+# Issue #2382 — Rule of Two: read the tree, read open issues, write nothing.
+# `actions: read` is what github/codeql-action needs to look up its own
+# workflow run even with `upload: never` (it fails with "Resource not
+# accessible by integration" without it).
+permissions:
+  contents: read
+  issues: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # `gh` (worker-scan source: open `security` issues) reads with the
+      # workflow token; nothing here writes.
+      GH_TOKEN: ${{ github.token }}
+      SARIF_DIR: ${{ github.workspace }}/.sweep/codeql
+      SEMGREP_JSON: ${{ github.workspace }}/.sweep/semgrep.json
+      REPORT: ${{ github.workspace }}/.sweep/security-tree-sweep.md
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install Deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          deno-version-file: .deno-version
+
+      - name: Initialise CodeQL (JavaScript/TypeScript, SARIF kept local)
+        # github/codeql-action/init@v4.37.7
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd
+        with:
+          languages: javascript-typescript
+          # The default query pack; the sweep, not CodeQL, decides severity
+          # thresholds against the baseline.
+          queries: security-and-quality
+
+      - name: Analyse with CodeQL
+        # github/codeql-action/analyze@v4.37.7
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd
+        with:
+          category: security-tree-sweep
+          upload: never
+          output: ${{ env.SARIF_DIR }}
+
+      - name: Semgrep (digest-pinned image, JSON to file)
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$SEMGREP_JSON")"
+          # Same image `semgrep.yml` runs; the sweep's own runner would pick
+          # this container up too, but running it here keeps the JSON as an
+          # artefact and separates "scanner failed" from "sweep failed".
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/src" -w /src \
+            semgrep/semgrep:1.173.0@sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a \
+            semgrep scan --config p/default --json --metrics=off --quiet . \
+            > "$SEMGREP_JSON"
+          echo "semgrep JSON: $(wc -c < "$SEMGREP_JSON") bytes"
+
+      - name: Sweep — normalise, deduplicate, classify against the baseline
+        id: sweep
+        run: |
+          set -euo pipefail
+          sarif="$(find "$SARIF_DIR" -name '*.sarif' | head -1)"
+          if [ -z "$sarif" ]; then
+            echo "::error::CodeQL produced no SARIF under $SARIF_DIR"
+            exit 1
+          fi
+          cd worker/deno
+          set +e
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run \
+            --allow-sys=hostname mod.ts security-tree-sweep \
+            --repo ../.. \
+            --slug "${GITHUB_REPOSITORY}" \
+            --semgrep-json "$SEMGREP_JSON" \
+            --codeql-sarif "$sarif" \
+            --report "$REPORT" \
+            --stamp
+          status=$?
+          set -e
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          if [ -f "$REPORT" ]; then
+            cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::the sweep wrote no report — see the step log"
+          fi
+          exit "$status"
+
+      - name: Upload the sweep report and scanner outputs
+        if: always()
+        # actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: security-tree-sweep
+          path: |
+            .sweep/security-tree-sweep.md
+            .sweep/semgrep.json
+            .sweep/codeql/*.sarif
+          if-no-files-found: warn
+          retention-days: 7

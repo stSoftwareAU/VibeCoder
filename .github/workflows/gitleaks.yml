@@ -1,0 +1,198 @@
+name: Gitleaks
+
+# Detect secrets in pull request diffs.
+#
+# Mirrors the canonical NEAT-AI pattern at
+# example-org/private-repo-29/.github/workflows/quality.yml. Third-party
+# actions are pinned to 40-character commit SHAs (Issue #1756) so a
+# hijacked tag cannot exfiltrate CI secrets.
+#
+# gitleaks-action (v3; v2 was the same) requires an organisation licence (GITLEAKS_LICENSE)
+# on org-owned repos. Dependabot-authored PRs do not receive Actions
+# secrets, so the licence is empty for them and the action exits with
+# ErrLicense before scanning (Issue #2981). For those licence-less runs
+# we fall back to the free, open-source gitleaks CLI, which needs no
+# licence. The CLI release is pinned by version and verified against a
+# published SHA-256 checksum so a tampered release cannot run in CI.
+
+on:
+  pull_request:
+    # Issue #3940 — this was `["*"]`, which reads as "every branch" but a
+    # GitHub `*` never matches `/`, so secret detection never ran on
+    # milestone sub-issue PRs. Those PRs target a shared `milestone/<name>`
+    # branch (Issue #1300) and are the dominant merge path, so the glob is
+    # listed explicitly (Issue #3360).
+    branches: [Develop, main, milestone/*]
+  # Issue #4190 — the PR job above only ever sees a commit range, so a
+  # credential that leaked into an old commit on a dead branch (or into a
+  # tag) is never re-examined. The weekly full-history sweep below scans
+  # every ref with both scanners so the audit cannot decay.
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Issue #2972: cancel superseded PR runs. Only the latest commit's
+# result matters for a PR check, so a per-ref group with cancellation
+# stops rapid pushes spawning parallel, redundant runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    # PR-diff scan only — the scheduled sweep is the job below.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Issue #4404 (GHA-SECRETS-012): GITLEAKS_LICENSE is consumed inside a
+    # GitHub Environment so an admin can scope and gate it; the licence-less
+    # CLI fallback below is unaffected (an absent secret is still absent).
+    environment: scanning-secrets
+    # Exposed at job level so step-level `if:` can branch on whether the
+    # org licence secret is present — the `secrets` context is not
+    # available in `if:` conditions, but `env` is.
+    env:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+      # Repo gitleaks config (extends the default rule set). It lives under
+      # .github/ because the repo .gitignore forbids committing root-level
+      # hidden files such as .gitleaks.toml (Issue #1751). Both the licensed
+      # action and the CLI fallback read it so their allowlists match — it
+      # scopes out the deliberately-fake PEM fixtures in the secret-redaction
+      # unit test (Issue #3203).
+      GITLEAKS_CONFIG: ${{ github.workspace }}/.github/gitleaks.toml
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Fetch the PR base branch so the computed commit range
+      # (`<base_sha>..<head_sha>`) resolves on the runner. Without this
+      # step gitleaks fails with "fatal: Invalid revision range" because
+      # the base ref is not in the shallow checkout (Issue #1756).
+      # Mirrors the NEAT-AI quality.yml pattern.
+      - name: Fetch base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF:$BASE_REF" || true
+      # Licensed path: when the org Gitleaks Pro licence (Issue #1636) is
+      # available, use the upstream action so the licence is applied.
+      # gitleaks/gitleaks-action@v3.0.0
+      - name: Gitleaks (licensed action)
+        if: env.GITLEAKS_LICENSE != ''
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+      # Licence-less fallback (e.g. Dependabot PRs, Issue #2981): the free
+      # open-source gitleaks CLI needs no licence. It scans the PR commit
+      # range, mirroring the action's diff scan.
+      - name: Gitleaks (open-source CLI fallback)
+        if: env.GITLEAKS_LICENSE == ''
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          curl -sSfL "$url" -o "$archive"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" gitleaks
+          ./gitleaks git --config "${GITLEAKS_CONFIG}" \
+            --redact --no-banner --exit-code 1 \
+            --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+
+  # Issue #4190 — audited, re-runnable full-history sweep. Runs both
+  # scanners over every ref (`--log-opts=--all` covers branches and tags)
+  # and classifies each finding against the committed baseline. Fails
+  # while any finding is unbaselined or any confirmed leak is unrotated.
+  full-history:
+    name: Full-history secrets sweep (gitleaks + trufflehog)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Issue #606: opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno).
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          # Every commit on every ref — a shallow or single-branch clone
+          # would silently narrow the sweep.
+          fetch-depth: 0
+
+      - name: Fetch every ref
+        run: |
+          set -euo pipefail
+          # actions/checkout leaves only the checked-out branch locally, so
+          # fetch the rest before scanning; without this the sweep reports a
+          # clean history it never looked at.
+          git fetch --no-tags --prune --force origin \
+            "+refs/heads/*:refs/remotes/origin/*"
+          git fetch --tags --force origin
+          git for-each-ref --format='%(refname)' | wc -l
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          deno-version-file: .deno-version
+
+      - name: Install scanners
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          TRUFFLEHOG_VERSION: "3.97.0"
+          TRUFFLEHOG_SHA256: "62224de2f9dd7cd418800feb953760a302ed2f82a7c547fe1146a4874fb179e4"
+        run: |
+          set -euo pipefail
+          # Both CLIs are pinned by version and verified against a published
+          # SHA-256 checksum so a tampered release cannot run in CI.
+          mkdir -p "$RUNNER_TEMP/bin"
+          gl="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$gl" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${gl}"
+          echo "${GITLEAKS_SHA256}  ${gl}" | sha256sum -c -
+          tar -xzf "$gl" -C "$RUNNER_TEMP/bin" gitleaks
+          th="trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$th" \
+            "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/${th}"
+          echo "${TRUFFLEHOG_SHA256}  ${th}" | sha256sum -c -
+          tar -xzf "$th" -C "$RUNNER_TEMP/bin" trufflehog
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Full-history secrets scan
+        run: |
+          set -euo pipefail
+          # The same command an operator runs locally, so CI and the desk
+          # can never disagree about what was swept.
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-read --allow-write --allow-run --allow-env \
+            worker/deno/mod.ts secrets-history-scan \
+            --report "$RUNNER_TEMP/secrets-full-history-scan.md" \
+            < /dev/null
+
+      - name: Publish the report to the job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          # The report carries locations and rule names only — never a
+          # secret value — so it is safe in the run summary.
+          if [ -f "$RUNNER_TEMP/secrets-full-history-scan.md" ]; then
+            cat "$RUNNER_TEMP/secrets-full-history-scan.md" \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No report produced — the scan failed before writing one." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi

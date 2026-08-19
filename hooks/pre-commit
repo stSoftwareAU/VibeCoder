@@ -1,0 +1,82 @@
+#!/bin/bash
+################################################################################
+# pre-commit hook
+#
+# Prevents accidental commits of sensitive configuration files.
+#
+# This hook blocks commits containing:
+# - .config*.json files (configuration files with secrets)
+# - *.secret.json files (explicitly marked secret files)
+# - private key material and credential files (Issue #3660):
+#   *.pem, *.key, *.p12, *.pfx, id_rsa[.*], credentials.json,
+#   service-account*.json
+# - anything under a .secrets/ directory, at any depth (Issue #3957)
+#
+# To bypass this hook in exceptional circumstances, use:
+#   git commit --no-verify
+#
+# See SECURITY.md for more information about config file protection.
+################################################################################
+
+set -euo pipefail
+
+# Get list of staged files
+staged_files=$(git diff --cached --name-only 2>/dev/null || echo "")
+
+# Exit early if no files are staged
+if [[ -z "$staged_files" ]]; then
+    exit 0
+fi
+
+# Check for sensitive config file patterns
+# Pattern 1: .config*.json (e.g., .config.json, .config-backup.json, .config.local.json)
+# Pattern 2: *.secret.json (any file explicitly marked as secret)
+blocked_files=""
+
+while IFS= read -r file; do
+    # Check for .config*.json pattern (file basename starts with .config and ends with .json)
+    basename_file=$(basename "$file")
+    if [[ "$basename_file" =~ ^\.config.*\.json$ ]]; then
+        blocked_files="${blocked_files}${file}"$'\n'
+    fi
+    # Check for *.secret.json pattern
+    if [[ "$basename_file" =~ \.secret\.json$ ]]; then
+        blocked_files="${blocked_files}${file}"$'\n'
+    fi
+    # Private key material and credential files (Issue #3660) — these are
+    # not hidden files, so .gitignore's `.*` rule never covered them.
+    if [[ "$basename_file" =~ ^.+\.(pem|key|p12|pfx)$ ]] \
+        || [[ "$basename_file" =~ ^id_rsa(\..*)?$ ]] \
+        || [[ "$basename_file" == "credentials.json" ]] \
+        || [[ "$basename_file" =~ ^service-account.*\.json$ ]]; then
+        blocked_files="${blocked_files}${file}"$'\n'
+    fi
+    # Anything under a .secrets/ directory (Issue #3957) — the documented
+    # home for credential material (SECURITY.md). Basename tests miss
+    # extension-less or arbitrarily named files force-added past .gitignore,
+    # so match the path itself, at any depth like the .gitignore rule.
+    if [[ "$file" == .secrets/* ]] || [[ "$file" == */.secrets/* ]]; then
+        blocked_files="${blocked_files}${file}"$'\n'
+    fi
+done <<< "$staged_files"
+
+# If any blocked files were found, reject the commit
+if [[ -n "$blocked_files" ]]; then
+    echo ""
+    echo "ERROR: Attempting to commit sensitive configuration or key files!"
+    echo ""
+    echo "The following files are blocked from being committed:"
+    echo "$blocked_files" | sed '/^$/d' | sed 's/^/  - /'
+    echo ""
+    echo "These files may contain secrets (API keys, tokens, etc.) and should"
+    echo "never be committed to version control."
+    echo ""
+    echo "If this is intentional and you understand the security implications,"
+    echo "you can bypass this check with:"
+    echo ""
+    echo "  git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+exit 0

@@ -1,0 +1,270 @@
+# Vibe Coder worker image (Issue #4061). Design rationale: docs/CONTAINER-IMAGE.md
+#
+# Everything is version-pinned in container/tools.json and digest/SHA-256
+# verified; container_manifest_test.ts fails the gate on drift.
+#
+# KEEP THIS FILE SMALL: Apple container rejects Dockerfiles over 16384 bytes
+# (apple/container#735), and near the cap the build dies with an unexplained
+# "Stream unexpectedly closed". container_manifest_test.ts enforces a margin
+# — new commentary belongs in docs/CONTAINER-IMAGE.md, not here.
+
+ARG DENO_IMAGE="denoland/deno:bin-2.9.5@sha256:0d1262facd139e815217c001945eb822c7a78584cf660142c34a6b53effec1aa"
+ARG BASE_IMAGE="ruby:3.4-trixie@sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b"
+
+FROM ${DENO_IMAGE} AS deno
+
+FROM ${BASE_IMAGE}
+
+ARG GH_VERSION="2.97.0"
+ARG GH_SHA256_AMD64="a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112"
+ARG GH_SHA256_ARM64="73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5"
+ARG JQ_VERSION="1.8.2"
+ARG JQ_SHA256_AMD64="b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
+ARG JQ_SHA256_ARM64="8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309"
+
+# Container PATH: no Homebrew, no host-specific guessing. Everything the
+# worker needs resolves from /usr/local/bin or the system directories.
+ENV PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    DENO_DIR="/home/vibe/.cache/deno" \
+    VIBE_BASE_DIR="/workspace" \
+    LANG="C.UTF-8"
+
+COPY --from=deno /deno /usr/local/bin/deno
+
+# Download the GitHub CLI and jq for the build architecture and verify each
+# against its pinned checksum before installing it. An unknown architecture,
+# a failed download, or a checksum mismatch aborts the build.
+RUN set -eu; \
+    arch="$(uname -m)"; \
+    case "${arch}" in \
+      x86_64) goarch="amd64"; gh_sha="${GH_SHA256_AMD64}"; jq_sha="${JQ_SHA256_AMD64}" ;; \
+      aarch64) goarch="arm64"; gh_sha="${GH_SHA256_ARM64}"; jq_sha="${JQ_SHA256_ARM64}" ;; \
+      *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    gh_dir="gh_${GH_VERSION}_linux_${goarch}"; \
+    curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${gh_dir}.tar.gz"; \
+    echo "${gh_sha}  /tmp/gh.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/${gh_dir}/bin/gh" /usr/local/bin/gh; \
+    curl -fsSL -o /tmp/jq "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-${goarch}"; \
+    echo "${jq_sha}  /tmp/jq" | sha256sum -c -; \
+    install -m 0755 /tmp/jq /usr/local/bin/jq; \
+    rm -rf /tmp/gh.tar.gz /tmp/jq "/tmp/${gh_dir}"
+
+# Node.js is installed here, ahead of the coding-agent provider layer, because
+# a provider whose CLI ships as a JavaScript bundle needs the runtime at
+# install time — the fragment proves the agent runs before the build moves on.
+# The image content is unchanged by the position; only the layer order is.
+# markdownlint-cli2 and Playwright, further down, use the same runtime.
+ARG NODE_VERSION="24.19.0"
+ARG NODE_SHA256_AMD64="14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647"
+ARG NODE_SHA256_ARM64="01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc"
+
+RUN set -eu; \
+    arch="$(uname -m)"; \
+    case "${arch}" in \
+      x86_64) nodearch="x64"; node_sha="${NODE_SHA256_AMD64}" ;; \
+      aarch64) nodearch="arm64"; node_sha="${NODE_SHA256_ARM64}" ;; \
+      *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${nodearch}.tar.xz"; \
+    echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner; \
+    rm -f /tmp/node.tar.xz /usr/local/CHANGELOG.md /usr/local/LICENSE /usr/local/README.md; \
+    node --version; \
+    npm --version
+
+# Coding-agent provider set (Issues #4067, #4105) — see docs/CONTAINER-IMAGE.md.
+# Defaults to the manifest's `installedProviders` (gate-checked); part of the
+# hashed definition, so changing the set changes the tag (Issue #4062).
+ARG AGENT_PROVIDERS="claude"
+
+# Glob, not a bare directory COPY: Apple container 1.2.2 materialises
+# `COPY providers /tmp/providers` (and the trailing-slash form) as an EMPTY
+# directory. The glob copies the fragments correctly on every runtime.
+COPY providers/*.sh /tmp/providers/
+COPY install-providers.sh /tmp/install-providers.sh
+COPY tools.json /tmp/agent-provider-manifest.json
+
+RUN set -eu; \
+    AGENT_PROVIDER_MANIFEST=/tmp/agent-provider-manifest.json \
+      bash /tmp/install-providers.sh "${AGENT_PROVIDERS}"; \
+    rm -rf /tmp/providers /tmp/install-providers.sh /tmp/agent-provider-manifest.json
+
+# Stamp the installed set into the image so the worker can fail loudly when a
+# phase asks for a provider this image does not carry
+# (worker/deno/lib/agent_provider.ts, `imageAgentProviderIds`).
+ENV VIBE_IMAGE_AGENT_PROVIDERS="${AGENT_PROVIDERS}"
+
+# ---------------------------------------------------------------------------
+# Monitored-repository toolchains (Issue #4068). Last on purpose: a toolchain
+# bump reuses the worker-runtime layers' cache. Ordered least-to-most churn
+# (Rust, largest and most frequent, sits last). Versions and checksums are
+# restated from container/tools.json `toolchains`, which records which repo
+# each toolchain exists for.
+
+ARG SHELLCHECK_VERSION="0.11.0"
+ARG SHELLCHECK_SHA256_AMD64="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+ARG SHELLCHECK_SHA256_ARM64="12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588"
+ARG ACTIONLINT_VERSION="1.7.12"
+ARG ACTIONLINT_SHA256_AMD64="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+ARG ACTIONLINT_SHA256_ARM64="325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
+ARG CARGO_DENY_VERSION="0.20.2"
+ARG CARGO_DENY_SHA256_AMD64="9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+ARG CARGO_DENY_SHA256_ARM64="995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d"
+ARG MARKDOWNLINT_CLI2_VERSION="0.23.2"
+ARG MARKDOWNLINT_CLI2_SHA256_NOARCH="b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
+ARG RUST_VERSION="1.95.0"
+ARG RUST_SHA256_AMD64="a47ac940abd12399d59ad15c877e7113fa35f2b9ec7e6a8a045d4fd8b9741dea"
+ARG RUST_SHA256_ARM64="3b9385d3144ac57616befa0ccbac524f857ba1b4ab074226e73a24d43568a98e"
+ARG RUST_SHA256_RUSTFMT_AMD64="6d3e64adc505ad4bef6935f6e6f5e4c6956d9782607fb8394df3a5d2b30d2733"
+ARG RUST_SHA256_RUSTFMT_ARM64="ee169a16fb2a415aef71fba78fb279b7e0bb875dfecd56cdb80bdb95ba29a559"
+ARG RUST_SHA256_CLIPPY_AMD64="5230c92fb0ae1346ee30a1b4e01413cc3e1ead8ded20391fb2826619775f1ccb"
+ARG RUST_SHA256_CLIPPY_ARM64="84480abfbfed89616b1e0b35acb9db84766f0353b671766638084f4e9b1d1143"
+
+# Static analysers the monitored repositories' gates invoke directly:
+# shellcheck (every repo with a committed shell gate), actionlint
+# (NEAT-AI-scorer) and cargo-deny (the Rust crates, which exit non-zero when
+# it is absent). All three are single, checksum-verified binaries.
+RUN set -eu; \
+    arch="$(uname -m)"; \
+    case "${arch}" in \
+      x86_64) goarch="amd64"; \
+        sc_sha="${SHELLCHECK_SHA256_AMD64}"; \
+        al_sha="${ACTIONLINT_SHA256_AMD64}"; \
+        cd_sha="${CARGO_DENY_SHA256_AMD64}" ;; \
+      aarch64) goarch="arm64"; \
+        sc_sha="${SHELLCHECK_SHA256_ARM64}"; \
+        al_sha="${ACTIONLINT_SHA256_ARM64}"; \
+        cd_sha="${CARGO_DENY_SHA256_ARM64}" ;; \
+      *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz"; \
+    echo "${sc_sha}  /tmp/shellcheck.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/shellcheck.tar.xz -C /tmp; \
+    install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck; \
+    curl -fsSL -o /tmp/actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${goarch}.tar.gz"; \
+    echo "${al_sha}  /tmp/actionlint.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint; \
+    install -m 0755 /tmp/actionlint /usr/local/bin/actionlint; \
+    cargo_deny_dir="cargo-deny-${CARGO_DENY_VERSION}-${arch}-unknown-linux-musl"; \
+    curl -fsSL -o /tmp/cargo-deny.tar.gz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${cargo_deny_dir}.tar.gz"; \
+    echo "${cd_sha}  /tmp/cargo-deny.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/cargo-deny.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/${cargo_deny_dir}/cargo-deny" /usr/local/bin/cargo-deny; \
+    rm -rf /tmp/shellcheck.tar.xz "/tmp/shellcheck-v${SHELLCHECK_VERSION}" \
+      /tmp/actionlint.tar.gz /tmp/actionlint \
+      /tmp/cargo-deny.tar.gz "/tmp/${cargo_deny_dir}"
+
+# markdownlint-cli2 backs the check-markdownlint gate stage. The release
+# tarball is downloaded and checksum-verified first, then installed from that
+# local file — `npm install <name>@<version>` would take upstream's word for
+# the bytes. `--ignore-scripts` keeps a package lifecycle script from running
+# as root during the build.
+RUN set -eu; \
+    tarball="/tmp/markdownlint-cli2.tgz"; \
+    curl -fsSL -o "${tarball}" "https://registry.npmjs.org/markdownlint-cli2/-/markdownlint-cli2-${MARKDOWNLINT_CLI2_VERSION}.tgz"; \
+    echo "${MARKDOWNLINT_CLI2_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
+    npm install -g --ignore-scripts "${tarball}"; \
+    npm cache clean --force; \
+    rm -f "${tarball}"; \
+    markdownlint-cli2 --version
+
+# The Rust toolchain the fleet's crates build and test with. The standalone
+# rust-lang distribution is installed into /usr/local rather than via rustup,
+# so there is no per-user toolchain directory and nothing to update at run
+# time. The combined rust-<version> package carries only rustc/cargo/rust-std
+# (rust-docs is dropped to keep the layer smaller); rustfmt and clippy are
+# separate component packages, each with its own pinned checksum.
+RUN set -eu; \
+    arch="$(uname -m)"; \
+    case "${arch}" in \
+      x86_64) target="x86_64-unknown-linux-gnu"; \
+        rust_sha="${RUST_SHA256_AMD64}"; \
+        rustfmt_sha="${RUST_SHA256_RUSTFMT_AMD64}"; \
+        clippy_sha="${RUST_SHA256_CLIPPY_AMD64}" ;; \
+      aarch64) target="aarch64-unknown-linux-gnu"; \
+        rust_sha="${RUST_SHA256_ARM64}"; \
+        rustfmt_sha="${RUST_SHA256_RUSTFMT_ARM64}"; \
+        clippy_sha="${RUST_SHA256_CLIPPY_ARM64}" ;; \
+      *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    install_rust_pkg() { \
+      dir="$1-${RUST_VERSION}-${target}"; \
+      curl -fsSL -o /tmp/rust-pkg.tar.gz "https://static.rust-lang.org/dist/${dir}.tar.gz"; \
+      echo "$2  /tmp/rust-pkg.tar.gz" | sha256sum -c -; \
+      tar -xzf /tmp/rust-pkg.tar.gz -C /tmp; \
+      shift 2; \
+      "/tmp/${dir}/install.sh" --prefix=/usr/local "$@"; \
+      rm -rf /tmp/rust-pkg.tar.gz "/tmp/${dir}"; \
+    }; \
+    install_rust_pkg rust "${rust_sha}" --without=rust-docs; \
+    install_rust_pkg rustfmt "${rustfmt_sha}"; \
+    install_rust_pkg clippy "${clippy_sha}"; \
+    cargo --version; \
+    rustc --version; \
+    cargo-clippy --version; \
+    rustfmt --version
+
+# ---------------------------------------------------------------------------
+# Playwright + headless Chromium baked at build time (Issue #4069) — see
+# docs/CONTAINER-IMAGE.md. PLAYWRIGHT_VERSION must match @playwright/mcp's
+# dependency exactly (gate-checked against setup/screenshot.ts); the final
+# page-render proves the library set before the first screenshot needs it.
+
+ARG PLAYWRIGHT_VERSION="1.61.0-alpha-1778188671000"
+ARG PLAYWRIGHT_SHA256_NOARCH="d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516"
+
+ENV PLAYWRIGHT_BROWSERS_PATH="/opt/playwright-browsers"
+
+RUN set -eu; \
+    tarball="/tmp/playwright-core.tgz"; \
+    curl -fsSL -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
+    echo "${PLAYWRIGHT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
+    npm install -g --ignore-scripts "${tarball}"; \
+    npm cache clean --force; \
+    rm -f "${tarball}"; \
+    playwright-core --version; \
+    mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"; \
+    playwright-core install --with-deps chromium; \
+    rm -rf /var/lib/apt/lists/*; \
+    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
+    NODE_PATH="$(npm root -g)" node -e "const {chromium} = require('playwright-core'); chromium.launch({args: ['--no-sandbox']}).then(async (browser) => { const page = await browser.newPage(); await page.setContent('<h1>baked</h1>'); const text = await page.textContent('h1'); await browser.close(); if (text !== 'baked') { throw new Error('unexpected page content: ' + text); } console.log('headless Chromium launched from ' + process.env.PLAYWRIGHT_BROWSERS_PATH); }).catch((err) => { console.error(err); process.exit(1); })"
+
+# FLEET-taxation's gate runs `rustup update stable` unless this is set. The
+# image owns its Rust toolchain, so the gate must use the baked one rather
+# than trying to install another at run time.
+ENV QUALITY_SKIP_RUST_UPDATE="1"
+
+# Least privilege: the worker never runs as root inside the container.
+RUN set -eu; \
+    groupadd --gid 1000 vibe; \
+    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash vibe; \
+    mkdir -p /workspace "${DENO_DIR}"; \
+    chown -R 1000:1000 /workspace /home/vibe
+
+# Pre-warmed Deno cache (Issue #4392): the pinned @playwright/mcp (its own
+# playwright-core included) and the worker's JSR deps, resolved against the
+# seed lockfile (integrity-pinned; a lock that changes fails the build). With
+# a complete lock `deno cache` skips transitive registry.json files, so one
+# online run fills them; the --cached-only run then proves the seed is whole.
+# The entrypoint seeds the durable volume cache from it — no round trip mid-run.
+ARG PLAYWRIGHT_MCP_VERSION="0.0.75"
+ENV VIBE_DENO_SEED_DIR="/opt/deno-seed"
+COPY deno-seed/ /opt/deno-seed-src/
+RUN set -eu; s=/opt/deno-seed-src; m="npm:@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"; \
+    grep -q "\"$m\"" $s/deno.json; cp $s/deno.lock /tmp/seed.lock; \
+    export DENO_DIR="${VIBE_DENO_SEED_DIR}"; \
+    deno cache --frozen --config $s/deno.json --lock $s/deno.lock $s/seed.ts; \
+    cmp -s $s/deno.lock /tmp/seed.lock || { echo "deno-seed lock drifted" >&2; exit 1; }; \
+    deno run --allow-all "$m" --version; \
+    deno run --cached-only --allow-all "$m" --version; \
+    chmod -R a+rX "${VIBE_DENO_SEED_DIR}"
+
+COPY entrypoint.sh /usr/local/bin/vibe-entrypoint
+RUN chmod 0755 /usr/local/bin/vibe-entrypoint
+
+USER vibe
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/vibe-entrypoint"]
