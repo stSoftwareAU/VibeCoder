@@ -217,7 +217,11 @@ export function parseIdentifiers(text: string): ParsedIdentifiers {
 function compileRepoName(value: string): RegExp | null {
   const regexForm = /^\/(.+)\/(i?)$/.exec(value);
   try {
+    // The value comes from the operator's private identifiers file, and a
+    // literal is metacharacter-escaped before compilation.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     if (regexForm) return new RegExp(regexForm[1]!, regexForm[2] ?? "");
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     return new RegExp(`^${escapeRegExp(value)}$`, "i");
   } catch {
     return null;

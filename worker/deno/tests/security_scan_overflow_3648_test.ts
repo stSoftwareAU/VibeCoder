@@ -508,30 +508,6 @@ Deno.test("SEC-a359b609bc63 - a timeline read failure keeps blocking labels", as
  * Parse a CODEOWNERS file into `[pattern, owners]` pairs, ignoring comments
  * and blank lines.
  */
-function parseCodeowners(text: string): Array<[string, string[]]> {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"))
-    .map((line) => {
-      const [pattern, ...owners] = line.split(/\s+/);
-      return [pattern!, owners] as [string, string[]];
-    });
-}
-
-/** Whether any CODEOWNERS rule claims ownership of `path`. */
-function ownersFor(
-  rules: Array<[string, string[]]>,
-  path: string,
-): string[] {
-  // Last matching rule wins, per GitHub's CODEOWNERS semantics.
-  let owners: string[] = [];
-  for (const [pattern, ruleOwners] of rules) {
-    const prefix = pattern.startsWith("/") ? pattern.slice(1) : pattern;
-    if (path === prefix || path.startsWith(prefix)) owners = ruleOwners;
-  }
-  return owners;
-}
 
 Deno.test("SEC-888ae4c269f9 - an unknown worker name contributes no spend", async () => {
   await withCreditLog(
