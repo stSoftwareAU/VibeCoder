@@ -21,10 +21,18 @@ export type FetchFn = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-/** Cached installation token with its expiry. */
+/**
+ * Cached installation token with its expiry and the identity it was minted for.
+ *
+ * Issue #38 (SEC-0f7d3c9a4e21): the identity is part of the cache entry so a
+ * request for a different App or installation can never be served another
+ * identity's credential — a cross-tenant leak that would fail silently.
+ */
 interface CachedToken {
   token: string;
   expiresAt: Date;
+  appId: string;
+  installationId: string;
 }
 
 /** In-memory token cache. */
@@ -35,7 +43,9 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Reset the in-memory token cache.
- * Exposed for testing only.
+ *
+ * Discards the whole entry — token, expiry and minting identity — so a reset
+ * can never leave a stale identity behind. Exposed for testing only.
  */
 export function resetTokenCache(): void {
   cachedToken = null;
@@ -161,8 +171,14 @@ export async function ensureValidToken(
   privateKeyPath: string,
   fetchFn: FetchFn = globalThis.fetch,
 ): Promise<string> {
-  // Return cached token if still valid (not expiring within the buffer)
-  if (cachedToken !== null) {
+  // Return cached token only when it was minted for THIS identity and is
+  // still valid (not expiring within the buffer). An identity mismatch is
+  // treated as a miss and falls through to a fresh mint below.
+  if (
+    cachedToken !== null &&
+    cachedToken.appId === appId &&
+    cachedToken.installationId === installationId
+  ) {
     const msUntilExpiry = cachedToken.expiresAt.getTime() - Date.now();
     if (msUntilExpiry > REFRESH_BUFFER_MS) {
       return cachedToken.token;
@@ -190,8 +206,13 @@ export async function ensureValidToken(
   const jwt = await generateAppJWT(appId, pemContents);
   const result = await getInstallationToken(jwt, installationId, fetchFn);
 
-  // Cache the new token
-  cachedToken = { token: result.token, expiresAt: result.expiresAt };
+  // Cache the new token alongside the identity it was minted for
+  cachedToken = {
+    token: result.token,
+    expiresAt: result.expiresAt,
+    appId,
+    installationId,
+  };
 
   return result.token;
 }
