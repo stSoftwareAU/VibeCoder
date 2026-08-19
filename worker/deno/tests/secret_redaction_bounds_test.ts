@@ -67,6 +67,40 @@ Deno.test("redactSecrets - a prompt-injected 500 KB output is redacted promptly"
   assertStringIncludes(out, `https://user:${REDACTION_PLACEHOLDER}@`);
 });
 
+Deno.test("redactSecrets - a long sk- charset run stays bounded and is masked (Issue #36)", () => {
+  // The `openai-key` quantifier carries an explicit ceiling, so an oversized
+  // charset run is consumed in fixed-size bites instead of one open-ended
+  // greedy sweep. The key material still goes.
+  const run = "sk-" + "a".repeat(4096);
+  const out = assertBounded("4 KiB sk- run", run);
+  assert(
+    out.includes(REDACTION_PLACEHOLDER),
+    "a long sk- run must still be masked",
+  );
+});
+
+Deno.test("redactSecrets - the google-api-key rule masks exactly the 39-character key (Issue #36)", () => {
+  // Google keys are exactly 39 characters, so the rule masks that span and
+  // leaves the surrounding text alone — an open-ended run would swallow the
+  // trailing sentence too.
+  const key = "AIzaSy" + "c".repeat(33);
+  const out = assertBounded("AIzaSy key in prose", `key ${key} rejected`);
+  assertEquals(out, `key ${REDACTION_PLACEHOLDER} rejected`);
+});
+
+Deno.test("redactSecrets - near-miss provider prefixes do not stall the new rules (Issue #36)", () => {
+  const skNearMiss = ("sk-" + "a".repeat(19) + "!").repeat(5_000);
+  assertEquals(
+    assertBounded("115 KiB of near-miss sk- prefixes", skNearMiss),
+    skNearMiss,
+  );
+  const aizaNearMiss = ("AIzaSy" + "b".repeat(32) + " ").repeat(3_000);
+  assertEquals(
+    assertBounded("117 KiB of near-miss AIzaSy prefixes", aizaNearMiss),
+    aizaNearMiss,
+  );
+});
+
 Deno.test("redactSecrets - url-userinfo still masks the credential for real schemes", () => {
   const cases: [string, string][] = [
     ["https://user:pw123@github.com/o/r.git", "https://user:"],

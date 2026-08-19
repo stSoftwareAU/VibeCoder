@@ -348,6 +348,58 @@ export function sanitiseDelimitedComments(
   return result + sanitiseDelimiterPatterns(content.slice(cursor));
 }
 
+/** A GitHub login: 1–39 characters of `[A-Za-z0-9-]`. */
+const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9-]{1,39}$/;
+
+/** Longest author rendered into a header once it has left the fast path. */
+const MAX_SCRUBBED_AUTHOR_CHARS = 64;
+
+/**
+ * Render an author safe for the `author=` position of a genuine trust header
+ * (Issue #37).
+ *
+ * The header {@link formatDelimitedComment} emits is the signal the prompt's
+ * integrity instruction teaches the model to trust, so every component of it
+ * must be locally unforgeable. `trustLevel` is a union type and `boundaryId` is
+ * minted in-process, but `author` arrives from the caller: today's sole caller
+ * sources it from the GitHub API, where logins are charset-restricted — an
+ * assumption held entirely off-site, which nothing here enforced and nothing
+ * failed loudly about.
+ *
+ * Strategy: **sanitise, not reject**. A login matching the GitHub charset
+ * passes through byte-for-byte, so the normal path is untouched. Anything else
+ * — a display name, a mirrored or synthetic author, a bot login such as
+ * `dependabot[bot]` — is scrubbed rather than discarded, so the header stays
+ * informative instead of collapsing to a placeholder. Rejecting outright would
+ * throw on the legitimate bot logins GitHub already issues; scrubbing keeps the
+ * header structurally unforgeable regardless of source:
+ *
+ *   1. {@link sanitiseDelimiterPatterns} neutralises the delimiter and
+ *      trust-signalling vocabulary (`---COMMENT_…`, `[TRUSTED]`, `author=`,
+ *      `<<<…>>>`, `BOUNDARY_…`) exactly as it does for a comment body.
+ *   2. Line terminators and other control/format characters collapse to a
+ *      space, so the header can never span more than one line.
+ *   3. Any surviving run of two-or-more hyphens collapses to one, so no `---`
+ *      can close the header or the comment block early.
+ *
+ * An author scrubbed to nothing becomes `unknown` — a visible placeholder, not
+ * a silently empty tag.
+ *
+ * @param author - The raw author string supplied by the caller
+ * @returns An author safe to interpolate into the header
+ */
+function sanitiseCommentAuthor(author: string): string {
+  if (GITHUB_LOGIN_PATTERN.test(author)) return author;
+
+  const scrubbed = sanitiseDelimiterPatterns(author)
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(/-{2,}/g, "-")
+    .slice(0, MAX_SCRUBBED_AUTHOR_CHARS)
+    .trim();
+
+  return scrubbed.length > 0 ? scrubbed : "unknown";
+}
+
 /**
  * Format a single comment with individual delimiters.
  *
@@ -355,7 +407,10 @@ export function sanitiseDelimitedComments(
  * the author username and trust level, making it clear where each
  * comment starts and ends within the untrusted section.
  *
- * The comment body is sanitised before wrapping.
+ * Both components sourced from outside are defended: the body is passed
+ * through {@link sanitiseDelimiterPatterns}, and the author through
+ * {@link sanitiseCommentAuthor}, which documents the sanitise-not-reject
+ * strategy the header relies on (Issue #37).
  *
  * @param body - The comment body text
  * @param author - The comment author's username
@@ -370,7 +425,8 @@ export function formatDelimitedComment(
   boundaryId: string,
 ): string {
   const sanitisedBody = sanitiseDelimiterPatterns(body);
-  return `---COMMENT_${boundaryId} [${trustLevel}] author=${author}---
+  const sanitisedAuthor = sanitiseCommentAuthor(author);
+  return `---COMMENT_${boundaryId} [${trustLevel}] author=${sanitisedAuthor}---
 ${sanitisedBody}
 ---END COMMENT_${boundaryId}---`;
 }
