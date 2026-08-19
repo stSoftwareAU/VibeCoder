@@ -530,9 +530,11 @@ Deno.test("prompt builder cache - milestone instructions included in dynamic pro
     assertEquals(result.ok, true);
     if (result.ok) {
       assertStringIncludes(result.value.prompt, "milestone/v2");
-      // The branch is fenced as untrusted data; the directive carries the
-      // `<milestone-branch>` placeholder instead of the value (Issue #16).
-      assertStringIncludes(result.value.prompt, "--base <milestone-branch>");
+      // The branch is fenced untrusted data, so the command carries the
+      // `<milestone-branch>` placeholder rather than the literal branch — this
+      // assertion replaces the previous `--base milestone/v2` one, which
+      // required the very splice Issue #16 removes.
+      assertStringIncludes(result.value.prompt, '--base "<milestone-branch>"');
       // Milestone instructions are dynamic, not in system prompt
       assertEquals(result.value.systemPrompt.includes("milestone/v2"), false);
     }

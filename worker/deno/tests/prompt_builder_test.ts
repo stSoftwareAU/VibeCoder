@@ -214,10 +214,12 @@ Deno.test("prompt builder - issue prompt includes milestone targeting", async ()
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value.prompt, "milestone/oidc");
-    // The branch name is fenced as untrusted data and referenced from the
-    // instruction text by placeholder, so the literal value no longer appears
-    // inside the `--base` directive (Issue #16).
-    assertStringIncludes(result.value.prompt, "--base <milestone-branch>");
+    // The branch is untrusted milestone-derived data, so the `gh pr create`
+    // example carries the `<milestone-branch>` placeholder rather than the
+    // literal value, which is fenced instead (Issue #16). This assertion
+    // replaces the previous `--base milestone/oidc` one, which required the
+    // very splice the fix removes.
+    assertStringIncludes(result.value.prompt, '--base "<milestone-branch>"');
     assertStringIncludes(result.value.prompt, "Closes #10");
   }
 });
