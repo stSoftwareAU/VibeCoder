@@ -50,6 +50,85 @@ Deno.test("redactSecrets - masks an Anthropic API key", () => {
   assertEquals(out.includes(key), false);
 });
 
+/** Number of times the shared placeholder appears in `text`. */
+function placeholderCount(text: string): number {
+  return text.split(REDACTION_PLACEHOLDER).length - 1;
+}
+
+Deno.test("redactSecrets - masks a bare OpenAI sk- API key (Issue #36)", () => {
+  // The shape a CLI echoes into stderr: no assignment, flag or Bearer scheme
+  // around it, so before Issue #36 no rule matched and the key was logged
+  // verbatim.
+  const key = "sk-" + "A1b2C3d4E5f6G7h8I9j0".repeat(2) + "KLmnOPqr";
+  const out = redactSecrets(`codex exited: invalid api key ${key} (401)`);
+  assertEquals(out.includes(key), false);
+  assertEquals(placeholderCount(out), 1);
+  assertStringIncludes(out, "codex exited: invalid api key");
+});
+
+Deno.test("redactSecrets - masks a bare sk-proj- project-scoped OpenAI key (Issue #36)", () => {
+  const key = "sk-proj-" + "aB3-_".repeat(20);
+  const out = redactSecrets(`Error: Incorrect API key provided: ${key}`);
+  assertEquals(out.includes(key), false);
+  assertEquals(placeholderCount(out), 1);
+});
+
+Deno.test("redactSecrets - masks a bare Google/Gemini AIzaSy API key (Issue #36)", () => {
+  // Google keys are a fixed 39 characters: `AIzaSy` plus 33 more.
+  const key = "AIzaSy" + "C9x-_Qd7".repeat(4) + "b";
+  assertEquals(key.length, 39);
+  const out = redactSecrets(`gemini: API key not valid (${key})`);
+  assertEquals(out.includes(key), false);
+  assertEquals(placeholderCount(out), 1);
+  assertStringIncludes(out, "API key not valid");
+});
+
+Deno.test("redactSecrets - masks OpenAI and Google keys inside an assignment exactly once (Issue #36)", () => {
+  for (
+    const [name, key] of [
+      ["OPENAI_API_KEY", "sk-" + "Z".repeat(48)],
+      ["CODEX_API_KEY", "sk-proj-" + "y".repeat(60)],
+      ["GEMINI_API_KEY", "AIzaSy" + "d".repeat(33)],
+      ["GOOGLE_API_KEY", "AIzaSy" + "e".repeat(33)],
+    ] as const
+  ) {
+    const out = redactSecrets(`${name}=${key}`);
+    assertEquals(out.includes(key), false, `${name} value should be masked`);
+    assertEquals(
+      placeholderCount(out),
+      1,
+      `${name} should yield exactly one placeholder, got: ${out}`,
+    );
+  }
+});
+
+Deno.test("redactSecrets - an Anthropic key still redacts to exactly one placeholder (Issue #36)", () => {
+  // Regression guard: the `openai-key` rule's `sk-` prefix overlaps
+  // `sk-ant-`, so a second substitution would nest placeholders.
+  const key = "sk-ant-api03-" + "x".repeat(40);
+  assertEquals(redactSecrets(key), REDACTION_PLACEHOLDER);
+  const inLine = redactSecrets(`ANTHROPIC_API_KEY set to ${key}`);
+  assertEquals(inLine.includes(key), false);
+  assertEquals(placeholderCount(inLine), 1);
+  assertEquals(inLine, `ANTHROPIC_API_KEY set to ${REDACTION_PLACEHOLDER}`);
+});
+
+Deno.test("redactSecrets - leaves short sk- and AIzaSy-like fragments untouched (Issue #36)", () => {
+  for (
+    const text of [
+      "renamed task-sk-notes to task-sk-todo",
+      "the sk-cache was flushed",
+      "sk-",
+      "AIzaSyShort",
+      "AIzaSy",
+      "prefix AIzaSy0123456789 truncated",
+    ]
+  ) {
+    assertEquals(redactSecrets(text), text, `should be unchanged: ${text}`);
+    assertEquals(containsSecret(text), false, `not a secret: ${text}`);
+  }
+});
+
 Deno.test("redactSecrets - masks a multi-line PEM private-key block (Issue #3203)", () => {
   const pem = [
     "-----BEGIN RSA PRIVATE KEY-----", // gitleaks:allow fake fixture, not a real key
