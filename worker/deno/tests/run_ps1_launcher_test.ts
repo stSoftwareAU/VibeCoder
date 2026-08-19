@@ -28,6 +28,7 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   buildCount,
+  builderHealed,
   type Harness,
   type LaunchOutcome,
   mountValues,
@@ -434,10 +435,11 @@ Deno.test({
 
       assertEquals(outcome.code, 0, outcome.stderr);
       assertEquals(await buildCount(harness), 2);
-      // Docker and Podman - what run.ps1 launches - prune the build cache
-      // rather than bouncing a builder VM.
+      // The heal is whatever the launch plan's runtime needs: Docker and
+      // Podman prune the build cache, Apple container (what the stub resolves
+      // to on a macOS host) restarts its builder VM.
       assert(
-        await recorded(harness, "builder-prune"),
+        await builderHealed(harness),
         `no builder heal was performed: ${outcome.stderr}`,
       );
       assert(await recorded(harness, "run"), "the worker must still launch");
@@ -466,7 +468,7 @@ Deno.test({
 
       assertEquals(outcome.code, 9, outcome.stderr);
       assertEquals(await buildCount(harness), 1);
-      assertEquals(await recorded(harness, "builder-prune"), null);
+      assertEquals(await builderHealed(harness), false);
       assertEquals(await recorded(harness, "run"), null);
     } finally {
       await harness.cleanup();
