@@ -431,24 +431,55 @@ export async function ensureFleetHealthRepo(
     return { ok: true, value: undefined };
   }
 
-  // Reset to remote default branch — try Develop first, fall back to main
-  const developResult = await deps.runCommand(
-    ["git", "-C", config.healthDir, "reset", "--hard", "origin/Develop"],
+  // Reset to the remote's default branch — whatever origin/HEAD names, so
+  // no assumption about the health repository's branch naming is baked in.
+  const branch = await resolveHealthRepoDefaultBranch(config.healthDir, deps);
+  const resetResult = await deps.runCommand(
+    ["git", "-C", config.healthDir, "reset", "--hard", `origin/${branch}`],
     { quiet: true },
   );
-  if (!developResult.ok) {
-    const mainResult = await deps.runCommand(
-      ["git", "-C", config.healthDir, "reset", "--hard", "origin/main"],
-      { quiet: true },
+  if (!resetResult.ok) {
+    deps.logWarning(
+      `Failed to reset private-repo-6 to origin/${branch}: ${resetResult.error.message}`,
     );
-    if (!mainResult.ok) {
-      deps.logWarning(
-        "Failed to reset private-repo-6 to remote branch (tried Develop and main)",
-      );
-    }
   }
 
   return { ok: true, value: undefined };
+}
+
+/** Fallback when the health repository's origin/HEAD cannot be resolved. */
+export const FLEET_HEALTH_FALLBACK_BRANCH = "main"; // allow-hardcoded-branch
+
+/**
+ * Resolve the branch `origin/HEAD` points at in the health checkout. A clone
+ * records it; if absent, `git remote set-head origin --auto` asks the remote
+ * once. Falls back to {@link FLEET_HEALTH_FALLBACK_BRANCH} — never throws.
+ */
+async function resolveHealthRepoDefaultBranch(
+  healthDir: string,
+  deps: FleetHealthDeps,
+): Promise<string> {
+  const lookup = async (): Promise<string | null> => {
+    const result = await deps.captureCommand([
+      "git",
+      "-C",
+      healthDir,
+      "symbolic-ref",
+      "--quiet",
+      "--short",
+      "refs/remotes/origin/HEAD",
+    ]);
+    if (!result.ok) return null;
+    const branch = result.value.trim().replace(/^origin\//, "");
+    return branch.length > 0 ? branch : null;
+  };
+  const recorded = await lookup();
+  if (recorded) return recorded;
+  await deps.runCommand(
+    ["git", "-C", healthDir, "remote", "set-head", "origin", "--auto"],
+    { quiet: true },
+  );
+  return (await lookup()) ?? FLEET_HEALTH_FALLBACK_BRANCH;
 }
 
 /**
