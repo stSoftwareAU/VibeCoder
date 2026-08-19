@@ -17,7 +17,6 @@
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   type BootstrapEnv,
-  DEFAULT_RESET_BRANCH,
   runBootstrap,
   toShellExports,
 } from "../lib/run_bootstrap.ts";
@@ -78,9 +77,11 @@ export const runBootstrapCommand: Command = {
       ? args["fallback-paths"]
       : (Deno.env.get("VIBE_FALLBACK_PATHS") ?? undefined);
 
+    // Omitted, the prelude resolves the checkout's own default branch from
+    // origin/HEAD — no repository or branch name is assumed.
     const defaultBranch = typeof args["default-branch"] === "string"
       ? args["default-branch"]
-      : DEFAULT_RESET_BRANCH;
+      : undefined;
 
     const pid = toOptionalNumber(args["pid"]) ?? Deno.pid;
 

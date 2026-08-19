@@ -17,11 +17,11 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
-  DEFAULT_HOUSEKEEPING_BRANCH,
   type HousekeepingResult,
   runSignalCleanup,
   runStartupHousekeeping,
 } from "../lib/run_housekeeping.ts";
+import { resolveOriginDefaultBranch } from "../lib/run_bootstrap.ts";
 
 /** Data returned by the run-housekeeping command. */
 interface RunHousekeepingData {
@@ -68,9 +68,22 @@ export const runHousekeepingCommand: Command = {
           ? args["tmp-dir"]
           : (Deno.env.get("TMPDIR") ?? "/tmp");
 
-        const defaultBranch = typeof args["default-branch"] === "string"
-          ? args["default-branch"]
-          : DEFAULT_HOUSEKEEPING_BRANCH;
+        // The branch clean-up runs in the worker's own checkout, so its
+        // default branch is whatever origin says — never an assumed name.
+        let defaultBranch: string;
+        if (typeof args["default-branch"] === "string") {
+          defaultBranch = args["default-branch"];
+        } else {
+          const resolved = await resolveOriginDefaultBranch(Deno.cwd());
+          if (!resolved.ok) {
+            return {
+              success: false,
+              message: `cannot resolve the checkout's default branch: ` +
+                `${resolved.error.message} (pass --default-branch to name it)`,
+            };
+          }
+          defaultBranch = resolved.value;
+        }
 
         const githubUser = typeof args["github-user"] === "string"
           ? args["github-user"]

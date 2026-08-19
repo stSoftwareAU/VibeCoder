@@ -64,9 +64,6 @@ import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
 import { runCoreCommand } from "../commands/run_core.ts";
 
-/** Branch the worker resets to and treats as the default. */
-const DEFAULT_BRANCH = "Develop"; // allow-hardcoded-branch
-
 /** Distinct outcomes of a worker driver invocation. */
 export type RunWorkerOutcome =
   | "blocked"
@@ -394,7 +391,7 @@ export async function runWorker(
       home,
       currentPath: env("PATH") ?? "",
       fallbackPaths: env("VIBE_FALLBACK_PATHS"),
-      defaultBranch: DEFAULT_BRANCH,
+      // Resolved from the checkout's own origin/HEAD — no assumed name.
       pid,
       skipSoftwareUpdate: skipSoftwareUpdateFromEnv(env),
       softwareUpdate: softwareUpdateOptionsFromEnv(options.config, env),
@@ -491,7 +488,13 @@ ${credentialFailure}`);
 
     // Step 7: One-time startup housekeeping (best-effort — never aborts).
     await deps.runHousekeeping(
-      { workDir, logDir, tmpDir, defaultBranch: DEFAULT_BRANCH, githubUser },
+      {
+        workDir,
+        logDir,
+        tmpDir,
+        defaultBranch: bootstrap.defaultBranch,
+        githubUser,
+      },
       options.config,
     );
 

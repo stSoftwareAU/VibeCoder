@@ -45,9 +45,6 @@ import {
 import { terminateDescendants } from "./pid_guard.ts";
 import { createLogger } from "./logger.ts";
 
-/** Default branch reset/compared against — mirrors run_core.sh. */
-export const DEFAULT_HOUSEKEEPING_BRANCH = "Develop"; // allow-hardcoded-branch
-
 /**
  * Canonical housekeeping step order (Issue #3502). Exposed so tests and callers
  * can assert the sequence without hard-coding string literals. Mirrors the bash

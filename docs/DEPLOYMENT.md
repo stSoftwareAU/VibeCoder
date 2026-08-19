@@ -181,8 +181,9 @@ VIBE_REPOS="myorg/repo1,myorg/repo2" \
 
 The clone the worker runs from is an **appliance checkout, not a workspace**:
 the bootstrap prelude runs
-`git fetch && git checkout Develop && git reset --hard origin/Develop &&
-git clean -fd` against it on **every cycle**. Anything uncommitted is the
+`git fetch && git checkout <default> && git reset --hard origin/<default> &&
+git clean -fd` against it on **every cycle** (`<default>` is the checkout's own
+default branch, read from `origin/HEAD` — no branch name is assumed). Anything uncommitted is the
 reset's enemy, in both directions:
 
 - While the tree is dirty or parked on a feature branch, the reset fails,
@@ -534,7 +535,7 @@ The setup is idempotent — running it multiple times produces identical results
 The script is designed to be run from cron every 5 minutes. It will:
 - Exit immediately if another instance is already running
 - Run for ~1 hour before exiting (allowing fresh code to be pulled)
-- Self-heal by resetting the repo to `origin/Develop` on each start
+- Self-heal by resetting the repo to its origin default branch (`origin/HEAD`) on each start
 
 ```bash
 # Edit crontab

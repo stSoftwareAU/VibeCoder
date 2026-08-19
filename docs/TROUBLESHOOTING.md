@@ -203,14 +203,15 @@ manual hints stand.
 
 ## 🌳 Every cycle logs `Git reset failed` and the worker claims nothing
 
-The bootstrap prelude resets the worker checkout to `origin/Develop` each
-cycle and **fails loud** when it cannot — each run then exits seconds after
+The bootstrap prelude resets the worker checkout to its default branch (read
+from `origin/HEAD` — the example below shows `main`) each cycle and **fails
+loud** when it cannot — each run then exits seconds after
 starting, leaving a one-line `worker-<pid>.log` and, in
 `~/logs/run_core.log`:
 
 ```text
-Resetting repo to origin/Develop
-Git reset failed: git checkout Develop failed (exit code 1) — the worker
+Resetting repo to origin/main
+Git reset failed: git checkout main failed (exit code 1) — the worker
 checkout looks like an active development tree (branch fix/x, 3 uncommitted
 change(s)). Commit or stash that work, or give the worker its own dedicated
 clone (Issue #4204).
