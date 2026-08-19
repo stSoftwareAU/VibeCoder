@@ -111,15 +111,24 @@ export function sanitiseDelimiterPatterns(content: string): string {
   // <<<UPPER_id>>> form — hyphens or spaces inside (<<<END-COMMENT>>>,
   // <<<ISSUE BODY END>>>), the empty case (<<<>>>), and the double-angle
   // form (<<ISSUE_BODY_END>>). Match any run of two-or-more opening angles
-  // followed by non-angle, single-line inner content and two-or-more closing
-  // angles, then rewrite every bracket to its inert fullwidth form. This
-  // supersedes the earlier restricted [0-9A-Za-z_]+ class (Issues #2487,
-  // #2872) and neutralises all these shapes (Issue #3201).
-  result = result.replace(
-    /(<{2,})([^<>\n]*)(>{2,})/g,
-    (_m, open: string, inner: string, close: string) =>
-      "＜".repeat(open.length) + inner + "＞".repeat(close.length),
-  );
+  // followed by non-angle inner content and two-or-more closing angles, then
+  // rewrite every bracket to its inert fullwidth form. This supersedes the
+  // earlier restricted [0-9A-Za-z_]+ class (Issues #2487, #2872) and
+  // neutralises all these shapes (Issue #3201).
+  //
+  // The same-line pass runs first and is unbounded, so no single-line marker
+  // is missed however long its inner content. The second pass then spans
+  // newlines, so a marker split across a line break (<<<ISSUE_BODY_END\n_id>>>)
+  // is neutralised too — the gap the sibling triple-dash rule below closed but
+  // this rule never did (Issue #15). It is bounded and non-greedy: the inner
+  // class excludes both angle brackets so there is no ambiguity to backtrack
+  // over, and the 512-character cap keeps a stray `<<` from pairing with a `>>`
+  // far down the document and mangling everything between them — a genuine
+  // marker is an order of magnitude shorter than that.
+  const inert = (_m: string, open: string, inner: string, close: string) =>
+    "＜".repeat(open.length) + inner + "＞".repeat(close.length);
+  result = result.replace(/(<{2,})([^<>\n]*)(>{2,})/g, inert);
+  result = result.replace(/(<{2,})([^<>]{0,512}?)(>{2,})/g, inert);
 
   // Replace triple-dash boundary patterns. The CONTENT rules use [\s\S] rather
   // than `.` so a marker split across a newline (---BEGIN FAKE\nCONTENT---) is
