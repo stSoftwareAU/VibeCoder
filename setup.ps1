@@ -1011,7 +1011,9 @@ function Show-VibeObsoleteWorkDirs {
         "--allow-env", "--allow-read",
         (Join-Path $ScriptDir "worker/deno/mod.ts"), "run-mode")
     $mode = (& $deno @argv 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $mode -eq "native") { return }
+    # Container is the only run mode (Issue #4); an unresolvable
+    # configuration skips the reminder rather than failing setup.
+    if ($LASTEXITCODE -ne 0 -or $mode -ne "container") { return }
 
     $workDir = if ($env:WORK_DIR) {
         $env:WORK_DIR

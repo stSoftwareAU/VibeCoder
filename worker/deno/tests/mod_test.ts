@@ -182,13 +182,14 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issues #4196/#4197 added `export-redact` (134 → 135).
   // Issues #4197/#4198 added `export-links` (135 → 136).
   // Issue #4441 added `container-build-heal` (count 136 → 137).
-  assertEquals(commands.length, 137);
+  // Issue #4 removed `seatbelt-profile` — containment is mandatory (137 → 136).
+  assertEquals(commands.length, 136);
   assertEquals(commands.includes("security-tree-sweep"), true);
   assertEquals(commands.includes("green-gate-report"), true);
   assertEquals(commands.includes("security-tabletop"), true);
   assertEquals(commands.includes("deno-cache-guard"), true);
   assertEquals(commands.includes("benchmark"), true);
-  assertEquals(commands.includes("seatbelt-profile"), true);
+  assertEquals(commands.includes("seatbelt-profile"), false);
   assertEquals(commands.includes("container-image-hash"), true);
   assertEquals(commands.includes("container-runtime-detect"), true);
   assertEquals(commands.includes("container-launch-plan"), true);

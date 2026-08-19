@@ -119,50 +119,16 @@ Deno.test("repairMacOsContainerRuntime - a declined repair keeps the failed repo
   assertEquals(result.ok, false, "a declined repair is never masked as ok");
 });
 
-// ── Run-mode awareness (Issue #4149) ────────────────────────────────────
-
-Deno.test("repairMacOsContainerRuntime - native mode never repairs a runtime", async () => {
-  let repairCalls = 0;
-  let recheckCalls = 0;
-
-  const result = await repairMacOsContainerRuntime(
-    failedReport(),
-    { runMode: "native" },
-    {
-      repair: () => {
-        repairCalls += 1;
-        return Promise.resolve(repairedReport());
-      },
-      recheckAll: () => {
-        recheckCalls += 1;
-        return Promise.resolve(freshReport());
-      },
-    },
-  );
-
-  assertEquals(repairCalls, 0, "a native host is never offered a runtime");
-  assertEquals(recheckCalls, 0);
-  assertEquals(result, failedReport());
-});
+// ── Run mode (Issues #4149, #4): container is the only one ───────────────
 
 Deno.test("prerequisiteSummaryLines - names the mode it probed for", () => {
   assertEquals(prerequisiteSummaryLines(true, "container"), [
     "All host prerequisites satisfied (run mode: container)",
   ]);
-  assertEquals(prerequisiteSummaryLines(true, "native"), [
-    "All host prerequisites satisfied (run mode: native)",
-  ]);
 
   const containerFailure = prerequisiteSummaryLines(false, "container");
   assertStringIncludes(containerFailure[0]!, "run mode: container");
   assertStringIncludes(containerFailure[1]!, "container runtime");
-
-  const nativeFailure = prerequisiteSummaryLines(false, "native");
-  assertStringIncludes(nativeFailure[0]!, "run mode: native");
-  assertStringIncludes(nativeFailure[1]!, "jq");
-  assertStringIncludes(nativeFailure[1]!, "no container runtime");
-  // Both modes keep the escape hatch documented.
-  for (const lines of [containerFailure, nativeFailure]) {
-    assertStringIncludes(lines.join(" "), "VIBE_SKIP_PREREQ_CHECK");
-  }
+  // The escape hatch stays documented.
+  assertStringIncludes(containerFailure.join(" "), "VIBE_SKIP_PREREQ_CHECK");
 });

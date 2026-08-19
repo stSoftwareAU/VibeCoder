@@ -9,10 +9,11 @@
  * networking and of published ports - so a future edit that broadens the
  * container's privileges fails here in the `Validate Scripts` workflow.
  *
- * Issue #4148 restored the host-native run mode. The cases at the foot of this
- * file hold the line that matters: container is what runs by default, native
- * runs only when it was explicitly asked for, and a missing container runtime
- * never quietly becomes a host run.
+ * Containment is mandatory (Issue #4): the host-native run mode (#4148) and
+ * the macOS seatbelt mode (#4300) are gone. The cases at the foot of this
+ * file hold the line that matters: container is what runs, a configuration
+ * naming a removed mode fails loud and launches nothing, and a missing
+ * container runtime never quietly becomes a host run.
  *
  * The end-to-end containment behaviour (a container genuinely cannot read
  * prohibited host paths) is verified separately by the containment
@@ -583,11 +584,12 @@ Deno.test("run.sh - exits non-zero with an actionable message when no runtime is
     assertStringIncludes(outcome.stderr, "No supported container runtime");
     assertStringIncludes(outcome.stderr, "no host fallback");
     assertEquals(await recorded(harness, "run"), null);
-    // Native must be asked for: an absent runtime never selects it (#4148).
+    // There is no host mode to fall back to (Issue #4), and an absent
+    // runtime must never invent one.
     assertEquals(
       await recorded(harness, "run-entrypoint"),
       null,
-      "a missing container runtime must not fall back to a host-native run",
+      "a missing container runtime must not fall back to a host run",
     );
   } finally {
     await harness.cleanup();
@@ -609,13 +611,20 @@ Deno.test("run.sh - fails loud when the credential directory is absent", async (
   }
 });
 
-Deno.test("run.sh - reaches the host only through the run-mode opt-in", async () => {
+Deno.test("run.sh - carries no host-execution path at all (Issue #4)", async () => {
   const source = await Deno.readTextFile(RUN_SH);
 
-  // The native path exists again (Issue #4148), but the launcher must ask
-  // which mode to run in rather than deciding for itself.
+  // The launcher still asks the run-mode resolver — so a removed mode fails
+  // loud in one place — but there is nothing for the answer to select: no
+  // run-entrypoint, no sandbox-exec, no Seatbelt profile.
   assertStringIncludes(source, "run-mode");
-  assertStringIncludes(source, "run-entrypoint");
+  for (const gone of ["run-entrypoint", "sandbox-exec", "seatbelt-profile"]) {
+    assertEquals(
+      source.includes(gone),
+      false,
+      `run.sh must not contain the host-execution marker ${gone}`,
+    );
+  }
   for (
     const forbidden of [
       "--privileged",
@@ -637,129 +646,8 @@ Deno.test("run.sh - reaches the host only through the run-mode opt-in", async ()
 });
 
 // ---------------------------------------------------------------------------
-// Native mode (Issue #4148) - the explicit opt-in, and nothing else
+// Run mode (Issues #4146, #4) - container, and only container
 // ---------------------------------------------------------------------------
-
-Deno.test("run.sh - runs the worker driver on the host under the native opt-in", async () => {
-  const harness = await setupHarness(
-    { VIBE_RUN_MODE: "native", STUB_ENTRYPOINT_EXIT: "0" },
-    { denoStub: true },
-  );
-  try {
-    const outcome = await runLauncher(harness);
-    assertEquals(outcome.code, 0, outcome.stderr);
-
-    const args = await recorded(harness, "run-entrypoint");
-    assert(args, `the worker driver was never invoked: ${outcome.stderr}`);
-
-    // The pre-#4065 contract, recovered verbatim: the frozen lockfile, the
-    // full permission set the in-process driver needs, and the base directory.
-    assertEquals(args[0], "run");
-    assertEquals(args.includes("--frozen"), true);
-    assertEquals(
-      args.includes(`--lock=${REPO_ROOT}/worker/deno/deno.lock`),
-      true,
-    );
-    for (
-      const permission of [
-        "--allow-env",
-        "--allow-read",
-        "--allow-write",
-        "--allow-run",
-        "--allow-net",
-        "--allow-sys=hostname",
-      ]
-    ) {
-      assertEquals(
-        args.includes(permission),
-        true,
-        `the native driver must be granted ${permission}`,
-      );
-    }
-    assertEquals(args.includes(`${REPO_ROOT}/worker/deno/mod.ts`), true);
-    assertEquals(args.includes("run-entrypoint"), true);
-    assertEquals(args[args.indexOf("--base-dir") + 1], REPO_ROOT);
-
-    // No container runtime is probed, built or run.
-    for (
-      const subCommand of [
-        "version",
-        "system",
-        "image",
-        "images",
-        "build",
-        "run",
-      ]
-    ) {
-      assertEquals(
-        await recorded(harness, subCommand),
-        null,
-        `native mode must not invoke the container runtime (${subCommand})`,
-      );
-    }
-  } finally {
-    await harness.cleanup();
-  }
-});
-
-Deno.test("run.sh - still records phase and outcome on the native path", async () => {
-  const harness = await setupHarness(
-    { VIBE_RUN_MODE: "native", STUB_ENTRYPOINT_EXIT: "23" },
-    { denoStub: true },
-  );
-  try {
-    const outcome = await runLauncher(harness);
-    assertEquals(outcome.code, 23, outcome.stderr);
-
-    // The phase must name the native run - `runtime_detection` and
-    // `image_build` are container-only, and a stale one would misattribute a
-    // crashed worker to broken host plumbing.
-    assertEquals(
-      (await Deno.readTextFile(
-        `${harness.tmpDir}/home/.vibe-coder/last-launch-phase`,
-      )).trim(),
-      "native_run",
-    );
-
-    // `exec` would replace this shell and take the EXIT trap - and the outcome
-    // record - with it (Issue #4072 accounting).
-    const backoff = await recorded(harness, "container-restart-backoff");
-    assert(backoff, "the launcher outcome was never recorded");
-    assertEquals(backoff[backoff.indexOf("--exit-status") + 1], "23");
-  } finally {
-    await harness.cleanup();
-  }
-});
-
-Deno.test("run.sh - propagates SIGTERM to the native worker and reports its status", async () => {
-  const harness = await setupHarness(
-    {
-      VIBE_RUN_MODE: "native",
-      STUB_ENTRYPOINT_SLEEP: "60",
-      STUB_ENTRYPOINT_SIGNAL_EXIT: "143",
-    },
-    { denoStub: true },
-  );
-  try {
-    const child = spawnLauncher(harness);
-    assert(
-      await waitForRecord(harness, "run-entrypoint"),
-      "the worker driver never started",
-    );
-
-    child.kill("SIGTERM");
-    const output = await child.output();
-
-    assertEquals(
-      await Deno.readTextFile(`${harness.recordDir}/entrypoint-terminated`),
-      "terminated",
-      "the native worker must receive the termination signal",
-    );
-    assertEquals(output.code, 143, new TextDecoder().decode(output.stderr));
-  } finally {
-    await harness.cleanup();
-  }
-});
 
 Deno.test("run.sh - launches the container when no run mode is configured", async () => {
   const harness = await setupHarness(
@@ -777,7 +665,7 @@ Deno.test("run.sh - launches the container when no run mode is configured", asyn
     assertEquals(
       await recorded(harness, "run-entrypoint"),
       null,
-      "the worker driver must not run on the host without the opt-in",
+      "the worker driver never runs on the host",
     );
   } finally {
     await harness.cleanup();
@@ -800,131 +688,23 @@ Deno.test("run.sh - fails loud on an unrecognised run mode rather than choosing 
   }
 });
 
-// ---------------------------------------------------------------------------
-// Seatbelt run mode (Issue #4300) — macOS only
-// ---------------------------------------------------------------------------
-
-Deno.test({
-  name:
-    "run.sh - seatbelt mode wraps the native driver in sandbox-exec with a generated profile (Issue #4300)",
-  ignore: Deno.build.os !== "darwin",
-  async fn() {
+Deno.test("run.sh - a removed run mode fails loud with the removal explained, and launches nothing (Issue #4)", async () => {
+  for (const removed of ["native", "seatbelt"]) {
     const harness = await setupHarness(
-      {
-        VIBE_RUN_MODE: "seatbelt",
-        STUB_ENTRYPOINT_EXIT: "0",
-        // The stub deno records into the harness temp dir; the sandbox
-        // must be told about it, exactly as an operator would declare an
-        // extra writable path.
-        VIBE_SEATBELT_EXTRA_WRITABLE: "",
-      },
+      { VIBE_RUN_MODE: removed, STUB_IMAGE_INSPECT_EXIT: "0" },
       { denoStub: true },
     );
-    // The record dir sits in the harness tmp dir — grant it explicitly.
-    harness.env.VIBE_SEATBELT_EXTRA_WRITABLE = harness.tmpDir;
     try {
       const outcome = await runLauncher(harness);
-      assertEquals(outcome.code, 0, outcome.stderr);
-      assertStringIncludes(outcome.stdout, "Seatbelt profile:");
-
-      // The driver ran with the full native permission set…
-      const args = await recorded(harness, "run-entrypoint");
-      assert(args, `the worker driver was never invoked: ${outcome.stderr}`);
-      assertEquals(args[0], "run");
-      for (
-        const permission of [
-          "--allow-env",
-          "--allow-read",
-          "--allow-write",
-          "--allow-run",
-          "--allow-net",
-          "--allow-sys=hostname",
-        ]
-      ) {
-        assertEquals(args.includes(permission), true, permission);
-      }
-      assertEquals(args[args.indexOf("--base-dir") + 1], REPO_ROOT);
-
-      // …and a profile was really written from the resolved host paths.
-      const profilePath = outcome.stdout
-        .split("\n").find((l) => l.startsWith("Seatbelt profile:"))!
-        .replace("Seatbelt profile:", "").trim();
-      const profile = await Deno.readTextFile(profilePath);
-      assertStringIncludes(profile, "(deny default)");
-      assertStringIncludes(profile, `(subpath "${REPO_ROOT}")`);
-      const workReal = await Deno.realPath(harness.env.WORK_DIR!);
-      assertStringIncludes(profile, `(subpath "${workReal}")`);
-
-      // No container runtime is probed, built or run.
-      for (const subCommand of ["version", "build", "run"]) {
-        assertEquals(await recorded(harness, subCommand), null, subCommand);
-      }
+      assert(outcome.code !== 0, `${removed} must fail the launch`);
+      assertStringIncludes(outcome.stderr, "removed");
+      assertStringIncludes(outcome.stderr, "Issue #4");
+      assertEquals(await recorded(harness, "run"), null);
+      assertEquals(await recorded(harness, "build"), null);
+      assertEquals(await recorded(harness, "run-entrypoint"), null);
     } finally {
       await harness.cleanup();
     }
-  },
-});
-
-Deno.test({
-  name:
-    "run.sh - under seatbelt the driver really is confined: it cannot read a HOME canary (Issue #4300)",
-  ignore: Deno.build.os !== "darwin",
-  async fn() {
-    const harness = await setupHarness(
-      { VIBE_RUN_MODE: "seatbelt" },
-      { denoStub: true },
-    );
-    harness.env.VIBE_SEATBELT_EXTRA_WRITABLE = harness.tmpDir;
-    // A canary the profile never grants: a sibling of the launcher's HOME.
-    const canary = `${harness.tmpDir}/../seatbelt-canary-${Date.now()}.txt`;
-    await Deno.writeTextFile(canary, "secret\n");
-    // Replace the stub deno's run-entrypoint with a probe that tries to
-    // read the canary and records the outcome. It runs INSIDE sandbox-exec
-    // because run.sh wraps the whole deno invocation.
-    const probe = `#!/bin/bash
-set -u
-for arg in "$@"; do
-  case "\${arg}" in
-    run-entrypoint)
-      mkdir -p "\${VIBE_STUB_RECORD}"
-      if cat "${canary}" >/dev/null 2>&1; then echo readable > "\${VIBE_STUB_RECORD}/canary"; else echo denied > "\${VIBE_STUB_RECORD}/canary"; fi
-      exit 0;;
-  esac
-done
-exec "\${VIBE_REAL_DENO}" "$@"
-`;
-    await Deno.writeTextFile(`${harness.tmpDir}/bin/deno`, probe);
-    await Deno.chmod(`${harness.tmpDir}/bin/deno`, 0o755);
-    try {
-      const outcome = await runLauncher(harness);
-      assertEquals(outcome.code, 0, outcome.stderr);
-      const verdict = (await Deno.readTextFile(`${harness.recordDir}/canary`))
-        .trim();
-      assertEquals(
-        verdict,
-        "denied",
-        "the driver must not read outside the allowlist",
-      );
-    } finally {
-      await Deno.remove(canary).catch(() => undefined);
-      await harness.cleanup();
-    }
-  },
-});
-
-Deno.test("run.sh - seatbelt mode is refused off macOS with an actionable message", async () => {
-  if (Deno.build.os === "darwin") return; // covered by the live cases above
-  const harness = await setupHarness(
-    { VIBE_RUN_MODE: "seatbelt" },
-    { denoStub: true },
-  );
-  try {
-    const outcome = await runLauncher(harness);
-    assert(outcome.code !== 0);
-    assertStringIncludes(outcome.stderr, "macOS-only");
-    assertEquals(await recorded(harness, "run-entrypoint"), null);
-  } finally {
-    await harness.cleanup();
   }
 });
 

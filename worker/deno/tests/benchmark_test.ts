@@ -16,7 +16,7 @@ Deno.test("perf workload report - runs every step with an injected runner and re
     const report = await runBenchmark({
       workDir,
       entryPath: "/nonexistent/mod.ts",
-      mode: "native",
+      mode: "container",
       host: "test-host",
       fsFiles: 5,
       cpuIterations: 3,
@@ -26,7 +26,7 @@ Deno.test("perf workload report - runs every step with an injected runner and re
         return Promise.resolve({ code: 0, stderr: "" });
       },
     });
-    assertEquals(report.mode, "native");
+    assertEquals(report.mode, "container");
     assertEquals(report.host, "test-host");
     assertEquals(
       report.steps.map((s) => s.name),
@@ -45,7 +45,7 @@ Deno.test("perf workload report - runs every step with an injected runner and re
       report.steps.reduce((sum, s) => sum + s.ms, 0),
     );
     const table = formatBenchmarkTable(report);
-    assertStringIncludes(table, "benchmark native@test-host");
+    assertStringIncludes(table, "benchmark container@test-host");
     assertStringIncludes(table, "cpu-hash");
     // Scratch is cleaned up.
     let scratchLeft = 0;
@@ -88,7 +88,7 @@ Deno.test("perf workload command - runs the real fs and cpu steps and emits a JS
     const result = await benchmarkCommand.execute(
       {
         "work-dir": workDir,
-        mode: "native",
+        mode: "container",
         only: "fs-write-read,cpu-hash",
         json: true,
       },
@@ -96,7 +96,7 @@ Deno.test("perf workload command - runs the real fs and cpu steps and emits a JS
     );
     assertEquals(result.success, true);
     const parsed = JSON.parse(result.message ?? "");
-    assertEquals(parsed.mode, "native");
+    assertEquals(parsed.mode, "container");
     assertEquals(parsed.steps.length, 2);
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);

@@ -112,9 +112,7 @@ export interface ContainerRepairDeps {
  *
  * A report whose runtime already passes — and every non-macOS host, where the
  * runtime is offered inside the driver instead (Issue #4137) — comes back
- * untouched. So does every native-mode report: a native host runs the worker
- * itself and needs no runtime, so there is nothing to repair (Issue #4149).
- * When the runtime *was* repaired the whole probe is re-run rather than
+ * untouched. When the runtime *was* repaired the whole probe is re-run rather than
  * patched: the worker-image check never ran while no runtime answered, so
  * patching would leave a half-checked report (Issue #3234).
  *
@@ -128,8 +126,6 @@ export async function repairMacOsContainerRuntime(
   probeOptions: PrerequisiteOptions,
   deps: ContainerRepairDeps = {},
 ): Promise<AllPrerequisitesResult> {
-  if (probeOptions.runMode === "native") return probe;
-
   const runtimeFailed = probe.results.some((r) =>
     r.tool === CONTAINER_RUNTIME_TOOL && !r.ok
   );
@@ -148,9 +144,8 @@ export async function repairMacOsContainerRuntime(
 /**
  * The closing lines of the prerequisite report (Issue #4149).
  *
- * Every line names the run mode the probe classified for, so an operator can
- * see at a glance whether they were probed as a container host or a native one
- * — a wrong-mode probe is otherwise invisible until it demands the wrong tool.
+ * Every line names the run mode the probe classified for — container, the
+ * only one (Issue #4) — so the report is explicit about what it demanded.
  *
  * @param ok - Whether the probe passed
  * @param runMode - The mode the probe ran for
@@ -163,12 +158,10 @@ export function prerequisiteSummaryLines(
   if (ok) {
     return [`All host prerequisites satisfied (run mode: ${runMode})`];
   }
-  const needs = runMode === "container"
-    ? "Container mode needs git, an authenticated gh, deno, the claude CLI " +
-      "(setup mints the worker's OAuth token with it) and a working " +
-      "container runtime on the host; the image provides jq and timeout."
-    : "Native mode needs git, an authenticated gh, deno, the coding-agent " +
-      "CLI, jq and timeout on the host; it needs no container runtime.";
+  const needs =
+    "Container mode needs git, an authenticated gh, deno, the claude CLI " +
+    "(setup mints the worker's OAuth token with it) and a working " +
+    "container runtime on the host; the image provides jq and timeout.";
   return [
     `Some host prerequisites are missing or not configured ` +
     `(run mode: ${runMode}).`,

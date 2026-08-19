@@ -17,16 +17,13 @@ runtime, manifest, run-mode and launcher-contract tests), not the whole test
 suite — that runs on the same commit in the sharded `validate (tests N/4)`
 legs. The second-engine (Podman) build is a push-time acceptance criterion.
 
-**Container is the default, not the only mode** (Issues #4145, #4146). A host
-may instead opt into a host-native run — `"run_mode": "native"` in
-`.config.json`, or `VIBE_RUN_MODE=native` for one run — which `run.sh` serves
-on macOS/Linux (Issue #4148); `run.ps1` stays container-only by design. Native
-is a first-class, indefinitely supported mode, not a transitional escape
-hatch, and it is chosen only by asking for it: a missing container runtime in
-container mode never silently selects it and stays the loud failure it is
-today (Issue #3234). See [`run_mode`](CONFIGURATION.md#-run-mode-issue-4146)
-for when native is the right answer, and [Containment](CONTAINMENT.md) for
-what an operator gives up by choosing it.
+**Container is the only mode** (Issues #4146, #4). The former host-native
+opt-in (Issue #4148) and the macOS `seatbelt` profile (Issue #4300) were
+removed by Issue #4 — containment is mandatory. A configuration that still
+names one fails loud with the removal explained, and a missing container
+runtime stays the loud failure it is today (Issue #3234), with no host path to
+fall back to. See [`run_mode`](CONFIGURATION.md#-run-mode-issue-4146) for the
+setting and [Containment](CONTAINMENT.md) for the boundary.
 
 ## What is in the image
 
@@ -377,9 +374,8 @@ Two properties matter more than the list:
 - **Detection never falls back to the host.** In container mode the outcome is
   either a descriptor naming a container runtime or a non-zero exit whose
   message names the platform, every runtime probed with the reason it was
-  rejected, and how to install one (Issue #3234). Native mode is reached only
-  through the explicit `run_mode` opt-in — nothing here may select it because a
-  runtime is absent.
+  rejected, and how to install one (Issue #3234). There is no host mode
+  (Issue #4), so nothing here can select one because a runtime is absent.
 
 **The runtime is not a manual-only checklist** (Issues #4136, #4137). Run
 `./setup.sh` in a terminal and the same probe drives an offer to fix what it
@@ -452,20 +448,18 @@ every containment decision lives in one auditable Deno module
 being restated in shell — code running *inside* the container cannot broaden
 its own mounts or capabilities by editing the launcher.
 
-It resolves the run mode first (Issue #4146), so the branch a host takes is
-decided by one Deno command rather than by what happens to be installed: in
-the default `container` mode it builds the launch plan below, and in the
-opt-in `native` mode it runs the same `run-entrypoint` driver directly on the
-host instead (Issue #4148), where none of the mounts and privilege flags below
-apply.
+It resolves the run mode first (Issue #4146) so that a configuration naming a
+removed mode fails loud in one place (Issue #4) — then builds the launch plan
+below. There is no other branch: the worker runs in the container or not at
+all.
 
 ```mermaid
 flowchart TD
     S["🖥️ loop.sh / launchd / cron / systemd"] --> R["run.sh"]
     R --> M{"run-mode<br/>(VIBE_RUN_MODE → run_mode → container)"}
-    M -->|native, opt-in| NV["🖥️ deno run-entrypoint on the host<br/>(outside the containment boundary)"]
-    M -->|container, default| P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
-    P -->|no runtime| X["❌ exit non-zero<br/>(never switches to native)"]
+    M -->|"native / seatbelt (removed, Issue #4)"| NV["❌ exit non-zero<br/>(removal explained)"]
+    M -->|container| P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
+    P -->|no runtime| X["❌ exit non-zero<br/>(no host fallback)"]
     P --> E{"image reference<br/>present?"}
     E -->|no| B["🐳 build"]
     E -->|yes| PR

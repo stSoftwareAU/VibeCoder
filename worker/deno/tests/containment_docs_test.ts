@@ -11,10 +11,11 @@
  * `candidatesForPlatform()`. A launcher change that broadens the boundary
  * therefore fails the documentation tests too.
  *
- * Issue #4151 adds the run-mode half of that contract: container is the
- * default, native is an explicit opt-in, and nothing auto-falls back between
- * them. Those assertions read their spelling from `lib/run_mode.ts`, so a
- * renamed setting fails the docs tests rather than leaving the pages stale.
+ * Issue #4151 added the run-mode half of that contract and Issue #4 settled
+ * it: container is the only run mode, the removed `native` / `seatbelt` modes
+ * fail loud, and nothing ever falls back to the host. Those assertions read
+ * their spelling from `lib/run_mode.ts`, so a renamed setting fails the docs
+ * tests rather than leaving the pages stale.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -38,6 +39,7 @@ import {
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import {
   DEFAULT_RUN_MODE,
+  REMOVED_RUN_MODES,
   RUN_MODE_CONFIG_KEY,
   RUN_MODE_ENV,
   RUN_MODES,
@@ -131,10 +133,10 @@ function tableRows(body: string): string[][] {
 }
 
 // ---------------------------------------------------------------------------
-// The two run modes (Issue #4151) — container by default, native by opt-in
+// The run mode (Issues #4151, #4) — container, and only container
 // ---------------------------------------------------------------------------
 
-/** Operator-facing pages that must carry the two-mode story. */
+/** Operator-facing pages that must carry the container-only story. */
 const RUN_MODE_SURFACES = [
   "README.md",
   "docs/CONTAINER.md",
@@ -145,33 +147,37 @@ const RUN_MODE_SURFACES = [
 ];
 
 /**
- * Accepted spellings of the no-auto-fallback rule.
+ * Accepted spellings of the no-host-fallback rule.
  *
- * The rule itself is the invariant `lib/run_mode.ts` enforces: nothing may
- * select `native` because a container runtime is absent. The pages are free to
- * word it, but they may not omit it.
+ * The rule itself is the invariant `lib/run_mode.ts` and the launchers
+ * enforce: a missing container runtime is a loud failure, never a run on the
+ * host. The pages are free to word it, but they may not omit it.
  */
 const NO_AUTO_FALLBACK =
-  /never (?:silently )?(?:selects?|switch(?:es)?(?: to)?|falls back)|no auto-fallback|not a fallback|never a fallback/i;
+  /never (?:silently )?(?:selects?|switch(?:es)?(?: to)?|falls back|runs? (?:the worker )?on the host)|no (?:auto-|host )?fallback|not a fallback|never a fallback/i;
 
 /**
  * The default stated near the mode that carries it — "container by default",
- * "the default `container` run mode", "container (the default)" and so on.
+ * "the default `container` run mode", "container (the default)", "the only
+ * run mode" and so on.
  */
 const DEFAULT_STATED = new RegExp(
-  `(default[^.\\n]{0,40}\\b${DEFAULT_RUN_MODE}\\b|\\b${DEFAULT_RUN_MODE}\\b[^.\\n]{0,40}default)`,
+  `(default[^.\\n]{0,40}\\b${DEFAULT_RUN_MODE}\\b|\\b${DEFAULT_RUN_MODE}\\b[^.\\n]{0,40}default|only run mode)`,
   "i",
 );
 
 /**
- * Claims the milestone's earlier container-only wording made, which #4145
- * falsified. Any page reintroducing one of these fails.
+ * Claims a page may no longer make (Issue #4): the removed modes are not
+ * something an operator can opt into. History may name them; instructions may
+ * not.
  */
 const RETIRED_CLAIMS = [
-  "and nowhere else",
-  "no native fallback",
-  "no native execution path",
-  "no host fallback to run instead",
+  '"run_mode": "native"',
+  '"run_mode": "seatbelt"',
+  "vibe_run_mode=native",
+  "vibe_run_mode=seatbelt",
+  "opt into the native mode",
+  "opt into native mode",
 ];
 
 /** Every markdown file under `docs/`, excluding the immutable PR archive. */
@@ -189,7 +195,7 @@ function liveDocs(directory = "docs"): string[] {
   return found;
 }
 
-Deno.test("no live document claims the worker runs in a container and nowhere else", () => {
+Deno.test("no live document tells an operator how to opt into a removed run mode (Issue #4)", () => {
   const offenders: string[] = [];
   for (const surface of ["README.md", ...liveDocs()]) {
     const text = read(surface).toLowerCase();
@@ -200,28 +206,23 @@ Deno.test("no live document claims the worker runs in a container and nowhere el
   assertEquals(
     offenders,
     [],
-    "native is a supported run mode (Issue #4145), so no page may deny it",
+    "native and seatbelt were removed (Issue #4); no page may offer them",
   );
 });
 
 for (const surface of RUN_MODE_SURFACES) {
-  Deno.test(`${surface} tells the two-mode story`, () => {
+  Deno.test(`${surface} tells the container-only story`, () => {
     const text = read(surface).toLowerCase();
     for (const mode of RUN_MODES) {
       assert(text.includes(mode), `${surface} must name the ${mode} run mode`);
     }
     assert(
       DEFAULT_STATED.test(text),
-      `${surface} must state that ${DEFAULT_RUN_MODE} is the default`,
-    );
-    assert(
-      text.includes(RUN_MODE_CONFIG_KEY) ||
-        text.includes(RUN_MODE_ENV.toLowerCase()),
-      `${surface} must name the setting that opts a host into native`,
+      `${surface} must state that ${DEFAULT_RUN_MODE} is the default (and only) mode`,
     );
     assert(
       NO_AUTO_FALLBACK.test(text),
-      `${surface} must state that a missing runtime never selects native`,
+      `${surface} must state that a missing runtime never runs the worker on the host`,
     );
   });
 }
@@ -241,18 +242,25 @@ Deno.test("CONFIGURATION.md documents the run-mode setting as the code spells it
       `CONFIGURATION.md must document ${token}`,
     );
   }
+  // The removed modes are named as removed, so an operator carrying one in
+  // an old config learns why it now fails (Issue #4).
+  for (const removed of REMOVED_RUN_MODES) {
+    assert(
+      text.includes(removed),
+      `CONFIGURATION.md must name the removed ${removed} mode as removed`,
+    );
+  }
 });
 
-Deno.test("CONTAINMENT.md places native mode outside the boundary", () => {
+Deno.test("CONTAINMENT.md states that containment is mandatory", () => {
   const text = read("docs/CONTAINMENT.md").toLowerCase();
   assert(
-    /native mode.*(outside|not covered by|no containment)|(outside|beyond) (the |this )?(#4060 )?containment boundary/s
-      .test(text),
-    "CONTAINMENT.md must say native mode is outside the containment boundary",
+    text.includes("mandatory"),
+    "CONTAINMENT.md must say containment is mandatory (Issue #4)",
   );
   assert(
-    text.includes("host access"),
-    "CONTAINMENT.md must state that native mode runs with host access",
+    NO_AUTO_FALLBACK.test(text),
+    "CONTAINMENT.md must state there is no host fallback",
   );
 });
 
@@ -384,9 +392,9 @@ Deno.test("DEPLOYMENT.md states the hard-cutover rollout requirement", () => {
     text.includes("hard cutover"),
     "an operator upgrading an existing host must see the hard cutover",
   );
-  // Issue #4151: the cutover is into the *default* mode, not the only one. An
-  // operator reading the rollout note must see both modes and the rule that
-  // links them — a missing runtime never selects native for them.
+  // Issues #4151, #4: the cutover is into the only mode. An operator reading
+  // the rollout note must see it named, and the rule that a missing runtime
+  // never runs the worker on the host.
   for (const mode of RUN_MODES) {
     assert(
       text.includes(mode),
@@ -394,14 +402,8 @@ Deno.test("DEPLOYMENT.md states the hard-cutover rollout requirement", () => {
     );
   }
   assert(
-    text.includes(RUN_MODE_CONFIG_KEY) || text.includes(
-      RUN_MODE_ENV.toLowerCase(),
-    ),
-    "the rollout note must name the setting that selects the run mode",
-  );
-  assert(
     NO_AUTO_FALLBACK.test(text),
-    "the rollout note must state that container mode never auto-selects native",
+    "the rollout note must state that a missing runtime never runs on the host",
   );
 });
 

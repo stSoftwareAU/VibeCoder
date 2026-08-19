@@ -34,11 +34,11 @@ Deno.test("run mode record - format and parse round-trip through a run_core.log 
 
 Deno.test("run mode record - whitespace in values is never spliced into the line (Issue #4189)", () => {
   const line = formatRunModeRecord({
-    mode: "native",
+    mode: "container",
     host: "my host",
     runId: "",
   });
-  assertEquals(line, "run mode: native host=my_host run_id=unknown");
+  assertEquals(line, "run mode: container host=my_host run_id=unknown");
 });
 
 Deno.test("run mode record - host id prefers VIBE_HOST_ID and trims the domain (Issue #4189)", () => {

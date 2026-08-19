@@ -5,8 +5,8 @@
  * Container mode keeps the workspace on the `vibe-work` / `vibe-approval-state`
  * named volumes, so a leftover host `~/auto-issue-work` (or its approval-state
  * sibling) is never mounted again and only wastes disk. Setup must say so —
- * and must only say so: it never deletes, and it stays quiet on native-mode
- * hosts, where the directories are still in use.
+ * and must only say so: it never deletes, and it stays quiet on a host whose
+ * run mode cannot be resolved (container is the only mode, Issue #4).
  *
  * Behavioural: each test sources the real setup.sh and calls the real
  * `remind_obsolete_host_work_dirs` with a stubbed `deno` answering the
@@ -149,19 +149,18 @@ Deno.test("remind_obsolete_host_work_dirs - a checkout beside the cache is still
   }
 });
 
-Deno.test("remind_obsolete_host_work_dirs - stays quiet in native mode, where the dirs are live", async () => {
+Deno.test("remind_obsolete_host_work_dirs - stays quiet when the run mode cannot be resolved (a removed mode, Issue #4)", async () => {
   const tmp = await Deno.makeTempDir();
   try {
     await Deno.mkdir(`${tmp}/auto-issue-work/some-repo`, { recursive: true });
     await Deno.writeTextFile(`${tmp}/auto-issue-work/some-repo/f`, "x");
 
-    const { code, output } = await remind(tmp, "native");
+    // The stub answers what the real run-mode command prints on a removed
+    // mode: nothing on stdout (it exits non-zero). Setup's reminder must
+    // skip rather than fail setup.
+    const { code, output } = await remind(tmp, "");
     assertEquals(code, 0, output);
-    assertEquals(
-      output.includes("wasting disk"),
-      false,
-      `native mode still uses the host work dir: ${output}`,
-    );
+    assertEquals(output.includes("4186"), false, output);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

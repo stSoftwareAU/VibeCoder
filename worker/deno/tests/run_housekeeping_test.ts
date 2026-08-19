@@ -395,12 +395,13 @@ Deno.test("sweepVolatileCliState - container mode removes dead-run registries, k
   }
 });
 
-Deno.test("sweepVolatileCliState - native mode leaves CLI state alone (Issue #4245)", async () => {
-  const workDir = await Deno.makeTempDir({ prefix: "cli_state_native_" });
+Deno.test("sweepVolatileCliState - outside the worker container the CLI state is left alone (Issue #4245)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "cli_state_host_" });
   try {
     await Deno.mkdir(`${workDir}/.claude-config/sessions`, { recursive: true });
+    // A host-side invocation (no image stamp): not this process's to sweep.
     const summary = await sweepVolatileCliState(workDir, () => undefined);
-    assertStringIncludes(summary, "native mode");
+    assertStringIncludes(summary, "not inside the worker container");
     assertEquals(
       (await Deno.stat(`${workDir}/.claude-config/sessions`)).isDirectory,
       true,

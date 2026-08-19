@@ -16,9 +16,8 @@
  * 2. **Detection never falls back to the host.** Nothing here can return "run
  *    on the host instead": the outcome is either a descriptor naming a
  *    container runtime or a loud `ContainerRuntimeUnavailableError`
- *    (Issue #3234). The host-native mode is reached only through the explicit
- *    `run_mode` opt-in (Issues #4145, #4146), never because a runtime is
- *    absent.
+ *    (Issue #3234). There is no host mode at all (Issue #4: containment is
+ *    mandatory), so nothing can be selected because a runtime is absent.
  *
  * Platform and probe are both injectable, so every branch is testable on a host
  * with none of the runtimes installed.
@@ -664,10 +663,9 @@ function buildUnavailableMessage(
     "To fix this, install and start one of:",
     hints,
     "",
-    "Container mode has no host fallback (Issue #4060): this fails rather " +
-    "than running the worker on the host. Native mode is an explicit opt-in " +
-    '- set "run_mode": "native" in .config.json, or VIBE_RUN_MODE=native ' +
-    "- never something a missing runtime selects for you (Issue #4145).",
+    "Container mode has no host fallback (Issues #4060, #4): containment " +
+    "is mandatory, so this fails rather than running the worker on the host. " +
+    "Install a supported runtime (./setup.sh offers to) and launch again.",
   ].join("\n");
 }
 

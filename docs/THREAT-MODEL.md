@@ -43,7 +43,7 @@ flowchart LR
     end
     subgraph HOST["🏠 Operator host (behind the firewall)"]
         W["Worker process (Deno)<br/>trust checks + prompt build"]
-        subgraph CON["📦 Container (default run mode)"]
+        subgraph CON["📦 Container (the only run mode)"]
             A["Agent CLI<br/>unrestricted shell"]
         end
         K["🔑 Credentials<br/>read-only mounts"]
@@ -209,7 +209,7 @@ accept.
 | **R2** | **Suspicious-pattern detection is advisory.** C11 logs and never blocks | Blocking on pattern matches would stop ordinary issues that quote an attack; the boundary fencing (C4) is the control that must hold, and it does not depend on detection |
 | **R3** | **Sophisticated social engineering.** Plausible, well-formed untrusted guidance that trips no detector | No automated system reliably separates this from genuine community input; the compensating control is that a human reviews every PR before merge |
 | **R4** | **Trusted-account compromise.** A compromised `allowed_authors` account has full trusted access | Inherent to any trust-based system; compensated by two-factor authentication, short-lived tokens, and the audit journal |
-| **R5** | **Native run mode is outside the containment boundary.** An operator may opt out of the container | Explicit opt-in, never an automatic fallback; the operator who chooses it accepts C22's absence knowingly |
+| **R5** | **A checkout older than Issue #4 can still run a host mode.** The `native` and `seatbelt` opt-ins were removed (containment is mandatory); a fleet host that has not pulled the removal could still launch outside C22 | Current code refuses the removed modes loud and never falls back to the host; the green-gate report counts any host-mode launch record as NOT GREEN, so a stale host is visible rather than silently uncontained |
 | **R6** | **Repository-supplied build scripts execute.** The agent runs the monitored repository's own `quality.sh` and its test suite | Running the repository's gate is the product; the boundary that must hold is containment (C22) and egress control (C12, C13), not the contents of that script |
 | **R7** | **The model is not deterministic.** No prompt-level control can guarantee an instruction is never followed | Which is exactly why the boundaries below the prompt exist — see the next section |
 

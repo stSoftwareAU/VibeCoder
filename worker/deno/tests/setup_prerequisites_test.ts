@@ -7,7 +7,7 @@
  * Issue #4149: The split follows the resolved run mode.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   aggregatePrerequisiteOk,
   checkAllPrerequisites,
@@ -137,12 +137,12 @@ function containerReadyOpts(
   };
 }
 
-/** Options for a native host: no container runtime answers at all. */
-function nativeOpts(tools: string[]): PrerequisiteOptions {
+/** Options for a host where no container runtime answers at all. */
+function noRuntimeOpts(tools: string[]): PrerequisiteOptions {
   return {
     os: "linux",
     repoRoot: REPO_ROOT,
-    runMode: "native",
+    runMode: "container",
     containerProbe: fakeProbe([]),
     runCommand: mockRunner(tools),
   };
@@ -410,172 +410,86 @@ Deno.test("checkAllPrerequisites - fails when a host tool is missing", async () 
   assertEquals(result.ok, false);
 });
 
-// ── Native run mode (Issue #4149) ───────────────────────────────────────
+// ── Container is the only run mode (Issues #4149, #4) ─────────────────────
 
-Deno.test("checkAllPrerequisites - native mode makes claude, jq and timeout host-fatal", async () => {
-  const result = await checkAllPrerequisites(nativeOpts(["git", "gh", "deno"]));
-
-  assertEquals(result.ok, false, "a native host without the agent tools fails");
-  for (const tool of ["claude", "jq", "timeout"]) {
-    const entry = result.results.find((r) => r.tool === tool)!;
-    assertEquals(entry.ok, false, `${tool} must fail`);
-    assertEquals(
-      entry.informational,
-      undefined,
-      `${tool} must be host-fatal in native mode`,
-    );
-    assert(
-      !entry.message.includes("container image"),
-      `${tool} must not be described as container-owned: ${entry.message}`,
-    );
-    assert(
-      !(entry.hint ?? "").includes("container-only"),
-      `${tool} must not keep the container-only hint: ${entry.hint}`,
-    );
-  }
-});
-
-Deno.test("checkAllPrerequisites - native mode passes on a host with no container runtime", async () => {
+Deno.test("checkAllPrerequisites - a host with no container runtime fails: there is no mode that needs none (Issue #4)", async () => {
   const result = await checkAllPrerequisites(
-    nativeOpts(["git", "gh", "deno", "claude", "jq", "timeout"]),
+    noRuntimeOpts(["git", "gh", "deno", "claude", "jq", "timeout"]),
   );
-
-  assertEquals(result.ok, true, "a native host needs no container runtime");
+  assertEquals(
+    result.ok,
+    false,
+    "no runtime is host-fatal; containment is mandatory",
+  );
   const runtime = result.results.find((r) => r.tool === "container runtime")!;
   assertEquals(runtime.ok, false);
-  assertEquals(runtime.informational, true);
-  assertStringIncludes(runtime.message, "native run mode does not need one");
-  assertStringIncludes(String(runtime.hint), "container mode");
-  // The image is never resolved for a mode that will not run it.
-  assertEquals(
-    result.results.some((r) => r.tool === "worker image"),
-    false,
-  );
+  assertEquals(runtime.informational, undefined);
 });
 
-Deno.test("checkAllPrerequisites - native mode reports an available runtime informationally", async () => {
-  const result = await checkAllPrerequisites({
-    ...nativeOpts(["git", "gh", "deno", "claude", "jq", "timeout"]),
-    containerProbe: fakeProbe(["docker"]),
-  });
-
-  assertEquals(result.ok, true);
-  const runtime = result.results.find((r) => r.tool === "container runtime")!;
-  assertEquals(runtime.ok, true);
-  assertEquals(runtime.informational, true);
-  assertStringIncludes(runtime.message, "container mode is available");
-});
-
-Deno.test("checkAllPrerequisites - native mode still fails on a missing setup tool", async () => {
-  const result = await checkAllPrerequisites(
-    nativeOpts(["gh", "deno", "claude", "jq", "timeout"]),
-  );
-  assertEquals(result.ok, false);
-  assertEquals(result.results.find((r) => r.tool === "git")!.ok, false);
-});
-
-Deno.test("checkAllPrerequisites - VIBE_SKIP_PREREQ_CHECK skips both modes alike", async () => {
+Deno.test("checkAllPrerequisites - VIBE_SKIP_PREREQ_CHECK skips the probe", async () => {
   const original = Deno.env.get("VIBE_SKIP_PREREQ_CHECK");
   try {
     Deno.env.set("VIBE_SKIP_PREREQ_CHECK", "true");
-    for (const runMode of ["container", "native"] as const) {
-      // A bare host — nothing installed, no runtime — passes on the flag alone.
-      const result = await checkAllPrerequisites({
-        ...nativeOpts([]),
-        runMode,
-      });
-      assertEquals(result.ok, true, `${runMode} must honour the skip flag`);
-    }
+    // A bare host — nothing installed, no runtime — passes on the flag alone.
+    const result = await checkAllPrerequisites(noRuntimeOpts([]));
+    assertEquals(result.ok, true, "the skip flag must be honoured");
   } finally {
     if (original) Deno.env.set("VIBE_SKIP_PREREQ_CHECK", original);
     else Deno.env.delete("VIBE_SKIP_PREREQ_CHECK");
   }
 });
 
-Deno.test("checkAllPrerequisites - VIBE_SKIP_AUTH_CHECK skips gh in native mode too", async () => {
-  const result = await checkAllPrerequisites({
-    ...nativeOpts(["git", "deno", "claude", "jq", "timeout"]),
-    skipAuthCheck: true,
-  });
-  assertEquals(result.ok, true);
-  assertEquals(result.results.find((r) => r.tool === "gh")!.ok, true);
-});
-
-Deno.test("recheckPrerequisite - jq is informational in container mode, fatal in native", async () => {
-  const missing = { runCommand: mockRunner([]), os: "linux" };
-
-  const container = await recheckPrerequisite("jq", {
-    ...missing,
+Deno.test("recheckPrerequisite - jq is informational, present or not: the image provides it", async () => {
+  const missing = await recheckPrerequisite("jq", {
+    runCommand: mockRunner([]),
+    os: "linux",
     runMode: "container",
   });
-  assertEquals(container!.ok, false);
-  assertEquals(container!.informational, true);
+  assertEquals(missing!.ok, false);
+  assertEquals(missing!.informational, true);
 
-  const native = await recheckPrerequisite("jq", {
-    ...missing,
-    runMode: "native",
-  });
-  assertEquals(native!.ok, false);
-  assertEquals(native!.informational, undefined);
-  assertStringIncludes(String(native!.hint), "jq");
-});
-
-Deno.test("recheckPrerequisite - installing a tool never reclassifies it", async () => {
-  // The same tool, now present: it stays informational in container mode and
-  // host-fatal in native mode. Classification follows the mode, not the state.
-  const present = { runCommand: mockRunner(["jq"]), os: "linux" };
-
-  const container = await recheckPrerequisite("jq", {
-    ...present,
+  // Installing a tool never reclassifies it: classification follows the
+  // mode, not the state.
+  const present = await recheckPrerequisite("jq", {
+    runCommand: mockRunner(["jq"]),
+    os: "linux",
     runMode: "container",
   });
-  assertEquals(container!.ok, true);
-  assertEquals(container!.informational, true);
-
-  const native = await recheckPrerequisite("jq", {
-    ...present,
-    runMode: "native",
-  });
-  assertEquals(native!.ok, true);
-  assertEquals(native!.informational, undefined);
+  assertEquals(present!.ok, true);
+  assertEquals(present!.informational, true);
 });
 
-Deno.test("aggregatePrerequisiteOk - the mode decides which failures are fatal", () => {
+Deno.test("aggregatePrerequisiteOk - image-owned tools never fail setup; the runtime always can", () => {
   const jqMissing = [
     { ok: true, tool: "git", message: "git is installed" },
     { ok: false, tool: "jq", message: "jq is not installed" },
   ];
   assertEquals(aggregatePrerequisiteOk(jqMissing, "container"), true);
-  assertEquals(aggregatePrerequisiteOk(jqMissing, "native"), false);
 
   const noRuntime = [
     { ok: true, tool: "git", message: "git is installed" },
     { ok: false, tool: "container runtime", message: "no runtime" },
   ];
   assertEquals(aggregatePrerequisiteOk(noRuntime, "container"), false);
-  assertEquals(aggregatePrerequisiteOk(noRuntime, "native"), true);
 });
 
-Deno.test("isFatalInMode - swaps the two tool groups over between modes", () => {
+Deno.test("isFatalInMode - the image-owned tools are the only non-fatal ones", () => {
   const result = (tool: string) => ({ ok: false, tool, message: "missing" });
 
   for (const tool of ["jq", "timeout"]) {
     assertEquals(isFatalInMode(result(tool), "container"), false);
-    assertEquals(isFatalInMode(result(tool), "native"), true);
   }
   for (const tool of ["container runtime", "worker image"]) {
     assertEquals(isFatalInMode(result(tool), "container"), true);
-    assertEquals(isFatalInMode(result(tool), "native"), false);
   }
-  // claude is host-fatal in BOTH modes: setup mints and validates the
-  // worker's OAuth token with the host CLI (Issue #4161).
+  // claude is host-fatal: setup mints and validates the worker's OAuth token
+  // with the host CLI (Issue #4161).
   for (const tool of ["git", "gh", "deno", "claude"]) {
     assertEquals(isFatalInMode(result(tool), "container"), true);
-    assertEquals(isFatalInMode(result(tool), "native"), true);
   }
-  // An explicit informational flag is never fatal, in either mode.
+  // An explicit informational flag is never fatal.
   assertEquals(
-    isFatalInMode({ ...result("git"), informational: true }, "native"),
+    isFatalInMode({ ...result("git"), informational: true }, "container"),
     false,
   );
 });

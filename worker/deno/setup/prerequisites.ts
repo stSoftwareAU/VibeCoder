@@ -522,30 +522,6 @@ function asContainerOwned(result: PrerequisiteResult): PrerequisiteResult {
 }
 
 /**
- * Mark container software as informational on a native host (Issue #4149).
- *
- * Native mode runs the worker on the host, so no container runtime is needed.
- * A runtime that *is* present is still worth reporting: it means the host can
- * switch to container mode, the default.
- */
-function asContainerModeOnly(result: PrerequisiteResult): PrerequisiteResult {
-  if (result.ok) {
-    return {
-      ...result,
-      informational: true,
-      message: `${result.message} — container mode is available on this host`,
-    };
-  }
-  return {
-    ...result,
-    informational: true,
-    message: `${result.message} — native run mode does not need one`,
-    hint:
-      "Install a container runtime to switch to container mode (the default).",
-  };
-}
-
-/**
  * Tools the container image owns — informational in container mode.
  *
  * `claude` is deliberately NOT here (Issue #4161): the image carries its own
@@ -559,57 +535,44 @@ const CONTAINER_OWNED_TOOLS: ReadonlySet<string> = new Set([
   "timeout",
 ]);
 
-/** Container software only container mode needs — informational in native. */
-const CONTAINER_MODE_TOOLS: ReadonlySet<string> = new Set([
-  "container runtime",
-  "worker image",
-  "container",
-]);
-
 /**
- * Apply the resolved mode's classification to one raw result.
+ * Apply the mode's classification to one raw result.
  *
- * The single place the two modes differ, so no caller can classify a tool one
- * way in the aggregate and another way after an install (Issue #4149).
+ * The single place the classification lives, so no caller can classify a tool
+ * one way in the aggregate and another way after an install (Issue #4149).
+ * Container is the only mode (Issue #4): the image-owned tools are
+ * informational, everything else is host-fatal.
  *
  * @param result - A raw check result, before any classification
- * @param runMode - The resolved run mode
- * @returns The result, wrapped as informational when this mode does not need
- *          the tool on the host
+ * @param _runMode - The resolved run mode (container)
+ * @returns The result, wrapped as informational when the image provides it
  */
 function classifyForMode(
   result: PrerequisiteResult,
-  runMode: RunMode,
+  _runMode: RunMode,
 ): PrerequisiteResult {
-  if (runMode === "container") {
-    return CONTAINER_OWNED_TOOLS.has(result.tool)
-      ? asContainerOwned(result)
-      : result;
-  }
-  return CONTAINER_MODE_TOOLS.has(result.tool)
-    ? asContainerModeOnly(result)
+  return CONTAINER_OWNED_TOOLS.has(result.tool)
+    ? asContainerOwned(result)
     : result;
 }
 
 /**
- * Report whether one result can fail setup in the resolved mode.
+ * Report whether one result can fail setup.
  *
  * Belt and braces over the `informational` flag: the classification follows the
- * mode, so a result assembled without the flag still cannot fail a mode that
- * does not need its tool.
+ * mode, so a result assembled without the flag still cannot fail on a tool
+ * the image provides.
  *
  * @param result - The result to classify
- * @param runMode - The resolved run mode
+ * @param _runMode - The resolved run mode (container)
  * @returns True when a failure of this result must fail setup
  */
 export function isFatalInMode(
   result: PrerequisiteResult,
-  runMode: RunMode,
+  _runMode: RunMode,
 ): boolean {
   if (result.informational) return false;
-  return runMode === "container"
-    ? !CONTAINER_OWNED_TOOLS.has(result.tool)
-    : !CONTAINER_MODE_TOOLS.has(result.tool);
+  return !CONTAINER_OWNED_TOOLS.has(result.tool);
 }
 
 /** The single-tool checks {@link recheckPrerequisite} can re-run. */
@@ -769,28 +732,21 @@ export async function configureGitIdentity(
  * Probe the container software the resolved mode cares about.
  *
  * Container mode needs a working runtime *and* a present-or-buildable image,
- * so both are probed and both are host-fatal. Native mode needs neither: only
- * the runtime is probed — informationally, to report whether this host could
- * also run in container mode — and the image check is skipped outright rather
- * than resolved for an image nothing will run (Issue #4149).
+ * so both are probed and both are host-fatal. Containment is mandatory
+ * (Issue #4): there is no other mode.
  */
 async function checkContainerSoftware(
   resolved: ResolvedPrerequisiteOptions,
 ): Promise<PrerequisiteResult[]> {
-  if (resolved.runMode === "container") {
-    return await checkContainerPrerequisites(resolved);
-  }
-  return [await checkContainerRuntime(resolved)];
+  return await checkContainerPrerequisites(resolved);
 }
 
 /**
  * Run all prerequisite checks for the resolved run mode.
  *
- * Setup's own tools (`git`, an authenticated `gh`, `deno`) are host-fatal in
- * both modes. What differs is everything else: container mode makes the
- * container runtime and worker image fatal and the coding-agent CLI, `jq` and
- * `timeout` informational (Issue #4117); native mode swaps the two groups
- * over (Issue #4149).
+ * Setup's own tools (`git`, an authenticated `gh`, `deno`) are host-fatal;
+ * container mode makes the container runtime and worker image fatal and `jq`
+ * and `timeout` informational (Issue #4117) — the image provides them.
  */
 export async function checkAllPrerequisites(
   opts: PrerequisiteOptions = {},

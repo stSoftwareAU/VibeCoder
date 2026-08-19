@@ -21,8 +21,10 @@
  *
  * Verdict rules:
  * - INSUFFICIENT EVIDENCE — no launch with a known run mode in the window.
- * - NOT GREEN — any host-mode launch (native or seatbelt: both run on the
- *   host, outside the #4060 boundary), any launch with no run-mode record
+ * - NOT GREEN — any host-mode launch (the removed native or seatbelt modes,
+ *   Issue #4: both ran on the host, outside the #4060 boundary — a record
+ *   naming one is a launch from a checkout older than the removal), any
+ *   launch with no run-mode record
  *   (unverified is not container), a window shorter than the minimum, an
  *   open regression issue, or a regression lookup that could not be made.
  * - GREEN — otherwise, with the observed window stated.
@@ -35,7 +37,11 @@
 
 import { parseRunModeRecord } from "./run_mode_record.ts";
 
-/** Run modes that execute on the host, outside the #4060 boundary. */
+/**
+ * Run modes that executed on the host, outside the #4060 boundary. Both were
+ * removed by Issue #4 — containment is mandatory — and stay named here so a
+ * launch record from an older checkout is still judged NOT GREEN.
+ */
 export const HOST_MODE_RUN_MODES: readonly string[] = ["native", "seatbelt"];
 
 /** A gap between consecutive private-repo-6 reports longer than this counts. */

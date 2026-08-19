@@ -897,7 +897,7 @@ write_interactive_config() {
 # `vibe-work` / `vibe-approval-state` runtime volumes, so a leftover
 # ~/auto-issue-work (or its approval-state sibling) on the host is never
 # mounted again and only wastes disk. Reminder only — deleting operator data
-# is never setup's call, and native-mode hosts still use these directories.
+# is never setup's call.
 # True when the directory holds anything besides setup's own `.vibe-cache`.
 # Setup's host-side steps (the workflow and best-practice audits) keep a small
 # lookup cache at `${WORK_DIR}/.vibe-cache`, so that entry is setup's doing,
@@ -914,10 +914,10 @@ host_work_dir_holds_worker_data() {
 }
 
 remind_obsolete_host_work_dirs() {
-    # Resolve the run mode through the same Deno command the launchers use,
-    # so the precedence (VIBE_RUN_MODE, then .config.json, then container)
-    # cannot drift. Best-effort: an unresolvable mode skips the reminder
-    # rather than failing setup.
+    # Container is the only run mode (Issue #4), so the host work dir is
+    # always obsolete once the worker runs; still resolved through the same
+    # Deno command the launchers use, best-effort — a configuration that
+    # cannot be resolved skips the reminder rather than failing setup.
     local mode
     if ! mode="$(deno run \
         --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
@@ -925,7 +925,7 @@ remind_obsolete_host_work_dirs() {
         "${SCRIPT_DIR}/worker/deno/mod.ts" run-mode </dev/null 2>/dev/null)"; then
         return 0
     fi
-    [[ "${mode}" == "native" ]] && return 0
+    [[ "${mode}" == "container" ]] || return 0
 
     local work_dir="${WORK_DIR:-${HOME}/auto-issue-work}"
     local dir size found=false

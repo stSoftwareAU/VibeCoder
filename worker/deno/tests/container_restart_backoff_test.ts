@@ -124,11 +124,11 @@ Deno.test("resolveFailurePhase - names the phase the launcher reached", () => {
   // A missing or unreadable marker must not crash the supervisor.
   assertEquals(resolveFailurePhase(null, 17), "worker_run");
   assertEquals(resolveFailurePhase("  image_build\n", 1), "image_build");
-  // Native mode started no container, so the runtime CLI's 125/126/127 codes
-  // carry no meaning - every status is the worker's own (Issue #4148).
+  // A marker from a removed mode (Issue #4) is unrecognised, and an
+  // unrecognised marker is attributed to the worker run - the phase that
+  // owns the exit status.
   assertEquals(resolveFailurePhase("native_run", 17), "worker_run");
-  assertEquals(resolveFailurePhase("native_run", 125), "worker_run");
-  assertEquals(resolveFailurePhase("  native_run\n", 1), "worker_run");
+  assertEquals(resolveFailurePhase("seatbelt_run", 125), "worker_run");
 });
 
 Deno.test("escalationThresholdFor - a failed image build escalates earlier", () => {

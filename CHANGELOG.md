@@ -11,6 +11,27 @@ This changelog is a human-readable digest grouped by version.
 
 ## [Unreleased]
 
+### Removed
+
+- **Containment is mandatory: the `native` and `seatbelt` run modes are gone
+  (Issue #4).** Container is the only run mode. A `.config.json` `run_mode`
+  (or `VIBE_RUN_MODE`) naming a removed mode fails loud — in the launchers,
+  `setup.sh`, config validation and `loadConfig` — with the removal explained,
+  and is never coerced into a container run the operator did not know they
+  were getting (Issue #3234). `run.sh` / `run.ps1` carry no host-execution
+  path at all (no `run-entrypoint`, no `sandbox-exec`); the launch contract
+  again treats any host-execution marker as a fault and drops the
+  Windows-container-only parity exception (both launchers are equal now);
+  the `seatbelt-profile` command and `seatbelt_profile.ts` are deleted; the
+  setup prerequisite probe has no native classification (the container
+  runtime and worker image are host-fatal, `jq`/`timeout` image-owned). CI's
+  `validate (native)` leg is replaced by `validate (no-runtime)`, which
+  strips every container runtime from the runner and asserts `run.sh` fails
+  loud with no host fallback — the run-mode CI audit now requires that proof.
+  A missing container runtime remains a loud failure; `./setup.sh` installs
+  one. Green-gate still counts a legacy native/seatbelt launch record (from a
+  checkout older than this removal) as a host-mode launch: NOT GREEN.
+
 ### Added
 
 - **The launcher heals a builder that ran out of storage (Issue #4441).** An

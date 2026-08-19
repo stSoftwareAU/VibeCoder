@@ -101,7 +101,6 @@ import { atomicWriteCommand } from "./commands/atomic_write.ts";
 import { cleanupStaleTempFilesCommand } from "./commands/cleanup_stale_temp_files.ts";
 import { staleWorkDirCommand } from "./commands/stale_workdir.ts";
 import { sessionSweepCommand } from "./commands/session_sweep.ts";
-import { seatbeltProfileCommand } from "./commands/seatbelt_profile.ts";
 import { denoCacheGuardCommand } from "./commands/deno_cache_guard.ts";
 import { benchmarkCommand } from "./commands/benchmark.ts";
 import { worktreeCleanupCommand } from "./commands/worktree_cleanup.ts";
@@ -287,7 +286,6 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(cleanupStaleTempFilesCommand);
   registry.register(staleWorkDirCommand);
   registry.register(sessionSweepCommand);
-  registry.register(seatbeltProfileCommand);
   registry.register(denoCacheGuardCommand);
   registry.register(benchmarkCommand);
   registry.register(worktreeCleanupCommand);
@@ -574,7 +572,6 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-build-heal",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
-      "seatbelt-profile",
       // Read-only sweep; runs against --org/--repos with no config (Issue #4356).
       "audit-default-branch-rulesets",
       // Full-history secrets sweep; runs in CI with no config (Issue #4190).
@@ -675,7 +672,6 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-image-prune",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
-      "seatbelt-profile",
       // Read-only sweep; runs against --org/--repos with no config (Issue #4356).
       "audit-default-branch-rulesets",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).

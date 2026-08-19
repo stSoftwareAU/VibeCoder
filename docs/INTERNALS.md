@@ -162,9 +162,8 @@ Deno. Both launchers follow the same steps (Issues #4065, #4066):
 2. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
    resolves and validates the container runtime, computes the content-derived
    image reference, and constructs the fixed least-privilege mount set. No
-   supported runtime is a loud non-zero exit; container mode never falls back
-   to a host-native run, which is reached only through the explicit `run_mode`
-   opt-in (Issues #4145, #4146).
+   supported runtime is a loud non-zero exit; there is no host mode to fall
+   back to (Issues #4146, #4).
 3. **Builds the image** when that reference is absent locally, and skips the
    build when it is present, then **prunes every other `vibe-coder` tag** —
    the reference this checkout resolves to is the only one a future launch of
@@ -191,14 +190,12 @@ the property the old `worker/.run_core.sh` shadow-copy provided, now for free.
 The two launchers are held to one contract by
 `worker/deno/tests/launcher_parity_test.ts`, which fails when their mount sets,
 read-only flags, network settings or privilege flags diverge, or when either
-can run the worker on the host without the explicit run-mode opt-in. Native
-execution is not banned outright (Issue #4147): container is the default, and a
-native path is a fault only when it is *ungated* — reachable without consulting
-the [run mode](CONFIGURATION.md) (Issue #4146) or outside an explicit native
-branch. The one intended asymmetry is named in the contract: `run.ps1` stays
-container-only (`windows-container-only`) and exits non-zero with an actionable
-message when native mode is requested on Windows. See
-[Container Image](CONTAINER.md) for the mount set and the privilege flags.
+can run the worker on the host at all. Containment is mandatory (Issue #4): a
+host-execution marker in either launcher is a fault outright, both consult the
+[run mode](CONFIGURATION.md) resolver (Issue #4146) so a configuration naming
+a removed mode fails loud in one place, and there is no intended asymmetry
+left between them. See [Container Image](CONTAINER.md) for the mount set and
+the privilege flags.
 
 ### 🔄 Worker driver: Deno `run-entrypoint` → `run-core`
 
@@ -2285,7 +2282,7 @@ links to its issue for the full rationale.
 
 | Module              | Path                                                                              | Purpose                                                                                               |
 | ------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Entry point         | [run.sh](../run.sh) / [run.ps1](../run.ps1)                                       | Cron/launchd/Task Scheduler entry — both launch the worker container from the same launch plan by default; `run.sh` also serves the opt-in native run mode on macOS/Linux (Issues #4065, #4066, #4148) |
+| Entry point         | [run.sh](../run.sh) / [run.ps1](../run.ps1)                                       | Cron/launchd/Task Scheduler entry — both launch the worker container from the same launch plan; container is the only run mode (Issues #4065, #4066, #4) |
 | Worker driver       | [run_worker.ts](../worker/deno/lib/run_worker.ts)                                 | PID guard → bootstrap → housekeeping → `run-core` loop → cleanup (Issue #3504)                        |
 | Issue orchestration | [issue_worker.ts](../worker/deno/lib/issue_worker.ts)                             | Issue processing orchestration in Deno (the bash `worker/issue_worker.sh` was deleted in Issue #3661) |
 | Repo diagnostics    | [worker/deno/commands/diagnose_repo.ts](../worker/deno/commands/diagnose_repo.ts) | Analyse why issues are blocked in a repo (Issue #743)                                                 |

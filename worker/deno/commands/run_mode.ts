@@ -92,7 +92,7 @@ export async function readConfiguredRunMode(
 export const runModeCommand: Command = {
   name: "run-mode",
   description:
-    "Print the resolved run mode — container or native (Issue #4146)",
+    "Print the resolved run mode — container, the only one (Issues #4146, #4)",
   async execute(
     args: Record<string, unknown>,
   ): Promise<CommandResult<RunModeResult>> {
