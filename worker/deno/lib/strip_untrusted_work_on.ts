@@ -6,7 +6,7 @@
  * and, when it was not, silently skips the issue. That silence is the bug: an
  * issue that a worker (or any untrusted actor) self-labelled `work-on` looks
  * queued but is never picked up, and it can sit that way indefinitely — the
- * production case being NEAT-AI#3489, which sat ~25 h appearing queued.
+ * production case being private-repo-14#3489, which sat ~25 h appearing queued.
  *
  * This helper turns that silent skip into a loud, self-correcting action: when
  * the most-recent `work-on` add is positively confirmed to come from an

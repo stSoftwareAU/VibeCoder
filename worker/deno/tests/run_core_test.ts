@@ -180,7 +180,7 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     sleep: () => Promise.resolve(),
     now: () => Date.now(),
 
-    // Issue #1935: FLEET-health heartbeat — best-effort no-op by default.
+    // Issue #1935: private-repo-6 heartbeat — best-effort no-op by default.
     reportFleetHealthHeartbeat: () => Promise.resolve(),
 
     // Expose call log for testing
@@ -1409,7 +1409,7 @@ Deno.test("run_core - empty iteration emits graphql-calls: 0 total (Issue #1924)
 });
 
 // ---------------------------------------------------------------------------
-// Tests — FLEET-health heartbeat (Issue #1935)
+// Tests — private-repo-6 heartbeat (Issue #1935)
 // ---------------------------------------------------------------------------
 
 Deno.test(
@@ -1528,7 +1528,7 @@ Deno.test(
 
     // The whole point of #2602: an unauthorised worker must NOT report
     // itself healthy. With Claude failing every cycle, the heartbeat must
-    // never fire so the host goes stale on the FLEET-health dashboard.
+    // never fire so the host goes stale on the private-repo-6 dashboard.
     assertEquals(
       heartbeatCalls,
       0,
@@ -1686,7 +1686,7 @@ Deno.test(
         return Promise.resolve();
       },
       // One of several monitored repos has lost access.
-      getInaccessibleRepos: () => ["example-org/private-repo-49"],
+      getInaccessibleRepos: () => ["stSoftwareAU/repo-b"],
     });
 
     const config = createDefaultRunCoreConfig();
@@ -1714,7 +1714,7 @@ Deno.test(
     );
     const accessLines = errorLines.filter((l) => l.includes("repo-access"));
     assertEquals(accessLines.length >= 1, true, "the gate must log the repos");
-    assertStringIncludes(accessLines[0]!, "example-org/private-repo-49");
+    assertStringIncludes(accessLines[0]!, "stSoftwareAU/repo-b");
   },
 );
 
@@ -1726,7 +1726,7 @@ Deno.test(
       // First iteration: inaccessible. Second: the store has cleared.
       getInaccessibleRepos: () => {
         probeCall++;
-        return probeCall === 1 ? ["example-org/private-repo-49"] : [];
+        return probeCall === 1 ? ["stSoftwareAU/repo-b"] : [];
       },
     });
 
@@ -1752,8 +1752,8 @@ Deno.test(
       // One access-denied probe only — below ACCESS_FAILURE_THRESHOLD, so the
       // store (#4036) does not report the repo inaccessible. No dep override:
       // this exercises the real store wiring the gate uses in production.
-      recordRepoProbe("example-org/private-repo-48", "access_denied", 1000);
-      recordRepoProbe("example-org/private-repo-49", "transient", 1000);
+      recordRepoProbe("stSoftwareAU/repo-a", "access_denied", 1000);
+      recordRepoProbe("stSoftwareAU/repo-b", "transient", 1000);
 
       const { deps } = createAccessGateDeps(2, {});
 

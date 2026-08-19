@@ -1,7 +1,7 @@
 /**
  * Tests for github_actions_audit prompt v17 (Issue #3902).
  *
- * v17 closes the container-image pin gap the NEAT-AI `semgrep.yml` case
+ * v17 closes the container-image pin gap the private-repo-14 `semgrep.yml` case
  * exposed: a workflow container pinned as a bare
  * `semgrep/semgrep@sha256:…` digest with no tag is immutable but
  * **untrackable** — Renovate and Dependabot key their bumps off the tag,

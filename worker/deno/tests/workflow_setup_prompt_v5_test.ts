@@ -181,12 +181,12 @@ Deno.test("workflow_setup v5 - gives an action-SHA resolution rule instead of 'w
 });
 
 // The load-bearing gitleaks content must survive the rewrite.
-Deno.test("workflow_setup v5 - keeps the NEAT-AI gitleaks strings verbatim", async () => {
+Deno.test("workflow_setup v5 - keeps the private-repo-14 gitleaks strings verbatim", async () => {
   const body = await loadV5();
   for (
     const s of [
       "Gitleaks Reference Implementation",
-      "example-org/private-repo-29",
+      "stSoftwareAU/private-repo-14",
       "GITLEAKS_LICENSE",
       "ErrLicense",
       "Fetch base branch",

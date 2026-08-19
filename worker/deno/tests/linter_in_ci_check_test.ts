@@ -183,7 +183,7 @@ Deno.test("typescript — deno lint + deno check invoked in CI is configured", a
 Deno.test(
   "typescript #2880 — a quality.yml-style Deno workflow satisfies both gates",
   async () => {
-    // Regression for the NEAT-AI false BP-LINTER-typescript finding: a
+    // Regression for the private-repo-14 false BP-LINTER-typescript finding: a
     // `quality.yml` running `deno lint` AND `deno check` must satisfy both
     // gates once the workflow files are actually loaded. The original bug
     // was an empty workflow load from the wrong path, not a matching bug.

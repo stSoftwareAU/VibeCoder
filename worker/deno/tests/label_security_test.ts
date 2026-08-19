@@ -655,7 +655,7 @@ Deno.test("label_security - needs-human applied by workerUser is trusted case-in
       {
         event: "labeled",
         label: { name: "needs-human" },
-        actor: { login: "stsvcbot" },
+        actor: { login: "Stsvcbot" },
       },
     ]);
   };
@@ -716,7 +716,7 @@ Deno.test("label_security - needs-revision added by a sibling fleet worker is un
       {
         event: "labeled",
         label: { name: "needs-revision" },
-        actor: { login: "VibeCoderBot" }, // sibling worker, in allowed_authors
+        actor: { login: "Vibecoderbot" }, // sibling worker, in allowed_authors
       },
     ]);
   };
@@ -725,16 +725,16 @@ Deno.test("label_security - needs-revision added by a sibling fleet worker is un
     "owner/repo",
     42,
     ["needs-revision"],
-    ["alice", "VibeCoderBot"], // human + sibling worker
+    ["alice", "Vibecoderbot"], // human + sibling worker
     mockGh,
     "stsvcbot", // this host's worker login
-    ["VibeCoderBot", "stsvcbot"], // fleet worker logins
+    ["Vibecoderbot", "stsvcbot"], // fleet worker logins
   );
 
   assertEquals(result.trustedLabels, []);
   assertEquals(result.untrustedLabels, [{
     label: "needs-revision",
-    addedBy: "VibeCoderBot",
+    addedBy: "Vibecoderbot",
   }]);
 });
 
@@ -744,7 +744,7 @@ Deno.test("label_security - planning added by a sibling fleet worker is untruste
       {
         event: "labeled",
         label: { name: "planning" },
-        actor: { login: "VibeCoderBot" },
+        actor: { login: "Vibecoderbot" },
       },
     ]);
   };
@@ -753,16 +753,16 @@ Deno.test("label_security - planning added by a sibling fleet worker is untruste
     "owner/repo",
     7,
     ["planning"],
-    ["alice", "VibeCoderBot"],
+    ["alice", "Vibecoderbot"],
     mockGh,
     "stsvcbot",
-    ["VibeCoderBot", "stsvcbot"],
+    ["Vibecoderbot", "stsvcbot"],
   );
 
   assertEquals(result.trustedLabels, []);
   assertEquals(result.untrustedLabels, [{
     label: "planning",
-    addedBy: "VibeCoderBot",
+    addedBy: "Vibecoderbot",
   }]);
 });
 
@@ -786,7 +786,7 @@ Deno.test("label_security - operational label added by this host's own worker is
     ["alice", "stsvcbot"],
     mockGh,
     "stsvcbot",
-    ["stsvcbot", "VibeCoderBot"],
+    ["stsvcbot", "Vibecoderbot"],
   );
 
   assertEquals(result.trustedLabels, []);
@@ -813,10 +813,10 @@ Deno.test("label_security - planning added by a genuine human is still trusted",
     "owner/repo",
     11,
     ["planning"],
-    ["alice", "VibeCoderBot"],
+    ["alice", "Vibecoderbot"],
     mockGh,
     "stsvcbot",
-    ["VibeCoderBot", "stsvcbot"],
+    ["Vibecoderbot", "stsvcbot"],
   );
 
   assertEquals(result.trustedLabels, ["planning"]);
@@ -844,7 +844,7 @@ Deno.test("label_security - needs-human by worker stays trusted despite fleet-wo
     ["alice", "stsvcbot"],
     mockGh,
     "stsvcbot",
-    ["stsvcbot", "VibeCoderBot"],
+    ["stsvcbot", "Vibecoderbot"],
   );
 
   assertEquals(result.trustedLabels, ["needs-human"]);

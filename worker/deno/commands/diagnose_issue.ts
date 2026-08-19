@@ -6,7 +6,7 @@
  * debugging situations where issues are not being picked up.
  *
  * Usage:
- *   deno_run_command diagnose-issue --repo example-org/private-repo-13 --issue 1590
+ *   deno_run_command diagnose-issue --repo stSoftwareAU/private-repo-1 --issue 1590
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */

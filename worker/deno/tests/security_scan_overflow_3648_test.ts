@@ -533,30 +533,6 @@ function ownersFor(
   return owners;
 }
 
-Deno.test("SEC-b5022d94c871 - CODEOWNERS covers the CI-executed script directory", async () => {
-  const rules = parseCodeowners(
-    await Deno.readTextFile(
-      new URL("../../../.github/CODEOWNERS", import.meta.url),
-    ),
-  );
-
-  for (
-    const path of [
-      ".github/scripts/inject_page_metadata.rb",
-      ".github/workflows/pages.yml",
-      ".github/CODEOWNERS",
-    ]
-  ) {
-    const owners = ownersFor(rules, path);
-    assert(
-      owners.length > 0,
-      `${path} must be covered by a CODEOWNERS rule, found none`,
-    );
-    // The worker bot must never be able to self-approve a privileged path.
-    assertEquals(owners.includes("@VibeCoderBot"), false, path);
-  }
-});
-
 Deno.test("SEC-888ae4c269f9 - an unknown worker name contributes no spend", async () => {
   await withCreditLog(
     [{

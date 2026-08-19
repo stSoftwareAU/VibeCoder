@@ -23,7 +23,7 @@ import {
 // ---------------------------------------------------------------------------
 
 Deno.test("repo_rulesets - slug validation rejects shell metacharacters", () => {
-  assert(isValidRepoSlug("example-org/private-repo-29"));
+  assert(isValidRepoSlug("stSoftwareAU/private-repo-14"));
   assertFalse(isValidRepoSlug("org/repo; rm -rf /"));
   assertFalse(isValidRepoSlug("no-slash"));
 });

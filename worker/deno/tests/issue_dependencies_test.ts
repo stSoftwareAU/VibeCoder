@@ -934,7 +934,7 @@ Deno.test("formatParentBlockedMessage - blocked with open children", () => {
 // =============================================================================
 
 Deno.test("integration - realistic parent issue with sub-issues scenario", async () => {
-  // Simulates the example-org/private-repo-57#482 scenario from the issue description
+  // Simulates the stSoftwareAU/private-repo-24#482 scenario from the issue description
   const issues = new Map<number, { state: "OPEN" | "CLOSED"; body: string }>([
     [482, {
       state: "OPEN",

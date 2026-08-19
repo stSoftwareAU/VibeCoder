@@ -3,7 +3,7 @@
  *
  * v16 instructs Claude to close the planning issue inline as the final
  * step of the planning prompt, fixing the multi-minute gap that produced
- * the FLEET-marketdata#59 incident where the worker's session-end close
+ * the private-repo-8#59 incident where the worker's session-end close
  * fired nine minutes after the "planning complete" comment.
  *
  * v15 must remain immutable (Issue #235).

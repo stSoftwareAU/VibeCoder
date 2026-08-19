@@ -6,7 +6,7 @@
  * labels *before* creation. The only deterministic guard for those paths is to
  * strip reserved labels from the issues the run just created, *after* the fact —
  * the worked example being a worker-generated planning sub-issue that kept a
- * `top-priority` label (NEAT-AI-Discovery#1384).
+ * `top-priority` label (private-repo-17#1384).
  *
  * This is the post-creation sibling of `filterReservedLabelsWithWarning`
  * (creation-time, in `github.ts`). Both read the one `RESERVED_LABELS` constant

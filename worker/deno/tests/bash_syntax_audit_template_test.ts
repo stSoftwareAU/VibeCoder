@@ -411,14 +411,14 @@ Deno.test("bash-syntax-audit runTask - native detectors use the repo checkout, n
   });
 
   await t.runTask({
-    repo: "example-org/private-repo-21",
+    repo: "stSoftwareAU/private-repo-9",
     workDir: "/work",
     idleTaskIssueNumber: 1,
   });
 
-  assertEquals(bashPaths, ["/work/FLEET-taxation"]);
-  assertEquals(langPaths, ["/work/FLEET-taxation"]);
-  assertEquals(suppressPaths, ["/work/FLEET-taxation"]);
+  assertEquals(bashPaths, ["/work/private-repo-9"]);
+  assertEquals(langPaths, ["/work/private-repo-9"]);
+  assertEquals(suppressPaths, ["/work/private-repo-9"]);
 });
 
 // ---------------------------------------------------------------------------

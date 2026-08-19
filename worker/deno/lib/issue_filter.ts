@@ -128,7 +128,7 @@ export function filterByAssignee(issues: FilterableIssue[]): FilterableIssue[] {
  * Fleet-aware (Issue #3099): a work stream is "occupied" when an issue in the
  * same milestone/branch is assigned to ANY fleet account — the current worker
  * OR any other fleet login in `allowedAuthors`. In a multi-account fleet
- * (e.g. `VibeCoderBot`, `stsvcbot`) another host's assignment is otherwise
+ * (e.g. `Vibecoderbot`, `stsvcbot`) another host's assignment is otherwise
  * invisible, so a second host would not consider the work stream occupied and
  * would start the same issue — the root cause of duplicate PRs (#3095). The
  * underlying issue data already carries every assignee, so widening the match

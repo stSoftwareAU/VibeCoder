@@ -737,7 +737,7 @@ export function createBestPracticesTemplate(
         if (!check.configured && check.workflowsLoaded !== false) {
           // Pre-file dedup (Issue #2882): skip creating when an open issue
           // with this finding-id already exists, so one finding never files
-          // two open issues (observed: BP-LINTER-typescript NEAT-AI
+          // two open issues (observed: BP-LINTER-typescript private-repo-14
           // #2990/#2991). A closed prior issue does not block re-filing.
           const filed = await fileFindingOnce({
             repo: opts.repo,
@@ -770,7 +770,7 @@ export function createBestPracticesTemplate(
       //    through `fileFindingOnce`, which looks up an existing open issue by
       //    `finding-id` before creating, so one finding never yields two open
       //    issues (the duplicate observed in the previously-documented #2411
-      //    race — BP-LINTER-typescript NEAT-AI#2990/#2991). A residual
+      //    race — BP-LINTER-typescript private-repo-14#2990/#2991). A residual
       //    micro-race between the look-up and the create is acceptable; the
       //    guard closes the routine window, it is not a distributed lock.
       const knownOpenFindingIds = Array.from(

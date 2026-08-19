@@ -321,7 +321,7 @@ async function completionBody(
   // #4286). The agent may have committed on a branch of its own; every
   // step below assumes HEAD IS state.branchName, and each silently agreed
   // with the others while all being wrong until `gh pr create` met an
-  // empty branch ("No commits between …", NEAT-AI-scorer#565, three
+  // empty branch ("No commits between …", private-repo-22#565, three
   // attempts). Fast-forward when safe; refuse loudly when diverged.
   const reconcile = await deps.git.reconcileHeadToBranch(state.branchName, {
     cwd: state.repoPath,
@@ -382,7 +382,7 @@ async function completionBody(
   // (zero commits ahead) reaches `gh pr create` and surfaces as the opaque
   // "GraphQL: No commits between <base> and <branch>" error — diagnosed in
   // production as Issue #1463 (pushUnpushedCommits side, fixed in #1592)
-  // and again on NEAT-AI-scorer#42 from another path. Bail out here with a
+  // and again on private-repo-22#42 from another path. Bail out here with a
   // clear, diagnostic failure so the worker reports an actionable cause
   // instead of a misleading PR-creation error.
   // The single resolved base for this PR — used for the ahead-count guard, the

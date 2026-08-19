@@ -222,7 +222,7 @@ Deno.test("isHumanAuthoredPr - a trusted human's PR is human-authored", () => {
 
 Deno.test("isHumanAuthoredPr - a fleet PR is not, case-insensitively", () => {
   assertEquals(isHumanAuthoredPr(HOST, [HOST, SIBLING]), false);
-  assertEquals(isHumanAuthoredPr("stsvcbot", [HOST, SIBLING]), false);
+  assertEquals(isHumanAuthoredPr("STSVCBOT", [HOST, SIBLING]), false);
 });
 
 Deno.test("isHumanAuthoredPr - an unclassifiable author is not human", () => {

@@ -111,7 +111,7 @@ Deno.test(
     const template = "workflow-annotation-scan";
     const runId = "vibe-mrohvwmj-f55930";
     // Mirror a template whose buildIssueBody pre-embedded the footer via the
-    // {{ATTRIBUTION_FOOTER}} placeholder — the exact NEAT-AI#3394 shape.
+    // {{ATTRIBUTION_FOOTER}} placeholder — the exact private-repo-14#3394 shape.
     const embedded = buildAttributionFooter({ template, runId });
     const preStamped =
       `# Workflow-Run Annotation Scan\n\nprose\n\n---\n\n${embedded}`;

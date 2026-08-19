@@ -70,7 +70,7 @@ const EVIDENCE_IMAGE_PATTERN = /\.(png|jpe?g|gif|webp)$/i;
  * Evidence images committed on the branch (Issue #4355): screenshots the
  * agent captured into `docs/evidence/` count as evidence even when a
  * resumed run left the summary without a reference to them — that is
- * exactly what happened on FLEET-validation#831, where three real screenshots
+ * exactly what happened on private-repo-10#831, where three real screenshots
  * sat on the branch while the gate failed the run for the summary text.
  */
 export function findBranchEvidenceImages(changedFiles: string[]): string[] {

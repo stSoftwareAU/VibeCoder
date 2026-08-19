@@ -47,7 +47,7 @@ function restoreEnv(snapshot: Record<string, string | undefined>): void {
 }
 
 /**
- * Body as produced by Migration_v21's `.github/workflows/develop-build-watch.yml`.
+ * Body as produced by private-repo-12's `.github/workflows/develop-build-watch.yml`.
  * The machine-readable header is the parsing contract this feature relies on.
  */
 const REAL_BODY = `## Develop pipeline build failed

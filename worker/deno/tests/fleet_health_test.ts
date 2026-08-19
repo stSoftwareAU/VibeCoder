@@ -87,8 +87,8 @@ function createTestConfig(
   overrides?: Partial<FleetHealthConfig>,
 ): FleetHealthConfig {
   return {
-    healthDir: "/tmp/test-fleet-health",
-    healthRepo: "git@github.com:test/FLEET-health.git",
+    healthDir: "/tmp/test-private-repo-6",
+    healthRepo: "git@github.com:test/private-repo-6.git",
     hostId: "test-host",
     reportTimeoutMs: DEFAULT_FLEET_HEALTH_TIMEOUT_MS,
     ...overrides,
@@ -111,10 +111,10 @@ Deno.test("buildFleetHealthConfig - uses defaults when env vars not set", () => 
     Deno.env.delete("FLEET_HEALTH_REPO");
 
     const config = buildFleetHealthConfig("/home/user/VibeCoder");
-    assertEquals(config.healthDir, "/home/user/VibeCoder/../FLEET-health");
+    assertEquals(config.healthDir, "/home/user/VibeCoder/../private-repo-6");
     assertEquals(
       config.healthRepo,
-      "git@github.com:example-org/private-repo-18.git",
+      "git@github.com:stSoftwareAU/private-repo-6.git",
     );
     assertEquals(typeof config.hostId, "string");
     assertEquals(config.hostId.length > 0, true);
@@ -359,8 +359,8 @@ Deno.test("reportFleetHealth - returns error when script not found", async () =>
 
 Deno.test("reportFleetHealth - production runCommand surfaces stderr on failure with quiet:true (Issue #1979)", async () => {
   // Write a tiny script that emits an exit-trap-style line on stderr and
-  // exits non-zero — mirrors FLEET-health's helpers/repos.sh behaviour.
-  const tmpDir = await Deno.makeTempDir({ prefix: "fleet-health-1979-" });
+  // exits non-zero — mirrors private-repo-6's helpers/repos.sh behaviour.
+  const tmpDir = await Deno.makeTempDir({ prefix: "private-repo-6-1979-" });
   try {
     const scriptDir = `${tmpDir}/helpers`;
     await Deno.mkdir(scriptDir);
@@ -482,7 +482,7 @@ Deno.test("reportFleetHealth - surfaces the real git push rejection printed to s
   // Mirror repos.sh: the terse trap line goes to stderr, but the actual
   // GH006 protected-branch rejection is printed to stdout. The pre-fix code
   // ran with quiet:true and discarded stdout, hiding the cause.
-  const tmpDir = await Deno.makeTempDir({ prefix: "fleet-health-3174-" });
+  const tmpDir = await Deno.makeTempDir({ prefix: "private-repo-6-3174-" });
   try {
     const scriptDir = `${tmpDir}/helpers`;
     await Deno.mkdir(scriptDir);
@@ -613,7 +613,7 @@ Deno.test(
   () => {
     const infoCalls: string[] = [];
     const warnCalls: string[] = [];
-    // Minimal Logger stub — only the methods fleet-health uses need to fire.
+    // Minimal Logger stub — only the methods private-repo-6 uses need to fire.
     const logger = {
       info: (msg: string) => {
         infoCalls.push(msg);
@@ -719,7 +719,7 @@ Deno.test(
       const result = await reportFleetHealth(config, deps);
 
       assertEquals(result.ok, true);
-      // Byte-identical to today's invocation — existing FLEET-health
+      // Byte-identical to today's invocation — existing private-repo-6
       // consumers of docs/repos.json must not see a new field.
       assertEquals(deps.commands[0], [
         `${config.healthDir}/helpers/repos.sh`,
@@ -803,7 +803,7 @@ Deno.test(
 
 Deno.test("buildFleetHealthConfig - container mode clones under the work-dir mount", () => {
   // Issue #4165: the sibling default resolves to the root-owned "/" inside
-  // the container ("could not create work tree dir '/workspace/../FLEET-health'"
+  // the container ("could not create work tree dir '/workspace/../private-repo-6'"
   // observed live). The work-dir mount is writable and the remote is the
   // repository of record, so a disposable clone belongs there.
   const savedDir = Deno.env.get("FLEET_HEALTH_DIR");
@@ -814,7 +814,7 @@ Deno.test("buildFleetHealthConfig - container mode clones under the work-dir mou
     Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
     Deno.env.set("WORK_DIR", "/home/vibe/auto-issue-work");
     const config = buildFleetHealthConfig("/workspace");
-    assertEquals(config.healthDir, "/home/vibe/auto-issue-work/FLEET-health");
+    assertEquals(config.healthDir, "/home/vibe/auto-issue-work/private-repo-6");
   } finally {
     restoreEnvVar("FLEET_HEALTH_DIR", savedDir);
     restoreEnvVar("VIBE_IMAGE_AGENT_PROVIDERS", savedStamp);
@@ -826,10 +826,10 @@ Deno.test("buildFleetHealthConfig - an explicit FLEET_HEALTH_DIR wins even in co
   const savedDir = Deno.env.get("FLEET_HEALTH_DIR");
   const savedStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
   try {
-    Deno.env.set("FLEET_HEALTH_DIR", "/mnt/telemetry/FLEET-health");
+    Deno.env.set("FLEET_HEALTH_DIR", "/mnt/telemetry/private-repo-6");
     Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
     const config = buildFleetHealthConfig("/workspace");
-    assertEquals(config.healthDir, "/mnt/telemetry/FLEET-health");
+    assertEquals(config.healthDir, "/mnt/telemetry/private-repo-6");
   } finally {
     restoreEnvVar("FLEET_HEALTH_DIR", savedDir);
     restoreEnvVar("VIBE_IMAGE_AGENT_PROVIDERS", savedStamp);
@@ -845,7 +845,7 @@ function restoreEnvVar(name: string, value: string | undefined): void {
 Deno.test("buildFleetHealthConfig - VIBE_HOST_ID names the real host from inside the container", () => {
   // The container's own hostname is the ephemeral container name
   // (observed live: "Reporting health as Vibe Coder:vibe-coder-66770"),
-  // which would leave the real host permanently "dead" on the FLEET-health
+  // which would leave the real host permanently "dead" on the private-repo-6
   // board and register a phantom host per cycle. The launcher passes the
   // host's identity through VIBE_HOST_ID.
   const savedHost = Deno.env.get("VIBE_HOST_ID");

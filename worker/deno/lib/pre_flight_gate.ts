@@ -10,7 +10,7 @@
  * Fail loud, never fail open: a command that is missing, not executable,
  * cannot be started, or times out is a **block**, not a pass. "Could not run
  * the check" is never reported as "check passed" (carried over from
- * Migration_v21#563, where a check exited 0 when a prerequisite was absent).
+ * private-repo-12#563, where a check exited 0 when a prerequisite was absent).
  *
  * The failure carries a distinct `reason` and the captured command output so
  * callers can surface the real compiler error to the retry/diagnosis path.

@@ -4,7 +4,7 @@
  * The raiser seeds exactly one named idle-task template's wrapper into one or
  * more named target repos — the deterministic, "pinned target" one-off that
  * lets an operator trigger a specific scan (e.g. `documentation-audit` against
- * NEAT-AI) without waiting for the random idle-task filer to happen to pick
+ * private-repo-14) without waiting for the random idle-task filer to happen to pick
  * that template and repo.
  *
  * Covers:

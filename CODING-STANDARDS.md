@@ -264,12 +264,12 @@ proactively:
 
 The top-tier reasoning phases route to the current top model generation —
 **Fable 5**, with automatic fallback to **Opus 5** when Fable is unavailable
-(see docs/MODEL-AND-CACHING.md for the per-phase
+(see [docs/MODEL-AND-CACHING.md](docs/MODEL-AND-CACHING.md) for the per-phase
 routing chain and the Fable-unavailable self-heal). The guidance below is
 model-generation-agnostic good practice for authoring prompt templates and
 agent instructions; it is not tied to any superseded model. Where a rule does
 depend on the model generation, it defers to
-Model-generation prompt tuning,
+[Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning-issue-3562),
 which records what each generation needs and what was tried and reversed.
 
 - **Write precise, unambiguous instructions.** State exactly what you want done
@@ -284,7 +284,7 @@ which records what each generation needs and what was tried and reversed.
   correctness before proceeding") helps a generation that does not self-verify;
   on a generation that already does — Opus 5 — it is redundant and encourages
   over-work, which is why the current templates omit it. Check
-  Model-generation prompt tuning
+  [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning-issue-3562)
   before adding or removing such scaffolding.
 - **State when and why a tool should be used** rather than assuming the model
   reaches for it — e.g. "Use the `gh` CLI to check the current PR status".

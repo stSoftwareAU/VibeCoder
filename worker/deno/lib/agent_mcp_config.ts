@@ -9,7 +9,7 @@
  * target-repo clone under `WORK_DIR`), and no `--mcp-config` was passed. So
  * `browser_take_screenshot` never existed for the agent, natively or in the
  * container, and `needs-screenshot` issues cycled through
- * "Screenshot Evidence Required" releases (FLEET-validation#831, five times).
+ * "Screenshot Evidence Required" releases (private-repo-10#831, five times).
  *
  * This module builds the server configuration for the environment the agent
  * actually runs in — the baked browser when the image supplies one, the

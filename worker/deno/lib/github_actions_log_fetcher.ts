@@ -319,7 +319,7 @@ export interface SummariseOptions {
  * fix prompt: the window around the first failure marker plus the log
  * tail, with timestamp prefixes stripped and the result hard-capped.
  *
- * Mirrors the approach proven by Migration_v21's
+ * Mirrors the approach proven by private-repo-12's
  * `scripts/summarise-jenkins-log.sh`.
  */
 export function summariseActionsLog(

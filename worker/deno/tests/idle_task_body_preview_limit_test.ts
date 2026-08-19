@@ -80,7 +80,7 @@ async function withRepoRootCwd<T>(fn: () => Promise<T>): Promise<T> {
 function buildPreview(template: IdleTaskTemplate): Promise<string> {
   return Promise.resolve(
     template.buildIssueBody({
-      repo: "example-org/private-repo-29",
+      repo: "stSoftwareAU/private-repo-14",
       pickedAt: "2026-08-07T00:00:00.000Z",
       workerUser: "vibe-coder",
     }),

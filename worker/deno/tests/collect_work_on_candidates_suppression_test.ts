@@ -5,7 +5,7 @@
  * The suppression signal must be computed from the *post-`filterAndSort`*
  * set, not the raw `fetchIssuesByLabel` count. Work-on issues the worker
  * can never action this cycle — milestone-tracking trackers (the proven
- * `Migration_v21` field case), issues assigned to anyone, and issues
+ * `private-repo-12` field case), issues assigned to anyone, and issues
  * carrying a blocking label (failed, needs-human, needs-revision,
  * refine-issue, planning, question) — are dropped by `filterAndSort` and
  * must NOT suppress the repo's low-priority/idle-task backlog. Otherwise a

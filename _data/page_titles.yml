@@ -1,0 +1,272 @@
+# Page title and icon for GitHub Pages (browser tab + favicon).
+# Pattern: "Vibe Coder: <page title>". page_icon = emoji in tab and favicon.
+# Used at build time by .github/workflows/pages.yml (injection script).
+# Unknown paths get fallback "Vibe Coder: <derived from filename>".
+
+README.md:
+  title: "Vibe Coder: Overview"
+  page_icon: "🚀"
+
+docs/LESSONS-LEARNT.md:
+  title: "Vibe Coder: Lessons learnt"
+  page_icon: "📚"
+
+docs/MERGE.md:
+  title: "Vibe Coder: Merge Enforcement"
+  page_icon: "🔀"
+
+docs/HUMAN-PR-POLICY.md:
+  title: "Vibe Coder: Human-authored PR Policy"
+  page_icon: "🤝"
+
+docs/OVERVIEW.md:
+  title: "Vibe Coder: Overview"
+  page_icon: "📋"
+
+docs/USAGE.md:
+  title: "Vibe Coder: Usage Guide"
+  page_icon: "📖"
+
+docs/CONFIGURATION.md:
+  title: "Vibe Coder: Configuration Reference"
+  page_icon: "⚙️"
+
+docs/SECURITY-SCAN.md:
+  title: "Vibe Coder: Security Scans"
+  page_icon: "🛡️"
+
+docs/FULL-HISTORY-SECRET-SCAN.md:
+  title: "Vibe Coder: Full-history Secret Scan"
+  page_icon: "🔐"
+
+docs/SUPPLY-CHAIN-GATE.md:
+  title: "Vibe Coder: Supply-chain Gate"
+  page_icon: "🔗"
+
+docs/SECURITY-TREE-SWEEP.md:
+  title: "Vibe Coder: Whole-tree Security Sweep"
+  page_icon: "🧹"
+
+docs/security-fix-gate-feedback.md:
+  title: "Vibe Coder: Security-fix Gate Feedback"
+  page_icon: "🔐"
+
+docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md:
+  title: "Vibe Coder: OWASP Top 10 2025 Coverage Matrix"
+  page_icon: "🗂️"
+
+docs/SECURITY-REMEDIATION-BATCHING.md:
+  title: "Vibe Coder: Security Remediation Batching"
+  page_icon: "🛡️"
+
+docs/SECURITY-WORK-STREAM-PARALLELISM-INVESTIGATION.md:
+  title: "Vibe Coder: Security Work Stream Parallelism Investigation"
+  page_icon: "🔬"
+
+docs/DUPLICATE-PR-ROOT-CAUSE-3138.md:
+  title: "Vibe Coder: Duplicate-PR Root Cause (#3138)"
+  page_icon: "🔁"
+
+docs/ADD-REPO.md:
+  title: "Vibe Coder: Add-repo Onboarding"
+  page_icon: "➕"
+
+docs/AGENT-ACCOUNTABILITY.md:
+  title: "Vibe Coder: Agent Accountability"
+  page_icon: "🛡️"
+
+docs/BEST-PRACTICES-SCAN.md:
+  title: "Vibe Coder: Best-Practices Scans"
+  page_icon: "📐"
+
+docs/BASH-SYNTAX-AUDIT-SCAN.md:
+  title: "Vibe Coder: Bash Syntax Audit Scans"
+  page_icon: "🐚"
+
+docs/CROSS-REPO-FIX.md:
+  title: "Vibe Coder: Cross-repo Fix"
+  page_icon: "🔀"
+
+docs/TEST-AUDIT-SCAN.md:
+  title: "Vibe Coder: Test-Audit Scans"
+  page_icon: "🧪"
+
+docs/DOCUMENTATION-AUDIT-SCAN.md:
+  title: "Vibe Coder: Documentation-Audit Scans"
+  page_icon: "📚"
+
+docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md:
+  title: "Vibe Coder: Private-Repo Reference Audit"
+  page_icon: "🔒"
+
+docs/DUPLICATED-KNOWLEDGE-SCAN.md:
+  title: "Vibe Coder: Duplicated-Knowledge Scan"
+  page_icon: "👯"
+
+docs/GITHUB-ACTIONS-AUDIT-SCAN.md:
+  title: "Vibe Coder: GitHub Actions Audit Scans"
+  page_icon: "⚙️"
+
+docs/SUPPLY-CHAIN-READINESS-SCAN.md:
+  title: "Vibe Coder: Supply-Chain Readiness Scans"
+  page_icon: "🔗"
+
+docs/SUPPLY-CHAIN-DETECTION-SCAN.md:
+  title: "Vibe Coder: Supply-Chain Detection Scans"
+  page_icon: "🛡️"
+
+docs/ORPHAN-DEPS-SCAN.md:
+  title: "Vibe Coder: Orphan-Dependency Scans"
+  page_icon: "🪦"
+
+docs/SUPPLY-CHAIN-TRIAGE.md:
+  title: "Vibe Coder: Supply-Chain Bulk Triage"
+  page_icon: "📥"
+
+docs/IDLE-TASK-FRAMEWORK.md:
+  title: "Vibe Coder: Idle-task Framework"
+  page_icon: "😴"
+
+docs/per-repo-pr-failure-actions.md:
+  title: "Vibe Coder: Per-repository PR failure actions"
+  page_icon: "🔧"
+
+docs/ci-failure-issue-log-fetch.md:
+  title: "Vibe Coder: CI-failure Issue Log Fetch"
+  page_icon: "🔎"
+
+docs/DEPLOYMENT.md:
+  title: "Vibe Coder: Deployment Guide"
+  page_icon: "📦"
+
+docs/CONTAINER.md:
+  title: "Vibe Coder: Container Image"
+  page_icon: "🐳"
+
+docs/CONTAINER-IMAGE.md:
+  title: "Vibe Coder: Worker Image Design"
+  page_icon: "📦"
+
+docs/CONTAINMENT.md:
+  title: "Vibe Coder: Containment"
+  page_icon: "🔒"
+
+docs/THREAT-MODEL.md:
+  title: "Vibe Coder: Threat Model"
+  page_icon: "🛡️"
+
+docs/EXTENDING.md:
+  title: "Vibe Coder: Extending the Worker"
+  page_icon: "🔧"
+
+docs/PROMPTS.md:
+  title: "Vibe Coder: Prompt goals (summary)"
+  page_icon: "📝"
+
+docs/QUORUM.md:
+  title: "Vibe Coder: Quorum"
+  page_icon: "⚖️"
+
+docs/PROMPT-BEST-PRACTICES-CHECKLIST.md:
+  title: "Vibe Coder: Prompt best-practices checklist"
+  page_icon: "📐"
+
+docs/INTERNALS.md:
+  title: "Vibe Coder: Worker Internals"
+  page_icon: "🏗️"
+
+docs/MODEL-AND-CACHING.md:
+  title: "Vibe Coder: Model Selection & Caching"
+  page_icon: "🧠"
+
+docs/GH-API-OPTIMISATION.md:
+  title: "Vibe Coder: GitHub API Optimisation"
+  page_icon: "📡"
+
+docs/TROUBLESHOOTING.md:
+  title: "Vibe Coder: Troubleshooting"
+  page_icon: "🔧"
+
+docs/workflows/README.md:
+  title: "Vibe Coder: Workflows Overview"
+  page_icon: "📋"
+
+docs/workflows/label-flows.md:
+  title: "Vibe Coder: Label Flows"
+  page_icon: "🏷️"
+
+docs/workflows/issue-processing.md:
+  title: "Vibe Coder: Issue Processing"
+  page_icon: "🔍"
+
+docs/workflows/pr-feedback.md:
+  title: "Vibe Coder: PR Feedback & Upkeep"
+  page_icon: "💬"
+
+docs/workflows/planning-and-questions.md:
+  title: "Vibe Coder: Planning, Questions & Refinement"
+  page_icon: "📝"
+
+docs/workflows/grill-me.md:
+  title: "Vibe Coder: Grill-Me Clarification"
+  page_icon: "🔥"
+
+docs/workflows/projects-and-dependencies.md:
+  title: "Vibe Coder: Projects & Dependencies"
+  page_icon: "🔗"
+
+docs/workflows/milestones.md:
+  title: "Vibe Coder: Milestones"
+  page_icon: "🎯"
+
+docs/workflows/resilience-and-concurrency.md:
+  title: "Vibe Coder: Resilience & Concurrency"
+  page_icon: "🛡️"
+
+docs/workflows/WORKED-EXAMPLE.md:
+  title: "Vibe Coder: Worked Example"
+  page_icon: "🖼️"
+
+docs/workflows/ci-fix.md:
+  title: "Vibe Coder: CI Fix Workflow"
+  page_icon: "🔧"
+
+SECURITY.md:
+  title: "Vibe Coder: Security"
+  page_icon: "🔒"
+
+docs/security-advisory-triage.md:
+  title: "Vibe Coder: Upstream Security Advisory Triage"
+  page_icon: "🔎"
+
+docs/audits/dependency-inventory.md:
+  title: "Vibe Coder: Dependency Inventory"
+  page_icon: "🔗"
+
+AGENTS.md:
+  title: "Vibe Coder: AGENTS"
+  page_icon: "🤖"
+
+docs/security/README.md:
+  title: "Vibe Coder: Security analyses & assessments"
+  page_icon: "🔐"
+
+docs/social/README.md:
+  title: "Vibe Coder: Social media images"
+  page_icon: "🎨"
+
+docs/security/ghostcommit-image-injection-assessment.md:
+  title: "Vibe Coder: GhostCommit image-injection assessment (Issue #3387)"
+  page_icon: "👻"
+
+docs/security/ghostcommit-canary-tests.md:
+  title: "Vibe Coder: GhostCommit canary regression tests (Issue #3390)"
+  page_icon: "🐤"
+
+docs/security/cloudflare-security-audit-gap-analysis.md:
+  title: "Vibe Coder: Cloudflare security-audit-skill coverage gap analysis (Issue #3445)"
+  page_icon: "🛡️"
+
+docs/security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md:
+  title: "Vibe Coder: idle-task scans vs Anthropic & Visa security harnesses gap analysis (Issue #3535)"
+  page_icon: "🔬"

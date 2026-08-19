@@ -69,7 +69,7 @@ array can:
 - Add the `work-on` label to trigger work on issues created by others
 - Add the `ignore-open-prs` label to bypass open PR checks
 - Invite the worker onto their **own** PR — see
-  Human-authored PR policy
+  [Human-authored PR policy](HUMAN-PR-POLICY.md)
 
 For backward compatibility, the legacy `allowed_author` (singular) string is
 still supported and will be converted to an array internally.
@@ -94,7 +94,7 @@ that.
 
 The full policy — what the worker will and will not do, how to invite it, how to
 revoke, and what happens when a human PR blocks a `work-on` issue — is in
-Human-authored PR policy.
+[Human-authored PR policy](HUMAN-PR-POLICY.md).
 
 ## 👥 Multiple PR Reviewers
 
@@ -160,7 +160,7 @@ explicitly overridden.
 When no claimable work exists, the worker files a background **idle-task**
 issue. It picks which template to run from the seventeen registered templates by
 a random draw — the authoritative list lives in the
-idle-task registry, which this page
+[idle-task registry](IDLE-TASK-FRAMEWORK.md#registry), which this page
 deliberately does not restate. By default the draw is **uniform** — each
 template has a 1/17 chance, so only ~2/17 of idle runs are
 supply-chain-relevant.
@@ -247,7 +247,7 @@ Semantics:
 
 Full behaviour, including the decision flow and the log lines a biased tick
 emits, is in
-Idle-task Framework → Configuring the cadence.
+[Idle-task Framework → Configuring the cadence](IDLE-TASK-FRAMEWORK.md#configuring-the-cadence--idle_task_cadence-issue-4011).
 
 ### ⬆️ Minimum-Version Floor (Issue #2622)
 
@@ -655,7 +655,7 @@ unless explicitly overridden.
 | Max untrusted comment count    | `max_untrusted_comment_count`    | `5`        | Maximum number of untrusted comments to include in the prompt (Issue #1342)                                                                                                                          |
 | Comment flood threshold        | `comment_flood_threshold`        | `10`       | Threshold of untrusted comments that triggers a flood audit event (Issue #1342)                                                                                                                      |
 | Include untrusted comments     | `include_untrusted_comments`     | `true`     | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely (Issue #1340).                                                             |
-| Include codebase map           | `include_codebase_map`           | `true`     | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See Codebase Map (Issue #4281).                          |
+| Include codebase map           | `include_codebase_map`           | `true`     | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map-issue-4281) (Issue #4281).                          |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap-issue-3582).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red — or with an unanswered authorised comment — before the watchdog escalates it with `needs-human`. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog-issue-4025). |
 
@@ -908,7 +908,7 @@ not read at runtime.
 ```bash
 VIBE_ALLOWED_AUTHORS=user1,user2 \
 VIBE_REPOS="org/repo1,org/repo2" \
-VIBE_SERVICE_ACCOUNTS="stsvcbot,VibeCoderBot" \
+VIBE_SERVICE_ACCOUNTS="stsvcbot,Vibecoderbot" \
 ./setup.sh
 ```
 
@@ -975,7 +975,7 @@ model id, or a run that resolved no `--model` argument, would spend against a
 ceiling that could not see it. The ceiling message names the unpriced portion,
 and the hook logs a `[SPEND_CEILING]` line listing the ids whenever any is
 present, so the missing
-pricing row gets added.
+[pricing row](MODEL-AND-CACHING.md#unpriced-model-ids-issue-3870) gets added.
 
 ```mermaid
 flowchart TD
@@ -1267,7 +1267,7 @@ thumbs-up gate — use `authorized_commenters` for human reviewers instead.
 
 The `fleet_pr_authors` field lets a worker host **maintain PRs raised by sibling
 fleet hosts**, not just its own. The fleet runs across machines, each
-authenticated as a different GitHub account (for example `VibeCoderBot` on one
+authenticated as a different GitHub account (for example `Vibecoderbot` on one
 host and `stsvcbot` on another). PR feedback and CI-fix maintenance are
 otherwise scoped per-host by PR author (`gh pr list --author <login>`), so a
 milestone PR raised by a sibling host that is busy elsewhere — or down — would
@@ -1297,16 +1297,16 @@ reaction, and a duplicated CI-fix push is rejected by git as a non-fast-forward
 2. `fleet_pr_authors` array in `.config.json`.
 3. Empty list (own author only).
 
-**Example (the `VibeCoderBot` host listing its `stsvcbot` sibling):**
+**Example (the `Vibecoderbot` host listing its `stsvcbot` sibling):**
 
 ```json
 {
-  "github_user": "VibeCoderBot",
+  "github_user": "Vibecoderbot",
   "fleet_pr_authors": ["stsvcbot"]
 }
 ```
 
-The `stsvcbot` host mirrors this with `"fleet_pr_authors": ["VibeCoderBot"]`.
+The `stsvcbot` host mirrors this with `"fleet_pr_authors": ["Vibecoderbot"]`.
 
 ### Fleet PR authors feed the open-PR duplicate guard too (Issue #3138)
 
@@ -1317,7 +1317,7 @@ the host `github_user`, `allowed_authors`, **and** `fleet_pr_authors`
 guard read `allowed_authors` only, so a sibling listed **solely** in
 `fleet_pr_authors` was never queried and its open PRs were invisible to the
 guard — the root cause of the duplicate documented in
-`DUPLICATE-PR-ROOT-CAUSE-3138.md`.
+[`DUPLICATE-PR-ROOT-CAUSE-3138.md`](DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
 At startup (and in `diagnose-repo`) the worker now validates this configuration
 and emits a `[fleet-config]` line: an **error** if the effective fleet set is
@@ -1329,7 +1329,7 @@ That direction is one-way. Listing a fleet login in `allowed_authors` keeps the
 duplicate guard sighted; it does **not** follow that a login in
 `allowed_authors` may have its PRs maintained. Maintenance comes from
 `fleet_pr_authors` alone — see
-`HUMAN-PR-POLICY.md`.
+[`HUMAN-PR-POLICY.md`](HUMAN-PR-POLICY.md).
 
 ### Defer to a PR, or act on it? (Issues #4023, #4075, #4076)
 
@@ -1340,7 +1340,7 @@ answer a different question: *may I claim this PR, push to it, comment on it,
 merge it?*
 
 - **#4023** widened the scans to the blocking set, which fixed a fleet PR
-  stranded with no host maintaining it (`NEAT-AI-Lamarck#103`) …
+  stranded with no host maintaining it (`private-repo-21#103`) …
 - **#4074** exposed the cost: the scans then adopted a trusted **human's** PR
   uninvited (`TitlePage/tp-web-react#2312`) — claimed it, pushed to it, and
   commented on it.
@@ -1388,7 +1388,7 @@ You can still ask the worker to work on **your** PR — it just has to be asked.
 Every scan additionally lists the open PRs authored by `allowed_authors` and
 admits only those carrying an explicit invitation (the operator-facing version
 of this, including how to revoke, is
-`HUMAN-PR-POLICY.md`):
+[`HUMAN-PR-POLICY.md`](HUMAN-PR-POLICY.md)):
 
 | Signal      | How to give it                                          | Checked by                                                              |
 | ----------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -1481,12 +1481,12 @@ Example configuration:
       "pre_setup_command": "./scripts/link-sibling-repos.sh",
       "custom_instructions": "This repo requires sibling repos for tests. The pre-setup script links them."
     },
-    "your-org/NEAT-AI": {
+    "your-org/private-repo-14": {
       "claude_model": "fable",
       "phase_model_overrides": { "issue": "fable" },
       "phase_effort_overrides": { "issue": "xhigh" }
     },
-    "your-org/NEAT-AI-Examples": {
+    "your-org/private-repo-18": {
       "claude_model": "sonnet",
       "phase_effort_overrides": { "issue": "medium", "planning": "high" }
     }
@@ -1509,7 +1509,7 @@ when nothing else is queued) avoids burning premium tokens.
 | `phase_effort_overrides`| object | Per-repo per-phase effort map (e.g. `{ "issue": "xhigh" }`). Same shape as the global `phase_effort_overrides`.     |
 
 The resolution order (most specific wins) is documented in full in
-MODEL-AND-CACHING.md → Model/effort precedence.
+[MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain).
 In short: a phase-specific `CLAUDE_MODEL_<PHASE>` / `CLAUDE_EFFORT_<PHASE>` env
 var (operator escape hatch) beats a per-repo phase override, which beats the
 per-repo base `claude_model`, which beats the global config overrides, which
@@ -1543,7 +1543,7 @@ routing, so a premium tier never leaks into a filler repo.
 > The interaction is internally consistent — the degraded-model detector reads
 > the same precedence chain and does not false-flag the demotion — so this is a
 > routing surprise to be aware of, not a bug. See
-> MODEL-AND-CACHING.md → Model/effort precedence
+> [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain)
 > for the full chain, and
 > [#2710](https://github.com/stSoftwareAU/VibeCoder/issues/2710) /
 > [#2716](https://github.com/stSoftwareAU/VibeCoder/issues/2716) for the
@@ -1559,7 +1559,7 @@ routing, so a premium tier never leaks into a filler repo.
 > self-heals once Fable returns — config keeps pointing at Fable, the
 > substitution is per-run, and there is no "Fable down" switch to set or clear.
 > See
-> MODEL-AND-CACHING.md → Fable-unavailable auto-fallback + self-heal.
+> [MODEL-AND-CACHING.md → Fable-unavailable auto-fallback + self-heal](MODEL-AND-CACHING.md#fable-unavailable-auto-fallback--self-heal-issue-2720).
 
 > **Out of scope (possible follow-up):** per-issue overrides (e.g. a
 > human-applied `premium` label bumping a single issue to the top tier).
@@ -1597,18 +1597,18 @@ a negative `nice`:
 ```json
 {
   "repo_config": {
-    "example-org/private-repo-33": {
+    "stSoftwareAU/private-repo-18": {
       "nice": 99
     },
-    "example-org/private-repo-44": {
+    "stSoftwareAU/priority-repo": {
       "nice": -1
     }
   }
 }
 ```
 
-Here `example-org/private-repo-33` (`nice: 99`) is picked up only when every
-lower-`nice` repo is idle, while `example-org/private-repo-44` (`nice: -1`) jumps
+Here `stSoftwareAU/private-repo-18` (`nice: 99`) is picked up only when every
+lower-`nice` repo is idle, while `stSoftwareAU/priority-repo` (`nice: -1`) jumps
 ahead of every default-tier (`nice: 0`) repo.
 
 You can confirm a repo's resolved tier without reading the config — the
@@ -1627,16 +1627,16 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#docker-based-quality-checks).                                                                                                                                                                                                                           |
 | `requires_screenshots`  | boolean | When `true`, always injects screenshot instructions into Claude's prompt. Use for UI/frontend repositories.                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion. Use for non-UI repositories to prevent false positives (Issue #1278).                                                                                                                                                                                                                                          |
-| `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff (Issue #3652), and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass (Issue #3540). A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop (Issue #4057): the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See Security-fix gate feedback. |
+| `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff (Issue #3652), and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass (Issue #3540). A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop (Issue #4057): the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`). Overrides phase defaults. See [Verbosity Configuration](#-verbosity-configuration-issue-1329).                                                                                                                                                                                         |
 | `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only. See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier-issue-2772).                                                                                                                                                                         |
-| `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; `provider` is required, `jobPath` is required for `jenkins`. GitHub Actions is the built-in default and needs no entry. Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#adding-a-ci-log-provider) and Per-repository PR failure actions. |
-| `prFailureActions`      | array   | **Deprecated — use `ciProviders`.** Still parsed and converted into an equivalent `ciProviders` entry, so existing configuration keeps working unchanged. The only action type is `fetch-jenkins-log`. See Per-repository PR failure actions for the schema, the `JENKINS_URL`/`JENKINS_USER`/`JENKINS_TOKEN` env var contract, a worked Migration_v21 example, and troubleshooting steps. |
+| `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; `provider` is required, `jobPath` is required for `jenkins`. GitHub Actions is the built-in default and needs no entry. Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#adding-a-ci-log-provider) and [Per-repository PR failure actions](per-repo-pr-failure-actions.md). |
+| `prFailureActions`      | array   | **Deprecated — use `ciProviders`.** Still parsed and converted into an equivalent `ciProviders` entry, so existing configuration keeps working unchanged. The only action type is `fetch-jenkins-log`. See [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for the schema, the `JENKINS_URL`/`JENKINS_USER`/`JENKINS_TOKEN` env var contract, a worked private-repo-12 example, and troubleshooting steps. |
 | `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate-issue-3577). |
-| `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** Jenkins console log, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See CI-failure issue log fetch. |
-| `ci_failure_job_path`   | string  | Fallback Jenkins job path (e.g. `Migration/job/Develop`) used when a CI-failure issue body carries a build number but no `Build URL`. See CI-failure issue log fetch.                                                                                                                                                     |
+| `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** Jenkins console log, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
+| `ci_failure_job_path`   | string  | Fallback Jenkins job path (e.g. `Migration/job/Develop`) used when a CI-failure issue body carries a build number but no `Build URL`. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md).                                                                                                                                                     |
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap-issue-3582).                                                                                                                           |
 | `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog-issue-4025). |
 | `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing-issue-2625).                                                                                                                                                                                                          |
@@ -1672,7 +1672,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 ### 🛫 Pre-flight enforcement gate (Issue #3577)
 
 Expensive builds (e.g. the full Jenkins Develop pipeline for
-`example-org/private-repo-27`) cost hours before a compilation error the worker
+`stSoftwareAU/private-repo-12`) cost hours before a compilation error the worker
 pushed is even reported. The `pre-flight` gate refuses to commit or push work
 that is already known to be broken, so the failure is caught locally in
 seconds instead of downstream in the build.
@@ -1682,7 +1682,7 @@ snake_case `pre_flight`, or camelCase `preFlight` are all accepted):
 
 ```jsonc
 "repo_config": {
-  "example-org/private-repo-27": {
+  "stSoftwareAU/private-repo-12": {
     "pre-flight": ["./pre-flight.sh"]
   }
 }
@@ -1789,7 +1789,7 @@ A `work-on` issue defers to the open PR that
 [blocks it](#-fleet-pr-authors-fleet-aware-pr-maintenance). When that PR stops
 making progress
 the work stream stops with it — and until this watchdog existed, silently:
-NEAT-AI-Lamarck PR #103 sat red with an unanswered authorised comment for ~13
+private-repo-21 PR #103 sat red with an unanswered authorised comment for ~13
 hours while two `work-on` issues waited behind it and nothing in the worker
 noticed.
 
@@ -1882,7 +1882,7 @@ Docker installed.
   "TitlePage/tp-web-react": {
     "docker_image": "node:20"
   },
-  "example-org/private-repo-57": {
+  "stSoftwareAU/private-repo-24": {
     "docker_image": "eclipse-temurin:21"
   },
   "my-org/rust-project": {
@@ -1968,7 +1968,7 @@ GitHub account** (e.g., a service account like `stsvcbot`), you set up a
 dedicated SSH key and a separate `gh` auth session **once**, then store the
 paths in `.config.json`. After that, everything is automatic — start the worker
 with `./run.sh` (or via cron/launchd as in the
-Deployment Guide); no environment variables needed at runtime.
+[Deployment Guide](DEPLOYMENT.md)); no environment variables needed at runtime.
 
 > 🔄 **Already deployed and need to switch to a different account?** See
 > Switching the Worker GitHub Identity for the
@@ -2124,14 +2124,14 @@ the GitHub logins the worker is permitted to operate as:
 
 ```json
 {
-  "service_accounts": ["stsvcbot", "VibeCoderBot"]
+  "service_accounts": ["stsvcbot", "Vibecoderbot"]
 }
 ```
 
 **Setup writes this field (Issue #4030).** It is no longer a hand-edit-only key:
 
 - Pass the fleet's accounts explicitly:
-  `VIBE_SERVICE_ACCOUNTS="stsvcbot,VibeCoderBot" ./setup.sh`.
+  `VIBE_SERVICE_ACCOUNTS="stsvcbot,Vibecoderbot" ./setup.sh`.
 - Or answer the interactive **Service accounts** prompt in `./setup.sh`.
 - Supply nothing and setup **defaults the allowlist to the login it just
   authenticated as** — a one-entry allowlist that enforces from the first run,

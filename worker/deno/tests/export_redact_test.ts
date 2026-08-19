@@ -24,21 +24,21 @@ const ACCOUNT = ["Vibe", "CoderST"].join("");
 const HOST = ["FLEET", "-23"].join("");
 const TELEMETRY = ["FLEET", "-health"].join("");
 const ORG = "stSoftwareAU";
-const PRIVATE_A = ["NEAT", "-AI"].join("");
+const PRIVATE_A = ["private-repo-13", "-AI"].join("");
 const PRIVATE_B = ["Migration", "_v21"].join("");
 
 const REDACTIONS = `# comment
 account: ${ACCOUNT} -> vibe-coder-bot
 hostname: /\\b${HOST.split("-")[0]}-(\\d+)\\b/ -> host-$1
 telemetry: /\\b${TELEMETRY.split("-")[0]}[- _]?health\\b/i -> fleet-health
-private-repo: * -> example-org/private-repo-{n}
+private-repo: * -> private-repo-{n}
 `;
 
 Deno.test("parseRedactions - each rule is class, pattern and replacement; malformed lines are errors", () => {
   const parsed = parseRedactions(REDACTIONS);
   assertEquals(parsed.errors, []);
   assertEquals(parsed.rules.length, 3);
-  assertEquals(parsed.privateRepoTemplate, "example-org/private-repo-{n}");
+  assertEquals(parsed.privateRepoTemplate, "private-repo-{n}");
   const bad = parseRedactions(
     "account: x\nbogus: y -> z\nprivate-repo: * -> nope\n",
   );
@@ -53,7 +53,7 @@ Deno.test("redactText - literal, regex-with-group and case-insensitive rules app
   const input =
     `allowed: ${ACCOUNT}, ${ACCOUNT.toLowerCase()} on ${HOST} via ${TELEMETRY.toUpperCase()}`;
   const out = redactText(input, rules, {
-    privateRepoTemplate: "example-org/private-repo-{n}",
+    privateRepoTemplate: "private-repo-{n}",
     privateRepoIndex: new Map(),
   });
   assertEquals(
@@ -70,18 +70,38 @@ Deno.test("redactText - private repositories map to numbered placeholders by a t
     [PRIVATE_A.toLowerCase(), 1],
     [PRIVATE_B.toLowerCase(), 2],
   ]);
+  // The name is replaced wherever it appears as a whole word — slug, work
+  // dir, Jenkins path — so derived forms stay consistent; the organisation
+  // stays (it is public), and so do public and placeholder repositories.
   const input =
-    `${ORG}/${PRIVATE_B} then ${ORG}/${PRIVATE_A}.git and ${ORG}/VibeCoder and ${ORG}/foo`;
+    `${ORG}/${PRIVATE_B} then ${ORG}/${PRIVATE_A}.git and /work/${PRIVATE_A} and job/${ORG}/job/${PRIVATE_B} and ${ORG}/VibeCoder and ${ORG}/foo`;
   const out = redactText(input, [], {
-    privateRepoTemplate: "example-org/private-repo-{n}",
+    privateRepoTemplate: "private-repo-{n}",
     privateRepoIndex: index,
-    publicRepos: ["VibeCoder"],
+    // Declared private repositories are renamed tree-wide; an undeclared
+    // (unknown) name would be hidden in slug form only.
+    repoPolicy: {
+      publicRepos: ["VibeCoder"],
+      placeholderRepos: [],
+      privatePatterns: [
+        new RegExp(`^${PRIVATE_A}$`, "i"),
+        new RegExp(`^${PRIVATE_B}$`, "i"),
+      ],
+    },
   });
   assertEquals(
     out.text,
-    `example-org/private-repo-2 then example-org/private-repo-1.git and ${ORG}/VibeCoder and ${ORG}/foo`,
+    `${ORG}/private-repo-2 then ${ORG}/private-repo-1.git and /work/private-repo-1 and job/${ORG}/job/private-repo-2 and ${ORG}/VibeCoder and ${ORG}/foo`,
   );
-  assertEquals(out.counts.get("private-repo"), 2);
+  assertEquals(out.counts.get("private-repo"), 4);
+
+  // Undeclared: slug form only, and the gate would still block it.
+  const unknown = redactText(`${ORG}/${PRIVATE_A} in /work/${PRIVATE_A}`, [], {
+    privateRepoTemplate: "private-repo-{n}",
+    privateRepoIndex: index,
+    publicRepos: ["VibeCoder"],
+  });
+  assertEquals(unknown.text, `${ORG}/private-repo-1 in /work/${PRIVATE_A}`);
 });
 
 Deno.test("redactTree - rewrites text files in place, skips binaries, numbers private repos deterministically across the tree, and reports per class/file", async () => {
@@ -103,18 +123,18 @@ Deno.test("redactTree - rewrites text files in place, skips binaries, numbers pr
     const { rules } = parseRedactions(REDACTIONS);
     const report = await redactTree(root, {
       rules,
-      privateRepoTemplate: "example-org/private-repo-{n}",
+      privateRepoTemplate: "private-repo-{n}",
       publicRepos: ["VibeCoder"],
     });
-    // Alphabetical numbering: migration_v21 (2) sorts after neat-ai (1),
+    // Alphabetical numbering: PRIVATE_B (2) sorts after PRIVATE_A (1),
     // regardless of which file is read first.
     assertEquals(
       await Deno.readTextFile(`${root}/docs/a.md`),
-      "example-org/private-repo-1 and vibe-coder-bot\n",
+      `${ORG}/private-repo-1 and vibe-coder-bot\n`,
     );
     assertEquals(
       await Deno.readTextFile(`${root}/b.ts`),
-      `const repo = "example-org/private-repo-2"; // host-23\n`,
+      `const repo = "${ORG}/private-repo-2"; // host-23\n`,
     );
     assertEquals(report.filesRewritten, 2);
     assertEquals(report.filesSkippedBinary, 1);
@@ -122,7 +142,7 @@ Deno.test("redactTree - rewrites text files in place, skips binaries, numbers pr
     assertEquals(report.totals.get("account"), 1);
     assertEquals(
       report.privateRepoMap.get(PRIVATE_B.toLowerCase()),
-      "example-org/private-repo-1",
+      "private-repo-1",
     );
     const rendered = renderRedactionReport(report);
     assertStringIncludes(rendered, "private-repo: 2");
@@ -145,7 +165,7 @@ Deno.test("redactTree - a second run is a no-op (idempotent)", async () => {
     const { rules } = parseRedactions(REDACTIONS);
     const opts = {
       rules,
-      privateRepoTemplate: "example-org/private-repo-{n}",
+      privateRepoTemplate: "private-repo-{n}",
       publicRepos: [] as string[],
     };
     await redactTree(root, opts);

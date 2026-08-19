@@ -286,7 +286,7 @@ prints what the setup-time sync **would** do — `create` / `update` the worker'
 `Vibe Coder default branch` ruleset, `delete` its own stale one from a
 direct-push branch, or skip (`direct-push-branch`, `opted-out`,
 `existing-ruleset`, `no-reported-checks`) — as a Markdown table. Nothing is
-written. See MERGE.md → Never lock a direct-push branch
+written. See [MERGE.md → Never lock a direct-push branch](MERGE.md#never-lock-a-direct-push-branch-issue-4356)
 for the decision.
 
 ```bash
@@ -372,8 +372,8 @@ CI log excerpt into that placeholder before invoking Claude — from a
 configured provider (e.g. a Jenkins console tail) or, failing that, from the
 built-in GitHub Actions provider. See
 [Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point
-and Per-repository PR failure actions for
-the config schema, env var contract, worked Migration_v21 example, and
+and [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for
+the config schema, env var contract, worked private-repo-12 example, and
 troubleshooting symptoms.
 
 **To update a prompt**: Create a new version file (e.g., `v2.md`). The latest version (highest number) is used automatically.

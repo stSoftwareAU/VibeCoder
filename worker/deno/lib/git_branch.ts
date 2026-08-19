@@ -252,7 +252,7 @@ export interface HeadReconciliation {
  * Bring HEAD back onto the worker's branch before pushing (Issue #4286).
  *
  * The coding agent may switch to a branch of its own and commit there
- * (NEAT-AI-scorer#565: `issue-565-readme-banner`, two commits ahead, while
+ * (private-repo-22#565: `issue-565-readme-banner`, two commits ahead, while
  * the worker's `issue-565-…` branch sat at base). Every downstream step then
  * agreed with the others while all being wrong — change detection counted
  * `base..HEAD`, the push pushed the *branch ref* ("Everything up-to-date"),

@@ -13,7 +13,7 @@ import {
   runFleetHealthReporting,
 } from "../lib/fleet_health.ts";
 
-/** Command result data for fleet-health. */
+/** Command result data for private-repo-6. */
 interface FleetHealthData {
   healthDir: string;
   hostId: string;
@@ -21,14 +21,15 @@ interface FleetHealthData {
 }
 
 /**
- * fleet-health command — reports worker health to the FLEET-health repository.
+ * private-repo-6 command — reports worker health to the private-repo-6 repository.
  *
  * Called at the end of each worker run to record that the worker is alive
- * and functioning. The FLEET-health repository is cloned/synced automatically.
+ * and functioning. The private-repo-6 repository is cloned/synced automatically.
  */
 export const fleetHealthCommand: Command = {
-  name: "fleet-health",
-  description: "Report worker health to FLEET-health repository (Issue #1124)",
+  name: "private-repo-6",
+  description:
+    "Report worker health to private-repo-6 repository (Issue #1124)",
 
   async execute(
     args: Record<string, unknown>,

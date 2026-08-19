@@ -16,26 +16,26 @@ import {
 
 Deno.test("resolveFleetAuthors - unions host, allowed and fleet-pr authors", () => {
   const result = resolveFleetAuthors(
-    "VibeCoderBot",
+    "Vibecoderbot",
     ["human1"],
     ["stsvcbot"],
   );
-  assertEquals(result, ["VibeCoderBot", "human1", "stsvcbot"]);
+  assertEquals(result, ["Vibecoderbot", "human1", "stsvcbot"]);
 });
 
 Deno.test("resolveFleetAuthors - includes fleet sibling missing from allowed_authors", () => {
   // Root-cause scenario: sibling only in fleet_pr_authors must still be queried.
-  const result = resolveFleetAuthors("VibeCoderBot", ["human1"], ["stsvcbot"]);
+  const result = resolveFleetAuthors("Vibecoderbot", ["human1"], ["stsvcbot"]);
   assertEquals(result.includes("stsvcbot"), true);
 });
 
 Deno.test("resolveFleetAuthors - deduplicates case-insensitively, first-seen wins", () => {
   const result = resolveFleetAuthors(
-    "VibeCoderBot",
-    ["VibeCoderBot", "Human1"],
+    "Vibecoderbot",
+    ["vibecoderbot", "Human1"],
     ["HUMAN1", "stsvcbot"],
   );
-  assertEquals(result, ["VibeCoderBot", "Human1", "stsvcbot"]);
+  assertEquals(result, ["Vibecoderbot", "Human1", "stsvcbot"]);
 });
 
 Deno.test("resolveFleetAuthors - drops blank and whitespace entries", () => {
@@ -50,24 +50,24 @@ Deno.test("resolveFleetAuthors - empty inputs yield empty list", () => {
 // --- isFleetAuthor (Issue #3164) ---
 
 Deno.test("isFleetAuthor - matches a fleet login case-insensitively", () => {
-  const fleet = ["VibeCoderBot", "stsvcbot"];
-  assertEquals(isFleetAuthor("VibeCoderBot", fleet), true);
-  assertEquals(isFleetAuthor("stsvcbot", fleet), true);
+  const fleet = ["Vibecoderbot", "stsvcbot"];
+  assertEquals(isFleetAuthor("vibecoderbot", fleet), true);
+  assertEquals(isFleetAuthor("STSVCBOT", fleet), true);
 });
 
 Deno.test("isFleetAuthor - rejects a non-fleet author", () => {
-  assertEquals(isFleetAuthor("attacker", ["VibeCoderBot"]), false);
+  assertEquals(isFleetAuthor("attacker", ["Vibecoderbot"]), false);
 });
 
 Deno.test("isFleetAuthor - null/undefined/blank logins are never fleet", () => {
-  const fleet = ["VibeCoderBot"];
+  const fleet = ["Vibecoderbot"];
   assertEquals(isFleetAuthor(null, fleet), false);
   assertEquals(isFleetAuthor(undefined, fleet), false);
   assertEquals(isFleetAuthor("   ", fleet), false);
 });
 
 Deno.test("isFleetAuthor - empty fleet list matches nobody", () => {
-  assertEquals(isFleetAuthor("VibeCoderBot", []), false);
+  assertEquals(isFleetAuthor("Vibecoderbot", []), false);
 });
 
 // --- resolveFleetMaintenanceAuthorSet (Issue #4075) ---
@@ -76,47 +76,47 @@ Deno.test("resolveFleetMaintenanceAuthorSet - excludes every allowedAuthors entr
   // The #4074 regression: a trusted human's PR was adopted by the
   // maintenance scans because the push-capable set inherited allowed_authors.
   const result = resolveFleetMaintenanceAuthorSet({
-    githubUser: "VibeCoderBot",
+    githubUser: "Vibecoderbot",
     allowedAuthors: ["human1", "human2"],
     fleetPrAuthors: ["stsvcbot"],
   });
-  assertEquals(result, ["VibeCoderBot", "stsvcbot"]);
+  assertEquals(result, ["Vibecoderbot", "stsvcbot"]);
 });
 
 Deno.test("resolveFleetMaintenanceAuthorSet - keeps a login listed in both lists", () => {
   // Membership comes from the sibling list, so also being a trusted human
   // must not remove a genuine fleet account.
   const result = resolveFleetMaintenanceAuthorSet({
-    githubUser: "VibeCoderBot",
+    githubUser: "Vibecoderbot",
     allowedAuthors: ["stsvcbot", "human1"],
     fleetPrAuthors: ["stsvcbot"],
   });
-  assertEquals(result, ["VibeCoderBot", "stsvcbot"]);
+  assertEquals(result, ["Vibecoderbot", "stsvcbot"]);
 });
 
 Deno.test("resolveFleetMaintenanceAuthorSet - host login is always present", () => {
   assertEquals(
-    resolveFleetMaintenanceAuthorSet({ githubUser: "VibeCoderBot" }),
-    ["VibeCoderBot"],
+    resolveFleetMaintenanceAuthorSet({ githubUser: "Vibecoderbot" }),
+    ["Vibecoderbot"],
   );
   assertEquals(
     resolveFleetMaintenanceAuthorSet({
-      githubUser: "VibeCoderBot",
+      githubUser: "Vibecoderbot",
       allowedAuthors: ["human1"],
       fleetPrAuthors: ["stsvcbot"],
     })[0],
-    "VibeCoderBot",
+    "Vibecoderbot",
   );
 });
 
 Deno.test("resolveFleetPrAuthorSet - host login is always present", () => {
   assertEquals(
     resolveFleetPrAuthorSet({
-      githubUser: "VibeCoderBot",
+      githubUser: "Vibecoderbot",
       allowedAuthors: ["human1"],
       fleetPrAuthors: ["stsvcbot"],
     })[0],
-    "VibeCoderBot",
+    "Vibecoderbot",
   );
 });
 
@@ -131,19 +131,19 @@ Deno.test("resolveFleetMaintenanceAuthorSet - drops blank and whitespace entries
 
 Deno.test("resolveFleetMaintenanceAuthorSet - dedupes case-insensitively, first-seen casing wins", () => {
   const result = resolveFleetMaintenanceAuthorSet({
-    githubUser: "VibeCoderBot",
-    fleetPrAuthors: ["VibeCoderBot", "stsvcbot", "stsvcbot"],
+    githubUser: "Vibecoderbot",
+    fleetPrAuthors: ["vibecoderbot", "Stsvcbot", "STSVCBOT"],
   });
-  assertEquals(result, ["VibeCoderBot", "stsvcbot"]);
+  assertEquals(result, ["Vibecoderbot", "Stsvcbot"]);
 });
 
 Deno.test("resolveFleetMaintenanceAuthorSet - is a subset of the fleet-owned set", () => {
   const inputs: FleetAuthorSetInput[] = [
-    { githubUser: "VibeCoderBot" },
-    { githubUser: "VibeCoderBot", allowedAuthors: ["human1"] },
-    { githubUser: "VibeCoderBot", fleetPrAuthors: ["stsvcbot"] },
+    { githubUser: "Vibecoderbot" },
+    { githubUser: "Vibecoderbot", allowedAuthors: ["human1"] },
+    { githubUser: "Vibecoderbot", fleetPrAuthors: ["stsvcbot"] },
     {
-      githubUser: "VibeCoderBot",
+      githubUser: "Vibecoderbot",
       allowedAuthors: ["human1", "stsvcbot"],
       fleetPrAuthors: ["stsvcbot", "sibling2"],
     },
@@ -173,7 +173,7 @@ Deno.test("resolveFleetMaintenanceAuthorSet - is a subset of the fleet-owned set
 // --- compareFleetAuthorSets, intent-aware (Issue #4079) ---
 
 const INTENT_INPUT: FleetAuthorSetInput = {
-  githubUser: "VibeCoderBot",
+  githubUser: "Vibecoderbot",
   allowedAuthors: ["human1"],
   fleetPrAuthors: ["stsvcbot"],
 };
@@ -196,7 +196,7 @@ Deno.test("compareFleetAuthorSets - a fleet sibling missing from maintenance sti
   // scan will ever fix, answer, or merge.
   const result = compareFleetAuthorSets(
     resolveFleetPrAuthorSet(INTENT_INPUT),
-    ["VibeCoderBot"],
+    ["Vibecoderbot"],
     { expectedMaintenanceExclusions: INTENT_INPUT.allowedAuthors },
   );
   assertEquals(result.diverged, true);
@@ -208,8 +208,8 @@ Deno.test("compareFleetAuthorSets - a maintenance login invisible to the blockin
   // The #3138 hazard: a login the worker pushes to but the duplicate guard
   // cannot see. Trusted-human exclusions never suppress this direction.
   const result = compareFleetAuthorSets(
-    ["VibeCoderBot"],
-    ["VibeCoderBot", "stsvcbot"],
+    ["Vibecoderbot"],
+    ["Vibecoderbot", "stsvcbot"],
     { expectedMaintenanceExclusions: ["human1", "stsvcbot"] },
   );
   assertEquals(result.diverged, true);
@@ -219,7 +219,7 @@ Deno.test("compareFleetAuthorSets - a maintenance login invisible to the blockin
 
 Deno.test("compareFleetAuthorSets - a login in both allowed_authors and fleet_pr_authors never diverges", () => {
   const input: FleetAuthorSetInput = {
-    githubUser: "VibeCoderBot",
+    githubUser: "Vibecoderbot",
     allowedAuthors: ["human1", "stsvcbot"],
     fleetPrAuthors: ["stsvcbot"],
   };
@@ -238,8 +238,8 @@ Deno.test("compareFleetAuthorSets - a login in both allowed_authors and fleet_pr
 
 Deno.test("compareFleetAuthorSets - exclusions match case-insensitively and ignore blanks", () => {
   const result = compareFleetAuthorSets(
-    ["VibeCoderBot", "Human1", "sibling2"],
-    ["VibeCoderBot"],
+    ["Vibecoderbot", "Human1", "sibling2"],
+    ["Vibecoderbot"],
     { expectedMaintenanceExclusions: ["  ", "HUMAN1"] },
   );
   assertEquals(result.diverged, true);
@@ -249,8 +249,8 @@ Deno.test("compareFleetAuthorSets - exclusions match case-insensitively and igno
 });
 
 Deno.test("compareFleetAuthorSets - omitted options keep the strict equality check", () => {
-  const result = compareFleetAuthorSets(["VibeCoderBot", "human1"], [
-    "VibeCoderBot",
+  const result = compareFleetAuthorSets(["Vibecoderbot", "human1"], [
+    "Vibecoderbot",
   ]);
   assertEquals(result.diverged, true);
   assertEquals(result.missingFromMaintenance, ["human1"]);

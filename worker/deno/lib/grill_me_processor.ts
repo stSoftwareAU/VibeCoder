@@ -247,7 +247,7 @@ export function countGrillMeRounds(
  *
  * Used to escalate to `needs-human` when two consecutive rounds have failed
  * (Claude error / timeout). In a fleet that runs more than one worker
- * identity (e.g. `VibeCoderBot` on one host and `stsvcbot` on another),
+ * identity (e.g. `Vibecoderbot` on one host and `stsvcbot` on another),
  * failures may be authored by *different* identities, so a `## Grill-Me
  * Failed` marker counts regardless of which worker posted it (Issue #2729) —
  * keyed off the distinctive marker rather than a single hardcoded account.
@@ -508,7 +508,7 @@ export function isAwaitingDeveloperReply(
  * Detect whether a grill-me round is already posted and still awaiting a
  * developer reply, **regardless of which identity posted it** (Issue #3768).
  *
- * In a fleet running more than one worker identity (e.g. `VibeCoderBot` on one
+ * In a fleet running more than one worker identity (e.g. `Vibecoderbot` on one
  * host and `stsvcbot` on another), a peer may post `## Grill-Me Round N`
  * moments before this identity claims the same issue. Because
  * {@link countGrillMeRounds} and {@link hasReadyMarkerBeenPosted} only see
@@ -1704,7 +1704,7 @@ async function postFailureComment(
  * marker so consecutive-failure detection / escalation can count it on the
  * next run, then (2) release the worker's self-assignment so a failed round
  * does not leave the issue assigned and re-looping (the symptom in
- * NEAT-AI#2944). Order matters — post the marker FIRST so the
+ * private-repo-14#2944). Order matters — post the marker FIRST so the
  * consecutive-failure counter still has it to count, then unassign.
  *
  * The unassign is best-effort: a failed unassign is logged, not fatal,

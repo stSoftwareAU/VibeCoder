@@ -22,7 +22,7 @@ import {
 // ============================================================================
 
 Deno.test("normaliseLogin - trims and lowercases", () => {
-  assertEquals(normaliseLogin("  VibeCoderBot "), "VibeCoderBot");
+  assertEquals(normaliseLogin("  Vibecoderbot "), "vibecoderbot");
   assertEquals(normaliseLogin("stsvcbot"), "stsvcbot");
 });
 
@@ -33,7 +33,7 @@ Deno.test("normaliseLogin - trims and lowercases", () => {
 Deno.test("evaluateWorkerIdentity - permits an allowed service account", () => {
   const result = evaluateWorkerIdentity(
     "stsvcbot",
-    ["stsvcbot", "VibeCoderBot"],
+    ["stsvcbot", "Vibecoderbot"],
     "host-a",
   );
   assertEquals(result.permitted, true);
@@ -44,8 +44,8 @@ Deno.test("evaluateWorkerIdentity - permits an allowed service account", () => {
 
 Deno.test("evaluateWorkerIdentity - login match is case-insensitive", () => {
   const result = evaluateWorkerIdentity(
-    "VibeCoderBot",
-    ["stsvcbot", "VibeCoderBot"],
+    "VIBECODERBOT",
+    ["stsvcbot", "Vibecoderbot"],
     "host-a",
   );
   assertEquals(result.permitted, true);
@@ -68,7 +68,7 @@ Deno.test("evaluateWorkerIdentity - trims surrounding whitespace on the login", 
 Deno.test("evaluateWorkerIdentity - refuses a human account not on the allowlist", () => {
   const result = evaluateWorkerIdentity(
     "maintainer",
-    ["stsvcbot", "VibeCoderBot"],
+    ["stsvcbot", "Vibecoderbot"],
     "host-drifted",
   );
   assertEquals(result.permitted, false);
@@ -114,8 +114,8 @@ Deno.test("evaluateWorkerIdentity - a setup-defaulted one-entry allowlist enforc
   // Setup writes `service_accounts: [<resolved worker login>]` when the
   // operator supplies nothing, so the guard is active from the first run.
   const result = evaluateWorkerIdentity(
-    "VibeCoderBot",
-    ["VibeCoderBot"],
+    "Vibecoderbot",
+    ["Vibecoderbot"],
     "host-3",
   );
   assertEquals(result.permitted, true);
@@ -125,7 +125,7 @@ Deno.test("evaluateWorkerIdentity - a setup-defaulted one-entry allowlist enforc
 Deno.test("evaluateWorkerIdentity - drift away from a setup-defaulted allowlist is refused", () => {
   // The host-3 drift (#4028): the host authenticated as a second service
   // account that is not on the allowlist. A one-entry allowlist catches it.
-  const result = evaluateWorkerIdentity("VibeCoderBot", ["stsvcbot"], "host-3");
+  const result = evaluateWorkerIdentity("Vibecoderbot", ["stsvcbot"], "host-3");
   assertEquals(result.permitted, false);
   assertEquals(result.enforced, true);
   assertStringIncludes(result.message, "MISMATCH");

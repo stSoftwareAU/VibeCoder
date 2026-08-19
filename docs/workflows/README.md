@@ -18,7 +18,7 @@ reading** at the end of each workflow doc; those are for a different audience.
 ## 👤 For repo owners and developers (e.g. ST)
 
 If your repository is monitored by the Vibe Coder — for example
-[example-org/private-repo-57](https://github.com/example-org/private-repo-57/issues) or any other repo
+[stSoftwareAU/private-repo-24](https://github.com/stSoftwareAU/private-repo-24/issues) or any other repo
 in the worker's config — this manual is for you. You want to **get the Vibe
 Coder to work on your issues** (e.g. over the weekend) so you can **come in on
 Monday and see lots of work done** in your repos. You care about **how to assign
@@ -197,7 +197,7 @@ flowchart TD
 | 2        | New implementation issues                             | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (Issue #2022 — `help wanted` / `claude` retired)       |
 | 2.5      | Low-priority backlog                                  | `low-priority` label (Issue #1721) — only consulted when no eligible higher-tier candidate exists in any scanned repo                    |
 | 2.9      | Idle-task framework                                   | `idle-task` label (Issue #1959) — strictly below low-priority; the only label the Vibe Coder may self-apply                              |
-| Idle     | Security scan                                         | Fired after a full cycle ends with no claimable work in any monitored repo. See Security Scans — Operator Manual. |
+| Idle     | Security scan                                         | Fired after a full cycle ends with no claimable work in any monitored repo. See [Security Scans — Operator Manual](../SECURITY-SCAN.md). |
 
 ## 📏 Shared invariants
 
@@ -261,12 +261,12 @@ These existing docs remain the source of truth for their areas:
 | Area                                             | Document                                                      |
 | ------------------------------------------------ | ------------------------------------------------------------- |
 | Configuration                                    | [CONFIGURATION.md](../CONFIGURATION.md)                       |
-| Deployment (cron, systemd, launchd, logs)        | DEPLOYMENT.md                             |
+| Deployment (cron, systemd, launchd, logs)        | [DEPLOYMENT.md](../DEPLOYMENT.md)                             |
 | Usage (labels, clarification, failure handling)  | [USAGE.md](../USAGE.md)                                       |
 | Security (threat model, tokens)                  | [SECURITY.md](../../SECURITY.md)                              |
 | Worker label policy (worker-added vs human-only) | [README.md](../../README.md#-supported-labels)              |
 | Extending (Deno, prompts)                        | [EXTENDING.md](../EXTENDING.md)                               |
 | Worker internals (run loop, selection, PRs)      | [INTERNALS.md](../INTERNALS.md)                               |
-| Troubleshooting                                  | TROUBLESHOOTING.md                   |
-| Security scans (idle)                            | SECURITY-SCAN.md                       |
-| Upstream CVE/GHSA triage                         | security-advisory-triage.md |
+| Troubleshooting                                  | [TROUBLESHOOTING.md](../TROUBLESHOOTING.md)                   |
+| Security scans (idle)                            | [SECURITY-SCAN.md](../SECURITY-SCAN.md)                       |
+| Upstream CVE/GHSA triage                         | [security-advisory-triage.md](../security-advisory-triage.md) |

@@ -90,13 +90,13 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// checkParentBlocked — the end-to-end NEAT-AI-Examples#522 scenario
+// checkParentBlocked — the end-to-end private-repo-18#522 scenario
 // ---------------------------------------------------------------------------
 
 Deno.test(
   "checkParentBlocked - work-on issue with only a task-list checkbox and no native children is NOT blocked (Issue #2470)",
   async () => {
-    // Reproduces example-org/private-repo-33#522: body has a single
+    // Reproduces stSoftwareAU/private-repo-18#522: body has a single
     // acceptance-criteria checkbox `- [ ] #484 …`, but #484 is not a
     // genuine sub-issue (no back-reference) and the native sub-issues
     // API reports no children.

@@ -453,7 +453,7 @@ Deno.test("filterOutSelfIssueUrl - removes the planning issue's own URL", () => 
 });
 
 Deno.test("filterOutSelfIssueUrl - returns empty when only the self URL is present", () => {
-  // Reproduces the NEAT-AI-Discovery incident: Claude's output echoed only
+  // Reproduces the private-repo-17 incident: Claude's output echoed only
   // the parent #1418 URL. After filtering, the count is zero so the GitHub
   // fallbacks run instead of treating the parent as a sub-issue.
   const urls = ["https://github.com/org/repo/issues/1418"];
@@ -656,7 +656,7 @@ Deno.test("processIssuePlanning - closes successfully when search lags but REST 
 });
 
 Deno.test("processIssuePlanning - recovers native sub-issues when output only echoes the parent (Issue #2900)", async () => {
-  // Reproduces the NEAT-AI-Discovery incident: Claude created native
+  // Reproduces the private-repo-17 incident: Claude created native
   // sub-issues whose bodies say "Follow-up to #100" (not "Part of #100") and
   // its output echoed only the parent URL. Previously primary extraction
   // returned [#100] (length 1) which skipped every GitHub fallback, so no

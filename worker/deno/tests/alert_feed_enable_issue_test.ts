@@ -79,7 +79,7 @@ const UNAVAILABLE_404: FeedUnavailable = {
   reason: "Not Found (HTTP 404)",
 };
 
-const ALLOWLIST = ["stSoftwareAU/VibeCoder", "example-org/private-repo-29"];
+const ALLOWLIST = ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"];
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -98,7 +98,7 @@ Deno.test("enableFeedFindingId - feed-keyed, matches finding-id grammar", () => 
 Deno.test("isRepoAllowlisted - case-insensitive, whitespace-tolerant", () => {
   assert(isRepoAllowlisted("stSoftwareAU/VibeCoder", ALLOWLIST));
   assert(isRepoAllowlisted("stsoftwareau/vibecoder", ALLOWLIST));
-  assert(isRepoAllowlisted("  example-org/private-repo-29  ", ALLOWLIST));
+  assert(isRepoAllowlisted("  stSoftwareAU/private-repo-14  ", ALLOWLIST));
   assert(!isRepoAllowlisted("TitlePage/tp-web-react", ALLOWLIST));
   assert(!isRepoAllowlisted("", ALLOWLIST));
 });
@@ -159,7 +159,7 @@ Deno.test("acceptance - 403 not-enabled files exactly one enable-feed issue", as
 });
 
 Deno.test("acceptance - 404 no-access (Dependabot) also files one enable-feed issue", async () => {
-  const repo = "example-org/private-repo-29";
+  const repo = "stSoftwareAU/private-repo-14";
   const { gh, createCalls } = createGhFake(repo);
 
   const outcome = await maybeFileEnableFeedIssue({

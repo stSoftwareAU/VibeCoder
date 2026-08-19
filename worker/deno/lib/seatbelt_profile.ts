@@ -215,7 +215,7 @@ export function buildSeatbeltProfile(inputs: SeatbeltProfileInputs): string {
     ";; Read-write: work dir, logs, tool caches, temp.",
     `(allow file-read* file-write* ${readWrite.map(subpath).join(" ")})`,
     "",
-    ";; Network: outbound only (GitHub, Anthropic, FLEET-health).",
+    ";; Network: outbound only (GitHub, Anthropic, private-repo-6).",
     "(allow network-outbound)",
     "(allow system-socket)",
     "",

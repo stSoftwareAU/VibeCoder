@@ -1,7 +1,7 @@
 /**
  * Screenshots committed on the branch but not referenced in the summary
  * count as evidence and are referenced in the PR body (Issue #4355). This
- * is the exact FLEET-validation#831 shape: a WIP-resumed run captured three
+ * is the exact private-repo-10#831 shape: a WIP-resumed run captured three
  * real screenshots into docs/evidence/ while the first attempt's summary
  * ("No screenshot: the Playwright MCP browser is not available…") stayed in
  * place, and the gate failed the run for the summary text.
@@ -104,7 +104,7 @@ Deno.test("completion - screenshots on the branch are referenced in the PR body 
   const capturedBodies: string[] = [];
   const posted: string[] = [];
   const ctx: IssueContext = {
-    repo: "example-org/private-repo-22",
+    repo: "stSoftwareAU/private-repo-10",
     issueNumber: 831,
     issueTitle: "bug: 1-for-15 reverse split unadjusted",
     issueBody: "",
@@ -133,7 +133,7 @@ Deno.test("completion - screenshots on the branch are referenced in the PR body 
           if (bodyIdx >= 0) capturedBodies.push(args[bodyIdx + 1]!);
         }
         return Promise.resolve(
-          "https://github.com/example-org/private-repo-22/pull/900",
+          "https://github.com/stSoftwareAU/private-repo-10/pull/900",
         );
       },
     },
@@ -184,7 +184,7 @@ Deno.test("completion - screenshots on the branch are referenced in the PR body 
   for (const f of ["issue-831-mvis-before.png", "issue-831-mvis-after.png"]) {
     assertStringIncludes(
       body,
-      `https://github.com/example-org/private-repo-22/raw/${SHA}/docs/evidence/${f}`,
+      `https://github.com/stSoftwareAU/private-repo-10/raw/${SHA}/docs/evidence/${f}`,
     );
   }
   assertEquals(

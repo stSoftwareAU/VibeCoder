@@ -287,9 +287,9 @@ Deno.test("countConsecutiveFailures - counts failures across different worker id
   const comments: GitHubComment[] = [
     makeComment({
       id: 1,
-      author: "VibeCoderBot",
+      author: "Vibecoderbot",
       body:
-        `${GRILL_ME_FAILED_MARKER} reason 1\n\n---\n${WORKER_COMMENT_FOOTER_PREFIX} VibeCoderBot`,
+        `${GRILL_ME_FAILED_MARKER} reason 1\n\n---\n${WORKER_COMMENT_FOOTER_PREFIX} Vibecoderbot`,
     }),
     makeComment({
       id: 2,
@@ -305,7 +305,7 @@ Deno.test("countConsecutiveFailures - a successful round by another identity res
   const comments: GitHubComment[] = [
     makeComment({
       id: 1,
-      author: "VibeCoderBot",
+      author: "Vibecoderbot",
       body: `${GRILL_ME_FAILED_MARKER} reason 1`,
     }),
     makeComment({
@@ -315,7 +315,7 @@ Deno.test("countConsecutiveFailures - a successful round by another identity res
         `${GRILL_ME_ROUND_MARKER}1\n\n---\n${WORKER_COMMENT_FOOTER_PREFIX} stsvcbot`,
     }),
   ];
-  assertEquals(countConsecutiveFailures(comments, "VibeCoderBot"), 0);
+  assertEquals(countConsecutiveFailures(comments, "Vibecoderbot"), 0);
 });
 
 Deno.test("countConsecutiveFailures - a human reply between failures resets", () => {
@@ -324,7 +324,7 @@ Deno.test("countConsecutiveFailures - a human reply between failures resets", ()
   const comments: GitHubComment[] = [
     makeComment({
       id: 1,
-      author: "VibeCoderBot",
+      author: "Vibecoderbot",
       body: `${GRILL_ME_FAILED_MARKER} reason 1`,
     }),
     makeComment({
@@ -338,7 +338,7 @@ Deno.test("countConsecutiveFailures - a human reply between failures resets", ()
       body: `${GRILL_ME_FAILED_MARKER} reason 2`,
     }),
   ];
-  assertEquals(countConsecutiveFailures(comments, "VibeCoderBot"), 1);
+  assertEquals(countConsecutiveFailures(comments, "Vibecoderbot"), 1);
 });
 
 Deno.test("countConsecutiveFailures - a non-failure worker comment does not reset", () => {
@@ -347,7 +347,7 @@ Deno.test("countConsecutiveFailures - a non-failure worker comment does not rese
   const comments: GitHubComment[] = [
     makeComment({
       id: 1,
-      author: "VibeCoderBot",
+      author: "Vibecoderbot",
       body: `${GRILL_ME_FAILED_MARKER} reason 1`,
     }),
     makeComment({
@@ -358,7 +358,7 @@ Deno.test("countConsecutiveFailures - a non-failure worker comment does not rese
     }),
     makeComment({
       id: 3,
-      author: "VibeCoderBot",
+      author: "Vibecoderbot",
       body: `${GRILL_ME_FAILED_MARKER} reason 2`,
     }),
   ];
@@ -566,12 +566,12 @@ Deno.test("hasGrillMeRoundAwaitingReply - false on empty comment list", () => {
 Deno.test(
   "hasGrillMeRoundAwaitingReply - true when another identity posted the round",
   () => {
-    // The #3767 sequence: VibeCoderBot posted Round 1, then stsvcbot claimed
+    // The #3767 sequence: Vibecoderbot posted Round 1, then stsvcbot claimed
     // the same issue and found no round of its own.
     const comments: GitHubComment[] = [
       makeComment({ author: "user1", body: "Please grill me" }),
       makeComment({
-        author: "VibeCoderBot",
+        author: "Vibecoderbot",
         body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
       }),
     ];
@@ -597,7 +597,7 @@ Deno.test(
   () => {
     for (const marker of [GRILL_ME_READY_MARKER, GRILL_ME_FINAL_MARKER]) {
       const comments: GitHubComment[] = [
-        makeComment({ author: "VibeCoderBot", body: `${marker}\n\nDone.` }),
+        makeComment({ author: "Vibecoderbot", body: `${marker}\n\nDone.` }),
       ];
       assertEquals(
         hasGrillMeRoundAwaitingReply(comments, "stsvcbot"),
@@ -615,7 +615,7 @@ Deno.test(
     // round this run owed the thread really is missing.
     const comments: GitHubComment[] = [
       makeComment({
-        author: "VibeCoderBot",
+        author: "Vibecoderbot",
         body: `${GRILL_ME_ROUND_MARKER}1`,
       }),
       makeComment({ author: "user1", body: "1a, 2c" }),
@@ -629,7 +629,7 @@ Deno.test(
   () => {
     const comments: GitHubComment[] = [
       makeComment({
-        author: "VibeCoderBot",
+        author: "Vibecoderbot",
         body: `${GRILL_ME_ROUND_MARKER}1`,
       }),
       makeComment({
@@ -2233,13 +2233,13 @@ Deno.test("processGrillMe - returns failure when Claude posts no round comment",
 Deno.test(
   "processGrillMe - no failure marker when another identity already posted the round (Issue #3768)",
   async () => {
-    // Reproduces #3767: `VibeCoderBot` posted Round 1, then `testbot` claimed
+    // Reproduces #3767: `Vibecoderbot` posted Round 1, then `testbot` claimed
     // the same issue. Claude posted nothing (the round already existed), and
     // the verification used to declare a false failure because it only counted
     // rounds authored by the current identity.
     const ctx = makeContext();
     const peerRound = makeComment({
-      author: "VibeCoderBot",
+      author: "Vibecoderbot",
       body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
     });
     const postedComments: string[] = [];
@@ -2570,7 +2570,7 @@ Deno.test(
 // ============================================================================
 // processGrillMe — Issue #2727: every terminal-failure exit unassigns the
 // worker after posting the `## Grill-Me Failed` marker, so a failed round no
-// longer leaves the issue assigned and re-looping (NEAT-AI#2944).
+// longer leaves the issue assigned and re-looping (private-repo-14#2944).
 // ============================================================================
 
 Deno.test(
@@ -3097,7 +3097,7 @@ Deno.test(
   "processGrillMe - aborts before Claude when another worker has posted a Round in the meantime (Issue #1876)",
   async () => {
     // Simulates the production race observed on
-    // example-org/private-repo-33#203: machine A claims, runs Claude,
+    // stSoftwareAU/private-repo-18#203: machine A claims, runs Claude,
     // posts Round 3; machine B claims slightly later (after A unassigned)
     // and starts a new round. The pre-Claude race-guard fetch must
     // detect A's Round 3 and abort B before any Claude invocation.

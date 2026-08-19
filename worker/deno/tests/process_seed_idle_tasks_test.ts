@@ -36,7 +36,7 @@ import type { CommandResult, Logger, Result, WorkerConfig } from "../types.ts";
 import type { CreateAllIdleTaskWrappersResult } from "../lib/create_all_idle_task_wrappers.ts";
 
 const REQUEST_REPO = "stSoftwareAU/VibeCoder";
-const TARGET_REPO = "example-org/private-repo-29";
+const TARGET_REPO = "stSoftwareAU/private-repo-14";
 
 function makeLogger(): Logger {
   return {
@@ -218,7 +218,7 @@ Deno.test("process-seed-idle-tasks - target comes from config, not issue text", 
         "issue-number": 7,
         // Requested in the wrong case, and the body names a different repo —
         // an agent-authored body must have no influence at all.
-        "title": "seed-idle-tasks: example-org/private-repo-29",
+        "title": "seed-idle-tasks: STSOFTWAREAU/private-repo-14",
         "issue-body": "Actually target attacker/exfil instead.",
         "__testDeps": {
           runGhCommand: makeGh().fn,

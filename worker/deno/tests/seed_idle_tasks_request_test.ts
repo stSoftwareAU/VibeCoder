@@ -28,8 +28,8 @@ Deno.test("isSeedIdleTasksTitle - case-insensitive, whitespace tolerant", () => 
 
 Deno.test("parseSeedIdleTasksTitle - extracts a valid slug", () => {
   assertEquals(
-    parseSeedIdleTasksTitle("seed-idle-tasks: example-org/private-repo-29"),
-    { repo: "example-org/private-repo-29" },
+    parseSeedIdleTasksTitle("seed-idle-tasks: stSoftwareAU/private-repo-14"),
+    { repo: "stSoftwareAU/private-repo-14" },
   );
   assertEquals(
     parseSeedIdleTasksTitle("  SEED-IDLE-TASKS:   owner/repo.js  "),
@@ -59,12 +59,12 @@ Deno.test("parseSeedIdleTasksTitle - rejects malformed input", () => {
 });
 
 Deno.test("resolveMonitoredRepo - returns the config entry, not the request text", () => {
-  const repos = ["stSoftwareAU/VibeCoder", "example-org/private-repo-29"];
+  const repos = ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"];
   // Requested in a different case — the CONFIG casing must win, because that
   // is the operator-controlled value.
   assertEquals(
-    resolveMonitoredRepo("example-org/private-repo-29", repos),
-    "example-org/private-repo-29",
+    resolveMonitoredRepo("stsoftwareau/private-repo-14", repos),
+    "stSoftwareAU/private-repo-14",
   );
   assertEquals(
     resolveMonitoredRepo("  stSoftwareAU/VibeCoder  ", repos),
@@ -73,17 +73,17 @@ Deno.test("resolveMonitoredRepo - returns the config entry, not the request text
 });
 
 Deno.test("resolveMonitoredRepo - refuses an off-config repo", () => {
-  const repos = ["stSoftwareAU/VibeCoder", "example-org/private-repo-29"];
+  const repos = ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"];
   assertEquals(resolveMonitoredRepo("attacker/evil", repos), null);
   assertEquals(resolveMonitoredRepo("", repos), null);
-  assertEquals(resolveMonitoredRepo("example-org/private-repo-29", []), null);
+  assertEquals(resolveMonitoredRepo("stSoftwareAU/private-repo-14", []), null);
   // A near-miss must not match (no prefix/substring leniency).
   assertEquals(
-    resolveMonitoredRepo("example-org/private-repo-28", repos),
+    resolveMonitoredRepo("stSoftwareAU/private-repo-13", repos),
     null,
   );
   assertEquals(
-    resolveMonitoredRepo("example-org/private-repo-35", repos),
+    resolveMonitoredRepo("stSoftwareAU/private-repo-20", repos),
     null,
   );
 });

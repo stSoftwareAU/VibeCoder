@@ -350,7 +350,7 @@ export interface DuplicateTrackerSelection {
  * to keep (lowest issue number) and the N−1 duplicates to close (Issue #2753).
  *
  * Pure selection logic — performs no GitHub calls — so the one-time cleanup
- * (`Migration_v21#375`) can fetch the trackers, call this to decide, and close
+ * (`private-repo-12#375`) can fetch the trackers, call this to decide, and close
  * the duplicates itself. Duplicate input numbers are de-duplicated. A no-op
  * (empty `close`) when zero or one tracker is supplied.
  *

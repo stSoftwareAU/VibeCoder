@@ -147,14 +147,14 @@ Deno.test("write-repo-allowlist - (c) idle-scan scanned repo is allowed once see
   try {
     captureSinks();
     // An idle-task run seeds the scanned repo (cwd = target clone).
-    seedWriteRepoAllowlist("example-org/private-repo-23");
-    assert(isWriteRepoAllowed("example-org/private-repo-23"));
+    seedWriteRepoAllowlist("stSoftwareAU/private-repo-11");
+    assert(isWriteRepoAllowed("stSoftwareAU/private-repo-11"));
     // Filing a finding issue in the scanned repo must pass.
     await enforceGhWriteAllowlist([
       "issue",
       "create",
       "-R",
-      "example-org/private-repo-23",
+      "stSoftwareAU/private-repo-11",
       "--title",
       "Finding",
       "--body",
@@ -171,14 +171,14 @@ Deno.test("write-repo-allowlist - (d) a second repo is writable only once explic
     seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
 
     // Before registration, a write to the second repo is blocked.
-    assertEquals(isWriteRepoAllowed("example-org/private-repo-41"), false);
+    assertEquals(isWriteRepoAllowed("stSoftwareAU/other-repo"), false);
     await assertRejects(
       () =>
         enforceGhWriteAllowlist([
           "pr",
           "create",
           "-R",
-          "example-org/private-repo-41",
+          "stSoftwareAU/other-repo",
           "--title",
           "Fix root cause",
         ]),
@@ -186,13 +186,13 @@ Deno.test("write-repo-allowlist - (d) a second repo is writable only once explic
     );
 
     // A sanctioned worker-side flow registers the one extra repo explicitly.
-    registerWriteRepo("example-org/private-repo-41");
-    assert(isWriteRepoAllowed("example-org/private-repo-41"));
+    registerWriteRepo("stSoftwareAU/other-repo");
+    assert(isWriteRepoAllowed("stSoftwareAU/other-repo"));
     await enforceGhWriteAllowlist([
       "pr",
       "create",
       "-R",
-      "example-org/private-repo-41",
+      "stSoftwareAU/other-repo",
       "--title",
       "Fix root cause",
     ]);
@@ -375,7 +375,7 @@ Deno.test("write-repo-allowlist - pinned repo survives a reseed (Issue #3760)", 
     seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
     pinWriteRepo("stSoftwareAU/VibeCoder");
     // ...then the next claim reseeds with a different target repo.
-    seedWriteRepoAllowlist("example-org/private-repo-33");
+    seedWriteRepoAllowlist("stsoftwareau/private-repo-18");
 
     // The seeded set was replaced, but the pinned repo must stay writable —
     // this is exactly the heartbeat marker PATCH that used to be refused.
@@ -500,7 +500,7 @@ Deno.test("write-repo-allowlist - (a) sweep registers the target before seeding"
       {
         "repo": "stSoftwareAU/VibeCoder",
         "issue-number": 3858,
-        "title": "seed-idle-tasks: example-org/private-repo-29",
+        "title": "seed-idle-tasks: stSoftwareAU/private-repo-14",
         "__testDeps": {
           runGhCommand: () => Promise.resolve(""),
           logger: allowlistTestLogger(),
@@ -523,14 +523,14 @@ Deno.test("write-repo-allowlist - (a) sweep registers the target before seeding"
         },
       },
       {
-        repos: ["stSoftwareAU/VibeCoder", "example-org/private-repo-29"],
+        repos: ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"],
       } as unknown as WorkerConfig,
     );
 
     assertEquals(result.success, true);
     assertEquals(
       enforcedDuringSeeding,
-      ["example-org/private-repo-29"],
+      ["stSoftwareAU/private-repo-14"],
       "the target must be writable when the seeding helper runs",
     );
   } finally {
@@ -561,7 +561,7 @@ Deno.test("write-repo-allowlist - (b) off-config sweep target is refused, allowl
         },
       },
       {
-        repos: ["stSoftwareAU/VibeCoder", "example-org/private-repo-29"],
+        repos: ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"],
       } as unknown as WorkerConfig,
     );
 

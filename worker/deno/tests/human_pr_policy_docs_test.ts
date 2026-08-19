@@ -145,7 +145,7 @@ Deno.test("human-PR policy - the policy is reachable from the README", () => {
 // The documented invitation signals are the ones the code honours
 // ---------------------------------------------------------------------------
 
-const HOST = "VibeCoderBot";
+const HOST = "Vibecoderbot";
 const SIBLING = "stsvcbot";
 const HUMAN = "trusted-human";
 const INVITE_OPTIONS = {

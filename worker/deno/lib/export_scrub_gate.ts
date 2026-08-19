@@ -100,11 +100,31 @@ export interface IdentifierPattern {
   regex: RegExp;
 }
 
+/**
+ * How `stSoftwareAU/<name>` references are judged (Issue #4196):
+ *
+ * - `publicRepos` — public repositories; referenced freely.
+ * - `placeholderRepos` — documentation/test fixture names (`foo`, `SomeRepo`,
+ *   `repo-a`) that are not repositories at all; left as written.
+ * - `privatePatterns` — the operator's private repositories; the redaction
+ *   stage maps each to a numbered placeholder wherever the name appears.
+ * - anything else is *unknown*: the gate blocks it (a new private repository
+ *   must be classified, never assumed harmless), and the redaction stage
+ *   still hides it in slug form.
+ */
+export interface RepoPolicy {
+  publicRepos: readonly string[];
+  placeholderRepos: readonly string[];
+  privatePatterns: readonly RegExp[];
+}
+
 /** Parsed identifiers file. */
 export interface ParsedIdentifiers {
   patterns: IdentifierPattern[];
   /** `stSoftwareAU` repositories that are public and may be referenced. */
   publicRepos: string[];
+  /** The full repository policy (public / placeholder / private / unknown). */
+  repoPolicy: RepoPolicy;
   errors: string[];
 }
 
@@ -122,6 +142,8 @@ function escapeRegExp(literal: string): string {
 export function parseIdentifiers(text: string): ParsedIdentifiers {
   const patterns: IdentifierPattern[] = [];
   const publicRepos: string[] = [];
+  const placeholderRepos: string[] = [];
+  const privatePatterns: RegExp[] = [];
   const errors: string[] = [];
 
   text.split("\n").forEach((raw, index) => {
@@ -143,10 +165,25 @@ export function parseIdentifiers(text: string): ParsedIdentifiers {
       publicRepos.push(value);
       return;
     }
+    if (klass === "placeholder-repo") {
+      placeholderRepos.push(value);
+      return;
+    }
+    if (klass === "private-repo") {
+      const compiled = compileRepoName(value);
+      if (compiled === null) {
+        errors.push(`${where}: invalid regular expression`);
+        return;
+      }
+      privatePatterns.push(compiled);
+      return;
+    }
     if (!(IDENTIFIER_CLASSES as readonly string[]).includes(klass)) {
       errors.push(
         `${where}: unknown class "${klass}" (expected one of ` +
-          `${IDENTIFIER_CLASSES.join(", ")}, public-repo)`,
+          `${
+            IDENTIFIER_CLASSES.join(", ")
+          }, public-repo, placeholder-repo, private-repo)`,
       );
       return;
     }
@@ -168,7 +205,23 @@ export function parseIdentifiers(text: string): ParsedIdentifiers {
         `${IDENTIFIER_CLASSES.join("/")} entry`,
     );
   }
-  return { patterns, publicRepos, errors };
+  return {
+    patterns,
+    publicRepos,
+    repoPolicy: { publicRepos, placeholderRepos, privatePatterns },
+    errors,
+  };
+}
+
+/** A repository-name value: `/regex/i` as written, or a whole-name literal. */
+function compileRepoName(value: string): RegExp | null {
+  const regexForm = /^\/(.+)\/(i?)$/.exec(value);
+  try {
+    if (regexForm) return new RegExp(regexForm[1]!, regexForm[2] ?? "");
+    return new RegExp(`^${escapeRegExp(value)}$`, "i");
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -313,6 +366,9 @@ const PRIVATE_REPO_PLACEHOLDERS = new Set([
   "project",
   "name",
   "owner",
+  // Jenkins folder syntax: `job/<org>/job/<name>` — `job` is a keyword, not
+  // a repository.
+  "job",
 ]);
 
 const BRANDING_RESIDUE_RE = /vibe[-_]?coding/gi;
@@ -324,13 +380,23 @@ const BRANDING_RESIDUE_RE = /vibe[-_]?coding/gi;
  */
 export function classifyRepoName(
   name: string,
-  publicRepos: readonly string[],
-): "public" | "placeholder" | "private" {
-  const repo = name.replace(/\.git$/i, "").replace(/\.+$/, "").toLowerCase();
+  policy: RepoPolicy | readonly string[],
+): "public" | "placeholder" | "private" | "unknown" {
+  const p: RepoPolicy = Array.isArray(policy)
+    ? { publicRepos: policy, placeholderRepos: [], privatePatterns: [] }
+    : policy as RepoPolicy;
+  const bare = name.replace(/\.git$/i, "").replace(/\.+$/, "");
+  const repo = bare.toLowerCase();
   if (repo === "") return "placeholder";
-  if (publicRepos.some((r) => r.toLowerCase() === repo)) return "public";
+  if (p.publicRepos.some((r) => r.toLowerCase() === repo)) return "public";
   if (PRIVATE_REPO_PLACEHOLDERS.has(repo)) return "placeholder";
-  return "private";
+  if (p.placeholderRepos.some((r) => r.toLowerCase() === repo)) {
+    return "placeholder";
+  }
+  // The redaction stage's own output: a numbered placeholder is not a name.
+  if (/^private-repo-\d+$/.test(repo)) return "placeholder";
+  if (p.privatePatterns.some((re) => re.test(bare))) return "private";
+  return "unknown";
 }
 
 // =============================================================================
@@ -369,7 +435,7 @@ interface Span {
 function collectSpans(
   line: string,
   patterns: IdentifierPattern[],
-  publicRepos: string[],
+  policy: RepoPolicy | readonly string[],
 ): Span[] {
   const spans: Span[] = [];
   const add = (klass: FindingClass, start: number, end: number): void => {
@@ -394,13 +460,14 @@ function collectSpans(
   // an overlap when the operator lists it first).
   for (const p of patterns) forEach(p.regex, p.klass);
 
-  const publicLower = new Set(publicRepos.map((r) => r.toLowerCase()));
-  forEach(PRIVATE_REPO_RE, "private-repo", (m) => {
-    const repo = (m[1] ?? "").replace(/\.git$/i, "").replace(/\.+$/, "")
-      .toLowerCase();
-    return repo !== "" && !publicLower.has(repo) &&
-      !PRIVATE_REPO_PLACEHOLDERS.has(repo);
-  });
+  forEach(
+    PRIVATE_REPO_RE,
+    "private-repo",
+    (m) => {
+      const kind = classifyRepoName(m[1] ?? "", policy);
+      return kind === "private" || kind === "unknown";
+    },
+  );
   for (const re of API_KEY_RES) forEach(re, "api-key");
   forEach(
     EMAIL_RE,
@@ -446,13 +513,13 @@ export function scanText(
   text: string,
   path: string,
   patterns: IdentifierPattern[],
-  publicRepos: string[],
+  policy: RepoPolicy | readonly string[],
 ): RawFinding[] {
   const findings: RawFinding[] = [];
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    const spans = collectSpans(line, patterns, publicRepos);
+    const spans = collectSpans(line, patterns, policy);
     if (spans.length === 0) continue;
     const excerpts = excerptsFor(line, spans);
     spans.forEach((span, n) => {
@@ -476,9 +543,9 @@ export function scanText(
 export function scanPath(
   path: string,
   patterns: IdentifierPattern[],
-  publicRepos: string[],
+  policy: RepoPolicy | readonly string[],
 ): RawFinding[] {
-  const spans = collectSpans(path, patterns, publicRepos);
+  const spans = collectSpans(path, patterns, policy);
   const excerpts = excerptsFor(path, spans);
   return spans.map((span, n) => {
     const match = path.slice(span.start, span.end);
@@ -659,7 +726,7 @@ export async function scanTree(options: ScanTreeOptions): Promise<GateReport> {
   let filesScanned = 0;
   let filesSkippedBinary = 0;
   for (const rel of await listTreeFiles(options.tree)) {
-    raw.push(...scanPath(rel, identifiers.patterns, identifiers.publicRepos));
+    raw.push(...scanPath(rel, identifiers.patterns, identifiers.repoPolicy));
     const text = decodeTextOrNull(
       await Deno.readFile(`${options.tree}/${rel}`),
     );
@@ -669,7 +736,7 @@ export async function scanTree(options: ScanTreeOptions): Promise<GateReport> {
     }
     filesScanned++;
     raw.push(
-      ...scanText(text, rel, identifiers.patterns, identifiers.publicRepos),
+      ...scanText(text, rel, identifiers.patterns, identifiers.repoPolicy),
     );
   }
 

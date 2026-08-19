@@ -58,7 +58,7 @@ Deno.test("cooldown - recordIssueCooldown adds an entry", async () => {
     const config = testConfig(dir);
     const result = await recordIssueCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       42,
     );
     assertEquals(result.ok, true);
@@ -66,7 +66,7 @@ Deno.test("cooldown - recordIssueCooldown adds an entry", async () => {
       assertEquals(result.value.state.entries.length, 1);
       assertEquals(
         result.value.state.entries[0]!.repo,
-        "example-org/private-repo-13",
+        "stSoftwareAU/private-repo-1",
       );
       assertEquals(result.value.state.entries[0]!.issueNumber, 42);
     }
@@ -79,8 +79,8 @@ Deno.test("cooldown - multiple cooldowns are tracked", async () => {
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await recordIssueCooldown(config, "example-org/private-repo-13", 42);
-    await recordIssueCooldown(config, "example-org/private-repo-13", 100);
+    await recordIssueCooldown(config, "stSoftwareAU/private-repo-1", 42);
+    await recordIssueCooldown(config, "stSoftwareAU/private-repo-1", 100);
     await recordIssueCooldown(config, "other/repo", 5);
 
     const state = await loadState(dir);
@@ -98,10 +98,10 @@ Deno.test("cooldown - isIssueInCooldown returns true for recently recorded issue
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await recordIssueCooldown(config, "example-org/private-repo-13", 42);
+    await recordIssueCooldown(config, "stSoftwareAU/private-repo-1", 42);
     const inCooldown = await isIssueInCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       42,
     );
     assertEquals(inCooldown, true);
@@ -114,10 +114,10 @@ Deno.test("cooldown - isIssueInCooldown returns false for unrecorded issue", asy
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await recordIssueCooldown(config, "example-org/private-repo-13", 42);
+    await recordIssueCooldown(config, "stSoftwareAU/private-repo-1", 42);
     const inCooldown = await isIssueInCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       100,
     );
     assertEquals(inCooldown, false);
@@ -132,7 +132,7 @@ Deno.test("cooldown - isIssueInCooldown returns false for empty state", async ()
     const config = testConfig(dir);
     const inCooldown = await isIssueInCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       42,
     );
     assertEquals(inCooldown, false);
@@ -152,7 +152,7 @@ Deno.test("cooldown - expired entries are cleaned up on load", async () => {
     const state = {
       entries: [
         {
-          repo: "example-org/private-repo-13",
+          repo: "stSoftwareAU/private-repo-1",
           issueNumber: 42,
           timestamp: oldTimestamp,
         },
@@ -166,7 +166,7 @@ Deno.test("cooldown - expired entries are cleaned up on load", async () => {
     const config = testConfig(dir);
     const inCooldown = await isIssueInCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       42,
     );
     assertEquals(inCooldown, false);
@@ -182,7 +182,7 @@ Deno.test("cooldown - non-expired entries are preserved on load", async () => {
     const state = {
       entries: [
         {
-          repo: "example-org/private-repo-13",
+          repo: "stSoftwareAU/private-repo-1",
           issueNumber: 42,
           timestamp: recentTimestamp,
         },
@@ -196,7 +196,7 @@ Deno.test("cooldown - non-expired entries are preserved on load", async () => {
     const config = testConfig(dir);
     const inCooldown = await isIssueInCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       42,
     );
     assertEquals(inCooldown, true);
@@ -213,12 +213,12 @@ Deno.test("cooldown - cleanExpiredCooldowns removes only old entries", async () 
     const state = {
       entries: [
         {
-          repo: "example-org/private-repo-13",
+          repo: "stSoftwareAU/private-repo-1",
           issueNumber: 10,
           timestamp: oldTimestamp,
         },
         {
-          repo: "example-org/private-repo-13",
+          repo: "stSoftwareAU/private-repo-1",
           issueNumber: 42,
           timestamp: recentTimestamp,
         },
@@ -249,12 +249,12 @@ Deno.test("cooldown - state persists and reloads correctly", async () => {
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await recordIssueCooldown(config, "example-org/private-repo-13", 42);
+    await recordIssueCooldown(config, "stSoftwareAU/private-repo-1", 42);
 
     // Simulate restart: reload from disk
     const inCooldown = await isIssueInCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       42,
     );
     assertEquals(inCooldown, true);
@@ -267,11 +267,11 @@ Deno.test("cooldown - different repos are tracked independently", async () => {
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    await recordIssueCooldown(config, "example-org/private-repo-13", 42);
+    await recordIssueCooldown(config, "stSoftwareAU/private-repo-1", 42);
 
     const inCooldown1 = await isIssueInCooldown(
       config,
-      "example-org/private-repo-13",
+      "stSoftwareAU/private-repo-1",
       42,
     );
     assertEquals(inCooldown1, true);

@@ -117,7 +117,7 @@ export interface PrScanOptions {
    * this host should also maintain (PR feedback + CI fixes).
    *
    * The fleet runs across machines, each authenticated as a different
-   * GitHub account (e.g. `VibeCoderBot` on one host, `stsvcbot` on
+   * GitHub account (e.g. `Vibecoderbot` on one host, `stsvcbot` on
    * another). PR maintenance is otherwise scoped per-host by author, so a
    * milestone PR raised by a sibling host that is busy elsewhere or down
    * would never get its blocking CI failure fixed by any peer. Listing the

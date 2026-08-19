@@ -86,13 +86,13 @@ const PER_TEMPLATE_CASES: ReadonlyArray<{
   {
     title: SECURITY_SCAN_ISSUE_TITLE,
     templateName: "security-scan",
-    repo: "example-org/private-repo-34",
+    repo: "stSoftwareAU/private-repo-19",
     number: 180,
   },
   {
     title: TEST_AUDIT_ISSUE_TITLE,
     templateName: "test-audit",
-    repo: "example-org/private-repo-22",
+    repo: "stSoftwareAU/private-repo-10",
     number: 48,
   },
   {

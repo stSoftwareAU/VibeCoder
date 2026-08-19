@@ -73,11 +73,11 @@ function fakeGh(
 }
 
 const OOM_REPORT: RunFailureReport = {
-  sourceRepo: "example-org/private-repo-18",
+  sourceRepo: "stSoftwareAU/private-repo-6",
   sourceIssueNumber: 147,
   machineId: "vibe-coder-50110-0f8e2a1b-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
   releaseCommentUrl:
-    "https://github.com/example-org/private-repo-18/issues/147#issuecomment-1",
+    "https://github.com/stSoftwareAU/private-repo-6/issues/147#issuecomment-1",
   outcome: {
     kind: "no_pr",
     category: "killed",
@@ -113,7 +113,7 @@ Deno.test("run failure issue - code_fixable + no existing issue → exactly one 
     assert(isRunFailureIssue(body, "oom"));
     assert(!isRunFailureIssue(body, "disk-full"));
     // The source repo and issue are named, the target is not the source.
-    assert(body.includes("example-org/private-repo-18#147"), body);
+    assert(body.includes("stSoftwareAU/private-repo-6#147"), body);
     assert(body.includes(OOM_REPORT.releaseCommentUrl!));
     assert(body.includes("`execute` after 539s"));
     assertEquals(
@@ -269,7 +269,7 @@ Deno.test("run failure issue - a run on a different monitored repo still files i
     await fileRunFailureIssue({
       report: {
         ...OOM_REPORT,
-        sourceRepo: "example-org/private-repo-36",
+        sourceRepo: "stSoftwareAU/private-repo-21",
         sourceIssueNumber: 61,
         outcome: {
           kind: "no_pr",
@@ -289,7 +289,7 @@ Deno.test("run failure issue - a run on a different monitored repo still files i
       "stSoftwareAU/VibeCoder",
     );
     const body = create[create.indexOf("--body") + 1]!;
-    assert(body.includes("example-org/private-repo-36#61"));
+    assert(body.includes("stSoftwareAU/private-repo-21#61"));
     assertEquals(parseRunFailureMarker(body), "disk-full");
     assertEquals(create[create.indexOf("--label") + 1], "enhancement");
   } finally {

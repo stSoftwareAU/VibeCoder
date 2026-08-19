@@ -2146,13 +2146,13 @@ Deno.test(
     });
 
     await t.runTask({
-      repo: "example-org/private-repo-21",
+      repo: "stSoftwareAU/private-repo-9",
       workDir: "/work",
       idleTaskIssueNumber: 100,
     });
 
-    assertEquals(linterPaths, ["/work/FLEET-taxation"]);
-    assertEquals(workflowPaths, ["/work/FLEET-taxation"]);
+    assertEquals(linterPaths, ["/work/private-repo-9"]);
+    assertEquals(workflowPaths, ["/work/private-repo-9"]);
   },
 );
 

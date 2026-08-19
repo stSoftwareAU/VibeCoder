@@ -1,6 +1,6 @@
 /**
  * Jenkins provider `target_url` fallback behaviour
- * (example-org/private-repo-27#585).
+ * (stSoftwareAU/private-repo-12#585).
  *
  * The job-path-from-URL and view-suffix parsing are covered by
  * `pr_failure_actions_test.ts`. This file covers the two boundaries that
@@ -23,7 +23,7 @@ const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
 
 async function withJenkinsEnv<T>(run: () => Promise<T>): Promise<T> {
   const snapshot = ENV_KEYS.map((k) => [k, Deno.env.get(k)] as const);
-  Deno.env.set("JENKINS_URL", "https://pipeline.stsoftware.com.au");
+  Deno.env.set("JENKINS_URL", "https://ci.example.invalid");
   Deno.env.set("JENKINS_USER", "ci-bot");
   Deno.env.set("JENKINS_TOKEN", "test-token");
   try {
@@ -54,13 +54,13 @@ Deno.test("jenkins provider - falls back to the configured job path when the URL
 
   await withJenkinsEnv(async () => {
     const result = await jenkinsCiLogProvider.fetchLog({
-      repo: "example-org/private-repo-27",
+      repo: "stSoftwareAU/private-repo-12",
       checkName: "continuous-integration/jenkins/pr-head",
       // No /job/ segment: build number only.
-      targetUrl: "https://pipeline.stsoftware.com.au/6/",
+      targetUrl: "https://ci.example.invalid/6/",
       providerConfig: {
         provider: "jenkins",
-        jobPath: "example-org/private-repo-26/Migration_v21/job/Develop",
+        jobPath: "stSoftwareAU/job/private-repo-12/job/Develop",
       },
       fetchFn,
     });
@@ -73,7 +73,7 @@ Deno.test("jenkins provider - falls back to the configured job path when the URL
   assert(requested.length > 0, "no Jenkins request was made");
   assertStringIncludes(
     requested[0]!,
-    "/job/example-org/private-repo-26/Migration_v21/job/Develop/6/",
+    "/job/stSoftwareAU/job/private-repo-12/job/Develop/6/",
   );
 });
 
@@ -86,9 +86,9 @@ Deno.test("jenkins provider - unparseable target_url fails loudly, never fetches
 
   const result = await withJenkinsEnv(() =>
     jenkinsCiLogProvider.fetchLog({
-      repo: "example-org/private-repo-27",
+      repo: "stSoftwareAU/private-repo-12",
       checkName: "continuous-integration/jenkins/pr-head",
-      targetUrl: "https://pipeline.stsoftware.com.au/job/Develop/lastBuild/",
+      targetUrl: "https://ci.example.invalid/job/Develop/lastBuild/",
       providerConfig: { provider: "jenkins", jobPath: "Develop" },
       fetchFn,
     })

@@ -2231,7 +2231,7 @@ Deno.test("checkAndHandleMilestoneCompletions - refuses ALL writes when live log
   const logs: string[] = [];
   const deps = createMockDeps({
     ghCommandFn: completeMilestoneGhFn(writes),
-    serviceAccounts: ["stsvcbot", "VibeCoderBot"],
+    serviceAccounts: ["stsvcbot", "Vibecoderbot"],
     // gh auth has drifted to a human personal token mid-run.
     resolveActualLogin: () => Promise.resolve("maintainer"),
     hostname: () => "host-drifted",
@@ -2254,7 +2254,7 @@ Deno.test("checkAndHandleMilestoneCompletions - proceeds when live login is an a
   const writes: string[] = [];
   const deps = createMockDeps({
     ghCommandFn: completeMilestoneGhFn(writes),
-    serviceAccounts: ["stsvcbot", "VibeCoderBot"],
+    serviceAccounts: ["stsvcbot", "Vibecoderbot"],
     resolveActualLogin: () => Promise.resolve("stsvcbot"),
     hostname: () => "host-ok",
   });

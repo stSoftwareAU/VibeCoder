@@ -603,7 +603,7 @@ Deno.test("interactive_credentials_flow - materialises a keychain-held gh token 
     await Deno.mkdir(ghSource, { recursive: true });
     await Deno.writeTextFile(
       `${ghSource}/hosts.yml`,
-      "github.com:\n    users:\n        VibeCoderBot:\n    user: VibeCoderBot\n",
+      "github.com:\n    users:\n        Vibecoderbot:\n    user: Vibecoderbot\n",
     );
     const bin = `${tmp}/bin`;
     await Deno.mkdir(bin, { recursive: true });

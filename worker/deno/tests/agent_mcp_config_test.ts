@@ -21,7 +21,7 @@ import { PLAYWRIGHT_MCP_VERSION } from "../setup/screenshot.ts";
 Deno.test("agent mcp config - writes the Playwright server config to the worker cache (never the clone) with the clone's docs/evidence as output dir and the chromium channel (Issue #4355)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-" });
   try {
-    const clone = "/home/vibe/auto-issue-work/example-org/private-repo-22";
+    const clone = "/home/vibe/auto-issue-work/stSoftwareAU/private-repo-10";
     const path = await ensureAgentMcpConfig({ cwd: clone, configDir: dir });
     assert(path, "config path returned");
     assert(path.startsWith(`${dir}/`), path);

@@ -143,7 +143,7 @@ export function parseAttributionFooter(
  * Some templates pre-embed the footer in their wrapper body by substituting a
  * `{{ATTRIBUTION_FOOTER}}` placeholder inside their own `buildIssueBody`, so
  * an unconditional append double-stamps the footer (seen in cross-repo-filed
- * bodies such as `example-org/private-repo-29#3394`). This helper is the single guard
+ * bodies such as `stSoftwareAU/private-repo-14#3394`). This helper is the single guard
  * both filers share: it appends the footer only when the body does not already
  * end with an attribution-footer line, then always appends the run-id metadata
  * block (which templates never embed). Trailing whitespace on the incoming

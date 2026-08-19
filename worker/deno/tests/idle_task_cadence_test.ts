@@ -232,22 +232,22 @@ Deno.test("computeDueScans - just inside 30 days since fable is not due", () => 
 Deno.test("computeDueScans - never-run is due at fable and sorts first", () => {
   const due = computeDueScans([
     entry({
-      repo: "example-org/private-repo-4",
+      repo: "stSoftwareAU/beta",
       template: "security-scan",
       lastRunDaysAgo: 40,
       byModel: { sonnet: 40, fable: 40 },
     }),
     entry({
-      repo: "example-org/private-repo-2",
+      repo: "stSoftwareAU/alpha",
       template: "security-scan",
       lastRunDaysAgo: null,
     }),
   ], NOW);
   assertEquals(due.length, 2);
-  assertEquals(due[0]?.repo, "example-org/private-repo-2");
+  assertEquals(due[0]?.repo, "stSoftwareAU/alpha");
   assertEquals(due[0]?.tier, "fable");
   assertEquals(due[0]?.overdueDays, NEVER_RUN_OVERDUE_DAYS);
-  assertEquals(due[1]?.repo, "example-org/private-repo-4");
+  assertEquals(due[1]?.repo, "stSoftwareAU/beta");
 });
 
 Deno.test("computeDueScans - unknown freshness yields no due entry (fail-open)", () => {
@@ -291,28 +291,28 @@ Deno.test("computeDueScans - a missing lastRunAtByModel field is treated as no t
 Deno.test("computeDueScans - output is sorted most-overdue first", () => {
   const due = computeDueScans([
     entry({
-      repo: "example-org/private-repo-1",
+      repo: "stSoftwareAU/a",
       template: "security-scan",
       lastRunDaysAgo: 9,
       byModel: { sonnet: 9, fable: 9 },
     }),
     entry({
-      repo: "example-org/private-repo-3",
+      repo: "stSoftwareAU/b",
       template: "security-scan",
       lastRunDaysAgo: 60,
       byModel: { sonnet: 60, fable: 60 },
     }),
     entry({
-      repo: "example-org/private-repo-8",
+      repo: "stSoftwareAU/c",
       template: "security-scan",
       lastRunDaysAgo: 20,
       byModel: { sonnet: 20, fable: 20 },
     }),
   ], NOW);
   assertEquals(due.map((d) => d.repo), [
-    "example-org/private-repo-3",
-    "example-org/private-repo-8",
-    "example-org/private-repo-1",
+    "stSoftwareAU/b",
+    "stSoftwareAU/c",
+    "stSoftwareAU/a",
   ]);
   assertEquals(due.map((d) => d.tier), ["fable", "sonnet", "sonnet"]);
   assertEquals(due.map((d) => d.overdueDays), [30, 13, 2]);
@@ -327,14 +327,14 @@ Deno.test("computeDueScans - ties break deterministically by repo then template"
       byModel: { sonnet: 10, fable: 10 },
     });
   const due = computeDueScans([
-    stale("example-org/private-repo-64", "security-scan"),
-    stale("example-org/private-repo-1", "supply-chain-readiness"),
-    stale("example-org/private-repo-1", "github-actions-audit"),
+    stale("stSoftwareAU/z", "security-scan"),
+    stale("stSoftwareAU/a", "supply-chain-readiness"),
+    stale("stSoftwareAU/a", "github-actions-audit"),
   ], NOW);
   assertEquals(due.map((d) => `${d.repo}/${d.template}`), [
-    "example-org/private-repo-1/github-actions-audit",
-    "example-org/private-repo-1/supply-chain-readiness",
-    "example-org/private-repo-64/security-scan",
+    "stSoftwareAU/a/github-actions-audit",
+    "stSoftwareAU/a/supply-chain-readiness",
+    "stSoftwareAU/z/security-scan",
   ]);
 });
 

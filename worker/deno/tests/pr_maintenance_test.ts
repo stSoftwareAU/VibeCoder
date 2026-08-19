@@ -151,11 +151,11 @@ Deno.test(
   "listOpenPrs - merges and de-duplicates PRs across fleet authors",
   async () => {
     // A sibling fleet host (stsvcbot) authored PR #510; this host
-    // (VibeCoderBot) authored #1. PR #2 is (implausibly) returned by both
+    // (Vibecoderbot) authored #1. PR #2 is (implausibly) returned by both
     // authors and must appear only once.
     const ghFn = (args: string[]) => {
       const key = args.join(" ");
-      if (key.includes("--author VibeCoderBot")) {
+      if (key.includes("--author Vibecoderbot")) {
         return Promise.resolve(
           JSON.stringify([{ number: 1 }, { number: 2 }]),
         );
@@ -169,7 +169,7 @@ Deno.test(
     };
     const prs = await listOpenPrs(
       "org/repo",
-      ["VibeCoderBot", "stsvcbot"],
+      ["Vibecoderbot", "stsvcbot"],
       "number",
       ghFn,
     );
@@ -192,7 +192,7 @@ Deno.test(
     };
     const prs = await listOpenPrs(
       "org/repo",
-      ["VibeCoderBot", "stsvcbot"],
+      ["Vibecoderbot", "stsvcbot"],
       "number",
       ghFn,
     );
@@ -209,14 +209,14 @@ Deno.test(
       return Promise.resolve("[]");
     };
     await findPrCommentsToFix(makeBaseScanOptions({
-      githubUser: "VibeCoderBot",
+      githubUser: "Vibecoderbot",
       prAuthors: ["stsvcbot"],
       ghCommandFn: ghFn,
     }));
     const authorsQueried = listCalls
       .map((c) => c[c.indexOf("--author") + 1])
       .filter((a): a is string => typeof a === "string");
-    assertEquals(authorsQueried.includes("VibeCoderBot"), true);
+    assertEquals(authorsQueried.includes("Vibecoderbot"), true);
     assertEquals(authorsQueried.includes("stsvcbot"), true);
   },
 );
@@ -1380,7 +1380,7 @@ Deno.test("findFailedCiChecks - a green PR clears its auto-fix attempt counters"
 // ============================================================================
 
 /** Host login and fleet configuration used by the scoping cases. */
-const HOST = "VibeCoderBot";
+const HOST = "Vibecoderbot";
 /** Sibling fleet host (`fleet_pr_authors`) — its PRs must still be rescued. */
 const FLEET_MEMBER = "maintainer";
 /** Trusted human (`allowed_authors`) — their PRs must never be adopted. */
