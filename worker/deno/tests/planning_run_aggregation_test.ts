@@ -154,9 +154,10 @@ Deno.test("summarisePlanningRuns - systemic when fable runs consistently served 
   assertEquals(summary.mismatched, 3);
   assertEquals(summary.fableServed, 0);
   assertEquals(summary.byServedFamily["opus"], 3);
+  // Sorted: `V` (0x56) sorts before `p` (0x70).
   assertEquals(summary.repos, [
-    "stSoftwareAU/private-repo-1",
     "stSoftwareAU/VibeCoder",
+    "stSoftwareAU/private-repo-1",
   ]);
 });
 
