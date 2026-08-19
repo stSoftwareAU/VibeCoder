@@ -107,6 +107,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "gh_config_dir",
   "imgbb_api_key",
   "fleet_health_dir",
+  "fleet_health_repo",
   "github_app_id",
   "github_app_installation_id",
   "github_app_private_key_path",

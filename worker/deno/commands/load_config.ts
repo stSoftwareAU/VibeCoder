@@ -367,6 +367,13 @@ function buildShellOutput(
     lines.push(exportScalar("FLEET_HEALTH_DIR", fleetHealthDir));
   }
 
+  // The health repository the worker clones into fleet_health_dir when that
+  // checkout is missing. Config-only: setup asks for it once and stores it.
+  const fleetHealthRepo = rawFile.fleet_health_repo;
+  if (fleetHealthRepo) {
+    lines.push(exportScalar("FLEET_HEALTH_REPO", fleetHealthRepo));
+  }
+
   // --- GitHub App authentication (Issue #957) ---
   const githubAppId = rawFile.github_app_id;
   if (githubAppId) {

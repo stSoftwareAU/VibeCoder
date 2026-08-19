@@ -790,6 +790,19 @@ Deno.test("buildOverridesOnly - includes fleet_health_dir when present", () => {
   assertEquals(result.fleet_health_dir, "/path/to/health");
 });
 
+Deno.test("buildOverridesOnly - carries fleet_health_repo, the health repository setup asked for", () => {
+  const config: SetupConfig = {
+    fleet_health_repo: "git@github.com:org/health.git",
+  };
+  const result = buildOverridesOnly(config);
+  assertEquals(result.fleet_health_repo, "git@github.com:org/health.git");
+  assertEquals(
+    buildOverridesOnly({}).fleet_health_repo,
+    undefined,
+    "no health repository is ever assumed",
+  );
+});
+
 Deno.test("buildOverridesOnly - omits fleet_health_dir when empty", () => {
   const config: SetupConfig = {
     fleet_health_dir: "",

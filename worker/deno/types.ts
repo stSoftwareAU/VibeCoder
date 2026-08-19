@@ -901,6 +901,12 @@ export interface ConfigFile {
   imgbb_api_key?: string;
   /** FLEET health directory (Issue #535) */
   fleet_health_dir?: string;
+  /**
+   * Git URL of the FLEET health repository, cloned into `fleet_health_dir`
+   * when that checkout is missing. Set once by the interactive setup; the
+   * worker never assumes a URL.
+   */
+  fleet_health_repo?: string;
   /** GitHub App ID for App-based authentication (Issue #957) */
   github_app_id?: string;
   /** GitHub App Installation ID for App-based authentication (Issue #957) */

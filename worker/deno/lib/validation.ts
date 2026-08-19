@@ -119,6 +119,7 @@ export interface ConfigFileJson {
   issue_retry_cooldown?: number;
   imgbb_api_key?: string;
   fleet_health_dir?: string;
+  fleet_health_repo?: string;
   github_app_id?: string;
   github_app_installation_id?: string;
   github_app_private_key_path?: string;
@@ -481,6 +482,7 @@ export function validateConfigFileJson(
     "gh_config_dir",
     "imgbb_api_key",
     "fleet_health_dir",
+    "fleet_health_repo",
     "github_app_id",
     "github_app_installation_id",
     "github_app_private_key_path",

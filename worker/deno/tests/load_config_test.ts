@@ -62,6 +62,46 @@ Deno.test("load-config - outputs shell variable assignments", async () => {
   });
 });
 
+Deno.test("load-config - fleet_health_dir / fleet_health_repo reach the worker as FLEET_HEALTH_DIR / FLEET_HEALTH_REPO, and only when set", async () => {
+  await withTempConfig({
+    allowed_authors: ["user1"],
+    repos: ["org/repo1"],
+    fleet_health_dir: "/srv/GRQ-health",
+    fleet_health_repo: "git@github.com:org/GRQ-health.git",
+  }, async (configPath) => {
+    const result = await loadConfigCommand.execute(
+      { "config-path": configPath },
+      buildDefaultWorkerConfig(),
+    );
+    assert(
+      result.message.includes(
+        'FLEET_HEALTH_DIR="${FLEET_HEALTH_DIR:-/srv/GRQ-health}"',
+      ),
+      result.message,
+    );
+    assert(
+      result.message.includes(
+        'FLEET_HEALTH_REPO="${FLEET_HEALTH_REPO:-git@github.com:org/GRQ-health.git}"',
+      ),
+      result.message,
+    );
+  });
+
+  // Not configured: neither variable is emitted, so the worker sees no
+  // checkout and no URL and reports that tracking is off — never a guess.
+  await withTempConfig({
+    allowed_authors: ["user1"],
+    repos: ["org/repo1"],
+  }, async (configPath) => {
+    const result = await loadConfigCommand.execute(
+      { "config-path": configPath },
+      buildDefaultWorkerConfig(),
+    );
+    assert(!result.message.includes("FLEET_HEALTH_REPO"), result.message);
+    assert(!result.message.includes("FLEET_HEALTH_DIR"), result.message);
+  });
+});
+
 Deno.test("load-config - legacy ALLOWED_AUTHOR scalar tracks allowedAuthors[0] (Issue #3206)", async () => {
   // The legacy scalar is derived from the first entry of the allowedAuthors
   // array, not the deprecated allowedAuthor field.
