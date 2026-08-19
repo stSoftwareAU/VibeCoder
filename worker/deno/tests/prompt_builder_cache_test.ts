@@ -530,9 +530,9 @@ Deno.test("prompt builder cache - milestone instructions included in dynamic pro
     assertEquals(result.ok, true);
     if (result.ok) {
       assertStringIncludes(result.value.prompt, "milestone/v2");
-      // The branch is fenced as untrusted data; the command carries the
-      // `<milestone-branch>` placeholder (Issue #16).
-      assertStringIncludes(result.value.prompt, '--base "<milestone-branch>"');
+      // The branch name is fenced as untrusted data, so the imperative
+      // instructions carry the `<branch>` placeholder instead (Issue #16).
+      assertStringIncludes(result.value.prompt, "--base <branch>");
       // Milestone instructions are dynamic, not in system prompt
       assertEquals(result.value.systemPrompt.includes("milestone/v2"), false);
     }
