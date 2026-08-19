@@ -46,7 +46,7 @@ Deno.test("ACCESS_FAILURE_THRESHOLD is an exported constant >= 2", () => {
 
 Deno.test("never-probed repo is unknown and not reported inaccessible", () => {
   resetRepoAccessState();
-  const state = getRepoAccessState("example-org/private-repo-38");
+  const state = getRepoAccessState("stSoftwareAU/never-probed");
   assertEquals(state.lastOutcome, "unknown");
   assertEquals(state.consecutiveAccessDenied, 0);
   assertEquals(state.lastOkAt, undefined);
@@ -55,33 +55,33 @@ Deno.test("never-probed repo is unknown and not reported inaccessible", () => {
 
 Deno.test("single access_denied below threshold leaves repo accessible", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD - 1);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD - 1);
   assertEquals(getInaccessibleRepos(), []);
   assertEquals(
-    getRepoAccessState("example-org/private-repo-48").consecutiveAccessDenied,
+    getRepoAccessState("stSoftwareAU/repo-a").consecutiveAccessDenied,
     ACCESS_FAILURE_THRESHOLD - 1,
   );
 });
 
 Deno.test("threshold consecutive access_denied probes trip the repo", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
-  assertEquals(getInaccessibleRepos(), ["example-org/private-repo-48"]);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
+  assertEquals(getInaccessibleRepos(), ["stSoftwareAU/repo-a"]);
   assertEquals(
-    getRepoAccessState("example-org/private-repo-48").lastOutcome,
+    getRepoAccessState("stSoftwareAU/repo-a").lastOutcome,
     "access_denied",
   );
 });
 
 Deno.test("a success after a trip recovers the repo immediately", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD + 3);
-  assertEquals(getInaccessibleRepos(), ["example-org/private-repo-48"]);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD + 3);
+  assertEquals(getInaccessibleRepos(), ["stSoftwareAU/repo-a"]);
 
-  recordRepoProbe("example-org/private-repo-48", "ok", T0 + 9_000);
+  recordRepoProbe("stSoftwareAU/repo-a", "ok", T0 + 9_000);
 
   assertEquals(getInaccessibleRepos(), []);
-  const state = getRepoAccessState("example-org/private-repo-48");
+  const state = getRepoAccessState("stSoftwareAU/repo-a");
   // Reset to 0, not merely decremented — a decrementing reset would keep
   // the repo tripped for several ticks after access was restored.
   assertEquals(state.consecutiveAccessDenied, 0);
@@ -92,76 +92,56 @@ Deno.test("a success after a trip recovers the repo immediately", () => {
 Deno.test("transient outcomes never escalate a repo to inaccessible", () => {
   resetRepoAccessState();
   for (let i = 0; i < ACCESS_FAILURE_THRESHOLD * 3; i++) {
-    recordRepoProbe("example-org/private-repo-48", "transient", T0 + i);
-    recordRepoProbe("example-org/private-repo-49", "parse_failed", T0 + i);
+    recordRepoProbe("stSoftwareAU/repo-a", "transient", T0 + i);
+    recordRepoProbe("stSoftwareAU/repo-b", "parse_failed", T0 + i);
   }
   assertEquals(getInaccessibleRepos(), []);
   assertEquals(
-    getRepoAccessState("example-org/private-repo-48").consecutiveAccessDenied,
+    getRepoAccessState("stSoftwareAU/repo-a").consecutiveAccessDenied,
     0,
   );
   assertEquals(
-    getRepoAccessState("example-org/private-repo-49").consecutiveAccessDenied,
+    getRepoAccessState("stSoftwareAU/repo-b").consecutiveAccessDenied,
     0,
   );
 });
 
 Deno.test("transient outcomes never clear an already-tripped repo", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
-  recordRepoProbe("example-org/private-repo-48", "transient", T0 + 100);
-  recordRepoProbe("example-org/private-repo-48", "parse_failed", T0 + 200);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
+  recordRepoProbe("stSoftwareAU/repo-a", "transient", T0 + 100);
+  recordRepoProbe("stSoftwareAU/repo-a", "parse_failed", T0 + 200);
 
   // Still tripped: only a successful probe may clear the counter.
-  assertEquals(getInaccessibleRepos(), ["example-org/private-repo-48"]);
+  assertEquals(getInaccessibleRepos(), ["stSoftwareAU/repo-a"]);
   assertEquals(
-    getRepoAccessState("example-org/private-repo-48").consecutiveAccessDenied,
+    getRepoAccessState("stSoftwareAU/repo-a").consecutiveAccessDenied,
     ACCESS_FAILURE_THRESHOLD,
   );
 });
 
 Deno.test("a success between denials restarts the run — counter is consecutive", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD - 1);
-  recordRepoProbe("example-org/private-repo-48", "ok", T0 + 50);
-  denyTimes(
-    "example-org/private-repo-48",
-    ACCESS_FAILURE_THRESHOLD - 1,
-    T0 + 60,
-  );
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD - 1);
+  recordRepoProbe("stSoftwareAU/repo-a", "ok", T0 + 50);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD - 1, T0 + 60);
   assertEquals(getInaccessibleRepos(), []);
 });
 
 Deno.test("getInaccessibleRepos is stable-ordered across calls and insertion orders", () => {
   resetRepoAccessState();
-  for (
-    const repo of [
-      "example-org/private-repo-65",
-      "example-org/private-repo-2",
-      "b/mike",
-    ]
-  ) {
+  for (const repo of ["stSoftwareAU/zulu", "stSoftwareAU/alpha", "b/mike"]) {
     denyTimes(repo, ACCESS_FAILURE_THRESHOLD);
   }
   const first = getInaccessibleRepos();
   const second = getInaccessibleRepos();
   assertEquals(first, second);
-  assertEquals(first, [
-    "b/mike",
-    "example-org/private-repo-2",
-    "example-org/private-repo-65",
-  ]);
+  assertEquals(first, ["b/mike", "stSoftwareAU/alpha", "stSoftwareAU/zulu"]);
 
   // Same set recorded in a different order yields the identical list, so
   // downstream health messages cannot churn between ticks.
   resetRepoAccessState();
-  for (
-    const repo of [
-      "b/mike",
-      "example-org/private-repo-65",
-      "example-org/private-repo-2",
-    ]
-  ) {
+  for (const repo of ["b/mike", "stSoftwareAU/zulu", "stSoftwareAU/alpha"]) {
     denyTimes(repo, ACCESS_FAILURE_THRESHOLD);
   }
   assertEquals(getInaccessibleRepos(), first);
@@ -169,32 +149,32 @@ Deno.test("getInaccessibleRepos is stable-ordered across calls and insertion ord
 
 Deno.test("only tripped repos appear — mixed fleet", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-11", ACCESS_FAILURE_THRESHOLD);
-  denyTimes("example-org/private-repo-63", ACCESS_FAILURE_THRESHOLD - 1);
-  recordRepoProbe("example-org/private-repo-24", "ok", T0);
-  recordRepoProbe("example-org/private-repo-5", "transient", T0);
+  denyTimes("stSoftwareAU/down", ACCESS_FAILURE_THRESHOLD);
+  denyTimes("stSoftwareAU/wobbly", ACCESS_FAILURE_THRESHOLD - 1);
+  recordRepoProbe("stSoftwareAU/healthy", "ok", T0);
+  recordRepoProbe("stSoftwareAU/blip", "transient", T0);
 
-  assertEquals(getInaccessibleRepos(), ["example-org/private-repo-11"]);
+  assertEquals(getInaccessibleRepos(), ["stSoftwareAU/down"]);
 });
 
 Deno.test("resetRepoAccessState clears every repo", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
   assertEquals(getInaccessibleRepos().length, 1);
 
   resetRepoAccessState();
 
   assertEquals(getInaccessibleRepos(), []);
   assertEquals(
-    getRepoAccessState("example-org/private-repo-48").lastOutcome,
+    getRepoAccessState("stSoftwareAU/repo-a").lastOutcome,
     "unknown",
   );
 });
 
 Deno.test("repo names are trimmed and blank names are rejected loudly", () => {
   resetRepoAccessState();
-  denyTimes("  example-org/private-repo-48  ", ACCESS_FAILURE_THRESHOLD);
-  assertEquals(getInaccessibleRepos(), ["example-org/private-repo-48"]);
+  denyTimes("  stSoftwareAU/repo-a  ", ACCESS_FAILURE_THRESHOLD);
+  assertEquals(getInaccessibleRepos(), ["stSoftwareAU/repo-a"]);
 
   assertThrows(
     () => recordRepoProbe("   ", "access_denied", T0),
@@ -205,10 +185,10 @@ Deno.test("repo names are trimmed and blank names are rejected loudly", () => {
 
 Deno.test("getRepoAccessState returns a copy — callers cannot mutate the store", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
-  const state = getRepoAccessState("example-org/private-repo-48");
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
+  const state = getRepoAccessState("stSoftwareAU/repo-a");
   state.consecutiveAccessDenied = 0;
-  assertEquals(getInaccessibleRepos(), ["example-org/private-repo-48"]);
+  assertEquals(getInaccessibleRepos(), ["stSoftwareAU/repo-a"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -228,20 +208,20 @@ Deno.test("formatInaccessibleReposReason names every repo, comma-separated", () 
 
 Deno.test("maxConsecutiveAccessDenied reports the worst-affected repo", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
-  denyTimes("example-org/private-repo-49", ACCESS_FAILURE_THRESHOLD + 3);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
+  denyTimes("stSoftwareAU/repo-b", ACCESS_FAILURE_THRESHOLD + 3);
 
   assertEquals(
     maxConsecutiveAccessDenied(getInaccessibleRepos()),
     ACCESS_FAILURE_THRESHOLD + 3,
   );
   // A repo the store has never seen is never guessed at.
-  assertEquals(maxConsecutiveAccessDenied(["example-org/private-repo-38"]), 0);
+  assertEquals(maxConsecutiveAccessDenied(["stSoftwareAU/never-probed"]), 0);
 });
 
 Deno.test("logRepoAccessOnce emits one structured line and suppresses repeats", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
 
   const lines: string[] = [];
   const sink = (line: string) => lines.push(line);
@@ -250,7 +230,7 @@ Deno.test("logRepoAccessOnce emits one structured line and suppresses repeats", 
   assertEquals(logRepoAccessOnce(repos, sink, { hostId: "host-3" }), true);
   assertEquals(logRepoAccessOnce(repos, sink, { hostId: "host-3" }), false);
   assertEquals(lines, [
-    `[repo-access] host=host-3 status=inaccessible repos=example-org/private-repo-48 consecutive=${ACCESS_FAILURE_THRESHOLD}`,
+    `[repo-access] host=host-3 status=inaccessible repos=stSoftwareAU/repo-a consecutive=${ACCESS_FAILURE_THRESHOLD}`,
   ]);
 
   // The iteration boundary re-arms it.
@@ -261,14 +241,14 @@ Deno.test("logRepoAccessOnce emits one structured line and suppresses repeats", 
 
 Deno.test("logRepoAccessOnce logs a changed repo set immediately", () => {
   resetRepoAccessState();
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
 
   const lines: string[] = [];
   const sink = (line: string) => lines.push(line);
 
   logRepoAccessOnce(getInaccessibleRepos(), sink, { hostId: "host-3" });
   // A second repo going dark is new information, not spam.
-  denyTimes("example-org/private-repo-49", ACCESS_FAILURE_THRESHOLD);
+  denyTimes("stSoftwareAU/repo-b", ACCESS_FAILURE_THRESHOLD);
   assertEquals(
     logRepoAccessOnce(getInaccessibleRepos(), sink, { hostId: "host-3" }),
     true,
@@ -276,7 +256,7 @@ Deno.test("logRepoAccessOnce logs a changed repo set immediately", () => {
   assertEquals(lines.length, 2);
   assertStringIncludes(
     lines[1]!,
-    "repos=example-org/private-repo-48,example-org/private-repo-49",
+    "repos=stSoftwareAU/repo-a,stSoftwareAU/repo-b",
   );
 });
 
@@ -288,7 +268,7 @@ Deno.test("logRepoAccessOnce is silent for a healthy host and appends the caller
   assertEquals(logRepoAccessOnce([], sink, { hostId: "host-3" }), false);
   assertEquals(lines, []);
 
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD);
+  denyTimes("stSoftwareAU/repo-a", ACCESS_FAILURE_THRESHOLD);
   logRepoAccessOnce(getInaccessibleRepos(), sink, {
     hostId: "host-3",
     suffix: "host marked unhealthy",

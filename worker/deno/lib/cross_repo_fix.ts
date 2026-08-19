@@ -2,7 +2,7 @@
  * Cross-repo fix capability (Issue #2941).
  *
  * When an assigned issue's root cause lives in an internal `stSoftwareAU/*`
- * dependency the worker can access (e.g. `@stsoftware/neat-ai`), the worker
+ * dependency the worker can access (e.g. `@stsoftware/private-repo-14`), the worker
  * should fix it in that dependency's *own* repo by raising a PR there — in the
  * same run — rather than spinning the real fix out into follow-up issues.
  *
@@ -68,9 +68,9 @@ export type DependencyClassification =
     kind: "internal";
     /** The original spec, verbatim. */
     package: string;
-    /** Bare package name (scope and version stripped), e.g. `neat-ai`. */
+    /** Bare package name (scope and version stripped), e.g. `private-repo-14`. */
     name: string;
-    /** Candidate GitHub repo, e.g. `example-org/private-repo-29`. */
+    /** Candidate GitHub repo, e.g. `stSoftwareAU/private-repo-14`. */
     candidateRepo: string;
   }
   | { kind: "external"; package: string; reason: string };
@@ -173,7 +173,7 @@ export type CrossRepoAccess =
  * - 200 with `permissions.push !== true` → unreachable (cannot push a branch
  *   / open a PR).
  * - 200 with `permissions.push === true` → reachable, returning the canonical
- *   `full_name` (so casing differences like `neat-ai` → `NEAT-AI` resolve).
+ *   `full_name` (so casing differences like `private-repo-14` → `private-repo-14` resolve).
  *
  * @param repo - Candidate repository in `owner/repo` form.
  * @param runner - Injected command runner.

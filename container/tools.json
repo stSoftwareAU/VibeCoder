@@ -86,14 +86,14 @@
         "arm64": "12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588"
       },
       "repos": [
-        "example-org/private-repo-21",
-        "example-org/private-repo-30",
-        "example-org/private-repo-32",
-        "example-org/private-repo-33",
-        "example-org/private-repo-34",
-        "example-org/private-repo-36",
-        "example-org/private-repo-31",
-        "example-org/private-repo-37"
+        "stSoftwareAU/private-repo-9",
+        "stSoftwareAU/private-repo-15",
+        "stSoftwareAU/private-repo-17",
+        "stSoftwareAU/private-repo-18",
+        "stSoftwareAU/private-repo-19",
+        "stSoftwareAU/private-repo-21",
+        "stSoftwareAU/private-repo-16",
+        "stSoftwareAU/private-repo-22"
       ],
       "notes": "Each of these repos commits its own shellcheck gate (quality/shellcheck.sh or an inline loop) and hard-fails without the binary — previously satisfied by a Homebrew install on the host."
     },
@@ -108,8 +108,8 @@
         "amd64": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
         "arm64": "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
       },
-      "repos": ["example-org/private-repo-37"],
-      "notes": "NEAT-AI-scorer's quality.sh lints its workflows with actionlint. Remove this toolchain if that repo leaves the fleet."
+      "repos": ["stSoftwareAU/private-repo-22"],
+      "notes": "private-repo-22's quality.sh lints its workflows with actionlint. Remove this toolchain if that repo leaves the fleet."
     },
     {
       "id": "cargo-deny",
@@ -123,14 +123,14 @@
         "arm64": "995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d"
       },
       "repos": [
-        "example-org/private-repo-21",
-        "example-org/private-repo-30",
-        "example-org/private-repo-32",
-        "example-org/private-repo-36",
-        "example-org/private-repo-31",
-        "example-org/private-repo-37"
+        "stSoftwareAU/private-repo-9",
+        "stSoftwareAU/private-repo-15",
+        "stSoftwareAU/private-repo-17",
+        "stSoftwareAU/private-repo-21",
+        "stSoftwareAU/private-repo-16",
+        "stSoftwareAU/private-repo-22"
       ],
-      "notes": "`cargo deny check` is not optional in these gates: NEAT-AI-core exits non-zero when the binary is absent and NEAT-AI-Discovery runs it unguarded. The linux release is a static musl build, so it runs on the glibc base image."
+      "notes": "`cargo deny check` is not optional in these gates: private-repo-16 exits non-zero when the binary is absent and private-repo-17 runs it unguarded. The linux release is a static musl build, so it runs on the glibc base image."
     },
     {
       "id": "node",
@@ -175,16 +175,16 @@
         "clippy_arm64": "84480abfbfed89616b1e0b35acb9db84766f0353b671766638084f4e9b1d1143"
       },
       "repos": [
-        "example-org/private-repo-17",
-        "example-org/private-repo-21",
-        "example-org/private-repo-22",
-        "example-org/private-repo-30",
-        "example-org/private-repo-32",
-        "example-org/private-repo-36",
-        "example-org/private-repo-31",
-        "example-org/private-repo-37"
+        "stSoftwareAU/private-repo-5",
+        "stSoftwareAU/private-repo-9",
+        "stSoftwareAU/private-repo-10",
+        "stSoftwareAU/private-repo-15",
+        "stSoftwareAU/private-repo-17",
+        "stSoftwareAU/private-repo-21",
+        "stSoftwareAU/private-repo-16",
+        "stSoftwareAU/private-repo-22"
       ],
-      "notes": "Standalone rust-lang distribution installed into /usr/local, so no rustup and nothing to update at run time. The combined rust-<version> package carries only rustc/cargo/rust-std/rust-docs, so rustfmt and clippy are fetched as their own component packages — hence the rustfmt_/clippy_ checksum keys, one per architecture. 1.95.0 is the channel NEAT-AI-scorer, NEAT-AI-Lamarck and NEAT-AI-Backpropagation pin in rust-toolchain.toml — bump those repos and this pin together, or a new stable's clippy lints break their -D warnings gates."
+      "notes": "Standalone rust-lang distribution installed into /usr/local, so no rustup and nothing to update at run time. The combined rust-<version> package carries only rustc/cargo/rust-std/rust-docs, so rustfmt and clippy are fetched as their own component packages — hence the rustfmt_/clippy_ checksum keys, one per architecture. 1.95.0 is the channel private-repo-22, private-repo-21 and private-repo-15 pin in rust-toolchain.toml — bump those repos and this pin together, or a new stable's clippy lints break their -D warnings gates."
     }
   ],
   "tools": [

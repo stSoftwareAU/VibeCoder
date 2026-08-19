@@ -63,7 +63,7 @@ Deno.test("heartbeat - active heartbeat keeps its repo writable across a reseed 
 
     // The next claim reseeds the allowlist with a different target repo —
     // this is the exact sequence that used to block the marker refresh.
-    seedWriteRepoAllowlist("example-org/private-repo-33");
+    seedWriteRepoAllowlist("stsoftwareau/private-repo-18");
     assert(
       isWriteRepoAllowed("stSoftwareAU/VibeCoder"),
       "an active heartbeat's repo must stay writable after a reseed",

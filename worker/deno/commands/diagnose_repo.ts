@@ -7,7 +7,7 @@
  * diagnosis, summary generation).
  *
  * Usage:
- *   deno_run_command diagnose-repo --repo example-org/private-repo-57 --github-user worker-bot
+ *   deno_run_command diagnose-repo --repo stSoftwareAU/private-repo-24 --github-user worker-bot
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */

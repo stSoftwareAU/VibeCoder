@@ -163,17 +163,17 @@ Deno.test("checkJenkinsAccess - probes the job path with basic auth, trimming th
 });
 
 // Jenkins nests folders as /job/<a>/job/<b>/job/<c>, matching the reference
-// implementation in example-org/private-repo-27 scripts/fetch-jenkins-build.sh.
+// implementation in stSoftwareAU/private-repo-12 scripts/fetch-jenkins-build.sh.
 // A folder path must not collapse to /job/<a>/<b>/<c>, which 404s.
 Deno.test("buildJenkinsUrl - expands each folder segment into /job/", () => {
   assertEquals(
     buildJenkinsUrl(
       "https://jenkins.example.com",
-      "example-org/private-repo-27/Develop",
+      "stSoftwareAU/private-repo-12/Develop",
       42,
       "api/json",
     ),
-    "https://jenkins.example.com/job/example-org/private-repo-26/Migration_v21/job/Develop/42/api/json",
+    "https://jenkins.example.com/job/stSoftwareAU/job/private-repo-12/job/Develop/42/api/json",
   );
 });
 

@@ -157,4 +157,4 @@ If the worker cannot fix a CI failure after the maximum retries:
 - **Timeout and retry:** [`worker/deno/lib/claude_runner.ts`](../../worker/deno/lib/claude_runner.ts) — `runClaudeWithRetry()`, `timeoutWithCleanup()`.
 - **Workflow orchestration:** Unified workflow handler in Deno TypeScript — `execute_workflow_priority()`.
 - **Related workflows:** [PR feedback and upkeep](pr-feedback.md), [Issue processing](issue-processing.md).
-- **Configuration:** [CONFIGURATION.md](../CONFIGURATION.md), TROUBLESHOOTING.md.
+- **Configuration:** [CONFIGURATION.md](../CONFIGURATION.md), [TROUBLESHOOTING.md](../TROUBLESHOOTING.md).

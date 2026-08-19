@@ -42,20 +42,17 @@ Deno.test("parseCiFailureLabels - rejects a blank entry", () => {
 
 Deno.test("getCiFailureLabels - reads the per-repo configuration", () => {
   const configs: Record<string, RepoConfig> = {
-    "example-org/private-repo-27": {
+    "stSoftwareAU/private-repo-12": {
       ciFailureLabels: ["develop-build-failure"],
     },
-    "example-org/private-repo-40": {},
+    "stSoftwareAU/Other": {},
   };
-  assertEquals(getCiFailureLabels(configs, "example-org/private-repo-27"), [
+  assertEquals(getCiFailureLabels(configs, "stSoftwareAU/private-repo-12"), [
     "develop-build-failure",
   ]);
-  assertEquals(getCiFailureLabels(configs, "example-org/private-repo-40"), []);
-  assertEquals(getCiFailureLabels(configs, "example-org/private-repo-60"), []);
-  assertEquals(
-    getCiFailureLabels(undefined, "example-org/private-repo-40"),
-    [],
-  );
+  assertEquals(getCiFailureLabels(configs, "stSoftwareAU/Other"), []);
+  assertEquals(getCiFailureLabels(configs, "stSoftwareAU/Unknown"), []);
+  assertEquals(getCiFailureLabels(undefined, "stSoftwareAU/Other"), []);
 });
 
 Deno.test("getCiFailureLabels - throws on malformed configuration", () => {

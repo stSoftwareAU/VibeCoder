@@ -12,7 +12,7 @@
  *     F --> C["classifyProbeFailure<br/>(#4035)"]
  *     C --> S["access store<br/>(#4036)"]
  *     S --> H["health gate in<br/>runCoreLoop (#4038)"]
- *     H --> N["named repos on log +<br/>FLEET-health payload (#4039)"]
+ *     H --> N["named repos on log +<br/>private-repo-6 payload (#4039)"]
  * ```
  *
  * It reproduces the incident shape exactly: `checkClaudeHealth()` and
@@ -22,7 +22,7 @@
  *
  * Three scenarios:
  *   1. Incident — the host ends unhealthy, both dark repos are named on the
- *      worker log and the FLEET-health payload, and the accessible repos are
+ *      worker log and the private-repo-6 payload, and the accessible repos are
  *      still scanned and worked while unhealthy.
  *   2. Recovery — once the two repos answer again the next iteration is
  *      healthy, with no restart and no operator action.
@@ -51,19 +51,16 @@ import { reportFleetHealth } from "../lib/fleet_health.ts";
 // ---------------------------------------------------------------------------
 
 /** Repos the identity can still see. */
-const ACCESSIBLE_REPOS = [
-  "example-org/private-repo-2",
-  "example-org/private-repo-9",
-];
+const ACCESSIBLE_REPOS = ["stSoftwareAU/alpha", "stSoftwareAU/charlie"];
 
 /** The two repos that went dark in the incident, in store (sorted) order. */
 const DARK_REPOS = ["TitlePage/bravo", "TitlePage/delta"];
 
 /** Full monitored set, deliberately interleaved so order is not load-bearing. */
 const MONITORED_REPOS = [
-  "example-org/private-repo-2",
+  "stSoftwareAU/alpha",
   "TitlePage/bravo",
-  "example-org/private-repo-9",
+  "stSoftwareAU/charlie",
   "TitlePage/delta",
 ];
 
@@ -131,7 +128,7 @@ interface LoopObservations {
   worked: IterationEvent[];
   /** Iterations in which the access gate logged its `[repo-access]` line. */
   unhealthyIterations: number[];
-  /** Iterations in which a healthy FLEET-health heartbeat was reported. */
+  /** Iterations in which a healthy private-repo-6 heartbeat was reported. */
   heartbeatIterations: number[];
   /** Every line the loop sent to `logError`. */
   errorLines: string[];
@@ -319,12 +316,12 @@ Deno.test(
         "an unhealthy iteration must not report a healthy heartbeat",
       );
 
-      // The FLEET-health payload names both repos too.
+      // The private-repo-6 payload names both repos too.
       const commands: string[][] = [];
       const reported = await reportFleetHealth(
         {
-          healthDir: "/tmp/fleet-health-e2e",
-          healthRepo: "git@github.com:example-org/private-repo-18.git",
+          healthDir: "/tmp/private-repo-6-e2e",
+          healthRepo: "git@github.com:stSoftwareAU/private-repo-6.git",
           hostId: "host-3",
           reportTimeoutMs: 1000,
         },

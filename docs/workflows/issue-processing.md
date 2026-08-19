@@ -165,7 +165,7 @@ The worker never self-applies `low-priority` — it is a human scheduling signal
 
 The desired end state is **exactly one PR per issue across the whole fleet**.
 The fleet runs on several machines, each authenticated as a different GitHub
-account (e.g. `VibeCoderBot` on one host, `stsvcbot` on another). Without
+account (e.g. `Vibecoderbot` on one host, `stsvcbot` on another). Without
 fleet-wide guards, two hosts can each open a PR for the same issue — the
 duplicate-PR class of bugs seen after #3095 / #3099 / #3100. This section
 documents the invariant, the two ways it can break, the guard stack that
@@ -249,7 +249,7 @@ startup and in `diagnose-repo`, emitting a `[fleet-config] WARNING` for a
 `fleet_pr_authors` sibling missing from `allowed_authors` and a
 `[fleet-config] ERROR` when the effective fleet set is empty (the guard would be
 inoperative). See [CONFIGURATION.md](../CONFIGURATION.md) and
-`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`.
+[`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](../DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
 ### Recovery path — human re-open / re-label
 

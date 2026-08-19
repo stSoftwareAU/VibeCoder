@@ -220,7 +220,7 @@ labelling and commenting; the worker reports progress, escalations
 
 SSH, Remote Desktop, screen sharing, a management UI and terminal access to
 the host are **not required for normal operation**. Local logs remain useful
-for diagnosis (see Troubleshooting), but a recoverable
+for diagnosis (see [Troubleshooting](TROUBLESHOOTING.md)), but a recoverable
 operational failure is reported through GitHub rather than left to disappear
 into a host log.
 
@@ -306,9 +306,9 @@ with the fixture attached as the regression test.
 
 - [Container Image](CONTAINER.md) — what is in the image, how the pins stay
   honest, runtime detection, and the launcher contract.
-- Deployment Guide — host requirements and the rollout
+- [Deployment Guide](DEPLOYMENT.md) — host requirements and the rollout
   cutover.
-- Troubleshooting — image rebuilds, log locations and
+- [Troubleshooting](TROUBLESHOOTING.md) — image rebuilds, log locations and
   runtime-detection failures.
 - [Security](../SECURITY.md) — the wider control set and operator guidance.
 - [Threat Model](THREAT-MODEL.md) — the design-level model containment sits in.

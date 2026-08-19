@@ -84,13 +84,13 @@ Deno.test("verifyFollowUpIssueExists - resolves a cross-repo ref against that re
   const { logger } = recordingLogger();
   const { ghClient, calls } = fakeClient({});
   await verifyFollowUpIssueExists({
-    issueRef: "example-org/private-repo-13#99",
+    issueRef: "stSoftwareAU/private-repo-1#99",
     currentRepo: "stSoftwareAU/VibeCoder",
     ghClient,
     logger,
   });
   assertEquals(calls, [{
-    repo: "example-org/private-repo-13",
+    repo: "stSoftwareAU/private-repo-1",
     issueNumber: 99,
   }]);
 });

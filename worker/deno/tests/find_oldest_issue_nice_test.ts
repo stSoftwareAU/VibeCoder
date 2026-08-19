@@ -127,7 +127,7 @@ function repoConfig(
 Deno.test(
   "findOldestIssue - low-nice repo with newer work beats high-nice repo with older work (Issue #2774)",
   async () => {
-    // Reproduces the #2771 symptom: NEAT-AI-Discovery-style fresh work in a
+    // Reproduces the #2771 symptom: private-repo-17-style fresh work in a
     // prioritised (low-`nice`) repo must not sit behind an older backlog in a
     // default-`nice` repo.
     const config = makeConfig({

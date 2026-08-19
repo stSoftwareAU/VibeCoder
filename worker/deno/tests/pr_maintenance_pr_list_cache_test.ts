@@ -36,21 +36,21 @@ Deno.test("pr list cache - repeated scans with different fields share ONE supers
   try {
     const first = await listOpenPrs(
       "o/r",
-      "VibeCoderBot",
+      "Vibecoderbot",
       "number,headRefName,headRefOid",
       mockGh(calls),
       cache,
     );
     const second = await listOpenPrs(
       "o/r",
-      "VibeCoderBot",
+      "Vibecoderbot",
       "number,headRefName,baseRefName",
       mockGh(calls),
       cache,
     );
     const third = await listOpenPrs(
       "o/r",
-      "VibeCoderBot",
+      "Vibecoderbot",
       "number,headRefName,autoMergeRequest",
       mockGh(calls),
       cache,
@@ -75,7 +75,7 @@ Deno.test("pr list cache - a second cache instance over the same directory reads
   try {
     await listOpenPrs(
       "o/r",
-      "VibeCoderBot",
+      "Vibecoderbot",
       "number",
       mockGh(calls),
       new IssueCache(dir),
@@ -83,7 +83,7 @@ Deno.test("pr list cache - a second cache instance over the same directory reads
     // A fresh instance — the next launch — over the same durable dir.
     const warm = await listOpenPrs(
       "o/r",
-      "VibeCoderBot",
+      "Vibecoderbot",
       "number,headRefName",
       mockGh(calls),
       new IssueCache(dir),
@@ -99,7 +99,7 @@ Deno.test("pr list cache - without a cache the legacy call shape is unchanged", 
   const calls: string[][] = [];
   const result = await listOpenPrs(
     "o/r",
-    "VibeCoderBot",
+    "Vibecoderbot",
     "number,headRefName",
     mockGh(calls),
   );

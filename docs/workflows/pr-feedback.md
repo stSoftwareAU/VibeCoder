@@ -253,7 +253,7 @@ sequenceDiagram
 
 For the full operator detail — the visibility-aware required-check selection,
 the defer-and-retry sequence, the trigger-classification table, and the
-failure/recovery modes — see `docs/MERGE.md` and
+failure/recovery modes — see [`docs/MERGE.md`](../MERGE.md) and
 [DESIGN-PRINCIPLES.md → Dual-layer pre-merge enforcement](../../DESIGN-PRINCIPLES.md).
 
 ## 📊 Diagram: PR monitoring and fixes
@@ -321,7 +321,7 @@ After feedback fixes and quality checks, the PR is auto-merged._
 
 ## 📚 Further reading
 
-- **Merge enforcement:** Merge Enforcement — Operator Manual —
+- **Merge enforcement:** [Merge Enforcement — Operator Manual](../MERGE.md) —
   the dual-layer pre-merge gate, visibility-aware required checks,
   defer-and-retry, read-only default branch, and workflow-trigger normalisation.
 - **Design overview:** [DESIGN-PRINCIPLES.md](../../DESIGN-PRINCIPLES.md) — dual-layer pre-merge

@@ -11,7 +11,7 @@
  *     `node-version:` inputs, #18 only catches catalogue-flagged actions.
  *     The motivating case is SHA-pinned `actions/checkout` v4.2.2 and
  *     `actions/setup-node` on the deprecated node20 runtime
- *     (FLEET-GTC#220 / PR #222). New stable-id prefix
+ *     (private-repo-5#220 / PR #222). New stable-id prefix
  *     `BP-DEPRECATED-RUNTIME-<owner>-<action>`.
  *   - **Extended check #16 — SHA pins no longer exempt from stale-major.**
  *     v12 skipped SHA-pinned actions in the stale-major check; v13 maps

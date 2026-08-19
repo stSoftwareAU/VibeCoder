@@ -10,9 +10,9 @@ Deno.test("repoCheckoutPath - appends the repo name to the work dir", () => {
   assertEquals(
     repoCheckoutPath(
       "/home/vibe/auto-issue-work",
-      "example-org/private-repo-29",
+      "stSoftwareAU/private-repo-14",
     ),
-    "/home/vibe/auto-issue-work/NEAT-AI",
+    "/home/vibe/auto-issue-work/private-repo-14",
   );
 });
 

@@ -60,7 +60,7 @@ Deno.test("matchPrimarySignals - flags a scoped SDK family member", () => {
 });
 
 Deno.test("matchPrimarySignals - ignores non-LLM dependencies (precision)", () => {
-  // NEAT-AI's only "openai" hit is the OpenAI Gym RL env package `gym`,
+  // private-repo-14's only "openai" hit is the OpenAI Gym RL env package `gym`,
   // never the `openai` SDK — so a non-LLM dep set must not be flagged.
   const signals = matchPrimarySignals(["gym", "numpy", "lodash", "express"]);
   assertEquals(signals.length, 0);
@@ -357,7 +357,7 @@ Deno.test(
 Deno.test("isLlmAuditAllowlisted - VibeCoder matches case-insensitively", () => {
   assert(isLlmAuditAllowlisted("stSoftwareAU/VibeCoder"));
   assert(isLlmAuditAllowlisted("  stsoftwareau/vibecoder  "));
-  assertEquals(isLlmAuditAllowlisted("example-org/private-repo-55"), false);
+  assertEquals(isLlmAuditAllowlisted("stSoftwareAU/SomeOtherRepo"), false);
 });
 
 Deno.test(
@@ -385,9 +385,9 @@ Deno.test(
 );
 
 Deno.test(
-  "detectLlmUsageForRepo - non-allowlisted repo follows the signal rule (NEAT-AI stays false)",
+  "detectLlmUsageForRepo - non-allowlisted repo follows the signal rule (private-repo-14 stays false)",
   async () => {
-    // Regression: NEAT-AI declares no LLM SDK and references "openai" only
+    // Regression: private-repo-14 declares no LLM SDK and references "openai" only
     // as the OpenAI Gym RL package and "anthropic" only in docs prose.
     const dir = await fixtureWith({
       "package.json": JSON.stringify({
@@ -397,7 +397,10 @@ Deno.test(
       "src/agent.py": "import gym\nenv = gym.make('CartPole-v1')",
     });
     try {
-      const verdict = await detectLlmUsageForRepo("someorg/NEAT-AI", dir);
+      const verdict = await detectLlmUsageForRepo(
+        "someorg/private-repo-14",
+        dir,
+      );
       assertEquals(verdict.isLlmUsing, false);
       assertEquals(verdict.signals.length, 0);
     } finally {

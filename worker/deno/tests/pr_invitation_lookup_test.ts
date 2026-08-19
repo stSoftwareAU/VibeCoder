@@ -16,7 +16,7 @@ import {
 } from "../lib/pr_invitation_lookup.ts";
 
 const REPO = "owner/repo";
-const HOST = "VibeCoderBot";
+const HOST = "Vibecoderbot";
 const SIBLING = "stsvcbot";
 const HUMAN = "courtyen";
 const PR_NUMBER = 2312;

@@ -1,0 +1,32 @@
+---
+layout: null
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>404 — Not found</title>
+  <link rel="icon" href="{{ site.baseurl }}/assets/favicon.svg" type="image/svg+xml">
+  <script>
+    // Redirect README.md links to README.html so relative doc links work on GitHub Pages.
+    // Anchor the destination to the site origin: browsers keep a leading '//' in
+    // pathname, so an unanchored rewrite would build a protocol-relative URL and
+    // navigate off-origin (Issue #3666, CWE-601).
+    // The leading-slash test also keeps `new URL` from throwing on an empty authority.
+    if (window.location.pathname.endsWith('README.md') && /^\/(?![\/\\])/.test(window.location.pathname)) {
+      var resolved = new URL(
+        window.location.pathname.replace(/README\.md$/, 'README.html') + window.location.search + window.location.hash,
+        window.location.origin
+      );
+      if (resolved.origin === window.location.origin) {
+        var target = resolved.pathname + resolved.search + resolved.hash;
+        window.location.replace(target);
+      }
+    }
+  </script>
+</head>
+<body>
+  <p>Page not found.</p>
+</body>
+</html>

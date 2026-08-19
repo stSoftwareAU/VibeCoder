@@ -460,7 +460,7 @@ Deno.test("issue_finder_logger - logIssueSkipped sanitises injected detail", () 
 // =============================================================================
 
 const DIVERGENCE_INPUT: FleetAuthorSetInput = {
-  githubUser: "VibeCoderBot",
+  githubUser: "Vibecoderbot",
   allowedAuthors: ["human1"],
   fleetPrAuthors: ["stsvcbot"],
 };
@@ -492,7 +492,7 @@ Deno.test("issue_finder_logger - expected trusted-human delta logs no divergence
 Deno.test("issue_finder_logger - a fleet sibling missing from maintenance still warns (Issue #4079)", () => {
   const lines = divergenceLines(
     resolveFleetPrAuthorSet(DIVERGENCE_INPUT),
-    ["VibeCoderBot"],
+    ["Vibecoderbot"],
   );
   assertEquals(lines.length, 1);
   assertStringIncludes(lines[0]!, "missing-from-maintenance=stsvcbot");
@@ -501,8 +501,8 @@ Deno.test("issue_finder_logger - a fleet sibling missing from maintenance still 
 
 Deno.test("issue_finder_logger - a maintained login invisible to the guard still warns (Issue #4079)", () => {
   const lines = divergenceLines(
-    ["VibeCoderBot"],
-    ["VibeCoderBot", "stsvcbot"],
+    ["Vibecoderbot"],
+    ["Vibecoderbot", "stsvcbot"],
   );
   assertEquals(lines.length, 1);
   assertStringIncludes(lines[0]!, "missing-from-blocking=stsvcbot");

@@ -2358,7 +2358,7 @@ Deno.test(
 // ---------------------------------------------------------------------------
 //
 // Production observed wrappers landing without the `idle-task` label
-// (e.g. NEAT-AI-Explore#180). When the label is missing, the wrapper is
+// (e.g. private-repo-19#180). When the label is missing, the wrapper is
 // invisible to the priority queue and the cross-repo dedup, so the
 // worker keeps idling. After every successful `gh issue create`,
 // `maybe-file-idle-task` now fetches the new issue's labels and
@@ -2550,7 +2550,7 @@ Deno.test(
 // Retry-with-backoff for the re-apply hook (Issue #2137)
 // ---------------------------------------------------------------------------
 //
-// Exhibit B: example-org/private-repo-34#182 landed unlabelled after PR
+// Exhibit B: stSoftwareAU/private-repo-19#182 landed unlabelled after PR
 // #2130's single-shot re-apply hit a transient REST+CLI failure. The
 // fix retries `addLabelFn` up to REAPPLY_MAX_ATTEMPTS times with
 // REAPPLY_BACKOFF_MS between attempts, and emits a loud

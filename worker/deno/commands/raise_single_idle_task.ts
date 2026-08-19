@@ -9,11 +9,11 @@
  * single-template parallel to `create-all-idle-task-wrappers` (which seeds all
  * thirteen) and to `raise-boy-scout-idle-tasks` (which seeds just the four Boy
  * Scout templates). It was added to trigger a one-off `documentation-audit`
- * run against NEAT-AI once #3319 landed.
+ * run against private-repo-14 once #3319 landed.
  *
  * Usage:
  *   deno run ... raise-single-idle-task \
- *     --template documentation-audit --repo example-org/private-repo-29
+ *     --template documentation-audit --repo stSoftwareAU/private-repo-14
  *
  * `--template` is required. Repos are taken from `--repo` (single) or
  * `--monitored-repos` (CSV); at least one is required. The underlying helper is

@@ -90,7 +90,7 @@ function toNumber(value: unknown, fallback: number): number {
  * The leading `--` separates gh-level flags from flags forwarded to
  * `git clone` by the gh CLI.
  *
- * FLEET-health already uses `--depth=1` successfully as a precedent (see
+ * private-repo-6 already uses `--depth=1` successfully as a precedent (see
  * `worker/deno/lib/fleet_health.ts`).
  */
 export function buildShallowCloneArgs(

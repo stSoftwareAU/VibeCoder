@@ -1,7 +1,7 @@
 /**
  * Regression test for Issue #1862, part of #1855.
  *
- * Reproduces the PR #2524 scenario in example-org/private-repo-29:
+ * Reproduces the PR #2524 scenario in stSoftwareAU/private-repo-14:
  * Claude commits-and-pushes the fix during its own run, leaving the
  * final-mile commitAndPushPending with nothing to do. The processor must
  * still recognise that HEAD moved (via the new branch_head_tracker

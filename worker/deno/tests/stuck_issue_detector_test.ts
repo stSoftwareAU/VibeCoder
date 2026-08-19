@@ -1084,14 +1084,14 @@ Deno.test("stuck issue detector - scanHeartbeatMarkers ignores a marker from a n
         // Genuine marker from a fleet account.
         {
           body: `<!-- ${HEARTBEAT_MARKER_PREFIX}:host-A:1700000000 -->`,
-          author: "VibeCoderBot",
+          author: "Vibecoderbot",
         },
       ]);
     }
     return "";
   };
   const markers = await scanHeartbeatMarkers("org/repo", 10, ghFn, [
-    "VibeCoderBot",
+    "Vibecoderbot",
   ]);
   assertEquals(markers.length, 1);
   assertEquals(markers[0]?.machineId, "host-A");
@@ -1132,7 +1132,7 @@ Deno.test("stuck issue detector - shouldSkipRecoveryForMarker does not skip on a
     1800,
     () => now,
     ghFn,
-    ["VibeCoderBot"], // fleet allow-list — attacker is not in it
+    ["Vibecoderbot"], // fleet allow-list — attacker is not in it
   );
   // Recovery must NOT be suppressed by a forged marker.
   assertEquals(skip, false);
@@ -1155,7 +1155,7 @@ Deno.test("stuck issue detector - shouldSkipRecoveryForMarker still skips on a f
     1800,
     () => now,
     ghFn,
-    ["VibeCoderBot", "stsvcbot"],
+    ["Vibecoderbot", "stsvcbot"],
   );
   assertEquals(skip, true);
 });

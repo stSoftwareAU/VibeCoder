@@ -904,12 +904,12 @@ function Read-VibeInteractiveConfig {
             "Without this, screenshots are saved locally only.")
     if ($imgbb) { $answers.imgbb_api_key = $imgbb }
 
-    # FLEET health tracking — always at ../FLEET-health (sibling of VibeCoder).
-    $fleetDir = Join-Path (Split-Path -Parent $ScriptDir) "FLEET-health"
+    # FLEET health tracking — always at ../private-repo-6 (sibling of VibeCoder).
+    $fleetDir = Join-Path (Split-Path -Parent $ScriptDir) "private-repo-6"
     $answers.fleet_health_dir = $fleetDir
     if (-not (Test-Path -LiteralPath $fleetDir)) {
         Write-VibeInfo "Cloning FLEET health repository to $fleetDir..."
-        & git clone git@github.com:example-org/private-repo-18.git $fleetDir
+        & git clone git@github.com:stSoftwareAU/private-repo-6.git $fleetDir
         if ($LASTEXITCODE -eq 0) {
             Write-VibeSuccess "FLEET health repository cloned"
         } else {

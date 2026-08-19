@@ -159,8 +159,8 @@ function stripQuotedRegions(body: string): string {
  * both a ReDoS surface and needless work per login. The character before
  * `@` may not be part of an address or path (so `email@host` and
  * `owner/repo@login` never match), and the captured token runs to the end
- * of the login characters, so `@VibeCoderBot-bot` yields `VibeCoderBot-bot`
- * and never the shorter `VibeCoderBot`.
+ * of the login characters, so `@Vibecoderbot-bot` yields `Vibecoderbot-bot`
+ * and never the shorter `Vibecoderbot`.
  */
 const MENTION_TOKEN = /(?:^|[^A-Za-z0-9_@/.-])@([A-Za-z0-9_-]+)/g;
 

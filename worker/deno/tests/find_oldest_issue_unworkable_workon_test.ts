@@ -5,7 +5,7 @@
  * set. A repo whose only open `work-on` issues are dropped by
  * `filterAndSort` (milestone-tracking trackers, assigned, failed,
  * needs-human, …) must no longer suppress its `low-priority`/`idle-task`
- * backlog — the `Migration_v21` field case, where 28 low-priority issues
+ * backlog — the `private-repo-12` field case, where 28 low-priority issues
  * sat frozen for over a month behind 2 milestone-tracking work-on issues
  * the worker never actions.
  *
@@ -144,7 +144,7 @@ function issue(
 }
 
 Deno.test(
-  "findOldestIssue - milestone-tracking work-on issues no longer suppress the repo's low-priority backlog (Migration_v21 field case)",
+  "findOldestIssue - milestone-tracking work-on issues no longer suppress the repo's low-priority backlog (private-repo-12 field case)",
   async () => {
     const config = makeConfig();
     const mockGh = createMockGh({

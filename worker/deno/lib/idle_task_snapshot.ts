@@ -165,7 +165,7 @@ export async function listKnownOpenFindingIds(
  *
  * This is the pre-file dedup look-up (Issue #2882): the pre-filers call
  * `gh issue create` directly, so without it the same `finding-id` could yield
- * two open issues (observed for `BP-LINTER-typescript` — NEAT-AI#2990/#2991).
+ * two open issues (observed for `BP-LINTER-typescript` — private-repo-14#2990/#2991).
  *
  * Dedup is against **open** issues only: a finding whose prior issue was
  * **closed** (fixed) may legitimately re-file if it recurs, so a closed match

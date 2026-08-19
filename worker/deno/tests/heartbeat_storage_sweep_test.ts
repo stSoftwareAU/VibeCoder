@@ -198,7 +198,7 @@ Deno.test("sweep - orphaned live marker past stuckIssueTimeout is swept and coun
 Deno.test("sweep - an aged orphan is never chosen as the survivor", async () => {
   // The real backlog shape: every marker on the thread was either released
   // or orphaned long ago, so the thread must end with none rather than
-  // keeping a dead claim alive (NEAT-AI PR #3644).
+  // keeping a dead claim alive (private-repo-14 PR #3644).
   const stale = NOW - (STUCK_TIMEOUT + 3600);
   const { ghFn } = makeGhFn([
     {

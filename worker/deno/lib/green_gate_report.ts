@@ -38,7 +38,7 @@ import { parseRunModeRecord } from "./run_mode_record.ts";
 /** Run modes that execute on the host, outside the #4060 boundary. */
 export const HOST_MODE_RUN_MODES: readonly string[] = ["native", "seatbelt"];
 
-/** A gap between consecutive FLEET-health reports longer than this counts. */
+/** A gap between consecutive private-repo-6 reports longer than this counts. */
 export const HEARTBEAT_GAP_THRESHOLD_MS = 90 * 60 * 1000;
 
 /** The regression issues the Phase 0 gate names (plan #4160, this issue). */
@@ -65,7 +65,7 @@ export const DEFAULT_REGRESSION_ISSUES: readonly number[] = [
 /** Injectable evidence sources. */
 export interface GreenGateSources {
   now(): Date;
-  /** This host's id, as FLEET-health names it. */
+  /** This host's id, as private-repo-6 names it. */
   hostId(): string;
   /** Text of `run_core.log` and its rotated siblings, any order. */
   readRunCoreLogs(): Promise<string[]>;
@@ -481,7 +481,7 @@ export function formatGreenGateReport(report: GreenGateReport): string {
   row("Container restarts / backoffs", h.restarts);
   row("Crash cleanups", h.crashCleanups);
   row(
-    "Heartbeat gaps (over 90 min between FLEET-health reports)",
+    "Heartbeat gaps (over 90 min between private-repo-6 reports)",
     h.heartbeatGaps,
   );
   row("Heartbeat push failures", h.heartbeatFailures);

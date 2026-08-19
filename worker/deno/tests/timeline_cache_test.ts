@@ -195,7 +195,7 @@ Deno.test(
           {
             event: "labeled",
             label: { name: "work-on" },
-            actor: { login: "VibeCoderBot" },
+            actor: { login: "Vibecoderbot" },
             created_at: "2024-05-01T10:00:00Z",
           },
         ],
@@ -206,10 +206,10 @@ Deno.test(
         "owner/repo",
         42,
         "work-on",
-        ["alice", "VibeCoderBot"], // fleet worker in allowed_authors
+        ["alice", "Vibecoderbot"], // fleet worker in allowed_authors
         fn,
         cache,
-        ["VibeCoderBot"], // fleet worker logins
+        ["Vibecoderbot"], // fleet worker logins
       );
       assertEquals(result, false, "fleet worker add must be untrusted");
       assertEquals(calls.length, 0, "completed cache entry must short-circuit");

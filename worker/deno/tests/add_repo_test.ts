@@ -117,16 +117,16 @@ Deno.test("validateAddRepoTarget - returns err when visibility lookup itself fai
 // ---------------------------------------------------------------------------
 
 Deno.test("parseAddRepoTitle - parses a valid add-repo title", () => {
-  assertEquals(parseAddRepoTitle("add-repo: example-org/private-repo-23"), {
-    repo: "example-org/private-repo-23",
+  assertEquals(parseAddRepoTitle("add-repo: stSoftwareAU/private-repo-11"), {
+    repo: "stSoftwareAU/private-repo-11",
   });
 });
 
 Deno.test("parseAddRepoTitle - tolerates surrounding whitespace", () => {
   assertEquals(
-    parseAddRepoTitle("  add-repo:   example-org/private-repo-23  "),
+    parseAddRepoTitle("  add-repo:   stSoftwareAU/private-repo-11  "),
     {
-      repo: "example-org/private-repo-23",
+      repo: "stSoftwareAU/private-repo-11",
     },
   );
 });

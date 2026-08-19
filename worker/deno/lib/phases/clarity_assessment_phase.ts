@@ -45,7 +45,7 @@ export const CLARIFICATION_NEXT_STEP =
  * leaves the issue assigned with a CLAIM_LOCK comment, no heartbeat, and
  * the heartbeat-recovery sweep only unassigns after 30 minutes — causing
  * the issue to loop through priority 2 every cycle (observed on FLEET#1626,
- * NEAT-AI-Discovery#1085).
+ * private-repo-17#1085).
  */
 async function releaseClaimForRouting(
   ctx: IssueContext,

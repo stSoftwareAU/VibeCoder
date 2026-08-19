@@ -30,7 +30,7 @@ Deno.test("runConfigSetup - writes config to a temp file", async () => {
 
   // Issue #4030: stub the login lookup so the test never shells out to `gh`.
   const result = await runConfigSetup(configPath, env, {
-    resolveWorkerLogin: () => Promise.resolve("VibeCoderBot"),
+    resolveWorkerLogin: () => Promise.resolve("Vibecoderbot"),
   });
   assertEquals(result.ok, true);
 
@@ -60,7 +60,7 @@ Deno.test("runConfigSetup - preserves existing config values", async () => {
   const env = (_name: string): string | undefined => undefined;
 
   const result = await runConfigSetup(configPath, env, {
-    resolveWorkerLogin: () => Promise.resolve("VibeCoderBot"),
+    resolveWorkerLogin: () => Promise.resolve("Vibecoderbot"),
   });
   assertEquals(result.ok, true);
 

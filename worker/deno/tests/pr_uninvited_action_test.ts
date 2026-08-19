@@ -45,7 +45,7 @@ import type { Logger } from "../types.ts";
 
 const REPO = "owner/repo";
 /** This host's login — a fleet account. */
-const HOST = "VibeCoderBot";
+const HOST = "Vibecoderbot";
 /** A sibling fleet host (`fleet_pr_authors`) — also a fleet account. */
 const SIBLING = "stsvcbot";
 /** A trusted human (`allowed_authors`) — trusted to instruct, never adopted. */

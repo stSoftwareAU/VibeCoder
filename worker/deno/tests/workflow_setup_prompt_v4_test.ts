@@ -2,7 +2,7 @@
  * Tests for workflow_setup prompt v4 (Issue #2638, follow-up to #2624).
  *
  * v4 lightly simplifies v3 for Fable 5: it states the "do not invent
- * alternatives / NEAT-AI workflow wins" rule once (v3 stated it both at
+ * alternatives / private-repo-14 workflow wins" rule once (v3 stated it both at
  * the top and bottom of the Gitleaks section) and trims the duplicated
  * action-pinning restatement in the General Requirements. The
  * workflow_setup prompt has no four-phase finding-stage scaffolding, so
@@ -10,7 +10,7 @@
  *
  * The load-bearing contracts are unchanged: every required placeholder,
  * the optional `{{VERBOSITY_INSTRUCTIONS}}`, and — per the issue note —
- * the `Gitleaks Reference Implementation` section and its NEAT-AI strings
+ * the `Gitleaks Reference Implementation` section and its private-repo-14 strings
  * verbatim (the worker has no H1 router for this prompt, but the
  * workflow_setup_prompt_test.ts latest-version test asserts the Gitleaks
  * string survives).
@@ -83,14 +83,14 @@ Deno.test(
 );
 
 Deno.test(
-  "workflow_setup prompt v4 - keeps the NEAT-AI Gitleaks strings verbatim",
+  "workflow_setup prompt v4 - keeps the private-repo-14 Gitleaks strings verbatim",
   async () => {
     const result = await loadPrompt("workflow_setup", "v4", PROMPTS_DIR);
     assert(result.ok);
     if (!result.ok) return;
     const body = result.value;
     assertStringIncludes(body, "Gitleaks Reference Implementation");
-    assertStringIncludes(body, "example-org/private-repo-29");
+    assertStringIncludes(body, "stSoftwareAU/private-repo-14");
     assertStringIncludes(body, "GITLEAKS_LICENSE");
     assertStringIncludes(body, "ErrLicense");
     assert(

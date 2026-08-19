@@ -118,7 +118,7 @@ set -euo pipefail
 #                             Without this, screenshots are saved locally and must
 #                             be manually uploaded to the PR if needed.
 #   VIBE_FLEET_HEALTH_DIR     - Directory for FLEET health tracking repository
-#                             Defaults to ../FLEET-health (sibling of VibeCoder).
+#                             Defaults to ../private-repo-6 (sibling of VibeCoder).
 #                             Cloned automatically if missing.
 #   VIBE_UPDATE_GH_USER_STATUS - Set to "true" (default) or "false" to control
 #                             GitHub user profile status updates. Requires the
@@ -758,8 +758,8 @@ prompt_interactive_config() {
 
     echo ""
 
-    # FLEET health tracking — always at ../FLEET-health (sibling of VibeCoder)
-    INTERACTIVE_FLEET_HEALTH_DIR="$(cd "$SCRIPT_DIR" && cd .. && pwd)/FLEET-health"
+    # FLEET health tracking — always at ../private-repo-6 (sibling of VibeCoder)
+    INTERACTIVE_FLEET_HEALTH_DIR="$(cd "$SCRIPT_DIR" && cd .. && pwd)/private-repo-6"
     local expanded_fleet="$INTERACTIVE_FLEET_HEALTH_DIR"
     if [[ ! -d "$expanded_fleet" ]]; then
         print_info "Cloning FLEET health repository to ${INTERACTIVE_FLEET_HEALTH_DIR}..."
@@ -773,13 +773,13 @@ prompt_interactive_config() {
             _fleet_ssh_cmd="ssh -i $(printf '%q' "$_expanded_ssh") -o IdentitiesOnly=yes"
         fi
         if [[ -n "$_fleet_ssh_cmd" ]]; then
-            if GIT_SSH_COMMAND="$_fleet_ssh_cmd" git clone git@github.com:example-org/private-repo-18.git "$expanded_fleet" 2>&1; then
+            if GIT_SSH_COMMAND="$_fleet_ssh_cmd" git clone git@github.com:stSoftwareAU/private-repo-6.git "$expanded_fleet" 2>&1; then
                 print_success "FLEET health repository cloned"
             else
                 print_warning "Failed to clone FLEET health repository (non-fatal)"
             fi
         else
-            if git clone git@github.com:example-org/private-repo-18.git "$expanded_fleet" 2>&1; then
+            if git clone git@github.com:stSoftwareAU/private-repo-6.git "$expanded_fleet" 2>&1; then
                 print_success "FLEET health repository cloned"
             else
                 print_warning "Failed to clone FLEET health repository (non-fatal)"

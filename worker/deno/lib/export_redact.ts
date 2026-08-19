@@ -44,6 +44,7 @@ import {
   compileIdentifier,
   IDENTIFIER_CLASSES,
   PRIVATE_REPO_RE,
+  type RepoPolicy,
 } from "./export_scrub_gate.ts";
 import { decodeTextOrNull, listTreeFiles } from "./export_tree.ts";
 
@@ -182,6 +183,8 @@ export interface RedactTextOptions {
   /** Lower-cased private repository name → 1-based index. */
   privateRepoIndex: Map<string, number>;
   publicRepos?: readonly string[];
+  /** Full repository policy; when given it supersedes `publicRepos`. */
+  repoPolicy?: RepoPolicy;
   /** Case-preserving substring renames, applied after every other rule. */
   renames?: readonly RenameRule[];
 }
@@ -207,17 +210,48 @@ export function redactText(
 
   if (options.privateRepoTemplate !== null) {
     let n = 0;
-    text = text.replace(PRIVATE_REPO_RE, (whole, name: string) => {
-      const kind = classifyRepoName(name, options.publicRepos ?? []);
-      if (kind !== "private") return whole;
-      const key = normaliseRepoName(name);
-      const index = options.privateRepoIndex.get(key);
-      if (index === undefined) return whole;
-      n++;
-      const suffix = name.slice(key.length); // keeps a trailing `.git` / `.`
-      return options.privateRepoTemplate!.replace("{n}", String(index)) +
-        suffix;
-    });
+    // The organisation is public; the repository NAME is what is private.
+    // Every private name found after `stSoftwareAU/` anywhere in the tree
+    // (the index) is replaced wherever it appears as a whole word — in the
+    // slug, in a Jenkins job path, in a work-dir path, in a fixture — so a
+    // test that derives one form from another still agrees with itself.
+    // Names shorter than four characters are replaced only in slug form
+    // (a bare short word is too likely to be ordinary text).
+    // Longest name first, so `private-repo-9` is replaced before `fleet` can
+    // match its prefix and leave a half-renamed `private-repo-13-taxation`.
+    const byLength = [...options.privateRepoIndex].sort(
+      (a, b) => b[0].length - a[0].length || a[0].localeCompare(b[0]),
+    );
+    const policy = options.repoPolicy ??
+      {
+        publicRepos: options.publicRepos ?? [],
+        placeholderRepos: [],
+        privatePatterns: [],
+      };
+    for (const [key, index] of byLength) {
+      const placeholder = options.privateRepoTemplate.replace(
+        "{n}",
+        String(index),
+      );
+      // A declared private repository is renamed wherever its name appears
+      // (≥ 4 characters, so a short word is not chased through prose); an
+      // unknown one — which the gate blocks anyway — is hidden in slug form.
+      const treeWide = key.length >= 4 &&
+        classifyRepoName(key, policy) === "private";
+      const re = treeWide
+        ? new RegExp(
+          `(?<![A-Za-z0-9_])${escapeRegExp(key)}(?![A-Za-z0-9_])`,
+          "gi",
+        )
+        : new RegExp(
+          `(stSoftwareAU\\/)${escapeRegExp(key)}(?![A-Za-z0-9_])`,
+          "gi",
+        );
+      text = text.replace(re, (_whole, orgPrefix?: string) => {
+        n++;
+        return treeWide ? placeholder : `${orgPrefix ?? ""}${placeholder}`;
+      });
+    }
     bump("private-repo", n);
   }
 
@@ -251,6 +285,8 @@ export interface RedactTreeOptions {
   rules: readonly RedactionRule[];
   privateRepoTemplate: string | null;
   publicRepos?: readonly string[];
+  /** Full repository policy; when given it supersedes `publicRepos`. */
+  repoPolicy?: RepoPolicy;
   renames?: readonly RenameRule[];
 }
 
@@ -297,7 +333,11 @@ export async function redactTree(
     if (options.privateRepoTemplate !== null) {
       for (const m of text.matchAll(PRIVATE_REPO_RE)) {
         const name = m[1] ?? "";
-        if (classifyRepoName(name, options.publicRepos ?? []) === "private") {
+        const kind = classifyRepoName(
+          name,
+          options.repoPolicy ?? options.publicRepos ?? [],
+        );
+        if (kind === "private" || kind === "unknown") {
           const key = normaliseRepoName(name);
           names.add(key);
           if (!privateRepoDisplay.has(key)) {
@@ -328,6 +368,7 @@ export async function redactTree(
       privateRepoTemplate: options.privateRepoTemplate,
       privateRepoIndex,
       publicRepos: options.publicRepos,
+      repoPolicy: options.repoPolicy,
       renames: options.renames,
     });
     if (out.text === text) continue;

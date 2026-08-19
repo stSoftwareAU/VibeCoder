@@ -1,131 +1,163 @@
-# 🤝 Contributing to Vibe Coder
+# Contributing to VibeCoder
 
-Thanks for your interest. Vibe Coder is an Apache-2.0 licensed, unattended
-GitHub issue-to-PR worker whose value rests on a containment boundary holding
-against hostile input. That shapes what we accept and how carefully we review
-it. This page is the human contributor's landing; the standards that humans
-and AI agents both follow are in [AGENTS.md](AGENTS.md),
-[CODING-STANDARDS.md](CODING-STANDARDS.md) and
-[DESIGN-PRINCIPLES.md](DESIGN-PRINCIPLES.md) — this page points into them
-rather than duplicating them.
+Thanks for your interest in contributing! VibeCoder is an Apache-2.0
+licensed automated GitHub issue worker. This page is a one-stop landing
+for human contributors — it points into the existing docs rather than
+duplicating them.
 
-## What we accept
+For AI agents (Claude Code, Copilot, etc.) working in this repo, the
+authoritative coding-standards document is [AGENTS.md](AGENTS.md). The
+guidance below summarises what humans need to know to land a change.
 
-**Welcome, with a test:**
+## Where to start
 
-- Bug fixes — with a failing test first, then the fix that makes it pass.
-- Hardening of any boundary named in the [Threat Model](docs/THREAT-MODEL.md)
-  — closing a listed gap, reducing a residual risk, adding an enforcing test
-  to a control that has none.
-- Improvements to the container definition, launcher scripts and seatbelt
-  profile that keep the mount set explicit and the boundary deny-by-default.
-- Documentation that is accurate against the code as it is today.
-- New worker commands, prompts and idle-task templates, following
-  [Extending](docs/EXTENDING.md).
+- **Project overview** — [README.md](README.md) and
+  [docs/OVERVIEW.md](docs/OVERVIEW.md) describe what the worker does
+  and how it fits together end-to-end.
+- **Internals and architecture** — [docs/INTERNALS.md](docs/INTERNALS.md)
+  covers the run loop, claim flow, and the major subsystems.
+- **Extending the worker** — [docs/EXTENDING.md](docs/EXTENDING.md) is
+  the entry point for adding new commands, templates, or idle-task
+  templates.
+- **Configuration** — [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+  lists every supported environment variable and config knob.
 
-**Please open an issue first:**
+## Branching
 
-- Anything that widens what the agent can reach — a new mount, a new
-  environment variable passed through, a new outbound sink, a new GitHub
-  surface the worker reads. These need a threat-model row before code
-  (see [Change process](docs/THREAT-MODEL.md#-change-process)).
-- New agent providers or model integrations.
-- Large refactors of `worker/deno/lib`.
+- **`Develop` is the default branch** — open all pull requests against
+  `Develop` (see `.vibe_default_branch` and
+  `.github/workflows/pages.yml`). `main` is reserved for releases.
+- **Milestone branches** — work tagged with a GitHub milestone lands on
+  the milestone branch first; the milestone is merged into `Develop` as
+  a unit when the milestone closes. See
+  [docs/workflows/milestones.md](docs/workflows/milestones.md) for the full
+  workflow.
+- **Branch names** — descriptive kebab-case, ideally referencing the
+  issue number (for example, `issue-2170-add-contributing-md`).
 
-**Not accepted:**
+## Commit signing
 
-- A change that weakens an execution or egress boundary in exchange for a
-  stronger prompt-level defence. The threat model calls this a bad trade on
-  purpose.
-- Tests that grep source files for patterns instead of calling real code.
-- Unpinned dependencies or actions, or a change that needs the Deno lockfile
-  regenerated without saying why.
+**Required signed commits are not currently enforced on `Develop`, and
+this is a deliberate, auditable decision — not an oversight.**
 
-By submitting a pull request you agree that your contribution is licensed
-under the [Apache License 2.0](LICENSE) (its section 5 covers this).
+Every commit on `Develop` is produced by an automation identity
+(`service @ ST <maintainer@example.invalid>` and
+`Vibe Coder <maintainer@example.invalid>`) committing through
+local `git`. Turning on **Require signed commits** in the branch-
+protection rule before each of those identities has a registered signing
+key would make the requirement **fail closed**: every autonomous merge
+would be rejected and the worker fleet would stall. Enabling it safely is
+therefore gated on human credential work that cannot be performed from an
+unattended worker run:
 
-## Security-sensitive review
+1. Generate a signing key for each automation account. SSH-signing is
+   simplest for a bot:
 
-A public repository receives untrusted pull requests — exactly the class of
-input this product is built to distrust — so the review bar is deliberately
-higher on the paths that hold the boundary:
+   ```bash
+   git config gpg.format ssh
+   git config user.signingkey <path-or-key>
+   git config commit.gpgsign true
+   ```
 
-- `worker/deno/lib/` files named in the threat model's traceability table
-  (trust classification, prompt fencing, content-approval snapshots, the `gh`
-  guard and write-repository allowlist, secret redaction, the audit journal,
-  container launch);
-- `container/`, `hooks/`, `run.sh`, `run.ps1`, `setup.sh`, `setup.ps1`,
-  `loop.sh`, `loop.ps1`;
-- `.github/workflows/`.
+2. Register the **public** key as a *signing key* (not an authentication
+   key) on the matching bot's GitHub account. This needs access to that
+   account's settings, so it is a human-only step — never commit private
+   key material (it matches the forbidden-hidden-files allowlist in
+   [CODING-STANDARDS.md](CODING-STANDARDS.md#commit-safety--never-commit-hidden-files)).
+3. Once **every** automation identity that pushes to `Develop` signs its
+   commits, enable **Require signed commits** in the `Develop` branch-
+   protection rule / ruleset — the same setup step that already
+   configures required status checks (see [docs/MERGE.md](docs/MERGE.md)).
 
-Expect a maintainer to ask *which attack path this changes* and *which test
-proves it*. Workflows from a fork run with a read-only token and no secrets;
-a maintainer re-runs them after review where needed. If your change touches
-security behaviour, say so in the PR body — do not make reviewers discover it.
-
-Found a vulnerability rather than a bug? **Do not open an issue or PR.** Use
-private vulnerability reporting as described in [SECURITY.md](SECURITY.md).
-
-## The rules every change follows
-
-- **Test-driven.** Write the failing test, watch it fail, make it pass. Every
-  test calls real code and asserts on its result. See
-  [Test-driven development](CODING-STANDARDS.md#test-driven-development-tdd).
-- **Frozen lockfile.** Every Deno launch site runs `--frozen
-  --lock=deno.lock`. A PR that changes `worker/deno/deno.lock` must explain
-  the dependency change; new dependencies sit in a release-age quarantine
-  before adoption.
-- **SHA-pinned actions.** Every `uses:` in `.github/workflows/` is pinned to
-  a 40-character commit SHA with the version tag in a leading
-  `# owner/action@vX.Y.Z` comment, and one SHA carries one version comment
-  across the tree. Tag or branch refs are rejected in CI.
-- **`set -euo pipefail`** opens every multi-line `run:` block.
-- **Never stage hidden files** (anything matching `.*`) outside the small
-  allowlist in
-  [Commit safety](CODING-STANDARDS.md#commit-safety--never-commit-hidden-files);
-  the pre-commit hook blocks credential-shaped files and `git add -f` is
-  forbidden.
-- **Australian English** in prose, comments and identifiers — `behaviour`,
-  `colour`, `organisation`, `licence` (noun).
-- **No operator specifics.** No account names, hostnames, e-mail addresses
-  or home paths in code, docs or tests. Fixtures use `example.invalid`.
+Until those steps are complete, the requirement stays off by design. The
+surrounding controls already close most of the workflow-tampering chain:
+`.github/CODEOWNERS` mandates code-owner review on workflow and action
+paths (with the worker bot excluded from self-approval), and the default
+branch carries required status checks plus the direct-merge wall
+documented in [docs/MERGE.md](docs/MERGE.md). Signed commits would add
+provenance verification on top; this note records why that final link is
+deferred so the gap is a deliberate choice rather than an implicit one.
 
 ## Local quality gate
 
-One entry point mirrors CI:
+The repository ships a single quality entry point that mirrors what CI
+runs:
 
 ```bash
 ./quality.sh < /dev/null
 ```
 
-It runs the Deno type-check, the test suite, `deno lint`, `deno fmt --check`
-and markdownlint. Redirect stdin from `/dev/null` so an unattended run can
-never hang on a prompt. To run one test file:
+This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
+Deno test suite, `deno lint`, `deno fmt --check`, and markdownlint. CI
+additionally runs shellcheck over the repo's shell scripts — the gate
+itself does not (Issue #3129). Always redirect stdin from `/dev/null` so
+unattended runs cannot hang waiting for input.
 
-```bash
-cd worker/deno
-deno test --allow-read --allow-env --allow-run --allow-write --allow-sys=hostname tests/<file>_test.ts
-```
+CI-enforced workflows live under `.github/workflows/`, including
+`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
+`semgrep.yml`. A green local `./quality.sh` is the best predictor of a
+green PR.
 
-CI adds shellcheck, actionlint and zizmor over the workflows, secret detection
-(gitleaks), SAST (semgrep), a dependency audit with SBOM, the container image
-build with its containment tests, and a Markdown lint. A green local
-`./quality.sh` is the best predictor of a green PR.
+### Workflow hygiene (Issue #3716)
 
-## Branching, commits and pull requests
+The gate also enforces two static invariants over the workflows
+themselves:
 
-- Open pull requests against the default branch. Branch names are descriptive
-  kebab-case, ideally carrying the issue number
-  (`issue-123-short-description`).
-- Reference the issue in commit messages; lead with the *what* and the *why*;
-  keep commits focused and reviewable.
-- PR body: a short `## Summary` (with `Closes #N`), `## Evidence` (test
-  output, a screenshot where behaviour is visual), and `## Test Plan` naming
-  the tests added or changed.
-- Keep the diff to the change. Reformatting unrelated files, or "while I was
-  here" edits, slow review down on the paths where review matters most.
+- **Every multi-line `run:` block opens with `set -euo pipefail`.** GitHub
+  runs steps as `bash -e` only, so without the preamble an unset variable
+  or a failure mid-pipeline is silently ignored and the step still reports
+  green. A block carrying a single command is exempt — nothing can be
+  skipped after it.
+- **One pinned SHA carries one version comment.** Actions are pinned to
+  40-character commit SHAs (Issue #2123) with the tag recorded in a
+  leading `# owner/action@vX.Y.Z` comment. Annotating the same SHA
+  `v6.0.0` in one workflow and `v6.0.2` in another destroys the only
+  human-readable signal that makes SHA pinning auditable.
+
+## Test layout
+
+- **Deno unit tests** — `worker/deno/tests/`. Run the full suite with
+  `cd worker/deno && deno task test`, or target a single file with
+  `deno test worker/deno/tests/<file>_test.ts`. The previous top-level
+  `tests/` Bats integration suite has been fully migrated to Deno
+  (Issue #2249); files carrying a `Migrated from tests/*.bats` header
+  in `worker/deno/tests/` cover the original cases.
+- **No-grep tests** — every test must call real code and assert on its
+  result. Tests that grep source files for patterns or function names
+  are rejected; see [CODING-STANDARDS.md](CODING-STANDARDS.md#test-driven-development-tdd)
+  for the rationale.
+- **Speed budget** — unit tests must complete within 120 seconds (most
+  are well under 10 seconds). Slow tests are likely benchmarks in
+  disguise — move them to a dedicated benchmark file.
+
+## Commit and PR conventions
+
+- Reference the issue number in commit messages (for example,
+  `Add CONTRIBUTING.md (#2170)`).
+- Lead with the *what* and the *why*; keep individual commits focused
+  and reviewable.
+- PR summaries follow the pattern in
+  `docs/archive/pr-summaries/` — a short
+  `## Summary` (with a `Closes #N` line so GitHub auto-closes the
+  issue), an `## Evidence` section (screenshot, benchmark numbers, or
+  test results as appropriate), and a `## Test Plan` enumerating the
+  tests added or modified.
+- Use **Australian English** spelling throughout — `colour`,
+  `behaviour`, `organisation`, `favour`, `centre`. CI does not block
+  on this but reviewers will ask for changes.
+- Never stage hidden files (anything matching `.*`) outside the small
+  allowlist documented in [CODING-STANDARDS.md](CODING-STANDARDS.md#commit-safety--never-commit-hidden-files) — the
+  pre-commit gate blocks accidental secret leaks and `git add -f` is
+  forbidden.
+
+## Reporting security issues
+
+Please do **not** open a public GitHub issue for a security
+vulnerability. See [SECURITY.md](SECURITY.md) for the hardening checklist and
+the private reporting channel, and [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)
+for the design-level threat model.
 
 ## Getting help
 
-If something in this guide is unclear or out of date, open an issue — or a PR
-fixing it. We take both gladly.
+If something in this guide is unclear or out of date, open an issue
+(or a PR fixing it) — we will gladly take both.

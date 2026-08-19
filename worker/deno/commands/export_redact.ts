@@ -91,6 +91,7 @@ export const exportRedactCommand: Command = {
         rules: redactions.rules,
         privateRepoTemplate: redactions.privateRepoTemplate,
         publicRepos: identifiers.publicRepos,
+        repoPolicy: identifiers.repoPolicy,
         renames: redactions.renames,
       });
     } catch (error) {

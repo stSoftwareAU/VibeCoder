@@ -214,16 +214,16 @@ Deno.test("audit - listOrgRepos pages the org and returns slugs", async () => {
   const gh: GhExec = (args) => {
     seen = args;
     return Promise.resolve(
-      "example-org/private-repo-13\nstSoftwareAU/VibeCoder\n\n",
+      "stSoftwareAU/private-repo-1\nstSoftwareAU/VibeCoder\n\n",
     );
   };
   const repos = await listOrgRepos("stSoftwareAU", gh);
   assertEquals(repos, [
-    "example-org/private-repo-13",
+    "stSoftwareAU/private-repo-1",
     "stSoftwareAU/VibeCoder",
   ]);
   assert(seen.includes("--paginate"));
-  assert(seen.some((a) => a.startsWith("orgs/example-org/private-repo-53")));
+  assert(seen.some((a) => a.startsWith("orgs/stSoftwareAU/repos")));
 });
 
 Deno.test("audit - listOrgRepos rejects an invalid organisation without a gh call", async () => {

@@ -93,7 +93,7 @@ export interface WorkOnCollectionResult {
    *
    * Issue #2751: the signal is computed from the post-`filterAndSort`
    * set, not the raw fetch count. Work-on issues `filterAndSort` drops —
-   * milestone-tracking trackers (the proven `Migration_v21` field case),
+   * milestone-tracking trackers (the proven `private-repo-12` field case),
    * issues assigned to anyone, and issues carrying a blocking label
    * (failed, needs-human, needs-revision, refine-issue, planning,
    * question) — are work the worker can never action this cycle, so they
@@ -375,7 +375,7 @@ export async function collectWorkOnCandidates(
       diag?.logIssueSkipped(repo, issue.number, "label-author-not-allowed");
       // Issue #3575: fail loud. An untrusted `work-on` label was previously
       // skipped silently, leaving the issue in a false "queued" state that
-      // could persist indefinitely (NEAT-AI#3489 sat ~25 h). Strip the label
+      // could persist indefinitely (private-repo-14#3489 sat ~25 h). Strip the label
       // and post one explanatory comment when the most-recent adder is
       // positively confirmed untrusted (the helper fails closed otherwise, so
       // a genuine human `work-on` is never removed on a transient read error).
@@ -552,7 +552,7 @@ export async function collectWorkOnCandidates(
   // Issue #2751: compute the suppression signal from the *post-
   // `filterAndSort`* set (`filtered`), not the raw fetch count.
   // `filterAndSort` drops every work-on issue the worker can never action
-  // this cycle — milestone-tracking trackers (the proven `Migration_v21`
+  // this cycle — milestone-tracking trackers (the proven `private-repo-12`
   // field case), issues assigned to anyone, and issues carrying a blocking
   // label (failed, needs-human, needs-revision, refine-issue, planning,
   // question). A repo whose only work-on issues fall into those categories

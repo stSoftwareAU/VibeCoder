@@ -17,7 +17,7 @@ Deno.test("isSafeDockerImageRef - accepts ordinary image references", () => {
       "ubuntu",
       "ubuntu:22.04",
       "library/node:20-alpine",
-      "ghcr.io/example-org/private-repo-7:latest",
+      "ghcr.io/stsoftwareau/build:latest",
       "registry.example.com:5000/team/img:v1.2.3",
       "alpine@sha256:" + "a".repeat(64),
     ]

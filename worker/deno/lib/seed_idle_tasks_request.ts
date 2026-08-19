@@ -37,7 +37,7 @@ import { REPO_SLUG_PATTERN } from "./config.ts";
 
 /**
  * Title prefix marking an issue as a full idle-task wrapper sweep request,
- * e.g. `seed-idle-tasks: example-org/private-repo-29`. Matched case-insensitively,
+ * e.g. `seed-idle-tasks: stSoftwareAU/private-repo-14`. Matched case-insensitively,
  * in the same `.startsWith()` style as `ADD_REPO_PREFIX`.
  */
 export const SEED_IDLE_TASKS_PREFIX = "seed-idle-tasks:";

@@ -67,7 +67,7 @@ When creating a PR, the worker includes appropriate evidence based on the type
 of change:
 
 - **UI (User Interface) Changes**: Include a screenshot (see
-  Screenshot Support). If a screenshot
+  [Screenshot Support](DEPLOYMENT.md#screenshot-support-setup)). If a screenshot
   cannot be generated, you must explicitly state why in the PR summary.
 - **Performance Changes**: Include benchmark results (before/after). If no
   measurable improvement, document this finding.
@@ -277,7 +277,7 @@ cd worker/deno && deno run --allow-all mod.ts diagnose-repo --repo owner/repo --
 ```
 
 See also the
-Troubleshooting guide for
+[Troubleshooting guide](TROUBLESHOOTING.md#-worker-not-picking-up-issues) for
 the full diagnostic decision tree.
 
 ### 🕐 Timeout Behaviour
@@ -576,8 +576,8 @@ repository to signal it is functioning correctly.
 
 | Variable          | Default                                      | Description                                               |
 | ----------------- | -------------------------------------------- | --------------------------------------------------------- |
-| `FLEET_HEALTH_DIR`  | (empty)                                      | Directory for FLEET-health repository. Disabled when empty. |
-| `FLEET_HEALTH_REPO` | `git@github.com:example-org/private-repo-18.git` | Git URL to clone if directory doesn't exist               |
+| `FLEET_HEALTH_DIR`  | (empty)                                      | Directory for private-repo-6 repository. Disabled when empty. |
+| `FLEET_HEALTH_REPO` | `git@github.com:stSoftwareAU/private-repo-6.git` | Git URL to clone if directory doesn't exist               |
 | `FLEET_HEALTH_TIMEOUT_MS` | `600000` (10 minutes)                  | Timeout for the `helpers/repos.sh` health-report subprocess. Raised from 60s so a slow-but-healthy report run is not killed and the host wrongly marked dead (Issue #3127). |
 
 These values can be configured via `setup.sh` using `VIBE_FLEET_HEALTH_DIR` or
@@ -656,9 +656,9 @@ manageable.
 For state file paths, finding-issue layout, suppression syntax, the
 vulnerability taxonomy, and the operator playbook (lock recovery, overflow
 rollover, scan crash recovery), see
-Security Scans — Operator Manual. Upstream CVE advisories
+[Security Scans — Operator Manual](SECURITY-SCAN.md). Upstream CVE advisories
 follow a separate process documented in
-Upstream Security Advisory Triage.
+[Upstream Security Advisory Triage](security-advisory-triage.md).
 
 ## 🔤 Automatic Spelling Check Fixes
 

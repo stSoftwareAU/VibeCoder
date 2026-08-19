@@ -548,13 +548,13 @@ Deno.test(
     });
 
     const result = await tpl.runTask({
-      repo: "example-org/private-repo-29",
+      repo: "stSoftwareAU/private-repo-14",
       workDir: "/home/vibe/auto-issue-work",
       idleTaskIssueNumber: 50,
     });
 
     assert(result.ok);
-    assertEquals(receivedPath, "/home/vibe/auto-issue-work/NEAT-AI");
+    assertEquals(receivedPath, "/home/vibe/auto-issue-work/private-repo-14");
   },
 );
 
@@ -927,7 +927,7 @@ Deno.test(
 //
 // The CI-gate pre-filer must not create a second issue when an OPEN issue
 // with the same finding-id already exists (the observed BP-LINTER-typescript
-// duplicate NEAT-AI#2990/#2991). A CLOSED prior issue must not suppress a
+// duplicate private-repo-14#2990/#2991). A CLOSED prior issue must not suppress a
 // genuine re-file.
 // ---------------------------------------------------------------------------
 

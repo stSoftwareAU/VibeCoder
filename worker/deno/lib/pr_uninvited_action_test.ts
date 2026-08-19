@@ -53,7 +53,7 @@ import type { Logger } from "../types.ts";
 const REPO = "org/fixture";
 const DEFAULT_BRANCH = "main"; // allow-hardcoded-branch — fixture repo only
 /** The host's own login. */
-const HOST = "VibeCoderBot";
+const HOST = "Vibecoderbot";
 /** A sibling fleet host (`fleet_pr_authors`) — push-capable. */
 const SIBLING = "stsvcbot";
 /** A trusted human (`allowed_authors`) — may instruct, never adopted. */

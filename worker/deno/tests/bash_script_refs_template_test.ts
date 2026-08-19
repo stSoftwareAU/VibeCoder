@@ -368,7 +368,7 @@ Deno.test("runTask - scans the repo's own checkout, not the parent work dir (Iss
   // Regression for the cross-repo false positives (#3292): `opts.workDir`
   // is the PARENT directory holding every clone side by side; the scanner
   // must be pointed at `${workDir}/${repoName}` so it never sweeps sibling
-  // checkouts (NEAT-AI, VibeCoder, …) and files against the wrong repo.
+  // checkouts (private-repo-14, VibeCoder, …) and files against the wrong repo.
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const scanRoots: string[] = [];
   const t = createBashScriptRefsTemplate({
@@ -385,13 +385,13 @@ Deno.test("runTask - scans the repo's own checkout, not the parent work dir (Iss
   });
 
   await t.runTask({
-    repo: "example-org/private-repo-21",
+    repo: "stSoftwareAU/private-repo-9",
     workDir: "/work",
     idleTaskIssueNumber: 100,
   });
 
   // Derived from the parent work dir + repo name — never the bare parent.
-  assertEquals(scanRoots, ["/work/FLEET-taxation"]);
+  assertEquals(scanRoots, ["/work/private-repo-9"]);
 });
 
 // ---------------------------------------------------------------------------

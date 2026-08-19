@@ -976,7 +976,7 @@ Deno.test(
 // ---------------------------------------------------------------------------
 // Issue #1756 — gitleaks-action's computed `<base_sha>^..<head_sha>` rev-range
 // fails on the runner unless the PR base branch is explicitly fetched
-// before the action runs. Mirror the NEAT-AI quality.yml pattern.
+// before the action runs. Mirror the private-repo-14 quality.yml pattern.
 // ---------------------------------------------------------------------------
 
 Deno.test(
@@ -1163,9 +1163,9 @@ Deno.test(
 //
 // The gitleaks workflow is security-sensitive — a hijacked third-party
 // action tag could exfiltrate secrets from any consumer repository. The
-// canonical NEAT-AI pattern pins both `actions/checkout` and
+// canonical private-repo-14 pattern pins both `actions/checkout` and
 // `gitleaks/gitleaks-action` to 40-character commit SHAs (see
-// example-org/private-repo-29/.github/workflows/quality.yml). The Vibe Coder must
+// stSoftwareAU/private-repo-14/.github/workflows/quality.yml). The Vibe Coder must
 // emit the same hardening for every repository it sets up.
 
 Deno.test(
@@ -1191,16 +1191,16 @@ Deno.test(
 );
 
 Deno.test(
-  "workflow_definitions - gitleaks template references NEAT-AI canonical pattern",
+  "workflow_definitions - gitleaks template references private-repo-14 canonical pattern",
   () => {
     const spec = WORKFLOW_SPECS.find((s) => s.id === "gitleaks");
     assertNotEquals(spec, undefined, "gitleaks spec missing");
     // The template must point reviewers at the canonical reference so a
     // future regression is easy to diagnose.
     assertEquals(
-      spec!.template.includes("NEAT-AI"),
+      spec!.template.includes("private-repo-14"),
       true,
-      "gitleaks template should reference the canonical NEAT-AI pattern",
+      "gitleaks template should reference the canonical private-repo-14 pattern",
     );
   },
 );

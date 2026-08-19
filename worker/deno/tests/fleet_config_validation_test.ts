@@ -12,8 +12,8 @@ import {
 
 Deno.test("validateFleetConfig - complete config is ok", () => {
   const result = validateFleetConfig({
-    githubUser: "VibeCoderBot",
-    allowedAuthors: ["VibeCoderBot", "stsvcbot", "human1"],
+    githubUser: "Vibecoderbot",
+    allowedAuthors: ["Vibecoderbot", "stsvcbot", "human1"],
     fleetPrAuthors: ["stsvcbot"],
   });
   assertEquals(result.level, "ok");
@@ -34,7 +34,7 @@ Deno.test("validateFleetConfig - empty effective set is an error", () => {
 
 Deno.test("validateFleetConfig - empty allowed_authors warns about blindness", () => {
   const result = validateFleetConfig({
-    githubUser: "VibeCoderBot",
+    githubUser: "Vibecoderbot",
     allowedAuthors: [],
     fleetPrAuthors: [],
   });
@@ -45,8 +45,8 @@ Deno.test("validateFleetConfig - empty allowed_authors warns about blindness", (
 Deno.test("validateFleetConfig - sibling only in fleet_pr_authors warns", () => {
   // The exact #3138 blind-spot shape.
   const result = validateFleetConfig({
-    githubUser: "VibeCoderBot",
-    allowedAuthors: ["VibeCoderBot", "human1"],
+    githubUser: "Vibecoderbot",
+    allowedAuthors: ["Vibecoderbot", "human1"],
     fleetPrAuthors: ["stsvcbot"],
   });
   assertEquals(result.level, "warning");
@@ -59,7 +59,7 @@ Deno.test("validateFleetConfig - sibling only in fleet_pr_authors warns", () => 
 Deno.test("validateFleetConfig - missing detection is case-insensitive", () => {
   const result = validateFleetConfig({
     githubUser: "host",
-    allowedAuthors: ["stsvcbot"],
+    allowedAuthors: ["STSVCBOT"],
     fleetPrAuthors: ["stsvcbot"],
   });
   assertEquals(result.missingFromAllowed, []);

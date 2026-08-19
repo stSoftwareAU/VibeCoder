@@ -67,7 +67,7 @@ than via rustup, so there is no per-user toolchain directory and nothing to
 update at run time. The combined `rust-<version>` package carries only
 rustc/cargo/rust-std (rust-docs is dropped to keep the layer smaller);
 rustfmt and clippy are separate component packages, each with its own pinned
-checksum. `QUALITY_SKIP_RUST_UPDATE=1` stops FLEET-taxation's gate running
+checksum. `QUALITY_SKIP_RUST_UPDATE=1` stops private-repo-9's gate running
 `rustup update stable` — the image owns its toolchain.
 
 ## Playwright + headless Chromium (Issue #4069)

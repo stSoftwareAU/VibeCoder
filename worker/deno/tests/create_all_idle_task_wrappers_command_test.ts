@@ -64,7 +64,9 @@ function makeMockGh(opts: { createThrows?: boolean } = {}) {
       if (opts.createThrows) {
         return Promise.reject(new Error("gh issue create exploded"));
       }
-      return Promise.resolve("https://github.com/org/neat/issues/1\n");
+      return Promise.resolve(
+        "https://github.com/org/private-repo-13/issues/1\n",
+      );
     }
     return Promise.resolve("[]");
   };
@@ -85,7 +87,7 @@ Deno.test("create-all-idle-task-wrappers - clean repo seeds all ten wrappers", a
     const { fn, calls } = makeMockGh();
     const result = await createAllIdleTaskWrappersCommand.execute(
       {
-        repo: "example-org/private-repo-29",
+        repo: "stSoftwareAU/private-repo-14",
         __testDeps: {
           ghCommandFn: fn,
           ensureLabelFn: labelOk,
@@ -123,7 +125,7 @@ Deno.test("create-all-idle-task-wrappers - skips wrappers already open", async (
     const allOpen = new Set<string>(IDLE_TASK_WRAPPER_TITLES);
     const result = await createAllIdleTaskWrappersCommand.execute(
       {
-        repo: "example-org/private-repo-29",
+        repo: "stSoftwareAU/private-repo-14",
         __testDeps: {
           ghCommandFn: fn,
           ensureLabelFn: labelOk,
@@ -149,7 +151,7 @@ Deno.test("create-all-idle-task-wrappers - gh failure surfaces as failed result"
     const { fn } = makeMockGh({ createThrows: true });
     const result = await createAllIdleTaskWrappersCommand.execute(
       {
-        repo: "example-org/private-repo-29",
+        repo: "stSoftwareAU/private-repo-14",
         __testDeps: {
           ghCommandFn: fn,
           ensureLabelFn: labelOk,
@@ -176,7 +178,7 @@ Deno.test("create-all-idle-task-wrappers - prints the outcome table on success",
     const lines: string[] = [];
     const result = await createAllIdleTaskWrappersCommand.execute(
       {
-        repo: "example-org/private-repo-29",
+        repo: "stSoftwareAU/private-repo-14",
         __testDeps: {
           ghCommandFn: fn,
           ensureLabelFn: labelOk,
@@ -203,7 +205,7 @@ Deno.test("create-all-idle-task-wrappers - prints the outcome table and exits no
     const lines: string[] = [];
     const result = await createAllIdleTaskWrappersCommand.execute(
       {
-        repo: "example-org/private-repo-29",
+        repo: "stSoftwareAU/private-repo-14",
         __testDeps: {
           ghCommandFn: fn,
           ensureLabelFn: labelOk,

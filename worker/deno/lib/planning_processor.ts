@@ -351,7 +351,7 @@ export async function checkSubIssuesOnGitHub(
  * remain as fallbacks for runs where Claude added a parent-link prose marker
  * but did not create a native link.
  *
- * Production incident: a planning run on NEAT-AI-Discovery created seven
+ * Production incident: a planning run on private-repo-17 created seven
  * native sub-issues whose bodies said "Follow-up to #1418". Claude's output
  * echoed only the parent URL, so primary extraction returned `[#1418]`
  * (length 1, non-zero) and every GitHub fallback was skipped — no milestone

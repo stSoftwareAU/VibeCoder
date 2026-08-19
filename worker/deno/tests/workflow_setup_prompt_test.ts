@@ -124,7 +124,7 @@ Deno.test("prompt builder - workflow setup prompt returns PromptParts with codin
 // the user turn — it is repository-supplied and therefore untrusted.
 Deno.test("prompt builder - workflow setup prompt injects repo context into the user turn", async () => {
   const repoContext =
-    "## Repository Context: AGENTS.md\n\nUse NEAT-AI patterns.";
+    "## Repository Context: AGENTS.md\n\nUse private-repo-14 patterns.";
   const result = await buildWorkflowSetupPrompt({
     repo: "owner/repo",
     languages: "Go",
@@ -136,9 +136,9 @@ Deno.test("prompt builder - workflow setup prompt injects repo context into the 
   });
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertStringIncludes(result.value.prompt, "Use NEAT-AI patterns.");
+    assertStringIncludes(result.value.prompt, "Use private-repo-14 patterns.");
     assertEquals(
-      result.value.systemPrompt.includes("Use NEAT-AI patterns."),
+      result.value.systemPrompt.includes("Use private-repo-14 patterns."),
       false,
     );
     assertStringIncludes(result.value.systemPrompt, "Australian English");
@@ -200,7 +200,7 @@ Deno.test("prompt builder - workflow setup prompt template mentions workflow YAM
 
 // --- v2 template tests (Issue #1581) ---
 //
-// v2 folds in CI hardening lessons learnt from NEAT-AI-scorer issues #18–#24.
+// v2 folds in CI hardening lessons learnt from private-repo-22 issues #18–#24.
 // v1 is frozen (per Issue #235 prompt immutability) and must remain unchanged.
 
 Deno.test("prompt manager - loads workflow_setup v2 specifically", async () => {
@@ -223,7 +223,7 @@ Deno.test("prompt manager - workflow_setup v2 contains CI Hardening Defaults sec
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value, "CI Hardening Defaults");
-    // Concrete NEAT-AI-scorer learnings codified in v2
+    // Concrete private-repo-22 learnings codified in v2
     assertStringIncludes(
       result.value,
       "Pin actions to fully-qualified versions",
@@ -264,7 +264,7 @@ Deno.test("prompt manager - workflow_setup v1 remains unchanged (immutability)",
 
 // --- v3 template tests (Issue #1756) ---
 //
-// v3 codifies the canonical NEAT-AI gitleaks pattern in two ways:
+// v3 codifies the canonical private-repo-14 gitleaks pattern in two ways:
 //   1. SHA-pinned third-party actions and a wired-through GITLEAKS_LICENSE
 //      secret (avoids ErrLicense and supply-chain tag hijack).
 //   2. An explicit "Fetch base branch" step before gitleaks-action runs so
@@ -288,14 +288,14 @@ Deno.test("prompt manager - loads workflow_setup v3 specifically", async () => {
 });
 
 Deno.test(
-  "prompt manager - workflow_setup v3 documents NEAT-AI gitleaks pattern",
+  "prompt manager - workflow_setup v3 documents private-repo-14 gitleaks pattern",
   async () => {
     const result = await loadPrompt("workflow_setup", "v3", PROMPTS_DIR);
     assertEquals(result.ok, true);
     if (result.ok) {
-      // The new section must point to NEAT-AI as canonical
+      // The new section must point to private-repo-14 as canonical
       assertStringIncludes(result.value, "Gitleaks Reference Implementation");
-      assertStringIncludes(result.value, "example-org/private-repo-29");
+      assertStringIncludes(result.value, "stSoftwareAU/private-repo-14");
       // The two concrete failures the prompt must prevent
       assertStringIncludes(result.value, "GITLEAKS_LICENSE");
       assertStringIncludes(result.value, "ErrLicense");
@@ -307,7 +307,7 @@ Deno.test(
         true,
         "v3 should require a 40-character commit SHA pin",
       );
-      // The fetch-base-branch fix from NEAT-AI quality.yml
+      // The fetch-base-branch fix from private-repo-14 quality.yml
       assertStringIncludes(result.value, "Fetch base branch");
       assertStringIncludes(result.value, "github.base_ref");
       assertStringIncludes(result.value, "Invalid revision range");
@@ -332,7 +332,7 @@ Deno.test("prompt manager - workflow_setup v3 passes placeholder validation", as
 Deno.test(
   "prompt manager - workflow_setup v2 remains unchanged (immutability for v3)",
   async () => {
-    // v2 must NOT mention the v3-only NEAT-AI gitleaks fixes — they live
+    // v2 must NOT mention the v3-only private-repo-14 gitleaks fixes — they live
     // in v3 only. This guards against accidental edits to v2.
     const result = await loadPrompt("workflow_setup", "v2", PROMPTS_DIR);
     assertEquals(result.ok, true);

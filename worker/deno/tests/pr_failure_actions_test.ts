@@ -105,10 +105,10 @@ Deno.test("extractJenkinsBuildNumber - non-numeric tail is unparseable", () => {
 
 // The shape GitHub actually records in the `target_url` of a
 // `continuous-integration/jenkins/pr-head` status: the build number is
-// followed by a `/display/redirect` view suffix (example-org/private-repo-27#585).
+// followed by a `/display/redirect` view suffix (stSoftwareAU/private-repo-12#585).
 Deno.test("extractJenkinsBuildNumber - display/redirect suffix", () => {
   const result = extractJenkinsBuildNumber(
-    "https://pipeline.stsoftware.com.au/job/example-org/private-repo-26/Migration_v21/job/PR-599/6/display/redirect",
+    "https://ci.example.invalid/job/stSoftwareAU/job/private-repo-12/job/PR-599/6/display/redirect",
   );
   assert(result.ok);
   if (result.ok) assertEquals(result.value, 6);
@@ -135,7 +135,7 @@ Deno.test("extractJenkinsBuildNumber - numeric view sub-path is not the build", 
 // A PR job name is non-numeric, so it can never be read as the build number.
 Deno.test("extractJenkinsBuildNumber - PR job with no build segment is unparseable", () => {
   const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/example-org/private-repo-26/Migration_v21/job/PR-599/",
+    "https://jenkins.example.com/job/stSoftwareAU/job/private-repo-12/job/PR-599/",
   );
   assert(!result.ok);
 });
@@ -146,11 +146,11 @@ Deno.test("extractJenkinsBuildNumber - PR job with no build segment is unparseab
 
 Deno.test("extractJenkinsJobPath - nested PR job path", () => {
   const result = extractJenkinsJobPath(
-    "https://pipeline.stsoftware.com.au/job/example-org/private-repo-26/Migration_v21/job/PR-599/6/display/redirect",
+    "https://ci.example.invalid/job/stSoftwareAU/job/private-repo-12/job/PR-599/6/display/redirect",
   );
   assert(result.ok);
   if (result.ok) {
-    assertEquals(result.value, "example-org/private-repo-27/PR-599");
+    assertEquals(result.value, "stSoftwareAU/private-repo-12/PR-599");
   }
 });
 
@@ -189,16 +189,16 @@ Deno.test("jenkins provider - uses the PR job named by the check target URL", as
   try {
     const seen: string[] = [];
     const results = await runPrFailureActions({
-      repo: "example-org/private-repo-27",
+      repo: "stSoftwareAU/private-repo-12",
       prNumber: 599,
       failedChecks: [makeCheck({
         checkName: "continuous-integration/jenkins/pr-head",
         targetUrl:
-          "https://jenkins.example.com/job/example-org/private-repo-26/Migration_v21/job/PR-599/6/display/redirect",
+          "https://jenkins.example.com/job/stSoftwareAU/job/private-repo-12/job/PR-599/6/display/redirect",
       })],
       providers: [{
         provider: "jenkins",
-        jobPath: "example-org/private-repo-27/Develop",
+        jobPath: "stSoftwareAU/private-repo-12/Develop",
         checkNamePattern: "jenkins",
       }],
       fetchFn: (url: string | URL | Request) => {
@@ -233,7 +233,7 @@ Deno.test("jenkins provider - refuses a job outside the configured folder", asyn
   setEnv();
   try {
     const results = await runPrFailureActions({
-      repo: "example-org/private-repo-27",
+      repo: "stSoftwareAU/private-repo-12",
       prNumber: 599,
       failedChecks: [makeCheck({
         checkName: "continuous-integration/jenkins/pr-head",
@@ -242,7 +242,7 @@ Deno.test("jenkins provider - refuses a job outside the configured folder", asyn
       })],
       providers: [{
         provider: "jenkins",
-        jobPath: "example-org/private-repo-27/Develop",
+        jobPath: "stSoftwareAU/private-repo-12/Develop",
         checkNamePattern: "jenkins",
       }],
       fetchFn: () => {
@@ -627,7 +627,7 @@ Deno.test(
 
       const checks: FailedCiCheck[] = [
         makeCheck({
-          checkName: "ST-pipeline build",
+          checkName: "private-repo-25 build",
           targetUrl: "https://jenkins.example.com/job/foo/9/",
         }),
       ];
@@ -635,7 +635,7 @@ Deno.test(
         {
           provider: "jenkins",
           jobPath: "foo",
-          checkNamePattern: "ST-pipeline",
+          checkNamePattern: "private-repo-25",
         },
       ];
 

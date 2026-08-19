@@ -393,7 +393,7 @@ Deno.test("resolveInFlightIssue - reads the issue the crashed container was work
       "1700000000",
     );
     const found = await resolveInFlightIssue(workDir);
-    assertEquals(found?.repo, "example-org/private-repo-61");
+    assertEquals(found?.repo, "stSoftwareAU/Vibe_Coder");
     assertEquals(found?.issueNumber, 4072);
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => {});

@@ -576,7 +576,7 @@ Deno.test(
 // ---------------------------------------------------------------------------
 
 Deno.test("createAllIdleTaskWrappers - every write classifies against the target repo", async () => {
-  const target = "example-org/private-repo-29";
+  const target = "stSoftwareAU/private-repo-14";
   const classified: MutationInfo[] = [];
   const gh = (args: string[]): Promise<string> => {
     // Stand-in for the chokepoint: classify exactly what `spawnGh` would.

@@ -11,7 +11,7 @@
  *       the label.
  *
  * Reproduces the bug reported on
- * https://github.com/example-org/private-repo-21/issues/406#issuecomment-4527545438
+ * https://github.com/stSoftwareAU/private-repo-9/issues/406#issuecomment-4527545438
  * — silent re-application of `needs-human` after the user adds `work-on`
  * — by asserting that the Ready-already-posted defence-in-depth path
  * routes through the shared helper with the expected reason / next step
@@ -256,11 +256,11 @@ Deno.test(
 
 // ============================================================================
 // 3) Ready-already-posted DiD: posts explanation when no prior dedup
-//    marker exists; bug from FLEET-taxation#406 cannot recur
+//    marker exists; bug from private-repo-9#406 cannot recur
 // ============================================================================
 
 Deno.test(
-  "Issue #2209: Ready-already-posted defence-in-depth posts an explanation when no dedup marker exists (FLEET-taxation#406 regression)",
+  "Issue #2209: Ready-already-posted defence-in-depth posts an explanation when no dedup marker exists (private-repo-9#406 regression)",
   async () => {
     // The user previously added `work-on` and the verifier stripped
     // `needs-human`. The Ready marker is in the comment history but

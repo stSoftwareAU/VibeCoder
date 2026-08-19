@@ -291,7 +291,7 @@ Deno.test(
     // sees claimable work but the scan loop reports `foundClaimableIssue
     // = false`, the next iteration's GraphQL budget is more valuable
     // than filing yet another wrapper. Skipping the filer here is what
-    // breaks the rate-limit-burning loop observed against FLEET-validation
+    // breaks the rate-limit-burning loop observed against private-repo-10
     // #45-#48.
     let cycleCount = 0;
     let nowValue = 0;

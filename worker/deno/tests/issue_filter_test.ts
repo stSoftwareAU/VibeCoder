@@ -135,15 +135,15 @@ Deno.test("issue_filter - isMilestoneOccupied only blocks same milestone", () =>
 // -----------------------------------------------------------------------------
 
 Deno.test("issue_filter - isMilestoneOccupied is occupied when assigned to another fleet account", () => {
-  // The current host is VibeCoderBot; another fleet host (stsvcbot) already
+  // The current host is Vibecoderbot; another fleet host (stsvcbot) already
   // holds an issue in the same milestone. The work stream must read as
   // occupied so this host does not start the same issue (duplicate PRs).
   const issues = [
     makeIssue({ milestone: "v1.0", assignees: ["stsvcbot"] }),
   ];
   assertEquals(
-    isMilestoneOccupied(issues, "v1.0", "VibeCoderBot", [
-      "VibeCoderBot",
+    isMilestoneOccupied(issues, "v1.0", "Vibecoderbot", [
+      "Vibecoderbot",
       "stsvcbot",
     ]),
     true,
@@ -154,11 +154,11 @@ Deno.test("issue_filter - isMilestoneOccupied is occupied when assigned to the c
   // Regression: the current worker's own assignment must still occupy even
   // when the fleet-account set is supplied.
   const issues = [
-    makeIssue({ milestone: "v1.0", assignees: ["VibeCoderBot"] }),
+    makeIssue({ milestone: "v1.0", assignees: ["Vibecoderbot"] }),
   ];
   assertEquals(
-    isMilestoneOccupied(issues, "v1.0", "VibeCoderBot", [
-      "VibeCoderBot",
+    isMilestoneOccupied(issues, "v1.0", "Vibecoderbot", [
+      "Vibecoderbot",
       "stsvcbot",
     ]),
     true,
@@ -173,8 +173,8 @@ Deno.test("issue_filter - isMilestoneOccupied not occupied when assigned only to
     makeIssue({ milestone: "v1.0", assignees: ["CDelSTSW"] }),
   ];
   assertEquals(
-    isMilestoneOccupied(issues, "v1.0", "VibeCoderBot", [
-      "VibeCoderBot",
+    isMilestoneOccupied(issues, "v1.0", "Vibecoderbot", [
+      "Vibecoderbot",
       "stsvcbot",
     ]),
     false,
@@ -183,11 +183,11 @@ Deno.test("issue_filter - isMilestoneOccupied not occupied when assigned only to
 
 Deno.test("issue_filter - isMilestoneOccupied fleet match is case-insensitive", () => {
   const issues = [
-    makeIssue({ milestone: "v1.0", assignees: ["stsvcbot"] }),
+    makeIssue({ milestone: "v1.0", assignees: ["Stsvcbot"] }),
   ];
   assertEquals(
-    isMilestoneOccupied(issues, "v1.0", "VibeCoderBot", [
-      "VibeCoderBot",
+    isMilestoneOccupied(issues, "v1.0", "vibecoderbot", [
+      "Vibecoderbot",
       "stsvcbot",
     ]),
     true,

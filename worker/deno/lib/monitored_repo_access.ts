@@ -209,7 +209,7 @@ export const REPO_ACCESS_LOG_PREFIX = "[repo-access]";
  *
  * `lastHealthCheckPassed = false` on its own is not actionable: the fix
  * depends entirely on *which* repos went dark (#4031). This is the
- * string carried onto the FLEET-health report payload.
+ * string carried onto the private-repo-6 report payload.
  */
 export function formatInaccessibleReposReason(repos: string[]): string {
   return `repos inaccessible: ${repos.join(", ")}`;
@@ -267,7 +267,7 @@ let lastLoggedLine: string | null = null;
  * Emit the structured status line at most once per iteration.
  *
  * Several call sites observe the same condition in one iteration — the
- * health gate in `run_core.ts` and the FLEET-health report — and logging
+ * health gate in `run_core.ts` and the private-repo-6 report — and logging
  * from each would turn one outage into per-call-site spam. The line is
  * therefore suppressed when it is byte-identical to the previous one;
  * {@link resetRepoAccessLogState} is called at the iteration boundary so

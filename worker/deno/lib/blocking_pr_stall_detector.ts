@@ -4,7 +4,7 @@
  * `handler_watchdog.ts`, `stale_workflow_detector.ts` and
  * `purge_stale_workflow_issues.ts` all watch worker-**internal** execution.
  * Nothing watched the externally-visible state of a PR that owns a work
- * stream, so NEAT-AI-Lamarck PR #103 sat red — with an unanswered
+ * stream, so private-repo-21 PR #103 sat red — with an unanswered
  * authorised comment — for ~13 hours while two `work-on` issues deferred to
  * it and no host noticed.
  *

@@ -2,7 +2,7 @@
  * Regression tests for workflow alternative-group detection (Issue #1579).
  *
  * These fixtures reproduce the four false-positive partial-match cases
- * observed against NEAT-AI-scorer once the per-tool entries in
+ * observed against private-repo-22 once the per-tool entries in
  * workflow_definitions.ts adopted the alternative-group structure
  * introduced in #1578. Each scenario exercises a workflow that uses one
  * of several valid implementations of the same capability and asserts

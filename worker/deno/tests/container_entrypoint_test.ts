@@ -351,7 +351,7 @@ async function exists(path: string): Promise<boolean> {
 }
 
 Deno.test("entrypoint - exports GH_CONFIG_DIR so raw scripts inherit gh auth (Issue #4220)", async () => {
-  // Observed live: FLEET-health's helpers/repos.sh runs raw `git push` in the
+  // Observed live: private-repo-6's helpers/repos.sh runs raw `git push` in the
   // worker's inherited environment; without GH_CONFIG_DIR the credential
   // helper reads an absent default config and the push dies unauthenticated
   // ("could not read Username for 'https://github.com'") — silently, behind
@@ -415,7 +415,7 @@ Deno.test("entrypoint - leaves GH_CONFIG_DIR unset when no credential is mounted
 });
 
 Deno.test("entrypoint - sets a container-wide git identity from the mounted credential (Issue #4235)", async () => {
-  // Raw scripts (FLEET-health's repos.sh) inherit no per-call identity, so
+  // Raw scripts (private-repo-6's repos.sh) inherit no per-call identity, so
   // their `git commit` died identity-less, exited 0, and the uncommitted
   // repos.json edit rate-limited every retry — the heartbeat stayed dead
   // behind three separate silent layers. The identity comes from the
@@ -436,7 +436,7 @@ Deno.test("entrypoint - sets a container-wide git identity from the mounted cred
     });
     await Deno.writeTextFile(
       `${dir}/home/.vibe-coder/credentials/gh/hosts.yml`,
-      "github.com:\n    user: VibeCoderBot\n    git_protocol: https\n",
+      "github.com:\n    user: Vibecoderbot\n    git_protocol: https\n",
     );
 
     const outcome = await runEntrypoint({
@@ -447,10 +447,10 @@ Deno.test("entrypoint - sets a container-wide git identity from the mounted cred
     assertEquals(outcome.code, 0, outcome.stderr);
 
     const gitArgv = await Deno.readTextFile(gitArgvFile);
-    assertStringIncludes(gitArgv, "config --global user.name VibeCoderBot");
+    assertStringIncludes(gitArgv, "config --global user.name Vibecoderbot");
     assertStringIncludes(
       gitArgv,
-      "config --global user.email VibeCoderBot@users.noreply.github.com",
+      "config --global user.email Vibecoderbot@users.noreply.github.com",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

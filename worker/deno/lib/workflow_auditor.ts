@@ -206,7 +206,7 @@ async function fetchWorkflowFiles(
  * read then failed silently — leaving the audit with an empty content
  * map and misclassifying every required workflow as missing. The
  * symptom was a flood of duplicate "Add … workflow" issues against
- * repos whose workflows were in fact present (e.g. NEAT-AI-core got
+ * repos whose workflows were in fact present (e.g. private-repo-16 got
  * seven duplicate sync issues). The fix mirrors the listing
  * fall-through semantics here.
  */
