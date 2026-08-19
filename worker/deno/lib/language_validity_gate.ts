@@ -18,6 +18,11 @@
  *   - The repo's main languages are enumerated from the same
  *     language / SLOC detection the best-practices bucket picker uses
  *     (`RepoLanguages` + the shared {@link isReactRepo} React decision).
+ *   - *Main* means a material share of the repo, not merely present: a
+ *     language must hold at least {@link MAIN_LANGUAGE_MIN_SHARE} of the
+ *     repo's measured bytes (Issue #3). A Rust repo carrying one incidental
+ *     `.ts` helper script does not need a TypeScript CI gate, and demanding
+ *     one is a false positive.
  *
  * Scope boundaries:
  *   - Bash is NOT handled here — the shell `bash -n` + shellcheck gate is
@@ -145,24 +150,40 @@ const VALIDITY_SPECS: Record<ValidityGateLanguage, ValiditySpec> = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Minimum share of a repository's measured bytes a language must hold to
+ * count as a **main** language (Issue #3).
+ *
+ * Mere presence is not enough: a Rust repo whose only TypeScript is a single
+ * fixture-generation script (0.1% of its bytes) has no TypeScript to
+ * validate, so demanding a `deno check` gate there is a false positive. 5%
+ * keeps every genuine polyglot repo in scope while excluding one-off helper
+ * scripts.
+ */
+export const MAIN_LANGUAGE_MIN_SHARE = 0.05;
+
+/**
  * Enumerate the repo's main languages that have a basic-validity gate
  * concept. Reuses the same language / SLOC signals the best-practices
  * bucket picker uses (`RepoLanguages.raw` byte counts plus the shared
  * {@link isReactRepo} React decision). Bash / shell is intentionally
  * excluded.
+ *
+ * A language is *main* only when it holds at least
+ * {@link MAIN_LANGUAGE_MIN_SHARE} of the repo's total measured bytes.
  */
 export function detectValidityGateLanguages(
   langs: RepoLanguages,
 ): ValidityGateLanguage[] {
   const out: ValidityGateLanguage[] = [];
   const raw = langs.raw;
+  const total = totalBytes(raw);
 
-  if ((raw.Rust ?? 0) > 0) out.push("rust");
-  if ((raw.TypeScript ?? 0) > 0) {
+  if (isMainLanguage(raw.Rust, total)) out.push("rust");
+  if (isMainLanguage(raw.TypeScript, total)) {
     out.push(isReactRepo(langs.bestPracticesMarkers) ? "react" : "typescript");
   }
-  if ((raw.Java ?? 0) > 0) out.push("java");
-  if ((raw.Python ?? 0) > 0) out.push("python");
+  if (isMainLanguage(raw.Java, total)) out.push("java");
+  if (isMainLanguage(raw.Python, total)) out.push("python");
 
   return out;
 }
@@ -191,6 +212,24 @@ export async function checkLanguageValidityGates(
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/** Sum the repo's measured byte counts, ignoring any non-positive entry. */
+function totalBytes(raw: Record<string, number>): number {
+  let total = 0;
+  for (const bytes of Object.values(raw)) {
+    if (Number.isFinite(bytes) && bytes > 0) total += bytes;
+  }
+  return total;
+}
+
+/**
+ * True iff `bytes` is at least {@link MAIN_LANGUAGE_MIN_SHARE} of `total`.
+ * A repo with no measured bytes has no main language.
+ */
+function isMainLanguage(bytes: number | undefined, total: number): boolean {
+  if (total <= 0) return false;
+  return (bytes ?? 0) / total >= MAIN_LANGUAGE_MIN_SHARE;
+}
 
 function checkOne(
   language: ValidityGateLanguage,
