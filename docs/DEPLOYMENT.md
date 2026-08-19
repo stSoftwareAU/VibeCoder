@@ -271,17 +271,20 @@ leaves its check failed.
 
 ```mermaid
 flowchart TD
-    F["failed check"] --> T{"stdin a terminal<br/>and not VIBE_NO_AUTO_INSTALL?"}
-    T -->|no| R["report + fail — unchanged"]
-    T -->|yes| PL{"install plan?"}
-    PL -->|none| R
-    PL -->|yes| Q{"consent? [y/N]"}
+    F["failed check"] --> AI{"--auto-install?"}
+    AI -->|yes| PL{"install plan?"}
+    AI -->|no| T{"stdin a terminal<br/>and not VIBE_NO_AUTO_INSTALL?"}
+    T -->|no| W["report + fail, naming the<br/>withheld offer (Issue #33)"]
+    T -->|yes| PL
+    PL -->|none| R["report + fail — unchanged"]
+    PL -->|yes| Q{"consent? [y/N]<br/>(auto-yes with --auto-install)"}
     Q -->|no| R
     Q -->|yes| I["run steps, streamed"]
     I --> RP["re-probe the tool"]
     RP -->|passes| OKC["✓ in this run"]
     RP -->|still fails| R
     style R fill:#9d0208,stroke:#6a040f,color:#fff
+    style W fill:#9d0208,stroke:#6a040f,color:#fff
     style OKC fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
@@ -377,8 +380,13 @@ Two Windows-specific rules:
 container-only (Issue #4145), so `timeout` is container-owned there and never
 host-fatal.
 
-Unattended runs are unaffected: with no TTY the offer never appears and the
-output is exactly the report-and-fail of before. `VIBE_NO_AUTO_INSTALL=true`
+Unattended runs never install without prior consent: with no TTY the offer
+cannot prompt, so setup reports and fails — but never silently (Issue #33):
+the report names the failed checks an offer *was* available for and why it
+was withheld. `./setup.sh --auto-install` (or `.\setup.ps1 -AutoInstall`) is
+the one sanctioned pre-consent — an explicit per-invocation flag, never an
+environment variable — approving every offer so a scripted run installs what
+it can, each approval reported as it happens. `VIBE_NO_AUTO_INSTALL=true`
 suppresses the offer while keeping the probe;
 `VIBE_SKIP_PREREQ_CHECK=true` still skips the probe, and therefore the offer,
 entirely.
@@ -501,7 +509,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | Variable | Description |
 |----------|-------------|
 | `VIBE_SKIP_PREREQ_CHECK` | Set to `true` to skip the prerequisite **probe** entirely — nothing is checked, so nothing is offered either (CI only; a container-only host does not need it) |
-| `VIBE_NO_AUTO_INSTALL` | Set to `true` to skip only the install **offer** — the probe still runs and still reports every gap (Issue #4135). For an operator who manages packages themselves |
+| `VIBE_NO_AUTO_INSTALL` | Set to `true` to skip only the install **offer** — the probe still runs, still reports every gap, and names the offer it withheld (Issues #4135, #33). For an operator who manages packages themselves. The inverse — consenting to every offer in advance — is deliberately not an environment variable: it is the `--auto-install` flag (`-AutoInstall` for setup.ps1), typed per invocation |
 | `VIBE_SKIP_AUTH_CHECK` | Set to `true` to skip authentication checks |
 
 The setup is idempotent — running it multiple times produces identical results.

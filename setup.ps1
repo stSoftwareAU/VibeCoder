@@ -39,6 +39,14 @@
 #                        Defaults to the account running setup.
 ################################################################################
 
+# -AutoInstall consents in advance to every offered install (Issue #33), so a
+# scripted `.\setup.ps1 -AutoInstall` installs what it can without a terminal
+# to prompt on. Deliberately a per-invocation switch, never an environment
+# variable.
+param(
+    [switch] $AutoInstall
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -1110,7 +1118,12 @@ function Invoke-VibeScheduledTaskPrompt {
 
 function Invoke-VibeSetupMain {
     # Prerequisites check via Deno — a gap here stops setup (Issue #3234).
-    Invoke-VibeSetupCliOrExit -Arguments @("prerequisites")
+    # -AutoInstall consents in advance to every offered install (Issue #33).
+    if ($AutoInstall) {
+        Invoke-VibeSetupCliOrExit -Arguments @("prerequisites", "--auto-install")
+    } else {
+        Invoke-VibeSetupCliOrExit -Arguments @("prerequisites")
+    }
 
     # Provision the dedicated credential directory non-interactively from
     # environment variables (Issue #4064). Runs before the prompts so the gh
