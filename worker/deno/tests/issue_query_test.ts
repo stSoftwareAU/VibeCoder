@@ -274,7 +274,10 @@ Deno.test("issue_query - getBlockingPRForIssue ignores a human-authored PR (Issu
   // `maintainer` is a trusted human: fetched by the fleet-owned guard set, but
   // never push-capable. Their PR is theirs to manage, so it must not park
   // the repo's queue.
-  assertEquals(getBlockingPRForIssue([prBy(4036, "maintainer")], "", FLEET), null);
+  assertEquals(
+    getBlockingPRForIssue([prBy(4036, "maintainer")], "", FLEET),
+    null,
+  );
 });
 
 Deno.test("issue_query - getBlockingPRForIssue still blocks on a fleet PR (Issue #4133)", () => {
@@ -330,7 +333,8 @@ Deno.test("issue_query - getBlockingPRForIssue blocks on an unstamped author (Is
 Deno.test("issue_query - getBlockingPRForIssue blocks when the fleet set is unresolved (Issue #4133)", () => {
   // An empty push-capable set classifies nothing — fail safe, not open.
   assertEquals(
-    getBlockingPRForIssue([prBy(700, "maintainer")], "", UNCLASSIFIABLE)?.number,
+    getBlockingPRForIssue([prBy(700, "maintainer")], "", UNCLASSIFIABLE)
+      ?.number,
     700,
   );
 });

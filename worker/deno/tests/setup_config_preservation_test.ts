@@ -128,7 +128,9 @@ Deno.test("pruneOrphanRepoConfig - no-op when repos is empty", () => {
   const { config: pruned, removed } = pruneOrphanRepoConfig(config);
 
   assertEquals(removed, []);
-  assertEquals(Object.keys(pruned.repo_config ?? {}), ["example-org/private-repo-13"]);
+  assertEquals(Object.keys(pruned.repo_config ?? {}), [
+    "example-org/private-repo-13",
+  ]);
 });
 
 Deno.test("pruneOrphanRepoConfig - no-op when repos is absent", () => {
@@ -139,7 +141,9 @@ Deno.test("pruneOrphanRepoConfig - no-op when repos is absent", () => {
   const { config: pruned, removed } = pruneOrphanRepoConfig(config);
 
   assertEquals(removed, []);
-  assertEquals(Object.keys(pruned.repo_config ?? {}), ["example-org/private-repo-13"]);
+  assertEquals(Object.keys(pruned.repo_config ?? {}), [
+    "example-org/private-repo-13",
+  ]);
 });
 
 Deno.test("pruneOrphanRepoConfig - no-op when repo_config is absent", () => {
@@ -201,7 +205,9 @@ Deno.test("runConfigSetup - reports pruned orphan repo_config entries", async ()
   });
   assertEquals(result.ok, true);
   assertEquals(
-    (result.warnings ?? []).some((w) => w.includes("example-org/private-repo-13")),
+    (result.warnings ?? []).some((w) =>
+      w.includes("example-org/private-repo-13")
+    ),
     true,
   );
 

@@ -154,7 +154,10 @@ Deno.test("summarisePlanningRuns - systemic when fable runs consistently served 
   assertEquals(summary.mismatched, 3);
   assertEquals(summary.fableServed, 0);
   assertEquals(summary.byServedFamily["opus"], 3);
-  assertEquals(summary.repos, ["example-org/private-repo-13", "stSoftwareAU/VibeCoder"]);
+  assertEquals(summary.repos, [
+    "example-org/private-repo-13",
+    "stSoftwareAU/VibeCoder",
+  ]);
 });
 
 Deno.test("summarisePlanningRuns - one-off when mismatch is isolated", () => {

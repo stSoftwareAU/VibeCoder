@@ -416,7 +416,10 @@ Deno.test("repo_config - parsePrFailureActions returns empty array for []", () =
 
 Deno.test("repo_config - parsePrFailureActions parses a valid fetch-jenkins-log action", () => {
   const result = parsePrFailureActions([
-    { type: "fetch-jenkins-log", jobPath: "example-org/private-repo-58/Develop" },
+    {
+      type: "fetch-jenkins-log",
+      jobPath: "example-org/private-repo-58/Develop",
+    },
   ]);
   assertEquals(result.ok, true);
   if (result.ok) {

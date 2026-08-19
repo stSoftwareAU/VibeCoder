@@ -78,6 +78,12 @@ Deno.test("resolveMonitoredRepo - refuses an off-config repo", () => {
   assertEquals(resolveMonitoredRepo("", repos), null);
   assertEquals(resolveMonitoredRepo("example-org/private-repo-29", []), null);
   // A near-miss must not match (no prefix/substring leniency).
-  assertEquals(resolveMonitoredRepo("example-org/private-repo-28", repos), null);
-  assertEquals(resolveMonitoredRepo("example-org/private-repo-35", repos), null);
+  assertEquals(
+    resolveMonitoredRepo("example-org/private-repo-28", repos),
+    null,
+  );
+  assertEquals(
+    resolveMonitoredRepo("example-org/private-repo-35", repos),
+    null,
+  );
 });

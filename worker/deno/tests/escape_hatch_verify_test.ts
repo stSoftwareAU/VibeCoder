@@ -89,7 +89,10 @@ Deno.test("verifyFollowUpIssueExists - resolves a cross-repo ref against that re
     ghClient,
     logger,
   });
-  assertEquals(calls, [{ repo: "example-org/private-repo-13", issueNumber: 99 }]);
+  assertEquals(calls, [{
+    repo: "example-org/private-repo-13",
+    issueNumber: 99,
+  }]);
 });
 
 Deno.test("verifyFollowUpIssueExists - rejects a hallucinated issue number", async () => {

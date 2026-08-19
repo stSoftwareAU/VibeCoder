@@ -52,7 +52,10 @@ Deno.test("getCiFailureLabels - reads the per-repo configuration", () => {
   ]);
   assertEquals(getCiFailureLabels(configs, "example-org/private-repo-40"), []);
   assertEquals(getCiFailureLabels(configs, "example-org/private-repo-60"), []);
-  assertEquals(getCiFailureLabels(undefined, "example-org/private-repo-40"), []);
+  assertEquals(
+    getCiFailureLabels(undefined, "example-org/private-repo-40"),
+    [],
+  );
 });
 
 Deno.test("getCiFailureLabels - throws on malformed configuration", () => {

@@ -213,10 +213,15 @@ Deno.test("audit - listOrgRepos pages the org and returns slugs", async () => {
   let seen: string[] = [];
   const gh: GhExec = (args) => {
     seen = args;
-    return Promise.resolve("example-org/private-repo-13\nstSoftwareAU/VibeCoder\n\n");
+    return Promise.resolve(
+      "example-org/private-repo-13\nstSoftwareAU/VibeCoder\n\n",
+    );
   };
   const repos = await listOrgRepos("stSoftwareAU", gh);
-  assertEquals(repos, ["example-org/private-repo-13", "stSoftwareAU/VibeCoder"]);
+  assertEquals(repos, [
+    "example-org/private-repo-13",
+    "stSoftwareAU/VibeCoder",
+  ]);
   assert(seen.includes("--paginate"));
   assert(seen.some((a) => a.startsWith("orgs/example-org/private-repo-53")));
 });

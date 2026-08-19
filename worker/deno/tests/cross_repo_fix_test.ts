@@ -110,14 +110,22 @@ Deno.test("probeCrossRepoAccess - clonable with push access is reachable, uses c
         permissions: { push: true },
       })),
     );
-  const access = await probeCrossRepoAccess("example-org/private-repo-29", runner);
+  const access = await probeCrossRepoAccess(
+    "example-org/private-repo-29",
+    runner,
+  );
   assertEquals(access.reachable, true);
-  if (access.reachable) assertEquals(access.repo, "example-org/private-repo-29");
+  if (access.reachable) {
+    assertEquals(access.repo, "example-org/private-repo-29");
+  }
 });
 
 Deno.test("probeCrossRepoAccess - repo not found is unreachable", async () => {
   const runner: RunCommand = (_cmd) => Promise.resolve(fail("HTTP 404"));
-  const access = await probeCrossRepoAccess("example-org/private-repo-12", runner);
+  const access = await probeCrossRepoAccess(
+    "example-org/private-repo-12",
+    runner,
+  );
   assertEquals(access.reachable, false);
 });
 
@@ -129,7 +137,10 @@ Deno.test("probeCrossRepoAccess - no push access is unreachable", async () => {
         permissions: { push: false, pull: true },
       })),
     );
-  const access = await probeCrossRepoAccess("example-org/private-repo-47", runner);
+  const access = await probeCrossRepoAccess(
+    "example-org/private-repo-47",
+    runner,
+  );
   assertEquals(access.reachable, false);
   if (!access.reachable) assertStringIncludes(access.reason, "push");
 });

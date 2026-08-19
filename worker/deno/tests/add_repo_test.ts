@@ -123,9 +123,12 @@ Deno.test("parseAddRepoTitle - parses a valid add-repo title", () => {
 });
 
 Deno.test("parseAddRepoTitle - tolerates surrounding whitespace", () => {
-  assertEquals(parseAddRepoTitle("  add-repo:   example-org/private-repo-23  "), {
-    repo: "example-org/private-repo-23",
-  });
+  assertEquals(
+    parseAddRepoTitle("  add-repo:   example-org/private-repo-23  "),
+    {
+      repo: "example-org/private-repo-23",
+    },
+  );
 });
 
 Deno.test("parseAddRepoTitle - is case-insensitive on the prefix", () => {

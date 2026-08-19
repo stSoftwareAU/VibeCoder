@@ -51,7 +51,10 @@ import { reportFleetHealth } from "../lib/fleet_health.ts";
 // ---------------------------------------------------------------------------
 
 /** Repos the identity can still see. */
-const ACCESSIBLE_REPOS = ["example-org/private-repo-2", "example-org/private-repo-9"];
+const ACCESSIBLE_REPOS = [
+  "example-org/private-repo-2",
+  "example-org/private-repo-9",
+];
 
 /** The two repos that went dark in the incident, in store (sorted) order. */
 const DARK_REPOS = ["TitlePage/bravo", "TitlePage/delta"];

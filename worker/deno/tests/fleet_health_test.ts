@@ -8,7 +8,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { Result } from "../types.ts";
-import type { FleetHealthConfig, FleetHealthDeps } from "../lib/fleet_health.ts";
+import type {
+  FleetHealthConfig,
+  FleetHealthDeps,
+} from "../lib/fleet_health.ts";
 import {
   ACCESS_FAILURE_THRESHOLD,
   recordRepoProbe,

@@ -124,24 +124,44 @@ Deno.test("a success between denials restarts the run — counter is consecutive
   resetRepoAccessState();
   denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD - 1);
   recordRepoProbe("example-org/private-repo-48", "ok", T0 + 50);
-  denyTimes("example-org/private-repo-48", ACCESS_FAILURE_THRESHOLD - 1, T0 + 60);
+  denyTimes(
+    "example-org/private-repo-48",
+    ACCESS_FAILURE_THRESHOLD - 1,
+    T0 + 60,
+  );
   assertEquals(getInaccessibleRepos(), []);
 });
 
 Deno.test("getInaccessibleRepos is stable-ordered across calls and insertion orders", () => {
   resetRepoAccessState();
-  for (const repo of ["example-org/private-repo-65", "example-org/private-repo-2", "b/mike"]) {
+  for (
+    const repo of [
+      "example-org/private-repo-65",
+      "example-org/private-repo-2",
+      "b/mike",
+    ]
+  ) {
     denyTimes(repo, ACCESS_FAILURE_THRESHOLD);
   }
   const first = getInaccessibleRepos();
   const second = getInaccessibleRepos();
   assertEquals(first, second);
-  assertEquals(first, ["b/mike", "example-org/private-repo-2", "example-org/private-repo-65"]);
+  assertEquals(first, [
+    "b/mike",
+    "example-org/private-repo-2",
+    "example-org/private-repo-65",
+  ]);
 
   // Same set recorded in a different order yields the identical list, so
   // downstream health messages cannot churn between ticks.
   resetRepoAccessState();
-  for (const repo of ["b/mike", "example-org/private-repo-65", "example-org/private-repo-2"]) {
+  for (
+    const repo of [
+      "b/mike",
+      "example-org/private-repo-65",
+      "example-org/private-repo-2",
+    ]
+  ) {
     denyTimes(repo, ACCESS_FAILURE_THRESHOLD);
   }
   assertEquals(getInaccessibleRepos(), first);

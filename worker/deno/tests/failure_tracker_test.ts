@@ -57,14 +57,23 @@ Deno.test("failure tracker - trackFailure increments counter for same key", asyn
   const dir = await makeTempDir();
   try {
     const config = testConfig(dir);
-    const r1 = await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    const r1 = await trackFailure(
+      config,
+      "spelling|example-org/private-repo-13|1277",
+    );
     assertEquals(r1.ok, true);
     if (r1.ok) assertEquals(r1.value.consecutiveFailures, 1);
 
-    const r2 = await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    const r2 = await trackFailure(
+      config,
+      "spelling|example-org/private-repo-13|1277",
+    );
     if (r2.ok) assertEquals(r2.value.consecutiveFailures, 2);
 
-    const r3 = await trackFailure(config, "spelling|example-org/private-repo-13|1277");
+    const r3 = await trackFailure(
+      config,
+      "spelling|example-org/private-repo-13|1277",
+    );
     if (r3.ok) assertEquals(r3.value.consecutiveFailures, 3);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -78,11 +87,17 @@ Deno.test("failure tracker - trackFailure resets counter for different key", asy
     await trackFailure(config, "spelling|example-org/private-repo-13|1277");
     await trackFailure(config, "spelling|example-org/private-repo-13|1277");
 
-    const result = await trackFailure(config, "issue|example-org/private-repo-13|42");
+    const result = await trackFailure(
+      config,
+      "issue|example-org/private-repo-13|42",
+    );
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value.consecutiveFailures, 1);
-      assertEquals(result.value.lastFailureKey, "issue|example-org/private-repo-13|42");
+      assertEquals(
+        result.value.lastFailureKey,
+        "issue|example-org/private-repo-13|42",
+      );
     }
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -225,7 +240,10 @@ Deno.test("failure tracker - state persists and reloads correctly", async () => 
     // Simulate restart: reload from disk
     const state = await loadState(dir);
     assertEquals(state.consecutiveFailures, 2);
-    assertEquals(state.lastFailureKey, "spelling|example-org/private-repo-13|1277");
+    assertEquals(
+      state.lastFailureKey,
+      "spelling|example-org/private-repo-13|1277",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
