@@ -522,8 +522,15 @@ worker token holds.
 exports `isWorkerAppliableLabel(label)` and
 `assertWorkerCanApplyLabel(label, { caller })`. The guard is wired into
 `addLabelToIssue` in
-[`label_operations.ts`](../worker/deno/lib/label_operations.ts) — every
-worker label mutation now passes through it before the `gh api` /
+[`label_operations.ts`](../worker/deno/lib/label_operations.ts) and into
+the two call sites that reach the labels API without it (Issue #13):
+`escalateToHuman` in
+[`needs_human_escalation.ts`](../worker/deno/lib/needs_human_escalation.ts),
+which guards the label before `ghClient.addLabel` (the escalation comment
+is still posted when the label is refused), and `ghClientFromCommandFn` in
+[`label_clarification.ts`](../worker/deno/lib/label_clarification.ts),
+whose `addLabel` now delegates to `addLabelToIssue`. Every worker label
+mutation therefore passes through the guard before the `gh api` /
 `gh issue edit` call. A refused mutation emits a
 `[SECURITY] [WORKER_LABEL_REFUSED]` line and returns the refusal up the
 stack so the caller never opens a follow-up retry. `label_security.ts`
@@ -589,7 +596,7 @@ initial guard + capability map.
 
 ```mermaid
 flowchart LR
-    A[Worker code calls<br/>addLabelToIssue] --> B{worker_label_guard:<br/>label in allowlist?}
+    A[Worker code calls<br/>addLabelToIssue / escalateToHuman] --> B{worker_label_guard:<br/>label in allowlist?}
     B -- No --> C[Refuse + emit<br/>SECURITY WORKER_LABEL_REFUSED]
     B -- Yes --> D[gh api / gh issue edit<br/>label applied]
     E[run_core startup] --> F[gh-auth check-scopes]
