@@ -119,13 +119,11 @@ set -euo pipefail
 #                             be manually uploaded to the PR if needed.
 #   VIBE_FLEET_HEALTH_DIR     - Directory of the FLEET health tracking checkout
 #                             (optional; a single host does not need one).
-#                             Defaults to ../private-repo-6 (sibling of VibeCoder)
-#                             and is recorded only when that directory exists.
-#   VIBE_FLEET_HEALTH_REPO    - Git URL of your fleet's health repository. When
-#                             set and the directory is missing, setup clones it
-#                             there. Never assumed: without it setup does not
-#                             attempt a clone (an unreachable guessed URL only
-#                             ever produced a "repository exists?" warning).
+#                             The interactive setup asks for the health
+#                             repository's git URL and checkout directory and
+#                             stores them in .config.json (fleet_health_repo,
+#                             fleet_health_dir); nothing is cloned unless the
+#                             operator named the repository.
 #   VIBE_UPDATE_GH_USER_STATUS - Set to "true" (default) or "false" to control
 #                             GitHub user profile status updates. Requires the
 #                             `user` scope on the GitHub token.
@@ -642,6 +640,7 @@ prompt_interactive_config() {
     local existing_gh_config_dir=""
     local existing_imgbb_api_key=""
     local existing_fleet_health_dir=""
+    local existing_fleet_health_repo=""
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         existing_repos=$(jq -r '(.repos // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
         existing_allowed_author=$(jq -r '(.allowed_authors // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
@@ -650,6 +649,7 @@ prompt_interactive_config() {
         existing_gh_config_dir=$(jq -r '.gh_config_dir // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_imgbb_api_key=$(jq -r '.imgbb_api_key // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_fleet_health_dir=$(jq -r '.fleet_health_dir // empty' "$CONFIG_FILE" 2>/dev/null)
+        existing_fleet_health_repo=$(jq -r '.fleet_health_repo // empty' "$CONFIG_FILE" 2>/dev/null)
     fi
 
     # Prompt for repos to monitor (required)
@@ -768,51 +768,81 @@ prompt_interactive_config() {
 
     # FLEET health tracking (optional, Issue #535). A fleet of workers can
     # report into a shared health repository; a single host does not need one.
-    # Enabled when a checkout already exists (VIBE_FLEET_HEALTH_DIR, the
-    # configured fleet_health_dir, or the ../private-repo-6 sibling) or when
-    # the operator names the repository to clone (VIBE_FLEET_HEALTH_REPO).
-    # Setup never clones an assumed URL: on a host without access that only
-    # ever produced "Could not read from remote repository ... repository
-    # exists".
-    local fleet_default_dir
-    fleet_default_dir="$(cd "$SCRIPT_DIR" && cd .. && pwd)/private-repo-6"
-    local fleet_dir="${VIBE_FLEET_HEALTH_DIR:-${existing_fleet_health_dir:-$fleet_default_dir}}"
-    local expanded_fleet="${fleet_dir/#\~/$HOME}"
-    if [[ -d "$expanded_fleet" ]]; then
-        INTERACTIVE_FLEET_HEALTH_DIR="$fleet_dir"
-        print_success "FLEET health directory found at ${fleet_dir}"
-    elif [[ -n "${VIBE_FLEET_HEALTH_REPO:-}" ]]; then
-        print_info "Cloning FLEET health repository to ${fleet_dir}..."
-        local _fleet_ssh_cmd=""
-        if [[ -n "${INTERACTIVE_SSH_KEY_PATH:-}" ]]; then
-            local _expanded_ssh="${INTERACTIVE_SSH_KEY_PATH/#\~/$HOME}"
-            # Git parses GIT_SSH_COMMAND with /bin/sh — quote the key path so a
-            # space picks the intended identity rather than silently falling
-            # back, and `;`/`$(…)` cannot execute (Issue #3661,
-            # SEC-a228ff008ed4). printf %q is bash 3.2+ and macOS-safe.
-            _fleet_ssh_cmd="ssh -i $(printf '%q' "$_expanded_ssh") -o IdentitiesOnly=yes"
-        fi
-        local _fleet_cloned=false
-        if [[ -n "$_fleet_ssh_cmd" ]]; then
-            if GIT_SSH_COMMAND="$_fleet_ssh_cmd" git clone "$VIBE_FLEET_HEALTH_REPO" "$expanded_fleet" 2>&1; then
-                _fleet_cloned=true
-            fi
-        else
-            if git clone "$VIBE_FLEET_HEALTH_REPO" "$expanded_fleet" 2>&1; then
-                _fleet_cloned=true
-            fi
-        fi
-        if [[ "$_fleet_cloned" == "true" ]]; then
+    # Setup asks where that repository is and stores the answer in
+    # .config.json (fleet_health_repo + fleet_health_dir) — a one-off, no
+    # environment variables. Nothing is cloned unless the operator named the
+    # repository: an assumed URL on a host without access to it only ever
+    # produced "Could not read from remote repository ... repository exists".
+    local fleet_repo_display=""
+    if [[ -n "$existing_fleet_health_repo" ]]; then
+        fleet_repo_display=" [${existing_fleet_health_repo}]"
+    fi
+    echo -e "  FLEET health repository (optional): git URL of the fleet's health"
+    echo -e "  repository, e.g. git@github.com:your-org/your-health-repo.git${fleet_repo_display}"
+    echo -e "  Leave blank to keep the current value, or '-' to turn health tracking off."
+    echo -n "  FLEET health repository: "
+    read -r input_fleet_health_repo
+    local fleet_repo=""
+    if [[ "$input_fleet_health_repo" == "-" ]]; then
+        fleet_repo=""
+        INTERACTIVE_FLEET_HEALTH_CLEAR=true
+    elif [[ -n "$input_fleet_health_repo" ]]; then
+        fleet_repo="$input_fleet_health_repo"
+    else
+        fleet_repo="$existing_fleet_health_repo"
+    fi
+
+    if [[ -n "$fleet_repo" ]]; then
+        # Checkout directory: the configured one, else a sibling of VibeCoder
+        # named after the repository (git@host:org/GRQ-health.git -> ../GRQ-health).
+        local fleet_repo_name="${fleet_repo##*/}"
+        fleet_repo_name="${fleet_repo_name%.git}"
+        local fleet_default_dir="${existing_fleet_health_dir:-$(cd "$SCRIPT_DIR" && cd .. && pwd)/${fleet_repo_name}}"
+        echo -e "  FLEET health checkout directory [${fleet_default_dir}]"
+        echo -n "  FLEET health directory: "
+        read -r input_fleet_health_dir
+        local fleet_dir="${input_fleet_health_dir:-$fleet_default_dir}"
+        local expanded_fleet="${fleet_dir/#\~/$HOME}"
+        INTERACTIVE_FLEET_HEALTH_REPO="$fleet_repo"
+        if [[ -d "$expanded_fleet" ]]; then
             INTERACTIVE_FLEET_HEALTH_DIR="$fleet_dir"
-            print_success "FLEET health repository cloned"
+            print_success "FLEET health directory found at ${fleet_dir}"
         else
-            # Not recorded: a fleet_health_dir that points at nothing would
-            # have the worker warn about the missing checkout every heartbeat.
-            print_warning "Failed to clone FLEET health repository from ${VIBE_FLEET_HEALTH_REPO} (non-fatal; health tracking stays off)"
+            print_info "Cloning FLEET health repository to ${fleet_dir}..."
+            local _fleet_ssh_cmd=""
+            if [[ -n "${INTERACTIVE_SSH_KEY_PATH:-}" ]]; then
+                local _expanded_ssh="${INTERACTIVE_SSH_KEY_PATH/#\~/$HOME}"
+                # Git parses GIT_SSH_COMMAND with /bin/sh — quote the key path
+                # so a space picks the intended identity rather than silently
+                # falling back, and `;`/`$(…)` cannot execute (Issue #3661,
+                # SEC-a228ff008ed4). printf %q is bash 3.2+ and macOS-safe.
+                _fleet_ssh_cmd="ssh -i $(printf '%q' "$_expanded_ssh") -o IdentitiesOnly=yes"
+            fi
+            local _fleet_cloned=false
+            if [[ -n "$_fleet_ssh_cmd" ]]; then
+                if GIT_SSH_COMMAND="$_fleet_ssh_cmd" git clone "$fleet_repo" "$expanded_fleet" 2>&1; then
+                    _fleet_cloned=true
+                fi
+            else
+                if git clone "$fleet_repo" "$expanded_fleet" 2>&1; then
+                    _fleet_cloned=true
+                fi
+            fi
+            # The directory is recorded either way: the worker clones
+            # fleet_health_repo there itself when it is missing, so a clone
+            # that failed here (network, key not yet authorised) self-heals
+            # on the first run instead of leaving tracking silently off.
+            INTERACTIVE_FLEET_HEALTH_DIR="$fleet_dir"
+            if [[ "$_fleet_cloned" == "true" ]]; then
+                print_success "FLEET health repository cloned"
+            else
+                print_warning "Failed to clone FLEET health repository from ${fleet_repo} (non-fatal; the worker retries the clone on its first run)"
+            fi
         fi
     else
-        print_info "FLEET health tracking not configured (optional). To enable it, clone your fleet's health repository to ${fleet_default_dir} or set VIBE_FLEET_HEALTH_REPO to its git URL and re-run setup."
+        print_info "FLEET health tracking not configured (optional) — re-run setup and give the repository's git URL to enable it."
     fi
+    echo ""
 
     # If a gh config dir is set, ensure it exists and offer to run gh auth login
     if [[ -n "${INTERACTIVE_GH_CONFIG_DIR:-}" ]]; then
@@ -847,7 +877,7 @@ prompt_interactive_config() {
 # Write interactive values directly into .config.json after TS setup runs.
 # This merges ssh_key_path and gh_config_dir into the config file.
 write_interactive_config() {
-    if [[ -z "${INTERACTIVE_REPOS:-}" && -z "${INTERACTIVE_ALLOWED_AUTHORS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" && -z "${INTERACTIVE_FLEET_HEALTH_DIR:-}" ]]; then
+    if [[ -z "${INTERACTIVE_REPOS:-}" && -z "${INTERACTIVE_ALLOWED_AUTHORS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" && -z "${INTERACTIVE_FLEET_HEALTH_DIR:-}" && -z "${INTERACTIVE_FLEET_HEALTH_REPO:-}" && -z "${INTERACTIVE_FLEET_HEALTH_CLEAR:-}" ]]; then
         return 0
     fi
 
@@ -889,6 +919,15 @@ write_interactive_config() {
 
     if [[ -n "${INTERACTIVE_FLEET_HEALTH_DIR:-}" ]]; then
         config=$(echo "$config" | jq --arg v "$INTERACTIVE_FLEET_HEALTH_DIR" '. + {fleet_health_dir: $v}')
+    fi
+
+    if [[ -n "${INTERACTIVE_FLEET_HEALTH_REPO:-}" ]]; then
+        config=$(echo "$config" | jq --arg v "$INTERACTIVE_FLEET_HEALTH_REPO" '. + {fleet_health_repo: $v}')
+    fi
+
+    # '-' at the health prompt: health tracking off — drop both keys.
+    if [[ -n "${INTERACTIVE_FLEET_HEALTH_CLEAR:-}" ]]; then
+        config=$(echo "$config" | jq 'del(.fleet_health_repo, .fleet_health_dir)')
     fi
 
     echo "$config" | jq '.' > "$CONFIG_FILE"

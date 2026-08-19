@@ -98,20 +98,23 @@ This changelog is a human-readable digest grouped by version.
 
 ### Fixed
 
-- **Setup no longer clones an assumed FLEET-health repository, or warns about
-  its own cache.** `setup.sh` / `setup.ps1` used to `git clone` a fixed
-  fleet-health URL on every first run — on a host without access to it, only
-  ever a `Could not read from remote repository … repository exists` warning —
-  and to record `fleet_health_dir` regardless, after which the worker retried
-  the same failed clone every heartbeat. Health tracking is optional: setup
-  records the directory only when the checkout exists (`../private-repo-6`,
-  `VIBE_FLEET_HEALTH_DIR`, or the configured `fleet_health_dir`), clones only
-  a repository named by the new `VIBE_FLEET_HEALTH_REPO`, and otherwise prints
-  one informational line. The worker likewise clones only `FLEET_HEALTH_REPO`
-  and logs that tracking is off when there is no checkout and no URL. Setup's
-  end-of-run reminder about an obsolete host `~/auto-issue-work` now ignores
-  the `.vibe-cache` its own workflow audits write there, so it no longer
-  flags a 4K directory it just created.
+- **Setup asks where the FLEET-health repository is (optional) instead of
+  cloning an assumed URL, and no longer warns about its own cache.** `setup.sh`
+  / `setup.ps1` used to `git clone` a fixed fleet-health URL on every first run
+  — on a host without access to it, only ever a `Could not read from remote
+  repository … repository exists` warning — and to record `fleet_health_dir`
+  regardless, after which the worker retried the same failed clone every
+  heartbeat. Health tracking is optional: the interactive setup now asks once
+  for the health repository's git URL and checkout directory, stores them in
+  `.config.json` (`fleet_health_repo`, `fleet_health_dir` — no environment
+  variables), clones the repository if the checkout is missing, and otherwise
+  prints one informational line. The worker reads `fleet_health_repo` from the
+  config, clones only that, and logs that tracking is off when there is no
+  checkout and no URL. Setup's end-of-run reminder about an obsolete host
+  `~/auto-issue-work` now ignores the `.vibe-cache` its own workflow audits
+  write there, so it no longer flags a 4K directory it just created; and
+  `setup.sh` leaves through `exit` after `main` so a file rewritten mid-run
+  is not read past its old end.
 - **Two super-linear regexes could stall the single-threaded worker
   (Issue #3942).** The suppression parser's block-comment patterns were cubic
   on an unterminated `/* … ignore: … ` line (11s for 4,000 characters, hours

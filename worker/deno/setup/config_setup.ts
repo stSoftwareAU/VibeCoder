@@ -47,6 +47,7 @@ export interface SetupConfig {
   // Optional feature configuration (Issue #535)
   imgbb_api_key?: string;
   fleet_health_dir?: string;
+  fleet_health_repo?: string;
   update_gh_user_status?: boolean;
   // GitHub App authentication (Issue #957)
   github_app_id?: string;
@@ -141,6 +142,7 @@ const EXPLICITLY_HANDLED_KEYS: ReadonlySet<string> = new Set([
   "gh_config_dir",
   "imgbb_api_key",
   "fleet_health_dir",
+  "fleet_health_repo",
   "update_gh_user_status",
   "github_app_id",
   "github_app_installation_id",
@@ -269,6 +271,10 @@ export function buildOverridesOnly(
 
   if (config.fleet_health_dir) {
     result.fleet_health_dir = config.fleet_health_dir;
+  }
+
+  if (config.fleet_health_repo) {
+    result.fleet_health_repo = config.fleet_health_repo;
   }
 
   if (
