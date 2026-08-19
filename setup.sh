@@ -118,12 +118,13 @@ set -euo pipefail
 #                             Without this, screenshots are saved locally and must
 #                             be manually uploaded to the PR if needed.
 #   VIBE_FLEET_HEALTH_DIR     - Directory of the FLEET health tracking checkout
-#                             (optional; a single host does not need one).
-#                             The interactive setup asks for the health
-#                             repository's git URL and checkout directory and
-#                             stores them in .config.json (fleet_health_repo,
-#                             fleet_health_dir); nothing is cloned unless the
-#                             operator named the repository.
+#                             (optional, native mode only; a single host does
+#                             not need one). The interactive setup asks for the
+#                             health repository's git URL and stores it in
+#                             .config.json (fleet_health_repo); the worker
+#                             clones it on first run — beside VibeCoder
+#                             natively, inside its work volume in container
+#                             mode. Nothing is cloned from an assumed URL.
 #   VIBE_UPDATE_GH_USER_STATUS - Set to "true" (default) or "false" to control
 #                             GitHub user profile status updates. Requires the
 #                             `user` scope on the GitHub token.
@@ -639,7 +640,6 @@ prompt_interactive_config() {
     local existing_ssh_key_path=""
     local existing_gh_config_dir=""
     local existing_imgbb_api_key=""
-    local existing_fleet_health_dir=""
     local existing_fleet_health_repo=""
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         existing_repos=$(jq -r '(.repos // []) | join(",")' "$CONFIG_FILE" 2>/dev/null)
@@ -648,7 +648,6 @@ prompt_interactive_config() {
         existing_ssh_key_path=$(jq -r '.ssh_key_path // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_gh_config_dir=$(jq -r '.gh_config_dir // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_imgbb_api_key=$(jq -r '.imgbb_api_key // empty' "$CONFIG_FILE" 2>/dev/null)
-        existing_fleet_health_dir=$(jq -r '.fleet_health_dir // empty' "$CONFIG_FILE" 2>/dev/null)
         existing_fleet_health_repo=$(jq -r '.fleet_health_repo // empty' "$CONFIG_FILE" 2>/dev/null)
     fi
 
@@ -768,77 +767,29 @@ prompt_interactive_config() {
 
     # FLEET health tracking (optional, Issue #535). A fleet of workers can
     # report into a shared health repository; a single host does not need one.
-    # Setup asks where that repository is and stores the answer in
-    # .config.json (fleet_health_repo + fleet_health_dir) — a one-off, no
-    # environment variables. Nothing is cloned unless the operator named the
-    # repository: an assumed URL on a host without access to it only ever
-    # produced "Could not read from remote repository ... repository exists".
+    # Setup asks only where that repository is and stores it in .config.json
+    # (fleet_health_repo). The worker clones it itself on its first run -
+    # natively beside VibeCoder, in container mode inside its own work volume
+    # - so no directory is asked for and nothing is cloned here. Nothing is
+    # ever cloned from an assumed URL.
     local fleet_repo_display=""
     if [[ -n "$existing_fleet_health_repo" ]]; then
         fleet_repo_display=" [${existing_fleet_health_repo}]"
     fi
     echo -e "  FLEET health repository (optional): git URL of the fleet's health"
     echo -e "  repository, e.g. git@github.com:your-org/your-health-repo.git${fleet_repo_display}"
-    echo -e "  Leave blank to keep the current value, or '-' to turn health tracking off."
+    echo -e "  The worker clones it on first run. Leave blank to keep the current value,"
+    echo -e "  or '-' to turn health tracking off."
     echo -n "  FLEET health repository: "
     read -r input_fleet_health_repo
-    local fleet_repo=""
     if [[ "$input_fleet_health_repo" == "-" ]]; then
-        fleet_repo=""
         INTERACTIVE_FLEET_HEALTH_CLEAR=true
+        print_info "FLEET health tracking turned off."
     elif [[ -n "$input_fleet_health_repo" ]]; then
-        fleet_repo="$input_fleet_health_repo"
-    else
-        fleet_repo="$existing_fleet_health_repo"
-    fi
-
-    if [[ -n "$fleet_repo" ]]; then
-        # Checkout directory: the configured one, else a sibling of VibeCoder
-        # named after the repository (git@host:org/GRQ-health.git -> ../GRQ-health).
-        local fleet_repo_name="${fleet_repo##*/}"
-        fleet_repo_name="${fleet_repo_name%.git}"
-        local fleet_default_dir="${existing_fleet_health_dir:-$(cd "$SCRIPT_DIR" && cd .. && pwd)/${fleet_repo_name}}"
-        echo -e "  FLEET health checkout directory [${fleet_default_dir}]"
-        echo -n "  FLEET health directory: "
-        read -r input_fleet_health_dir
-        local fleet_dir="${input_fleet_health_dir:-$fleet_default_dir}"
-        local expanded_fleet="${fleet_dir/#\~/$HOME}"
-        INTERACTIVE_FLEET_HEALTH_REPO="$fleet_repo"
-        if [[ -d "$expanded_fleet" ]]; then
-            INTERACTIVE_FLEET_HEALTH_DIR="$fleet_dir"
-            print_success "FLEET health directory found at ${fleet_dir}"
-        else
-            print_info "Cloning FLEET health repository to ${fleet_dir}..."
-            local _fleet_ssh_cmd=""
-            if [[ -n "${INTERACTIVE_SSH_KEY_PATH:-}" ]]; then
-                local _expanded_ssh="${INTERACTIVE_SSH_KEY_PATH/#\~/$HOME}"
-                # Git parses GIT_SSH_COMMAND with /bin/sh — quote the key path
-                # so a space picks the intended identity rather than silently
-                # falling back, and `;`/`$(…)` cannot execute (Issue #3661,
-                # SEC-a228ff008ed4). printf %q is bash 3.2+ and macOS-safe.
-                _fleet_ssh_cmd="ssh -i $(printf '%q' "$_expanded_ssh") -o IdentitiesOnly=yes"
-            fi
-            local _fleet_cloned=false
-            if [[ -n "$_fleet_ssh_cmd" ]]; then
-                if GIT_SSH_COMMAND="$_fleet_ssh_cmd" git clone "$fleet_repo" "$expanded_fleet" 2>&1; then
-                    _fleet_cloned=true
-                fi
-            else
-                if git clone "$fleet_repo" "$expanded_fleet" 2>&1; then
-                    _fleet_cloned=true
-                fi
-            fi
-            # The directory is recorded either way: the worker clones
-            # fleet_health_repo there itself when it is missing, so a clone
-            # that failed here (network, key not yet authorised) self-heals
-            # on the first run instead of leaving tracking silently off.
-            INTERACTIVE_FLEET_HEALTH_DIR="$fleet_dir"
-            if [[ "$_fleet_cloned" == "true" ]]; then
-                print_success "FLEET health repository cloned"
-            else
-                print_warning "Failed to clone FLEET health repository from ${fleet_repo} (non-fatal; the worker retries the clone on its first run)"
-            fi
-        fi
+        INTERACTIVE_FLEET_HEALTH_REPO="$input_fleet_health_repo"
+        print_success "FLEET health repository: ${input_fleet_health_repo}"
+    elif [[ -n "$existing_fleet_health_repo" ]]; then
+        print_success "FLEET health repository: ${existing_fleet_health_repo}"
     else
         print_info "FLEET health tracking not configured (optional) — re-run setup and give the repository's git URL to enable it."
     fi
@@ -877,7 +828,7 @@ prompt_interactive_config() {
 # Write interactive values directly into .config.json after TS setup runs.
 # This merges ssh_key_path and gh_config_dir into the config file.
 write_interactive_config() {
-    if [[ -z "${INTERACTIVE_REPOS:-}" && -z "${INTERACTIVE_ALLOWED_AUTHORS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" && -z "${INTERACTIVE_FLEET_HEALTH_DIR:-}" && -z "${INTERACTIVE_FLEET_HEALTH_REPO:-}" && -z "${INTERACTIVE_FLEET_HEALTH_CLEAR:-}" ]]; then
+    if [[ -z "${INTERACTIVE_REPOS:-}" && -z "${INTERACTIVE_ALLOWED_AUTHORS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" && -z "${INTERACTIVE_FLEET_HEALTH_REPO:-}" && -z "${INTERACTIVE_FLEET_HEALTH_CLEAR:-}" ]]; then
         return 0
     fi
 
@@ -915,10 +866,6 @@ write_interactive_config() {
 
     if [[ -n "${INTERACTIVE_IMGBB_API_KEY:-}" ]]; then
         config=$(echo "$config" | jq --arg v "$INTERACTIVE_IMGBB_API_KEY" '. + {imgbb_api_key: $v}')
-    fi
-
-    if [[ -n "${INTERACTIVE_FLEET_HEALTH_DIR:-}" ]]; then
-        config=$(echo "$config" | jq --arg v "$INTERACTIVE_FLEET_HEALTH_DIR" '. + {fleet_health_dir: $v}')
     fi
 
     if [[ -n "${INTERACTIVE_FLEET_HEALTH_REPO:-}" ]]; then
@@ -1014,6 +961,25 @@ prompt_launchagent_setup() {
     read -r install_launchagent
     if [[ "$install_launchagent" != "n" && "$install_launchagent" != "N" ]]; then
         run_setup_cli launchagent
+        return 0
+    fi
+
+    # Declined. An agent an earlier setup installed is still there, still
+    # launching the worker every five minutes beside whatever the operator
+    # starts by hand - and two workers on one host collide on the work
+    # volumes (Issue #26). Say so, and offer to remove it; "no" here must
+    # never silently mean "keep the one you have".
+    local plist_dir="${VIBE_LAUNCHAGENT_DIR:-$HOME/Library/LaunchAgents}"
+    if [[ -f "${plist_dir}/com.vibe.auto-issue-worker.plist" ]]; then
+        print_warning "The LaunchAgent is currently installed: launchd starts the worker every 5 minutes on this machine."
+        print_info "Starting the worker by hand (./loop.sh) as well would run two workers on this host - one worker per host."
+        echo -n "  Remove the installed LaunchAgent now? [Y/n] "
+        read -r remove_launchagent
+        if [[ "$remove_launchagent" != "n" && "$remove_launchagent" != "N" ]]; then
+            run_setup_cli launchagent --uninstall
+        else
+            print_info "Keeping the LaunchAgent - do not also start the worker by hand on this machine."
+        fi
     else
         print_info "Skipping LaunchAgent — continue starting the worker manually (e.g. ./loop.sh)."
     fi

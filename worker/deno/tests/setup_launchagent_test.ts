@@ -8,6 +8,8 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   generatePlist,
   getLaunchAgentLabel,
+  isLaunchAgentInstalled,
+  removeLaunchAgent,
   setupLaunchAgent,
   writeSecurePlist,
 } from "../setup/launchagent.ts";
@@ -228,6 +230,38 @@ Deno.test({
       assertStringIncludes(second.message, "already up to date");
     } finally {
       await Deno.remove(root, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "removeLaunchAgent / isLaunchAgentInstalled - a declined install can remove the agent an earlier setup left, idempotently (Issue #26)",
+  ignore: Deno.build.os !== "darwin",
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      assertEquals(await isLaunchAgentInstalled(dir), false);
+      const absent = await removeLaunchAgent({
+        launchAgentDir: dir,
+        skipLaunchctl: true,
+      });
+      assertEquals(absent.ok, true);
+      assertStringIncludes(absent.message, "No LaunchAgent is installed");
+
+      const plistPath = `${dir}/com.vibe.auto-issue-worker.plist`;
+      await Deno.writeTextFile(plistPath, "<plist/>");
+      assertEquals(await isLaunchAgentInstalled(dir), true);
+
+      const removed = await removeLaunchAgent({
+        launchAgentDir: dir,
+        skipLaunchctl: true,
+      });
+      assertEquals(removed.ok, true, removed.message);
+      assertStringIncludes(removed.message, plistPath);
+      assertEquals(await isLaunchAgentInstalled(dir), false);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
     }
   },
 });

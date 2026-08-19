@@ -63,6 +63,7 @@ import { formatRunModeRecord, resolveRunHostId } from "./run_mode_record.ts";
 import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
 import { runCoreCommand } from "../commands/run_core.ts";
+import { applyOptionalFeatureEnv } from "./optional_feature_env.ts";
 
 /** Distinct outcomes of a worker driver invocation. */
 export type RunWorkerOutcome =
@@ -157,6 +158,12 @@ export interface RunWorkerDeps {
   cleanup(pidFile: string, pid: number, liveSlots?: number): Promise<void>;
   /** Establish an environment variable in-process. */
   setEnv(name: string, value: string): void;
+  /**
+   * Apply the optional-feature settings in `.config.json` to the process
+   * environment (Issue #535 keys). Optional so older dependency sets keep
+   * working; the production set always has it.
+   */
+  applyOptionalFeatureEnv?(configPath: string): Promise<unknown>;
   /** Log an informational line. */
   log(message: string): void;
   /** Log an error line. */
@@ -294,6 +301,14 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
         // Best-effort — a permission denial must not abort the run.
       }
     },
+    applyOptionalFeatureEnv: (configPath) =>
+      applyOptionalFeatureEnv(configPath, (name, value) => {
+        try {
+          Deno.env.set(name, value);
+        } catch {
+          // Best-effort — a permission denial must not abort the run.
+        }
+      }),
     log: (message) => logger.info(message),
     logError: (message) => logger.error(message),
   };
@@ -377,6 +392,14 @@ export async function runWorker(
   if (!env("CONFIG_PATH")) {
     deps.setEnv("CONFIG_PATH", `${repoDir}/.config.json`);
   }
+  // Optional-feature settings from .config.json (imgbb key, FLEET health
+  // repository/directory, GitHub status) become the environment variables
+  // their consumers read — the step the bash conductor's `eval
+  // "$(load-config)"` used to be. Environment wins; a host-only path is
+  // not applied inside the container.
+  await deps.applyOptionalFeatureEnv?.(
+    env("CONFIG_PATH") ?? `${repoDir}/.config.json`,
+  );
 
   try {
     // Step 3: Bootstrap prelude — PATH, run-id, logging, git reset, updates.
