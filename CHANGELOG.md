@@ -98,6 +98,20 @@ This changelog is a human-readable digest grouped by version.
 
 ### Fixed
 
+- **One worker per host: a launcher now refuses to start beside a running
+  worker, and setup offers to remove a LaunchAgent / scheduled task the
+  operator declines (Issue #26).** The pre-launch reaper only killed stale or
+  orphaned containers, so a second `run.sh` (loop.sh beside the LaunchAgent)
+  launched anyway and died on the runtime's storage-attachment error
+  (`VZErrorDomain … The storage device attachment is invalid`) — the work
+  volumes are per-host singletons. `container-reap --refuse-live` now reports
+  a live worker container (young, launcher alive) with its own exit status
+  (4), and `run.sh` / `run.ps1` exit before building or launching, naming the
+  container and launcher pid. Separately, answering `n` to "Install the
+  LaunchAgent now?" used to leave an agent from an earlier setup installed and
+  firing every five minutes; setup now says it is installed and offers to
+  remove it (`launchagent --uninstall`; `scheduled-task --uninstall` on
+  Windows).
 - **The optional-feature keys in `.config.json` reach the worker again, and
   FLEET health needs only the repository URL.** `imgbb_api_key`,
   `fleet_health_dir`, `fleet_health_repo` and `update_gh_user_status` were

@@ -347,6 +347,31 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "run.ps1 - refuses to launch when another worker is already running on this host (Issue #26)",
+  ignore,
+  fn: async () => {
+    const live = `vibe-coder-${Deno.pid}`;
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_LIST_JSON: JSON.stringify([{ Names: live }]),
+    });
+    try {
+      const outcome = await runLauncher(harness);
+
+      assert(outcome.code !== 0, "a second worker must not launch");
+      assertStringIncludes(outcome.stderr, "another worker is already running");
+      assertStringIncludes(outcome.stderr, live);
+      assertEquals(await recorded(harness, "kill"), null);
+      assertEquals(await recorded(harness, "build"), null);
+      assertEquals(await recorded(harness, "run"), null);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
   name: "run.ps1 - reaps a container that outlives the watchdog deadline",
   ignore,
   fn: async () => {

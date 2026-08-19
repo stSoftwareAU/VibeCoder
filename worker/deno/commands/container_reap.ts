@@ -10,7 +10,7 @@
  *       deleted"), SIGKILL the host-side client and the runtime helper holding
  *       it, so the launcher — and the supervisor behind it — is freed.
  *
- *   --stale --max-age-seconds <n> [--exclude <container>]
+ *   --stale --max-age-seconds <n> [--exclude <container>] [--refuse-live]
  *       Pre-launch reaper: reap every `vibe-coder-*` container older than the
  *       deadline, or whose launcher process is gone (which is also how a wedge
  *       that survived a host reboot is caught).
@@ -30,11 +30,21 @@ import type { Command, CommandResult } from "../types.ts";
 import {
   createReapDeps,
   dialectForExecutable,
+  listLiveWorkerContainers,
+  type LiveWorkerContainer,
   type ReapResult,
   reapStaleContainers,
   reapWedgedContainer,
   resolveGraceSeconds,
 } from "../lib/container_watchdog.ts";
+
+/**
+ * Exit status for "another worker is already running on this host" — a
+ * correct outcome the launcher must tell apart from a reaper that could not
+ * run (1) and from a clean host (0) (Issue #26). The launchers read it by
+ * this number; keep it stable.
+ */
+export const ANOTHER_WORKER_RUNNING_EXIT = 4;
 
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -51,6 +61,8 @@ function optionalNumber(value: unknown): number | undefined {
 export interface ContainerReapResult {
   /** One entry per container the command tried to reap. */
   reaped: ReapResult[];
+  /** Live worker containers found by `--refuse-live` (Issue #26). */
+  live?: LiveWorkerContainer[];
 }
 
 export const containerReapCommand: Command = {
@@ -144,6 +156,41 @@ export async function reap(
   }
 
   const survivors = results.filter((result) => !result.reaped);
+
+  // One worker per host (Issue #26): after the stale reap, anything still
+  // listed with a live launcher behind it is a worker somebody else is
+  // running — say so and stop this launch, before it builds or launches.
+  if (args["refuse-live"] === true && stale) {
+    const maxAgeSeconds = optionalNumber(args["max-age-seconds"]) ?? 0;
+    const exclude = optionalString(args["exclude"]);
+    const found = await listLiveWorkerContainers(deps, {
+      maxAgeSeconds,
+      ...(exclude ? { excludeNames: [exclude] } : {}),
+    });
+    if (!found.ok) {
+      return {
+        success: false,
+        message: `could not tell whether another worker is running: ` +
+          found.error,
+        data: { reaped: results },
+      };
+    }
+    if (found.live.length > 0) {
+      const named = found.live.map((c) =>
+        `${c.name} (launcher pid ${c.launcherPid}` +
+        `${c.ageSeconds !== undefined ? `, running ${c.ageSeconds}s` : ""})`
+      ).join(", ");
+      return {
+        success: false,
+        exitCode: ANOTHER_WORKER_RUNNING_EXIT,
+        message: `another worker is already running on this host: ${named}. ` +
+          `One worker per host — stop that one (or the LaunchAgent, ` +
+          `scheduled task or loop.sh that started it) before launching another.`,
+        data: { reaped: results, live: found.live },
+      };
+    }
+  }
+
   if (survivors.length > 0) {
     return {
       success: false,

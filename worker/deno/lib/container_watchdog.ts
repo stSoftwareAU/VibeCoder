@@ -692,6 +692,106 @@ export async function reapWedgedContainer(
   };
 }
 
+/** A worker container another launcher is still legitimately running. */
+export interface LiveWorkerContainer {
+  /** Container name (`vibe-coder-<launcher pid>`). */
+  name: string;
+  /** The launcher process behind it, alive on this host. */
+  launcherPid: number;
+  /** Age in seconds, when the runtime reported a creation time. */
+  ageSeconds?: number;
+}
+
+/**
+ * The worker containers the pre-launch scan must leave alone *and* that
+ * therefore stop this launch: one worker per host (Issue #26).
+ *
+ * The named work volumes are per-host singletons, so a second worker cannot
+ * start while a first is running — its `-init` helper fails on the storage
+ * attachment with a VM-internals error that names nothing. A container that
+ * is young enough and whose launcher pid is alive is exactly the one the
+ * stale scan keeps; this is that set, so the launcher can say "already
+ * running" before it builds or launches anything.
+ *
+ * @param options.records - The runtime's container listing
+ * @param options.maxAgeSeconds - The launcher's deadline
+ * @param options.now - Current time in milliseconds since the epoch
+ * @param options.prefix - Worker container prefix
+ * @param options.excludeNames - Names to leave alone (this run's own)
+ * @param options.isProcessAlive - Host pid liveness probe
+ * @returns The live worker containers, oldest first
+ */
+export function selectLiveWorkerContainers(options: {
+  records: readonly ContainerRecord[];
+  maxAgeSeconds: number;
+  now: number;
+  prefix?: string;
+  excludeNames?: readonly string[];
+  isProcessAlive: (pid: number) => boolean;
+}): LiveWorkerContainer[] {
+  const prefix = options.prefix ?? WORKER_CONTAINER_PREFIX;
+  const excluded = new Set(options.excludeNames ?? []);
+  const live: LiveWorkerContainer[] = [];
+
+  for (const record of options.records) {
+    if (excluded.has(record.name)) continue;
+    const pid = launcherPidFromContainerName(record.name, prefix);
+    if (pid === null) continue;
+
+    let ageSeconds: number | undefined;
+    if (record.createdAt !== undefined) {
+      ageSeconds = Math.floor((options.now - record.createdAt) / 1000);
+      if (ageSeconds > options.maxAgeSeconds) continue; // stale: reaped
+    }
+    if (!options.isProcessAlive(pid)) continue; // orphaned: reaped
+
+    live.push({
+      name: record.name,
+      launcherPid: pid,
+      ...(ageSeconds !== undefined ? { ageSeconds } : {}),
+    });
+  }
+
+  return live.sort((a, b) => (b.ageSeconds ?? 0) - (a.ageSeconds ?? 0));
+}
+
+/**
+ * List the worker containers other launchers are still running (Issue #26).
+ *
+ * A listing the runtime cannot produce is an error, never "nothing is
+ * running" (Issue #3234): the caller decides whether that stops the launch.
+ *
+ * @param deps - Injected operations
+ * @param options - Scan bounds (the same as the stale scan's)
+ * @returns The live worker containers, or the listing failure
+ */
+export async function listLiveWorkerContainers(
+  deps: Pick<ReapDeps, "runRuntime" | "listArgs" | "isProcessAlive" | "now">,
+  options: ReapStaleOptions,
+): Promise<
+  { ok: true; live: LiveWorkerContainer[] } | { ok: false; error: string }
+> {
+  const listing = await deps.runRuntime(deps.listArgs);
+  if (listing.code !== 0) {
+    return {
+      ok: false,
+      error: `could not list containers: ${deps.listArgs.join(" ")} exited ` +
+        `${listing.code} (${listing.stderr.trim() || "no output"})`,
+    };
+  }
+  return {
+    ok: true,
+    live: selectLiveWorkerContainers({
+      records: parseContainerListing(listing.stdout),
+      maxAgeSeconds: options.maxAgeSeconds,
+      now: deps.now(),
+      ...(options.prefix ? { prefix: options.prefix } : {}),
+      ...(options.excludeNames ? { excludeNames: options.excludeNames } : {}),
+      isProcessAlive: deps.isProcessAlive,
+    }),
+  };
+}
+
 /** Options for the pre-launch scan. */
 export interface ReapStaleOptions {
   /** The launcher's deadline — a container older than this is a leak. */

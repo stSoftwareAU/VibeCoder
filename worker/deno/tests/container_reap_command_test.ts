@@ -14,7 +14,10 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { reap } from "../commands/container_reap.ts";
+import {
+  ANOTHER_WORKER_RUNNING_EXIT,
+  reap,
+} from "../commands/container_reap.ts";
 
 Deno.test("container-reap - refuses a request with no runtime", async () => {
   const result = await reap({ name: "vibe-coder-1" });
@@ -41,4 +44,10 @@ Deno.test("container-reap - a stale scan without a deadline is refused", async (
   const result = await reap({ runtime: "docker", stale: true });
   assertEquals(result.success, false);
   assertStringIncludes(result.message, "--max-age-seconds");
+});
+
+Deno.test("container-reap - the 'another worker is running' status is its own number, distinct from pass and fail (Issue #26)", () => {
+  // The launchers branch on this exact value; 0 and 1 already mean "clean
+  // host" and "the reaper could not run".
+  assertEquals(ANOTHER_WORKER_RUNNING_EXIT, 4);
 });

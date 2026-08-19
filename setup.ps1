@@ -746,6 +746,28 @@ function Invoke-VibeSetupCli {
 
 <#
 .SYNOPSIS
+    Run a setup CLI subcommand and return its standard output as one string.
+
+.DESCRIPTION
+    For the query forms (`scheduled-task --status`) whose one-line answer
+    setup branches on. A CLI that cannot run yields an empty string, which no
+    query answer equals, so the caller takes the "not registered" path.
+#>
+function Invoke-VibeSetupCliCapture {
+    param([Parameter(Mandatory = $true)][string[]] $Arguments)
+
+    $deno = Get-VibeDenoCommand
+    if (-not $deno) { return "" }
+    $argv = @("run", "--frozen", "--lock=$DenoLock", "--allow-all", $SetupCli) +
+        $Arguments +
+        @("--script-dir", $ScriptDir, "--config-path", $ConfigFile)
+    $output = (& $deno @argv 2>$null | Out-String)
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return $output
+}
+
+<#
+.SYNOPSIS
     Run a setup CLI subcommand that setup cannot continue without.
 #>
 function Invoke-VibeSetupCliOrExit {
@@ -1044,7 +1066,24 @@ function Invoke-VibeScheduledTaskPrompt {
     Write-VibeInfo "Answer 'n' on a machine where you start the worker manually via loop.ps1."
     $install = Read-Host "  Register the scheduled task now? [Y/n]"
     if ($install -match '^[nN]') {
-        Write-VibeInfo "Skipping the scheduled task - continue starting the worker manually (e.g. .\loop.ps1)."
+        # Declined. A task an earlier setup registered is still there, still
+        # launching the worker every five minutes beside whatever the operator
+        # starts by hand - and two workers on one host collide on the work
+        # volumes (Issue #26). Say so, and offer to remove it; "no" here must
+        # never silently mean "keep the one you have".
+        $registered = (Invoke-VibeSetupCliCapture @("scheduled-task", "--status")).Trim()
+        if ($registered -eq "registered") {
+            Write-VibeWarning "The scheduled task is currently registered: Task Scheduler starts the worker every 5 minutes on this machine."
+            Write-VibeInfo "Starting the worker by hand (.\loop.ps1) as well would run two workers on this host - one worker per host."
+            $remove = Read-Host "  Unregister the scheduled task now? [Y/n]"
+            if ($remove -match '^[nN]') {
+                Write-VibeInfo "Keeping the scheduled task - do not also start the worker by hand on this machine."
+            } else {
+                Invoke-VibeSetupCli @("scheduled-task", "--uninstall")
+            }
+        } else {
+            Write-VibeInfo "Skipping the scheduled task - continue starting the worker manually (e.g. .\loop.ps1)."
+        }
         return
     }
 
