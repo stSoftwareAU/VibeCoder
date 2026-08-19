@@ -311,6 +311,22 @@ export async function recorded(
 }
 
 /**
+ * True when the launcher healed the runtime's builder (Issue #4441).
+ *
+ * Apple container restarts its builder VM (`builder stop` + `builder start`);
+ * Docker and Podman prune the build cache (`builder prune -f`). Either is the
+ * heal for the runtime the launch plan chose on this host, so a launcher test
+ * asserting on the heal passes on macOS and Linux alike.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns True when a builder restart or prune was recorded
+ */
+export async function builderHealed(harness: Harness): Promise<boolean> {
+  return await recorded(harness, "builder-start") !== null ||
+    await recorded(harness, "builder-prune") !== null;
+}
+
+/**
  * Image references the launcher's prune removed (Issue #4162).
  *
  * @param harness - The harness the launcher ran under

@@ -35,6 +35,7 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   BASH_LAUNCHER,
   buildCount,
+  builderHealed,
   type Harness,
   type LaunchOutcome,
   mountValues,
@@ -935,14 +936,6 @@ const ENOSPC_BUILD_FAILURE =
   'Error: resourceExhausted: "failed to solve: write ' +
   "/var/lib/container-builder-shim/exports/abc/out.tar: no space left on " +
   'device"';
-
-/** True when the launcher restarted (or pruned) the runtime's builder. */
-async function builderHealed(harness: Harness): Promise<boolean> {
-  // Apple container restarts its builder VM; Docker and Podman prune the
-  // build cache instead. Either is the heal for this host's runtime.
-  return await recorded(harness, "builder-start") !== null ||
-    await recorded(harness, "builder-prune") !== null;
-}
 
 Deno.test("run.sh - heals the builder and retries once when the build dies on storage (Issue #4441)", async () => {
   const harness = await setupHarness({
