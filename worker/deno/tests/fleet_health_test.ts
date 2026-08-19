@@ -254,10 +254,13 @@ Deno.test("ensureFleetHealthRepo - uses fetch+reset when directory exists (self-
   assertEquals(fetchCmd[0], "git");
   assertStringIncludes(fetchCmd.join(" "), "fetch");
 
-  const resetCmd = deps.commands[1]!;
+  // The reset is the last git step (a `remote set-head` may precede it when
+  // the clone never recorded origin/HEAD).
+  const resetCmd = deps.commands[deps.commands.length - 1]!;
   assertEquals(resetCmd[0], "git");
   assertStringIncludes(resetCmd.join(" "), "reset");
   assertStringIncludes(resetCmd.join(" "), "--hard");
+  assertEquals(deps.commands.some((c) => c.join(" ").includes("pull")), false);
 });
 
 Deno.test("ensureFleetHealthRepo - logs warning on clone failure", async () => {
@@ -296,33 +299,106 @@ Deno.test("ensureFleetHealthRepo - logs warning on fetch failure but returns ok"
   assertStringIncludes(deps.warnings[0]!, "Failed to fetch");
 });
 
-Deno.test("ensureFleetHealthRepo - falls back to origin/main when origin/Develop reset fails", async () => {
-  let callCount = 0;
+Deno.test("ensureFleetHealthRepo - resets to the branch origin/HEAD names", async () => {
   const commands: string[][] = [];
   const deps = createMockDeps({
     directoryExists: () => Promise.resolve(true),
     runCommand: (cmd: string[]) => {
       commands.push(cmd);
-      callCount++;
-      // Fetch succeeds (call 1), Develop reset fails (call 2), main reset succeeds (call 3)
-      if (callCount === 2) {
-        return Promise.resolve({
-          ok: false as const,
-          error: new Error("Reset to Develop failed"),
-        });
-      }
       return Promise.resolve({ ok: true, value: undefined } as Result<void>);
     },
+    captureCommand: (cmd: string[]) => {
+      if (cmd.includes("symbolic-ref")) {
+        return Promise.resolve(
+          { ok: true, value: "origin/release\n" } as Result<string>,
+        );
+      }
+      return Promise.resolve(
+        { ok: false, error: new Error("not probed") } as Result<string>,
+      );
+    },
   });
-  Object.defineProperty(deps, "commands", { value: commands });
   const config = createTestConfig();
 
   const result = await ensureFleetHealthRepo(config, deps);
 
   assertEquals(result.ok, true);
-  // Should have 3 commands: fetch, reset Develop (fail), reset main (success)
+  // fetch, then a single reset to the resolved branch — no guessing.
+  assertEquals(commands.length, 2);
+  assertStringIncludes(commands[1]!.join(" "), "origin/release");
+  assertEquals(deps.warnings.length, 0);
+});
+
+Deno.test("ensureFleetHealthRepo - asks the remote for HEAD once when the clone did not record it", async () => {
+  const commands: string[][] = [];
+  let setHeadDone = false;
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(true),
+    runCommand: (cmd: string[]) => {
+      commands.push(cmd);
+      if (cmd.includes("set-head")) setHeadDone = true;
+      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    },
+    captureCommand: (cmd: string[]) => {
+      if (cmd.includes("symbolic-ref") && setHeadDone) {
+        return Promise.resolve(
+          { ok: true, value: "origin/trunk" } as Result<string>,
+        );
+      }
+      return Promise.resolve(
+        { ok: false, error: new Error("unset") } as Result<string>,
+      );
+    },
+  });
+  const config = createTestConfig();
+
+  const result = await ensureFleetHealthRepo(config, deps);
+
+  assertEquals(result.ok, true);
+  // fetch, remote set-head, reset
+  assertEquals(commands.length, 3);
+  assertStringIncludes(commands[1]!.join(" "), "remote set-head origin --auto");
+  assertStringIncludes(commands[2]!.join(" "), "origin/trunk");
+});
+
+Deno.test("ensureFleetHealthRepo - falls back to main when origin/HEAD cannot be resolved at all", async () => {
+  const commands: string[][] = [];
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(true),
+    runCommand: (cmd: string[]) => {
+      commands.push(cmd);
+      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    },
+    // captureCommand default: never resolves
+  });
+  const config = createTestConfig();
+
+  const result = await ensureFleetHealthRepo(config, deps);
+
+  assertEquals(result.ok, true);
   assertEquals(commands.length, 3);
   assertStringIncludes(commands[2]!.join(" "), "origin/main");
+});
+
+Deno.test("ensureFleetHealthRepo - a failed reset is a warning, not a failure", async () => {
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(true),
+    runCommand: (cmd: string[]) => {
+      if (cmd.includes("reset")) {
+        return Promise.resolve(
+          { ok: false as const, error: new Error("Reset failed") },
+        );
+      }
+      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    },
+  });
+  const config = createTestConfig();
+
+  const result = await ensureFleetHealthRepo(config, deps);
+
+  assertEquals(result.ok, true);
+  assertEquals(deps.warnings.length, 1);
+  assertStringIncludes(deps.warnings[0]!, "Failed to reset");
 });
 
 // ---------------------------------------------------------------------------
