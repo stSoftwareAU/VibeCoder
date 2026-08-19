@@ -214,10 +214,9 @@ Deno.test("prompt builder - issue prompt includes milestone targeting", async ()
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value.prompt, "milestone/oidc");
-    // The branch is untrusted data, so it is rendered once inside the fence and
-    // the example command carries the `<milestone-branch>` placeholder rather
-    // than the literal value (Issue #16) — the same shape the milestone
-    // *assignment* block has used since #2515.
+    // The branch is fenced as untrusted data and reached through the
+    // `<milestone-branch>` placeholder rather than spliced into the command
+    // (Issue #16).
     assertStringIncludes(result.value.prompt, '--base "<milestone-branch>"');
     assertStringIncludes(result.value.prompt, "Closes #10");
   }
