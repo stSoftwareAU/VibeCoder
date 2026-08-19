@@ -7,7 +7,12 @@
  * Australian English spelling throughout (behaviour, authorisation, etc.)
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   APP_AUTH_FALLBACK_EVENT,
   type AuthEventLogger,
@@ -309,6 +314,110 @@ Deno.test("github_app_auth - ensureValidToken refreshes token when near expiry",
     // Second call should refresh because token expires within 5 minutes
     const token2 = await ensureValidToken("12345", "67890", tmpFile, mockFetch);
     assertEquals(token2, "ghs_token_2");
+    assertEquals(fetchCallCount, 2);
+  } finally {
+    await Deno.remove(tmpFile);
+  }
+});
+
+/**
+ * Issue #38 (SEC-0f7d3c9a4e21): the cache must be keyed by the identity the
+ * token was minted for. A hit for a different installation would hand out
+ * another tenant's credential silently.
+ */
+Deno.test("github_app_auth - ensureValidToken mints fresh for a different installationId", async () => {
+  resetTokenCache();
+
+  const tmpFile = await Deno.makeTempFile({ suffix: ".pem" });
+  let fetchCallCount = 0;
+
+  try {
+    await Deno.writeTextFile(tmpFile, TEST_PRIVATE_KEY_PEM);
+
+    const mockFetch: FetchFn = async (_url, _init) => {
+      fetchCallCount++;
+      const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+      return new Response(
+        JSON.stringify({
+          token: `ghs_token_${fetchCallCount}`,
+          expires_at: expiresAt,
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const tokenA = await ensureValidToken("12345", "67890", tmpFile, mockFetch);
+    const tokenB = await ensureValidToken("12345", "99999", tmpFile, mockFetch);
+
+    assertEquals(tokenA, "ghs_token_1");
+    assertEquals(tokenB, "ghs_token_2"); // Fresh mint — not installation A's token
+    assertNotEquals(tokenB, tokenA);
+    assertEquals(fetchCallCount, 2);
+  } finally {
+    await Deno.remove(tmpFile);
+  }
+});
+
+Deno.test("github_app_auth - ensureValidToken mints fresh for a different appId", async () => {
+  resetTokenCache();
+
+  const tmpFile = await Deno.makeTempFile({ suffix: ".pem" });
+  let fetchCallCount = 0;
+
+  try {
+    await Deno.writeTextFile(tmpFile, TEST_PRIVATE_KEY_PEM);
+
+    const mockFetch: FetchFn = async (_url, _init) => {
+      fetchCallCount++;
+      const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+      return new Response(
+        JSON.stringify({
+          token: `ghs_token_${fetchCallCount}`,
+          expires_at: expiresAt,
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const tokenA = await ensureValidToken("12345", "67890", tmpFile, mockFetch);
+    const tokenB = await ensureValidToken("54321", "67890", tmpFile, mockFetch);
+
+    assertEquals(tokenA, "ghs_token_1");
+    assertEquals(tokenB, "ghs_token_2"); // Fresh mint — not app A's token
+    assertNotEquals(tokenB, tokenA);
+    assertEquals(fetchCallCount, 2);
+  } finally {
+    await Deno.remove(tmpFile);
+  }
+});
+
+Deno.test("github_app_auth - resetTokenCache clears the cached identity too", async () => {
+  resetTokenCache();
+
+  const tmpFile = await Deno.makeTempFile({ suffix: ".pem" });
+  let fetchCallCount = 0;
+
+  try {
+    await Deno.writeTextFile(tmpFile, TEST_PRIVATE_KEY_PEM);
+
+    const mockFetch: FetchFn = async (_url, _init) => {
+      fetchCallCount++;
+      const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+      return new Response(
+        JSON.stringify({
+          token: `ghs_token_${fetchCallCount}`,
+          expires_at: expiresAt,
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    await ensureValidToken("12345", "67890", tmpFile, mockFetch);
+    resetTokenCache();
+
+    // Same identity, but the reset wiped both token and identity — mint again.
+    const token = await ensureValidToken("12345", "67890", tmpFile, mockFetch);
+    assertEquals(token, "ghs_token_2");
     assertEquals(fetchCallCount, 2);
   } finally {
     await Deno.remove(tmpFile);
