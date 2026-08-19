@@ -29,6 +29,7 @@ import {
   type SoftwareUpdateOptions,
 } from "./software_updates.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { resolveLocalDefaultBranch } from "./git_push.ts";
 import { createLogger } from "./logger.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import { GH_RUNTIME_CONFIG_SUFFIX } from "./credential_preflight.ts";
@@ -37,12 +38,50 @@ import {
   type GzipWorkerLogsResult,
 } from "./worker_log_gzip.ts";
 
-// The worker's own repository default branch is intentionally fixed — the
-// bootstrap prelude resets this checkout to origin/Develop, exactly as the
-// prior bash `git reset --hard origin/Develop` did (Issue #3501). Callers may
-// override via `--default-branch`.
-/** Default branch the checkout is reset to during the prelude. */
-export const DEFAULT_RESET_BRANCH = "Develop"; // allow-hardcoded-branch
+/**
+ * Resolve the worker checkout's own default branch from `origin/HEAD`.
+ *
+ * The prelude used to reset to a fixed branch name, which held only while
+ * every host cloned the one repository that happened to use it. Nothing may
+ * assume a repository or branch name: `git clone` records the remote's
+ * default branch as `origin/HEAD`, and a clone that lacks it (older clones,
+ * `git remote add` by hand) is asked to record it now with
+ * `git remote set-head origin --auto`. Callers may still override through
+ * `--default-branch`; a checkout whose default cannot be resolved fails loud
+ * (there is no sensible guess).
+ */
+export async function resolveOriginDefaultBranch(
+  repoDir: string,
+): Promise<Result<string>> {
+  const local = await resolveLocalDefaultBranch({ cwd: repoDir });
+  if (local) return { ok: true, value: local };
+
+  const setHead = await runGitCommand(
+    ["remote", "set-head", "origin", "--auto"],
+    { cwd: repoDir },
+  );
+  if (!setHead.ok) return { ok: false, error: setHead.error };
+  if (setHead.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `git remote set-head origin --auto failed (exit code ` +
+          `${setHead.value.code}): ${
+            setHead.value.stderr.trim() || setHead.value.stdout.trim()
+          }`,
+      ),
+    };
+  }
+  const retried = await resolveLocalDefaultBranch({ cwd: repoDir });
+  if (retried) return { ok: true, value: retried };
+  return {
+    ok: false,
+    error: new Error(
+      "cannot determine the default branch of origin: refs/remotes/origin/HEAD " +
+        "is unset even after `git remote set-head origin --auto`",
+    ),
+  };
+}
 
 /**
  * Consecutive reset failures before the bootstrap escalates through the
@@ -117,7 +156,10 @@ export interface BootstrapOptions {
   currentPath: string;
   /** Optional colon-separated additional fallback paths. */
   fallbackPaths?: string;
-  /** Default branch to reset to (defaults to {@link DEFAULT_RESET_BRANCH}). */
+  /**
+   * Branch to reset to. Omitted, it is resolved from the checkout's own
+   * `origin/HEAD` (see {@link resolveOriginDefaultBranch}).
+   */
   defaultBranch?: string;
   /** PID stamped into the per-PID worker log file name. */
   pid: number;
@@ -137,6 +179,12 @@ export interface BootstrapResult {
   stepsRun: PreludeStep[];
   /** Failure reason when {@link ok} is false. */
   error?: string;
+  /**
+   * The branch the checkout was reset to — given, or resolved from
+   * `origin/HEAD` — so later steps (housekeeping's branch clean-up) use the
+   * same answer. Empty when the prelude failed before it was known.
+   */
+  defaultBranch: string;
 }
 
 /**
@@ -162,6 +210,8 @@ export interface BootstrapDeps {
   ): Promise<GzipWorkerLogsResult>;
   /** Append a timestamped line to `run_core.log`. */
   appendRunCoreLog(logDir: string, message: string): Promise<void>;
+  /** Resolve the checkout's default branch from `origin/HEAD`. */
+  resolveDefaultBranch(repoDir: string): Promise<Result<string>>;
   /** Reset the checkout to `origin/<branch>`; fail-loud on any git failure. */
   resetToDefaultBranch(
     repoDir: string,
@@ -467,6 +517,7 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
     resolvePath: async (currentPath, home, fallbackPaths) =>
       (await applyDefaults(currentPath, home, fallbackPaths)).path,
     resolveRunId: () => getRunId(),
+    resolveDefaultBranch: resolveOriginDefaultBranch,
     initWorkerLog: async (logDir, pid) => {
       await Deno.mkdir(logDir, { recursive: true });
       // Timestamp-named per run (Issue #4227): in container mode the worker
@@ -553,7 +604,7 @@ export async function runBootstrap(
     ...createDefaultBootstrapDeps(),
     ...depsOverride,
   };
-  const branch = options.defaultBranch ?? DEFAULT_RESET_BRANCH;
+  let branch = options.defaultBranch ?? "";
   const stepsRun: PreludeStep[] = [];
   const env: BootstrapEnv = {
     PATH: options.currentPath,
@@ -613,18 +664,36 @@ export async function runBootstrap(
     );
   }
 
-  // 4) Git reset to the default branch — fail-loud on any git failure.
+  // 4) Git reset to the default branch — fail-loud on any git failure. The
+  //    branch is whatever origin says it is unless the caller named one.
   stepsRun.push("git-reset");
-  await deps.appendRunCoreLog(
-    options.logDir,
-    `Resetting repo to origin/${branch}`,
-  );
-  const reset = await deps.resetToDefaultBranch(
-    options.repoDir,
-    branch,
-    options.logDir,
-  );
-  if (!reset.ok) {
+  let reset: Result<void>;
+  if (branch === "") {
+    const resolved = await deps.resolveDefaultBranch(options.repoDir);
+    if (resolved.ok) {
+      branch = resolved.value;
+    } else {
+      reset = {
+        ok: false,
+        error: new Error(
+          `cannot resolve the checkout's default branch: ` +
+            `${resolved.error.message} (pass --default-branch to name it)`,
+        ),
+      };
+    }
+  }
+  if (branch !== "") {
+    await deps.appendRunCoreLog(
+      options.logDir,
+      `Resetting repo to origin/${branch}`,
+    );
+    reset = await deps.resetToDefaultBranch(
+      options.repoDir,
+      branch,
+      options.logDir,
+    );
+  }
+  if (!reset!.ok) {
     // Collision diagnosis (Issue #4204): when the checkout looks like an
     // active development tree — dirty, or parked on another branch — say so,
     // instead of the bare "Git reset failed" that let a crash-loop run for
@@ -635,8 +704,11 @@ export async function runBootstrap(
     } catch {
       checkout = null;
     }
-    let detail = reset.error.message;
-    if (checkout && (checkout.dirtyFiles > 0 || checkout.branch !== branch)) {
+    let detail = reset!.error.message;
+    if (
+      checkout && branch !== "" &&
+      (checkout.dirtyFiles > 0 || checkout.branch !== branch)
+    ) {
       detail += ` — the worker checkout looks like an active development ` +
         `tree (branch ${checkout.branch}, ${checkout.dirtyFiles} ` +
         `uncommitted change(s)). Commit or stash that work, or give the ` +
@@ -691,6 +763,7 @@ export async function runBootstrap(
       env,
       stepsRun,
       error: detail,
+      defaultBranch: branch,
     };
   }
 
@@ -708,7 +781,7 @@ export async function runBootstrap(
     await deps.checkUpdates(options.softwareUpdate);
   }
 
-  return { ok: true, env, stepsRun };
+  return { ok: true, env, stepsRun, defaultBranch: branch };
 }
 
 /**

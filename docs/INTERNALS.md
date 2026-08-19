@@ -213,7 +213,8 @@ the deleted bash `worker/run_core.sh` conductor. It sequences:
    [run_bootstrap.ts](../worker/deno/lib/run_bootstrap.ts) (Issue #3501)
    performs, in-process, PATH bootstrap → run-id / `VIBE_RUN_ID` → worker log
    init (plus gzip of prior runs' logs, Issue #4027) → git reset to
-   `origin/Develop` (self-healing) → software-update check. A failed git reset
+   the checkout's own default branch, resolved from `origin/HEAD` (self-healing;
+   `--default-branch` overrides) → software-update check. A failed git reset
    aborts the run rather than run on stale code (fail-loud, Issue #3234).
 3. **Config validation + GitHub-user resolution + gh-scope publication** —
    fail-loud on invalid config or an unresolvable user; the active token's OAuth
@@ -545,8 +546,8 @@ The worker exits when any of these occur:
 The worker is built to recover from just about anything — crashes, stale state,
 network hiccups, and even its own mistakes:
 
-- **Repo reset** — on startup, resets to `origin/Develop` to recover from
-  crashed partial edits.
+- **Repo reset** — on startup, resets to the checkout's default branch (from
+  `origin/HEAD`) to recover from crashed partial edits.
 - **Shadow-copy execution** — protects against mid-run `git pull` corruption.
 - **Pre-Claude validation (Issue #621)** — `validate_repo_format()` catches
   broken repository states (uncommitted changes, detached HEAD, divergence)

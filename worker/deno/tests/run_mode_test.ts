@@ -394,6 +394,7 @@ Deno.test("run mode - the worker logs the mode it resolved for the run", async (
             LOG_FILE: "",
           },
           stepsRun: [],
+          defaultBranch: "main",
         }),
       validateConfig: () => {},
       checkCredentials: () => Promise.resolve(null),

@@ -40,6 +40,7 @@ function okBootstrap(): BootstrapResult {
       LOG_FILE: "",
     },
     stepsRun: ["path", "run-id", "log-init", "git-reset", "software-update"],
+    defaultBranch: "main",
   };
 }
 
@@ -217,7 +218,8 @@ Deno.test("runWorker - bootstrap failure aborts before the loop (fail-loud)", as
           ok: false,
           env: { PATH: "", VIBE_RUN_ID: "", WORKER_LOG_FILE: "", LOG_FILE: "" },
           stepsRun: ["path", "run-id", "log-init", "git-reset"],
-          error: "git reset --hard origin/Develop failed",
+          error: "git reset --hard origin/main failed",
+          defaultBranch: "main",
         });
       },
     }),
