@@ -109,6 +109,41 @@ const RULES: readonly RedactionRule[] = [
     pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g,
     replace: () => REDACTION_PLACEHOLDER,
   },
+  // OpenAI / Codex API key (Issue #36). `OPENAI_API_KEY` and `CODEX_API_KEY`
+  // are live secrets handed to the Codex child (see `codex_env.ts`), but until
+  // this rule existed a bare key was masked only when it happened to sit in a
+  // recognised structure — an env assignment, a `--api-key` flag or a Bearer
+  // header. The shape that actually leaks has no structure at all: a CLI
+  // echoing the rejected key into stderr, or an exception message carrying it
+  // into a stack frame. Covers the classic `sk-` form and the project-scoped
+  // `sk-proj-` variant (plus `sk-svcacct-` / `sk-admin-`, same charset).
+  //
+  // Ordering matters: this rule runs *after* `anthropic-key`, which owns the
+  // overlapping `sk-ant-` prefix. By the time this pattern sees the text an
+  // Anthropic key is already the placeholder — which contains no `sk-` — so
+  // each key yields exactly one substitution and placeholders never nest.
+  //
+  // Bounded at both ends (Issue #3942). The 20-character minimum and the `\b`
+  // anchor keep ordinary hyphenated prose (`task-sk-notes`) from matching; the
+  // 512 ceiling keeps the quantifier explicitly bounded and is roughly three
+  // times the longest real `sk-proj-` key, so no genuine key is split.
+  {
+    name: "openai-key",
+    pattern: /\bsk-[A-Za-z0-9_-]{20,512}/g,
+    replace: () => REDACTION_PLACEHOLDER,
+  },
+  // Google / Gemini API key (Issue #36). `GEMINI_API_KEY` / `GOOGLE_API_KEY`
+  // reach the Gemini child (see `gemini_env.ts`) and leak in the same bare
+  // shape as the OpenAI key above. Google's format is a fixed 39 characters —
+  // the `AIzaSy` prefix plus 33 charset characters — so the quantifier is an
+  // exact count and is bounded by construction. The fixed length is also what
+  // keeps the rule off ordinary text: a shorter `AIzaSy…` fragment is left
+  // alone.
+  {
+    name: "google-api-key",
+    pattern: /\bAIzaSy[A-Za-z0-9_-]{33}/g,
+    replace: () => REDACTION_PLACEHOLDER,
+  },
   // AWS access key id.
   {
     name: "aws-access-key-id",

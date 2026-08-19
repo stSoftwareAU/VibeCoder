@@ -352,9 +352,10 @@ what redact-before-truncate forbids.
 
 ### New credential shapes are new redaction rules
 
-`redactSecrets()` masks *known* shapes (GitHub tokens, Anthropic keys, AWS
-access-key ids, PEM private-key blocks, `Bearer`/`Basic` auth headers,
-URL-embedded credentials, and `*_TOKEN=`/`*_SECRET=` assignments). A credential
+`redactSecrets()` masks *known* shapes (GitHub tokens, Anthropic `sk-ant-`
+keys, OpenAI/Codex `sk-` keys, Google/Gemini `AIzaSy` keys, AWS access-key ids,
+PEM private-key blocks, `Bearer`/`Basic` auth headers, URL-embedded
+credentials, and `*_TOKEN=`/`*_SECRET=` assignments). A credential
 shape it does not yet recognise passes through **verbatim**. When you introduce
 or discover a new credential shape, add a redaction rule to the `RULES` array in
 `secret_redaction.ts` (with tests) so every sink inherits the coverage at once.
@@ -381,6 +382,7 @@ direct conflict with "redact before you truncate" above.
 | No-changes phase (already-complete close + Partial Answer) | `worker/deno/lib/phases/handle_no_changes_phase.ts` | [#3636](https://github.com/stSoftwareAU/VibeCoder/issues/3636) |
 | PEM private-key masking rule | `worker/deno/lib/secret_redaction.ts` | [#3203](https://github.com/stSoftwareAU/VibeCoder/issues/3203) |
 | HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | [#3427](https://github.com/stSoftwareAU/VibeCoder/issues/3427) |
+| Bare OpenAI (`sk-`) and Google/Gemini (`AIzaSy`) key rules | `worker/deno/lib/secret_redaction.ts` | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) |
 | `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | [#3707](https://github.com/stSoftwareAU/VibeCoder/issues/3707) |
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | [#3938](https://github.com/stSoftwareAU/VibeCoder/issues/3938) |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | [#3707](https://github.com/stSoftwareAU/VibeCoder/issues/3707) |
