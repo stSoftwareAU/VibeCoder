@@ -111,6 +111,44 @@ Deno.test("remind_obsolete_host_work_dirs - stays quiet when nothing is left beh
   }
 });
 
+Deno.test("remind_obsolete_host_work_dirs - stays quiet when only setup's own .vibe-cache is present", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    // Setup's host-side audits cache default-branch lookups under the work
+    // dir; a warning about a directory setup itself just wrote is noise.
+    await Deno.mkdir(`${tmp}/auto-issue-work/.vibe-cache`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${tmp}/auto-issue-work/.vibe-cache/default-branch-cache.json`,
+      "{}",
+    );
+
+    const { code, output } = await remind(tmp, "container");
+    assertEquals(code, 0, output);
+    assertEquals(output.includes("4186"), false, output);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("remind_obsolete_host_work_dirs - a checkout beside the cache is still reported", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${tmp}/auto-issue-work/.vibe-cache`, {
+      recursive: true,
+    });
+    await Deno.mkdir(`${tmp}/auto-issue-work/some-repo`, { recursive: true });
+    await Deno.writeTextFile(`${tmp}/auto-issue-work/some-repo/f`, "x");
+
+    const { code, output } = await remind(tmp, "container");
+    assertEquals(code, 0, output);
+    assertStringIncludes(output, "4186");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test("remind_obsolete_host_work_dirs - stays quiet in native mode, where the dirs are live", async () => {
   const tmp = await Deno.makeTempDir();
   try {

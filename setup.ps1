@@ -904,19 +904,41 @@ function Read-VibeInteractiveConfig {
             "Without this, screenshots are saved locally only.")
     if ($imgbb) { $answers.imgbb_api_key = $imgbb }
 
-    # FLEET health tracking — always at ../private-repo-6 (sibling of VibeCoder).
-    $fleetDir = Join-Path (Split-Path -Parent $ScriptDir) "private-repo-6"
-    $answers.fleet_health_dir = $fleetDir
-    if (-not (Test-Path -LiteralPath $fleetDir)) {
+    # FLEET health tracking (optional, Issue #535). A fleet of workers can
+    # report into a shared health repository; a single host does not need one.
+    # Enabled when a checkout already exists (VIBE_FLEET_HEALTH_DIR, the
+    # configured fleet_health_dir, or the ../private-repo-6 sibling) or when
+    # the operator names the repository to clone (VIBE_FLEET_HEALTH_REPO).
+    # Setup never clones an assumed URL: on a host without access that only
+    # ever produced "Could not read from remote repository ... repository
+    # exists".
+    $fleetDefaultDir = Join-Path (Split-Path -Parent $ScriptDir) "private-repo-6"
+    $fleetDir = if ($env:VIBE_FLEET_HEALTH_DIR) {
+        $env:VIBE_FLEET_HEALTH_DIR
+    } elseif ($existing.fleet_health_dir) {
+        $existing.fleet_health_dir
+    } else {
+        $fleetDefaultDir
+    }
+    if (Test-Path -LiteralPath $fleetDir -PathType Container) {
+        $answers.fleet_health_dir = $fleetDir
+        Write-VibeSuccess "FLEET health directory found at $fleetDir"
+    } elseif ($env:VIBE_FLEET_HEALTH_REPO) {
         Write-VibeInfo "Cloning FLEET health repository to $fleetDir..."
-        & git clone git@github.com:stSoftwareAU/private-repo-6.git $fleetDir
+        & git clone $env:VIBE_FLEET_HEALTH_REPO $fleetDir
         if ($LASTEXITCODE -eq 0) {
+            $answers.fleet_health_dir = $fleetDir
             Write-VibeSuccess "FLEET health repository cloned"
         } else {
-            Write-VibeWarning "Failed to clone FLEET health repository (non-fatal)"
+            # Not recorded: a fleet_health_dir that points at nothing would
+            # have the worker warn about the missing checkout every heartbeat.
+            Write-VibeWarning ("Failed to clone FLEET health repository from " +
+                "$($env:VIBE_FLEET_HEALTH_REPO) (non-fatal; health tracking stays off)")
         }
     } else {
-        Write-VibeSuccess "FLEET health directory found at $fleetDir"
+        Write-VibeInfo ("FLEET health tracking not configured (optional). To enable it, " +
+            "clone your fleet's health repository to $fleetDefaultDir or set " +
+            "VIBE_FLEET_HEALTH_REPO to its git URL and re-run setup.")
     }
 
     return $answers
@@ -983,8 +1005,14 @@ function Show-VibeObsoleteWorkDirs {
 
     $found = $false
     foreach ($dir in @($workDir, "$workDir-approval-state")) {
+        # Setup's own host-side steps (the workflow and best-practice audits)
+        # keep a small lookup cache at `$WORK_DIR/.vibe-cache`, so that entry
+        # is setup's doing, not a leftover workspace: only repository checkouts
+        # and other worker data count as wasted disk.
         if ((Test-Path -LiteralPath $dir -PathType Container) -and
-            (Get-ChildItem -LiteralPath $dir -Force | Select-Object -First 1)) {
+            (Get-ChildItem -LiteralPath $dir -Force |
+                Where-Object { $_.Name -ne ".vibe-cache" } |
+                Select-Object -First 1)) {
             Write-VibeWarning ("$dir is wasting disk: container mode keeps the " +
                 "workspace on named volumes (Issue #4186), so this host " +
                 "directory is never mounted again.")
