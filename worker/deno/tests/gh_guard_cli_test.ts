@@ -347,3 +347,83 @@ Deno.test("gh-guard-cli #92 - the label guard refuses a non-JSON --input body fi
     await Deno.remove(path);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Issue #11 (SEC-b17ab4cc0e2a) / #94 — the two remaining argv shapes, pinned at
+// the CLI seam the shim actually invokes.
+//
+// `-F 'labels[]=@file'` is the field-path twin of `--input`: `gh` expands the
+// leading `@` by reading that file, so the label names never reach the argv and
+// the classifier surfaces no `bodyFilePath` for the guard to scan — the
+// fail-closed backstop is what must refuse it. A read is the counterpart: the
+// guard refuses reserved-label *mutations*, not every command that mentions
+// `--input`. The end-to-end forms of both live in `gh_guard_shim_test.ts`.
+// ---------------------------------------------------------------------------
+
+Deno.test("gh-guard-cli #11 - refuses a label set hidden behind -F 'labels[]=@file'", () => {
+  const result = runGhGuardCli([
+    "--active",
+    "--allow-repo",
+    "stSoftwareAU/VibeCoder",
+    "--",
+    "api",
+    "repos/stSoftwareAU/VibeCoder/issues/123/labels",
+    "-F",
+    "labels[]=@/tmp/labels-94.txt",
+  ]);
+  assertEquals(result.exitCode, 1);
+  assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+  assertEquals(result.ghArgs, undefined);
+  assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREADABLE]");
+});
+
+Deno.test("gh-guard-cli #11 - allows an -X GET read that supplies --input", async () => {
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(path, '{"per_page":100}');
+    const argv = [
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues/123/labels",
+      "-X",
+      "GET",
+      "--input",
+      path,
+    ];
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--",
+      ...argv,
+    ]);
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.stdout, GH_GUARD_ALLOW_MARKER);
+    assertEquals(result.ghArgs, argv);
+    assertEquals(result.stderr, "");
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("gh-guard-cli #11 - an -X GET --input - read is refused by the secret-redaction control, not the label guard", () => {
+  // Boundary case: the reserved-label guard treats this as a read and allows
+  // it; the refusal comes from the older stdin-body rule (Issue #3938), which
+  // cannot scan a body it never sees. Pinned so the two controls stay
+  // distinguishable — a read refused as a labelled write flips this marker.
+  const result = runGhGuardCli([
+    "--active",
+    "--allow-repo",
+    "stSoftwareAU/VibeCoder",
+    "--",
+    "api",
+    "repos/stSoftwareAU/VibeCoder/issues/123/labels",
+    "-X",
+    "GET",
+    "--input",
+    "-",
+  ]);
+  assertEquals(result.exitCode, 1);
+  assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+  assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREDACTABLE]");
+  assertEquals(result.stderr.includes("WORKER_LABEL_REFUSED"), false);
+});
