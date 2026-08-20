@@ -18,8 +18,11 @@ import {
 } from "../lib/claude_runner.ts";
 import {
   AGENT_HANDLER_GRACE_MS,
+  agentHandlerFloorMs,
+  buildPriorityDispatchTable,
   createDefaultRunCoreConfig,
   handlerHardTimeoutMs,
+  PLANNING_TAIL_SECONDS,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
@@ -384,7 +387,7 @@ Deno.test("run_core watchdog - an agent-backed handler that outlives the cycle d
   );
 });
 
-Deno.test("run_core watchdog - handlerHardTimeoutMs: flat for non-agent handlers; cycle-remaining plus grace (never below flat) for agent-backed ones (Issue #4369)", () => {
+Deno.test("run_core watchdog - handlerHardTimeoutMs: flat for non-agent handlers; cycle-remaining plus grace (never below flat) for an agent-backed handler that declares no agent floor (Issue #4369)", () => {
   const flat = 600;
   assertEquals(handlerHardTimeoutMs(flat, false, 3_600_000, 0), 600_000);
   assertEquals(
@@ -410,5 +413,189 @@ Deno.test("run_core watchdog - handlerHardTimeoutMs: flat for non-agent handlers
     handlerHardTimeoutMs(flat, true, 1000, 5000),
     600_000,
     "past the deadline: flat",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #62: the agent floor — a handler's budget can never be smaller than
+// the agent timeout it wraps plus its post-agent tail allowance.
+// ---------------------------------------------------------------------------
+
+Deno.test("run_core watchdog - handlerHardTimeoutMs: a non-agent handler ignores the agent floor and keeps exactly the flat handlerTimeoutSeconds (Issue #62)", () => {
+  const floor = agentHandlerFloorMs(1800, PLANNING_TAIL_SECONDS);
+  assertEquals(handlerHardTimeoutMs(600, false, 3_600_000, 0, floor), 600_000);
+  assertEquals(
+    handlerHardTimeoutMs(600, false, 3_600_000, 3_599_000, floor),
+    600_000,
+  );
+  assertEquals(handlerHardTimeoutMs(600, false, 1000, 5000, floor), 600_000);
+});
+
+Deno.test("run_core watchdog - handlerHardTimeoutMs: an agent-backed budget is never below the wrapped agent timeout plus its tail allowance, at every cycle-remaining including zero and negative (Issue #62)", () => {
+  const flat = 600;
+  const floor = agentHandlerFloorMs(1800, PLANNING_TAIL_SECONDS);
+  const endTime = 3_600_000;
+  const remainders = [
+    3_600_000,
+    1_800_000,
+    600_000,
+    60_000,
+    1000,
+    0,
+    -1,
+    -60_000,
+    -3_600_000,
+  ];
+  for (const remaining of remainders) {
+    const now = endTime - remaining;
+    const budget = handlerHardTimeoutMs(flat, true, endTime, now, floor);
+    assert(
+      budget >= floor,
+      `cycle-remaining ${remaining}ms: budget ${budget}ms below floor ${floor}ms`,
+    );
+    // The cycle-deadline rule of Issue #4369 still applies on top of the floor.
+    assert(
+      budget >= Math.max(flat * 1000, remaining + AGENT_HANDLER_GRACE_MS),
+      `cycle-remaining ${remaining}ms: budget ${budget}ms lost the #4369 bound`,
+    );
+  }
+  // Exactly at the deadline the old code returned the flat 600 s; it now
+  // returns the planning floor (1800 s agent + 600 s tail).
+  assertEquals(
+    handlerHardTimeoutMs(flat, true, endTime, endTime, floor),
+    2_400_000,
+  );
+  // Plenty of cycle left: the deadline bound wins because it is the larger.
+  assertEquals(
+    handlerHardTimeoutMs(flat, true, endTime, 0, floor),
+    3_600_000 + AGENT_HANDLER_GRACE_MS,
+  );
+});
+
+Deno.test("run_core watchdog - agentHandlerFloorMs derives the floor from the wrapped agent timeout plus the named tail allowance (Issue #62)", () => {
+  assertEquals(agentHandlerFloorMs(1800, PLANNING_TAIL_SECONDS), 2_400_000);
+  assertEquals(agentHandlerFloorMs(300, 0), 300_000);
+  // A nonsensical (negative) configuration floors at zero rather than
+  // silently shrinking the budget below the flat timeout.
+  assertEquals(agentHandlerFloorMs(-100, 0), 0);
+});
+
+Deno.test("run_core dispatch - Planning Mode declares an agent floor of planningTimeout plus the tail allowance; handlers with no post-agent tail declare none (Issue #62)", () => {
+  const config = createDefaultRunCoreConfig();
+  const table = buildPriorityDispatchTable(
+    {} as RunCoreDeps,
+    () => false,
+    config,
+  );
+  const planning = table.find((h) => h.name === "Planning Mode");
+  assert(planning, "Planning Mode is in the dispatch table");
+  assertEquals(
+    planning.agentFloorMs,
+    agentHandlerFloorMs(config.planningTimeoutSeconds, PLANNING_TAIL_SECONDS),
+  );
+  assertEquals(
+    table.find((h) => h.name === "Update PR Branches")?.agentFloorMs,
+    undefined,
+  );
+  assertEquals(
+    table.find((h) => h.name === "CI Fix")?.agentFloorMs,
+    undefined,
+  );
+});
+
+Deno.test("run_core watchdog - a wedged Planning Mode past the cycle deadline is abandoned at the planning floor, not the flat 600 s, and its agent is still terminated (Issue #62)", async () => {
+  const errors: string[] = [];
+  const terminations: string[] = [];
+  let now = 0;
+  let shutdown: (() => void) | undefined;
+  const config = createDefaultRunCoreConfig();
+  const deps = baseDeps({
+    logError: (m) => {
+      errors.push(m);
+    },
+    now: () => now,
+    addSignalListener: (signal, handler) => {
+      if (signal === "SIGTERM") shutdown = handler;
+    },
+    watchdogDelay: (ms) => {
+      now += ms;
+      return Promise.resolve();
+    },
+    terminateActiveAgentRuns: (reason) => {
+      terminations.push(reason);
+      return Promise.resolve();
+    },
+    findAndProcessPlanning: () => new Promise(() => {}), // wedged agent handler
+    findNextIssue: () => {
+      shutdown?.();
+      return Promise.resolve({ ok: true, value: null });
+    },
+  });
+  await runCoreLoop(config, deps);
+  const line = errors.find((e) =>
+    e.includes("(Planning Mode)") && e.includes("hard timeout")
+  );
+  assert(line, `planning abandoned: ${errors.join(" | ")}`);
+  // The earlier handlers have already pushed the clock past the cycle
+  // deadline, so the budget is the floor — 1800 s planning agent + 600 s tail.
+  assert(
+    line.includes("2400s"),
+    `planning bounded by the floor, not the flat 600 s: ${line}`,
+  );
+  assert(
+    terminations.some((r) => r.includes("Planning Mode")),
+    terminations.join(" | "),
+  );
+});
+
+Deno.test("run_core watchdog - a Planning Mode run whose post-publish repair tail outlives the flat 600 s completes instead of being abandoned mid-repair (Issue #62)", async () => {
+  const errors: string[] = [];
+  let now = 0;
+  let shutdown: (() => void) | undefined;
+  let planningCompleted = false;
+  // The clock at the moment the dispatch loop enters Planning Mode: the
+  // watchdog's injected timer then advances `now` by the whole budget before
+  // the handler body runs, so `now - enteredAt` is the budget the handler got.
+  let enteredPlanningAt: number | undefined;
+  const config = createDefaultRunCoreConfig();
+  const deps = baseDeps({
+    log: (m) => {
+      if (m.includes("Planning Mode")) enteredPlanningAt = now;
+    },
+    logError: (m) => {
+      errors.push(m);
+    },
+    now: () => now,
+    addSignalListener: (signal, handler) => {
+      if (signal === "SIGTERM") shutdown = handler;
+    },
+    watchdogDelay: (ms) => {
+      now += ms;
+      return Promise.resolve();
+    },
+    terminateActiveAgentRuns: () => Promise.resolve(),
+    // Planning + gate + repair takes 900 s — past the flat 600 s the old
+    // floor allowed (the GRQ-validation#835 mid-repair kill), inside the new
+    // 2400 s one.
+    findAndProcessPlanning: () => {
+      const budget = now - (enteredPlanningAt ?? 0);
+      if (budget >= 900_000) {
+        planningCompleted = true;
+        return Promise.resolve({ ok: true, value: { processed: true } });
+      }
+      return new Promise(() => {});
+    },
+    findNextIssue: () => {
+      shutdown?.();
+      return Promise.resolve({ ok: true, value: null });
+    },
+  });
+  await runCoreLoop(config, deps);
+  assert(planningCompleted, "planning ran its repair tail to completion");
+  assertEquals(
+    errors.filter((e) =>
+      e.includes("(Planning Mode)") && e.includes("hard timeout")
+    ),
+    [],
   );
 });
