@@ -76,6 +76,13 @@ export interface ClaudeExecutionResult {
    * run end or handler abandonment. Terminal; never a rate limit.
    */
   terminated?: boolean;
+  /**
+   * A SIGTERM the worker never requested (Issue #46): `isAgentRunsTerminating()`
+   * was false, so it came from outside — a tool the agent ran, the CLI, the
+   * container, a stray signal. Unlike {@link terminated} (our own shutdown),
+   * this is an external kill — a retryable failure carrying kill diagnostics.
+   */
+  externalSigterm?: boolean;
   timedOut: boolean;
   /**
    * Which timeout fired, when `timedOut` is true (Issue #1825). Distinguishes
