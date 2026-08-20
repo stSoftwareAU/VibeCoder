@@ -113,10 +113,13 @@ does not carry — Java and Maven are the first expected use — declares it in
 `.config.json` as `container_tools`. The build takes that validated array as
 the `VIBE_CONTAINER_TOOLS` build argument, writes it to a spec file and runs
 `container/install-tools.sh` over it, which downloads, SHA-256 verifies and
-extracts each entry under `/opt/vibe-tools/<id>`. That install implementation
-is still a stub: until it lands a non-empty selection aborts the build,
-naming the tools it refused, rather than producing an image that silently
-lacks them.
+extracts each entry under `/opt/vibe-tools/<id>`. The whole set is validated
+before anything is downloaded, and any fault — a bad id, a missing digest for
+the build architecture, an unsupported archive extension, a checksum mismatch
+— aborts the build naming the tool, rather than producing an image that
+silently lacks it. The spec shape, a worked Java + Maven example and the
+checksum rules a deployer needs are in
+[Container Image](CONTAINER.md#deployer-supplied-build-time-tools).
 
 ```mermaid
 flowchart LR
