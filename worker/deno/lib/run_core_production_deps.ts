@@ -1486,6 +1486,31 @@ export async function createProductionRunCoreDeps(
                 buildCheckoutArgs(candidate.headBranch),
                 { cwd: repoWorkDir },
               );
+              // Issue #52: the checkout selects the LOCAL branch from an
+              // earlier claim, which is behind origin (PR feedback or a human
+              // pushed since). The empty commit would then land on a stale tip
+              // and the push is rejected non-fast-forward every pass. The nudge
+              // owns nothing local, so hard-reset to the tip we just fetched —
+              // the empty commit lands on the current remote head and the push
+              // fast-forwards.
+              const resetResult = await runGitCommand(
+                ["reset", "--hard", "FETCH_HEAD"],
+                { cwd: repoWorkDir },
+              );
+              if (!resetResult.ok || resetResult.value.code !== 0) {
+                logger.warn(
+                  "CI nudge: could not fast-forward the PR branch to origin — " +
+                    "skipping (not nudged)",
+                  {
+                    repo: candidate.repo,
+                    branch: candidate.headBranch,
+                    error: resetResult.ok
+                      ? resetResult.value.stderr.trim()
+                      : resetResult.error.message,
+                  },
+                );
+                continue;
+              }
             } catch (err) {
               logger.warn("CI nudge: failed to checkout PR branch", {
                 repo: candidate.repo,

@@ -268,7 +268,7 @@ export interface CiCheckScanOptions extends PrScanOptions {
  * harmless to callers, which read only what they use.
  */
 export const PR_MAINTENANCE_LIST_FIELDS =
-  "number,title,headRefName,headRefOid,baseRefName,autoMergeRequest,createdAt,updatedAt,author";
+  "number,title,headRefName,headRefOid,baseRefName,autoMergeRequest,createdAt,updatedAt,author,mergeable";
 
 /**
  * Explicit page size for the cached superset listing (Issue #4303). The
