@@ -183,3 +183,40 @@ Deno.test("deno.json - excludes internal @stsoftware Deno deps (0h)", async () =
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// container/deno-seed/deno.json mirrors the quarantine (Issue #14)
+// ---------------------------------------------------------------------------
+
+const SEED_DENO_JSON_URL = new URL(
+  "../../../container/deno-seed/deno.json",
+  import.meta.url,
+);
+
+async function loadSeedConfig(): Promise<DenoConfig> {
+  return JSON.parse(await Deno.readTextFile(SEED_DENO_JSON_URL)) as DenoConfig;
+}
+
+Deno.test("deno-seed - minimumDependencyAge enforces the same 24h floor", async () => {
+  const config = await loadSeedConfig();
+  assertNotEquals(
+    config.minimumDependencyAge,
+    undefined,
+    "container/deno-seed/deno.json must declare minimumDependencyAge so a " +
+      "bumped npm/JSR pin gets the worker's 24h cooling-off window (Issue #14)",
+  );
+  const mda = config.minimumDependencyAge as MinimumDependencyAgeConfig;
+  assertEquals(
+    parseMinimumDependencyAgeHours(mda.age),
+    24,
+    `external floor must map to 24 hours; got "${mda.age}"`,
+  );
+  assertEquals(Array.isArray(mda.exclude), true, "exclude must be an array");
+  for (const entry of mda.exclude) {
+    assertEquals(
+      isValidExcludeEntry(entry),
+      true,
+      `exclude entry "${entry}" must satisfy deno's jsr:/npm: prefix rule`,
+    );
+  }
+});

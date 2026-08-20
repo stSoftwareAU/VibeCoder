@@ -212,3 +212,35 @@ Deno.test("dependency-audit notify step fires on a failed scheduled run", () => 
       "distinguish 'did not audit' from 'audited, vulnerable'",
   );
 });
+
+// ---------------------------------------------------------------------------
+// container/deno-seed coverage (Issue #14)
+// ---------------------------------------------------------------------------
+
+Deno.test("dependency-audit workflow also audits container/deno-seed", () => {
+  const run = denoAuditRunBlock();
+  assert(
+    run.includes("container/deno-seed"),
+    "the audit step must also scan the container seed's lockfile (Issue #14)",
+  );
+  // The seed audit must be fail-closed too — no registry-error opt-out on
+  // either invocation in the step.
+  assertEquals(
+    auditOptOutFlags(run),
+    [],
+    "neither audit invocation may re-add a registry-error opt-out",
+  );
+});
+
+Deno.test("dependency-audit workflow triggers on container/deno-seed changes", () => {
+  const text = Deno.readTextFileSync(WORKFLOW_PATH);
+  assert(
+    text.includes("container/deno-seed/deno.lock"),
+    "the paths: filters must include container/deno-seed/deno.lock so an " +
+      "edit there triggers the audit (Issue #14)",
+  );
+  assert(
+    text.includes("container/deno-seed/deno.json"),
+    "the paths: filters must include container/deno-seed/deno.json (Issue #14)",
+  );
+});
