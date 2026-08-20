@@ -3,7 +3,7 @@
  *
  * Performs size-based rotation on unbounded log files to prevent disk
  * exhaustion on long-running unattended machines. Callable from shell
- * via deno_bridge.sh.
+ * via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/log_rotation.sh (Issue #902).
  * Issue #469: Size-based log rotation for unbounded log files.

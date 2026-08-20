@@ -4,7 +4,7 @@
  * Issue #1231: Migrates the work_on_issue() main orchestrator from
  * issue_worker.sh to Deno. This command wraps the workOnIssue()
  * function from issue_worker.ts and exposes it for CLI invocation
- * via deno_bridge.sh.
+ * via the Deno CLI (`deno run mod.ts <command>`).
  *
  * The command:
  * 1. Validates required arguments

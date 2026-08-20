@@ -7,7 +7,7 @@
  * installed (e.g., ImgBB API key, health tracking).
  *
  * Note: Deno is a required dependency, not an optional feature (Issue #518).
- * Use require_deno() from deno_bridge.sh for the mandatory startup check.
+ * The Deno worker driver verifies it at bootstrap (run_bootstrap.ts).
  *
  * Issue #196: Implement graceful degradation for optional features.
  * Issue #907: Migrated from worker/shared/feature_availability.sh to Deno.

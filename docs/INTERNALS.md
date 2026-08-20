@@ -69,22 +69,15 @@ graph TD
         end
     end
 
-    subgraph Shell["worker/shared/ — 2 remaining scripts"]
-        bridge["deno_bridge.sh — Shell↔Deno bridge"]
-        configdef["config_defaults.sh"]
-    end
-
     subgraph Tests["worker/deno/tests/ — 305 test files"]
         tests["All tests use deno test + @std/assert"]
     end
 
     runsh --> mod
     qualsh --> qualts
-    Shell --> bridge --> mod
 
     style Launchers fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
     style DenoWorker fill:#74c69d,stroke:#52b788,color:#081c15
-    style Shell fill:#3a506b,stroke:#1c2541,color:#d8f3dc
     style Tests fill:#6a040f,stroke:#370617,color:#ffd6d6
 ```
 
@@ -107,16 +100,15 @@ Commands are registered in `mod.ts` via `createDefaultRegistry()` and invoked by
 name. Registry methods return `Result<T>` types — no exceptions for control
 flow.
 
-### Shell↔Deno bridge
+### Shell↔Deno invocation
 
-Shell scripts call Deno via `deno_bridge.sh`:
+The bash bridge (`deno_bridge.sh`) was retired in Issue #97 — nothing sourced
+it at runtime. The remaining shell tooling (e.g. `quality.sh`) invokes Deno
+commands directly:
 
 ```bash
-deno_run_command "command-name" --arg1 value1 --arg2 value2
+deno run --allow-X worker/deno/mod.ts command-name --arg1 value1 --arg2 value2
 ```
-
-This executes:
-`deno run --allow-X worker/deno/mod.ts command-name --arg1 value1 --arg2 value2`
 
 ### Quality gate
 
@@ -1275,11 +1267,11 @@ which refuses four ways and authorises one:
 | `UNDECIDABLE: <reason>` | The branch's state could not be read                 |
 | `SAFE_TO_DELETE`        | The only verdict that authorises a deletion          |
 
-An unreadable check is not permission: `handle_issue_failure()` in
-[deno_bridge.sh](../worker/shared/deno_bridge.sh) previously deleted the remote
-branch on anything that was not `HAS_OPEN_PR:*`, so a failed check fell through
-to the delete. It now deletes only on an exact `SAFE_TO_DELETE`, and every
-refusal is logged and recorded as a `skipped` self-heal event.
+An unreadable check is not permission: the shell `handle_issue_failure()` (in
+the since-removed `deno_bridge.sh`) previously deleted the remote branch on
+anything that was not `HAS_OPEN_PR:*`, so a failed check fell through to the
+delete. The Deno failure handler now deletes only on an exact `SAFE_TO_DELETE`,
+and every refusal is logged and recorded as a `skipped` self-heal event.
 
 ```mermaid
 flowchart TD
@@ -2288,12 +2280,10 @@ or replaced by Deno commands.
 
 | Module          | Path                                                      | Purpose                                                                |
 | --------------- | --------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Deno bridge     | [deno_bridge.sh](../worker/shared/deno_bridge.sh)         | Shell-to-Deno command execution bridge, logging, and wrapper functions |
-| Config defaults | [config_defaults.sh](../worker/shared/config_defaults.sh) | Default configuration values (shell fallback for Deno load-config)     |
 
 ### Deno TypeScript modules (`worker/deno/lib/` — 132 modules)
 
-All business logic lives here. Shell scripts call these via `deno_bridge.sh`.
+All business logic lives here. Shell tooling invokes them directly with `deno run worker/deno/mod.ts <command>`.
 
 | Category                                      | Module                                                                                                            | Purpose                                                                                                                                                                                      |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

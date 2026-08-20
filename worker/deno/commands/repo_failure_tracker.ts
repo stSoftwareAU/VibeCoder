@@ -3,7 +3,7 @@
  *
  * Per-repo failure tracking within a scan cycle to prevent one repo's
  * problems from starving other repos.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - record-failure: Record a failure for a repo (optionally with --issue)

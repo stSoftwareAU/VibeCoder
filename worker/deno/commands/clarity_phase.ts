@@ -3,7 +3,7 @@
  *
  * Wraps the full clarity phase flow: label routing, complexity detection,
  * clarity assessment via Claude, and question posting. Callable from shell
- * via deno_bridge.sh.
+ * via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Arguments:
  *   --repo          Repository in "owner/repo" format

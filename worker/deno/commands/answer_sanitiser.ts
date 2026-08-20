@@ -1,7 +1,7 @@
 /**
  * Answer sanitiser command for the Vibe Coder worker (Issue #913).
  *
- * Provides Claude output sanitisation via deno_bridge.sh.
+ * Provides Claude output sanitisation via the Deno CLI (`deno run mod.ts <command>`).
  * Replaces worker/shared/answer_sanitiser.sh.
  *
  * Sub-operations (--operation):

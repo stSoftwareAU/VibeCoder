@@ -2,7 +2,7 @@
  * Worker identity command for the Vibe Coder worker.
  *
  * Provides worker identity information (display name, unique ID, footer)
- * callable from shell via deno_bridge.sh.
+ * callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/worker_identity.sh (Issue #900).
  * Issue #436: Add worker name to issue comments and PR descriptions.

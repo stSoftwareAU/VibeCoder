@@ -611,7 +611,7 @@ run_setup_cli() {
         exit 1
     fi
     # --frozen + --lock fail closed on dependency drift (Issues #2896, #3653),
-    # mirroring run.sh and worker/shared/deno_bridge.sh: a stale or missing
+    # mirroring run.sh: a stale or missing
     # lockfile is a hard error rather than a silent re-resolve that could pull
     # unreviewed transitive code into this credential-handling process.
     deno run --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \

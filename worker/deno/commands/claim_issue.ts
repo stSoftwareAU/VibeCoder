@@ -2,7 +2,7 @@
  * Claim issue command for the Vibe Coder worker.
  *
  * Provides atomic issue claiming with verification and claim churn detection.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - claim: Atomically claim an issue with verification

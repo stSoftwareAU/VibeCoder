@@ -2,7 +2,7 @@
  * Disk space command for the Vibe Coder worker.
  *
  * Checks disk space and performs self-healing cleanup when the disk is
- * nearly full. Callable from shell via deno_bridge.sh.
+ * nearly full. Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/disk_space.sh (Issue #902).
  * Issue #95: Check disk space of WORK_DIR at startup.

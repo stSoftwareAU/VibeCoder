@@ -2,7 +2,7 @@
  * Label manager command for the Vibe Coder worker.
  *
  * Provides label management, failure handling, clarification workflows,
- * and planning escalation. Callable from shell via deno_bridge.sh.
+ * and planning escalation. Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - ensure-label: Create a label if it does not exist

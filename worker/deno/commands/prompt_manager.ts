@@ -2,7 +2,7 @@
  * Prompt manager command for the Vibe Coder worker (Issue #914).
  *
  * Provides prompt version management and immutability enforcement
- * via deno_bridge.sh. Replaces worker/shared/prompt_manager.sh.
+ * via the Deno CLI (`deno run mod.ts <command>`). Replaces worker/shared/prompt_manager.sh.
  *
  * Sub-operations (--operation):
  *   - get-latest-version: Get the latest version for a prompt

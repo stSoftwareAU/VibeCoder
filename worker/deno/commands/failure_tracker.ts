@@ -2,7 +2,7 @@
  * Failure tracker command for the Vibe Coder worker.
  *
  * Tracks consecutive work failures and triggers self-healing exits when the
- * threshold is reached. Callable from shell via deno_bridge.sh.
+ * threshold is reached. Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations:
  *   - track-failure: Record a failure for a work item key

@@ -2,7 +2,7 @@
  * GitHub CLI wrapper command for the Vibe Coder worker.
  *
  * Provides timeout-protected gh CLI execution and rate limit circuit
- * breaker, callable from shell via deno_bridge.sh. Supports sub-operations:
+ * breaker, callable from shell via the Deno CLI (`deno run mod.ts <command>`). Supports sub-operations:
  *   - run: Execute a gh command with timeout and circuit breaker protection
  *   - reset-circuit-breaker: Reset the rate limit circuit breaker
  *   - is-timeout: Check if an exit code indicates a timeout

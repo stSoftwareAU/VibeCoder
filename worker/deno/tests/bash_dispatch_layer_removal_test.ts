@@ -9,9 +9,9 @@
  *     worker/deno/lib/run_core_production_deps.ts.
  *
  * Both bash drivers have since been deleted outright — run_core.sh in #3504
- * and issue_worker.sh in #3661 — so these tests assert their absence, check
- * the remaining shell bridges still parse, and confirm the Deno replacements
- * are wired. They mirror the removal-guard pattern in
+ * and issue_worker.sh in #3661 — and the last two bash bridges (deno_bridge.sh,
+ * config_defaults.sh) in #97, so these tests assert their absence and confirm
+ * the Deno replacements are wired. They mirror the removal-guard pattern in
  * obsolete_scripts_removal_test.ts.
  *
  * Australian English throughout (behaviour, colour, organisation, etc.).
@@ -79,27 +79,28 @@ Deno.test("dispatch removal - superseded functions gone with issue_worker.sh", a
   );
 });
 
-Deno.test("dispatch removal - remaining shell bridges still parse", async () => {
-  // Both bash drivers are gone (run_core.sh #3504, issue_worker.sh #3661);
-  // parse-check the shell files that remain shipped.
+Deno.test("dispatch removal - the last bash bridges are gone (Issue #97)", async () => {
+  // deno_bridge.sh and config_defaults.sh were the final bash bridge scripts
+  // (run_core.sh #3504, issue_worker.sh #3661 preceded them). Nothing sourced
+  // deno_bridge.sh at runtime, and config_defaults.sh's only reader — the
+  // quality gate's config-integration check — now seeds its empty arrays
+  // inline, so both were retired. Assert their absence.
   for (
     const script of [
       "worker/shared/deno_bridge.sh",
       "worker/shared/config_defaults.sh",
     ]
   ) {
-    const cmd = new Deno.Command("bash", {
-      args: ["-n", `${repoRoot}${script}`],
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const { code, stderr } = await cmd.output();
+    let exists = true;
+    try {
+      await Deno.stat(`${repoRoot}${script}`);
+    } catch {
+      exists = false;
+    }
     assertEquals(
-      code,
-      0,
-      `${script} failed bash -n syntax check: ${
-        new TextDecoder().decode(stderr)
-      }`,
+      exists,
+      false,
+      `${script} should have been removed (Issue #97)`,
     );
   }
 });

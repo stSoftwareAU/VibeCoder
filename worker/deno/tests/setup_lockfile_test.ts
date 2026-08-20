@@ -3,8 +3,8 @@
  *
  * setup.sh launches the setup CLI with the widest permission set in the repo
  * (`--allow-all`) against a process that reads and writes `.config.json`. It
- * must fail closed on dependency drift exactly like run.sh and
- * worker/shared/deno_bridge.sh: `--frozen` plus an explicit `--lock=` so a
+ * must fail closed on dependency drift exactly like run.sh:
+ * `--frozen` plus an explicit `--lock=` so a
  * stale or missing lockfile is a hard error rather than a silent re-resolve
  * that could pull in unreviewed transitive code (Issue #2896).
  *

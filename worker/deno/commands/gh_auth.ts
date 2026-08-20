@@ -1,7 +1,7 @@
 /**
  * GitHub CLI authentication command for the Vibe Coder worker.
  *
- * Provides authentication verification callable from shell via deno_bridge.sh.
+ * Provides authentication verification callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  * Supports sub-operations:
  *   - check-auth: Verify gh CLI authentication is valid
  *   - is-auth-error: Check if error output indicates an auth failure

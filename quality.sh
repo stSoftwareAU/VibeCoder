@@ -31,7 +31,7 @@ fi
 if [[ -n "$DENO_CMD" ]] && [[ -f "$SCRIPT_DIR/worker/deno/quality.ts" ]]; then
     # Delegate to Deno quality gate (Issue #917)
     # --frozen + --lock fail closed on dependency drift (Issues #2896, #3653),
-    # matching setup.sh, run.sh and worker/shared/deno_bridge.sh.
+    # matching setup.sh and run.sh.
     # Low scheduler priority for the whole gate (Issue #4258): the suite
     # saturates every vCPU for minutes at a stretch, and inside the
     # container that starves whatever else must stay responsive — the agent
