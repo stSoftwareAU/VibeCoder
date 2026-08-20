@@ -537,6 +537,11 @@ export async function createProductionRunCoreDeps(
     // Issue #2473: per-handler watchdog bounds (conservative defaults).
     handlerTimeoutSeconds: runCoreConfig.handlerTimeoutSeconds,
     handlerSoftTimeoutSeconds: runCoreConfig.handlerSoftTimeoutSeconds,
+    // Issue #62: the operator's planning agent timeout sizes Planning Mode's
+    // watchdog floor, so a longer `planning_timeout` widens the handler
+    // budget with it rather than being clipped by the flat 600 s.
+    planningTimeoutSeconds: config.planningTimeout ??
+      runCoreConfig.planningTimeoutSeconds,
   };
 
   const repos = config.repos ?? [];
