@@ -399,12 +399,34 @@ async function executeClaudeBody(
       (Date.now() - state.executeStartTime) / 1000,
     );
     const snippet = state.claudeOutput.slice(-500);
+    // Issue #47: "without creating changes" was misleading — a timed-out run
+    // usually left uncommitted work in the tree (on #5 the agent was running
+    // `deno test` on its own changes at the 38-minute kill). Count the dirty
+    // files so the release comment tells the truth: the work existed, it just
+    // was not committed. (Preserving that work — a WIP commit/push so the next
+    // claim resumes it — is the larger follow-up.)
+    let dirtyFiles = 0;
+    if (state.claudeOutput.length > 0) {
+      const statusResult = await deps.git.runGitCommand(
+        ["status", "--porcelain"],
+        { cwd: state.repoPath },
+      );
+      if (statusResult.ok && statusResult.value.code === 0) {
+        dirtyFiles = statusResult.value.stdout.trim().split("\n").filter((l) =>
+          l.trim().length > 0
+        ).length;
+      }
+    }
     // Issue #1550: When Claude times out with an empty output, classify the
     // failure as zero_output (infrastructure) so the infra-retry wrapper
     // fires. Pure timeouts with partial output remain in the generic
     // `timeout` category and are not retried.
     const baseReason = state.claudeOutput.length === 0
       ? "Claude timed out with zero output and made no changes"
+      : dirtyFiles > 0
+      ? `Claude timed out with uncommitted changes (${dirtyFiles} file${
+        dirtyFiles === 1 ? "" : "s"
+      })`
       : "Claude timed out without creating changes";
     const reason = formatDetailedFailureMessage(baseReason, {
       elapsedSeconds,
