@@ -3,7 +3,7 @@
  *
  * Issue #1902: hybrid age-based retention for `worker-PID.log` files,
  * replacing the count-based policy that destroyed overnight diagnostics
- * during restart storms. Callable from shell via deno_bridge.sh.
+ * during restart storms. Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";

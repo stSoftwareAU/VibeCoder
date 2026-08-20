@@ -27,6 +27,7 @@ import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
 } from "../lib/write_repo_allowlist.ts";
+import { WORKER_FORBIDDEN_LABEL_LITERALS } from "../lib/worker_label_guard.ts";
 
 /** The `gh` target variables the wrapper is expected to control (#3866). */
 const GH_TARGET_ENV_NAMES = [
@@ -878,6 +879,280 @@ Deno.test({
       await shimB?.cleanup();
       await Deno.remove(stub.dir, { recursive: true });
       resetWriteRepoAllowlist();
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Issue #11 (SEC-b17ab4cc0e2a, CWE-863) — the exploit, run the way an injected
+// agent would run it (Issue #94)
+//
+// The sibling sub-issues unit-test their own modules; none of them proves that
+// the exploit is refused *through the shim*. The argv the wrapper hands the
+// decision function is `parsed.ghArgs`, so the wiring is its own seam: a
+// regression that stops flowing argv into `evaluateGhCommand`, or that drops
+// the `--input`-file read, leaves every unit test green and the guard open.
+//
+// These cases therefore assert the observable outcome of a real subprocess —
+// exit status, the shim's `[SECURITY] [...]` refusal marker, and whether the
+// stub `gh` ran at all — never the decision object. No live `gh` and no
+// network: the wrapper delegates to the logging stub on its PATH.
+// ---------------------------------------------------------------------------
+
+/** The run's own repo — the allowlist names it, so only the label check bites. */
+const OWN_REPO = "stSoftwareAU/VibeCoder";
+
+/** The endpoint from #11's exploit, verbatim. */
+const LABELS_ENDPOINT = `repos/${OWN_REPO}/issues/123/labels`;
+
+/** Install a shim whose allowlist names {@link OWN_REPO}, delegating to `stub`. */
+async function installOwnRepoShim(stub: StubGh): Promise<GhGuardShim> {
+  return expectInstalled(
+    await installGhGuardShim({
+      baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+      active: true,
+      allowedRepos: [OWN_REPO],
+    }),
+  );
+}
+
+/** Write a JSON body the agent would hand `gh api --input`. */
+async function writeInputBody(
+  dir: string,
+  name: string,
+  body: unknown,
+): Promise<string> {
+  const path = `${dir}/${name}`;
+  await Deno.writeTextFile(path, JSON.stringify(body));
+  return path;
+}
+
+Deno.test({
+  name:
+    "gh-guard-shim #11 - refuses the exploit when the reserved label is present ONLY in the --input file",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeStubGh();
+    const shim = await installOwnRepoShim(stub);
+    try {
+      // The exploit from #11, verbatim: nothing in the argv names a label, and
+      // the endpoint is the run's own repo, so every other control passes.
+      const body = await writeInputBody(stub.dir, "labels.json", {
+        labels: ["top-priority"],
+      });
+      const result = await runShim(shim.shimPath, shim.env, [
+        "api",
+        LABELS_ENDPOINT,
+        "--input",
+        body,
+      ]);
+
+      assertEquals(result.code, 1, `expected exit 1, stderr: ${result.stderr}`);
+      assertStringIncludes(result.stderr, "[SECURITY] [WORKER_LABEL_REFUSED]");
+      assertStringIncludes(result.stderr, "top-priority");
+      assertStringIncludes(
+        result.stderr,
+        "reason=reserved_workflow_label_in_input_body",
+      );
+      assertEquals(await readLog(stub.log), "", "gh must not have been run");
+      // The agent's own file is read, never rewritten.
+      assertEquals(
+        await Deno.readTextFile(body),
+        '{"labels":["top-priority"]}',
+      );
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim #11 - refuses every WORKER_FORBIDDEN_LABEL_LITERALS entry carried only by the --input file",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // Driven from the exported constant, so a label added to the denylist is
+    // covered here automatically — and a renamed/emptied constant fails loudly
+    // rather than shrinking this case to nothing.
+    assert(
+      WORKER_FORBIDDEN_LABEL_LITERALS.length >= 10,
+      "the reserved-label denylist must not have shrunk away",
+    );
+    const stub = await makeStubGh();
+    const shim = await installOwnRepoShim(stub);
+    try {
+      for (const [i, label] of WORKER_FORBIDDEN_LABEL_LITERALS.entries()) {
+        // Two shapes GitHub's REST API accepts, alternating across the list:
+        // the `{"labels": […]}` object and the `[{"name": …}]` element form.
+        const body = i % 2 === 0
+          ? { labels: [label] }
+          : { labels: [{ name: label }] };
+        const path = await writeInputBody(stub.dir, `labels-${i}.json`, body);
+        const result = await runShim(shim.shimPath, shim.env, [
+          "api",
+          LABELS_ENDPOINT,
+          "--input",
+          path,
+        ]);
+        assertEquals(result.code, 1, `${label}: stderr ${result.stderr}`);
+        assertStringIncludes(
+          result.stderr,
+          "[SECURITY] [WORKER_LABEL_REFUSED]",
+        );
+        assertStringIncludes(result.stderr, `label=${label}`);
+        assertEquals(await readLog(stub.log), "", `gh ran for ${label}`);
+      }
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim #11 - allows a scan-finding label set supplied by --input",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // The legitimate-traffic counterpart: the fix must refuse the reserved
+    // names, not `--input` label writes as a class. A blanket refusal would
+    // take the security-scan pipeline offline, and this case is where that
+    // outage shows up in CI rather than in a production run.
+    const stub = await makeStubGh();
+    const shim = await installOwnRepoShim(stub);
+    try {
+      const body = await writeInputBody(stub.dir, "finding.json", {
+        labels: ["security", "severity:critical", "confidence:high"],
+      });
+      const result = await runShim(shim.shimPath, shim.env, [
+        "api",
+        LABELS_ENDPOINT,
+        "--input",
+        body,
+      ]);
+
+      assertEquals(result.code, 0, result.stderr);
+      assertStringIncludes(result.stdout, "stub-gh-ok");
+      // The argv reaches the real binary unchanged — nothing to redact, so the
+      // agent's own file is what `gh` is pointed at.
+      assertEquals(
+        await readLog(stub.log),
+        `api\n${LABELS_ENDPOINT}\n--input\n${body}\n`,
+      );
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim #11 - refuses a label set hidden behind -F 'labels[]=@file'",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // `gh` expands a leading `@` on `-F`/`--field` by reading that file, so the
+    // label names never reach the argv — the same blind spot as `--input`, on
+    // the field path (Issue #93). There is no `bodyFilePath` for the guard to
+    // scan here, so the fail-closed backstop is what must refuse it.
+    const stub = await makeStubGh();
+    const shim = await installOwnRepoShim(stub);
+    try {
+      const labelFile = `${stub.dir}/labels.txt`;
+      await Deno.writeTextFile(labelFile, "top-priority");
+      const result = await runShim(shim.shimPath, shim.env, [
+        "api",
+        LABELS_ENDPOINT,
+        "-F",
+        `labels[]=@${labelFile}`,
+      ]);
+
+      assertEquals(result.code, 1, `expected exit 1, stderr: ${result.stderr}`);
+      assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREADABLE]");
+      assertEquals(await readLog(stub.log), "", "gh must not have been run");
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "gh-guard-shim #11 - allows an -X GET read that supplies --input",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // A read changes nothing on GitHub, so an explicit `GET` stays allowed with
+    // its `--input` body: the guard refuses reserved-label *mutations*, not
+    // every command that mentions `--input`.
+    const stub = await makeStubGh();
+    const shim = await installOwnRepoShim(stub);
+    try {
+      const body = await writeInputBody(stub.dir, "query.json", {
+        per_page: 100,
+      });
+      const result = await runShim(shim.shimPath, shim.env, [
+        "api",
+        LABELS_ENDPOINT,
+        "-X",
+        "GET",
+        "--input",
+        body,
+      ]);
+
+      assertEquals(result.code, 0, result.stderr);
+      assertStringIncludes(result.stdout, "stub-gh-ok");
+      assertEquals(
+        await readLog(stub.log),
+        `api\n${LABELS_ENDPOINT}\n-X\nGET\n--input\n${body}\n`,
+      );
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim #11 - an -X GET --input - read is refused by the secret-redaction control, not the label guard",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // Boundary case, pinned so the two controls are not confused for each
+    // other: the reserved-label guard treats this as a read and allows it, and
+    // the refusal comes from the older `--body-file -` rule (Issue #3938) —
+    // a body arriving on stdin cannot be scanned for secrets, so it fails
+    // closed. If a future change starts refusing reads *as labelled writes*,
+    // the marker below flips and this case fails.
+    const stub = await makeStubGh();
+    const shim = await installOwnRepoShim(stub);
+    try {
+      const result = await runShim(shim.shimPath, shim.env, [
+        "api",
+        LABELS_ENDPOINT,
+        "-X",
+        "GET",
+        "--input",
+        "-",
+      ]);
+
+      assertEquals(result.code, 1, `expected exit 1, stderr: ${result.stderr}`);
+      assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREDACTABLE]");
+      assertEquals(
+        result.stderr.includes("WORKER_LABEL_REFUSED"),
+        false,
+        "a read must not be refused as a reserved-label write",
+      );
+      assertEquals(await readLog(stub.log), "", "gh must not have been run");
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
     }
   },
 });

@@ -1,8 +1,8 @@
 # 🛡️ Security Scans — Operator Manual
 
 This document is the operator-facing reference for the Vibe Coder's MythOS-style
-security audit. The intent is documented in the parent issue (#1933) and the
-four sub-issues that built it (#1934–#1944).
+security audit. The intent is documented in the parent issue and the
+four sub-issues that built it.
 
 The security scan is **template #1 of the idle-task framework** — the generic
 mechanism for "things the worker does when no claimable work exists". The
@@ -13,12 +13,12 @@ and the lifecycle diagram common to every template.
 
 For the **agent-facing** rules (label policy, suppression syntax, trigger
 summary) see
-[DESIGN-PRINCIPLES.md → Security scans](../DESIGN-PRINCIPLES.md#security-scans-issue-1933-1944-simplified-by-2023).
+[DESIGN-PRINCIPLES.md → Security scans](../DESIGN-PRINCIPLES.md#security-scans-simplified-by).
 
 For the **rationale** behind the pipeline's shape — threat modelling, the
 multi-stage false-positive triage, and patch verification — see the
 [idle-task scans vs Anthropic & Visa harnesses gap analysis](security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md)
-(Issue #3535), whose G1–G4 gaps drove the #3537–#3540 scan upgrades, and the
+, whose G1–G4 gaps drove the – scan upgrades, and the
 [other security analyses](security/README.md) alongside it.
 
 ## Four-phase scaffold
@@ -37,10 +37,10 @@ summary below is reproduced from that prompt:
 
 The executor in `worker/deno/lib/security_scanner.ts` wraps Claude with the
 prompt and waits for a clean exit; it does **not** parse Claude's stdout. As
-of prompt v5 (Issue #2097) the contract is **outcome-only** — Claude itself
+of prompt v5 the contract is **outcome-only** — Claude itself
 files one GitHub issue per surviving finding via `gh issue create` inside the
 scan, and success is verified by diffing the repo's open `security`-labelled
-issues before and after the run. Prompt v6 (Issue #2135) expanded the Phase
+issues before and after the run. Prompt v6 expanded the Phase
 2 taxonomy to cover the CWE Top 25 + OWASP Top 10 weakness classes missing
 from v5 (CSRF, XSS, XXE, mass assignment, server-side template injection,
 broader authentication/authorisation) and retired the
@@ -51,7 +51,7 @@ substitution. The diff lives in
 The scanner returns `Result<{ ok: true }, ScanError>`; the `Finding`/`ScanReport`
 types, the JSON-block extractor, the Markdown-summary extractor, and the
 separate `security_issue_filer.ts` module that previously rendered findings
-were retired in PR #2110.
+were retired in.
 
 Write/Edit/MultiEdit/NotebookEdit and plan-mode tools are explicitly
 disallowed; Bash remains allowed so Claude can call `gh issue create`.
@@ -61,8 +61,8 @@ disallowed; Bash remains allowed so Claude can call `gh issue create`.
 Every Phase 2 detection pass since prompt
 `v2` audits the target repo's auto-update
 tooling for a `minimumReleaseAge`-style quarantine on external dependencies.
-The audit exists to close the gap identified in #1613 and tracked under
-parent #2010: recent supply-chain attacks (npm, PyPI, crates.io maintainer takeovers)
+The audit exists to close the gap identified in and tracked under
+parent: recent supply-chain attacks (npm, PyPI, crates.io maintainer takeovers)
 typically ship malicious versions for a short window before takedown, so a repo
 that auto-merges third-party bumps within minutes of publish is materially
 exposed. The audit makes that exposure visible as a normal scanner-filed
@@ -105,7 +105,7 @@ rules:
 
 ### Beyond dependency manifests — host toolchain upgrades
 
-The quarantine is **not** limited to dependency manifests (Issue #3655). The
+The quarantine is **not** limited to dependency manifests. The
 worker also upgrades four externally-distributed executables on its own hosts,
 and each is gated on the same window by
 [`worker/deno/lib/tool_release_age.ts`](../worker/deno/lib/tool_release_age.ts):
@@ -126,7 +126,7 @@ Three rules differ from the manifest checks above and are deliberate:
 - **No wholesale `gh extension upgrade --all`.** Extensions are enumerated with
   `gh extension list` and upgraded one at a time so each third-party repository
   is age-checked individually. If the list cannot be read, nothing is upgraded.
-- **The gate dates the ref that is installed (Issue #3952).** Bare
+- **The gate dates the ref that is installed.** Bare
   `gh extension upgrade <name>` installs the latest release for a *binary*
   extension but pulls the default branch for a *script* extension, so dating
   every extension by its latest release let a repo with a stale tag and an
@@ -139,7 +139,7 @@ Three rules differ from the manifest checks above and are deliberate:
 
 ### Internal vs external classification
 
-Per the worker-side bump policy in #1613, dependencies under
+Per the worker-side bump policy in, dependencies under
 `stSoftwareAU/*` are **internal** — bumped immediately, no quarantine, so that
 packages like FLEET stitch in the latest private-repo-14 without delay. All other
 dependencies (npm, JSR, crates.io, Maven Central, third-party GitHub Actions)
@@ -201,7 +201,7 @@ sequenceDiagram
     Filer->>GH: gh issue create — title `Run a security scan`, label `idle-task`, no milestone (skipMilestone)
     GH-->>Filer: new human-style wrapper issue
     Main->>Main: next iteration claims the idle-task issue
-    Main->>Template: idle_task_claim_handler.runTask(repo) — dispatch by title (Issue #2077)
+    Main->>Template: idle_task_claim_handler.runTask(repo) — dispatch by title
     Template->>GH: list open `security`-labelled issues (BEFORE snapshot)
     Template->>Scan: runSecurityScan(repo)
     Scan->>Claude: invoke with prompt — Bash allowed, Write/Edit disallowed
@@ -260,7 +260,7 @@ cannot abort the loop. The production wiring in `run_core_production_deps.ts`
 delegates to the `maybe-file-idle-task` Deno command.
 
 The command itself (`worker/deno/commands/maybe_file_idle_task.ts`) owns the
-rest of the decision tree (Issue #2023 retired the in-process trigger and its
+rest of the decision tree (retired the in-process trigger and its
 state files — no last-scanned timestamps, no idle-cycle counter, no scan lock):
 
 1. **Repo availability sweep** — short-circuits if any monitored repo has
@@ -268,7 +268,7 @@ state files — no last-scanned timestamps, no idle-cycle counter, no scan lock)
 2. **Random repo selection** — shuffles `monitoredRepos` via a
    `crypto.getRandomValues`-backed Fisher-Yates and walks the result, picking
    the first repo with no open `idle-task` issue (label-only dedup).
-3. **File the human-style wrapper issue (Issue #2077)** — the
+3. **File the human-style wrapper issue** — the
    `security-scan` template files the wrapper as an issue that reads
    like one a person would type:
 
@@ -279,24 +279,22 @@ state files — no last-scanned timestamps, no idle-cycle counter, no scan lock)
      marker, no parameters block. Language detection now happens inside
      the scanning agent during the Phase 1 inventory step (free-form
      filesystem inspection), so the worker no longer substitutes a
-     language list at raise time. Issue #2135 retired the `{{REPO_FULL_NAME}}`
+     language list at raise time. retired the `{{REPO_FULL_NAME}}`
      placeholder; the worker's cwd is the cloned repo, so `gh issue
      create` operates on the right one without an explicit `--repo`
      argument.
-   - **Label:** the canonical `idle-task` label. Issue #2077 retired
+   - **Label:** the canonical `idle-task` label. retired
      the `idle-task-pending` / `requiresApproval` approval gate;
      `idle-task` is already the lowest priority in the queue, so a
      separate approval step added no value.
-   - **No milestone** — the template sets `skipMilestone: true` (Issue
-     #2067), so the wrapper is filed as a standalone issue and never
+   - **No milestone** — the template sets `skipMilestone: true`, so the wrapper is filed as a standalone issue and never
      gates a milestone-merge PR. See
      [Skipping the per-template milestone](IDLE-TASK-FRAMEWORK.md#skipping-the-per-template-milestone)
      in the framework manual.
 
    The next iteration of the main loop claims the issue through standard
    priority dispatch and the claim handler routes it to
-   `securityScanTemplate.runTask()` by matching the issue title (Issue
-   #2077). The template also re-runs its `shouldFile` gate per repo
+   `securityScanTemplate.runTask` by matching the issue title. The template also re-runs its `shouldFile` gate per repo
    before filing: no fresh wrapper is created while open security
    findings or an existing `Run a security scan` wrapper still exist.
 
@@ -318,13 +316,13 @@ ordinary milestone work uses. The only artefacts a scan produces are:
    survivors exceed the six-finding cap.
 3. **A SARIF 2.1.0 upload** of the same findings to the scanned repo's own
    GitHub code scanning — additive to the issues, never a replacement. See
-   [SARIF publishing to code scanning](#sarif-publishing-to-code-scanning-issue-3538).
+   [SARIF publishing to code scanning](#sarif-publishing-to-code-scanning).
 4. **A closing comment** on the wrapper idle-task issue — see
    [Close-comment shape](#close-comment-shape) below.
 
 There is no separate Deno-side filer module any more — the previous
-`worker/deno/lib/security_issue_filer.ts` was retired in PR #2110
-(Issue #2097). The cap, label set, dedup-against-open-issues check,
+`worker/deno/lib/security_issue_filer.ts` was retired in
+. The cap, label set, dedup-against-open-issues check,
 and in-code suppression check are all enforced by the Phase 4
 instructions Claude follows directly.
 
@@ -333,7 +331,7 @@ as ordinary issues that flow through the normal triage → planning →
 work-on pipeline, where each fix is implemented and reviewed
 individually.
 
-## SARIF publishing to code scanning (Issue #3538)
+## SARIF publishing to code scanning
 
 Findings are **also** published as a **SARIF 2.1.0** document uploaded to the
 scanned repo's GitHub **code scanning**. This closed a half-open loop: the
@@ -348,10 +346,10 @@ Three durable properties govern the surface:
   unchanged. SARIF runs *after* the before/after issue diff and reads those same
   issues back; if the upload is impossible the issues still stand on their own,
   and the wrapper task still succeeds.
-- **Per-repo (Issue #3239).** The upload targets the scanned repo's own
+- **Per-repo.** The upload targets the scanned repo's own
   `POST repos/<owner>/<repo>/code-scanning/sarifs` endpoint. Nothing is
   centralised cross-repo — each repo owns and triages its own alerts.
-- **Fail-loud (Issue #3234).** Every outcome is reported in the wrapper's close
+- **Fail-loud.** Every outcome is reported in the wrapper's close
   comment. A missing code-scanning surface (403/404) is surfaced as its own
   distinct state, never collapsed into a silent success.
 
@@ -402,9 +400,9 @@ strictly as **data** — never interpreted as instructions.
 `external/cwe/cwe-<n>` tag whenever a filed issue body carries a
 `<!-- cwe: CWE-<n> -->` marker directly after the `<!-- finding-id: SEC-… -->`
 marker, and those tags are what a future vulnerability-chaining pass (gap G3 of
-the [#3535 gap analysis](security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md))
+the [gap analysis](security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md))
 consumes. The `security_scan` prompt emits that marker from **v28** onward
-(#3613), so rules built from a v28-or-later run carry both `security` and
+, so rules built from a v28-or-later run carry both `security` and
 `external/cwe/cwe-<n>`. Findings filed by an earlier prompt version carry the
 `security` tag only; uploads are unaffected either way.
 
@@ -487,7 +485,7 @@ triage and are never filed.
 The claim handler closes the wrapper idle-task issue with one of two
 deterministic comment strings, rendered by `renderRunSummary()` in
 [`security_scan_template.ts`](../worker/deno/lib/idle_task_templates/security_scan_template.ts)
-from the before/after snapshot diff (Issue #2097):
+from the before/after snapshot diff:
 
 - **Zero newly-filed findings** — the literal string:
 
@@ -505,7 +503,7 @@ from the before/after snapshot diff (Issue #2097):
   new issue number ascending:
 
   ```text
-  Security scan complete. Filed 2 issues: #123, #124
+  Security scan complete. Filed 2 issues:,
   ```
 
   The issue numbers are sorted ascending so the comment is
@@ -515,12 +513,12 @@ from the before/after snapshot diff (Issue #2097):
   wrapper is closed with `security-scan failed: <kind> — <message>`.
   A thrown error surfaces as `security-scan threw: <message>`.
 
-On a **successful** run the SARIF status line (Issue #3538) is appended to
+On a **successful** run the SARIF status line is appended to
 whichever of the first two strings applies, giving e.g.
-`Security scan complete. Filed 2 issues: #123, #124 SARIF: uploaded 2 findings
+`Security scan complete. Filed 2 issues:, SARIF: uploaded 2 findings
 to code scanning.` The failure strings return before the SARIF step, so they
 never carry one. See
-[SARIF publishing to code scanning](#sarif-publishing-to-code-scanning-issue-3538)
+[SARIF publishing to code scanning](#sarif-publishing-to-code-scanning)
 for the full set of status lines.
 
 The comment is posted by the idle-task claim handler when it closes
@@ -528,7 +526,7 @@ the wrapper issue; it never opens a PR.
 
 ## State files
 
-There are none. Issue #2023 retired the per-host state files
+There are none. retired the per-host state files
 (`security_scan_idle.json`, `security-scan-state.json`,
 `security_scan.lock`) — the idle-task filer picks a target by shuffling
 `monitoredRepos` and deduping against open `idle-task` issues, and the
@@ -542,7 +540,7 @@ from GitHub alone.
 
 Each finding is filed as its own GitHub issue in the scanned repo.
 
-**Title (Issue #2063).** Format is `<emoji> <plain title>` where the emoji
+**Title.** Format is `<emoji> <plain title>` where the emoji
 encodes the severity bucket so the issue list reads severity at a glance:
 
 | Emoji | Severity |
@@ -556,7 +554,7 @@ The plain title is `<class> in <file>:<first-line>` — e.g. `🔴 injection:SQL
 src/auth.ts:47`. Findings whose severity falls outside the four-bucket scheme
 (e.g. `Informational`) omit the emoji prefix.
 
-**Labels (Issue #2063).** Every filed issue is auto-tagged with both axes:
+**Labels.** Every filed issue is auto-tagged with both axes:
 
 - `severity:critical` | `severity:high` | `severity:medium` | `severity:low`
 - `confidence:high` | `confidence:medium` | `confidence:low`
@@ -593,7 +591,7 @@ The body has three parts (per the Phase 4 instructions in
 
 Operators who want to suppress the finding on future runs paste the
 in-source comment described in
-[`DESIGN-PRINCIPLES.md → Security scans`](../DESIGN-PRINCIPLES.md#security-scans-issue-1933-1944-simplified-by-2023):
+[`DESIGN-PRINCIPLES.md → Security scans`](../DESIGN-PRINCIPLES.md#security-scans-simplified-by):
 `security-scan-ignore: SEC-<id> — author=<login> expires=<YYYY-MM-DD> reason`.
 The grammar lives in
 [`worker/deno/lib/suppression_comments.ts`](../worker/deno/lib/suppression_comments.ts)
@@ -601,7 +599,7 @@ and the next scan will pre-substitute the suppressed id into the
 `{{SUPPRESSED_IDS}}` placeholder so Claude drops the finding in
 Phase 3 triage.
 
-Author, expiry, and reason are all **mandatory** (Issue #3712). A marker
+Author, expiry, and reason are all **mandatory**. A marker
 missing any of them, carrying a malformed or past expiry, or naming an
 author outside a configured allowlist is parsed and reported but never
 suppresses — the finding stays visible rather than being waived forever.
@@ -609,7 +607,7 @@ Every marker seen during a run is listed in that run's scan report as
 `Active suppressions (N): …` / `Rejected suppressions (N): …`.
 
 A marker must also sit on a line of at most **2,000 characters**
-(`MAX_SUPPRESSION_LINE_CHARS`, Issue #3942) — the parser is fed
+(`MAX_SUPPRESSION_LINE_CHARS`,) — the parser is fed
 attacker-influenced source on the worker's only thread, so the text any
 pattern sees is bounded. A longer line is skipped unparsed, which fails
 safe: the finding stays visible.
@@ -621,7 +619,7 @@ enforced by the Phase 4 instructions in
 [`prompts/security_scan/`](../prompts/security_scan/) — there
 is no hardcoded constant in Deno any more (the previous
 `MAX_FILED = 6` in `security_issue_filer.ts` was retired with that
-module in PR #2110). When more than six findings survive triage,
+module in). When more than six findings survive triage,
 Claude files the top six (sorted severity → confidence → ease of
 exploit) as standalone `security` issues and rolls the remainder into
 a single **overflow tracker** issue so the follow-up scan knows what
@@ -631,7 +629,7 @@ is still outstanding.
 in the same scan invocation that filed the first batch, but only when
 the post-triage survivors list contains more than six items.
 
-From `prompts/security_scan/v30.md` onward (Issue #3800) there is a second
+From `prompts/security_scan/v30.md` onward there is a second
 trigger: Phase 2 stops sweeping lower-exposure chunks once the candidate set
 already exceeds roughly twice the cap, so a run may finish with chunks
 unswept. The tracker then also carries a `## Chunks not reached` section
@@ -684,7 +682,7 @@ queue for the worker.
 
 ## Vulnerability taxonomy covered
 
-From the `prompts/security_scan/` v16 prompt (Issue #3012) the Phase 2 taxonomy
+From the `prompts/security_scan/` v16 prompt the Phase 2 taxonomy
 is organised around the **OWASP Top 10 2025**
 (https://owasp.org/Top10/2025/): each class below is tagged with its
 `A0N:2025` category id+name, and every one of the ten 2025 categories — Broken
@@ -759,7 +757,7 @@ list:
   code path; no blanket "no logging found" finding. Secrets/PII in logs are
   filed once under the A04 **Secrets** class, cross-referenced here.
 - **Node tooling in a Deno repo (regression)** — Node-only tooling growing
-  inside a Deno repo (Issue #2225). Phase 1 records the **dual-marker** state:
+  inside a Deno repo. Phase 1 records the **dual-marker** state:
   when both Deno markers (`deno.json`, `deno.jsonc`, `deno.lock`) and Node
   markers (`package.json`) are present, the repo is classified as **Deno** for
   remediation purposes, and Phase 2 may file a regression finding. A Node-only
@@ -776,7 +774,7 @@ list:
 
 ### OWASP GenAI / LLM Top 10 (2025) — LLM-using repos only
 
-From the `prompts/security_scan/` v17 prompt onward (Issue #3013, parent #3009)
+From the `prompts/security_scan/` v17 prompt onward (parent)
 the Phase 2 taxonomy also covers the **OWASP GenAI / LLM Top 10 (2025)**
 (https://genai.owasp.org/llm-top-10/). These ten classes — Prompt Injection
 (LLM01), Sensitive Information Disclosure (LLM02), Supply Chain (LLM03), Data
@@ -790,7 +788,7 @@ code. Findings still file through the standard Phase-4 path with the usual
 
 LLM-usage is decided by the shared, precision-first detection rule in
 [`worker/deno/lib/llm_usage_detection.ts`](../worker/deno/lib/llm_usage_detection.ts)
-(also used by the generic gate, #3014 — one mechanism, not two). A repo is
+(also used by the generic gate, — one mechanism, not two). A repo is
 flagged only on a concrete integration signal in **code or dependency
 manifests**, never on prose, the repo **name**, or mentions in `docs/`,
 `README`, or examples:
@@ -806,7 +804,7 @@ manifests**, never on prose, the repo **name**, or mentions in `docs/`,
 
 When no signal is present the LLM section is skipped entirely (skip on absence).
 
-**The worker computes this verdict deterministically (Issue #3014) and supplies
+**The worker computes this verdict deterministically and supplies
 it to the prompt.** `runSecurityScan` in
 [`worker/deno/lib/security_scanner.ts`](../worker/deno/lib/security_scanner.ts)
 calls `detectLlmUsageForRepo(repo, workDir)` against the clone and substitutes
@@ -834,16 +832,16 @@ enforcement (LLM06, `label_security.ts`), and secret handling (LLM02).
 | Symptom                                                                      | What to do                                                                                                                                                                     |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Worker logs `[idle-task] action=skipped reason=existing_wrapper_open` repeatedly | A `Run a security scan` wrapper (or any other `idle-task` issue) is open somewhere in the monitored set. Let the worker claim and close it, or close it by hand — the idle-task filer will resume on the next idle pass. |
-| Worker logs `[idle-task] action=skipped reason=all_repos_cooled_down`        | Every monitored repo is inside its 24-hour per-repo cooldown window (Issue #2105). No action needed; the idle-task filer will resume after a repo's window expires. |
-| Worker logs `[idle-task] … reason=output_backlog label=security count=N`     | A monitored repo already has six or more open `security`-labelled findings from a previous scan (Issue #2082). Triage the existing batch — close, fix, or add `security-scan-ignore` comments — and the next idle pass will resume scanning that repo. |
-| Worker logs `[idle-task] … reason=pending_results`                           | The `security-scan` template's `shouldFile()` returned `false` (Issue #2056) — either an open security finding or an existing `Run a security scan` wrapper still exists. Same remedy: triage the open work first. |
+| Worker logs `[idle-task] action=skipped reason=all_repos_cooled_down` | Every monitored repo is inside its 24-hour per-repo cooldown window. No action needed; the idle-task filer will resume after a repo's window expires. |
+| Worker logs `[idle-task] … reason=output_backlog label=security count=N` | A monitored repo already has six or more open `security`-labelled findings from a previous scan. Triage the existing batch — close, fix, or add `security-scan-ignore` comments — and the next idle pass will resume scanning that repo. |
+| Worker logs `[idle-task] … reason=pending_results` | The `security-scan` template's `shouldFile` returned `false` — either an open security finding or an existing `Run a security scan` wrapper still exists. Same remedy: triage the open work first. |
 | Wrapper closed with `0 findings.`                                            | Either the scan was clean or every candidate was deduplicated against an existing open `security` issue. No action needed unless that pattern persists when you expect new findings. |
 | Wrapper closed with `security-scan failed: …` or `security-scan threw: …`    | The scanner exited non-zero, timed out, or threw before finishing. Inspect the worker log for the matching `[security-scan]` lines; the run will be retried on the next idle pass once the repo's cooldown window expires. |
 | Filed finding looks wrong                                                    | Either close the issue (the live `gh issue list` dedup query keeps the scanner from re-filing while it is open), or add a `security-scan-ignore: SEC-… — reason` comment at the cited line so future scans skip it. |
 | Scan filed a `security-scan-overflow` tracker                                | Resolve the six filed issues, then wait for the next idle trigger to run another batch against the same repo.                                                                  |
 | Wrapper comment ends `SARIF: code scanning unavailable (HTTP 403\|404) …`    | Code scanning is disabled for that repo, or the worker token lacks the `security_events` scope. Enable code scanning (or grant the scope) if you want the alerts; the findings are already filed as issues either way. |
 | Wrapper comment ends `SARIF: not uploaded — git symbolic-ref …`              | The clone is on a detached HEAD, so no ref could be attributed. Nothing to do — the next scan on an attached branch uploads normally.                                          |
-| Worker-generated alerts appear on a repo's code-scanning tab                 | Expected since Issue #3538 — they are this scanner's findings, published as SARIF under the `VibeCoder-security-scan` tool. Dismiss them there (closing the matching `security` issue does not clear an alert), or fix the code. |
+| Worker-generated alerts appear on a repo's code-scanning tab | Expected since — they are this scanner's findings, published as SARIF under the `VibeCoder-security-scan` tool. Dismiss them there (closing the matching `security` issue does not clear an alert), or fix the code. |
 
 For deeper internals (e.g. modifying the prompt, raising the
 six-finding cap, adding a new vulnerability class) read

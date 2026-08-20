@@ -13,6 +13,12 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
+  assertSafeGitRef,
+  buildCheckoutArgs,
+  buildCheckoutNewBranchArgs,
+  buildFetchArgs,
+} from "../lib/git_ref_args.ts";
+import {
   ensureAutoMergeOnOpenPrs,
   extractIssueFromBranch,
   findFailedCiChecks,
@@ -434,9 +440,22 @@ export const prMaintenanceCommand: Command = {
         }) => {
           const gitOptions = { cwd: params.repoPath };
 
+          // Refuse an option-injecting ref before any git runs (Issue #12):
+          // the PR head branch is attacker-controlled and can begin with a
+          // dash, which git would parse as an option, not a ref.
+          try {
+            assertSafeGitRef(params.branchName, "PR head branch name");
+            assertSafeGitRef(params.baseBranch, "PR base branch name");
+          } catch (err) {
+            return {
+              ok: false as const,
+              error: err instanceof Error ? err : new Error(String(err)),
+            };
+          }
+
           // Fetch branches from remote
           const fetchHead = await runGitCommand(
-            ["fetch", "origin", params.branchName],
+            buildFetchArgs("origin", params.branchName),
             gitOptions,
           );
           if (!fetchHead.ok || fetchHead.value.code !== 0) {
@@ -447,7 +466,7 @@ export const prMaintenanceCommand: Command = {
           }
 
           const fetchBase = await runGitCommand(
-            ["fetch", "origin", params.baseBranch],
+            buildFetchArgs("origin", params.baseBranch),
             gitOptions,
           );
           if (!fetchBase.ok || fetchBase.value.code !== 0) {
@@ -461,17 +480,15 @@ export const prMaintenanceCommand: Command = {
 
           // Ensure local branch exists (checkout or create tracking branch)
           const checkoutResult = await runGitCommand(
-            ["checkout", params.branchName],
+            buildCheckoutArgs(params.branchName),
             gitOptions,
           );
           if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
             const createResult = await runGitCommand(
-              [
-                "checkout",
-                "-b",
+              buildCheckoutNewBranchArgs(
                 params.branchName,
                 `origin/${params.branchName}`,
-              ],
+              ),
               gitOptions,
             );
             if (!createResult.ok || createResult.value.code !== 0) {
@@ -493,7 +510,7 @@ export const prMaintenanceCommand: Command = {
 
           // Restore default branch regardless of update outcome
           await runGitCommand(
-            ["checkout", params.defaultBranch],
+            buildCheckoutArgs(params.defaultBranch),
             gitOptions,
           );
 

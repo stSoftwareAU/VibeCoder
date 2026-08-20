@@ -82,7 +82,7 @@ sequenceDiagram
 - **Per-repo configuration** — Operator-side `repo_config` in `.config.json`
   customises worker behaviour per repository (e.g., skip screenshots for
   CLI-only projects). Configuration is operator-side only — target repos carry
-  no worker configuration (Issue #2626).
+  no worker configuration.
 - **Milestone enhancements** — Progress notifications, configurable issue
   ordering within milestones, periodic branch sync with the default branch, and
   milestone health diagnostics.
@@ -170,7 +170,7 @@ $env:VIBE_REPOS = "myorg/repo1,myorg/repo2"
 .\run.ps1
 ```
 
-`setup.ps1` (Issue #4185) is the twin of `setup.sh`: it delegates every
+`setup.ps1` is the twin of `setup.sh`: it delegates every
 platform-neutral step to the same Deno setup CLI and adds only the interactive
 layer — the prompts, the credential flow (`gh` identity copy plus
 `claude setup-token`, each proven with a live call), and the offer to register
@@ -191,7 +191,7 @@ named volumes, and no other host data ([Containment](docs/CONTAINMENT.md)). The 
 asymmetric — **generous resources, strict boundary**: inside the container the
 worker gets all the memory, CPU and disk the host can give (it is sized to the
 host, not rationed), while the boundary around it is absolute (see
-[Design Principles](DESIGN-PRINCIPLES.md#generous-resources-strict-boundary-issues-4060-4184-4186)).
+[Design Principles](DESIGN-PRINCIPLES.md#generous-resources-strict-boundary)).
 **GitHub is the sole normal remote control plane**: issues, comments, labels, repositories, commits and
 pull requests. Humans steer the worker by labelling and commenting; the worker
 reports progress, escalations and crashes the same way.
@@ -218,16 +218,16 @@ The worker uses a **thin launcher + Deno TypeScript** architecture. Entry points
 are minimal shell/PowerShell scripts that delegate to Deno for all business
 logic. Cross-platform: macOS, Linux, and Windows.
 
-`run.sh` (Issue #4065) and `run.ps1` (Issue #4066) launch the worker inside the
+`run.sh` and `run.ps1` launch the worker inside the
 container image: both ask the same Deno `container-launch-plan` command what to
 run, so the mounts and privilege flags are identical on every host. Containment
 is mandatory (Issue #4): container is the only run mode — the former `native`
 and macOS `seatbelt` opt-ins were removed, a `run_mode` (or `VIBE_RUN_MODE`)
 that still names one fails loud with the removal explained, and a missing container runtime is a
-loud failure with no host fallback (Issue #3234). See
+loud failure with no host fallback. See
 [Container Image](docs/CONTAINER.md) for the mount set and privilege flags,
 [Containment](docs/CONTAINMENT.md) for the boundary, and
-[Configuration](docs/CONFIGURATION.md#-run-mode-issue-4146) for the setting.
+[Configuration](docs/CONFIGURATION.md#-run-mode) for the setting.
 
 ```mermaid
 graph TD
@@ -246,7 +246,7 @@ graph TD
 
 The thin launcher `exec`s Deno directly on the `run-entrypoint` command — there
 is no bash on the runtime path, so the worker runs natively on Windows
-(Issue #3504). Because Deno loads its modules at process start, the running
+. Because Deno loads its modules at process start, the running
 driver is immune to the mid-run `git reset` its bootstrap performs — the same
 property the old `worker/.run_core.sh` shadow-copy provided.
 
@@ -274,7 +274,7 @@ launcher, not the worker's toolchain:
   non-zero (there is no host mode to switch to). You do not have to install it by
   hand: `./setup.sh` (`.\setup.ps1` on Windows) run in a terminal offers to
   install and start it (see
-  [Deployment](docs/DEPLOYMENT.md#interactive-install-offer-issue-4135)).
+  [Deployment](docs/DEPLOYMENT.md#interactive-install-offer)).
 - [Deno](https://deno.com/) 2+ — the launcher's only host tool.
 - `bash` (macOS/Linux) or [PowerShell](https://learn.microsoft.com/powershell/)
   (Windows PowerShell 5.1 or `pwsh` 7) to run the launcher.
@@ -288,7 +288,7 @@ install them on the host. See the
 [Containment](docs/CONTAINMENT.md).
 
 Optional: [shellcheck](https://github.com/koalaman/shellcheck) is **not** run by
-`./quality.sh` — bash linting is owned by each repo's own CI (Issue #3129), and
+`./quality.sh` — bash linting is owned by each repo's own CI, and
 this repo lints its shell scripts in the `validate-scripts` GitHub Actions
 workflow. Install it only if you want to reproduce that CI check locally.
 
@@ -326,12 +326,14 @@ flowchart LR
 | — [Label Flows](docs/workflows/label-flows.md)                                 | Which label when: grill-me, needs-human, planning, work tiers, milestones, auto-merge                                                                  |
 | — [Issue Processing](docs/workflows/issue-processing.md)                       | Flow from issue discovery through branch creation, Claude coding, quality gate, and PR creation                                                        |
 | — [PR Feedback & Upkeep](docs/workflows/pr-feedback.md)                        | Review feedback loop, spelling fixes, branch updates, auto-merge catch-up                                                                              |
+| — [Merge-conflict Resolution](docs/workflows/merge-conflicts.md)              | Real merge of the base into a conflicting PR — both sides survive — plus the `merge-conflict` label, attempt bounds, and escalation                    |
 | — [Planning, Questions & Refinement](docs/workflows/planning-and-questions.md) | Non-coding workflows: planning mode, question answering, issue refinement, clarification phase                                                         |
 | — [Projects & Dependencies](docs/workflows/projects-and-dependencies.md)       | Milestones as projects, issue relationships, dependencies, sub-issues                                                                                  |
 | — [Milestones](docs/workflows/milestones.md)                                   | Unlocks productivity: safely work many issues overnight/weekend; quality gates on every PR; no code to default without your review of the final PR     |
 | — [Resilience & Concurrency](docs/workflows/resilience-and-concurrency.md)     | Self-healing behaviour, restart model, issue claiming, multi-worker coexistence                                                                        |
 | **[Quorum](docs/QUORUM.md)**                                                   | Operator manual for the `quorum` plan-off: the trigger, the two-draft/one-judge sequence, the result comment, every degradation path, the per-run cost, and the config keys |
 | **[Configuration Reference](docs/CONFIGURATION.md)**                           | Config file (`.config.json`), per-repo settings, authorised commenters                                                                                 |
+| **[Setup Guide](docs/SETUP.md)**                                               | Setup manual: what the automated setup script does, and the from-scratch manual path for macOS, Linux and Windows                                      |
 | **[Deployment Guide](docs/DEPLOYMENT.md)**                                     | Installation, cron/systemd/launchd setup, logs, screenshot support                                                                                     |
 | **[Containment](docs/CONTAINMENT.md)**                                         | The containment boundary: the mount set, the host resources deliberately kept outside it, the disposable container root filesystem, the network boundary, and GitHub as the control plane |
 | **[Container Image](docs/CONTAINER.md)**                                       | The `container/` definition: pinned toolchain manifest (worker runtime plus the monitored repos' build/test toolchains), non-root user, entrypoint, and the CI job that builds it and runs the quality gate inside it    |
@@ -363,10 +365,10 @@ flowchart LR
 | **[Supply-chain Gate](docs/SUPPLY-CHAIN-GATE.md)**                             | Operator manual for the CI gate that fails on unpinned actions, unfrozen `deno` invocations, tag-referenced container bases, permissive Renovate auto-merge or a stale dependency inventory |
 | **[Whole-tree Security Sweep](docs/SECURITY-TREE-SWEEP.md)**                   | Operator manual for the one-shot worker-scan + semgrep + CodeQL sweep over the entire checkout: sources and coverage, cross-tool dedup, the baseline, triage and filing |
 | **Public Export**                                     | Operator manual for `export-public.sh`: the versioned allowlist manifest, the hard-deny gate, the staged brand-new history, and why it never configures a remote or pushes |
-| **Public Repository Readiness**               | Operator checklist for the public VibeCoder repository (Issue #4199): the CI the export ships, every repository setting with its `gh api` command, branding assets, and the licence confirmation. The public README/SECURITY/CONTRIBUTING are authored under [`docs/public/`](docs/public/) (Issue #4198) |
-| **Publish Decision Dossier**                       | Operator-private Phase 4 go/no-go dossier for plan #4160 (Issue #4200): one evidenced verdict per condition, the headaches and alternatives, a dated NO-GO/GO line, and `deno task publish-decision-check` which refuses an incomplete GO |
+| **Public Repository Readiness** | Operator checklist for the public VibeCoder repository: the CI the export ships, every repository setting with its `gh api` command, branding assets, and the licence confirmation. The public README/SECURITY/CONTRIBUTING are authored under [`docs/public/`](docs/public/) |
+| **Publish Decision Dossier** | Operator-private Phase 4 go/no-go dossier for plan: one evidenced verdict per condition, the headaches and alternatives, a dated NO-GO/GO line, and `deno task publish-decision-check` which refuses an incomplete GO |
 | **[Security analyses & assessments](docs/security/README.md)**                 | Index of the point-in-time security gap analyses, threat models, and assessments (harness gap analysis, Cloudflare coverage, GhostCommit pair)         |
-| **[OWASP Top 10 2025 Coverage Matrix](docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md)** | Which idle-task template covers which OWASP Top 10 2025 category — the point-in-time matrix from Issue #3015 plus templates registered since       |
+| **[OWASP Top 10 2025 Coverage Matrix](docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md)** | Which idle-task template covers which OWASP Top 10 2025 category — the point-in-time matrix from plus templates registered since |
 | **[Cross-repo Fix](docs/CROSS-REPO-FIX.md)**                                   | Raising a PR in an internal `stSoftwareAU` dependency's own repo: the "can access" classification, PR plumbing, and release-gating boundaries          |
 | **[Merge Enforcement](docs/MERGE.md)**                                         | Operator manual for the dual-layer pre-merge gate: required checks, defer-and-retry, read-only default branch                                          |
 | **[Human-authored PR Policy](docs/HUMAN-PR-POLICY.md)**                        | What the worker will and will not do to a PR it did not author: the two author lists, inviting it onto your PR, revoking, and the blocked-issue nudge  |
@@ -401,9 +403,9 @@ These labels tell the worker which issues to pick up.
 
 | Label               | Default                                 | Config Key           | Description                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------- | --------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Issue labels**    | `top-priority`                          | — (hardwired, #1834) | Issues with this label are scanned first. Add `top-priority` to a new issue to trigger highest-priority processing. Hardwired since Issue #1834 — the retired `issue_labels` key is no longer accepted.                                                                                                                                                                                                                |
-| **Work-on**         | `work-on`                               | — (hardwired, #1834) | Signals the worker to pick up an issue **not** created by an allowed author. Only an allowed author can add this label (verified via the GitHub timeline API). Hardwired since Issue #1834 — the retired `work_on_label` key is no longer accepted.                                                                                                                                                                     |
-| **Low-priority**    | `low-priority`                          | — (hardwired, #1834) | Backlog work — selected only when **no** eligible `top-priority` or `work-on` candidate exists in **any** scanned repo. Only an allowed author can add this label. The full priority order is `top-priority` > `work-on` > `low-priority` > `idle-task`. Only `idle-task` is self-appliable by the Vibe Coder. Hardwired since Issue #1834. See [Issue selection priority](docs/workflows/issue-processing.md#-issue-selection-priority). |
+| **Issue labels** | `top-priority` | — (hardwired,) | Issues with this label are scanned first. Add `top-priority` to a new issue to trigger highest-priority processing. Hardwired since — the retired `issue_labels` key is no longer accepted. |
+| **Work-on** | `work-on` | — (hardwired,) | Signals the worker to pick up an issue **not** created by an allowed author. Only an allowed author can add this label (verified via the GitHub timeline API). Hardwired since — the retired `work_on_label` key is no longer accepted. |
+| **Low-priority** | `low-priority` | — (hardwired,) | Backlog work — selected only when **no** eligible `top-priority` or `work-on` candidate exists in **any** scanned repo. Only an allowed author can add this label. The full priority order is `top-priority` > `work-on` > `low-priority` > `idle-task`. Only `idle-task` is self-appliable by the Vibe Coder. Hardwired since. See [Issue selection priority](docs/workflows/issue-processing.md#-issue-selection-priority). |
 | **Ignore open PRs** | `ignore-open-prs`                       | —                    | Bypasses the default behaviour of skipping repositories with open PRs. Only effective when added by an allowed author.                                                                                                                                                                                                                                                                                                 |
 
 ### 🔄 Workflow Labels
@@ -416,8 +418,9 @@ These labels trigger specific workflows instead of (or before) implementation.
 | **Quorum**             | `quorum`             | `quorum_label`             | Runs a plan-off **before** planning: two agents draft a plan for the issue independently, a third judges the anonymised drafts, and the worker posts the winner with the runner-up and the judge's reasoning attached in collapsed sections. Human-applied only — the worker can never self-apply it. On completion it removes `quorum` and adds `needs-human`; you pick the next phase. See [Quorum](docs/QUORUM.md) and [Label Flows](docs/workflows/label-flows.md). |
 | **Planning**           | `planning`           | `planning_label`           | Instructs the worker to break down the issue into sub-issues and task plans instead of implementing code directly. The label is automatically removed after processing.                                                                                                                                                                                                                      |
 | **Refine issue**       | `refine-issue`       | `refine_issue_label`       | Triggers collaborative issue refinement — the worker updates the issue title and body based on your feedback comments. The label is automatically removed after processing. Add it again to continue refining.                                                                                                                                                                               |
-| **Question**           | `question`           | `question_label`           | Marks the issue as a question to be answered rather than implemented. The worker reads the issue and comments, posts an answer, removes `question`, and adds `needs-human` to mark it as the user's turn. Add `question` again to ask a follow-up (Issue #2030).                                                                                                                             |
-| **Needs human**        | `needs-human`        | `needs_human_label`        | Applied by the worker when it hits an unrecoverable blocker (e.g. a change that needs the `workflow` OAuth scope) **or when the clarity-assessment phase determines the issue is unclear** (Issue #2031). The worker posts a comment explaining what a human must do next, then skips the issue on every subsequent scan until the label is removed. This is the worker's **only** escalation label — see [Worker escalation policy](#-worker-escalation-policy-needs-human) below. |
+| **Question** | `question` | `question_label` | Marks the issue as a question to be answered rather than implemented. The worker reads the issue and comments, posts an answer, removes `question`, and adds `needs-human` to mark it as the user's turn. Add `question` again to ask a follow-up. |
+| **Merge conflict** | `merge-conflict` | — (hardwired) | Applied by the worker to an open PR whose branch conflicts with its base, so the stuck queue is visible at a glance instead of buried in per-pass logs. The Priority 1.61 conflict pass then merges the base in for real — both sides' changes survive, never a side-pick — runs the repo's quality gate, and pushes. The label is removed once the PR merges cleanly again; after two failed attempts the worker escalates with `needs-human` instead of retrying. |
+| **Needs human** | `needs-human` | `needs_human_label` | Applied by the worker when it hits an unrecoverable blocker (e.g. a change that needs the `workflow` OAuth scope) **or when the clarity-assessment phase determines the issue is unclear**. The worker posts a comment explaining what a human must do next, then skips the issue on every subsequent scan until the label is removed. This is the worker's **only** escalation label — see [Worker escalation policy](#-worker-escalation-policy-needs-human) below. |
 
 > **📝 Note:** The `top-priority` label is **human-only** — the worker never
 > self-applies it. It is the primary human scheduling signal for issue discovery
@@ -441,7 +444,7 @@ The worker **never** self-applies the reserved workflow labels (`top-priority`,
 pickup-priority order is
 `top-priority` > `work-on` > `low-priority` > `idle-task`, all meaning
 _work on this issue_ and differing only in priority; **only `idle-task` is
-self-appliable by the Vibe Coder** (Issue #2022). See
+self-appliable by the Vibe Coder**. See
 [Issue selection priority](docs/workflows/issue-processing.md#-issue-selection-priority)
 for the full ordering.
 
@@ -463,7 +466,8 @@ remove them manually to change the workflow.
 ### 📊 Work Prioritisation
 
 The worker processes work in a fixed priority order: in-flight PR maintenance
-first (feedback, spelling/CI fixes, branch updates, CI nudges, auto-merge,
+first (feedback, spelling/CI fixes, branch updates, merge-conflict resolution,
+CI nudges, auto-merge,
 issue closure, closed-PR recovery, milestone completion and branch sync), then
 non-coding workflows (refinement, grill-me, quorum, planning, questions), then
 new issues (globally oldest across repos), with `low-priority` last. The

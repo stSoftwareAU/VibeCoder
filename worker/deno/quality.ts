@@ -44,10 +44,17 @@ async function main(): Promise<void> {
   const scriptDir = qualityTsDir.replace(/\/worker\/deno$/, "");
   const denoDir = `${scriptDir}/worker/deno`;
 
+  // Issue #86: the content-addressed check cache lives on the work volume so
+  // it survives an agent's repeated in-session `./quality.sh` runs. Off when
+  // WORK_DIR is unset (a host dev run) — never a source of a wrong answer.
+  const workDir = Deno.env.get("WORK_DIR");
+  const cacheDir = workDir ? `${workDir}/.vibe-cache` : undefined;
+
   const config: QualityGateConfig = {
     scriptDir,
     denoDir,
     options,
+    ...(cacheDir ? { cacheDir } : {}),
   };
 
   const result = await runQualityGate(config);

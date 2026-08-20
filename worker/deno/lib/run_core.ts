@@ -267,6 +267,18 @@ export interface RunCoreDeps {
   // Priority 1.6: Update PR branches
   updateOpenPrBranches: () => Promise<Result<void>>;
 
+  /**
+   * Priority 1.61: resolve PRs stuck at `mergeable == CONFLICTING` (Issue #84).
+   *
+   * Runs straight after the branch updater, which detects the conflict but
+   * refuses to side-pick it (Issue #4373), and before the CI nudge, which
+   * would otherwise poke a PR no CI can ever run on.
+   *
+   * Optional — when absent the priority is a no-op, so a host wired without
+   * the conflict pass runs every other priority unchanged.
+   */
+  findAndProcessMergeConflict?: () => Promise<Result<PriorityHandlerResult>>;
+
   // Priority 1.62: Nudge stalled CI on Vibe Coder PRs (Issue #2100)
   nudgeStalledCi: () => Promise<Result<void>>;
 
@@ -401,7 +413,10 @@ export interface RunCoreDeps {
    * and when the run ends, so no agent runs detached from the loop or is
    * relaunched after "Run complete". Optional for test deps.
    */
-  terminateActiveAgentRuns?: (reason: string) => Promise<void>;
+  terminateActiveAgentRuns?: (
+    reason: string,
+    options?: { keepTerminating?: boolean },
+  ) => Promise<void>;
 
   // Failure tracking
   trackFailure: (key: string) => Promise<void>;
@@ -865,6 +880,23 @@ export function buildPriorityDispatchTable(
             ? { ok: true as const, value: { processed: false } }
             : { ok: false as const, error: r.error }
         ),
+    },
+    {
+      // Issue #84: the receiver for the hand-off Issue #4373 defers to.
+      // The branch updater above detects a CONFLICTING PR and leaves it
+      // untouched rather than side-picking; this priority merges the base
+      // in for real. It runs before the CI nudge so a conflicting PR is
+      // resolved rather than poked — GitHub runs no checks on a PR whose
+      // merge commit it cannot build.
+      priority: 1.61,
+      name: "Resolve PR Merge Conflicts",
+      agentBacked: true,
+      execute: () =>
+        deps.findAndProcessMergeConflict?.() ??
+          Promise.resolve({
+            ok: true as const,
+            value: { processed: false },
+          }),
     },
     {
       // Issue #2100: nudge CI on Vibe Coder PRs idle >5 min between
@@ -2474,8 +2506,12 @@ export async function runCoreLoop(
                     // abandoned handler spawned is terminated, and its retry
                     // loop will not relaunch it.
                     if (deps.terminateActiveAgentRuns) {
+                      // Issue #55: a handler abandonment is transient — clear
+                      // the terminating flag once its agents are dead so the
+                      // next priority can still launch its own agent.
                       deps.terminateActiveAgentRuns(
                         `handler ${handler.name} abandoned by the watchdog`,
+                        { keepTerminating: false },
                       ).catch(() => {});
                     }
                   },

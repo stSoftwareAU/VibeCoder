@@ -1,5 +1,5 @@
 /**
- * Tests for coding_guidelines v30 (Issue #3234).
+ * Tests for coding_guidelines v30.
  *
  * v30 adds an explicit "never fail silently — fail loud" principle:
  * generated code must surface failures (non-zero exit, throw with context,
@@ -73,7 +73,7 @@ Deno.test("coding_guidelines v30 - carries v29 content forward", async () => {
   assertEquals(v30.ok, true);
   if (v29.ok && v30.ok) {
     // A representative earlier section must survive the carry-forward.
-    assertStringIncludes(v30.value, "## Token Economy (Issue #1409)");
+    assertStringIncludes(v30.value, "## Token Economy");
     assertStringIncludes(v30.value, "## General Coding Principles");
     assertStringIncludes(v30.value, "## Dependency Bumps and Supply Chain");
   }

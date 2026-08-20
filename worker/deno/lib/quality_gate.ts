@@ -26,6 +26,13 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
+import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
+import {
+  cachedPassAt,
+  computeQualityInputDigest,
+  invalidate,
+  recordPass,
+} from "./quality_gate_cache.ts";
 import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
 import { runPagesLiquidCheck } from "./pages_liquid_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
@@ -38,6 +45,21 @@ export interface CheckExecutionResult {
   name: string;
   status: CheckStatus;
   output: string;
+  /** Wall time this check took, in milliseconds (Issue #86). */
+  durationMs?: number;
+}
+
+/**
+ * Run a check thunk and stamp its wall duration onto the result, so the gate
+ * summary can show where the ~6-minute in-container cost actually goes
+ * (Issue #86). A thrown check is left for the caller's own handling.
+ */
+async function timed(
+  check: () => Promise<CheckExecutionResult>,
+): Promise<CheckExecutionResult> {
+  const start = Date.now();
+  const result = await check();
+  return { ...result, durationMs: Date.now() - start };
 }
 
 /** Result of the full quality gate run. */
@@ -57,6 +79,11 @@ export interface QualityGateConfig {
   denoDir?: string;
   /** Quality options (strict, sequential, validatePrompts). */
   options: QualityOptions;
+  /**
+   * Directory for the content-addressed check cache (Issue #86). Omitted, the
+   * two expensive dimensions (deno test, deno check) run every time.
+   */
+  cacheDir?: string;
 }
 
 /**
@@ -443,6 +470,55 @@ async function runGhSpawnChokepointCheck(
   };
 }
 
+async function runGitRefArgvCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "git ref chokepoint";
+  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForGitRefArgv(config.scriptDir, relDirs);
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `git ref chokepoint: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+  const output = [
+    ...result.violations.map((v) =>
+      `VIOLATION: ${v.file}:${v.line}: ${v.text}`
+    ),
+    "",
+    "A PR head branch name reached a git ref argument inline (Issue #12,",
+    "CWE-88). A dash-leading branch (e.g. `--upload-pack=…`) would be parsed",
+    "as an option, not a ref. Route it through the builders in",
+    "`worker/deno/lib/git_ref_args.ts` (buildFetchArgs / buildPullArgs /",
+    "buildCheckoutArgs / buildCheckoutNewBranchArgs), which validate the ref",
+    "and insert `--end-of-options`.",
+  ].join("\n");
+  return {
+    name,
+    status: "FAILED",
+    output: `git ref chokepoint: FAILED\n${output}`,
+  };
+}
+
 /**
  * Run the workflow-hygiene check (Issue #3716).
  *
@@ -510,17 +586,16 @@ async function runConfigSmokeTest(
     };
   }
 
-  // Issue #3661 (SEC-bea501c3a7d7): quote through posixSingleQuote rather than
-  // bare `'…'`. Neither value is remotely reachable today, but an install path
-  // (or $HOME) containing a single quote would otherwise break out of the
-  // literal and execute — this keeps "no unescaped interpolation into any
-  // shell context" a checkable invariant.
-  const defaultsPath = posixSingleQuote(
-    `${config.scriptDir}/worker/shared/config_defaults.sh`,
-  );
+  // Issue #97: the retired `config_defaults.sh` shim used to seed these empty
+  // arrays before the load-config output was eval'd. Initialise them inline
+  // instead — the check's invariant is that load-config *populates* REPOS and
+  // ALLOWED_AUTHORS, and starting them empty is exactly what proves the
+  // override (mirroring load_config_test.ts's own harness).
   const script = `
     set -euo pipefail
-    source ${defaultsPath}
+    REPOS=()
+    ALLOWED_AUTHORS=()
+    ISSUE_LABELS=()
     _output=$(cd ${posixSingleQuote(config.scriptDir)} && ${
     posixSingleQuote(denoCmd)
   } run --allow-read --allow-env worker/deno/mod.ts load-config 2>/dev/null) || true
@@ -528,7 +603,7 @@ async function runConfigSmokeTest(
         eval "$_output"
     fi
     if [[ \${#REPOS[@]} -eq 0 ]]; then
-        echo 'FAIL: REPOS is empty after loading config — load-config output does not override config_defaults.sh'
+        echo 'FAIL: REPOS is empty after loading config — load-config output did not populate REPOS'
         exit 1
     fi
     if [[ \${#ALLOWED_AUTHORS[@]} -eq 0 ]]; then
@@ -759,6 +834,22 @@ async function runDenoTests(
   denoCmd: string,
 ): Promise<CheckExecutionResult> {
   const name = "deno tests";
+  // Content-addressed skip (Issue #86): reuse a cached PASS only when the
+  // whole .ts input set is byte-identical to the last passing run. The digest
+  // walk is skipped entirely when caching is off, so a host dev run pays
+  // nothing for it.
+  const digest = config.cacheDir
+    ? await computeQualityInputDigest(config.denoDir ?? ".")
+    : null;
+  const cachedAt = await cachedPassAt(config.cacheDir, name, digest);
+  if (cachedAt) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `Deno tests: PASSED (cached — inputs unchanged since ${cachedAt})`,
+    };
+  }
   const result = await runCommand(
     [
       denoCmd,
@@ -779,12 +870,14 @@ async function runDenoTests(
   );
 
   if (result.exitCode === 0) {
+    await recordPass(config.cacheDir, name, digest, isoNow());
     return {
       name,
       status: "PASSED",
       output: `${result.output}\nDeno tests: PASSED`,
     };
   }
+  await invalidate(config.cacheDir, name);
   return {
     name,
     status: "FAILED",
@@ -861,23 +954,42 @@ export async function runDenoCheck(
   denoCmd: string,
 ): Promise<CheckExecutionResult> {
   const name = "deno type check";
+  const digest = config.cacheDir
+    ? await computeQualityInputDigest(config.denoDir ?? ".")
+    : null;
+  const cachedAt = await cachedPassAt(config.cacheDir, name, digest);
+  if (cachedAt) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `Deno type check: PASSED (cached — inputs unchanged since ${cachedAt})`,
+    };
+  }
   const result = await runCommand(
     [denoCmd, "check", "**/*.ts"],
     { cwd: config.denoDir },
   );
 
   if (result.exitCode === 0) {
+    await recordPass(config.cacheDir, name, digest, isoNow());
     return {
       name,
       status: "PASSED",
       output: `${result.output}\nDeno type check: PASSED`,
     };
   }
+  await invalidate(config.cacheDir, name);
   return {
     name,
     status: "FAILED",
     output: `${result.output}\nDeno type check: FAILED`,
   };
+}
+
+/** ISO-8601 now, isolated so the cache stamp is easy to stub in tests. */
+function isoNow(): string {
+  return new Date().toISOString();
 }
 
 /**
@@ -890,7 +1002,7 @@ export async function runDenoCheck(
 export async function runChecksParallel(
   checks: Array<() => Promise<CheckExecutionResult>>,
 ): Promise<CheckExecutionResult[]> {
-  const settled = await Promise.allSettled(checks.map((check) => check()));
+  const settled = await Promise.allSettled(checks.map((check) => timed(check)));
   return settled.map((outcome, index) => {
     if (outcome.status === "fulfilled") {
       return outcome.value;
@@ -918,7 +1030,7 @@ async function runChecksSequential(
 ): Promise<CheckExecutionResult[]> {
   const results: CheckExecutionResult[] = [];
   for (const check of checks) {
-    results.push(await check());
+    results.push(await timed(check));
   }
   return results;
 }
@@ -1010,6 +1122,12 @@ export async function runQualityGate(
   const ghSpawnResult = await runGhSpawnChokepointCheck(config);
   allOutput.push(ghSpawnResult.output);
   recordCheck(checks, ghSpawnResult.name, ghSpawnResult.status);
+
+  // git ref chokepoint (Issue #12) — a PR head branch name must reach git
+  // only through the ref-arg builders, never as an inline positional.
+  const gitRefResult = await runGitRefArgvCheck(config);
+  allOutput.push(gitRefResult.output);
+  recordCheck(checks, gitRefResult.name, gitRefResult.status);
 
   // Workflow hygiene (Issue #3716) — strict-mode `run:` blocks and
   // consistent SHA/version pin comments across .github/workflows.
@@ -1108,9 +1226,16 @@ export async function runQualityGate(
     mainResults = await runChecksParallel(mainChecks);
   }
 
-  // Record results
+  // Record results, with a per-check duration line so the gate's cost is
+  // visible (Issue #86) — the two heavy dimensions dominate, and a cached
+  // skip shows as a few milliseconds.
   for (const result of mainResults) {
     allOutput.push(result.output);
+    if (result.durationMs !== undefined) {
+      allOutput.push(
+        `  ⏱  ${result.name}: ${(result.durationMs / 1000).toFixed(1)}s`,
+      );
+    }
     recordCheck(checks, result.name, result.status);
   }
 

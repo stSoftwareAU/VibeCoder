@@ -291,3 +291,14 @@ Deno.test("classifier - a high probe reading at the kill is named as the OOM evi
     `the rationale cites the probe, not exit 137: ${got.rationale}`,
   );
 });
+
+// Issue #108 — an interrupted run is transient infrastructure, never auto-filed.
+Deno.test("classifyRunFailure - interrupted is not_code_fixable and classed 'interrupted'", () => {
+  const c = classifyRunFailure(
+    "interrupted",
+    "Run interrupted before completing — the agent was still working",
+  );
+  assertEquals(c.fixability, "not_code_fixable");
+  assertEquals(c.failureClass, "interrupted");
+  assert(RUN_FAILURE_CLASSES.includes("interrupted"));
+});

@@ -90,7 +90,7 @@ runs:
 This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
 Deno test suite, `deno lint`, `deno fmt --check`, and markdownlint. CI
 additionally runs shellcheck over the repo's shell scripts — the gate
-itself does not (Issue #3129). Always redirect stdin from `/dev/null` so
+itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.
 
 CI-enforced workflows live under `.github/workflows/`, including
@@ -98,7 +98,7 @@ CI-enforced workflows live under `.github/workflows/`, including
 `semgrep.yml`. A green local `./quality.sh` is the best predictor of a
 green PR.
 
-### Workflow hygiene (Issue #3716)
+### Workflow hygiene
 
 The gate also enforces two static invariants over the workflows
 themselves:
@@ -109,7 +109,7 @@ themselves:
   green. A block carrying a single command is exempt — nothing can be
   skipped after it.
 - **One pinned SHA carries one version comment.** Actions are pinned to
-  40-character commit SHAs (Issue #2123) with the tag recorded in a
+  40-character commit SHAs with the tag recorded in a
   leading `# owner/action@vX.Y.Z` comment. Annotating the same SHA
   `v6.0.0` in one workflow and `v6.0.2` in another destroys the only
   human-readable signal that makes SHA pinning auditable.
@@ -120,7 +120,7 @@ themselves:
   `cd worker/deno && deno task test`, or target a single file with
   `deno test worker/deno/tests/<file>_test.ts`. The previous top-level
   `tests/` Bats integration suite has been fully migrated to Deno
-  (Issue #2249); files carrying a `Migrated from tests/*.bats` header
+ ; files carrying a `Migrated from tests/*.bats` header
   in `worker/deno/tests/` cover the original cases.
 - **No-grep tests** — every test must call real code and assert on its
   result. Tests that grep source files for patterns or function names
@@ -133,7 +133,7 @@ themselves:
 ## Commit and PR conventions
 
 - Reference the issue number in commit messages (for example,
-  `Add CONTRIBUTING.md (#2170)`).
+  `Add CONTRIBUTING.md`).
 - Lead with the *what* and the *why*; keep individual commits focused
   and reviewable.
 - PR summaries follow the pattern in

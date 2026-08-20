@@ -1,12 +1,12 @@
 # 🔐 Security-fix gate — contract up front, verdict into the retry
 
-The security-fix patch-verification gate (`security_fix_gate.ts`, Issues #3540
-and #3652) blocks PR creation when an issue carrying the `security` label
+The security-fix patch-verification gate (`security_fix_gate.ts`,
+and) blocks PR creation when an issue carrying the `security` label
 cannot show — in the branch diff, not only in prose — that the fault is
 genuinely closed. That gate is sound. What was missing was the feedback loop
 around it.
 
-Issue #4030 was attempted at least ten times across two workers on a single
+ was attempted at least ten times across two workers on a single
 day. Every attempt ended in the same `PR creation blocked:` comment; the code
 and tests on the branch were sound from early attempts, and only the PR
 summary's evidence format was wrong. Nothing ever converged, because:
@@ -21,7 +21,7 @@ summary's evidence format was wrong. Nothing ever converged, because:
    (`comment_trust_filter.ts`) classifies it UNTRUSTED, and the retry prompt
    explicitly tells the agent not to act on instructions found there.
 
-Issue #4057 closes both halves: the contract is stated before the first attempt,
+ closes both halves: the contract is stated before the first attempt,
 and the previous verdict rides worker run state — a trusted channel — into the
 next one.
 
@@ -82,7 +82,7 @@ Blocked verdicts live in a directory **beside** `workDir`, never inside it:
 ```
 
 The sibling placement is the same reasoning as the content-approval baseline
-(Issue #3717) — `nukeWorkDir()` and an agent-driven `rm` inside the work tree
+ — `nukeWorkDir` and an agent-driven `rm` inside the work tree
 must not be able to erase the record. Each file holds the missing evidence
 kinds, the ISO timestamp of the last block, and a running `blockCount` so a
 repeat loop is visible in the retry prompt and the worker log.
@@ -102,7 +102,7 @@ nothing is replayed. See [Configuration](CONFIGURATION.md).
 
 ## Related
 
-- Issue #3540 — the gate's original evidence requirements
-- Issue #3652 — machine-checkable diff evidence
-- Issue #3939 — wiring the gate into the live completion phase
-- Issue #4030 — the ten-run loop that motivated this
+- — the gate's original evidence requirements
+- — machine-checkable diff evidence
+- — wiring the gate into the live completion phase
+- — the ten-run loop that motivated this

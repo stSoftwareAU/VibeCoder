@@ -191,23 +191,78 @@ export interface PrBranchUpdateDeps {
 }
 
 // ---------------------------------------------------------------------------
+// Conflict warning suppression (Issue #84)
+// ---------------------------------------------------------------------------
+
+/**
+ * PRs already warned about this process, keyed `repo#number`.
+ *
+ * The "needs a real merge" warning used to fire on every ~2.5-minute pass
+ * for as long as the PR stayed conflicting — six hours of identical log
+ * lines in the observed case. The queue is now visible as the
+ * `merge-conflict` label the conflict pass applies, so the log line only
+ * needs to fire once per PR.
+ */
+const warnedConflicts = new Set<string>();
+
+/**
+ * Whether the conflict warning for this PR has yet to be emitted.
+ *
+ * Returns true exactly once per PR per process; subsequent calls for the
+ * same PR return false.
+ */
+export function shouldWarnPrConflictOnce(
+  repo: string,
+  prNumber: number,
+): boolean {
+  const key = `${repo}#${prNumber}`;
+  if (warnedConflicts.has(key)) return false;
+  warnedConflicts.add(key);
+  return true;
+}
+
+/** Clear the warned-PR set. Exported for tests. */
+export function resetPrConflictWarnings(): void {
+  warnedConflicts.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Worker PR identification
 // ---------------------------------------------------------------------------
+
+/** The branch-name shape a worker-created PR uses: `issue-<n>-…`. */
+const WORKER_PR_BRANCH_RE = /^issue-\d+-/;
+
+/** True when `ref` is safe to hand git as a positional (no leading dash). */
+function isSafeGitRef(ref: string | undefined): boolean {
+  return ref !== undefined && ref !== "" && !ref.startsWith("-");
+}
 
 /**
  * Check whether a PR was created by the worker.
  *
- * Uses the body marker as the primary signal, with the branch name
- * pattern (issue-{N}-*) as a fallback for older PRs created before
- * the marker was added. This ensures the branch update scan works
- * correctly even if the worker identity changes.
+ * Two signals: the branch-name shape (`issue-<n>-…`), which the worker
+ * controls, and the body marker ({@link WORKER_PR_MARKER_PREFIX}), a fixed
+ * public HTML comment any PR author can paste into their own body. The
+ * marker is a legitimate fallback for worker PRs on other branch shapes
+ * (milestone PRs, older PRs), but on its own it is spoofable (Issue #12): an
+ * outside PR could carry the marker to be treated as worker-owned and route
+ * its attacker-controlled head branch into the maintenance git commands.
+ *
+ * So the marker path additionally requires the head branch to be a safe git
+ * ref (no leading dash — the argument-injection shape). The git commands are
+ * independently hardened (`git_ref_args.ts`); this keeps a spoofed PR from
+ * even being *selected* for maintenance. The `issue-<n>-` shape already
+ * excludes a dash-leading name, so it needs no extra check.
  */
 export function isWorkerPr(
   body: string | undefined,
   branchName?: string,
 ): boolean {
-  if (body && body.includes(WORKER_PR_MARKER_PREFIX)) return true;
-  if (branchName && /^issue-\d+-/.test(branchName)) return true;
+  if (branchName && WORKER_PR_BRANCH_RE.test(branchName)) return true;
+  if (body && body.includes(WORKER_PR_MARKER_PREFIX)) {
+    return isSafeGitRef(branchName);
+  }
   return false;
 }
 
@@ -509,13 +564,20 @@ export async function executePrBranchUpdates(
     } else if (isPrBranchConflictError(updateResult.error)) {
       // Issue #4373: the PR's changes collide with the base and the worker
       // will not pick a side. Distinct status and a loud line — this PR
-      // needs a real merge (PR-feedback agent or a human), and it stays
-      // exactly as its author left it until then.
+      // needs a real merge, and it stays exactly as its author left it
+      // until then.
+      //
+      // Issue #84: the hand-off now has a receiver — the Priority 1.61
+      // conflict-resolution pass, which labels the PR `merge-conflict` and
+      // merges the base in for real. The warning fires once per PR rather
+      // than on every pass, because the label is the visible queue.
       conflictCount++;
-      deps.logger.warn(
-        `PR #${action.prNumber} (${action.branchName}) conflicts with ${action.baseBranch} — left untouched, needs a real merge (Issue #4373)`,
-        { repo: action.repo, prNumber: action.prNumber },
-      );
+      if (shouldWarnPrConflictOnce(action.repo, action.prNumber)) {
+        deps.logger.warn(
+          `PR #${action.prNumber} (${action.branchName}) conflicts with ${action.baseBranch} — left untouched, needs a real merge; handed to the merge-conflict pass (Issue #4373, Issue #84)`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+      }
       details.push({
         repo: action.repo,
         prNumber: action.prNumber,

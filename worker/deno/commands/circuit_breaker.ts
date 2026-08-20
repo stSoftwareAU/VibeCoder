@@ -2,7 +2,7 @@
  * Circuit breaker command for the Vibe Coder worker.
  *
  * Provides scan-cycle backoff and operation-specific backoff tracking
- * callable from shell via deno_bridge.sh. Supports sub-operations:
+ * callable from shell via the Deno CLI (`deno run mod.ts <command>`). Supports sub-operations:
  *   - record-zero-progress: Record a zero-progress scan cycle
  *   - reset: Reset the circuit breaker (on success)
  *   - get-sleep-interval: Get the current backed-off sleep interval

@@ -22,6 +22,7 @@ import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
+import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { getRepoConfig } from "../repo_config.ts";
 import {
@@ -389,43 +390,68 @@ async function completionBody(
   // milestone footer (Issue #3911), and `gh pr create --base` below, so all
   // three can never disagree.
   const baseBranch = state.milestoneBranch ?? state.defaultBranch;
-  // Count against the ref that will actually be pushed and named to
-  // `gh pr create --head` — the worker branch — not HEAD (Issue #4286);
-  // after the reconciliation above they agree, and this keeps the guard
-  // honest if they ever do not.
-  const aheadCountResult = await deps.git.runGitCommand(
-    ["rev-list", "--count", `${baseBranch}..${state.branchName}`],
+  // Issue #68: the ahead-count runs against a LOCAL ref, but a milestone base
+  // is present in this clone only as `origin/<base>` — the clone was set up on
+  // the issue branch from the remote milestone, so the bare name is an unknown
+  // revision and `rev-list` failed on every milestone PR, taking the "could
+  // not run" path silently each time. Resolve it (local → origin/<base>, with a
+  // fetch only when the remote-tracking ref is absent). `baseBranch` (the bare
+  // name) stays correct for the milestone footer and `gh pr create --base`,
+  // which GitHub resolves server-side.
+  const comparableBase = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    baseBranch,
     { cwd: state.repoPath },
   );
-  if (!aheadCountResult.ok || aheadCountResult.value.code !== 0) {
-    // A guard that cannot run must say so (Issue #4286): the old code
-    // parsed "" to NaN and proceeded silently.
-    logger.warn(
-      "Ahead-of-base guard could not run — proceeding to PR creation without it",
-      {
-        error: aheadCountResult.ok
-          ? aheadCountResult.value.stderr.trim() ||
-            `exit ${aheadCountResult.value.code}`
-          : aheadCountResult.error.message,
-      },
+  if (!comparableBase.ok) {
+    // The guard genuinely cannot run — a base that resolves to nothing local,
+    // remote, or fetchable. Louder than the per-PR warning (Issue #68): this
+    // line is the diagnostic of record for the empty-branch PR failure it
+    // exists to pre-empt, so it must not be routine noise.
+    logger.error(
+      "Ahead-of-base guard could not run — base ref unresolvable; " +
+        "proceeding to PR creation without it",
+      { baseBranch, error: comparableBase.error.message },
     );
-  }
-  if (aheadCountResult.ok && aheadCountResult.value.code === 0) {
-    const aheadCount = parseInt(aheadCountResult.value.stdout.trim(), 10);
-    if (Number.isFinite(aheadCount) && aheadCount === 0) {
-      const statusResult = await deps.git.runGitCommand(
-        ["status", "--porcelain"],
-        { cwd: state.repoPath },
+  } else {
+    // Count against the ref that will actually be pushed and named to
+    // `gh pr create --head` — the worker branch — not HEAD (Issue #4286);
+    // after the reconciliation above they agree, and this keeps the guard
+    // honest if they ever do not.
+    const aheadCountResult = await deps.git.runGitCommand(
+      ["rev-list", "--count", `${comparableBase.value}..${state.branchName}`],
+      { cwd: state.repoPath },
+    );
+    if (!aheadCountResult.ok || aheadCountResult.value.code !== 0) {
+      // A guard that cannot run must say so (Issue #4286): the old code
+      // parsed "" to NaN and proceeded silently.
+      logger.warn(
+        "Ahead-of-base guard could not run — proceeding to PR creation without it",
+        {
+          error: aheadCountResult.ok
+            ? aheadCountResult.value.stderr.trim() ||
+              `exit ${aheadCountResult.value.code}`
+            : aheadCountResult.error.message,
+        },
       );
-      const uncommittedHint = statusResult.ok &&
-          statusResult.value.stdout.trim().length > 0
-        ? " — uncommitted changes are present in the working tree, so Claude likely modified files but did not commit them"
-        : "";
-      return {
-        status: "failure",
-        reason:
-          `Branch \`${state.branchName}\` has no commits ahead of \`${baseBranch}\` — cannot create PR${uncommittedHint}`,
-      };
+    }
+    if (aheadCountResult.ok && aheadCountResult.value.code === 0) {
+      const aheadCount = parseInt(aheadCountResult.value.stdout.trim(), 10);
+      if (Number.isFinite(aheadCount) && aheadCount === 0) {
+        const statusResult = await deps.git.runGitCommand(
+          ["status", "--porcelain"],
+          { cwd: state.repoPath },
+        );
+        const uncommittedHint = statusResult.ok &&
+            statusResult.value.stdout.trim().length > 0
+          ? " — uncommitted changes are present in the working tree, so Claude likely modified files but did not commit them"
+          : "";
+        return {
+          status: "failure",
+          reason:
+            `Branch \`${state.branchName}\` has no commits ahead of \`${baseBranch}\` — cannot create PR${uncommittedHint}`,
+        };
+      }
     }
   }
 

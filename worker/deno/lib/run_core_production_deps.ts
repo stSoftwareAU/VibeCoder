@@ -92,6 +92,8 @@ import {
   processCiNudgeCandidate,
 } from "./pr_ci_nudge_scan.ts";
 import { scanBlockingPrStalls as libScanBlockingPrStalls } from "./blocking_pr_stall_detector.ts";
+import { findConflictingPr } from "./pr_merge_conflict_scan.ts";
+import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
   mergedReconcileWatermarkPath,
@@ -110,6 +112,12 @@ import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo } from "../commands/git_operations.ts";
 import { updatePrBranch } from "./git_pull.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import {
+  buildCheckoutArgs,
+  buildCheckoutNewBranchArgs,
+  buildFetchArgs,
+  buildPullArgs,
+} from "./git_ref_args.ts";
 import { getWorkerUniqueId } from "./worker_identity.ts";
 import {
   buildQualityInstructions,
@@ -886,15 +894,15 @@ export async function createProductionRunCoreDeps(
       const branchName = comment.branchName;
       try {
         await runGitCommand(
-          ["fetch", "origin", branchName],
+          buildFetchArgs("origin", branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["checkout", branchName],
+          buildCheckoutArgs(branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["pull", "origin", branchName],
+          buildPullArgs("origin", branchName),
           { cwd: repoWorkDir },
         );
       } catch (err) {
@@ -990,15 +998,15 @@ export async function createProductionRunCoreDeps(
 
       try {
         await runGitCommand(
-          ["fetch", "origin", check.branchName],
+          buildFetchArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["checkout", check.branchName],
+          buildCheckoutArgs(check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["pull", "origin", check.branchName],
+          buildPullArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
       } catch (err) {
@@ -1070,15 +1078,15 @@ export async function createProductionRunCoreDeps(
 
       try {
         await runGitCommand(
-          ["fetch", "origin", check.branchName],
+          buildFetchArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["checkout", check.branchName],
+          buildCheckoutArgs(check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["pull", "origin", check.branchName],
+          buildPullArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
       } catch (err) {
@@ -1262,7 +1270,7 @@ export async function createProductionRunCoreDeps(
 
             // Fetch branches from remote
             const fetchHead = await runGitCommand(
-              ["fetch", "origin", params.branchName],
+              buildFetchArgs("origin", params.branchName),
               gitOptions,
             );
             if (!fetchHead.ok || fetchHead.value.code !== 0) {
@@ -1275,7 +1283,7 @@ export async function createProductionRunCoreDeps(
             }
 
             const fetchBase = await runGitCommand(
-              ["fetch", "origin", params.baseBranch],
+              buildFetchArgs("origin", params.baseBranch),
               gitOptions,
             );
             if (!fetchBase.ok || fetchBase.value.code !== 0) {
@@ -1289,17 +1297,15 @@ export async function createProductionRunCoreDeps(
 
             // Ensure local branch exists (checkout or create tracking branch)
             const checkoutResult = await runGitCommand(
-              ["checkout", params.branchName],
+              buildCheckoutArgs(params.branchName),
               gitOptions,
             );
             if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
               const createResult = await runGitCommand(
-                [
-                  "checkout",
-                  "-b",
+                buildCheckoutNewBranchArgs(
                   params.branchName,
                   `origin/${params.branchName}`,
-                ],
+                ),
                 gitOptions,
               );
               if (!createResult.ok || createResult.value.code !== 0) {
@@ -1324,7 +1330,7 @@ export async function createProductionRunCoreDeps(
 
             // Restore default branch regardless of update outcome
             await runGitCommand(
-              ["checkout", params.defaultBranch],
+              buildCheckoutArgs(params.defaultBranch),
               gitOptions,
             );
 
@@ -1359,6 +1365,79 @@ export async function createProductionRunCoreDeps(
           error: err instanceof Error ? err : new Error(String(err)),
         };
       }
+    },
+
+    // -- Priority 1.61: Resolve conflicting PRs (Issue #84) --
+    async findAndProcessMergeConflict() {
+      const scan = await findConflictingPr({
+        githubUser,
+        allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+        fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+        repos,
+        logger,
+        isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+        ghCommandFn: runGhCommand,
+        // Shared PR-list cache (Issue #4303): one superset listing per
+        // repo×author serves every Priority-1.x scan this cycle.
+        cache: issueCache,
+        shuffleRepos: shuffleArray,
+      });
+
+      if (!scan.ok || scan.value === null) {
+        return { ok: true, value: { processed: false } };
+      }
+
+      const conflict = scan.value;
+
+      const repoSetupResult = await setupRepo(conflict.repo, workDir);
+      if (!repoSetupResult.success) {
+        logger.error("Failed to set up repo for merge-conflict resolution", {
+          repo: conflict.repo,
+          error: repoSetupResult.message,
+        });
+        return { ok: true, value: { processed: false } };
+      }
+
+      const result = await processMergeConflict(conflict, {
+        logger,
+        deps: workerDeps,
+        workDir: repoSetupResult.message,
+        qualityInstructions: buildQualityInstructions(
+          config.repoConfig,
+          conflict.repo,
+        ),
+        customInstructions: getCustomInstructions(
+          config.repoConfig,
+          conflict.repo,
+        ),
+        claudeTimeout: config.claudeTimeout,
+        claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+        maxRateLimitRetries: config.maxRateLimitRetries,
+        workerId: getWorkerUniqueId(config.workerName),
+        needsHumanLabel: config.needsHumanLabel,
+        repoConfigs: config.repoConfig,
+      });
+
+      if (!result.ok) {
+        logger.error("Merge-conflict resolution failed", {
+          repo: conflict.repo,
+          prNumber: conflict.prNumber,
+          error: result.error.message,
+        });
+        return { ok: true, value: { processed: false } };
+      }
+
+      // A pushed merge changes the PR's state, so the iteration-scoped
+      // open-PR cache must not serve the stale listing (Issue #1799).
+      if (result.value.merged) {
+        await issueCache.invalidate(conflict.repo, "prs_open_all");
+      }
+
+      logger.info(result.value.summary, {
+        repo: conflict.repo,
+        prNumber: conflict.prNumber,
+      });
+      return { ok: true, value: { processed: result.value.processed } };
     },
 
     // -- Priority 1.62: Nudge stalled CI on Vibe Coder PRs (Issue #2100) --
@@ -1400,11 +1479,11 @@ export async function createProductionRunCoreDeps(
             repoWorkDir = repoSetupResult.message;
             try {
               await runGitCommand(
-                ["fetch", "origin", candidate.headBranch],
+                buildFetchArgs("origin", candidate.headBranch),
                 { cwd: repoWorkDir },
               );
               await runGitCommand(
-                ["checkout", candidate.headBranch],
+                buildCheckoutArgs(candidate.headBranch),
                 { cwd: repoWorkDir },
               );
             } catch (err) {
@@ -1801,8 +1880,11 @@ export async function createProductionRunCoreDeps(
     inFlightRepos,
     slotCeiling,
     // Issue #4369: no agent runs detached or is relaunched after run end.
-    terminateActiveAgentRuns: async (reason: string) => {
-      await terminateActiveAgentRuns(reason, logger);
+    terminateActiveAgentRuns: async (
+      reason: string,
+      options?: { keepTerminating?: boolean },
+    ) => {
+      await terminateActiveAgentRuns(reason, logger, options);
     },
 
     // Minimum claim runway (Issue #4304): default 30 minutes — a Priority-2

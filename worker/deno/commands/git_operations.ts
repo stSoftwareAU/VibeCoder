@@ -1,7 +1,7 @@
 /**
  * Git operations command for the Vibe Coder worker (Issue #912).
  *
- * Unified command for all git operations, callable from shell via deno_bridge.sh.
+ * Unified command for all git operations, callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  * Replaces worker/shared/git_operations.sh and worker/shared/git_timeout.sh.
  *
  * Sub-operations (--operation):

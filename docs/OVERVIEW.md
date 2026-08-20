@@ -216,8 +216,7 @@ iteration, then sleep and repeat:
   sub-issues and closes the parent. No code is written until you add labels to
   the sub-issues.
 - **Question mode:** Add the `question` label → the worker answers in a comment,
-  removes `question`, and adds `needs-human` to mark the user's turn (Issue
-  #2030 — re-add `question` to ask a follow-up). No branch or PR. If the
+  removes `question`, and adds `needs-human` to mark the user's turn (re-add `question` to ask a follow-up). No branch or PR. If the
   question is too broad or
   ambiguous, the worker posts a **clarification request** instead — it adds
   `needs-human` so you can provide more context and retry. If question
@@ -283,7 +282,7 @@ The worker has multiple layers of resilience:
   heartbeat (defence-in-depth for crashes between claiming and recording
   heartbeat); multi-worker stale assignment recovery scans GitHub for stale
   assignments from other machines.
-- **Cross-account stale-assignment recovery (Issue #2671):** the recovery
+- **Cross-account stale-assignment recovery:** the recovery
   scans may auto-unassign a stale assignee from *any* account when that
   account has posted worker claim/heartbeat markers on the issue —
   evidence-based, no configured allowlist — so an assignment leaked by one

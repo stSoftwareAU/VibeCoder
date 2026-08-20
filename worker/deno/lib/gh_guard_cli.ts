@@ -31,6 +31,7 @@
 
 import {
   type BodyFileReader,
+  type BodyFileWriter,
   redactGhBodyArgs,
   UnredactableBodyError,
 } from "./gh_body_redaction.ts";
@@ -77,6 +78,16 @@ export function encodeGuardStdout(result: GhGuardCliResult): string {
 /** Production body-file reader — used when the caller supplies none. */
 const denoBodyFileReader: BodyFileReader = (path) =>
   Deno.readTextFileSync(path);
+
+/**
+ * Production writer for a masked `--input` body (Issue #92): a fresh temp file
+ * the redacted JSON lands in, so the agent's own file is never rewritten.
+ */
+const denoBodyFileWriter: BodyFileWriter = (content) => {
+  const path = Deno.makeTempFileSync({ prefix: "gh-input-", suffix: ".json" });
+  Deno.writeTextFileSync(path, content);
+  return path;
+};
 
 /** The guard's own argv, split from the `gh` arguments that follow `--`. */
 interface ParsedArgv {
@@ -141,6 +152,7 @@ function parseArgv(argv: readonly string[]): ParsedArgv {
 export function runGhGuardCli(
   argv: readonly string[],
   readBodyFile: BodyFileReader = denoBodyFileReader,
+  writeBodyFile: BodyFileWriter = denoBodyFileWriter,
 ): GhGuardCliResult {
   const parsed = parseArgv(argv);
   if (parsed.error) {
@@ -154,8 +166,14 @@ export function runGhGuardCli(
   const decision = evaluateGhCommand(parsed.ghArgs, {
     active: parsed.active,
     allowedRepos: parsed.allowedRepos,
+    // Issue #91: let the decision scan a readable `--input <file>` body for
+    // reserved labels instead of failing closed on every one. The decision
+    // module stays pure; the filesystem reader is injected here.
+    readBodyFile,
   });
-  if (decision.allowed) return allowWithRedactedBody(parsed, readBodyFile);
+  if (decision.allowed) {
+    return allowWithRedactedBody(parsed, readBodyFile, writeBodyFile);
+  }
 
   return {
     exitCode: 1,
@@ -173,10 +191,11 @@ export function runGhGuardCli(
 function allowWithRedactedBody(
   parsed: ParsedArgv,
   readBodyFile: BodyFileReader,
+  writeBodyFile: BodyFileWriter,
 ): GhGuardCliResult {
   let ghArgs: string[];
   try {
-    ghArgs = redactGhBodyArgs(parsed.ghArgs, readBodyFile);
+    ghArgs = redactGhBodyArgs(parsed.ghArgs, readBodyFile, writeBodyFile);
   } catch (err) {
     if (!(err instanceof UnredactableBodyError)) throw err;
     return {

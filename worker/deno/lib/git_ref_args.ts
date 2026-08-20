@@ -142,3 +142,24 @@ export function buildCheckoutNewBranchArgs(
   assertSafeGitRef(startPoint, "checkout start point");
   return ["checkout", "-b", branchName, "--end-of-options", startPoint];
 }
+
+/**
+ * `git checkout -B <branch> [<start-point>]` — create-or-reset a branch,
+ * hardened. The branch name is validated (no leading dash), and a start point
+ * is separated with `--end-of-options`.
+ *
+ * @param branchName - Branch to create or reset (attacker-controlled).
+ * @param startPoint - Optional start point.
+ * @returns The argv, e.g. `["checkout", "-B", "issue-42", "--end-of-options", "main"]`.
+ */
+export function buildCheckoutResetBranchArgs(
+  branchName: string,
+  startPoint?: string,
+): string[] {
+  assertSafeGitRef(branchName, "reset branch name");
+  if (startPoint === undefined) {
+    return ["checkout", "-B", branchName];
+  }
+  assertSafeGitRef(startPoint, "checkout start point");
+  return ["checkout", "-B", branchName, "--end-of-options", startPoint];
+}

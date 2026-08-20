@@ -1,5 +1,5 @@
 /**
- * Tests for Issue #3611 — a code change owes a docs change.
+ * Tests for — a code change owes a docs change.
  *
  * Renames, changed defaults, and removed flags shipped without their owed docs
  * update, and were only caught weeks later by the idle-task documentation
@@ -52,7 +52,7 @@ Deno.test("docs-owed - coding_guidelines v35 pins the grep-the-docs rule", async
   if (result.ok) {
     assertStringIncludes(
       result.value,
-      "## A Code Change Owes a Docs Change (Issue #3611)",
+      "## A Code Change Owes a Docs Change",
     );
     // The triggers — not just "usage and new features".
     for (const trigger of ["rename", "signature", "default", "flag"]) {
@@ -70,10 +70,10 @@ Deno.test("docs-owed - coding_guidelines v35 keeps core guidance intact", async 
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value, "Token Economy");
-    assertStringIncludes(result.value, "## Opus 5 Working Style (Issue #3562)");
+    assertStringIncludes(result.value, "## Opus 5 Working Style");
     assertStringIncludes(result.value, "## Visual Documentation");
     assertStringIncludes(result.value, "Australian English");
-    assertStringIncludes(result.value, "## Commit Safety (Issue #1751)");
+    assertStringIncludes(result.value, "## Commit Safety");
   }
 });
 

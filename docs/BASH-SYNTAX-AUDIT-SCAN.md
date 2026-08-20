@@ -1,10 +1,10 @@
 # 🐚 Bash Syntax Audit Scans — Operator Manual
 
 This document is the operator-facing reference for the Vibe Coder's **bash
-syntax audit**. The intent is documented in the parent issue (#3223 — require
+syntax audit**. The intent is documented in the parent issue (require
 `bash -n` + `shellcheck` CI gates in all repos, verified by an idle audit) and
-built by the sibling sub-issues: the bash CI-gate detector (#3236), the native
-language-validity detector (#3237), and this template + manual (#3238).
+built by the sibling sub-issues: the bash CI-gate detector, the native
+language-validity detector, and this template + manual.
 
 The bash syntax audit is **template #12 of the idle-task framework** — the
 generic mechanism for "things the worker does when no claimable work exists".
@@ -16,13 +16,13 @@ and the lifecycle diagram common to every template, and
 sibling template that this manual mirrors structurally.
 
 For the **agent-facing** rules (label policy, suppression syntax) see
-[DESIGN-PRINCIPLES.md → Bash syntax audit scans](../DESIGN-PRINCIPLES.md#bash-syntax-audit-scans-issue-3238-template-12).
+[DESIGN-PRINCIPLES.md → Bash syntax audit scans](../DESIGN-PRINCIPLES.md#bash-syntax-audit-scans-template-12).
 
 ## Why a dedicated weekly audit
 
 Bash has **no compile step**, so an invalid bash script can regress into a
 repository with no quality gate catching it. That is the exact FLEET regression
-that motivated #3223: broken scripts reached the default branch and no gate
+that motivated: broken scripts reached the default branch and no gate
 flagged them, because — unlike compiled languages — bash is never type-checked.
 
 The fix is per-repo and **layered**:
@@ -38,7 +38,7 @@ Repositories are **absolutely isolated**: there is no shared cross-repo
 reusable Action. The audit only verifies presence and raises an issue; each
 repo owns and commits its own gate, and that fix rides a normal `work-on`
 pipeline PR later. Rollout is audit-driven — the audit is built first and no
-proactive per-repo sub-issues are filed (#3223 Round 2 Q2).
+proactive per-repo sub-issues are filed (Round 2 Q2).
 
 A weekly cadence (`cooldownHours: 168`) matches how rarely CI configuration
 changes.
@@ -48,7 +48,7 @@ changes.
 The audit is **deterministic and native** — two Deno detectors drive the core
 checks, so **no Claude invocation is involved**. The prompt at
 [`prompts/bash_syntax_audit/`](../prompts/bash_syntax_audit/) is used only as
-the human-style wrapper body (Issue #2077), so an operator can paste it into a
+the human-style wrapper body, so an operator can paste it into a
 fresh `idle-task` issue titled `Run a bash syntax audit` and the worker runs it
 identically.
 
@@ -85,7 +85,7 @@ Both detectors distinguish **missing** from **unknown**:
 - A language below the **main-language share threshold** above is *not
   applicable* — no validity-gate finding for an incidental helper script.
 - A repo with **no loaded workflows** or an **unparseable workflow** leaves the
-  affected gate *unknown* — no false "missing gate" finding (the #2881
+  affected gate *unknown* — no false "missing gate" finding (the
   zero-workflow fail-safe).
 
 Only a *definite* missing gate yields a finding.
@@ -129,7 +129,7 @@ a new bare `"${arr[@]}"` is caught before merge.
 | Gate class | Stable finding id | Severity |
 | --- | --- | --- |
 | Missing `bash -n` / `sh -n` syntax gate | `BP-BASH-SYNTAX-GATE` | `high` — invalid bash reaching the default branch is the exact regression this audit prevents. |
-| Missing `shellcheck` gate | `BP-BASH-SHELLCHECK-GATE` | `medium` — the lint gate; error-level findings block at rollout, warnings tighten later (#3223 Round 2 Q1). |
+| Missing `shellcheck` gate | `BP-BASH-SHELLCHECK-GATE` | `medium` — the lint gate; error-level findings block at rollout, warnings tighten later (Round 2 Q1). |
 | A main language missing its native validity check | `BP-VALIDITY-GATE-<language>` | `high` — mirrors the best-practices compile-gate severity. |
 
 Each finding **leads with the fix**: it names the missing gate and gives the

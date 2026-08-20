@@ -2,7 +2,7 @@
  * Health check cache command for the Vibe Coder worker.
  *
  * Provides file-based caching of health check results to avoid expensive
- * repeated checks during scan cycles. Callable from shell via deno_bridge.sh.
+ * repeated checks during scan cycles. Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/health_check_cache.sh (Issue #906).
  */

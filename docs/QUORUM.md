@@ -136,9 +136,9 @@ where the approach is genuinely contested rather than for routine work.
 Wall-clock cost is lower than the token cost: the two drafts run concurrently,
 so the run takes one draft plus one judgement.
 
-### Degraded-model reporting (Issue #4434)
+### Degraded-model reporting
 
-Both Quorum phases prefer Fable 5 (Issue #4429), so when the pre-flight probe
+Both Quorum phases prefer Fable 5, so when the pre-flight probe
 says Fable is unavailable the plan-off runs on **Opus @ `max`** instead. That
 substitution is reported the same way the six single-call planning-shaped
 phases report theirs: the `degraded-model` label on the issue, paired with a
@@ -235,7 +235,7 @@ visible to another vendor's subprocess.** It is enforced twice over —
 The containment boundary those mounts sit inside — what else is and is not
 mounted, and why GitHub is the control plane — is
 [Containment](CONTAINMENT.md); it is not restated here. The sandboxed-environment
-guidance the agents themselves receive is Issue #4070.
+guidance the agents themselves receive is.
 
 ## 9. 📝 The prompts
 

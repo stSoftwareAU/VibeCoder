@@ -1,6 +1,6 @@
 /**
  * Tests for the Fable 5 simplification of the remaining working prompts
- * (Issue #2631), following on from the core-prompt rewrite in #2623.
+ * , following on from the core-prompt rewrite in.
  *
  * New latest versions: pr_feedback/v9, ci_fix/v8, planning/v17,
  * question/v7, grill-me/v10. Each was rewritten to state every policy
@@ -10,7 +10,7 @@
  * simplified versions must keep, confirm the required placeholders
  * survive the rewrite, and prove the escape-hatch detection contract the
  * pr_feedback / ci_fix replies depend on still fires. Earlier versions
- * stay immutable (Issue #235), so they are not touched here.
+ * stay immutable, so they are not touched here.
  *
  * Australian English throughout (behaviour, colour, organisation).
  */
@@ -80,8 +80,8 @@ const CASES: PromptCase[] = [
       "{{COMPLEXITY_CONTEXT}}",
       "{{MILESTONE_INSTRUCTIONS}}",
       "Depends on #N",
-      "#1344",
-      "#2040",
+      "",
+      "",
     ],
   },
   {
@@ -109,8 +109,8 @@ const CASES: PromptCase[] = [
       "<!-- GRILL-ME-UNDERSTANDING-START -->",
       "<!-- GRILL-ME-UNDERSTANDING-END -->",
       "**⏳ Awaiting your reply.**",
-      "#1344",
-      "#2040",
+      "",
+      "",
     ],
   },
 ];
@@ -173,7 +173,7 @@ for (const c of CASES) {
   });
 }
 
-// --- Escape-hatch detection contract (Issue #1826) ---------------------------
+// --- Escape-hatch detection contract ---------------------------
 //
 // pr_feedback/v9 and ci_fix/v8 instruct Claude to write an escape-hatch
 // `.pr_response_message` using the "out of scope" / "follow-up issue"
@@ -184,12 +184,12 @@ for (const c of CASES) {
 Deno.test("escape-hatch - a pr_feedback/ci_fix style hand-off message is detected", () => {
   const message = [
     "This is out of scope for this PR — it needs a multi-day refactor.",
-    "I have opened a follow-up issue stSoftwareAU/VibeCoder#9999 capturing",
+    "I have opened a follow-up issue stSoftwareAU/VibeCoder#42 capturing",
     "the analysis. Flagging needs-human so a person can triage.",
   ].join(" ");
   const detection = detectEscapeHatch(message, "stSoftwareAU/VibeCoder");
   assertEquals(detection.invoked, true);
-  assertEquals(detection.issueRef, "stSoftwareAU/VibeCoder#9999");
+  assertEquals(detection.issueRef, "stSoftwareAU/VibeCoder#42");
   assertEquals(detection.needsHuman, true);
 });
 

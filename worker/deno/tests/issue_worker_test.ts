@@ -1190,6 +1190,18 @@ Deno.test("executeClaude - fails on Claude auth error", async () => {
   const state = makeState();
   const deps = createMockDeps({
     claude: {
+      // Issue #45: a genuine auth failure is a NON-ZERO exit whose error
+      // surface matches, with no commits produced.
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 1,
+            output: "Invalid API key · Please run /login",
+            stderr: "Invalid API key",
+            timedOut: false,
+          },
+        }) as never,
       isClaudeAuthError: () => true,
     },
     git: {
@@ -1217,6 +1229,150 @@ Deno.test("executeClaude - fails on Claude auth error", async () => {
     true,
     (result as { reason: string }).reason,
   );
+});
+
+Deno.test("executeClaude #46 - an external SIGTERM fails the phase, not continue", async () => {
+  // The old code let a `terminated` result fall through to change detection
+  // and `continue`, so completion ran over a half-done tree and failed for the
+  // wrong reason. An external SIGTERM must fail the phase with the kill reason.
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 143,
+            rawExitCode: 143,
+            externalSigterm: true,
+            output: "…26 tool calls…",
+            stderr: "",
+            timedOut: false,
+          },
+        }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("no PR") }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "failure");
+  assertStringIncludes((result as { reason: string }).reason, "SIGTERM");
+});
+
+Deno.test("executeClaude #46 - an external SIGTERM self-heals when a PR already exists", async () => {
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 143,
+            rawExitCode: 143,
+            externalSigterm: true,
+            output: "…",
+            stderr: "",
+            timedOut: false,
+          },
+        }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({
+          ok: true,
+          value: "https://github.com/org/repo/pull/7",
+        }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "continue");
+});
+
+Deno.test("executeClaude #45 - a clean exit is never an auth error, even if the transcript mentions api keys", async () => {
+  // Reproduces VibeCoder#36: a redaction issue whose prose says "api key" and
+  // exits 0 having produced commits must NOT be recorded as an auth failure.
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 0,
+            output: "Redacted the bare OpenAI API key sk-…; tests: 0 failed.",
+            timedOut: false,
+          },
+        }) as never,
+      // Even a matcher that would fire on the prose must not be consulted for
+      // a clean exit.
+      isClaudeAuthError: () => true,
+    },
+    git: {
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: args[0] === "rev-list"
+              ? "2"
+              : args[0] === "log"
+              ? "abc123 delivered"
+              : "",
+            stderr: "",
+          },
+        }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "continue");
+});
+
+Deno.test("executeClaude #45 - an auth match with commits ahead is a false positive, not a failure", async () => {
+  // Non-zero exit AND the matcher fires, but the branch has commits ahead of
+  // base — the run did real work, so it must not be released as "no PR raised".
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 1,
+            output: "…api key… done",
+            stderr: "invalid api key",
+            timedOut: false,
+          },
+        }) as never,
+      isClaudeAuthError: () => true,
+    },
+    git: {
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: args[0] === "rev-list"
+              ? "2"
+              : args[0] === "log"
+              ? "abc123 delivered"
+              : "",
+            stderr: "",
+          },
+        }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "continue");
 });
 
 Deno.test("executeClaude - self-heals when PR exists despite timeout", async () => {

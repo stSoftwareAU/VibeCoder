@@ -39,7 +39,7 @@ flowchart TD
 ### Which image is this host meant to run?
 
 The tag is a hash of the container definition, so a changed definition is a
-different image (Issue #4062):
+different image:
 
 ```bash
 deno run --allow-read worker/deno/mod.ts container-image-hash
@@ -63,13 +63,13 @@ docker image rm "$IMAGE"        # podman image rm / container images delete
 A rebuild takes several minutes. If the build itself fails, `run.sh` records
 `image_build` in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, and the
 self-heal escalation reports that phase through GitHub after two consecutive
-failures (Issue #4072).
+failures.
 
 ### The image store is filling the disk
 
 It should not: every launch prunes each `vibe-coder` tag other than the one this
-checkout resolves to, and names what it removed on the host log (Issue #4162 —
-see [Container Image](CONTAINER.md#superseded-tags-are-pruned-every-launch-issue-4162)).
+checkout resolves to, and names what it removed on the host log (
+see [Container Image](CONTAINER.md#superseded-tags-are-pruned-every-launch)).
 If old tags are still there, the prune is failing rather than idle, and the
 launcher log says why:
 
@@ -106,13 +106,13 @@ at the next launch.
 
 A container VM can wedge: `<runtime> exec` hangs, nothing new appears in
 `~/logs/worker.log`, and the host-side `container run` client never exits. The
-launcher no longer waits on it for ever (Issue #4173) — past the plan's
+launcher no longer waits on it for ever — past the plan's
 watchdog deadline it kills the container, SIGKILLs the host-side client and
 runtime helper if the record survives that, and exits `87`:
 
 ```text
-[run.sh] watchdog: vibe-coder-66770 is still running after 11400s - reaping it (Issue #4173)
-Error: container vibe-coder-66770 wedged past the 11400s watchdog deadline and was reaped - exiting 87 so the next cycle runs (Issue #4173)
+[run.sh] watchdog: vibe-coder-66770 is still running after 11400s - reaping it
+Error: container vibe-coder-66770 wedged past the 11400s watchdog deadline and was reaped - exiting 87 so the next cycle runs
 ```
 
 Nothing to do by hand: the next cycle launches a fresh container, and any
@@ -126,7 +126,7 @@ deno run worker/deno/mod.ts self-heal-summary | grep container_wedged
 ### What a runtime-detection failure looks like
 
 With no supported runtime, the launcher exits non-zero **before** doing
-anything else — there is no host mode to switch to (Issues #4065, #4), so the
+anything else — there is no host mode to switch to (Issue #4), so the
 worker does not run at all:
 
 ```text
@@ -138,7 +138,7 @@ Probed:
 To fix this, install and start one of:
   - Apple container: install Apple container from https://github.com/apple/container and run `container system start`
 
-Container mode has no host fallback (Issues #4060, #4): containment is mandatory, so this fails rather than running the worker on the host. Install a supported runtime (./setup.sh offers to) and launch again.
+Container mode has no host fallback (Issue #4): containment is mandatory, so this fails rather than running the worker on the host. Install a supported runtime (./setup.sh offers to) and launch again.
 Error: cannot launch the Vibe Coder container (see above)
 ```
 
@@ -160,7 +160,7 @@ daemon, `podman machine start`) and re-run the probe — or run `./setup.sh` in 
 terminal and accept its offer to do it for you. Under cron or launchd, also
 confirm the runtime resolves on the unattended `PATH`.
 
-### macOS: setup offers to fix it (Issue #4136)
+### macOS: setup offers to fix it
 
 On a terminal, `./setup.sh` offers to repair the macOS runtime itself, and the
 two failure modes get different offers — a stopped service never triggers a
@@ -183,13 +183,13 @@ flowchart TD
 
 The re-probe decides the outcome, never the steps: a `brew install` that exits
 zero but leaves the service unable to answer is still a failed check
-(Issue #3234). Without Homebrew nothing is offered and nothing is run — setup never
+. Without Homebrew nothing is offered and nothing is run — setup never
 downloads a `.pkg` or an installer script. `VIBE_NO_AUTO_INSTALL=true` keeps
 the report without the offer, and a non-interactive run (no TTY) never prompts —
 in both cases the report says the offer was withheld and why (Issue #33), and
 `./setup.sh --auto-install` consents in advance so a scripted run still installs.
 
-### Linux: setup offers Docker, then Podman (Issue #4137)
+### Linux: setup offers Docker, then Podman
 
 The same offer runs on Debian/Ubuntu in the probe's own preference order —
 Docker (`sudo apt-get install -y docker.io`) first, Podman only if Docker is
@@ -217,13 +217,13 @@ Resetting repo to origin/main
 Git reset failed: git checkout main failed (exit code 1) — the worker
 checkout looks like an active development tree (branch fix/x, 3 uncommitted
 change(s)). Commit or stash that work, or give the worker its own dedicated
-clone (Issue #4204).
+clone.
 ```
 
 The usual cause is exactly what the message says: the worker's clone is
 doubling as somebody's development tree. Commit or stash the in-flight
 work — or better, move development elsewhere and leave the appliance clone
-alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone-issue-4204)).
+alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)).
 After three consecutive failures the worker also files (or comments on) a
 `Worker bootstrap failing on <host>` issue against the worker repository,
 so the crash-loop is visible from GitHub rather than only in host logs. The
@@ -233,7 +233,7 @@ first successful cycle.
 ## 🔐 The worker exits on a credential preflight error
 
 The worker reads credential *files* and never an interactive login or a host
-credential store (Issue #4064), so `gh auth login` and an interactive
+credential store, so `gh auth login` and an interactive
 coding-agent login are not the fix — they are not even on the runtime path. The
 preflight aborts before any work with a named cause: `credential-dir-missing`,
 `credential-dir-empty`, `credential-dir-unreadable`, `github-credentials-missing`,
@@ -279,9 +279,9 @@ succeeds, only the bump is dropped. Symptoms and remedies:
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Bumps land on every host except one; PRs from that host carry no dep bump   | The repo's `bump-deps.sh` failed its tool pre-flight, so the bump was reverted as `rejected_by_script` | Check the PR comment / `~/logs/worker.log` for the rejection reason (e.g. `ERROR: deno is required`), then confirm the tool resolves on that host's unattended `PATH` |
 | `ERROR: deno is required` from `bump-deps.sh` on a launchd/cron host        | Deno was installed by the official installer into `~/.deno/bin`, which the unattended `PATH` omits     | Confirm `~/.deno/bin/deno` exists; the bootstrap adds that directory to the driver and to spawned repo scripts, so a stale checkout of the worker is the usual cause  |
-| A bump is reverted as `rejected_by_quarantine` (Issue #3659)                | `bump-deps.sh` picked a version published inside `VIBE_BUMP_QUARANTINE_HOURS` (default 24h)            | Expected — the embargo held. Re-run once the release has aged past the window, or fix the repo's script to honour `VIBE_BUMP_QUARANTINE_HOURS` itself                 |
+| A bump is reverted as `rejected_by_quarantine` | `bump-deps.sh` picked a version published inside `VIBE_BUMP_QUARANTINE_HOURS` (default 24h) | Expected — the embargo held. Re-run once the release has aged past the window, or fix the repo's script to honour `VIBE_BUMP_QUARANTINE_HOURS` itself |
 | `[bump-deps] Ignoring VIBE_BUMP_QUARANTINE_HOURS=…` in the log             | The window was set to `0`, a negative, fractional, or non-numeric value; it fell back to 24h           | Set the variable to a positive whole number of hours, or unset it. `0` does **not** disable the embargo — there is deliberately no silent off switch                 |
-| `Refusing screenshot setup: pinned npm package(s) did not clear the dependency-update quarantine window` (Issue #3711) | Either the pinned Playwright version was published inside the window, or its publish time could not be resolved (registry unreachable, 5xx, unknown version) — the message quotes which | The gate is fail-closed by design; re-run `setup.sh` once the npm registry is reachable, or wait for / re-pin a version that has aged past the window. There is no opt-out — an unverified version would otherwise be installed under `--allow-all` |
+| `Refusing screenshot setup: pinned npm package(s) did not clear the dependency-update quarantine window` | Either the pinned Playwright version was published inside the window, or its publish time could not be resolved (registry unreachable, 5xx, unknown version) — the message quotes which | The gate is fail-closed by design; re-run `setup.sh` once the npm registry is reachable, or wait for / re-pin a version that has aged past the window. There is no opt-out — an unverified version would otherwise be installed under `--allow-all` |
 
 See [Deployment — note on cron `PATH`](DEPLOYMENT.md#-recommended-using-cron-5-minute-intervals)
 for what the bootstrap covers.
@@ -379,7 +379,7 @@ flowchart TD
 
 The per-iteration health gate has a third condition alongside Claude health and
 GitHub auth: **can this identity still see the repos it is configured to
-monitor?** (Issue #4038, incident #4028.) When two consecutive issue-list probes
+monitor?** (incident.) When two consecutive issue-list probes
 for a repo come back 404 / permission-denied, the host is marked unhealthy and
 the repos are named on two surfaces:
 
@@ -413,8 +413,7 @@ escalated automatically.
 the next iteration reports healthy again — no operator action, no restart.
 
 **First thing to check — the worker identity** (see
-Switching the Worker GitHub Identity,
-Issues #4030, #4029):
+Switching the Worker GitHub Identity,):
 
 ```bash
 # Use the host's configured gh config dir if .config.json sets one.
@@ -425,7 +424,7 @@ gh issue list --repo <named repo> --limit 1
 1. **Wrong identity** — `gh auth status` shows an account other than the
    expected service account, or the named repo 404s for it. On hosts with no
    `gh_config_dir` the ambient `gh` config is used, so a stray `gh auth switch`
-   from any tooling on the host silently re-points the worker (Issue #4029).
+   from any tooling on the host silently re-points the worker.
    Re-authenticate with `./switch-worker-identity.sh --user <service-account>`.
 2. **Access never granted** — the repo is private, or newly added, and the
    service account is not a collaborator. Grant access, or remove the repo from
@@ -493,7 +492,7 @@ causes and remedies:
    `failed-once` label after the first failure and `failed` after the second,
    preventing infinite loops.
 
-## 💳 Rate limits and subscription usage limits (Issue #4315)
+## 💳 Rate limits and subscription usage limits
 
 Two different things, handled two different ways:
 
@@ -526,7 +525,7 @@ active — pausing until reset …` in the worker log.
 
 ## 🔌 Circuit breaker activated (worker backing off)
 
-The worker includes a rate-limit circuit breaker (Issue #588) that activates
+The worker includes a rate-limit circuit breaker that activates
 when all issues across all repos fail consecutively. When active:
 
 - The worker increases its sleep interval exponentially (30s → 60s → 120s → 240s
@@ -545,7 +544,7 @@ when all issues across all repos fail consecutively. When active:
 
 ## 🔁 Worker keeps retrying a failing issue
 
-The worker tracks failure counts per issue using persistent state (Issue #633).
+The worker tracks failure counts per issue using persistent state.
 If an issue fails:
 
 1. **First failure** — `failed-once` label applied, issue unassigned, retried on
@@ -601,12 +600,12 @@ for merge/rebase). If operations are consistently timing out:
 The worker distinguishes timeouts from other failures and logs them clearly, so
 you can tell whether an operation hung or genuinely failed.
 
-## ⏳ Why did this run take three hours? (Issue #4298)
+## ⏳ Why did this run take three hours?
 
 `claude_timeout` is a one-hour ceiling, so a run that lasted longer means
 `progress_extension_enabled` is on and the deadline was re-armed while the run
 kept making progress (see
-[Progress-extended deadline](CONFIGURATION.md#-progress-extended-deadline-issue-4290)).
+[Progress-extended deadline](CONFIGURATION.md#-progress-extended-deadline)).
 Reconstruct what happened from three places:
 
 1. **The grants** — one line per extension in `worker-*.log`:
@@ -629,7 +628,7 @@ Reconstruct what happened from three places:
    The clause after the semicolon is the signal that stalled: stale tool
    activity, an unchanged working tree, or a working-tree probe that could not
    answer (`unknown` is never treated as progress). A trailing `Ns late` is the
-   #4254 starved-timer signal and is measured against the **final** deadline —
+    starved-timer signal and is measured against the **final** deadline —
    an extended run that dies on time reports no lateness.
 
 3. **The issue** — the failure comment carries the same extension history, and
@@ -643,7 +642,7 @@ grant is shorter, so a stall is caught sooner), tighten
 ceiling on the number of grants — the concurrency slot pool bounds the blast
 radius to one slot.
 
-## 🎞️ Capturing a full agent transcript (Issue #4169)
+## 🎞️ Capturing a full agent transcript
 
 The default observability for a long agent phase is the periodic
 `[agent-progress]` line in `worker-*.log`. When that is not enough — a stuck
@@ -651,7 +650,7 @@ or misbehaving session you want to diagnose after the fact without re-running
 it — set `VIBE_AGENT_TRANSCRIPT=true` (or `DEBUG=true`) and the worker tees
 the agent's raw stream-json to `~/logs/agent-<runid>[-<issue>].jsonl`:
 
-- Every line passes through the console secret redaction (Issue #3661) before
+- Every line passes through the console secret redaction before
   hitting disk.
 - Appends land per chunk, so a wedged session's transcript is inspectable
   while it is still wedged.
@@ -664,7 +663,7 @@ the agent's raw stream-json to `~/logs/agent-<runid>[-<issue>].jsonl`:
 If the worker exits unexpectedly, it does its best to clean up after itself and
 let you know:
 
-- **Crash notifications (Issue #634)** — if configured, the worker posts a
+- **Crash notifications** — if configured, the worker posts a
   comment on the GitHub issue it was working on and optionally fires a webhook.
   Check the issue for a crash report with the exit code, signal name, timestamp,
   work stage (what the worker was doing), elapsed time, system context (uptime,
@@ -697,7 +696,7 @@ situations automatically.
 
 The worker's idle security scanner
 ([Security Scans — Operator Manual](SECURITY-SCAN.md)) runs as an
-`idle-task` issue claimed through the standard priority dispatch. Issue #2023 retired the per-host state files (`security_scan_idle.json`,
+`idle-task` issue claimed through the standard priority dispatch. retired the per-host state files (`security_scan_idle.json`,
 `security_scan.lock`, `security-scan-state.json`); the only persistent
 state is the GitHub `idle-task` issue itself.
 

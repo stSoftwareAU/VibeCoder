@@ -5,7 +5,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   detectFailureCategory,
   extractKeyErrorLines,
@@ -486,4 +486,52 @@ Deno.test("detectFailureCategory - usage limit and capitalised rate limit are ra
     "rate_limit",
   );
   assertEquals(isInfrastructureFailure("rate_limit"), true);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #108 — the `interrupted` category (a run cut off before finishing)
+// ---------------------------------------------------------------------------
+
+Deno.test("detectFailureCategory - the interrupted marker classifies as interrupted", () => {
+  assertEquals(
+    detectFailureCategory(
+      "Run interrupted before completing — the agent was still working",
+    ),
+    "interrupted",
+  );
+});
+
+Deno.test("detectFailureCategory - a usage limit still wins over the interrupted marker", () => {
+  // Order matters: an account cap must never be read as a mere interruption.
+  assertEquals(
+    detectFailureCategory(
+      "Claude usage limit reached — interrupted before completing",
+    ),
+    "rate_limit",
+  );
+});
+
+Deno.test("isInfrastructureFailure - interrupted is infrastructure (retried, not blamed)", () => {
+  assertEquals(isInfrastructureFailure("interrupted"), true);
+});
+
+Deno.test("interrupted category - diagnosis, oneliner, display and validation all handle it", () => {
+  assertEquals(normaliseFailureCategory("interrupted"), "interrupted");
+  assertEquals(
+    getFailureCategoryDisplay("interrupted"),
+    "infrastructure-error",
+  );
+  assertStringIncludes(getFailureDiagnosis("interrupted"), "cut off before");
+  assertStringIncludes(getFailureDiagnosisOneliner("interrupted"), "cut off");
+});
+
+// Issue #46 — an external SIGTERM is an environment kill (infrastructure).
+Deno.test("detectFailureCategory - an external SIGTERM classifies as killed (Issue #46)", () => {
+  assertEquals(
+    detectFailureCategory(
+      "Claude was killed by an external SIGTERM (exit 143) — the worker did " +
+        "not request this shutdown",
+    ),
+    "killed",
+  );
 });

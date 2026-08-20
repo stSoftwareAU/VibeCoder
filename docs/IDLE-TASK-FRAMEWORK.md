@@ -11,7 +11,7 @@ unit of idle work auditable, claimable across multiple workers, and visible to
 operators alongside the rest of the queue.
 
 For the agent-facing summary see
-[DESIGN-PRINCIPLES.md → Idle-task framework](../DESIGN-PRINCIPLES.md#idle-task-framework-issue-1959).
+[DESIGN-PRINCIPLES.md → Idle-task framework](../DESIGN-PRINCIPLES.md#idle-task-framework).
 
 ## Overview
 
@@ -96,10 +96,10 @@ Key points:
 - The claim handler **never throws** — every failure mode (malformed body,
   unknown template, runner error) logs a structured warning and still closes the
   issue so the queue does not stall.
-- **A claimed idle task always runs to completion (Issue #2643).** The throttle
-  is **file-time only**: `isRepoBusyForIdleTask` (Issue #2435) refuses to _file_
+- **A claimed idle task always runs to completion.** The throttle
+  is **file-time only**: `isRepoBusyForIdleTask` refuses to _file_
   a wrapper into a repo with approved work in flight. There is no runTask-level
-  re-check. The earlier re-check guard (Issue #2441) reused the filer's busy
+  re-check. The earlier re-check guard reused the filer's busy
   set, which counts the `idle-task` label itself — so at run time the wrapper
   being executed was always an open, unblocked `idle-task` issue and the guard
   self-cancelled **every** run, burning each template's cooldown window. It was
@@ -120,19 +120,19 @@ export interface IdleTaskTemplate {
   description: string;
   /**
    * Title of the filed wrapper. Dispatch matches the issue title to
-   * the template by comparing against this value (Issue #2077), so
+   * the template by comparing against this value, so
    * each template's title must be unique within the registry.
    */
   buildIssueTitle(repo: string): string;
   /**
    * Body of the filed wrapper. May be async so a template can load
-   * and substitute a prompt file (Issue #2077: the body IS the
+   * and substitute a prompt file (the body IS the
    * substituted prompt — no hidden marker, no parameters block).
    */
   buildIssueBody(opts: IdleTaskBodyOptions): string | Promise<string>;
   /**
    * Optional veto of filing a fresh wrapper in a given repo (Issue
-   * #2056). Templates return `false` while a previous batch of output
+   *). Templates return `false` while a previous batch of output
    * is still being triaged — `security-scan` returns `false` while
    * any open `security`-labelled findings exist, so a new scan does
    * not pile up on an un-triaged batch. Defaults to "always file"
@@ -142,7 +142,7 @@ export interface IdleTaskTemplate {
   /** Executes the actual unit of work — never throws. */
   runTask(opts: IdleTaskRunOptions): Promise<IdleTaskRunResult>;
   /**
-   * Optional body-fingerprint check (Issue #2087). Returns `true` when
+   * Optional body-fingerprint check. Returns `true` when
    * `body` looks like an instance of this template's filed wrapper
    * (e.g. contains the prompt's distinctive heading). Used as a third
    * dispatch signal alongside the `idle-task` label and the title
@@ -154,13 +154,13 @@ export interface IdleTaskTemplate {
   /**
    * When true, the framework neither ensures nor assigns the per-template
    * milestone `idle-task: <template-name>` for issues filed under this
-   * template (Issue #2067). Defaults to false (the regular per-template
+   * template. Defaults to false (the regular per-template
    * milestone is ensured and assigned).
    */
   skipMilestone?: boolean;
   /**
    * Label that this template's output (findings, follow-up issues)
-   * carry on the target repo (Issue #2082). When set, the generic
+   * carry on the target repo. When set, the generic
    * filer counts open issues with this label on the target repo and
    * refuses to raise a new wrapper if there are already
    * `BACKLOG_THRESHOLD` (currently 6) or more — the previous batch is
@@ -171,7 +171,7 @@ export interface IdleTaskTemplate {
    */
   outputLabel?: string;
   /**
-   * Per-repo cooldown window in hours (Issue #2104). When set, the
+   * Per-repo cooldown window in hours. When set, the
    * idle-task filer skips a target repo for this template if the most
    * recent filed wrapper or finding's `createdAt` is younger than this
    * many hours. Omit to use the framework default
@@ -184,7 +184,7 @@ export interface IdleTaskTemplate {
 }
 ```
 
-### Human-style wrappers (Issue #2077)
+### Human-style wrappers
 
 A filed wrapper reads like an issue a person would type. There is no hidden
 `<!-- idle-task: ... -->` marker, no parameters block, and no references to
@@ -194,7 +194,7 @@ as:
 - **Title:** `Run a security scan`
 - **Body:** the latest `prompts/security_scan/` template with the two remaining
   placeholders substituted at file time — `{{SUPPRESSED_IDS}}`,
-  `{{KNOWN_OPEN_FINDING_IDS}}` (Issue #2135 retired `{{REPO_FULL_NAME}}`).
+  `{{KNOWN_OPEN_FINDING_IDS}}` (retired `{{REPO_FULL_NAME}}`).
   Language detection now happens inside the scanning agent during the Phase 1
   inventory step (free-form filesystem inspection), so the worker no longer
   substitutes a language list at raise time.
@@ -202,7 +202,7 @@ as:
 A human can paste the same prompt into a fresh issue, apply the `idle-task`
 label, and the worker runs it identically — dispatch matches by title, so the
 workflow is symmetric. The previous `idle-task-pending` / `requiresApproval`
-approval gate was retired in Issue #2077 because `idle-task` is already the
+approval gate was retired in because `idle-task` is already the
 lowest priority in the queue; a separate approval step added no value.
 
 Registration happens at module-load time via `registerTemplate()`, so callers do
@@ -223,27 +223,27 @@ The current production templates live in
 | `security-scan`                | [`security_scan_template.ts`](../worker/deno/lib/idle_task_templates/security_scan_template.ts)                       | Four-phase MythOS-style security audit. See [SECURITY-SCAN.md](SECURITY-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `best-practices`               | [`best_practices_template.ts`](../worker/deno/lib/idle_task_templates/best_practices_template.ts)                     | Bucket-scoped LLM-only best-practices review. The bucket (one of `rust`, `typescript`, `react`, `java`, `html`, `aws-cloudformation`, `terraform`, `general`) is picked at file time using a SLOC-weighted random draw across the detected supported languages, with `general` competing at a weight equal to the dominant language. Language-targeted runs include a linter-in-CI configuration check (does the workflow invoke the standard linter?) before the LLM review; the missing-linter finding, if any, lands first and counts against the 6-issue cap. Filed findings carry `best-practices` + `lang:<bucket>` + `severity:<level>` labels; the scan never raises a PR. See [BEST-PRACTICES-SCAN.md](BEST-PRACTICES-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `test-audit`                   | [`test_audit_template.ts`](../worker/deno/lib/idle_task_templates/test_audit_template.ts)                             | Language-agnostic (no bucket) static test-suite maintainability and coverage-gap audit — flags implementation-coupled tests that assert on incidental implementation details rather than observable behaviour (the informal WHAT/HOW heuristic). Single prompt, structurally like `security-scan`. `runTask` ensures the `test-audit` label exists, then invokes Claude, which files each surviving finding as its own issue carrying `test-audit` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `github-actions-audit`         | [`github_actions_audit_template.ts`](../worker/deno/lib/idle_task_templates/github_actions_audit_template.ts)         | Single-scope weekly review of the repo's GitHub Actions material only (`.github/workflows/*.yml` and composite actions) — SHA-pinning, supply-chain hardening, stale action majors, EOL runtimes, deprecated/archived actions, container-image pin trackability and freshness (v17, Issue #3902), and duplicate / obsolete steps. Two pre-filers run before Claude: an actionlint-in-CI check (`BP-LINTER-github-actions`) and a runner-deprecation scan (`BP-RUNNER-…`). Filed findings carry `github-actions-audit` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [GITHUB-ACTIONS-AUDIT-SCAN.md](GITHUB-ACTIONS-AUDIT-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `github-actions-audit` | [`github_actions_audit_template.ts`](../worker/deno/lib/idle_task_templates/github_actions_audit_template.ts) | Single-scope weekly review of the repo's GitHub Actions material only (`.github/workflows/*.yml` and composite actions) — SHA-pinning, supply-chain hardening, stale action majors, EOL runtimes, deprecated/archived actions, container-image pin trackability and freshness (v17,), and duplicate / obsolete steps. Two pre-filers run before Claude: an actionlint-in-CI check (`BP-LINTER-github-actions`) and a runner-deprecation scan (`BP-RUNNER-…`). Filed findings carry `github-actions-audit` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [GITHUB-ACTIONS-AUDIT-SCAN.md](GITHUB-ACTIONS-AUDIT-SCAN.md). |
 | `supply-chain-readiness`       | [`supply_chain_readiness_template.ts`](../worker/deno/lib/idle_task_templates/supply_chain_readiness_template.ts)     | Single-scope weekly **readiness** audit (no bucket, language-agnostic) of the repo's posture for surviving and responding to a supply-chain compromise — CI vuln-scan wiring, install-script blocking, auto-update of security advisories, dependency-review, provenance verification, lockfile/SBOM presence, and an emergency-bump runbook. Recommendations are calibrated to real risk (static-evidence only, no package-manager invocation) and cross-link the active-detection templates rather than duplicating them. Filed findings carry `supply-chain-readiness` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [SUPPLY-CHAIN-READINESS-SCAN.md](SUPPLY-CHAIN-READINESS-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `orphan-deps`                  | [`orphan_deps_template.ts`](../worker/deno/lib/idle_task_templates/orphan_deps_template.ts)                           | Single-scope weekly audit (no bucket, language-agnostic) of the repo's declared / locked dependency set for **orphaned, abandoned, deprecated, or end-of-life** dependencies, suggesting a maintained replacement for each. The **one sanctioned-network exception**: it reads registry / source-host metadata (npm, JSR, crates.io, `gh api` repo metadata, published EOL data) within a strict allow-list — no installs, no lifecycle scripts, no repo-code execution. Complements the active-detection / readiness / dormant-republish siblings (cross-link only) and the merely-out-of-date dependency-bump flow. Filed findings carry `orphan-deps` + `severity:<level>` labels; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [ORPHAN-DEPS-SCAN.md](ORPHAN-DEPS-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `dead-code`                    | [`dead_code_template.ts`](../worker/deno/lib/idle_task_templates/dead_code_template.ts)                               | "Boy Scout" weekly scan (Issue #2912) for dead code and unused exports — symbols defined but never referenced. Issue-only: filed findings carry `dead-code` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `doc-coverage`                 | [`doc_coverage_template.ts`](../worker/deno/lib/idle_task_templates/doc_coverage_template.ts)                         | "Boy Scout" weekly scan (Issue #2913) for module-doc and README coverage gaps. Four checks: `DOC-MODULE-DOC` (a public module with no leading doc comment), `DOC-PARAPHRASE` (from v3 onward, Issue #3607 — a module or exported-symbol doc comment whose content is derivable from the identifier and signature alone, so it adds no contract), `DOC-README-MISSING`, and `DOC-README-API-GAP`. From v3 onward the scan measures documentation by **content, not presence**: a block that only restates the name no longer passes `DOC-MODULE-DOC`, and triage lets at most one of the two module checks fire per file so a paraphrase is never double-filed. `DOC-PARAPHRASE` stays silent when the comment adds any non-derivable contract (units, ranges, error conditions, side effects, ordering, threading) and on trivial surface where the name is the whole contract. Issue-only: filed findings carry `doc-coverage` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `format-drift`                 | [`format_drift_template.ts`](../worker/deno/lib/idle_task_templates/format_drift_template.ts)                         | "Boy Scout" weekly scan (Issue #2915) for formatting and lint drift. Issue-only: filed findings carry `format-drift` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `deprecated-api`               | [`deprecated_api_template.ts`](../worker/deno/lib/idle_task_templates/deprecated_api_template.ts)                     | "Boy Scout" weekly scan (Issue #2914) for deprecated-API usage. Issue-only: filed findings carry `deprecated-api` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `bash-script-refs`             | [`bash_script_refs_template.ts`](../worker/deno/lib/idle_task_templates/bash_script_refs_template.ts)                 | **Native** (no LLM) weekly scan (Issue #3228, layer 2 of #3224, template #11) that statically resolves every `source` / `.` / `fleet_source_or_fail` / `bash …` reference in the repo's `*.sh` files and files one prevention-first finding per referenced script that is **missing on disk** — the exit-127 failure class `bash -n` cannot catch. `runTask` runs `bash_script_refs_scanner.ts` and files each missing target (deduped per path) as a `bash-missing-script` + `severity:high` issue that leads with the fix and a repo-local layer-2 CI-guard recommendation; the scanner is **fail-loud** (a walk/read error surfaces on the wrapper, never a silent green). Issue-only — never raises a PR. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `bash-syntax-audit`            | [`bash_syntax_audit_template.ts`](../worker/deno/lib/idle_task_templates/bash_syntax_audit_template.ts)               | **Native** (no LLM) weekly audit (Issue #3238, layer 1 of #3223, template #12) that verifies each monitored repo's **own CI** blocks invalid scripts and files one issue per missing gate. Two deterministic detectors drive it: `bash_ci_gate_scanner.ts` (the `bash -n` syntax gate → `severity:high`, and the `shellcheck` lint gate → `severity:medium`) and `language_validity_gate.ts` (each other main language's native basic-validity check, e.g. `cargo check` / `deno check` / `mvn compile` / `py_compile` → `severity:high`). Findings carry `bash-syntax-audit` + `severity:<level>`, use stable gate-class ids (`BP-BASH-SYNTAX-GATE`, `BP-BASH-SHELLCHECK-GATE`, `BP-VALIDITY-GATE-<language>`) deduped per gate, and honour `best-practice-ignore: BP-…` suppression. An `unknown` gate never files a false positive; a detector that cannot run surfaces a **fail-loud** `ok:false` summary. Repositories stay **absolutely isolated** — each commits its own gate; the audit only raises the issue. Issue-only — never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [`BASH-SYNTAX-AUDIT-SCAN.md`](BASH-SYNTAX-AUDIT-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `documentation-audit`          | [`documentation_audit_template.ts`](../worker/deno/lib/idle_task_templates/documentation_audit_template.ts)           | LLM-only weekly audit (Issue #3319, template #13) of the repo's **prose documentation** — READMEs, `docs/**`, agent instruction files (`CLAUDE.md`, `AGENTS.md`, …), and the PR-summary archive. Over repeated runs the docs converge on one source of truth (the README): durable PR-summary learnings (successes **and** recorded failures) are folded into the main docs and the obsolete summaries deleted (deletion only after the learning lands, so nothing is lost), stale/duplicate/contradictory content is fixed, agent files are trimmed to point at the README, terms are defined on first use, and links are validated. Single prompt, structurally like `test-audit`. `runTask` ensures the `documentation-audit` label, then invokes Claude, which files each grouped finding as its own `documentation-audit` + `severity:<level>` issue; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [DOCUMENTATION-AUDIT-SCAN.md](DOCUMENTATION-AUDIT-SCAN.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `alert-feed`                   | [`alert_feed_template.ts`](../worker/deno/lib/idle_task_templates/alert_feed_template.ts)                             | **Native** (no LLM) weekly scan (Issue #3394, parent #3386, template #14) that consumes the repo's **Dependabot** (`dependabot_alerts.ts`) and **code-scanning** (`code_scanning_alerts.ts`) alert feeds and files **one issue per new high/critical alert** in the affected repo itself (per-repo isolation, #3239). Detect-and-file only — the scan never opens a PR and never fixes an alert; each filed issue rides the normal `work-on` pipeline later. `runTask` ensures the `alert-feed` label, runs both fetchers, dedups via a stable per-alert fingerprint (Issue #3395 — each issue embeds a `<!-- alert-fingerprint: … -->` marker the next run reads back), and files each new alert as an `alert-feed` + `severity:<critical\|high>` issue. **Fail-loud**: a fetcher hard error forces `ok:false`; a `feed-unavailable` (403/404) feed is a non-fatal note, distinct from a genuine zero. Capped at once per repo per week (`cooldownHours: 168`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `workflow-annotation-scan`     | [`workflow_annotation_scan_template.ts`](../worker/deno/lib/idle_task_templates/workflow_annotation_scan_template.ts) | **Native** (no LLM) weekly scan (Issue #3485, template #15) that fetches recent GitHub Actions **workflow-run annotations** — both **errors and warnings**, including annotations on _passing_ runs — over a rolling window (`workflow_annotation_fetcher.ts`, default last 50 runs / 7 days), collapses them into distinct **annotation classes** with a stable version-agnostic dedup key (`workflow_annotation_classifier.ts`), and files **one self-contained issue per class** in the affected repo (per-repo isolation, #3239), deduped against already-open issues. **Detect → `work-on` → PR**: the scan only files the issue; a human applies `work-on` as a lightweight sanity check and the fix rides a normal per-repo PR — the scan never opens a PR itself. **Version-agnostic contract**: it reports whatever runtime deprecation GitHub announces (`node20` today, `node22`+ later) — never a hardcoded "node20 check"; volatile tokens (runtime versions, commit ids, line offsets) are stripped structurally before keying so `node20` and a later `node22` collapse to one class. **Complements** the static [`github-actions-audit`](GITHUB-ACTIONS-AUDIT-SCAN.md) check #34 (from #3460), which covers the _static_ deprecated-runtime half (SHA-pinned actions whose resolved runner is a deprecated runtime); this scan catches the _runtime_ instances the static audit misses — including the markdownlint "Unicorn!" HTML-error-page error class — so the two are complementary, not redundant, and share the `BP-` id prefix so they never double-file. Findings carry `workflow-annotation-scan` + `severity:<level>` labels; **fail-loud** on a fetch/classify error. Capped at once per repo per week (`cooldownHours: 168`). |
-| `private-repo-reference-audit` | [`private_repo_reference_template.ts`](../worker/deno/lib/idle_task_templates/private_repo_reference_template.ts)     | LLM-only weekly audit (Issue #3549, template #16) that runs **only against a public repo** and detects **direct references to a private `stSoftwareAU` repo** (e.g. FLEET) anywhere in the repo surface — runtime access (reads/clones/fetches, `../FLEET`-style checkout paths), committed private-derived fixtures/data, or textual repo-name mentions in code/comments/docs. Concept-level mentions (an idea without naming/pointing at the repo) are acceptable. The **public-only gate** is read from the GitHub API at scan time via `getRepoVisibility` and enforced in both `shouldFile` (never file the wrapper on a private/uncertain repo) and `runTask` (defence in depth — a wrapper seeded on a private repo short-circuits with a `skipped: … not public` summary), failing closed to private on any lookup error. `runTask` ensures the `private-repo-reference` label, then invokes Claude, which files each grouped finding as its own `private-repo-reference` + `severity:<level>` issue naming the private repo but **never quoting private content**. Remediation by tier: runtime-access tests are **deleted** (the team may recreate them in the private repo), private-derived fixtures are **deleted**, name mentions are **reworded to concept level** — all via the normal `work-on` flow; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md](PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md).                                                                                                                                                                                                                                                                   |
-| `duplicated-knowledge`         | [`duplicated_knowledge_template.ts`](../worker/deno/lib/idle_task_templates/duplicated_knowledge_template.ts)         | LLM-only weekly scan (Issue #3609, template #17) for **duplicated knowledge** — a block of five or more lines appearing in two or more places where every copy encodes the same rule and one call to an existing (or extractable) helper would serve them all. Duplication is the measured signature of AI-assisted development and no sibling template sees it: `dead-code` finds code nothing calls, `orphan-deps` finds unimported packages, `format-drift` measures formatter drift — a block pasted into three live, called places is invisible to all three. A deterministic pre-pass ([`duplicate_block_scanner.ts`](../worker/deno/lib/duplicate_block_scanner.ts) — normalised token-window hashing, clones greedily extended to full length) seeds `{{DUPLICATE_BLOCKS}}` the way `coverage_gap_scanner.ts` seeds `{{COVERAGE_GAPS}}` for `test-audit`; it narrows the search only, and Claude makes the knowledge-vs-text judgement. The prompt is **biased towards silence**: duplicated text is not duplicated knowledge, the wrong abstraction is worse than duplication, and the single test is _would every copy need the same edit if the rule changed?_ — so structural/boilerplate similarity, an already-wrong shared abstraction, and any new abstraction with fewer than three callers are all dropped. Findings carry `duplicated-knowledge` + `severity:<level>` (**high** when the copies have already diverged — a latent bug). `runTask` ensures the label, then invokes Claude, which files each finding as its own issue; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [DUPLICATED-KNOWLEDGE-SCAN.md](DUPLICATED-KNOWLEDGE-SCAN.md).                                               |
+| `dead-code` | [`dead_code_template.ts`](../worker/deno/lib/idle_task_templates/dead_code_template.ts) | "Boy Scout" weekly scan for dead code and unused exports — symbols defined but never referenced. Issue-only: filed findings carry `dead-code` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). |
+| `doc-coverage` | [`doc_coverage_template.ts`](../worker/deno/lib/idle_task_templates/doc_coverage_template.ts) | "Boy Scout" weekly scan for module-doc and README coverage gaps. Four checks: `DOC-MODULE-DOC` (a public module with no leading doc comment), `DOC-PARAPHRASE` (from v3 onward, — a module or exported-symbol doc comment whose content is derivable from the identifier and signature alone, so it adds no contract), `DOC-README-MISSING`, and `DOC-README-API-GAP`. From v3 onward the scan measures documentation by **content, not presence**: a block that only restates the name no longer passes `DOC-MODULE-DOC`, and triage lets at most one of the two module checks fire per file so a paraphrase is never double-filed. `DOC-PARAPHRASE` stays silent when the comment adds any non-derivable contract (units, ranges, error conditions, side effects, ordering, threading) and on trivial surface where the name is the whole contract. Issue-only: filed findings carry `doc-coverage` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). |
+| `format-drift` | [`format_drift_template.ts`](../worker/deno/lib/idle_task_templates/format_drift_template.ts) | "Boy Scout" weekly scan for formatting and lint drift. Issue-only: filed findings carry `format-drift` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). |
+| `deprecated-api` | [`deprecated_api_template.ts`](../worker/deno/lib/idle_task_templates/deprecated_api_template.ts) | "Boy Scout" weekly scan for deprecated-API usage. Issue-only: filed findings carry `deprecated-api` + `severity:<level>` labels and the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). |
+| `bash-script-refs` | [`bash_script_refs_template.ts`](../worker/deno/lib/idle_task_templates/bash_script_refs_template.ts) | **Native** (no LLM) weekly scan (layer 2 of, template #11) that statically resolves every `source` / `.` / `fleet_source_or_fail` / `bash …` reference in the repo's `*.sh` files and files one prevention-first finding per referenced script that is **missing on disk** — the exit-127 failure class `bash -n` cannot catch. `runTask` runs `bash_script_refs_scanner.ts` and files each missing target (deduped per path) as a `bash-missing-script` + `severity:high` issue that leads with the fix and a repo-local layer-2 CI-guard recommendation; the scanner is **fail-loud** (a walk/read error surfaces on the wrapper, never a silent green). Issue-only — never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). |
+| `bash-syntax-audit` | [`bash_syntax_audit_template.ts`](../worker/deno/lib/idle_task_templates/bash_syntax_audit_template.ts) | **Native** (no LLM) weekly audit (layer 1 of, template #12) that verifies each monitored repo's **own CI** blocks invalid scripts and files one issue per missing gate. Two deterministic detectors drive it: `bash_ci_gate_scanner.ts` (the `bash -n` syntax gate → `severity:high`, and the `shellcheck` lint gate → `severity:medium`) and `language_validity_gate.ts` (each other main language's native basic-validity check, e.g. `cargo check` / `deno check` / `mvn compile` / `py_compile` → `severity:high`). Findings carry `bash-syntax-audit` + `severity:<level>`, use stable gate-class ids (`BP-BASH-SYNTAX-GATE`, `BP-BASH-SHELLCHECK-GATE`, `BP-VALIDITY-GATE-<language>`) deduped per gate, and honour `best-practice-ignore: BP-…` suppression. An `unknown` gate never files a false positive; a detector that cannot run surfaces a **fail-loud** `ok:false` summary. Repositories stay **absolutely isolated** — each commits its own gate; the audit only raises the issue. Issue-only — never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [`BASH-SYNTAX-AUDIT-SCAN.md`](BASH-SYNTAX-AUDIT-SCAN.md). |
+| `documentation-audit` | [`documentation_audit_template.ts`](../worker/deno/lib/idle_task_templates/documentation_audit_template.ts) | LLM-only weekly audit (template #13) of the repo's **prose documentation** — READMEs, `docs/**`, agent instruction files (`CLAUDE.md`, `AGENTS.md`, …), and the PR-summary archive. Over repeated runs the docs converge on one source of truth (the README): durable PR-summary learnings (successes **and** recorded failures) are folded into the main docs and the obsolete summaries deleted (deletion only after the learning lands, so nothing is lost), stale/duplicate/contradictory content is fixed, agent files are trimmed to point at the README, terms are defined on first use, and links are validated. Single prompt, structurally like `test-audit`. `runTask` ensures the `documentation-audit` label, then invokes Claude, which files each grouped finding as its own `documentation-audit` + `severity:<level>` issue; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [DOCUMENTATION-AUDIT-SCAN.md](DOCUMENTATION-AUDIT-SCAN.md). |
+| `alert-feed` | [`alert_feed_template.ts`](../worker/deno/lib/idle_task_templates/alert_feed_template.ts) | **Native** (no LLM) weekly scan (parent, template #14) that consumes the repo's **Dependabot** (`dependabot_alerts.ts`) and **code-scanning** (`code_scanning_alerts.ts`) alert feeds and files **one issue per new high/critical alert** in the affected repo itself (per-repo isolation,). Detect-and-file only — the scan never opens a PR and never fixes an alert; each filed issue rides the normal `work-on` pipeline later. `runTask` ensures the `alert-feed` label, runs both fetchers, dedups via a stable per-alert fingerprint (each issue embeds a `<!-- alert-fingerprint: … -->` marker the next run reads back), and files each new alert as an `alert-feed` + `severity:<critical\|high>` issue. **Fail-loud**: a fetcher hard error forces `ok:false`; a `feed-unavailable` (403/404) feed is a non-fatal note, distinct from a genuine zero. Capped at once per repo per week (`cooldownHours: 168`). |
+| `workflow-annotation-scan` | [`workflow_annotation_scan_template.ts`](../worker/deno/lib/idle_task_templates/workflow_annotation_scan_template.ts) | **Native** (no LLM) weekly scan (template #15) that fetches recent GitHub Actions **workflow-run annotations** — both **errors and warnings**, including annotations on _passing_ runs — over a rolling window (`workflow_annotation_fetcher.ts`, default last 50 runs / 7 days), collapses them into distinct **annotation classes** with a stable version-agnostic dedup key (`workflow_annotation_classifier.ts`), and files **one self-contained issue per class** in the affected repo (per-repo isolation,), deduped against already-open issues. **Detect → `work-on` → PR**: the scan only files the issue; a human applies `work-on` as a lightweight sanity check and the fix rides a normal per-repo PR — the scan never opens a PR itself. **Version-agnostic contract**: it reports whatever runtime deprecation GitHub announces (`node20` today, `node22`+ later) — never a hardcoded "node20 check"; volatile tokens (runtime versions, commit ids, line offsets) are stripped structurally before keying so `node20` and a later `node22` collapse to one class. **Complements** the static [`github-actions-audit`](GITHUB-ACTIONS-AUDIT-SCAN.md) check #34 (from), which covers the _static_ deprecated-runtime half (SHA-pinned actions whose resolved runner is a deprecated runtime); this scan catches the _runtime_ instances the static audit misses — including the markdownlint "Unicorn!" HTML-error-page error class — so the two are complementary, not redundant, and share the `BP-` id prefix so they never double-file. Findings carry `workflow-annotation-scan` + `severity:<level>` labels; **fail-loud** on a fetch/classify error. Capped at once per repo per week (`cooldownHours: 168`). |
+| `private-repo-reference-audit` | [`private_repo_reference_template.ts`](../worker/deno/lib/idle_task_templates/private_repo_reference_template.ts) | LLM-only weekly audit (template #16) that runs **only against a public repo** and detects **direct references to a private `stSoftwareAU` repo** (e.g. FLEET) anywhere in the repo surface — runtime access (reads/clones/fetches, `../FLEET`-style checkout paths), committed private-derived fixtures/data, or textual repo-name mentions in code/comments/docs. Concept-level mentions (an idea without naming/pointing at the repo) are acceptable. The **public-only gate** is read from the GitHub API at scan time via `getRepoVisibility` and enforced in both `shouldFile` (never file the wrapper on a private/uncertain repo) and `runTask` (defence in depth — a wrapper seeded on a private repo short-circuits with a `skipped: … not public` summary), failing closed to private on any lookup error. `runTask` ensures the `private-repo-reference` label, then invokes Claude, which files each grouped finding as its own `private-repo-reference` + `severity:<level>` issue naming the private repo but **never quoting private content**. Remediation by tier: runtime-access tests are **deleted** (the team may recreate them in the private repo), private-derived fixtures are **deleted**, name mentions are **reworded to concept level** — all via the normal `work-on` flow; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md](PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md). |
+| `duplicated-knowledge` | [`duplicated_knowledge_template.ts`](../worker/deno/lib/idle_task_templates/duplicated_knowledge_template.ts) | LLM-only weekly scan (template #17) for **duplicated knowledge** — a block of five or more lines appearing in two or more places where every copy encodes the same rule and one call to an existing (or extractable) helper would serve them all. Duplication is the measured signature of AI-assisted development and no sibling template sees it: `dead-code` finds code nothing calls, `orphan-deps` finds unimported packages, `format-drift` measures formatter drift — a block pasted into three live, called places is invisible to all three. A deterministic pre-pass ([`duplicate_block_scanner.ts`](../worker/deno/lib/duplicate_block_scanner.ts) — normalised token-window hashing, clones greedily extended to full length) seeds `{{DUPLICATE_BLOCKS}}` the way `coverage_gap_scanner.ts` seeds `{{COVERAGE_GAPS}}` for `test-audit`; it narrows the search only, and Claude makes the knowledge-vs-text judgement. The prompt is **biased towards silence**: duplicated text is not duplicated knowledge, the wrong abstraction is worse than duplication, and the single test is _would every copy need the same edit if the rule changed?_ — so structural/boilerplate similarity, an already-wrong shared abstraction, and any new abstraction with fewer than three callers are all dropped. Findings carry `duplicated-knowledge` + `severity:<level>` (**high** when the copies have already diverged — a latent bug). `runTask` ensures the label, then invokes Claude, which files each finding as its own issue; the scan never raises a PR. Capped at once per repo per week (`cooldownHours: 168`). See [DUPLICATED-KNOWLEDGE-SCAN.md](DUPLICATED-KNOWLEDGE-SCAN.md). |
 
 The four `dead-code`, `doc-coverage`, `format-drift`, and `deprecated-api`
-templates are the "Boy Scout" family — created in milestone #2903 and wired into
-the production filer, claim handler, and seeding paths in Issue #2930 so they
+templates are the "Boy Scout" family — created in milestone and wired into
+the production filer, claim handler, and seeding paths in so they
 are raised across the monitored repos like the original six.
 
-### Attribution footer (Issues #2438, #2439)
+### Attribution footer
 
 Every wrapper body **and** every filed finding issue body ends with a single
 visible Markdown line naming the template that filed it and the canonical worker
@@ -254,15 +254,15 @@ run id, e.g.
 ```
 
 When the caller knows which **model tier** the scan ran on, one further segment
-is appended (Issue #4007):
+is appended:
 
 ```text
 🏷️ Filed by idle-task template: `test-audit` · Run id: `vibe-lkz3p9x-1a2b3c` · Model: `fable`
 ```
 
 The segment is omitted entirely when no tier is supplied, so bodies from
-unstamped callers stay byte-identical to the pre-#4007 format and the
-single-stamp guard (#3513) is unaffected.
+unstamped callers stay byte-identical to the pre- format and the
+single-stamp guard is unaffected.
 [`parseAttributionFooter`](../worker/deno/lib/idle_task_attribution.ts) is the
 reading counterpart — it lives beside the builder so the footer format is
 defined once, and it returns `null` (never throws) on a hand-edited or
@@ -279,7 +279,7 @@ footer. Result: an operator opening any idle-task issue — wrapper or finding �
 can answer "which run produced this?" from the issue body alone, without
 trawling the worker logs.
 
-### Wrapper body size limit (Issue #3634)
+### Wrapper body size limit
 
 GitHub rejects any issue body over **65,536 characters**
 (`GraphQL: Body is too long`). Prompts grow — the `security_scan` v28 preview
@@ -295,7 +295,7 @@ The scan itself is unaffected: the wrapper body is a _preview_, while
 `template.runTask` re-loads the full prompt from `prompts/<scan>/vN.md` at run
 time.
 
-### Condensed previews — summary plus pinned permalink (Issue #3863)
+### Condensed previews — summary plus pinned permalink
 
 The clamp is a backstop, not a fix. `security_scan` v30 built a
 100,841-character preview, so **every** seeded wrapper lost ~36,000 characters
@@ -331,7 +331,7 @@ flowchart LR
 A `truncated_body` line appearing in the seeder logs after this landed means a
 template slipped past the gate — file it as a bug.
 
-### Phase 0 — Adapt to the project (Issue #3610)
+### Phase 0 — Adapt to the project
 
 Every **judgement-bearing** scan reads the target repo's own committed
 conventions before it applies a single check. The prompts open with a shared
@@ -360,7 +360,7 @@ The wording lives in exactly one place —
 — and `project_conventions_stanza_test.ts` asserts each prompt carries it
 verbatim, so the six copies cannot drift apart. This changes only how a scan
 _judges_ a repo against its own conventions; it introduces no cross-repo
-mechanism, so repository isolation (Issue #3239) is untouched.
+mechanism, so repository isolation is untouched.
 
 ## Coordination
 
@@ -380,7 +380,7 @@ repo:
    tier is empty. It will never pre-empt PR feedback, CI fixes, planning, or
    new-issue work.
 
-**Fleet-global existence gate (Issue #2813).** Before the per-repo loop — right
+**Fleet-global existence gate.** Before the per-repo loop — right
 after the cross-repo wrapper check — the filer asks one whole-set question: does
 **any** monitored repo hold an open, **unblocked**
 `top-priority`/`work-on`/`low-priority` issue? If so it skips filing entirely
@@ -388,7 +388,7 @@ after the cross-repo wrapper check — the filer asks one whole-set question: do
 deliberately an **existence** check, not a "claimable right now" check: a
 `work-on` issue merely _deferred_ this cycle by `nice` tiering, fair rotation,
 or local/cross-worker cooldown still _exists_, so the fleet has real work and an
-idle-task must not be filed. It repairs the filing half of the #2806
+idle-task must not be filed. It repairs the filing half of the
 idle-vs-work-on inversion, where the per-repo busy check (gate 5 below) only
 skipped the _individual_ busy repo and let a quiet repo B be filed into while a
 different repo A held the deferred backlog. The same suppression is also applied
@@ -400,7 +400,7 @@ with no extra `gh issue list` call. `idle-task` is excluded from the label set
 [`worker/deno/lib/repo_busy_for_idle_task.ts`](../worker/deno/lib/repo_busy_for_idle_task.ts))
 because an in-flight wrapper is already caught by gate 1; blocked issues
 (`needs-human`, `failed`, `failed-once`, `planning`) do not count, reusing the
-Issue #2440 filter. Both layers are best-effort — a `gh` throw degrades to "no
+ filter. Both layers are best-effort — a `gh` throw degrades to "no
 work" so a transient hiccup never silently disables the filer.
 
 On top of these baseline guards, the filer applies a stack of per-repo gates
@@ -409,12 +409,12 @@ before filing a fresh wrapper. The full per-repo evaluation order (logged with
 
 | Order | Gate                          | Skips when                                                                                                                                                                                                                          |
 | ----- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | Cross-repo wrapper check      | Any monitored repo already has an open `idle-task` issue (Issue #2092). Reason: `existing_wrapper_open`.                                                                                                                            |
+| 1 | Cross-repo wrapper check | Any monitored repo already has an open `idle-task` issue. Reason: `existing_wrapper_open`. |
 | 2     | Per-repo label dedup          | The target repo already has an open `idle-task` issue (defence-in-depth against the cross-repo TOCTOU). Reason: `duplicate`.                                                                                                        |
-| 3     | Output-backlog gate           | The target repo has `BACKLOG_THRESHOLD` (currently 6) or more open issues carrying `template.outputLabel`. The previous batch is still being remediated (Issue #2082). Reason: `output_backlog`.                                    |
-| 4     | `shouldFile()` veto           | The template's own `shouldFile()` returns `false` (Issue #2056). `security-scan` uses this to refuse a new run while open `security` findings or an existing `Run a security scan` wrapper still exists. Reason: `pending_results`. |
+| 3 | Output-backlog gate | The target repo has `BACKLOG_THRESHOLD` (currently 6) or more open issues carrying `template.outputLabel`. The previous batch is still being remediated. Reason: `output_backlog`. |
+| 4 | `shouldFile` veto | The template's own `shouldFile` returns `false`. `security-scan` uses this to refuse a new run while open `security` findings or an existing `Run a security scan` wrapper still exists. Reason: `pending_results`. |
 | 5     | Approved-work-in-flight check | Another worker already holds an `idle-task` assignment somewhere. Reason: `approved_work_in_flight`.                                                                                                                                |
-| 6     | Per-repo cooldown gate        | The repo is inside the rolling cooldown window for this template (Issue #2104, default 24h). Reason: `cooldown_active`.                                                                                                             |
+| 6 | Per-repo cooldown gate | The repo is inside the rolling cooldown window for this template (default 24h). Reason: `cooldown_active`. |
 
 If the loop exhausts every repo without filing, the whole-set summary reason is
 chosen by specificity (most → least): `output_backlog` > `pending_results` >
@@ -426,7 +426,7 @@ a **scan wrapper** (run its template `runTask`) or an **ordinary work item**
 **only** when it matches one of two wrapper-identity signals:
 
 1. **Title match** — `template.buildIssueTitle(repo)` equals the issue's title
-   (Issue #2077, human-style wrappers).
+   (human-style wrappers).
 2. **Body-fingerprint match** — `template.matchesIdleTaskBody?.(body)` returns
    `true`. Defence-in-depth when the title was edited or the label was stripped
    and re-added between filing and pickup. All seventeen templates implement
@@ -439,12 +439,12 @@ issue — because `idle-task` is just a priority, not a scan-only marker. The ba
 match forced scan-only handling (and closed non-wrapper findings as "no template
 matches"), which stranded every `idle-task`-labelled finding. The
 wrapper-identity signals (title + body) still keep a genuine scan wrapper out of
-the PR flow even if its label was stripped (Issue #2083 / #2087).
+the PR flow even if its label was stripped.
 
 Any template that needs additional coordination (for example, the security-scan
 template's internal pipeline guards) implements that internally in `runTask()`.
 
-### Idle-decision claimable-work census (Issue #2811)
+### Idle-decision claimable-work census
 
 At the idle-task **filing** decision point (the same gate the idle-detect audit
 and the filer fire from — i.e. when the Priority 2 scan returned
@@ -454,8 +454,7 @@ every monitored repo the census records:
 
 - the **availability** verdict (`available` / `busy` / `empty`), computed from
   the per-iteration issue cache via `checkRepoAvailability`,
-- the resolved **`nice`** tier (Unix-`nice` semantics — lower is worked sooner,
-  #2771),
+- the resolved **`nice`** tier (Unix-`nice` semantics — lower is worked sooner,),
 - counts of **open, unblocked** `top-priority` / `work-on` / `low-priority` /
   `idle-task` issues, and
 - whether the repo was scanned this cycle (plus a skip reason slot).
@@ -494,7 +493,7 @@ wired into the idle gate in
 ([`worker/deno/commands/maybe_file_idle_task.ts`](../worker/deno/commands/maybe_file_idle_task.ts))
 applies two layered checks before filing.
 
-1. **Cross-repo wrapper check (Issue #2092).** Before any per-repo work, the
+1. **Cross-repo wrapper check.** Before any per-repo work, the
    command calls
    [`findAnyOpenIdleTaskWrapper`](../worker/deno/lib/idle_task_issue.ts) which
    scans **every** monitored repo for an open `idle-task`-labelled issue. If a
@@ -502,12 +501,12 @@ applies two layered checks before filing.
    `action=skipped reason=existing_wrapper_open`, and the existing wrapper is
    picked up by the next iteration of the main loop through the standard
    priority-dispatch path. This guarantees at most one open `idle-task` wrapper
-   across the entire monitored set, and prevents the failure mode of #2089 where
+   across the entire monitored set, and prevents the failure mode of where
    successive idle ticks each picked a different "clean" repo from the per-repo
    shuffle and fanned wrappers out across the fleet.
 2. **Per-repo shuffle and file.** Only when the entire monitored set is clean
    does the command shuffle the repo list with a Fisher–Yates pass backed by
-   `crypto.getRandomValues` (Issue #1986) and walk the shuffled list, filing
+   `crypto.getRandomValues` and walk the shuffled list, filing
    into the first repo whose per-repo dedup query also comes back clean. The
    per-repo dedup loop is preserved as defence-in-depth against TOCTOU races
    between the cross-repo check and the per-repo file.
@@ -518,10 +517,10 @@ subsequent idle pass would otherwise stall on it. Operators should expect two
 consecutive idle passes — when both fire against a clean set — to target
 different repos. That is by design, not a bug.
 
-Since Issue #4009 the random pick is the **fallback**, not the first choice —
-see [Cadence bias on the idle tick](#cadence-bias-on-the-idle-tick-issue-4009).
+Since the random pick is the **fallback**, not the first choice —
+see [Cadence bias on the idle tick](#cadence-bias-on-the-idle-tick).
 
-### Seeding all wrappers on demand (Issue #2870)
+### Seeding all wrappers on demand
 
 The steady-state filer above deliberately seeds **one** wrapper per idle tick.
 That is the wrong cadence when an operator wants the **full** set of seventeen
@@ -529,7 +528,7 @@ wrappers raised on a single repo immediately — for example, to re-check a repo
 after the best-practices templates were improved. The
 `create-all-idle-task-wrappers` command
 ([`worker/deno/commands/create_all_idle_task_wrappers.ts`](../worker/deno/commands/create_all_idle_task_wrappers.ts))
-exposes the same `createAllIdleTaskWrappers` seam (Issue #2577) that the
+exposes the same `createAllIdleTaskWrappers` seam that the
 `add-repo` onboarding flow uses, standalone:
 
 ```bash
@@ -543,12 +542,12 @@ and reports `N created, M already open`. Run it from the repository root so the
 template body builders can resolve their cwd-relative prompt paths (e.g.
 `prompts/best_practices/buckets/general.md`).
 
-#### When a sweep fails part-way (Issue #3862)
+#### When a sweep fails part-way
 
 A sweep used to return on the **first** `gh issue create` failure and throw away
 everything it had already done, so an operator whose sweep died on template 9 of
 17 was told only which template failed — not which eight wrappers already
-existed (the #3634 and #3858 signature). Three behaviours now hold:
+existed (the and signature). Three behaviours now hold:
 
 ```mermaid
 flowchart TD
@@ -593,7 +592,7 @@ The per-repo fan-out raisers below inherit all three: a repo that fails
 part-way still reports the wrappers it filed, and an off-allowlist repo is
 skipped in preflight while the remaining repos are seeded normally.
 
-### Raising the Boy Scout wrappers across every repo (Issue #2933)
+### Raising the Boy Scout wrappers across every repo
 
 The four "Boy Scout" templates (`dead-code`, `doc-coverage`, `format-drift`,
 `deprecated-api`) are the issue-only maintainability sweeps. To confirm the
@@ -619,7 +618,7 @@ recorded in the summary and the sweep continues to the next repo; the command
 reports `N filed, M already open, K failed`. Run it from the repository root for
 the same prompt-path reason as above.
 
-### Raising all wrappers across several repos (Issue #3196)
+### Raising all wrappers across several repos
 
 `create-all-idle-task-wrappers` seeds all seventeen wrappers on **one** repo;
 `raise-boy-scout-idle-tasks` seeds **four** wrappers on **every** repo. The
@@ -645,7 +644,7 @@ per-repo failure is recorded in the summary and the sweep continues to the next
 repo; the command reports `N filed, M already open, K failed`. Run it from the
 repository root for the same prompt-path reason as above.
 
-### Raising one named template against a pinned repo (Issue #3320)
+### Raising one named template against a pinned repo
 
 The three commands above vary the repo axis; none lets you pick a **single**
 template deterministically. `raise-single-idle-task`
@@ -679,11 +678,11 @@ summary and the sweep continues; the command reports
 `N filed, M already open, K failed`. Run it from the repository root for the
 same prompt-path reason as above.
 
-### Requesting a sweep by issue, without a human `deno run` (Issue #3860)
+### Requesting a sweep by issue, without a human `deno run`
 
 Every command above is CLI-only: an operator has to be at a terminal. Asking
 the **agent** to run one on a monitored repo does not work — since the
-agent-subprocess `gh` guard (Issue #3643) the agent's allowlist
+agent-subprocess `gh` guard the agent's allowlist
 is baked at spawn time with the claimed issue's own repo only, so the very
 first `gh issue create` against another repo is refused with
 `[SECURITY] [WRITE_REPO_BLOCKED]` and the request ends in a `needs-human`
@@ -721,18 +720,18 @@ Three properties make this safe to expose:
 - **The agent gains nothing.** The cross-repo grant is registered in the worker
   process and released before the command returns; the agent subprocess's baked
   allowlist still carries only the claimed issue's own repo, so the
-  #3311 exfiltration boundary is unchanged.
+   exfiltration boundary is unchanged.
 
 Seeding reuses the same idempotent `createAllIdleTaskWrappers` seam, so a
 re-filed request skips wrappers that are already open. A seeding failure is
 reported on the issue and the issue is left **open** for a safe retry.
 
-### Deciding *which* repo needs a sweep — the freshness report (Issue #3864)
+### Deciding *which* repo needs a sweep — the freshness report
 
 Every command above answers "seed these wrappers now". None answers the
 question that should come first: **which (repo, template) pairs are actually
 overdue?** The steady-state filer is deliberately conservative — at most one
-open wrapper across the whole monitored set (#2092), one randomly-picked
+open wrapper across the whole monitored set, one randomly-picked
 template per idle tick — so a pair can go unscanned indefinitely with no signal
 anywhere. "Zero open wrappers" is the normal drained state, not an alarm; the
 missing information is *when each pair last actually ran*.
@@ -752,7 +751,7 @@ deno run -A worker/deno/mod.ts idle-task-freshness --json
 # Flag anything older than a fortnight instead of the 30-day default:
 deno run -A worker/deno/mod.ts idle-task-freshness --stale-days 14
 
-# Append the weekly/monthly cadence compliance view (#4012, below):
+# Append the weekly/monthly cadence compliance view (below):
 deno run -A worker/deno/mod.ts idle-task-freshness --cadence
 ```
 
@@ -785,7 +784,7 @@ Three distinctions carry the report's meaning:
   renders `"no findings"` or `"… Filed N issues: #A, #B, …"`, so the report can
   say whether the last run was a no-op or filed work.
 
-Each entry also carries **per-model-tier history** (Issue #4007), read from the
+Each entry also carries **per-model-tier history**, read from the
 attribution footer's optional `Model:` segment:
 
 - `lastRunModel` — tier of the most recent completed scan, shown in the table's
@@ -802,14 +801,14 @@ The command is **reporting only** — every underlying `gh` call is a read
 nothing, and a regression test asserts zero mutating calls. It is therefore
 safe to run at any time, against any repo, alongside a live fleet.
 
-### Cadence policy — important vs busy work (Issues #4003, #4008)
+### Cadence policy — important vs busy work
 
 The freshness report says *when* each pair last ran; the cadence policy says
 *which* of those readings are overdue and *at which model tier*. It lives in
 [`worker/deno/lib/idle_task_cadence.ts`](../worker/deno/lib/idle_task_cadence.ts)
 — a **pure** module: the freshness entry type is imported type-only, and it
 performs no I/O, spawns no process and never touches `gh`, so the policy is
-unit-testable in isolation from the filer that will consume it (#4009).
+unit-testable in isolation from the filer that will consume it.
 
 Three templates are **important** — `security-scan`, `supply-chain-readiness`
 and `github-actions-audit`. Each monitored repository is owed a cheap `sonnet`
@@ -844,7 +843,7 @@ deterministically. The load-bearing details:
 - **A fable run satisfies the week.** A pair overdue on both windows is emitted
   **once**, at `fable` — never twice, and never at `sonnet`.
 - **Pre-stamp wrappers count towards the week, not the month.** A wrapper filed
-  before the tier stamp (#4007) sets `lastRunAt` but appears under no tier key,
+  before the tier stamp sets `lastRunAt` but appears under no tier key,
   so it can never falsely satisfy the fable floor.
 - **`never-run` is maximally overdue** (`NEVER_RUN_OVERDUE_DAYS`, a finite
   sentinel so it survives a JSON round trip) and sorts first; **`unknown` yields
@@ -856,12 +855,12 @@ The three template names, the 7/30-day windows and the two tiers are the
 built-in defaults (`DEFAULT_CADENCE_POLICY`); the `policy` argument is the seam
 the operator's `.config.json` block feeds through — see the next section.
 
-### Configuring the cadence — `idle_task_cadence` (Issue #4011)
+### Configuring the cadence — `idle_task_cadence`
 
 Which templates get a floor, over which windows, and at which model tier is a
 **spend** decision, so it is operator-only configuration in `.config.json` and
 has no in-repo equivalent — a repository can never configure itself onto a
-premium model (#2625/#2626). The block is parsed and validated by
+premium model. The block is parsed and validated by
 [`parseIdleTaskCadence()`](../worker/deno/lib/idle_task_cadence_config.ts) at
 config load and surfaced as `config.idleTaskCadence`, which the filer passes
 straight to `loadDueScans`.
@@ -924,7 +923,7 @@ Nothing is reconciled as valid silently: an all-typo `templates` block leaves th
 important set empty (and says so, loudly), rather than pretending the operator's
 policy is in force.
 
-### Cadence bias on the idle tick (Issue #4009)
+### Cadence bias on the idle tick
 
 The policy above only says which pairs are overdue; the filer is what acts on
 it. Before the template draw and the repo shuffle,
@@ -952,9 +951,9 @@ flowchart TD
 The load-bearing rules:
 
 - **Preference, never permission.** An overdue pair still passes cross-repo
-  wrapper dedup (#2092), the fleet-global `approved_work_in_flight` gate (#2813),
-  per-repo dedup, cooldown (#2105), busy (#2054), backlog (#2082) and the
-  template's own `shouldFile` veto (#2056). Both paths share one implementation
+  wrapper dedup, the fleet-global `approved_work_in_flight` gate,
+  per-repo dedup, cooldown, busy, backlog and the
+  template's own `shouldFile` veto. Both paths share one implementation
   of that gate sequence, so the bias cannot file where the random path could not.
   Queued `work-on` work is never preempted — a busy week legitimately misses the
   floor.
@@ -966,7 +965,7 @@ The load-bearing rules:
   (`DUE_SCAN_CACHE_TTL_MS`, driven by the caller's clock) and the per-wrapper
   closing-comment read is skipped entirely — cadence needs dates, not outcomes.
   A slightly stale due list is harmless because every gate re-runs before filing.
-- **Weights are the fallback's business.** `idleTaskTemplateWeights` (#2401) is
+- **Weights are the fallback's business.** `idleTaskTemplateWeights` is
   consulted only on the random path; a biased pick ignores it.
 
 Each tick emits exactly one decision line, so an operator can tell a biased tick
@@ -983,12 +982,12 @@ A sustained run of `reason=freshness_failed` means the freshness lookup is broke
 in production and the cadence floor is silently unmet — check it before the
 downstream symptom (a repo with no new wrapper for over 7 days) appears.
 
-### Honouring the stamped tier at claim time (Issue #4010)
+### Honouring the stamped tier at claim time
 
 The cadence policy decides the tier; the wrapper carries it; the claiming run
 spends it. Filing and claiming are different runs — possibly different workers —
 so the tier travels in the wrapper body's attribution footer — its optional
-`Model:` segment (#4007) — rather than in the filer's memory.
+`Model:` segment — rather than in the filer's memory.
 
 ```mermaid
 flowchart LR
@@ -1019,9 +1018,9 @@ flowchart LR
   `--model <tier>` and the per-run cost stats attribute the spend to the tier
   actually used.
 - **Unstamped is unchanged.** With no stamp the options carry **no** `model`
-  key, so a randomly-picked wrapper behaves exactly as it did before #4010.
+  key, so a randomly-picked wrapper behaves exactly as it did before.
 
-### Cadence compliance — was the floor actually delivered? (Issue #4012)
+### Cadence compliance — was the floor actually delivered?
 
 The bias above is a **preference, never permission**: it never preempts queued
 `work-on` work, so a busy week legitimately misses the floor. That trade-off is
@@ -1045,7 +1044,7 @@ extra `gh` call and, like the rest of the command, is read-only by construction
 
 It covers the **important** templates only; busy-work templates keep today's
 plain staleness rows. Compliance is measured against the policy actually in force
-(`config.idleTaskCadence`, #4011), not a hard-coded 7/30 the fleet is not being
+(`config.idleTaskCadence`,), not a hard-coded 7/30 the fleet is not being
 held to, and every rule matches `computeDueScans` — a report that disagreed with
 the filer would be worse than no report at all.
 
@@ -1078,7 +1077,7 @@ Reading a miss:
   read is never reconciled as compliance.
 - **Boundaries are inclusive** — exactly 7.0 / 30.0 days old is already a miss.
 - **A pre-stamp wrapper counts towards the week, not the month.** A wrapper filed
-  before the tier stamp (#4007) has no tier recorded, so the report shows
+  before the tier stamp has no tier recorded, so the report shows
   `TIER unstamped` / `weekly_tier=unstamped` and no monthly reading rather than
   assuming a tier. Until a pair has a stamped `fable` scan it reads
   `monthly=missed`, never `met` — the report states that dependency in its
@@ -1101,11 +1100,11 @@ offenders, most overdue first).
 
 The report is **reporting only** — a miss raises no issue and files nothing,
 consistent with the module's read-only contract. Whether the floor is reachable
-at all given one open wrapper fleet-wide (#2092) and the `approved_work_in_flight`
-suppression (#2813) is an empirical question; this is how it gets answered with
+at all given one open wrapper fleet-wide and the `approved_work_in_flight`
+suppression is an empirical question; this is how it gets answered with
 data rather than argument.
 
-### Per-repo cooldown gate (Issue #2105)
+### Per-repo cooldown gate
 
 Inside the per-repo loop, after the dedup query but before the busy check, the
 filer consults a rolling **per-repo cooldown gate** so a given template fires at
@@ -1192,7 +1191,7 @@ flowchart TD
     style E fill:#9d4d4d,stroke:#6a2d2d,color:#f3d8d8
 ```
 
-### Weighting the template draw (Issue #2401)
+### Weighting the template draw
 
 The template draw is **weighted** and **config-driven**. By default every
 registered template carries an equal weight, so the draw is uniform (1/17 each
@@ -1229,7 +1228,7 @@ A template can opt out of the per-template milestone by setting
 - Filed issues are not assigned to any milestone — they appear as ordinary
   standalone issues in the repo's issue list.
 - Closing the wrapper issue does **not** trigger the milestone-completion →
-  merge-PR flow (see #2062). This is the primary motivation for the flag.
+  merge-PR flow (see). This is the primary motivation for the flag.
 
 **When to use it.** Set `skipMilestone: true` for templates whose only output is
 GitHub issues (no code changes, no PR raised, no batch worth tracking as a
@@ -1274,7 +1273,7 @@ Operators rarely need to touch one mid-run, but the relevant levers are:
   one — closing an idle-task issue is the operator signal that "this batch is
   done, the next can start".
 - **Suppress filings entirely for a repo.** Remove the repo from `repos` in
-  `.config.json` (in-repo config was removed — Issue #2626; all configuration is
+  `.config.json` (in-repo config was removed —; all configuration is
   operator-side). Suppression at this layer applies to every template uniformly.
 - **Suppress a single finding from re-filing.** Template-specific. For
   `security-scan`, drop a `security-scan-ignore: SEC-... — author=<login> expires=<YYYY-MM-DD> reason` comment near
@@ -1314,7 +1313,7 @@ claim-handler all behave identically without any further plumbing.
      name: "my-template",
      description: "What this template does.",
      buildIssueTitle(_repo) {
-       // Human-style title — Issue #2077. Dispatch matches by exact title.
+       // Human-style title —. Dispatch matches by exact title.
        return `Run my idle task`;
      },
      buildIssueBody(_opts: IdleTaskBodyOptions) {
@@ -1322,21 +1321,21 @@ claim-handler all behave identically without any further plumbing.
        return `Pick a one-paragraph rationale here.`;
      },
      // Optional: declare an outputLabel so the backlog gate counts
-     // un-triaged output before filing a fresh wrapper (Issue #2082).
+     // un-triaged output before filing a fresh wrapper.
      // outputLabel: "my-template-finding",
      // Optional: override the per-repo cooldown window (default 24h —
-     // Issue #2104). Omit to use the framework default.
+     //). Omit to use the framework default.
      // cooldownHours: 24,
      // Optional: veto filing while previous output is still being
-     // triaged (Issue #2056).
+     // triaged.
      // async shouldFile({ repo }) { return true; },
-     // Optional: body-fingerprint dispatch (Issue #2087) — required if
+     // Optional: body-fingerprint dispatch — required if
      // operators may hand-paste the prompt into a fresh issue.
      // matchesIdleTaskBody: (body) => body.includes("My distinctive heading"),
      async runTask(opts: IdleTaskRunOptions): Promise<IdleTaskRunResult> {
        // Do the work. Never throw — return { ok: false, summary } on failure.
        // opts.idleTaskIssueNumber is the wrapper issue number; opts.repo is
-       // the target slug. IMPORTANT (Issues #2880, #3292): opts.workDir is
+       // the target slug. IMPORTANT: opts.workDir is
        // the PARENT directory holding every repo clone side by side, NOT the
        // target checkout — setupRepo checks each repo out at
        // `${workDir}/${repoName}`. A native detector that reads the repo
@@ -1375,7 +1374,7 @@ The framework intentionally keeps the template surface small: implementations
 describe **what** their unit of work is, not how the worker files, dedupes,
 claims, or closes the resulting issue.
 
-### Claude budget for scans (Issue #3657)
+### Claude budget for scans
 
 A template that drives Claude MUST invoke it through `runIdleTaskClaude` from
 [`worker/deno/lib/idle_task_claude_budget.ts`](../worker/deno/lib/idle_task_claude_budget.ts)
@@ -1415,19 +1414,19 @@ The test drives `run_core.runCoreLoop` and `find_oldest_issue.findOldestIssue`
 with stubbed `gh` and stubbed template `runTask`, so no real network or scanner
 calls escape. It fails closed when any of the following regressions land:
 
-- **Gap A (#2005)** — `runIdleTaskFiler` removed from `run_core.ts`. Iteration 1
+- **Gap A** — `runIdleTaskFiler` removed from `run_core.ts`. Iteration 1
   asserts the filer hook is invoked on a fully-idle scan pass and the underlying
   `gh issue create` carries the `idle-task` label. The `security-scan` template
-  sets `skipMilestone: true` (Issue #2067), so the same iteration also asserts
+  sets `skipMilestone: true`, so the same iteration also asserts
   the `gh issue
   create` invocation does **not** include a `--milestone` flag.
-- **Gap B (#2006)** — `collectIdleTaskCandidates` removed from
+- **Gap B** — `collectIdleTaskCandidates` removed from
   `find_oldest_issue.ts`. Iteration 2 asserts a filed idle-task issue is
   surfaced as a candidate with `source: "idle-task"` on the next scan.
-- **Claim routing (#1965, #2077)** — `handleIdleTaskIssue` fails to dispatch an
+- **Claim routing** — `handleIdleTaskIssue` fails to dispatch an
   `idle-task` issue to the registered template's `runTask` by matching the
   title.
-- **Label-only dedup (#1984)** — a second simultaneously-idle iteration files a
+- **Label-only dedup** — a second simultaneously-idle iteration files a
   duplicate `idle-task` issue against the same repo.
 
 When you touch any of these wiring points, run this test first — it is the
@@ -1451,7 +1450,7 @@ canonical regression detector for the trigger pipeline.
 - [`docs/ORPHAN-DEPS-SCAN.md`](ORPHAN-DEPS-SCAN.md) — Operator manual for the
   `orphan-deps` template (#6, weekly orphan / unmaintained-dependency audit; the
   one sanctioned-network exception).
-- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#idle-task-framework-issue-1959)
+- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#idle-task-framework)
   — VibeCoder-specific design principle for the framework, including the
   agent-facing rule that `idle-task` is the single permitted exception to the
   "never self-apply workflow labels" policy

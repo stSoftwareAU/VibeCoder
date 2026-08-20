@@ -32,7 +32,7 @@ You’ve reviewed the sub-issues, added the `work-on` label, and set a milestone
 
 ---
 
-**Why milestones?** Milestones **unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. With **one issue at a time** (no milestone), each PR targets the default branch (auto-merge enabled at create) and the worker effectively waits on that stream. With **milestones**, each issue’s PR targets the **milestone branch** and **skips auto-merge at create** (`skipAutoMerge` — Issue #1125); catch-up may arm auto-merge later. **Safety is unchanged:** every PR still runs the full quality gate (e.g. `./quality.sh`); **no code reaches the default branch without your review** — only the **one final PR** from the milestone branch to default, which you approve when ready. Productivity gain without sacrificing oversight. See [Label Flows](label-flows.md).
+**Why milestones?** Milestones **unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. With **one issue at a time** (no milestone), each PR targets the default branch (auto-merge enabled at create) and the worker effectively waits on that stream. With **milestones**, each issue’s PR targets the **milestone branch** and **skips auto-merge at create** (`skipAutoMerge` —); catch-up may arm auto-merge later. **Safety is unchanged:** every PR still runs the full quality gate (e.g. `./quality.sh`); **no code reaches the default branch without your review** — only the **one final PR** from the milestone branch to default, which you approve when ready. Productivity gain without sacrificing oversight. See [Label Flows](label-flows.md).
 
 ---
 

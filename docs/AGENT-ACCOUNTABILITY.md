@@ -6,7 +6,7 @@ article (Trust = Agency × Autonomy × Accountability) against the current
 behaviour of the Vibe Coder when it is running unattended.
 
 It is the foundation for three follow-up sub-issues spun out of
-[#2370](https://github.com/stSoftwareAU/VibeCoder/issues/2370) — one per
+ — one per
 in-scope theme.
 
 ## Scope
@@ -35,7 +35,7 @@ flowchart LR
 
 - **Sandboxing / credential-isolation review.** A full review of the
   worker's shell sandbox, network egress controls, and credential
-  isolation is deferred — parent issue #2370 explicitly excludes it.
+  isolation is deferred — parent issue explicitly excludes it.
 - **Further one-way-door gate hardening beyond the existing label
   hand-off.** The current model — a trusted human applies
   `planning` / `work-on`, and a trusted human merges the PR — is treated
@@ -72,14 +72,12 @@ that a reviewer can re-derive the agent's reasoning.
   - [`worker/deno/lib/logger.ts`](../worker/deno/lib/logger.ts)
     `formatTimestamp` — `getUTC*` fields plus a literal `Z`
     (`YYYY-MM-DD HH:MM:SSZ`).
-  - [`worker/shared/deno_bridge.sh`](../worker/shared/deno_bridge.sh)
-    `_get_timestamp` / `log()` — `date -u '+%Y-%m-%d %H:%M:%SZ'`.
   - the Deno worker driver's bootstrap prelude
     ([`run_bootstrap.ts`](../worker/deno/lib/run_bootstrap.ts)) —
     `date -u +%Y-%m-%dT%H:%M:%SZ` equivalents; the worker-log preamble also
     announces `(Worker timestamps are UTC)`.
 
-  **Why (negative result, Issue #1904).** Before this convention the
+  **Why (negative result,).** Before this convention the
   worker log alternated between local AEST and *unlabelled* UTC — line
   12 read `07:45:15` and line 13 read `21:45:16` for the same instant,
   with no marker for the switch — which made timeline reconstruction
@@ -156,7 +154,7 @@ the GitHub timeline, and the prompt git history by hand.
   archived security log on every worker startup and fails loudly if
   the chain has been broken.
 
-### Implementation (Issue #2380)
+### Implementation
 
 The highest-impact audit-log improvements above are implemented as a
 **tamper-evident, hash-chained journal of every GitHub mutation** the
@@ -173,7 +171,7 @@ subprocess chokepoints, so a new call site needs no extra wiring:
   opened/merged/closed/edited, issue opened/closed/edited/labelled, label
   created/deleted, milestone created via `gh api -X POST`, etc.); read-only
   commands (`view`, `list`, a GET `gh api`, a GraphQL query) are skipped.
-  Issue #3703 made this a real chokepoint: ~20 modules used to spawn `gh`
+   made this a real chokepoint: ~20 modules used to spawn `gh`
   themselves and were journalled nowhere, and the `gh spawn chokepoint`
   quality check now fails the build on any direct
   `new Deno.Command("gh", …)` outside `gh_spawn.ts`.
@@ -182,7 +180,7 @@ subprocess chokepoints, so a new call site needs no extra wiring:
   — `git push` (commits pushed). Every other (local) git sub-command is
   ignored. The sub-command is located past git's own value-carrying globals
   (`-C`, `-c`, `--git-dir`, `--work-tree`, `--exec-path`, `--namespace`), so
-  `git -C /repo push` is journalled like a bare `push` (Issue #3950); an
+  `git -C /repo push` is journalled like a bare `push`; an
   unrecognised leading global fails closed — a `push` anywhere in the vector
   is journalled rather than silently dropped.
 
@@ -194,7 +192,7 @@ never throw — a journalling failure can never abort or perturb the
 mutation it is recording.
 
 **Per-entry fields.** Each entry records the ISO 8601 timestamp, the
-run-correlation id (`VIBE_RUN_ID`, joining to #2381), repo, target
+run-correlation id (`VIBE_RUN_ID`, joining to), repo, target
 (issue/PR number, branch, or API endpoint), action verb, outcome
 (`success`/`error`), the process exit code, and the caller code path
 (`worker/deno/lib/<file>.ts`, resolved from the stack), plus the chain
@@ -216,7 +214,7 @@ Appends are serialised through an in-process async mutex so the chain
 stays consistent under concurrent writes, and the per-worker filename
 avoids cross-worker contention.
 
-**Chain anchor — truncation and deletion (Issue #3712).** The chain alone
+**Chain anchor — truncation and deletion.** The chain alone
 only detects *interior* edits: lop off the last three entries and the
 surviving prefix still chains perfectly, and deleting the file leaves
 nothing to check. Every append therefore also updates a **chain anchor**
@@ -229,7 +227,7 @@ holding the record count and head hash outside the journal, at
   `anchor head hash mismatch`.
 - A journal that has vanished while its anchor survives → `journal deleted`.
 - A journal with **no** anchor at all → `chain anchor missing`. Absence of a
-  success marker is not success (Issue #3234), so this is a failure, not a
+  success marker is not success, so this is a failure, not a
   clean result.
 
 A missing chain is no longer absorbed as a fresh start: `recordMutation`
@@ -240,7 +238,7 @@ written before the anchor existed is adopted **explicitly** by an operator
 (`deno task audit-chain-verify --adopt`), and adoption re-walks the chain
 first so a tampered file can never be blessed.
 
-**Scheduled verification (Issue #3712).** `deno task audit-chain-verify`
+**Scheduled verification.** `deno task audit-chain-verify`
 ([`worker/deno/commands/audit_chain_verify.ts`](../worker/deno/commands/audit_chain_verify.ts))
 sweeps every chain under the audit directory — enumerating anchors as well
 as journals, so a deleted journal is still inspected — and exits non-zero
@@ -284,7 +282,7 @@ flowchart LR
 ```
 
 The startup `verify-log-chain` gate is now implemented as the
-`audit-chain-verify` housekeeping step (Issue #3712). The remaining
+`audit-chain-verify` housekeeping step. The remaining
 bullets above (external append-only sink, per-issue decision record) stay
 as documented follow-ups beyond this initial journal.
 
@@ -375,7 +373,7 @@ takes down the whole fleet.
   state → host log → external log sink → prompt version. Today the
   chain exists but is undocumented.
 
-### Implemented (Issue #2381) — run-id traceability
+### Implemented — run-id traceability
 
 The run-id half of the actionable improvements above is now in place.
 Every GitHub mutation the worker performs carries a canonical **run
@@ -436,7 +434,7 @@ prod?"* — and the answer must be no.
   trusted human. The worker's service account is *not* on the
   trusted-author allowlist, so any operational label the worker
   applies to itself is silently stripped by `label_security.ts` on the
-  next scan (Issue #1344). The lone exception is `idle-task`, which
+  next scan. The lone exception is `idle-task`, which
   the framework requires.
 - **The trusted-author allowlist gates work intake.** Only issues
   authored by `allowed_authors` are picked up
@@ -447,13 +445,13 @@ prod?"* — and the answer must be no.
   applied.
 - **Pre-commit safety gates** block secret-bearing hidden files
   ([`gitignore_enforcer.ts`](../worker/deno/lib/gitignore_enforcer.ts)
-  + the pre-commit safety gate from Issue #1758) and a `--no-verify`
+  + the pre-commit safety gate from) and a `--no-verify`
   bypass is explicitly forbidden by the coding guidelines.
 - **Quality gate must pass before PR open**
   ([`quality.sh`](../quality.sh) → `worker/deno/quality.ts`): lint,
   type, tests, prompt immutability, Liquid, markdownlint
   must all be green or the PR is not created. (Shell-script linting is
-  delegated to each target repo's own CI — Issue #3129.)
+  delegated to each target repo's own CI —.)
 - **Comment author trust** is enforced
   ([`comment_trust_filter.ts`](../worker/deno/lib/comment_trust_filter.ts)
   +
@@ -511,7 +509,7 @@ that — it has push to every monitored repo on every run.
   upgrades to broader scopes by accident, the change is visible in
   the chain-of-custody log.
 
-### Implemented (Issue #2382) — runtime guard + capability map
+### Implemented — runtime guard + capability map
 
 The label-allowlist half of the actionable improvements above is now in
 place, along with a published capability map of every OAuth scope the
@@ -567,7 +565,7 @@ from the log alone exactly which capabilities the worker held on that
 run. A surprise upgrade to a broader scope is now visible in the
 chain-of-custody trail without any external tooling.
 
-**Worker token capability map (as of Issue #2382).** Every OAuth scope
+**Worker token capability map (as of).** Every OAuth scope
 on the worker token is justified against at least one concrete code
 path; nothing on this map is unused.
 
@@ -583,13 +581,13 @@ path; nothing on this map is unused.
 this repo now declares a `permissions:` block. The four pre-existing
 workflows (`gitleaks.yml`, `markdown-lint.yml`, `pages.yml`,
 `semgrep.yml`) were already minimised; `validate-scripts.yml` had no
-block and inherited the org default, so #2382 added an explicit
+block and inherited the org default, so added an explicit
 `permissions: contents: read` to it — the workflow runs only static
 checks (bash syntax, shellcheck, actionlint, `deno check`/lint/test) and
 needs no write capability.
 
 Still open from the list above: per-host GitHub Apps / scoped tokens
-(coordinated with #2381's identity-delegation work), the
+(coordinated with 's identity-delegation work), the
 `needs-human`-on-sensitive-paths defence-in-depth check, and the
 commit-cap rate limiter. Those are tracked as follow-up work beyond this
 initial guard + capability map.
@@ -614,7 +612,7 @@ proposed improvements changes the existing human one-way-door gate
 traceability around that gate so that when the gate does its job a
 reviewer can prove it.
 
-## Backlog & throughput observability (Issue #2405)
+## Backlog & throughput observability
 
 Accountability is not only "what did the agent do" — it is also "is the
 agent keeping pace". The security-remediation backlog grows whenever the
@@ -675,9 +673,9 @@ flowchart LR
 
 ## Cross-references
 
-- Parent issue: [#2370](https://github.com/stSoftwareAU/VibeCoder/issues/2370).
-- Backlog observability: [#2405](https://github.com/stSoftwareAU/VibeCoder/issues/2405)
-  (part of [#2400](https://github.com/stSoftwareAU/VibeCoder/issues/2400)).
+- Parent issue:.
+- Backlog observability:
+  (part of).
 - Article: <https://www.chrisfarris.com/post/agent-accountability/>.
 - Related operator docs:
   [`SECURITY.md`](../SECURITY.md),

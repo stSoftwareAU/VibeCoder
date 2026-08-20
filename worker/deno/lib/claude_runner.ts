@@ -126,6 +126,43 @@ export type {
   TimeoutDiagnostics,
 } from "./claude_executor.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+
+/** A run shorter than this with no output reads as a start-up failure (#35). */
+const STARTUP_FAILURE_MS = 2000;
+
+/**
+ * Build the log line for a non-rate-limit Claude failure (Issue #35).
+ *
+ * The generic failure path used to log only `exited with status N` and drop
+ * the captured stderr, so a transient start-up refusal (a lock held by the
+ * just-finished session, a bad flag, an auth refusal, a stdin race on the
+ * streamed prompt) was indistinguishable from a mid-run crash. This surfaces
+ * the CLI's own signal: a bounded, secret-redacted stderr tail (the 5-line
+ * shape the 137 path uses) and the wall time since spawn. An exit within
+ * {@link STARTUP_FAILURE_MS} of spawn with no output is named a start-up
+ * failure — a different instruction to the operator than a run that failed
+ * after working.
+ */
+export function buildClaudeFailureLog(input: {
+  exitCode: number;
+  stderr: string;
+  output: string;
+  wallClockMs: number;
+}): string {
+  const stderrTail = redactSecrets(
+    input.stderr.trim().split("\n").slice(-5).join("\n"),
+  );
+  const elapsedSeconds = Math.round(input.wallClockMs / 100) / 10;
+  const startupFailure = input.wallClockMs < STARTUP_FAILURE_MS &&
+    input.output.trim().length === 0;
+  const heading = startupFailure
+    ? `Claude Code exited ${input.exitCode} ${elapsedSeconds}s after spawn ` +
+      `with no output — a start-up failure (the CLI never reached a model call)`
+    : `Claude Code exited with status ${input.exitCode} after ${elapsedSeconds}s`;
+  return heading +
+    (stderrTail ? `; stderr tail:\n${stderrTail}` : " (stderr empty)");
+}
 export type { RunStats } from "./run_stats.ts";
 
 /** Default error scan tail lines. */
@@ -241,6 +278,14 @@ export interface ClaudeRunResult {
    * abandoned. Terminal: never classified as a rate limit, never retried.
    */
   terminated?: boolean;
+  /**
+   * The agent received a SIGTERM the worker never requested (Issue #46):
+   * `isAgentRunsTerminating()` was false, so it came from outside — a tool the
+   * agent ran, the CLI, the container, a stray signal. Unlike {@link
+   * terminated} (our own shutdown), this is an external kill: it carries the
+   * kill diagnostics and is a retryable failure, never a silent run-end.
+   */
+  externalSigterm?: boolean;
   /** The fallback model used when the original was rate-limited (Issue #1113). */
   fallbackModel?: string;
   /**
@@ -625,31 +670,45 @@ export function resetAgentRunsTerminating(): void {
  * Called when a handler is abandoned by the watchdog and when the run
  * ends, so no agent keeps running detached from the loop that awaited it.
  * Best-effort; returns the pids it signalled.
+ *
+ * Issue #55: the terminating flag is process-global. Leaving it set is correct
+ * only when the whole run is ending; a watchdog HANDLER abandonment is
+ * transient — the loop continues to the next priority, which must be able to
+ * launch its own agent. Pass `keepTerminating: false` for that case: the flag
+ * is cleared once the abandoned agents are confirmed dead (their runners
+ * already returned on the SIGTERM, so they cannot relaunch), so a single
+ * abandonment no longer silently refuses every agent for the rest of the run.
  */
 export async function terminateActiveAgentRuns(
   reason: string,
   logger?: Logger,
+  options: { keepTerminating?: boolean } = {},
 ): Promise<number[]> {
+  const keepTerminating = options.keepTerminating ?? true;
   agentRunsTerminating = true;
-  const runs = [...activeAgentRuns.values()];
-  if (runs.length === 0) return [];
-  (logger ?? runs[0]?.logger)?.warn(
-    `Terminating ${runs.length} active agent run(s) — ${reason}: ${
-      runs.map((r) => `${r.label} (pid ${r.pid})`).join(", ")
-    }`,
-  );
-  await Promise.all(runs.map(async (run) => {
-    try {
-      await killClaudeProcessTree(run.pid, run.killAfterSeconds, run.logger);
-    } catch (err) {
-      run.logger?.warn(
-        `Failed to terminate agent pid ${run.pid}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  }));
-  return runs.map((r) => r.pid);
+  try {
+    const runs = [...activeAgentRuns.values()];
+    if (runs.length === 0) return [];
+    (logger ?? runs[0]?.logger)?.warn(
+      `Terminating ${runs.length} active agent run(s) — ${reason}: ${
+        runs.map((r) => `${r.label} (pid ${r.pid})`).join(", ")
+      }`,
+    );
+    await Promise.all(runs.map(async (run) => {
+      try {
+        await killClaudeProcessTree(run.pid, run.killAfterSeconds, run.logger);
+      } catch (err) {
+        run.logger?.warn(
+          `Failed to terminate agent pid ${run.pid}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }));
+    return runs.map((r) => r.pid);
+  } finally {
+    if (!keepTerminating) agentRunsTerminating = false;
+  }
 }
 
 /** Milliseconds the runner waits for the child to settle after a kill. */
@@ -1446,14 +1505,21 @@ export async function runClaudeWithTimeout(
     const extensions = killTelemetry ?? snapshotExtensions(Date.now());
 
     activeAgentRuns.delete(childPid);
-    // SIGTERM that no watchdog of ours requested (Issue #4369): the run-end
-    // cleanup or a handler abandonment killed the agent. Terminal.
-    const terminated = !timedOut &&
+    const gotSigterm = !timedOut &&
       (status.signal === "SIGTERM" || status.code === 143);
+    // Issue #46: a SIGTERM is only "our shutdown" when the worker actually
+    // requested the termination (`terminateActiveAgentRuns` set the flag).
+    // #4369 fixed the flag-true case; the flag-FALSE case is an external kill
+    // — a tool the agent ran, the CLI, the container, a stray signal — and
+    // must be surfaced and retried like the SIGKILL path, not accepted as a
+    // silent run-end that lets the phase continue over a half-done tree.
+    const ourShutdown = isAgentRunsTerminating();
+    const terminated = gotSigterm && ourShutdown;
+    const externalSigterm = gotSigterm && !ourShutdown;
     // The child died from outside, or our kill never settled: collect the
     // descendants it left behind before anything else starts (Issue #4382).
     const externallyKilled = !timedOut &&
-      (status.code === 137 || status.signal === "SIGKILL" || terminated);
+      (status.code === 137 || status.signal === "SIGKILL" || gotSigterm);
     // Who held the memory at the kill (Issue #4382)? Captured before the
     // orphans are collected, so the table still shows them.
     let killDiagnostics: string | undefined;
@@ -1515,6 +1581,7 @@ export async function runClaudeWithTimeout(
         timedOut,
         timeoutReason,
         ...(terminated ? { terminated: true } : {}),
+        ...(externalSigterm ? { externalSigterm: true } : {}),
         ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
           ? { watchdogLateSeconds }
           : {}),
@@ -1808,6 +1875,36 @@ export async function runClaudeWithRetry(
         `Agent terminated (SIGTERM, exit ${
           result.value.rawExitCode ?? 143
         }) — the run is ending; no retry, no wait.`,
+      );
+      return { ok: true, value: withPreflight(result.value) };
+    }
+    if (result.value.externalSigterm) {
+      // Issue #46: a SIGTERM the worker never requested — an external kill.
+      // Surface it like the SIGKILL path (stderr tail, elapsed, kill
+      // diagnostics) instead of accepting it as run-end; the execute phase
+      // then fails the phase (not `continue`) and the bounded infrastructure
+      // retry applies.
+      const stderrTail = redactSecrets(
+        (result.value.stderr ?? "").trim().split("\n").slice(-5).join("\n"),
+      );
+      const elapsedSeconds = Math.round(
+        (result.value.runStats?.wallClockMs ?? 0) / 1000,
+      );
+      currentOptions.logger?.warn(
+        `Agent killed by an external SIGTERM (exit ${
+          result.value.rawExitCode ?? 143
+        }) after ${elapsedSeconds}s — the worker did not request this ` +
+          `shutdown` +
+          (stderrTail ? `; stderr tail:\n${stderrTail}` : " (stderr empty)") +
+          (result.value.killDiagnostics
+            ? `\nKill diagnostics:\n${result.value.killDiagnostics}`
+            : ""),
+      );
+      currentOptions.logger?.security?.(
+        "AGENT_KILLED",
+        `raw_exit_code=${
+          result.value.rawExitCode ?? 143
+        } external_sigterm=true`,
       );
       return { ok: true, value: withPreflight(result.value) };
     }
@@ -2172,8 +2269,18 @@ export async function runClaudeWithRetry(
         continue;
       }
 
-      // Non-rate-limit failure
-      currentOptions.logger?.warn(`Claude Code exited with status ${exitCode}`);
+      // Non-rate-limit failure (Issue #35): the old log said only the exit
+      // status and dropped the captured stderr, so a transient start-up
+      // refusal was indistinguishable from a mid-run crash and its cause was
+      // lost. See buildClaudeFailureLog.
+      currentOptions.logger?.warn(
+        buildClaudeFailureLog({
+          exitCode,
+          stderr: stderr ?? "",
+          output,
+          wallClockMs: runStats?.wallClockMs ?? 0,
+        }),
+      );
       return {
         ok: true,
         value: withPreflight(

@@ -135,6 +135,10 @@ docs/ci-failure-issue-log-fetch.md:
   title: "Vibe Coder: CI-failure Issue Log Fetch"
   page_icon: "🔎"
 
+docs/SETUP.md:
+  title: "Vibe Coder: Setup Guide"
+  page_icon: "🛠️"
+
 docs/DEPLOYMENT.md:
   title: "Vibe Coder: Deployment Guide"
   page_icon: "📦"
@@ -230,6 +234,10 @@ docs/workflows/WORKED-EXAMPLE.md:
 docs/workflows/ci-fix.md:
   title: "Vibe Coder: CI Fix Workflow"
   page_icon: "🔧"
+
+docs/workflows/merge-conflicts.md:
+  title: "Vibe Coder: Merge-Conflict Resolution Workflow"
+  page_icon: "🔀"
 
 SECURITY.md:
   title: "Vibe Coder: Security"

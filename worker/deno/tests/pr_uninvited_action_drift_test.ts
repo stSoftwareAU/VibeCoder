@@ -39,11 +39,11 @@ import {
   findFailedPrChecks,
   findPrCommentsToFix,
   type PrScanOptions,
-} from "./pr_maintenance.ts";
+} from "../lib/pr_maintenance.ts";
 import {
   findPrsNeedingCiNudge,
   processCiNudgeCandidate,
-} from "./pr_ci_nudge_scan.ts";
+} from "../lib/pr_ci_nudge_scan.ts";
 import type { Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -757,7 +757,7 @@ const DEFER_TO_RESOLVER = "resolveFleetPrAuthorSet";
 const MAINTENANCE_RESOLVER = "resolveFleetMaintenanceAuthorSet";
 
 function readScanModule(name: string): string {
-  return Deno.readTextFileSync(new URL(`./${name}`, import.meta.url));
+  return Deno.readTextFileSync(new URL(`../lib/${name}`, import.meta.url));
 }
 
 /**

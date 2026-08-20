@@ -9,13 +9,13 @@ not spin the real fix out into follow-up issues. This document describes the
 
 > **Scope.** This is the *plumbing* (build + verify the worker's ability to
 > raise a cross-repo PR). The *behaviour* that tells the worker when to use it
-> and the dedup / one-follow-up rules are sibling issues under parent #2935; the
+> and the dedup / one-follow-up rules are sibling issues under parent; the
 > release-gating boundaries that hold once the dep PR is open are described in
-> [Release-gating](#release-gating--never-auto-release-issue-2944) below.
+> [Release-gating](#release-gating--never-auto-release) below.
 
 ## "Can access" = internal + clonable + pushable
 
-The classification reuses the **#1613** rule rather than introducing a new one:
+The classification reuses the **** rule rather than introducing a new one:
 a dependency is **internal** when its package scope is `@stsoftware` (matching
 the `jsr:@stsoftware/*` / `npm:@stsoftware/*` exclude globs that give internal
 deps a 0h quarantine window). Everything else is **external**.
@@ -47,7 +47,7 @@ flowchart TD
     D --> E["openCrossRepoFixPr"]
     E --> E1[clone --depth=1 --no-single-branch]
     E1 --> E2{branch == default?}
-    E2 -- Yes --> Y[refuse: default branch is read-only #2584]
+    E2 -- Yes --> Y[refuse: default branch is read-only]
     E2 -- No --> E3[checkout -b feature]
     E3 --> E4["applyFix(repoDir)"]
     E4 --> E5[add -A → commit → push -u]
@@ -71,7 +71,7 @@ take an injectable command runner (no real network in tests).
 - `openCrossRepoFixPr(request, runner)` → clones, branches, runs the caller's
   `applyFix`, commits, pushes, and opens the PR; returns a `Result` carrying the
   **PR URL**. Refuses to push to the dependency repo's default branch (the
-  read-only invariant, Issue #2584). Any failed step returns an error `Result`
+  read-only invariant,). Any failed step returns an error `Result`
   rather than throwing, so the caller can fall back to deferral.
 
 > **Transitive root causes.** `resolveCrossRepoTarget` resolves a single spec.
@@ -102,7 +102,7 @@ which drives the full clone → branch → fix → commit → push → PR sequen
 scripted runner and asserts an actual PR is opened against a **different** repo
 than the run started in, with its URL surfaced back.
 
-## Release-gating — never auto-release (Issue #2944)
+## Release-gating — never auto-release
 
 Opening the dependency PR is where the worker's authority stops. Two boundaries
 hold once that PR is open — encoded in `prompts/coding_guidelines/` (from v29
@@ -112,12 +112,12 @@ onward) and `prompts/issue/` (from v28 onward):
   dependency PR, and must **not** bump the consumer to a raw commit/git-ref or a
   pre-release to pull the fix in early. Releasing the fixed dependency is a human
   decision; the consumer is bumped to the released version through the ordinary
-  dependency-bump flow (#1613) once that release exists.
+  dependency-bump flow once that release exists.
 - **Human-gated release is the one legitimate deferral.** The only reason to
   defer *after* the dependency PR is open is that the consumer bump needs a human
   to release the fixed dependency first. The worker handles it with exactly
   **one** follow-up (reusing the search-before-file / one-follow-up dedup rule,
-  #2943), filed in **either** the consuming repo (where the bump will land) **or**
+  ), filed in **either** the consuming repo (where the bump will land) **or**
   the dependency repo (beside the PR) — whichever it can reach — and
   **cross-linked to the open dependency PR** so the release and the consumer bump
   stay connected.

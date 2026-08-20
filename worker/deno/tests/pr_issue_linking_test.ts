@@ -14,6 +14,7 @@ import {
   findExistingPrForIssue,
   linkPrToIssue,
   postIssueLinkWithRetry,
+  prTitleMatchesIssue,
   reopenPr,
   updatePrLabels,
   verifyIssueLinkComment,
@@ -369,6 +370,60 @@ Deno.test("pr_issue_linking - findExistingPrForIssue does NOT match digit-prefix
     ]);
   };
   // Looking for #42 — must not match (#142)
+  const result = await findExistingPrForIssue("owner/repo", 42, fn);
+  assertEquals(result.ok, false);
+});
+
+Deno.test("pr_issue_linking - findExistingPrForIssue finds bracket-style '[#N]' title (Issue #106)", async () => {
+  // PR GRQ-validation#844 was titled "[#836] …"; the paren-only pattern missed
+  // it, so the existing-PR backstop failed to recognise the completed run.
+  const fn = async (_args: string[]): Promise<string> => {
+    return JSON.stringify([
+      {
+        number: 844,
+        title: "[#836] Forward the native memory budget to the Rust cache",
+        body: "",
+        url: "https://github.com/owner/repo/pull/844",
+      },
+    ]);
+  };
+  const result = await findExistingPrForIssue("owner/repo", 836, fn);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value, "https://github.com/owner/repo/pull/844");
+  }
+});
+
+Deno.test("pr_issue_linking - findExistingPrForIssue finds '[Issue #N]' bracket title (Issue #106)", async () => {
+  const fn = async (_args: string[]): Promise<string> => {
+    return JSON.stringify([
+      {
+        number: 10,
+        title: "Some fix [Issue #77]",
+        body: "",
+        url: "https://github.com/owner/repo/pull/10",
+      },
+    ]);
+  };
+  const result = await findExistingPrForIssue("owner/repo", 77, fn);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value, "https://github.com/owner/repo/pull/10");
+  }
+});
+
+Deno.test("pr_issue_linking - the bracket pattern still rejects digit-prefix variants (Issue #106)", async () => {
+  const fn = async (_args: string[]): Promise<string> => {
+    return JSON.stringify([
+      {
+        number: 11,
+        title: "Cross ref [#142]",
+        body: "",
+        url: "https://github.com/owner/repo/pull/11",
+      },
+    ]);
+  };
+  // Looking for #42 — must not match [#142]
   const result = await findExistingPrForIssue("owner/repo", 42, fn);
   assertEquals(result.ok, false);
 });
@@ -1111,5 +1166,27 @@ Deno.test("pr_issue_linking - a planning-label skip holds the watermark back (Is
     );
   } finally {
     await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("pr_issue_linking - prTitleMatchesIssue accepts paren and bracket styles, rejects prefixes (Issue #106)", () => {
+  // Accepted delimiter styles.
+  for (
+    const title of [
+      "Fix (#42)",
+      "Fix (Issue #42)",
+      "Fix (issue #42)",
+      "[#42] Fix",
+      "[Issue #42] Fix",
+      "[issue #42] Fix",
+    ]
+  ) {
+    assertEquals(prTitleMatchesIssue(title, 42), true, title);
+  }
+  // Digit-prefix / suffix variants must NOT match (closing delimiter guards it).
+  for (
+    const title of ["Ref (#142)", "Ref [#142]", "Ref (#420)", "Ref [#420]"]
+  ) {
+    assertEquals(prTitleMatchesIssue(title, 42), false, title);
   }
 });

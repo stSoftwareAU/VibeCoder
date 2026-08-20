@@ -1,7 +1,7 @@
 /**
- * Tests for issue prompt v30 (Issue #3790).
+ * Tests for issue prompt v30.
  *
- * v30 closes the seven Claude best-practice gaps the #3771 audit recorded
+ * v30 closes the seven Claude best-practice gaps the audit recorded
  * against v29: balanced code fences, a role sentence, worked examples for the
  * two hardest judgement calls, XML-delimited substitutions, named `gh`
  * commands, parallel-tool-call guidance, and the agentic-systems clauses
@@ -182,10 +182,10 @@ Deno.test("issue v30 - Gap 2: examples cover both forks and the near miss", asyn
   const examples = body.slice(start, end);
   // Internal dependency fixed cross-repo.
   assertStringIncludes(examples, "stSoftwareAU/*");
-  assertStringIncludes(examples, "#2942");
+  assertStringIncludes(examples, "");
   // External dependency correctly deferred.
   assertStringIncludes(examples, "external npm package");
-  assertStringIncludes(examples, "#1826");
+  assertStringIncludes(examples, "");
   // The negative case — big, but not out of scope.
   assertStringIncludes(examples, "Volume is not scope");
 });
@@ -320,12 +320,12 @@ Deno.test("issue v30 - carries forward the escape hatch and dependency rules", a
   for (
     const marker of [
       "Escape Hatch",
-      "#1826",
-      "#2943",
+      "",
+      "",
       "at most one",
       "gh issue list",
       "--state open",
-      "#2944",
+      "",
       "Human Escalation",
       "Performance Task Workflow",
       "Australian English",

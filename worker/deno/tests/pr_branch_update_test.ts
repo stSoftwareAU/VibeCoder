@@ -17,6 +17,7 @@ import {
   type PrBranchExecutionDeps,
   type PrBranchUpdateAction,
   type PrBranchUpdateDeps,
+  resetPrConflictWarnings,
   scanPrBranchUpdates,
 } from "../lib/pr_branch_update.ts";
 import type { BranchUpdateLockResult } from "../lib/pr_branch_lock.ts";
@@ -625,6 +626,7 @@ Deno.test("executePrBranchUpdates - records failure when performBranchUpdate fai
 });
 
 Deno.test("executePrBranchUpdates - a conflicting PR is recorded as 'conflict' (not failed), logged loudly, and never counted as updated (Issue #4373)", async () => {
+  resetPrConflictWarnings();
   const actions = [makeAction({ prNumber: 4372, branchName: "issue-4369-x" })];
   const warnings: string[] = [];
   const deps = makeExecDeps({
@@ -942,8 +944,22 @@ Deno.test("executePrBranchUpdates - handles lock acquisition error gracefully", 
 // isWorkerPr — worker PR identification by body marker
 // =============================================================================
 
-Deno.test("isWorkerPr - returns true for PR with worker marker", () => {
-  assertEquals(isWorkerPr("Some body\n<!-- vibe-worker-issue-42 -->"), true);
+Deno.test("isWorkerPr - the body marker is trusted only with a safe head branch (Issue #12)", () => {
+  // Marker present and the branch is a safe git ref: worker-owned.
+  assertEquals(
+    isWorkerPr(
+      "Some body\n<!-- vibe-worker-issue-42 -->",
+      "milestone/17-security",
+    ),
+    true,
+  );
+  // Marker present but no branch to check: not trusted for maintenance.
+  assertEquals(isWorkerPr("Some body\n<!-- vibe-worker-issue-42 -->"), false);
+  // Marker pasted by an outside PR onto an argument-injecting branch: refused.
+  assertEquals(
+    isWorkerPr("<!-- vibe-worker-issue-42 -->", "--upload-pack=touch /tmp/x"),
+    false,
+  );
 });
 
 Deno.test("isWorkerPr - returns false for PR without marker or worker branch", () => {
@@ -958,11 +974,12 @@ Deno.test("isWorkerPr - returns false for undefined body and no branch", () => {
   assertEquals(isWorkerPr(undefined), false);
 });
 
-Deno.test("isWorkerPr - matches marker created by different worker identity", () => {
-  // PR created by maintainer but marker is still present — should be found
+Deno.test("isWorkerPr - a marker from another worker identity is trusted with a safe branch", () => {
   const body =
     "## Summary\nSome changes\n\n🤖 Processed by: maintainer<!-- vibe-worker-issue-15 -->";
-  assertEquals(isWorkerPr(body), true);
+  assertEquals(isWorkerPr(body, "issue-15-something"), true);
+  // …but the marker alone (no branch to vet) is not enough (Issue #12).
+  assertEquals(isWorkerPr(body), false);
 });
 
 Deno.test("isWorkerPr - falls back to branch name pattern for older PRs", () => {
@@ -993,4 +1010,64 @@ Deno.test("scanPrBranchUpdates - finds worker PRs regardless of author identity"
     assertEquals(result.value.actions[0]!.prNumber, 23);
     assertEquals(result.value.actions[0]!.reason, "behind");
   }
+});
+
+Deno.test("executePrBranchUpdates - the conflict warning fires once per PR, not once per pass (Issue #84)", async () => {
+  resetPrConflictWarnings();
+  const actions = [makeAction({ prNumber: 48, branchName: "issue-16-fix" })];
+  const warnings: string[] = [];
+  const deps = makeExecDeps({
+    performBranchUpdate: async () => ({
+      ok: false,
+      error: prBranchConflictError("issue-16-fix", "main", "merge"),
+    }),
+  });
+  deps.logger = {
+    ...deps.logger,
+    warn: (m: string) => {
+      warnings.push(m);
+    },
+  } as typeof deps.logger;
+
+  // Three consecutive passes over the same still-conflicting PR.
+  for (let pass = 0; pass < 3; pass++) {
+    const result = await executePrBranchUpdates(actions, deps);
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      // Every pass still records the conflict — only the log line is deduped.
+      assertEquals(result.value.details[0]!.status, "conflict");
+      assertEquals(result.value.conflictCount, 1);
+    }
+  }
+
+  assertEquals(
+    warnings.filter((w) => w.includes("PR #48")).length,
+    1,
+    warnings.join(" | "),
+  );
+});
+
+Deno.test("executePrBranchUpdates - each conflicting PR gets its own warning (Issue #84)", async () => {
+  resetPrConflictWarnings();
+  const warnings: string[] = [];
+  const deps = makeExecDeps({
+    performBranchUpdate: async () => ({
+      ok: false,
+      error: prBranchConflictError("branch", "main", "merge"),
+    }),
+  });
+  deps.logger = {
+    ...deps.logger,
+    warn: (m: string) => {
+      warnings.push(m);
+    },
+  } as typeof deps.logger;
+
+  await executePrBranchUpdates([
+    makeAction({ prNumber: 101, branchName: "issue-101-a" }),
+    makeAction({ prNumber: 102, branchName: "issue-102-b" }),
+  ], deps);
+
+  assertEquals(warnings.filter((w) => w.includes("PR #101")).length, 1);
+  assertEquals(warnings.filter((w) => w.includes("PR #102")).length, 1);
 });

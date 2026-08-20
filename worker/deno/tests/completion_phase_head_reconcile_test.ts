@@ -34,13 +34,21 @@ function stubClient(): GitHubClient {
 async function runCompletion(
   reconcile: Result<HeadReconciliation>,
   gitStdoutFor: (args: string[]) => string = () => "",
+  opts: {
+    /** Per-command exit code; default 0 (command succeeded). */
+    gitCodeFor?: (args: string[]) => number;
+    /** Set `state.milestoneBranch` to exercise the milestone base (Issue #68). */
+    milestoneBranch?: string;
+  } = {},
 ): Promise<{
   status: string;
   reason?: string;
   order: string[];
   gitCalls: string[][];
   warnings: string[];
+  errors: string[];
 }> {
+  const gitCodeFor = opts.gitCodeFor ?? (() => 0);
   const repoPath = await Deno.makeTempDir();
   await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
     recursive: true,
@@ -64,6 +72,7 @@ async function runCompletion(
     branchName: "issue-565-branding-hot-link",
     baseBranch: "Develop",
     defaultBranch: "Develop",
+    ...(opts.milestoneBranch ? { milestoneBranch: opts.milestoneBranch } : {}),
     repoPath,
     clarityStatus: "not_assessed",
     claudeOutput: "",
@@ -74,11 +83,12 @@ async function runCompletion(
   const order: string[] = [];
   const gitCalls: string[][] = [];
   const warnings: string[] = [];
+  const errors: string[] = [];
   const deps = createMockDeps({
     logger: {
       info: () => undefined,
       warn: (m: string) => warnings.push(m),
-      error: () => undefined,
+      error: (m: string) => errors.push(m),
       debug: () => undefined,
     } as never,
     github: {
@@ -101,7 +111,11 @@ async function runCompletion(
         gitCalls.push(args);
         return Promise.resolve({
           ok: true as const,
-          value: { code: 0, stdout: gitStdoutFor(args), stderr: "" },
+          value: {
+            code: gitCodeFor(args),
+            stdout: gitStdoutFor(args),
+            stderr: "",
+          },
         });
       },
     },
@@ -120,6 +134,7 @@ async function runCompletion(
     order,
     gitCalls,
     warnings,
+    errors,
   };
 }
 
@@ -237,4 +252,89 @@ Deno.test("completion - a failing ahead-of-base guard warns instead of silently 
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #68 — the ahead-of-base guard resolves an origin-only milestone base.
+// The clone was set up on the issue branch, so a milestone base exists only as
+// `origin/<base>`; the bare name is an unknown revision and the guard used to
+// take its "could not run" path on every milestone PR.
+// ---------------------------------------------------------------------------
+
+const MILESTONE = "milestone/54-planning-the-failure-detection-self-repair";
+const RECONCILE_ON_BRANCH = {
+  ok: true as const,
+  value: {
+    action: "already-on-branch" as const,
+    fromRef: "issue-565-branding-hot-link",
+  },
+};
+
+Deno.test("completion #68 - counts against origin/<base> when the milestone base is not local", async () => {
+  const run = await runCompletion(
+    RECONCILE_ON_BRANCH,
+    (args) => args[0] === "rev-list" ? "1\n" : "",
+    {
+      milestoneBranch: MILESTONE,
+      // Local milestone ref absent (exit 1); origin/<base> resolves (exit 0).
+      gitCodeFor: (args) =>
+        args[0] === "rev-parse" && args.includes(`${MILESTONE}^{commit}`)
+          ? 1
+          : 0,
+    },
+  );
+  assertEquals(run.status, "continue");
+  const revList = run.gitCalls.find((a) => a[0] === "rev-list");
+  assert(revList, "the ahead guard must run for a milestone PR");
+  assertEquals(
+    revList[2],
+    `origin/${MILESTONE}..issue-565-branding-hot-link`,
+    "guard counts against the remote-tracking milestone ref",
+  );
+  assertEquals(run.errors, [], "no louder error when the base resolves");
+});
+
+Deno.test("completion #68 - a milestone base with zero ahead commits still fails with the bare name", async () => {
+  const run = await runCompletion(
+    RECONCILE_ON_BRANCH,
+    (args) => args[0] === "rev-list" ? "0\n" : "",
+    {
+      milestoneBranch: MILESTONE,
+      gitCodeFor: (args) =>
+        args[0] === "rev-parse" && args.includes(`${MILESTONE}^{commit}`)
+          ? 1
+          : 0,
+    },
+  );
+  assertEquals(run.status, "failure");
+  assertStringIncludes(run.reason ?? "", "no commits ahead");
+  // The user-facing message names the base by its bare (server-side) name.
+  assertStringIncludes(run.reason ?? "", MILESTONE);
+});
+
+Deno.test("completion #68 - an unresolvable base logs a louder error and skips the guard, not a routine warning", async () => {
+  const run = await runCompletion(
+    RECONCILE_ON_BRANCH,
+    () => "",
+    {
+      milestoneBranch: MILESTONE,
+      // Neither local nor origin resolves, and the fetch fails too.
+      gitCodeFor: (args) =>
+        args[0] === "rev-parse" || args[0] === "fetch" ? 1 : 0,
+    },
+  );
+  assertEquals(run.status, "continue"); // proceeds without the guard
+  assert(
+    run.errors.some((e) => e.includes("base ref unresolvable")),
+    `expected a louder error for an unresolvable base: ${run.errors}`,
+  );
+  assert(
+    !run.warnings.some((w) => w.includes("Ahead-of-base guard could not run")),
+    "an unresolvable base is the louder error, not the per-PR warning",
+  );
+  // The guard never ran a rev-list against a milestone range.
+  assert(
+    !run.gitCalls.some((a) => a[0] === "rev-list" && a[2]?.includes(MILESTONE)),
+    "no ahead-count attempted once the base could not be resolved",
+  );
 });

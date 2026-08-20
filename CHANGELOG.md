@@ -18,7 +18,7 @@ This changelog is a human-readable digest grouped by version.
   (or `VIBE_RUN_MODE`) naming a removed mode fails loud — in the launchers,
   `setup.sh`, config validation and `loadConfig` — with the removal explained,
   and is never coerced into a container run the operator did not know they
-  were getting (Issue #3234). `run.sh` / `run.ps1` carry no host-execution
+  were getting. `run.sh` / `run.ps1` carry no host-execution
   path at all (no `run-entrypoint`, no `sandbox-exec`); the launch contract
   again treats any host-execution marker as a fault and drops the
   Windows-container-only parity exception (both launchers are equal now);
@@ -34,7 +34,7 @@ This changelog is a human-readable digest grouped by version.
 
 ### Added
 
-- **The launcher heals a builder that ran out of storage (Issue #4441).** An
+- **The launcher heals a builder that ran out of storage.** An
   ENOSPC during `container build` leaves Apple container's BuildKit builder VM
   with a read-only filesystem, and it stays that way after the host disk is
   freed — on host-23 every later launch died with "read-only file system"
@@ -48,7 +48,7 @@ This changelog is a human-readable digest grouped by version.
   reasons fails exactly as it always has — the command exits 3 to say so — and
   every decision is recorded in `~/logs/run_core.log`.
 
-- **Supply-chain posture gate (Issue #4192).** New `supply-chain-gate`
+- **Supply-chain posture gate.** New `supply-chain-gate`
   command and a `supply-chain-gate` job in `validate-scripts.yml` that fail on
   a `uses:` not pinned to a full commit SHA (only local `./` actions exempt),
   a shipped `deno` invocation that resolves dependencies without `--frozen`,
@@ -60,8 +60,8 @@ This changelog is a human-readable digest grouped by version.
   file, line and rule. Closing the gaps it found: `--frozen` added to the CI
   `deno` invocations, the `test` / `check` tasks and the container's seed
   `deno cache`. Manual: `docs/SUPPLY-CHAIN-GATE.md`.
-- **Superseded container image tags are pruned on every launch (Issue #4162).**
-  The content-derived tag (#4062) rebuilds on every change to `container/` and
+- **Superseded container image tags are pruned on every launch.**
+  The content-derived tag rebuilds on every change to `container/` and
   nothing used to delete the tag it replaced, so an unattended host leaked a
   multi-gigabyte image per merged change until the next build died mid-export
   ("No space left on device" on host-23, 765 MB free). `run.sh` and `run.ps1` now
@@ -69,8 +69,7 @@ This changelog is a human-readable digest grouped by version.
   present: every other `vibe-coder` tag is removed and each removal is named on
   the host log. Foreign images and the builder cache are never touched, and a
   prune that fails is a loud warning rather than a blocked launch.
-- **Rust build-profile checks in the `rust` best-practices bucket (Issue
-  #4159).** The bucket guide now checks that `[profile.dev]` uses
+- **Rust build-profile checks in the `rust` best-practices bucket.** The bucket guide now checks that `[profile.dev]` uses
   `debug = "line-tables-only"` (fastest dev rebuilds), that the workspace-root
   `[profile.release]` sets `opt-level = 3` + `lto = "fat"` +
   `codegen-units = 1` (most optimised release artefact), and that
@@ -80,37 +79,37 @@ This changelog is a human-readable digest grouped by version.
   Cranelift backend are explicitly out of scope. `.cargo/config.toml` joins
   the bucket's file scope; per-repo manifest edits ride each repo's own PR.
 - **`github-actions-audit` detects untrackable and stale container-image pins
-  (Issue #3902).** Prompt v17 adds check #35 (a container image pinned by a
+ .** Prompt v17 adds check #35 (a container image pinned by a
   bare `@sha256:` digest with no tag — immutable but invisible to Renovate and
   Dependabot, so it freezes forever) and check #36 (a digest pin the tree
   itself shows is materially stale, via an aged floating-channel capture
   comment or in-repo drift). Both file `BP-CONTAINER-PIN-…` /
   `BP-CONTAINER-STALE-…` findings; the audit stays read-only detect-and-file
-  and the pin fix rides each repo's own PR (Issue #3239).
+  and the pin fix rides each repo's own PR.
 - `CHANGELOG.md` at the repo root following Keep a Changelog 1.1.0
-  (Issue #2171). User-visible changes should land an entry under `[Unreleased]`
+ . User-visible changes should land an entry under `[Unreleased]`
   alongside the per-PR summary in `docs/pr-summary-*.md`.
 
 ### Changed
 
-- **Agent `gh` guard covers the environment and config aliases (Issue #3866).**
+- **Agent `gh` guard covers the environment and config aliases.**
   The PATH shim now re-asserts the run's target before `exec` — clearing
   `GH_REPO`/`GH_ENTERPRISE_TOKEN`/`GITHUB_ENTERPRISE_TOKEN` and pinning the
   worker's `GH_HOST`/`GH_CONFIG_DIR` — and the guard refuses a root command
   `gh` does not ship, which can only be a user-defined config alias whose
   expansion the argv-only verdict never saw.
-- **`bump-deps.sh` quarantine is verified, not advised (Issue #3659).** The
+- **`bump-deps.sh` quarantine is verified, not advised.** The
   worker now checks the release ages of the dependency versions a repo's
   `bump-deps.sh` actually produced and reverts the bump as
   `rejected_by_quarantine` when one was published inside
   `VIBE_BUMP_QUARANTINE_HOURS` (default 24h). Internal `@stsoftware/*` packages
   are exempt; an age that cannot be resolved is logged as unverified rather
   than blocking.
-- **Supply-chain quarantine split by ecosystem (Issue #2536).** Documented
+- **Supply-chain quarantine split by ecosystem.** Documented
   native Deno `deno.json` `minimumDependencyAge` as the standard quarantine
   mechanism for Deno dependencies (JSR / `deno.land/x`) across `CLAUDE.md`,
   `AGENTS.md`, `docs/INTERNALS.md`, and `docs/DEPLOYMENT.md`. The canonical
-  config (Issue #2539) is `{ "age": "P1D", "exclude": ["jsr:@stsoftware/*",
+  config is `{ "age": "P1D", "exclude": ["jsr:@stsoftware/*",
   "npm:@stsoftware/*"] }`: external Deno deps wait the 24h (`P1D`) floor,
   internal `stSoftwareAU` deps update at 0h, enforced via `deno update` /
   `deno outdated --minimum-dependency-age`. npm, cargo, and GitHub Actions
@@ -174,7 +173,7 @@ This changelog is a human-readable digest grouped by version.
   `setup.sh` leaves through `exit` after `main` so a file rewritten mid-run
   is not read past its old end.
 - **Two super-linear regexes could stall the single-threaded worker
-  (Issue #3942).** The suppression parser's block-comment patterns were cubic
+ .** The suppression parser's block-comment patterns were cubic
   on an unterminated `/* … ignore: … ` line (11s for 4,000 characters, hours
   for 40KB) and `redactSecrets`'s `url-userinfo` and `secret-cli-flag` rules
   were quadratic on a long run of letters or hyphens. Both patterns are now

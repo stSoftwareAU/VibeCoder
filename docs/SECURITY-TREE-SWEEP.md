@@ -3,10 +3,9 @@
 Operator manual for the one-shot, re-runnable security sweep across the
 **entire checkout** — the worker's own security scan, semgrep and CodeQL,
 merged into one deduplicated findings table (Issue
-[#4193](https://github.com/stSoftwareAU/VibeCoder/issues/4193), part of the
-[#4160](https://github.com/stSoftwareAU/VibeCoder/issues/4160) proving-ground
-hardening). The scheduled CI wiring is Issue
-[#4409](https://github.com/stSoftwareAU/VibeCoder/issues/4409).
+, part of the
+ proving-ground
+hardening). The scheduled CI wiring is Issue.
 
 The idle-task scans ([Security Scans](SECURITY-SCAN.md)) and
 `.github/workflows/semgrep.yml` are incremental by design — they follow
@@ -28,7 +27,7 @@ deno run --allow-read --allow-write --allow-run --allow-env \
 Report-only by default. Exits non-zero when any deduplicated finding is
 **unbaselined** or the baseline is malformed. A missing scanner, an unreadable
 alert feed or an unexpected scanner exit code is an **error**, never a clean
-sweep (Issue #3234).
+sweep.
 
 | Option | Meaning |
 | ------ | ------- |
@@ -137,7 +136,7 @@ one list:
       "path": ".github/dependabot.yml",
       "rule": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
       "line": 24,
-      "reason": "One-day cooldown is deliberate (Issue #4400).",
+      "reason": "One-day cooldown is deliberate.",
       "issue": 4400
     }
   ]
@@ -195,7 +194,7 @@ accepted with the issues that chose them). CodeQL was excluded because Code
 Security is not enabled on the private repository, and the committed report
 says so in its Sources table.
 
-## The scheduled workflow (Issue #4409)
+## The scheduled workflow
 
 `.github/workflows/security-tree-sweep.yml` runs the sweep weekly (Tuesday
 03:41 UTC), on `workflow_dispatch`, and on pull requests that touch the

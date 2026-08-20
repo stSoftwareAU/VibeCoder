@@ -44,6 +44,22 @@ export interface MutationInfo {
   target?: string;
   /** How the target repo was determined (Issue #3703). */
   scope: MutationScope;
+  /**
+   * True when part of the request body is not visible in argv (Issue #11).
+   *
+   * Set by `gh api --input`/`--input=<file>` and by an `@file`-sourced
+   * `query=` field value, so a caller can tell an argv-visible body from one
+   * the argv cannot show. Left absent when the body is fully argv-visible.
+   */
+  unreadableBody?: boolean;
+  /**
+   * Path of a readable `--input <file>` body, when the argv names one
+   * (Issue #91). Absent for `--input -` (stdin) and `@file`-sourced field
+   * values, which are unscannable by construction. Present so a caller with a
+   * filesystem reader can scan the file for reserved labels rather than
+   * failing closed on every `--input` mutation.
+   */
+  bodyFilePath?: string;
 }
 
 /** Mutating sub-verbs per `gh` root command. */
@@ -410,20 +426,36 @@ function classifyGhApi(
   let skipNext = false;
   /** A body component the argv cannot show: `--input`, or a `@file` value. */
   let unreadableBody = false;
+  /** Path of a readable `--input <file>` body (Issue #91); `-` stays absent. */
+  let bodyFilePath: string | undefined;
   const queryDocuments: string[] = [];
 
   /**
-   * Record a `query=…` field value — the GraphQL document.
+   * Record a `key=value` field.
    *
    * `gh` reads a field value beginning with `@` from that file (`@-` from
-   * stdin), so the document itself never reaches the argv and the call must
-   * fail closed rather than read as a mutation-free document.
+   * stdin), so it never reaches the argv — the label/label-scan and GraphQL
+   * checks cannot see what it carries, and the call must fail closed. Verified
+   * against gh 2.97.0: only `-F`/`--field` expand a leading `@` (its help says
+   * `use "@<path>" or "@-" to read value from file or stdin`); `-f`/
+   * `--raw-field` add a *static string* and never expand `@` (Issue #93). The
+   * caller passes `expandsAtFile` so a literal `@name` on `-f` is not mistaken
+   * for a file.
    */
-  const noteField = (value: string | undefined): void => {
-    if (!value?.startsWith("query=")) return;
-    const document = value.slice("query=".length);
-    if (document.startsWith("@")) unreadableBody = true;
-    else queryDocuments.push(document);
+  const noteField = (
+    value: string | undefined,
+    expandsAtFile: boolean,
+  ): void => {
+    if (value === undefined) return;
+    const eq = value.indexOf("=");
+    if (eq < 0) return;
+    if (expandsAtFile && value.slice(eq + 1).startsWith("@")) {
+      unreadableBody = true;
+      return;
+    }
+    if (value.slice(0, eq) === "query") {
+      queryDocuments.push(value.slice(eq + 1));
+    }
   };
 
   for (let i = start; i < args.length; i++) {
@@ -447,29 +479,33 @@ function classifyGhApi(
       token === "--raw-field"
     ) {
       hasBody = true;
-      noteField(args[i + 1]);
+      noteField(args[i + 1], token === "-F" || token === "--field");
       skipNext = true;
       continue;
     }
     if (token.startsWith("--field=")) {
       hasBody = true;
-      noteField(token.slice("--field=".length));
+      noteField(token.slice("--field=".length), true);
       continue;
     }
     if (token.startsWith("--raw-field=")) {
       hasBody = true;
-      noteField(token.slice("--raw-field=".length));
+      noteField(token.slice("--raw-field=".length), false);
       continue;
     }
     if (token === "--input") {
       hasBody = true;
       unreadableBody = true;
       skipNext = true;
+      const path = args[i + 1];
+      if (path !== undefined && path !== "-") bodyFilePath = path;
       continue;
     }
     if (token.startsWith("--input=")) {
       hasBody = true;
       unreadableBody = true;
+      const path = token.slice("--input=".length);
+      if (path !== "-") bodyFilePath = path;
       continue;
     }
     if (GH_VALUE_FLAGS.has(token)) {
@@ -503,6 +539,10 @@ function classifyGhApi(
     ...(repo ? { repo } : {}),
     ...(endpoint ? { target: endpoint } : {}),
     scope,
+    // Issue #11: surface a body the argv cannot show. Left absent — never
+    // `false` — when the body is fully argv-visible.
+    ...(unreadableBody ? { unreadableBody: true } : {}),
+    ...(bodyFilePath !== undefined ? { bodyFilePath } : {}),
   };
 }
 

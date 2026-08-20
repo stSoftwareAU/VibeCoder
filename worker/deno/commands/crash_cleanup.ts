@@ -3,7 +3,7 @@
  *
  * Clears in-progress issue state (heartbeat file and GitHub assignment)
  * when the worker exits unexpectedly.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - cleanup: Clean up in-progress issue (clear heartbeat, unassign)

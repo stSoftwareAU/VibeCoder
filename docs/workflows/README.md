@@ -34,11 +34,11 @@ instructed to follow TDD (Test-Driven Development), KISS (Keep It Simple), DRY
 | Goal                              | What to do                                                                                                                                                                                                                                                                                                | Where it's explained                                                                   |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | **Understand the label flow**     | Read the journey map: `grill-me` ↔ `needs-human`, then `planning` or a work tier, then PRs / milestones / auto-merge — with coloured diagrams.                                                                                                                                                            | **[Label Flows](label-flows.md)**                                                      |
-| **Get issues picked up**          | Add a configured label to an issue and leave it unassigned. Label tiers in priority order: `top-priority` > `work-on` (allowed authors only) > `low-priority` (fallback) > `idle-task` (worker-filed only). The deprecated `help wanted` and `claude` labels were retired in Issue #2022.                  | [Issue processing](issue-processing.md)                                                |
+| **Get issues picked up** | Add a configured label to an issue and leave it unassigned. Label tiers in priority order: `top-priority` > `work-on` (allowed authors only) > `low-priority` (fallback) > `idle-task` (worker-filed only). The deprecated `help wanted` and `claude` labels were retired in. | [Issue processing](issue-processing.md) |
 | **Group issues into a feature**   | Create a GitHub milestone, add it to each issue. Per-issue PRs auto-merge into the milestone branch (quality gate passes), so the worker can **safely** run 24/7 (e.g. overnight/weekend). **No code reaches default without your review** — you approve the **one final PR** with many issues completed. | [Projects and dependencies](projects-and-dependencies.md), [Milestones](milestones.md) |
-| **Order work (dependencies)**     | In the issue body, add `Depends on #123` or `Blocked by #123`. The worker only picks issues whose dependencies are closed.                                                                                                                                                                                | [Projects and dependencies](projects-and-dependencies.md)                              |
+| **Order work (dependencies)** | In the issue body, add `Depends on ` or `Blocked by `. The worker only picks issues whose dependencies are closed. | [Projects and dependencies](projects-and-dependencies.md) |
 | **Break down a big issue**        | Add the `planning` label; the worker will create sub-issues and close the parent.                                                                                                                                                                                                                         | [Planning and questions](planning-and-questions.md)                                    |
-| **Get answers without code**      | Add the `question` label; the worker posts an answer in a comment, removes `question`, and adds `needs-human` to mark your turn (Issue #2030). Re-add `question` to ask a follow-up.                                                                                                                       | [Planning and questions](planning-and-questions.md)                                    |
+| **Get answers without code** | Add the `question` label; the worker posts an answer in a comment, removes `question`, and adds `needs-human` to mark your turn. Re-add `question` to ask a follow-up. | [Planning and questions](planning-and-questions.md) |
 | **Refine an issue with feedback** | Add the `refine-issue` label and comment; the worker will update the issue from your feedback.                                                                                                                                                                                                            | [Planning and questions](planning-and-questions.md)                                    |
 | **PRs stay mergeable**            | The worker monitors PRs it opens (by author), fixes spelling/quality and merge issues, and enables auto-merge when mergeable.                                                                                                                                                                             | [PR feedback and upkeep](pr-feedback.md)                                               |
 
@@ -54,14 +54,15 @@ each workflow page.
 
 **One loop, many queues.** Cron (or launchd) starts the worker; it runs a single
 loop that checks work in **priority order**: PR (Pull Request) feedback (1),
-spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6), CI nudges
+spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
+merge-conflict resolution (1.61), CI nudges
 and the blocking-PR watchdog (1.62, 1.63), auto-merge (1.65), issue closure
 (1.67), closed-PR recovery (1.68), milestone completion and branch sync (1.7,
 1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
 questions (1.85), stale-workflow detection (1.9), and finally new issues (2,
 oldest first across all repos). The table below is the canonical ladder; the
 dispatch table in `worker/deno/lib/run_core.ts` is the source of truth and a
-test keeps the two in step (Issue #3348). One work item per iteration, then sleep and repeat. All
+test keeps the two in step. One work item per iteration, then sleep and repeat. All
 interaction is via GitHub — no local UI (User Interface). When the same item
 fails repeatedly, the process exits so the next cron run gets fresh code.
 
@@ -87,7 +88,7 @@ flowchart TD
   style P5 fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style P6 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style P7 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
-  style Sleep fill:#707070,stroke:#333,color:#fff
+  style Sleep fill:#707070,stroke:,color:#fff
 ```
 
 **Short attention span?** Every doc in this folder starts with a **TL;DR** and a
@@ -118,6 +119,7 @@ Each workflow or topic is assigned to a dedicated document:
 | **Issue → PR implementation**                      | [issue-processing.md](issue-processing.md)                     | Flow from issue discovery through branch, Claude, quality gate, and PR creation                                                                          |
 | **PR feedback and upkeep**                         | [pr-feedback.md](pr-feedback.md)                               | Review feedback loop, spelling fixes, branch updates, auto-merge catch-up                                                                                |
 | **CI fix**                                         | [ci-fix.md](ci-fix.md)                                         | Automatic diagnosis and fix of CI check failures on open PRs                                                                                             |
+| **Merge-conflict resolution** | [merge-conflicts.md](merge-conflicts.md) | Real merge of the base into a `CONFLICTING` PR — both sides survive — with the `merge-conflict` label, attempt bounds and `needs-human` escalation |
 | **Planning, questions, refinement, clarification** | [planning-and-questions.md](planning-and-questions.md)         | Clarification phase (clear? small enough? too large → planning): question label, planning label, refine-issue                                            |
 | **Grill-me clarification (vague issues)**          | [grill-me.md](grill-me.md)                                     | Iterative, mobile-friendly back-and-forth that scopes vague issues into a clean requirement, then recommends the developer apply `planning` or `work-on` |
 | **Resilience and concurrency**                     | [resilience-and-concurrency.md](resilience-and-concurrency.md) | Self-healing, restart model, issue claiming, multi-worker coexistence, one PR per target branch                                                          |
@@ -140,7 +142,8 @@ flowchart TD
   P1 --> P15["1.5: Spelling"]
   P15 --> P155["1.55: CI checks"]
   P155 --> P16["1.6: Branch updates"]
-  P16 --> P162["1.62: Nudge stalled CI"]
+  P16 --> P161["1.61: Resolve merge conflicts"]
+  P161 --> P162["1.62: Nudge stalled CI"]
   P162 --> P163["1.63: Blocking-PR watchdog"]
   P163 --> P165["1.65: Auto-merge"]
   P165 --> P167["1.67: Issue closure"]
@@ -169,7 +172,7 @@ flowchart TD
   style P18 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style P185 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style P2 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
-  style Sleep fill:#707070,stroke:#333,color:#fff
+  style Sleep fill:#707070,stroke:,color:#fff
 ```
 
 **Priority order (highest to lowest):**
@@ -178,25 +181,26 @@ flowchart TD
 | -------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | 1        | PR feedback and reviews                               | Authorised commenters or thumbs-up                                                                                                       |
 | 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
-| 1.55     | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs (Issue #562)                                                                                             |
+| 1.55 | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs |
 | 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
-| 1.62     | Nudge stalled CI                                      | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing (Issue #2100)                                              |
-| 1.63     | Blocking-PR stall watchdog                            | Detect and escalate PRs that block `work-on` issues; the fixes stay with 1.55 and 1 (Issue #4025)                                       |
+| 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick; labels the PR `merge-conflict`, bounded to two attempts before `needs-human` |
+| 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |
+| 1.63 | Blocking-PR stall watchdog | Detect and escalate PRs that block `work-on` issues; the fixes stay with 1.55 and 1 |
 | 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
 | 1.66     | Branch cleanup                                        | Delete branches for merged PRs — runs once at start-up, not every cycle                                                                 |
 | 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                   |
-| 1.68     | Closed-PR recovery                                    | Recover assigned issues with closed-without-merge PRs (Issue #787)                                                                       |
+| 1.68 | Closed-PR recovery | Recover assigned issues with closed-without-merge PRs |
 | 1.7      | Milestone completion                                  | Final consolidation PR                                                                                                                   |
 | 1.72     | Milestone branch sync                                 | Merge the default branch into open `milestone/*` branches; claims nothing                                                                |
 | 1.75     | Issue refinement                                      | `refine-issue` label                                                                                                                     |
-| 1.78     | Grill-me clarification                                | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass (Issue #1619)                   |
-| 1.79     | Quorum plan-off                                       | `quorum` label — decides what the plan is before planning splits it (Issue #4112)                                                        |
+| 1.78 | Grill-me clarification | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass |
+| 1.79 | Quorum plan-off | `quorum` label — decides what the plan is before planning splits it |
 | 1.80     | Planning                                              | `planning` label                                                                                                                         |
 | 1.85     | Question answering                                    | `question` label                                                                                                                         |
 | 1.9      | Stale workflow detection                              | Flag `planning` / `question` labels left in place with no progress                                                                       |
-| 2        | New implementation issues                             | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (Issue #2022 — `help wanted` / `claude` retired)       |
-| 2.5      | Low-priority backlog                                  | `low-priority` label (Issue #1721) — only consulted when no eligible higher-tier candidate exists in any scanned repo                    |
-| 2.9      | Idle-task framework                                   | `idle-task` label (Issue #1959) — strictly below low-priority; the only label the Vibe Coder may self-apply                              |
+| 2 | New implementation issues | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (`help wanted` / `claude` retired) |
+| 2.5 | Low-priority backlog | `low-priority` label — only consulted when no eligible higher-tier candidate exists in any scanned repo |
+| 2.9 | Idle-task framework | `idle-task` label — strictly below low-priority; the only label the Vibe Coder may self-apply |
 | Idle     | Security scan                                         | Fired after a full cycle ends with no claimable work in any monitored repo. See [Security Scans — Operator Manual](../SECURITY-SCAN.md). |
 
 ## 📏 Shared invariants

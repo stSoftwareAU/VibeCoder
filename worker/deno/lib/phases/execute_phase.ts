@@ -30,6 +30,7 @@ import {
   recordPhaseCompletion,
 } from "../session_resume.ts";
 import { ensureHistoryDepth } from "../git_history.ts";
+import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import {
   PRIOR_PROGRESS_PROMPT_NOTE,
   saveResumeState,
@@ -53,6 +54,31 @@ import {
   resolveExtensionRegime,
 } from "../execute_timeout.ts";
 import { reportRunDeadline } from "../slot_context.ts";
+
+/**
+ * True when the worker branch has at least one commit ahead of its base
+ * (Issue #45). Used to detect a false-positive auth classification: a run that
+ * produced commits is not a credential failure, so its outcome must not be
+ * released as "no PR raised". Best-effort — any git error resolves to `false`
+ * so the caller keeps its existing behaviour.
+ */
+async function branchHasCommitsAhead(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<boolean> {
+  const base = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    state.baseBranch,
+    { cwd: state.repoPath },
+  );
+  if (!base.ok) return false;
+  const log = await deps.git.runGitCommand(
+    ["rev-list", "--count", `${base.value}..${state.branchName}`],
+    { cwd: state.repoPath },
+  );
+  if (!log.ok || log.value.code !== 0) return false;
+  return parseInt(log.value.stdout.trim(), 10) > 0;
+}
 
 /**
  * Build the prompt and execute Claude to implement the issue.
@@ -446,23 +472,93 @@ async function executeClaudeBody(
     return { status: "failure", reason };
   }
 
-  // Check for auth errors (Issue #1188 — detailed failure messages)
-  if (deps.claude.isClaudeAuthError(claudeResult.value.output)) {
+  // Issue #46: a SIGTERM the worker never requested — an external kill (a tool
+  // the agent ran, the CLI, the container, a stray signal). The old code let
+  // this `terminated` result fall through to change detection and `continue`,
+  // so quality-gate and completion ran over a half-done tree and failed for
+  // the wrong reason ("no commits ahead"). Fail the phase with the kill as the
+  // reason (which classifies as `killed` -> infrastructure, so the bounded
+  // retry applies), after the same pushed-PR self-heal the SIGKILL path uses.
+  if (claudeResult.value.externalSigterm) {
+    const existingPr = await deps.pr.findExistingPrForIssue(repo, issueNumber);
+    if (existingPr.ok && existingPr.value) {
+      logger.info(
+        "PR already exists despite the external SIGTERM, treating as success",
+      );
+      return { status: "continue" };
+    }
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );
-    // The evidence must survive (Issue #3234): during a live fleet auth
-    // outage this branch discarded Claude's own words, leaving
-    // "authentication error" indistinguishable from a usage-limit block or
-    // a classifier false positive on issue content that mentions tokens.
-    const authSnippet = claudeResult.value.output.slice(-500).trim() ||
-      "(no output captured)";
-    const reason = formatDetailedFailureMessage("Claude authentication error", {
-      elapsedSeconds,
-      clarityStatus: state.clarityStatus,
-      lastOutputSnippet: authSnippet,
-    });
+    const stderrTail = (claudeResult.value.stderr ?? "").trim().slice(-400);
+    const snippet = [state.claudeOutput.slice(-500), stderrTail]
+      .filter((part) => part.length > 0)
+      .join("\n--- stderr ---\n");
+    logger.warn(
+      "Claude killed by an external SIGTERM (not a worker-requested shutdown)",
+      { rawExitCode: claudeResult.value.rawExitCode },
+    );
+    const reason = formatDetailedFailureMessage(
+      "Claude was killed by an external SIGTERM (exit 143) — the worker did " +
+        "not request this shutdown",
+      {
+        elapsedSeconds,
+        outputSize: state.claudeOutput.length,
+        clarityStatus: state.clarityStatus,
+        lastOutputSnippet: snippet || undefined,
+        rawExitCode: claudeResult.value.rawExitCode ?? 143,
+        killDiagnostics: claudeResult.value.killDiagnostics,
+      },
+    );
     return { status: "failure", reason };
+  }
+
+  // Check for auth errors (Issue #1188 — detailed failure messages).
+  // Issue #45: an auth failure is the CLI's OWN signal — a non-zero exit whose
+  // stderr or final error lines match — never the body of a successful
+  // transcript. #36 (a redaction issue whose prose mentions "api key") exited
+  // having raised a correct PR, yet the whole-transcript scan tripped and
+  // recorded the success as an authentication failure. Read only the CLI's
+  // error surface (stderr + the final output lines), and only for a non-zero
+  // exit.
+  const authSurface = [
+    claudeResult.value.stderr ?? "",
+    claudeResult.value.output.trim().split("\n").slice(-15).join("\n"),
+  ].join("\n");
+  if (
+    claudeResult.value.exitCode !== 0 &&
+    deps.claude.isClaudeAuthError(authSurface)
+  ) {
+    // Cross-check for evidence of success before blaming the credential: a run
+    // that left commits ahead of base is a false positive on issue content,
+    // not an auth failure — fall through so the good branch/PR is not
+    // discarded and the claim is not released as "no PR raised" (Issue #45).
+    if (await branchHasCommitsAhead(state, deps)) {
+      logger.warn(
+        "Auth-error pattern matched but the branch has commits ahead of " +
+          "base — treating as a classifier false positive, not an " +
+          "authentication failure",
+        { branch: state.branchName },
+      );
+    } else {
+      const elapsedSeconds = Math.round(
+        (Date.now() - state.executeStartTime) / 1000,
+      );
+      // The evidence must survive (Issue #3234): during a live fleet auth
+      // outage this branch discarded Claude's own words, leaving
+      // "authentication error" indistinguishable from a usage-limit block.
+      const authSnippet = authSurface.slice(-500).trim() ||
+        "(no output captured)";
+      const reason = formatDetailedFailureMessage(
+        "Claude authentication error",
+        {
+          elapsedSeconds,
+          clarityStatus: state.clarityStatus,
+          lastOutputSnippet: authSnippet,
+        },
+      );
+      return { status: "failure", reason };
+    }
   }
 
   // Rate/usage-limit give-up (Issue #4315): the runner reports exit 2 when
@@ -516,30 +612,73 @@ async function executeClaudeBody(
     ["diff", "--stat", "HEAD"],
     { cwd: state.repoPath },
   );
+
+  // Issue #106: resolve the base to a ref this clone can actually compare
+  // against. A milestone base is frequently present only as `origin/<base>`,
+  // so a bare `<base>..HEAD` fails with exit 128 — and the old check inspected
+  // only whether the command ran, never its exit code, so the failure read as
+  // "no commits" and a run that had produced a merged PR was escalated as
+  // analysis-only. Resolve loudly: on an unresolvable base, fall back to the
+  // existing-PR backstop and otherwise surface the error, never "no changes".
+  const baseRef = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    state.baseBranch,
+    { cwd: state.repoPath },
+  );
+  if (!baseRef.ok) {
+    logger.warn("Could not resolve the base ref for change detection", {
+      baseBranch: state.baseBranch,
+      error: baseRef.error.message,
+    });
+    const existingPr = await deps.pr.findExistingPrForIssue(repo, issueNumber);
+    if (existingPr.ok && existingPr.value) {
+      logger.info(
+        "PR already exists — treating the base-ref resolution failure as non-fatal",
+      );
+      return { status: "continue" };
+    }
+    return {
+      status: "failure",
+      reason:
+        `change detection could not resolve base ref '${state.baseBranch}': ${baseRef.error.message}`,
+    };
+  }
+
   // Ensure enough history for the commit-range log on a shallow clone (Issue #1502)
-  await ensureHistoryDepth([state.baseBranch, "HEAD"], { cwd: state.repoPath });
+  await ensureHistoryDepth([baseRef.value, "HEAD"], { cwd: state.repoPath });
   const logResult = await deps.git.runGitCommand(
-    ["log", `${state.baseBranch}..HEAD`, "--oneline"],
+    ["log", `${baseRef.value}..HEAD`, "--oneline"],
     { cwd: state.repoPath },
   );
 
   const hasUncommitted = diffResult.ok &&
     diffResult.value.stdout.trim().length > 0;
-  const hasNewCommits = logResult.ok &&
-    logResult.value.stdout.trim().length > 0;
+  // Issue #106: a non-zero git exit is an ERROR, never "no commits". Only a
+  // command that ran AND exited 0 with empty output means the branch is level
+  // with its base.
+  const logOk = logResult.ok && logResult.value.code === 0;
+  const hasNewCommits = logOk && logResult.value.stdout.trim().length > 0;
 
   if (!hasUncommitted && !hasNewCommits) {
+    if (!logOk) {
+      logger.warn("git log <base>..HEAD failed during change detection", {
+        baseRef: baseRef.value,
+        code: logResult.ok ? logResult.value.code : undefined,
+        stderr: logResult.ok ? logResult.value.stderr.trim() : undefined,
+      });
+    }
+
     // Self-healing: check for remote commits (Issue #585)
     // Ensure enough history for the commit-range log on a shallow clone (Issue #1502)
     await ensureHistoryDepth(
-      [state.baseBranch, `origin/${state.branchName}`],
+      [baseRef.value, `origin/${state.branchName}`],
       { cwd: state.repoPath },
     );
     const remoteDiff = await deps.git.runGitCommand(
-      ["log", `${state.baseBranch}..origin/${state.branchName}`, "--oneline"],
+      ["log", `${baseRef.value}..origin/${state.branchName}`, "--oneline"],
       { cwd: state.repoPath },
     );
-    const hasRemoteCommits = remoteDiff.ok &&
+    const hasRemoteCommits = remoteDiff.ok && remoteDiff.value.code === 0 &&
       remoteDiff.value.stdout.trim().length > 0;
 
     if (hasRemoteCommits) {
@@ -552,6 +691,19 @@ async function executeClaudeBody(
     if (existingPr.ok && existingPr.value) {
       logger.info("PR already exists despite no local changes");
       return { status: "continue" };
+    }
+
+    // Issue #106: if the range comparison itself errored and nothing else
+    // found work, the state is undetermined — surface it, never silently
+    // conclude no_changes (which escalates to analysis-only).
+    if (!logOk) {
+      return {
+        status: "failure",
+        reason: `change detection failed: git log ${baseRef.value}..HEAD ` +
+          (logResult.ok
+            ? `exited ${logResult.value.code}: ${logResult.value.stderr.trim()}`
+            : `could not run: ${logResult.error.message}`),
+      };
     }
 
     return { status: "early_exit", reason: "no_changes" };

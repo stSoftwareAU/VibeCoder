@@ -99,7 +99,7 @@ export function createDefaultRegistry(): CommandRegistry {
 
 ### ⚠️ Registry Error Handling
 
-Registry methods return `Result` types instead of throwing (Issue #223):
+Registry methods return `Result` types instead of throwing:
 
 ```typescript
 const registry = createCommandRegistry();
@@ -212,7 +212,7 @@ Universal specs (applied to every repo regardless of language) include:
 
 - **`gitleaks`** — secret scanning on every PR.
 - **`semgrep`** — SAST scanning on every PR.
-- **`markdown-lint`** (Issue #1686) — runs `markdownlint-cli2` against
+- **`markdown-lint`** — runs `markdownlint-cli2` against
   the same `.markdownlint-cli2.jsonc` configuration used locally by
   `quality.sh`, on every PR and on pushes to the default branch.
   Optionally mirrors the local `check-mermaid` quality gate when the
@@ -221,7 +221,7 @@ Universal specs (applied to every repo regardless of language) include:
 Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
 see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
 
-### Pinning third-party actions in templates (Issue #3645)
+### Pinning third-party actions in templates
 
 Every emitted template references third-party CI components by immutable
 digest — a 40-character commit SHA for actions, a `@sha256:` digest for
@@ -237,7 +237,7 @@ When you add or bump a template:
   Adding a pin there is the only way to reference a new action; the
   helper throws for an unrecorded one.
 - Bump the SHA and the `version` label together, honouring the 24-hour
-  supply-chain quarantine for external dependencies (Issue #1613).
+  supply-chain quarantine for external dependencies.
 - Actions that read their behaviour from the ref name
   (`dtolnay/rust-toolchain@stable`, `taiki-e/install-action@<tool>`) need
   an explicit `toolchain:` / `tool:` input once pinned, because a SHA
@@ -254,7 +254,7 @@ A small set of commands target one-off operator workflows rather than the
 main scan/issue/PR loop. They are registered alongside the regular
 commands and run via `deno run worker/deno/mod.ts <name>`.
 
-### `purge-stale-workflow-issues` (Issue #1582)
+### `purge-stale-workflow-issues`
 
 Re-audits each configured repo (or a single repo passed via `--repo`)
 and closes any open issue carrying a workflow-sync deduplication tag —
@@ -275,18 +275,18 @@ deno run --allow-all worker/deno/mod.ts \
 ```
 
 The command is intended as a one-off cleanup after improvements to the
-workflow auditor (Issues #1578, #1579) — the existing dedup tag prevents
+workflow auditor — the existing dedup tag prevents
 the regular `workflow-sync` from re-creating the false-positive issues,
 but it does not retroactively close them.
 
-### `audit-default-branch-rulesets` (Issue #4356)
+### `audit-default-branch-rulesets`
 
 Read-only sweep of the default-branch **ruleset** decision. For every repo it
 prints what the setup-time sync **would** do — `create` / `update` the worker's
 `Vibe Coder default branch` ruleset, `delete` its own stale one from a
 direct-push branch, or skip (`direct-push-branch`, `opted-out`,
 `existing-ruleset`, `no-reported-checks`) — as a Markdown table. Nothing is
-written. See [MERGE.md → Never lock a direct-push branch](MERGE.md#never-lock-a-direct-push-branch-issue-4356)
+written. See [MERGE.md → Never lock a direct-push branch](MERGE.md#never-lock-a-direct-push-branch)
 for the decision.
 
 ```bash
@@ -384,11 +384,11 @@ troubleshooting symptoms.
 
 ## 🔗 Shell Integration (Internal)
 
-`run.sh` and `run.ps1` launch the worker container, which `exec`s Deno on the `run-entrypoint` driver inside it (Issues #3504, #4065, #4066 — no bash on the runtime path). In the opt-in native run mode `run.sh` starts the same `run-entrypoint` driver directly on the host instead (Issue #4148). The remaining shell tooling (e.g. `quality.sh`) still calls Deno commands via `worker/shared/deno_bridge.sh`:
+`run.sh` and `run.ps1` launch the worker container, which `exec`s Deno on the `run-entrypoint` driver inside it (— no bash on the runtime path). In the opt-in native run mode `run.sh` starts the same `run-entrypoint` driver directly on the host instead. The remaining shell tooling (e.g. `quality.sh`) invokes Deno commands directly (the `deno_bridge.sh` bash bridge was retired in Issue #97 — nothing sourced it):
 
-- `deno_run_command "command-name" [--arg value ...]` — Executes a Deno command from shell
+- `deno run --allow-X worker/deno/mod.ts <command-name> [--arg value ...]`
 
-> **Note:** This bridge is an internal implementation detail. All new logic should be added as Deno TypeScript commands — do not add business logic to shell scripts.
+> **Note:** All new logic should be added as Deno TypeScript commands — do not add business logic to shell scripts.
 
 ## 🧪 Running Tests
 

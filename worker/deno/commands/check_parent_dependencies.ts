@@ -5,7 +5,7 @@
  * that must be completed first. It uses the GitHub CLI to fetch issue data
  * and the issue_dependencies module for the dependency resolution logic.
  *
- * Usage from shell (via deno_bridge.sh):
+ * Usage from shell (via the Deno CLI (`deno run mod.ts <command>`)):
  *   deno_run_command "check-parent-deps" --repo "owner/repo" --issue 123
  *
  * Output:

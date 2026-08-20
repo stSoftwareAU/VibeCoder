@@ -1,5 +1,5 @@
 /**
- * Tests for best_practices prompt v5 (Issue #2638, follow-up to #2624).
+ * Tests for best_practices prompt v5 (, follow-up to).
  *
  * v5 applies the Fable-5 simplification recipe: the Hard Constraints are
  * stated once, a phase-output description list is added, the Phase 2
@@ -16,7 +16,7 @@
  * `<!-- finding-id:` marker, the `best-practice-ignore` suppression
  * grammar, and the 6-issue cap.
  *
- * Also guards immutability of v4 (Issue #235).
+ * Also guards immutability of v4.
  *
  * Australian English spelling used throughout.
  */
@@ -124,9 +124,9 @@ Deno.test(
     if (!result.ok) return;
     for (
       const heading of [
-        "### Cross-bucket: supply-chain hardening (Issue #2184)",
-        "### Cross-bucket: dead dependencies (Issue #2263)",
-        "### Cross-bucket: deprecated config on framework bump (Issue #2263)",
+        "### Cross-bucket: supply-chain hardening",
+        "### Cross-bucket: dead dependencies",
+        "### Cross-bucket: deprecated config on framework bump",
       ]
     ) {
       assert(
@@ -151,7 +151,7 @@ Deno.test(
 );
 
 Deno.test(
-  "best_practices prompt v4 - immutable: keeps the 'prefer the smallest' tone v5 drops (Issue #235)",
+  "best_practices prompt v4 - immutable: keeps the 'prefer the smallest' tone v5 drops",
   async () => {
     const result = await loadPrompt("best_practices", "v4", PROMPTS_DIR);
     assert(result.ok);

@@ -1,8 +1,8 @@
 # 🔐 Full-history secret scan
 
 Operator manual for the audited, re-runnable secrets sweep across **every ref**
-of this repository (Issue [#4190](https://github.com/stSoftwareAU/VibeCoder/issues/4190),
-part of the [#4160](https://github.com/stSoftwareAU/VibeCoder/issues/4160)
+of this repository (Issue,
+part of the
 proving-ground hardening).
 
 `.github/workflows/gitleaks.yml` scans a pull request's commit range. That is
@@ -119,7 +119,7 @@ fails the scan — and stays failing even after the credential stops being
 detected, because a leaked credential is live until it is rotated, not until it
 stops appearing in a scan.
 
-**Unrotated confirmed findings block Phase 3** of the #4160 plan.
+**Unrotated confirmed findings block Phase 3** of the plan.
 
 ## History is not rewritten
 
