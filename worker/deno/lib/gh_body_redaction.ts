@@ -26,6 +26,17 @@
  * {@link UnredactableBodyError} rather than being published unscanned. Callers
  * that pass no reader keep the argv-only behaviour.
  *
+ * **`gh api --input <file>` bodies (Issue #92).** `gh api …/comments --input
+ * body.json` POSTs the file's JSON as the request body — the same public sink
+ * as a comment, invisible to the argv. Supply a reader (to scan) and a
+ * {@link BodyFileWriter} (to materialise a masked copy) and the published-text
+ * keys of the JSON body (`body`, `message`, `note`, `comment`) are redacted;
+ * when something is masked the redacted JSON is written to a *fresh* temp file
+ * and `--input` is pointed at that, so the agent's own file is never rewritten.
+ * A body that is not a JSON object, or that hides a secret outside a redactable
+ * field, raises {@link UnredactableBodyError} rather than being published
+ * unscanned — unparseable never means unscanned.
+ *
  * ```mermaid
  * flowchart LR
  *     C["comment / PR-body call sites"] --> S["spawnGh()"]
@@ -47,6 +58,9 @@ const BODY_FLAGS = new Set(["--body", "-b"]);
 /** Flags whose following argument names a file holding published text. */
 const BODY_FILE_FLAGS = new Set(["--body-file", "-F"]);
 
+/** Flag whose following argument names a file `gh api` sends as the body. */
+const INPUT_FLAGS = new Set(["--input"]);
+
 /** Flags that carry a `key=value` field; only these keys are published text. */
 const FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
 
@@ -64,6 +78,15 @@ const BODY_FIELD_KEYS = new Set(["body", "message", "note", "comment"]);
  * out of file reads altogether.
  */
 export type BodyFileReader = (path: string) => string;
+
+/**
+ * Writes `content` to a fresh file and returns its path. Injected for the same
+ * reason as {@link BodyFileReader}: it keeps this module a pure function of its
+ * inputs (no `Deno` calls) and lets the caller decide where the masked copy of
+ * a `--input` body lives (Issue #92). The agent's own file is never touched —
+ * a redacted body always lands in a new file this writer creates.
+ */
+export type BodyFileWriter = (content: string) => string;
 
 /**
  * A body destined for a public sink that could not be scanned for secrets.
@@ -88,14 +111,20 @@ export class UnredactableBodyError extends Error {
  *
  * @param args - Arguments about to be passed to the `gh` binary.
  * @param readBodyFile - Optional reader; supplying it extends redaction to the
- *   contents of `--body-file` / `-F <path>` / `-F key=@path` arguments.
+ *   contents of `--body-file` / `-F <path>` / `-F key=@path` / `--input`
+ *   arguments.
+ * @param writeBodyFile - Optional writer; needed only to materialise a masked
+ *   copy of an `--input` body. When an `--input` body needs masking and no
+ *   writer is supplied, the call fails closed rather than publish it.
  * @returns A new array with body arguments redacted; all other arguments are
- *   returned unchanged. The argument count is always preserved.
+ *   returned unchanged. Every argument except a rewritten `--input` path is
+ *   left byte-for-byte alone.
  * @throws UnredactableBodyError when a body source cannot be scanned.
  */
 export function redactGhBodyArgs(
   args: readonly string[],
   readBodyFile?: BodyFileReader,
+  writeBodyFile?: BodyFileWriter,
 ): string[] {
   const out = [...args];
   for (let i = 0; i < out.length; i++) {
@@ -135,6 +164,26 @@ export function redactGhBodyArgs(
         const path = arg.substring("--body-file=".length);
         const masked = maskedBodyFile(path, readBodyFile);
         if (masked !== undefined) out[i] = `--body=${masked}`;
+        continue;
+      }
+
+      // `--input <path>` — `gh api` POSTs the file's JSON as the request body.
+      if (INPUT_FLAGS.has(arg) && next !== undefined) {
+        const masked = maskedInputFile(next, readBodyFile);
+        if (masked !== undefined) {
+          out[i + 1] = materialiseMaskedBody(masked, writeBodyFile);
+        }
+        i++;
+        continue;
+      }
+
+      // `--input=<path>`
+      if (arg.startsWith("--input=")) {
+        const path = arg.substring("--input=".length);
+        const masked = maskedInputFile(path, readBodyFile);
+        if (masked !== undefined) {
+          out[i] = `--input=${materialiseMaskedBody(masked, writeBodyFile)}`;
+        }
         continue;
       }
     }
@@ -201,4 +250,123 @@ function maskedBodyFile(
   }
   const masked = redactSecrets(text);
   return masked === text ? undefined : masked;
+}
+
+/**
+ * Read a `--input` body file and return its masked JSON, or undefined when
+ * there was nothing to mask (the `--input` reference is then left as it was).
+ *
+ * @throws UnredactableBodyError when the body cannot be read or safely masked.
+ */
+function maskedInputFile(
+  path: string,
+  readBodyFile: BodyFileReader,
+): string | undefined {
+  if (path === "-") {
+    throw new UnredactableBodyError(
+      path,
+      "a request body read from stdin cannot be scanned for secrets — write " +
+        "it to a file and pass --input <path>",
+    );
+  }
+  let text: string;
+  try {
+    text = readBodyFile(path);
+  } catch (err) {
+    throw new UnredactableBodyError(
+      path,
+      `could not read the --input body file ${path}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  return maskedJsonBody(text);
+}
+
+/**
+ * Mask the published-text keys of a JSON request body.
+ *
+ * Redacts the string values of {@link BODY_FIELD_KEYS} on the top-level
+ * object, mirroring the `-f body=…` field rules. Returns the re-serialised
+ * JSON when a value changed, or undefined when nothing needed masking. Fails
+ * closed on a secret it cannot place structurally: a non-object body, or a
+ * secret surviving in any field the key-scan does not cover — an unparseable
+ * or off-field secret must never pass through unscanned.
+ *
+ * @throws UnredactableBodyError when the body hides a secret it cannot mask.
+ */
+function maskedJsonBody(text: string): string | undefined {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return rawBodyFallback(text);
+  }
+  if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
+    return rawBodyFallback(text);
+  }
+  const obj = doc as Record<string, unknown>;
+  let changed = false;
+  for (const key of Object.keys(obj)) {
+    const value = obj[key];
+    if (BODY_FIELD_KEYS.has(key.toLowerCase()) && typeof value === "string") {
+      const redacted = redactSecrets(value);
+      if (redacted !== value) {
+        obj[key] = redacted;
+        changed = true;
+      }
+    }
+  }
+  const serialised = changed ? JSON.stringify(obj) : text;
+  // A secret the key-scan could not reach — a non-body field, a nested value —
+  // still survives here. Fail closed rather than publish it unscanned.
+  if (redactSecrets(serialised) !== serialised) {
+    throw new UnredactableBodyError(
+      "<input-body>",
+      "the --input body carries a secret outside its redactable body " +
+        "field(s) and cannot be safely masked — remove it or pass the body " +
+        "inline with -f body=…",
+    );
+  }
+  return changed ? serialised : undefined;
+}
+
+/**
+ * Handle an `--input` body that is not a JSON object: not something whose keys
+ * can be redacted. Do not let unparseable mean unscanned — fail closed when a
+ * secret is present, otherwise leave the reference untouched.
+ *
+ * @throws UnredactableBodyError when a non-object body contains a secret.
+ */
+function rawBodyFallback(text: string): undefined {
+  if (redactSecrets(text) !== text) {
+    throw new UnredactableBodyError(
+      "<input-body>",
+      "the --input body is not a JSON object and contains a secret, so it " +
+        "cannot be safely masked — send a JSON object body or remove the " +
+        "secret",
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Write a masked `--input` body to a fresh file and return its path, so the
+ * agent's own file is never rewritten. Fails closed when no writer is supplied
+ * — a body that needed masking must not be published from its original file.
+ *
+ * @throws UnredactableBodyError when masking was needed but no writer exists.
+ */
+function materialiseMaskedBody(
+  content: string,
+  writeBodyFile?: BodyFileWriter,
+): string {
+  if (!writeBodyFile) {
+    throw new UnredactableBodyError(
+      "<input-body>",
+      "the --input body needed masking but no writer was supplied to " +
+        "materialise the redacted copy",
+    );
+  }
+  return writeBodyFile(content);
 }

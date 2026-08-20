@@ -39,6 +39,7 @@
 import { classifyGhMutation } from "./audit_mutation_classifier.ts";
 import { normaliseGhArgs } from "./gh_flag_parser.ts";
 import { WORKER_FORBIDDEN_LABEL_LITERALS } from "./worker_label_guard.ts";
+import type { BodyFileReader } from "./gh_body_redaction.ts";
 
 /** The current run's egress state, as passed to the guard child process. */
 export interface GhGuardContext {
@@ -46,6 +47,14 @@ export interface GhGuardContext {
   active: boolean;
   /** `owner/repo` slugs the run may write to. */
   allowedRepos: readonly string[];
+  /**
+   * Filesystem reader for a `--input <file>` body (Issue #91). Injected rather
+   * than called directly so this module stays pure — it can run in a child
+   * process with no `--allow-read`, and a caller with no reader (the safe
+   * default) simply fails closed on every unreadable body, matching #90.
+   * `gh_guard_cli.ts` supplies `denoBodyFileReader`.
+   */
+  readBodyFile?: BodyFileReader;
 }
 
 /** Which control refused the command — matches the worker's log markers. */
@@ -53,6 +62,7 @@ export type GhGuardMarker =
   | "WRITE_REPO_BLOCKED"
   | "WRITE_TARGET_UNDETERMINABLE"
   | "WORKER_LABEL_REFUSED"
+  | "GH_BODY_UNREADABLE"
   | "GH_UNKNOWN_COMMAND";
 
 /** The guard's verdict for one `gh` argument vector. */
@@ -167,6 +177,14 @@ const FIELD_FLAGS: ReadonlySet<string> = new Set([
   "--raw-field",
 ]);
 
+/**
+ * The subset of field flags whose `@`-prefixed value `gh` reads from a file
+ * (`@-` from stdin) — verified against gh 2.97.0 (Issue #93). `-f`/
+ * `--raw-field` add a static string and never expand `@`, so a literal
+ * `@name` there is a real label name, not a file.
+ */
+const FIELD_FILE_FLAGS: ReadonlySet<string> = new Set(["-F", "--field"]);
+
 /** Reserved workflow labels, lower-cased for case-insensitive matching. */
 const FORBIDDEN_LABELS: ReadonlySet<string> = new Set(
   WORKER_FORBIDDEN_LABEL_LITERALS.map((l) => l.toLowerCase()),
@@ -177,10 +195,22 @@ function splitLabels(value: string): string[] {
   return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-/** Label names carried by a `gh api` field value such as `labels[]=x`. */
-function labelsFromField(field: string): string[] {
+/**
+ * Label names carried by a `gh api` field value such as `labels[]=x`.
+ *
+ * An `@`-prefixed value on a `-F`/`--field` flag is read from a file by `gh`,
+ * so the label names never reach the argv (Issue #93). Emitting the literal
+ * `@path` as a label would be worse than emitting nothing — it would look as
+ * if the guard inspected the value when it did not — so return no names and
+ * let the `unreadableBody` backstop refuse the command. `expandsAtFile` is
+ * false for `-f`/`--raw-field`, where `@literal` really is the label name.
+ */
+function labelsFromField(field: string, expandsAtFile: boolean): string[] {
   const match = field.match(/^labels(?:\[\])?=([\s\S]*)$/);
-  return match ? splitLabels(match[1] ?? "") : [];
+  if (!match) return [];
+  const value = match[1] ?? "";
+  if (expandsAtFile && value.startsWith("@")) return [];
+  return splitLabels(value);
 }
 
 /**
@@ -223,17 +253,102 @@ export function extractLabelValues(rawArgs: readonly string[]): string[] {
     if (FIELD_FLAGS.has(token)) {
       const value = args[i + 1];
       if (value !== undefined) {
-        labels.push(...labelsFromField(value));
+        labels.push(...labelsFromField(value, FIELD_FILE_FLAGS.has(token)));
         i++;
       }
       continue;
     }
     const eq = token.indexOf("=");
     if (eq > 0 && FIELD_FLAGS.has(token.slice(0, eq))) {
-      labels.push(...labelsFromField(token.slice(eq + 1)));
+      labels.push(
+        ...labelsFromField(
+          token.slice(eq + 1),
+          FIELD_FILE_FLAGS.has(token.slice(0, eq)),
+        ),
+      );
     }
   }
   return labels;
+}
+
+/** Outcome of scanning a `--input` body file for reserved workflow labels. */
+type BodyScan =
+  | { kind: "clean" }
+  | { kind: "forbidden"; label: string }
+  | { kind: "unreadable" };
+
+/**
+ * Label names from a `["a", {"name":"b"}]` array, or `null` if any element is
+ * a shape the extractor does not understand (fail closed on the unknown).
+ */
+function labelNamesFromArray(arr: readonly unknown[]): string[] | null {
+  const names: string[] = [];
+  for (const el of arr) {
+    if (typeof el === "string") {
+      names.push(el);
+    } else if (
+      el !== null && typeof el === "object" &&
+      typeof (el as { name?: unknown }).name === "string"
+    ) {
+      names.push((el as { name: string }).name);
+    } else {
+      return null;
+    }
+  }
+  return names;
+}
+
+/**
+ * Scan a `gh api --input` body for reserved workflow labels (Issue #91).
+ *
+ * Understands the three shapes GitHub's REST API accepts for labels — the bare
+ * array `["a"]`, `{"labels": ["a"]}`, and `{"labels": [{"name":"a"}]}` — plus
+ * a body carrying no `labels` field at all (an issue create/edit). Anything
+ * else — invalid JSON, a non-object/array top level, a `labels` field that is
+ * not an array, an array element that is neither a string nor `{name}` — is
+ * reported `unreadable` so the caller fails closed, never allowed unscanned.
+ * The extracted names run through the same {@link FORBIDDEN_LABELS} denylist,
+ * case-insensitively, as argv-sourced labels — one authoritative list.
+ */
+function scanBodyForForbiddenLabel(text: string): BodyScan {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return { kind: "unreadable" };
+  }
+  let names: string[] | null;
+  if (Array.isArray(doc)) {
+    names = labelNamesFromArray(doc);
+  } else if (doc !== null && typeof doc === "object") {
+    const labels = (doc as { labels?: unknown }).labels;
+    if (labels === undefined) {
+      names = [];
+    } else if (Array.isArray(labels)) {
+      names = labelNamesFromArray(labels);
+    } else {
+      names = null;
+    }
+  } else {
+    return { kind: "unreadable" };
+  }
+  if (names === null) return { kind: "unreadable" };
+  const forbidden = names.find((l) => FORBIDDEN_LABELS.has(l.toLowerCase()));
+  if (forbidden !== undefined) return { kind: "forbidden", label: forbidden };
+  return { kind: "clean" };
+}
+
+/** The #90 fail-closed refusal for an unscannable REST body. */
+function unreadableBodyRefusal(verb: string): GhGuardDecision {
+  return {
+    allowed: false,
+    marker: "GH_BODY_UNREADABLE",
+    reason: `Refused ${verb} from the agent subprocess — the request body ` +
+      `is supplied by \`--input\` and this guard cannot scan it for reserved ` +
+      `workflow labels (stdin, an unreadable path, or a body whose shape it ` +
+      `does not understand). Pass the fields inline with \`-f\`/\`--field\`, ` +
+      `or supply a readable JSON file.`,
+  };
 }
 
 /**
@@ -260,6 +375,46 @@ export function evaluateGhCommand(
         reason: `label=${forbidden} verb=${info.verb} ` +
           `caller=agent-subprocess reason=reserved_workflow_label`,
       };
+    }
+
+    // Issue #11/#90/#91: a REST mutation whose body is supplied by `--input`
+    // (or an `@file`-sourced query) is argv-invisible, so `extractLabelValues`
+    // above saw nothing to reject — a prompt-injected agent could hide a
+    // reserved label in the file. #90 failed closed on every such body; #91
+    // restores the legitimate case: when the argv names a *readable file* and
+    // a reader is supplied, read it and scan for reserved labels. Only a body
+    // that is successfully parsed and fully understood is allowed through;
+    // stdin (`--input -`), a `@file` field value, an unreadable path, invalid
+    // JSON, or an unrecognised shape all carry no readable `bodyFilePath` (or
+    // fail the scan) and stay refused. This sits WITH the reserved-label
+    // check, before the `ctx.active` early return, so the backstop is as
+    // unconditional as the denylist it guards. TOCTOU: the agent could rewrite
+    // the file between this read and `gh`'s — not closable from a PATH shim,
+    // and no worse than #90; the argv-visible path has no such window.
+    if (info.unreadableBody) {
+      if (info.bodyFilePath !== undefined && ctx.readBodyFile) {
+        let text: string;
+        try {
+          text = ctx.readBodyFile(info.bodyFilePath);
+        } catch {
+          return unreadableBodyRefusal(info.verb);
+        }
+        const scan = scanBodyForForbiddenLabel(text);
+        if (scan.kind === "forbidden") {
+          return {
+            allowed: false,
+            marker: "WORKER_LABEL_REFUSED",
+            reason: `label=${scan.label} verb=${info.verb} ` +
+              `caller=agent-subprocess ` +
+              `reason=reserved_workflow_label_in_input_body`,
+          };
+        }
+        if (scan.kind === "unreadable") return unreadableBodyRefusal(info.verb);
+        // scan.kind === "clean": the body carries no reserved label — fall
+        // through to the write-repo allowlist checks below, which still apply.
+      } else {
+        return unreadableBodyRefusal(info.verb);
+      }
     }
   }
 
