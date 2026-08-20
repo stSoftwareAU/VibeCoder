@@ -11,6 +11,7 @@
  */
 
 import type { GitHubClient, Logger, WorkerConfig } from "../types.ts";
+import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
 import type { IssueContext } from "./issue_worker_types.ts";
 import type {
   DiscoveredIssue,
@@ -1973,19 +1974,29 @@ export async function createProductionRunCoreDeps(
       await terminateActiveAgentRuns(reason, logger, options);
     },
 
-    // Minimum claim runway (Issue #4304): default 30 minutes — a Priority-2
-    // claim taken with less runway is doomed on arrival. Operator override
-    // via MIN_CLAIM_RUNWAY_SECONDS; 0 disables the floor.
+    // Minimum claim runway (Issue #4304, VibeCoder#170): default 5 minutes —
+    // only a claim that cannot even finish setup is refused. The cadence is
+    // "work as many issues as possible per run": a late claim runs
+    // deadline-bound and WIP preservation (Issues #47/#148) carries its
+    // progress into the next run. Operator override via
+    // MIN_CLAIM_RUNWAY_SECONDS; 0 disables the floor.
     minClaimRunwaySeconds: (() => {
       const raw = Deno.env.get("MIN_CLAIM_RUNWAY_SECONDS");
       const parsed = raw === undefined ? NaN : Number(raw);
-      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1800;
+      return Number.isFinite(parsed) && parsed >= 0
+        ? parsed
+        : DEFAULT_MIN_CLAIM_RUNWAY_SECONDS;
     })(),
 
-    // Full-budget claim gate (Issue #47): when the cycle can fit a full
-    // execute, refuse a claim whose runway cannot — the deadline-bound
-    // regime becomes a documented exception, not the default cycle tail.
-    fullExecuteBudgetSeconds: config.claudeTimeout,
+    // Full-budget claim gate (Issue #47): opt-in via
+    // CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1. When set, a claim is refused once
+    // the remaining runway cannot fit a full `claude_timeout` execute. Off by
+    // default (VibeCoder#170): it would idle the whole last hour of every
+    // longer cycle, and WIP preservation makes deadline-bound executes safe.
+    fullExecuteBudgetSeconds:
+      Deno.env.get("CLAIM_REQUIRE_FULL_EXECUTE_BUDGET") === "1"
+        ? config.claudeTimeout
+        : undefined,
 
     // Slot-aware sweep (Issue #4178): only heartbeats no live slot owns are
     // stopped, so a sibling slot's healthy heartbeat is never mistaken for
