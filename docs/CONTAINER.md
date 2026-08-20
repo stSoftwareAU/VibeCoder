@@ -213,7 +213,7 @@ changed definition is a different image and nobody has to remember to bump a
 version by hand:
 
 ```bash
-deno run --allow-read worker/deno/mod.ts container-image-hash
+deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash
 # vibe-coder:941c9bfe80fa
 ```
 
@@ -226,13 +226,30 @@ it would invalidate the image on every commit:
 | `container/Containerfile` | The build instructions themselves            |
 | `container/entrypoint.sh` | Baked into the image at `/usr/local/bin`     |
 | `container/tools.json`    | The pinned versions the build must agree with |
+| `container/install-*.sh`  | The provider and tool installers the build runs |
 | `container/providers/*.sh` | The coding-agent provider layer the build installs |
 | `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
+| `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
+
+The last one is not a committed file. `container_tools` is the deployment's own
+selection (see
+[Deployer-supplied build-time tools](CONTAINER-IMAGE.md#deployer-supplied-build-time-tools)),
+and the
+build bakes it into the image, so two hosts that select different tool sets
+must get different tags — otherwise one host's cached `vibe-coder:<hash>`
+silently satisfies the other's requirement and the tool is quietly missing. It
+is mixed in as a canonical, key-sorted serialisation of the **validated** spec,
+so re-ordering keys in `.config.json` does not churn the tag while any change
+of id, version, URL or checksum does. A deployment that selects no tools gets
+exactly the tag it got before the selection existed, so no existing host
+rebuilds. A malformed spec exits non-zero naming the offending field rather
+than falling back to a tools-free tag.
 
 ```mermaid
 flowchart LR
-    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
+    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
+    C["container_tools<br/>(.config.json)"] --> H
     W["docs/, worker/ sources,<br/>cloned repos"] -.ignored.-> H
     H --> R["vibe-coder:&lt;short hash&gt;"]
     R --> D{"image present<br/>locally?"}
