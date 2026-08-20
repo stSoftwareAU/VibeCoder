@@ -239,6 +239,17 @@ drop it) rather than published-then-fixed. This is prompt-only prevention — th
 deterministic presence gate and the model-driven repair below
 remain the backstops.
 
+The two **in-code fallback publish prompts** — `buildCritiqueFallbackPublishPrompt()`
+(used when the critique prompt fails to build) and
+`buildSingleInvocationPlanningPrompt()` (used when the draft stage produced no
+usable plan) — carry the same requirement, so a run that degrades to a fallback
+does not publish a whole plan of gate offenders. Both interpolate the single
+exported `FAILURE_DETECTION_REQUIREMENT` constant in
+`worker/deno/lib/planning_processor.ts` (alongside `RESERVED_LABEL_PROHIBITION`),
+which states the section, the concrete test / CI gate / alert criterion, the
+`N/A — <reason>` escape hatch, and that a bracketed placeholder does not count.
+One constant means the fallbacks cannot drift from each other or from the gate.
+
 #### 🛡️ Failure-Detection presence gate
 
 After a planning run publishes its sub-issues, a **deterministic presence gate**
@@ -246,7 +257,7 @@ verifies that every published sub-issue body carries a filled `## Failure
 Detection` section (the planner emits it from `prompts/planning/` v19 onward,
 ). This closes the "quality escape" of an unchecked prose rule: a
 prompt instruction alone can be silently ignored, so the gate turns a missing
-criterion into a **loud, labelled planning failure** rather than a silent pass.
+criterion into a **loud, labelled outcome** rather than a silent pass.
 
 A sub-issue **passes** when its body contains a `## Failure Detection` heading
 (or a bolded `**Failure detection:**` line) followed by non-whitespace content
@@ -256,17 +267,59 @@ the heading is missing, the section is empty, or it is left as the bracketed
 placeholder.
 
 When any published sub-issue fails the gate the worker first attempts a
-**model-driven self-repair** (see below) before recording a failure. Only the
-sub-issues the repair genuinely could not fix are recorded as **failed**: the
-worker posts a failure comment on the parent naming each un-repairable
-sub-issue, drives the existing failed-once/failed label progression, and posts a
-short actionable comment on each un-repairable sub-issue. The gate makes no
-GitHub mutation beyond those comments, the repair edits, and the label
-progression already used by the planning-failure path. A run whose sub-issues
-all carry the criterion (or that creates zero sub-issues) completes normally —
-no behaviour change. The gate is `worker/deno/lib/failure_detection_gate.ts`,
-wired into the single `closePlanningIssue()` chokepoint; an unreadable sub-issue
-body is skipped (best-effort) rather than mis-reported as a false failure.
+**model-driven self-repair** (see below). Whatever the repair cannot fix becomes
+a **partial repair**, not a planning failure (see the next section). A run whose
+sub-issues all carry the criterion (or that creates zero sub-issues) completes
+normally — no behaviour change. The gate is
+`worker/deno/lib/failure_detection_gate.ts`, wired into the single
+`closePlanningIssue()` chokepoint; an unreadable sub-issue body is skipped
+(best-effort) rather than mis-reported as a false failure.
+
+#### 🩹 Partial repair leaves a resumable state (Issue #59)
+
+A run that **published its sub-issues** and repaired only some of them is not a
+failed planning run. The plan is published and usable, and the published
+sub-issues stay published whatever the run reports — so marking the parent
+`failed-once` only told the retry machinery to re-plan from the top, which is
+the wrong recovery. On stSoftwareAU/GRQ-validation#835 that state was actively
+misleading: 8 sub-issues published, 6 compliant, and the parent nonetheless
+labelled `failed-once`.
+
+That outcome is now distinct from a planning failure. When the run published
+sub-issues but one or more still lack the criterion, the worker:
+
+- applies **`needs-failure-detection-repair`** to the parent (never
+  `failed-once` / `failed`);
+- posts **one** parent comment naming every sub-issue still needing repair and
+  the reason for each (shared wording with the failure comment — see
+  `buildParentPartialRepairComment()`);
+- posts the existing short, actionable comment on **each** offending sub-issue;
+- leaves the parent **open** — reopening it when the planner closed it inline —
+  so the repair stays discoverable; and
+- returns a **success-shaped** result carrying
+  `pendingFailureDetectionRepair`, so the run is not counted as a failed
+  planning run.
+
+`needs-failure-detection-repair` is **reserved** (`RESERVED_LABELS`), so the
+planner can never apply it to a sub-issue as a descriptive label and manufacture
+a phantom repair queue; the worker's own label guard allowlists it, because the
+worker is the only thing that may raise it. The label and its apply helper live
+in `worker/deno/lib/failure_detection_repair_label.ts`.
+
+The **loud failure path is unchanged for genuine planning failures** — a prompt
+failure, a timeout, or a publish failure still drives `handlePlanningFailure()`
+with the `failed-once` → `failed` progression. This change narrows *when* the
+gate fails a run, not the failure machinery itself.
+
+```mermaid
+flowchart TD
+    A[Planning run] --> B{Publish succeeded?}
+    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once → failed"]
+    B -->|yes| D[Gate + self-repair]
+    D --> E{Every sub-issue compliant?}
+    E -->|yes| F[Close parent as completed]
+    E -->|no| G["needs-failure-detection-repair on parent<br/>+ one parent comment naming each<br/>+ per-sub-issue comments<br/>parent left open · run succeeds"]
+```
 
 #### 🔧 Model-driven self-repair
 
@@ -290,23 +343,137 @@ longer say "no served model observed" on the repair path.
 
 ```mermaid
 flowchart TD
-    A[Gate finds offenders] --> B{Self-repair each offender}
-    B -->|draft section, patch, re-gate passes| C[repaired]
-    B -->|read/draft/edit fails, or draft still fails gate| D[stillOffending]
-    C --> E{Any stillOffending?}
-    D --> E
-    E -->|no| F[Run completes successfully]
-    E -->|yes| G[handlePlanningFailure — loud, labelled hard-block]
+    A[Gate finds offenders] --> Z{Budget left for one repair?}
+    Z -->|no| Y[deferred — never attempted]
+    Z -->|yes| B[Read each offender's body]
+    B --> Z2{Budget left for one repair?}
+    Z2 -->|no| Y
+    Z2 -->|yes| C{More than one readable offender?}
+    C -->|yes| D[One batched Claude call<br/>drafts every section]
+    C -->|no| E[Per-offender Claude call<br/>budget checked before each]
+    D -->|output unparseable| E
+    E -->|budget exhausted| Y
+    D --> F{Per offender: patch + re-gate}
+    E --> F
+    F -->|re-gate passes, edit succeeds| G[repaired]
+    F -->|absent from output, fails re-gate,<br/>or read/draft/edit fails| H[stillOffending]
+    G --> I{Any stillOffending or deferred?}
+    H --> I
+    Y --> I
+    I -->|no| J[Run completes successfully]
+    I -->|yes| K["Partial repair (#59) — parent labelled<br/>needs-failure-detection-repair, run succeeds"]
 ```
 
 The repair is **best-effort and idempotent**: an offender whose body cannot be
-read, whose Claude call fails/times out/empties, whose draft still fails the
-gate, or whose `gh issue edit` throws stays in `stillOffending` and drives the
-loud, labelled `handlePlanningFailure` (repair impossible → hard-block remains
-the fallback, per). The re-gate is performed on the constructed body
-*before* the patch, so a still-failing draft never overwrites the sub-issue.
+read, whose Claude call fails/times out/empties, that the batched output omits,
+whose draft still fails the gate, or whose `gh issue edit` throws stays in
+`stillOffending` and is recorded on the parent as an outstanding repair
+(Issue #59; before that it drove `handlePlanningFailure`). Only a positively
+confirmed repair is reported as repaired. The re-gate is performed on the
+constructed body *before* the patch, so a still-failing draft never overwrites
+the sub-issue.
 
-#### 🎯 Auto-milestone for sub-issues
+**Deadline-awareness (Issue #58)** stops the handler watchdog from killing the
+repair mid-way. The repair runs *inside* the Planning handler, after sub-issues
+are published; on one live run the watchdog killed the handler with 6 of 8
+offenders repaired, and the two Claude calls still in flight were reported as
+"timed out or was empty" — indistinguishable, in the logs and in the result,
+from a genuine model failure. The dispatcher now hands each handler the exact
+instant its watchdog will abandon it (`handlerHardTimeoutMs`, the same value the
+watchdog arms, so the two cannot drift), the planning context carries it as
+`handlerDeadlineEpochMs`, and `repairFailureDetectionSections()` checks the
+remaining budget against a per-repair cost estimate (default 2 min, injectable)
+**before every Claude invocation** — before the reads, before the batched call,
+and before each per-offender call. When the budget cannot fit another repair the
+pass stops cleanly and every un-attempted offender is returned in a separate
+`deferred` list, logged with the budget named as the reason.
+
+`deferred` ("we never tried — out of budget") is deliberately distinct from
+`stillOffending` ("the model tried and could not produce a passing section"): a
+deferred offender is no evidence that a repair is impossible, so a resumed run
+may still fix it. Both sets are recorded as outstanding repairs on the parent
+(Issue #59) — the criterion is missing either way, so a deferral is never a
+silent pass. With no deadline supplied (tests, CLI paths) behaviour is unchanged
+and `deferred` is empty.
+
+#### 📊 The gate's hit rate is recorded in the run stats (Issue #63)
+
+The gate and repair outcome used to be visible **only** by reading worker logs —
+which is how its systemic scale was found (8/8 offenders on one run, 3/3 on
+another, by grepping a single day's log) and why the omission went unnoticed long
+enough for the self-repair to become a routine, load-bearing part of every
+planning run rather than a rare fallback.
+
+The planning run-stats comment now carries the counts, so the rate is measurable
+without log archaeology:
+
+```markdown
+- **Failure-Detection gate:** published 8 · offenders 8 · repaired 6 · still offending 1 · deferred 1
+- **Failure-Detection repair:** 1m 4s
+```
+
+`FailureDetectionGateStats` (`worker/deno/lib/planning_run_stats.ts`) is seeded
+with **explicit zeros** at the gate call site in `closePlanningIssue()` and
+populated on every path — clean, fully repaired, and partially repaired. A
+metric emitted only on the unhappy path cannot distinguish "healthy" from "not
+reporting", which is the failure mode this exists to fix, so a clean run records
+`offenders 0` rather than omitting the fields. The counts are additive: the
+established stats lines keep their exact shape and order, and the phases that
+never gate sub-issues (grill-me and the other phase-parametric callers) supply
+no gate stats and emit no gate lines.
+
+#### ♻️ Resume pass finishes outstanding repairs (Issue #60)
+
+A `needs-failure-detection-repair` parent is only a better state than
+`failed-once` if a later cycle actually **finishes** the job. Priority **1.81**
+(`Failure-Detection Repair Resume`, registered in `run_core.ts` as an
+agent-backed handler) is that cycle. Each pass:
+
+1. lists the open issues carrying the label in every configured repository
+   (`worker/deno/lib/find_failure_detection_repair_issues.ts`);
+2. enumerates the parent's **native** sub-issues — the original run's
+   `subIssueUrls` are long gone by then — and re-runs the deterministic gate
+   over them;
+3. repairs only what is **still** offending, reusing
+   `repairFailureDetectionSections()`; and
+4. removes the label and posts a confirmation comment when nothing is left.
+
+Re-gating first is what makes the pass **idempotent and self-healing**: a
+sub-issue a human fixed by hand between cycles is no longer an offender, so an
+already-clean parent costs **zero Claude calls** and simply loses its label.
+Running outside the Planning handler also takes the repair off that handler's
+watchdog budget entirely; the pass gets the dispatcher's own deadline, so
+offenders it cannot fit are deferred exactly as they are inside planning.
+
+**Retries are bounded.** A cycle that genuinely attempted a repair and still
+failed records an attempt marker
+(`<!-- failure-detection-resume-attempt: N -->`) in its parent comment — the
+count lives in the comments so it survives a restart and reads the same for
+every worker in the fleet. Once
+`MAX_FAILURE_DETECTION_RESUME_ATTEMPTS` (3) attempts are spent, the parent goes
+through the existing `escalateToHuman()` chokepoint (`needs-human` + an
+explanation naming each sub-issue) and the resume label is dropped, so the pass
+stops re-picking a parent that is now a human's to finish. Offenders the budget
+merely **deferred** never spend an attempt: not having tried is no evidence that
+a repair is impossible. A parent whose native sub-issues cannot be enumerated is
+treated the same way as a failed repair — the label stays, the attempt is
+recorded, and repeated failure escalates rather than looping.
+
+```mermaid
+flowchart TD
+    A["Priority 1.81 — parents labelled<br/>needs-failure-detection-repair"] --> B[Re-gate the parent's native sub-issues]
+    B --> C{Any offender left?}
+    C -->|no — fixed by hand or earlier cycle| D["Remove label + confirmation comment<br/>zero Claude calls"]
+    C -->|yes| E{Retry budget spent?}
+    E -->|yes| F["escalateToHuman() — needs-human<br/>+ label dropped, no further retries"]
+    E -->|no| G[Repair only the still-offending sub-issues]
+    G --> H{Anything unresolved?}
+    H -->|no| I[Remove label + confirmation comment]
+    H -->|yes, model tried and failed| J["Keep label + progress comment<br/>records attempt N of 3"]
+    H -->|yes, budget deferred| K["Keep label · no attempt spent"]
+```
+
+#### 🎯 Auto-milestone for sub-issues (Issue #2863)
 
 When a planning run breaks an issue into **two or more** sub-issues **and the
 parent issue has no milestone of its own**, the worker auto-creates a GitHub

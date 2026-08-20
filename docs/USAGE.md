@@ -705,13 +705,14 @@ flowchart TD
     P178["🟢 Priority 1.78 — Grill-Me Clarification"]
     P179["🟢 Priority 1.79 — Quorum Plan-Off"]
     P18["🔵 Priority 1.80 — Planning Mode Requests"]
+    P181["🔵 Priority 1.81 — Failure-Detection Repair Resume"]
     P185["🔵 Priority 1.85 — Question Answering Requests"]
     P19["🔵 Priority 1.9 — Stale Workflow Detection"]
     P2["🟣 Priority 2 — New Issues (globally oldest, label tiers `top-priority` > `work-on`)"]
     P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
     P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
-    P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P185 --> P19 --> P2 --> P25 --> P29
+    P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P19 --> P2 --> P25 --> P29
 
     style P1 fill:#d00000,stroke:#9d0208,color:#fff
     style P15 fill:#dc2f02,stroke:#d00000,color:#fff
