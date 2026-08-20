@@ -49,6 +49,7 @@ Deno.test("extractSetupContract - reads the subcommands a bash script runs", () 
       "run_setup_cli prerequisites",
       "run_setup_cli label-sync || print_warning 'non-fatal'",
       "run_setup_cli launchagent",
+      'rm -rf "${dir}/.vibe-cache"',
       "# run_setup_cli hooks   <- a comment cannot run anything",
     ].join("\n"),
     "bash",
@@ -58,6 +59,7 @@ Deno.test("extractSetupContract - reads the subcommands a bash script runs", () 
   assertEquals(contract.freezesLockfile, true);
   assertEquals(contract.sharedSubcommands, ["prerequisites", "label-sync"]);
   assertEquals(contract.supervisorSubcommands, ["launchagent"]);
+  assertEquals(contract.removesCacheOnlyWorkDir, true);
 });
 
 Deno.test("extractSetupContract - reads the subcommands a PowerShell script runs", () => {
@@ -69,6 +71,7 @@ Deno.test("extractSetupContract - reads the subcommands a PowerShell script runs
       'Invoke-VibeSetupCliOrExit -Arguments @("prerequisites")',
       'if (-not (Invoke-VibeSetupCli -Arguments @("label-sync"))) { }',
       'Invoke-VibeSetupCli -Arguments @("scheduled-task")',
+      'Remove-Item -LiteralPath (Join-Path $dir ".vibe-cache") -Recurse -Force',
       '# Invoke-VibeSetupCli -Arguments @("hooks")   <- a comment runs nothing',
     ].join("\n"),
     "powershell",
@@ -78,6 +81,7 @@ Deno.test("extractSetupContract - reads the subcommands a PowerShell script runs
   assertEquals(contract.freezesLockfile, true);
   assertEquals(contract.sharedSubcommands, ["prerequisites", "label-sync"]);
   assertEquals(contract.supervisorSubcommands, ["scheduled-task"]);
+  assertEquals(contract.removesCacheOnlyWorkDir, true);
 });
 
 Deno.test("extractSetupContract - names a script that decides for itself", () => {
@@ -97,8 +101,8 @@ Deno.test("extractSetupContract - names a script that decides for itself", () =>
 
   const faults = setupContractFaults(contract);
   // Delegation, lockfile, every shared subcommand, the supervisor, gh
-  // provisioning and credential validation.
-  assertEquals(faults.length, 6, faults.join("\n"));
+  // provisioning, credential validation and the cache-only work dir removal.
+  assertEquals(faults.length, 7, faults.join("\n"));
 });
 
 Deno.test("setupContractFaults - a dropped setup step is named", () => {
@@ -112,6 +116,7 @@ Deno.test("setupContractFaults - a dropped setup step is named", () => {
       "run_setup_cli launchagent",
       "write_gh_hosts_file() { : > hosts.yml; }",
       "claude -p 'Say hello'",
+      'rm -rf "${dir}/.vibe-cache"',
     ].join("\n"),
     "bash",
   );
@@ -134,6 +139,26 @@ Deno.test("compareSetupContracts - reports a script that drops a step", () => {
   const { divergences } = compareSetupContracts(SETUP_SH, drifted);
   assertEquals(divergences.length, 1, divergences.join("\n"));
   assertStringIncludes(divergences[0]!, "shared setup subcommands");
+});
+
+Deno.test("compareSetupContracts - dropping the cache-only work dir removal is a divergence (Issue #134)", () => {
+  const drifted = extractSetupContract(
+    "setup.ps1",
+    SETUP_PS1_SOURCE.replace(
+      /^.*Remove-Item -LiteralPath \(Join-Path \$Dir "\.vibe-cache"\).*$/m,
+      "",
+    ),
+    "powershell",
+  );
+
+  assertEquals(drifted.removesCacheOnlyWorkDir, false);
+  const { divergences } = compareSetupContracts(SETUP_SH, drifted);
+  assert(
+    divergences.some((message) =>
+      message.includes("cache-only host work dir removal")
+    ),
+    `a setup.ps1 without the removal must diverge: ${divergences.join("\n")}`,
+  );
 });
 
 Deno.test("compareSetupContracts - a script with no supervisor is a real divergence", () => {

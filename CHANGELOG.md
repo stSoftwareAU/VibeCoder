@@ -92,6 +92,16 @@ This changelog is a human-readable digest grouped by version.
 
 ### Changed
 
+- **Setup caches nothing on the host, and cleans up its own leftover
+  (Issues #131–#134).** `WORK_DIR` no longer defaults to a host
+  `$HOME/auto-issue-work`: only the in-container run driver exports it
+  (pointing the worker at the `vibe-work` volume), and with it unset there is
+  no cache directory at all — setup, the launchers and housekeeping re-query
+  the GitHub API for default branches each run instead of caching the answers
+  on the host. Setup now also removes an existing host `~/auto-issue-work`
+  that holds nothing beyond a stale `.vibe-cache` an earlier setup wrote,
+  reporting what it removed; a directory holding real worker data still only
+  gets the size-and-reclaim reminder — setup never deletes operator data.
 - **Agent `gh` guard covers the environment and config aliases.**
   The PATH shim now re-asserts the run's target before `exec` — clearing
   `GH_REPO`/`GH_ENTERPRISE_TOKEN`/`GITHUB_ENTERPRISE_TOKEN` and pinning the

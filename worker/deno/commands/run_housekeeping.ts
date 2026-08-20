@@ -56,9 +56,24 @@ export const runHousekeepingCommand: Command = {
           ? args["home"]
           : (Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "");
 
+        // No `${home}/auto-issue-work` fallback (Issues #118, #135): the
+        // disk-space step ensureDirs the work directory it is handed, so a
+        // HOME-derived default silently CREATED a stray ~/auto-issue-work on
+        // the host. The run driver (run_worker.ts) always passes an explicit
+        // workDir and exports WORK_DIR (Issue #4370); a direct CLI invocation
+        // must name one.
         const workDir = typeof args["work-dir"] === "string"
           ? args["work-dir"]
-          : (Deno.env.get("WORK_DIR") ?? `${home}/auto-issue-work`);
+          : Deno.env.get("WORK_DIR");
+        if (!workDir) {
+          return {
+            success: false,
+            message: "run-housekeeping needs a work directory: pass " +
+              "--work-dir or set WORK_DIR. There is deliberately no " +
+              "HOME-derived work-dir fallback (Issue #118).",
+            data: { operation },
+          };
+        }
 
         const logDir = typeof args["log-dir"] === "string"
           ? args["log-dir"]
