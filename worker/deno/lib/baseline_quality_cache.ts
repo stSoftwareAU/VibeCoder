@@ -117,8 +117,10 @@ export function isBaselineQualityCacheEnabled(
  * Path of the persistent cache file — on the durable work volume (Issue
  * #4318): `$HOME/.vibe-coder` is root-owned in container mode, so writes
  * there failed silently every issue and the cache never persisted.
+ * Returns `undefined` when `WORK_DIR` is unset — there is no cache
+ * directory then (Issue #131); the full no-op semantics land in Issue #133.
  */
-export function baselineQualityCachePath(): string {
+export function baselineQualityCachePath(): string | undefined {
   return workerCachePath(BASELINE_QUALITY_CACHE_FILE);
 }
 
@@ -155,14 +157,20 @@ export async function computeBaselineQualityCacheKey(
 
 /** Read the whole cache file, dropping anything malformed. */
 async function loadCache(
-  path: string,
+  path: string | undefined,
 ): Promise<Map<string, BaselineQualityCacheEntry>> {
-  let text: string;
-  try {
-    text = await Deno.readTextFile(path);
-  } catch {
+  let text: string | null = null;
+  if (path !== undefined) {
+    try {
+      text = await Deno.readTextFile(path);
+    } catch {
+      // Fall through to the legacy location below.
+    }
+  }
+  if (text === null) {
     // Legacy-location fallback (Issue #4318): a native host that cached
-    // under $HOME/.vibe-coder keeps its warm cache across the move.
+    // under $HOME/.vibe-coder keeps its warm cache across the move. Also
+    // the only read when WORK_DIR is unset (path undefined — Issue #131).
     if (path === baselineQualityCachePath()) {
       try {
         text = await Deno.readTextFile(
@@ -261,7 +269,7 @@ function validateFindings(value: unknown): GenericFinding[] | null {
  */
 export async function readBaselineQualityCache(
   key: string,
-  path: string = baselineQualityCachePath(),
+  path: string | undefined = baselineQualityCachePath(),
 ): Promise<BaselineQualityCacheEntry | null> {
   const entry = (await loadCache(path)).get(key);
   if (!entry) return null;
@@ -286,13 +294,16 @@ function nextSequence(cache: Map<string, BaselineQualityCacheEntry>): number {
 /**
  * Record the baseline outcome for `key`, pruning the oldest entries so the
  * file stays bounded. Throws only if the file cannot be written — callers
- * treat a write failure as non-fatal.
+ * treat a write failure as non-fatal. An `undefined` path (no cache
+ * directory — WORK_DIR unset, Issue #131) skips the write rather than
+ * inventing a location; the full no-op semantics land in Issue #133.
  */
 export async function writeBaselineQualityCache(
   key: string,
   outcome: BaselineQualityOutcome,
-  path: string = baselineQualityCachePath(),
+  path: string | undefined = baselineQualityCachePath(),
 ): Promise<void> {
+  if (path === undefined) return;
   const cache = await loadCache(path);
   cache.set(key, {
     version: BASELINE_QUALITY_CACHE_VERSION,

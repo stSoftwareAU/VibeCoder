@@ -67,7 +67,10 @@ function env(name: string): string | undefined {
  * `~/auto-issue-work/.vibe-cache/mcp/…` through the HOME fallback).
  */
 export function defaultMcpConfigDir(): string {
-  if (env("WORK_DIR")) return `${workerCacheDir()}/mcp`;
+  // `workerCacheDir()` is undefined exactly when WORK_DIR is unset
+  // (Issue #131), so no separate env guard is needed any more.
+  const cacheDir = workerCacheDir();
+  if (cacheDir) return `${cacheDir}/mcp`;
   const tmp = env("TMPDIR") ?? env("TEMP") ?? env("TMP") ?? "/tmp";
   return `${tmp.replace(/[\\/]+$/, "")}/vibe-playwright-mcp`;
 }
