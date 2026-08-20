@@ -449,6 +449,72 @@ function makeDenoCheckConfig(denoDir: string): QualityGateConfig {
   };
 }
 
+Deno.test("runDenoCheck - a cached PASS is reused on the second run with the same inputs, and a source edit busts it (Issue #86)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const cacheDir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${tmpDir}/mod.ts`,
+      'export const greeting: string = "hi";\n',
+    );
+    const config: QualityGateConfig = {
+      scriptDir: tmpDir,
+      denoDir: tmpDir,
+      options: { strict: false, sequential: true, validatePrompts: false },
+      cacheDir,
+    };
+
+    const first = await runDenoCheck(config, "deno");
+    assertEquals(first.status, "PASSED");
+    // A cold run actually invoked deno check, so its output carries the
+    // command's own text, not the cached-skip line.
+    assertEquals(first.output.includes("cached"), false);
+
+    const second = await runDenoCheck(config, "deno");
+    assertEquals(second.status, "PASSED");
+    assertStringIncludes(second.output, "cached");
+
+    // Any source change busts the digest → a real run again, no cache line.
+    await Deno.writeTextFile(
+      `${tmpDir}/mod.ts`,
+      'export const greeting: string = "hello";\n',
+    );
+    const third = await runDenoCheck(config, "deno");
+    assertEquals(third.status, "PASSED");
+    assertEquals(third.output.includes("cached"), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    await Deno.remove(cacheDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("runDenoCheck - a FAILED result is never cached: the next run re-checks (Issue #86)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const cacheDir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${tmpDir}/standalone.ts`,
+      'const broken: number = "not a number";\nexport { broken };\n',
+    );
+    const config: QualityGateConfig = {
+      scriptDir: tmpDir,
+      denoDir: tmpDir,
+      options: { strict: false, sequential: true, validatePrompts: false },
+      cacheDir,
+    };
+    const first = await runDenoCheck(config, "deno");
+    assertEquals(first.status, "FAILED");
+    const second = await runDenoCheck(config, "deno");
+    // Still runs (no cached skip on a failing tree) — output is the compiler's,
+    // not the cache line.
+    assertEquals(second.status, "FAILED");
+    assertEquals(second.output.includes("cached"), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    await Deno.remove(cacheDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("runDenoCheck - FAILED when a standalone entrypoint has a type error", async () => {
   const tmpDir = await Deno.makeTempDir();
   // Clean module graph reachable from mod.ts.
