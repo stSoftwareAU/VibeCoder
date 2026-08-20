@@ -56,6 +56,31 @@ import {
 import { reportRunDeadline } from "../slot_context.ts";
 
 /**
+ * True when the worker branch has at least one commit ahead of its base
+ * (Issue #45). Used to detect a false-positive auth classification: a run that
+ * produced commits is not a credential failure, so its outcome must not be
+ * released as "no PR raised". Best-effort — any git error resolves to `false`
+ * so the caller keeps its existing behaviour.
+ */
+async function branchHasCommitsAhead(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<boolean> {
+  const base = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    state.baseBranch,
+    { cwd: state.repoPath },
+  );
+  if (!base.ok) return false;
+  const log = await deps.git.runGitCommand(
+    ["rev-list", "--count", `${base.value}..${state.branchName}`],
+    { cwd: state.repoPath },
+  );
+  if (!log.ok || log.value.code !== 0) return false;
+  return parseInt(log.value.stdout.trim(), 10) > 0;
+}
+
+/**
  * Build the prompt and execute Claude to implement the issue.
  *
  * Handles prompt building, Claude invocation with timeout, change
@@ -447,23 +472,52 @@ async function executeClaudeBody(
     return { status: "failure", reason };
   }
 
-  // Check for auth errors (Issue #1188 — detailed failure messages)
-  if (deps.claude.isClaudeAuthError(claudeResult.value.output)) {
-    const elapsedSeconds = Math.round(
-      (Date.now() - state.executeStartTime) / 1000,
-    );
-    // The evidence must survive (Issue #3234): during a live fleet auth
-    // outage this branch discarded Claude's own words, leaving
-    // "authentication error" indistinguishable from a usage-limit block or
-    // a classifier false positive on issue content that mentions tokens.
-    const authSnippet = claudeResult.value.output.slice(-500).trim() ||
-      "(no output captured)";
-    const reason = formatDetailedFailureMessage("Claude authentication error", {
-      elapsedSeconds,
-      clarityStatus: state.clarityStatus,
-      lastOutputSnippet: authSnippet,
-    });
-    return { status: "failure", reason };
+  // Check for auth errors (Issue #1188 — detailed failure messages).
+  // Issue #45: an auth failure is the CLI's OWN signal — a non-zero exit whose
+  // stderr or final error lines match — never the body of a successful
+  // transcript. #36 (a redaction issue whose prose mentions "api key") exited
+  // having raised a correct PR, yet the whole-transcript scan tripped and
+  // recorded the success as an authentication failure. Read only the CLI's
+  // error surface (stderr + the final output lines), and only for a non-zero
+  // exit.
+  const authSurface = [
+    claudeResult.value.stderr ?? "",
+    claudeResult.value.output.trim().split("\n").slice(-15).join("\n"),
+  ].join("\n");
+  if (
+    claudeResult.value.exitCode !== 0 &&
+    deps.claude.isClaudeAuthError(authSurface)
+  ) {
+    // Cross-check for evidence of success before blaming the credential: a run
+    // that left commits ahead of base is a false positive on issue content,
+    // not an auth failure — fall through so the good branch/PR is not
+    // discarded and the claim is not released as "no PR raised" (Issue #45).
+    if (await branchHasCommitsAhead(state, deps)) {
+      logger.warn(
+        "Auth-error pattern matched but the branch has commits ahead of " +
+          "base — treating as a classifier false positive, not an " +
+          "authentication failure",
+        { branch: state.branchName },
+      );
+    } else {
+      const elapsedSeconds = Math.round(
+        (Date.now() - state.executeStartTime) / 1000,
+      );
+      // The evidence must survive (Issue #3234): during a live fleet auth
+      // outage this branch discarded Claude's own words, leaving
+      // "authentication error" indistinguishable from a usage-limit block.
+      const authSnippet = authSurface.slice(-500).trim() ||
+        "(no output captured)";
+      const reason = formatDetailedFailureMessage(
+        "Claude authentication error",
+        {
+          elapsedSeconds,
+          clarityStatus: state.clarityStatus,
+          lastOutputSnippet: authSnippet,
+        },
+      );
+      return { status: "failure", reason };
+    }
   }
 
   // Rate/usage-limit give-up (Issue #4315): the runner reports exit 2 when

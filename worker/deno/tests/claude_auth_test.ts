@@ -43,11 +43,11 @@ Deno.test("claude auth - detects 'unauthorised' pattern (Australian English)", (
   assertEquals(isClaudeAuthError("Request was unauthorised"), true);
 });
 
-Deno.test("claude auth - detects 'invalid token' pattern", () => {
-  assertEquals(isClaudeAuthError("Error: invalid authentication token"), true);
+Deno.test("claude auth - detects the adjacent 'invalid token' pattern", () => {
+  assertEquals(isClaudeAuthError("Error: invalid token"), true);
 });
 
-Deno.test("claude auth - detects 'api key' pattern", () => {
+Deno.test("claude auth - detects 'invalid api key' phrasing", () => {
   assertEquals(isClaudeAuthError("Missing or invalid API key"), true);
 });
 
@@ -153,4 +153,54 @@ Deno.test("claude auth - actionable message includes 'claude login'", () => {
 Deno.test("claude auth - actionable message is non-empty", () => {
   const message = claudeAuthActionableMessage();
   assertEquals(message.length > 0, true);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #45 — the matcher keys on the CLI's own phrasing, not issue prose
+// ---------------------------------------------------------------------------
+
+Deno.test("claude auth #45 - bare 'api key' in issue prose is NOT an auth error", () => {
+  // The exact false positive that recorded VibeCoder#36 (a redaction issue) as
+  // an authentication failure while its PR was open.
+  assertEquals(
+    isClaudeAuthError(
+      "I redacted the bare OpenAI API key sk-... and the tests passed, 0 failed.",
+    ),
+    false,
+  );
+});
+
+Deno.test("claude auth #45 - a non-adjacent invalid...token in prose is NOT an auth error", () => {
+  assertEquals(
+    isClaudeAuthError(
+      "The contract rejects an invalid recipient for the token transfer",
+    ),
+    false,
+  );
+});
+
+Deno.test("claude auth #45 - genuine CLI auth phrasings still match", () => {
+  for (
+    const s of [
+      "Invalid API key · Please run /login",
+      "API key not found",
+      "Authentication failed",
+      "OAuth token has expired",
+      "Not logged in · Run `claude login`",
+    ]
+  ) {
+    assertEquals(isClaudeAuthError(s), true, s);
+  }
+});
+
+Deno.test("claude auth #45 - discussing tokens/keys without a CLI error phrase does not match", () => {
+  for (
+    const s of [
+      "Add an api key rotation policy to the config",
+      "The auth token should be stored in the keychain",
+      "Document how to obtain an api key for the service",
+    ]
+  ) {
+    assertEquals(isClaudeAuthError(s), false, s);
+  }
 });
