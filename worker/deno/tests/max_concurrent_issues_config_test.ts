@@ -4,7 +4,8 @@
  * The foundation of the concurrent-issue-slots epic (#4168): a configured,
  * validated slot count that defaults to 1 so the change is inert until an
  * operator opts in. This issue only makes the number available and legal —
- * `runIssueScanLoop` does not yet consume it.
+ * Above one slot the Priority-2 scan runs as a pool (Issue #4177); the
+ * default is two (VibeCoder#170).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -31,9 +32,9 @@ function validConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   }) as WorkerConfig;
 }
 
-Deno.test("maxConcurrentIssues - defaults to 1 (Issue #4174)", () => {
-  assertEquals(OPERATIONAL_DEFAULTS.maxConcurrentIssues, 1);
-  assertEquals(validConfig().maxConcurrentIssues, 1);
+Deno.test("maxConcurrentIssues - defaults to 2 (Issue #4174, VibeCoder#170)", () => {
+  assertEquals(OPERATIONAL_DEFAULTS.maxConcurrentIssues, 2);
+  assertEquals(validConfig().maxConcurrentIssues, 2);
 });
 
 Deno.test("maxConcurrentIssues - a valid value in range validates (Issue #4174)", () => {

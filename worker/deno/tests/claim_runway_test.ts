@@ -10,7 +10,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { resolveClaimRunwayFloor } from "../lib/claim_runway.ts";
+import {
+  DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
+  resolveClaimRunwayFloor,
+} from "../lib/claim_runway.ts";
 
 Deno.test("claim runway #47 - no budget keeps the plain #4304 floor", () => {
   const floor = resolveClaimRunwayFloor({
@@ -72,4 +75,15 @@ Deno.test("claim runway #47 - a cycle shorter than the budget is the documented 
     floor.exceptionReason.includes("Issue #47"),
     "the exception reason must cite Issue #47",
   );
+});
+
+Deno.test("DEFAULT_MIN_CLAIM_RUNWAY_SECONDS is five minutes so a run keeps claiming until its last minutes (VibeCoder#170)", () => {
+  assertEquals(DEFAULT_MIN_CLAIM_RUNWAY_SECONDS, 300);
+  // A 3600 s cycle with 1200 s left must still admit a claim under the default.
+  const floor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
+    cycleSeconds: 3600,
+  });
+  assertEquals(floor.floorSeconds, 300);
+  assertEquals(floor.fullBudgetGate, false);
 });
