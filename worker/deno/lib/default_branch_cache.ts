@@ -30,9 +30,11 @@ export interface DefaultBranchCacheEntry {
  * Resolve the default path for the persistent cache file.
  *
  * Honours `VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH` for overrides (used by
- * tests); otherwise uses `${HOME}/.vibe-coder/default-branch-cache.json`.
+ * tests); otherwise uses `${WORK_DIR}/.vibe-cache/default-branch-cache.json`.
+ * Returns `undefined` when `WORK_DIR` is unset — there is no cache directory
+ * then (Issue #131); the full no-op semantics land in Issue #132.
  */
-export function defaultBranchCachePath(): string {
+export function defaultBranchCachePath(): string | undefined {
   const override = Deno.env.get("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH");
   if (override) return override;
   // On the durable work volume (Issue #4318): $HOME/.vibe-coder is
@@ -48,13 +50,19 @@ export const DEFAULT_BRANCH_CACHE_FILE = "default-branch-cache.json";
  * or the contents cannot be parsed (corrupt cache must not crash the worker).
  */
 export async function loadDefaultBranchCache(
-  path: string = defaultBranchCachePath(),
+  path: string | undefined = defaultBranchCachePath(),
 ): Promise<Map<string, DefaultBranchCacheEntry>> {
-  let text: string;
-  try {
-    text = await Deno.readTextFile(path);
-  } catch {
-    // Legacy-location fallback (Issue #4318) — read-only.
+  let text: string | null = null;
+  if (path !== undefined) {
+    try {
+      text = await Deno.readTextFile(path);
+    } catch {
+      // Fall through to the legacy location below.
+    }
+  }
+  if (text === null) {
+    // Legacy-location fallback (Issue #4318) — read-only. Also the only
+    // read when WORK_DIR is unset (path undefined — Issue #131).
     if (path !== defaultBranchCachePath()) return new Map();
     try {
       text = await Deno.readTextFile(
@@ -79,11 +87,17 @@ export async function loadDefaultBranchCache(
   }
 }
 
-/** Persist the cache to disk, creating the parent directory if needed. */
+/**
+ * Persist the cache to disk, creating the parent directory if needed.
+ * An `undefined` path (no cache directory — WORK_DIR unset, Issue #131)
+ * skips the write rather than inventing a location; the full no-op
+ * semantics land in Issue #132.
+ */
 export async function saveDefaultBranchCache(
   cache: Map<string, DefaultBranchCacheEntry>,
-  path: string = defaultBranchCachePath(),
+  path: string | undefined = defaultBranchCachePath(),
 ): Promise<void> {
+  if (path === undefined) return;
   const slash = path.lastIndexOf("/");
   if (slash > 0) {
     const dir = path.slice(0, slash);
@@ -107,7 +121,7 @@ export async function saveDefaultBranchCache(
  */
 export async function getCachedDefaultBranch(
   repo: string,
-  path: string = defaultBranchCachePath(),
+  path: string | undefined = defaultBranchCachePath(),
 ): Promise<string | null> {
   const cache = await loadDefaultBranchCache(path);
   const entry = cache.get(repo);
@@ -121,7 +135,7 @@ export async function getCachedDefaultBranch(
 export async function setCachedDefaultBranch(
   repo: string,
   branch: string,
-  path: string = defaultBranchCachePath(),
+  path: string | undefined = defaultBranchCachePath(),
 ): Promise<void> {
   const cache = await loadDefaultBranchCache(path);
   cache.set(repo, { branch, fetchedAt: Date.now() });
@@ -135,7 +149,7 @@ export async function setCachedDefaultBranch(
  */
 export async function invalidateCachedDefaultBranch(
   repo: string,
-  path: string = defaultBranchCachePath(),
+  path: string | undefined = defaultBranchCachePath(),
 ): Promise<void> {
   const cache = await loadDefaultBranchCache(path);
   if (!cache.has(repo)) return;
