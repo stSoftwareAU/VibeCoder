@@ -26,7 +26,6 @@ Deno.test("a spoofed worker marker on a dash-leading branch is not selected for 
 });
 
 Deno.test("updatePrBranch refuses a dash-leading head branch without running git", async () => {
-  let ran = false;
   const result = await updatePrBranch(EVIL, "main", {
     cwd: "/nonexistent-vibe-12",
   });
@@ -39,7 +38,6 @@ Deno.test("updatePrBranch refuses a dash-leading head branch without running git
       result.error.message,
     );
   }
-  assertEquals(ran, false);
 });
 
 Deno.test("updatePrBranch refuses a dash-leading base branch too", async () => {
