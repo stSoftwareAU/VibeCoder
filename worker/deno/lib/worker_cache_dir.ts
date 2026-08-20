@@ -26,16 +26,29 @@ function env(name: string): string | undefined {
   }
 }
 
-/** The worker cache directory: `${WORK_DIR}/.vibe-cache`. */
-export function workerCacheDir(): string {
-  const workDir = env("WORK_DIR") ??
-    `${env("HOME") ?? env("USERPROFILE") ?? "."}/auto-issue-work`;
-  return `${workDir}/.vibe-cache`;
+/**
+ * The worker cache directory: `${WORK_DIR}/.vibe-cache`, or `undefined`
+ * when `WORK_DIR` is unset (Issue #131).
+ *
+ * `WORK_DIR` is only exported by the run driver (`run_worker.ts`,
+ * Issue #4370), so any other entry point — setup, launcher, housekeeping,
+ * a dev run — has no cache directory at all. There is deliberately NO
+ * fallback path (not `$HOME/auto-issue-work`, not XDG, not temp): the old
+ * HOME-derived default silently created a stray `~/auto-issue-work` on the
+ * host (Issue #118).
+ */
+export function workerCacheDir(): string | undefined {
+  const workDir = env("WORK_DIR");
+  return workDir ? `${workDir}/.vibe-cache` : undefined;
 }
 
-/** Path of a named cache file in the worker cache directory. */
-export function workerCachePath(fileName: string): string {
-  return `${workerCacheDir()}/${fileName}`;
+/**
+ * Path of a named cache file in the worker cache directory, or `undefined`
+ * when there is no cache directory (`WORK_DIR` unset — Issue #131).
+ */
+export function workerCachePath(fileName: string): string | undefined {
+  const dir = workerCacheDir();
+  return dir ? `${dir}/${fileName}` : undefined;
 }
 
 /**
@@ -56,6 +69,7 @@ export async function readCacheWithLegacyFallback(
   for (
     const path of [workerCachePath(fileName), legacyHomeCachePath(fileName)]
   ) {
+    if (path === undefined) continue; // no cache dir when WORK_DIR is unset
     try {
       return await Deno.readTextFile(path);
     } catch {

@@ -99,6 +99,8 @@ interface ListedPr {
   updatedAt: string;
   createdAt: string;
   author?: { login?: string };
+  /** GitHub mergeability — "CONFLICTING" means CI cannot start (Issue #52). */
+  mergeable?: string;
 }
 
 /**
@@ -172,6 +174,7 @@ export async function findPrsNeedingCiNudge(
         limit: PR_LIST_LIMIT,
         ghCommandFn,
         log,
+        cache: opts.cache,
       })
     ) {
       if (prs.some((existing) => existing.number === pr.number)) continue;
@@ -192,6 +195,18 @@ export async function findPrsNeedingCiNudge(
 
       const ageSec = computeAgeSeconds(pr, now);
       if (ageSec < minAgeSec) continue;
+
+      // Issue #52: a CONFLICTING PR has no checks for a reason no empty commit
+      // can change — GitHub will not build a merge commit until the conflict
+      // is resolved. Nudging it just pushes noise (or fails non-fast-forward)
+      // every pass, so skip it and say why (once per PR per run).
+      if (pr.mergeable === "CONFLICTING") {
+        log?.(
+          `[ci-nudge-scan] ${repo}#${pr.number}: not nudged — PR is ` +
+            `conflicting; CI cannot start until it is resolved`,
+        );
+        continue;
+      }
 
       let status: "started" | "queued" | "none";
       try {
@@ -415,7 +430,7 @@ async function listOpenPrsForAuthor(
     "--json",
     cache
       ? PR_MAINTENANCE_LIST_FIELDS
-      : "number,headRefName,headRefOid,createdAt,updatedAt,author",
+      : "number,headRefName,headRefOid,createdAt,updatedAt,author,mergeable",
     "--limit",
     cache ? String(PR_MAINTENANCE_LIST_LIMIT) : String(PR_LIST_LIMIT),
   ]);
@@ -445,6 +460,10 @@ async function listOpenPrsForAuthor(
     const authorLogin = author && typeof author.login === "string"
       ? author.login
       : undefined;
+    // Issue #52: carry mergeability so the scan can skip CONFLICTING PRs.
+    const mergeable = typeof obj.mergeable === "string"
+      ? obj.mergeable
+      : undefined;
     if (!Number.isFinite(number) || !headRefName || !headRefOid) continue;
     out.push({
       number,
@@ -453,6 +472,7 @@ async function listOpenPrsForAuthor(
       createdAt,
       updatedAt,
       author: authorLogin ? { login: authorLogin } : undefined,
+      ...(mergeable ? { mergeable } : {}),
     });
   }
   return out;

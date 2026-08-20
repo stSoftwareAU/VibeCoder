@@ -483,10 +483,11 @@ flowchart TD
 
 ### The mount set
 
-| Host path                    | In container                         | Mode |
+| Source (host path or named volume) | In container                   | Mode |
 | ---------------------------- | ------------------------------------ | ---- |
 | the worker checkout          | `/workspace`                         | rw   |
-| `$WORK_DIR`                  | `/home/vibe/auto-issue-work`         | rw   |
+| volume `vibe-work`           | `/home/vibe/auto-issue-work`         | rw   |
+| volume `vibe-approval-state` | `…/auto-issue-work-approval-state`   | rw   |
 | the worker log directory     | `/home/vibe/logs`                    | rw   |
 | `.config.json`               | `/workspace/.config.json`            | ro   |
 | `…/credentials/gh`           | `/home/vibe/.vibe-coder/credentials/gh` | ro |
@@ -497,9 +498,12 @@ multi-provider run carries three of them and a default run exactly one.
 
 The checkout is the worker's own code, not host data: the image ships only the
 entrypoint, so without it there is no driver to run and no tree for the
-bootstrap to self-update. The rest are the persistent host state
-enumerates, and their in-container paths are deliberately the ones the worker
-resolves for itself from `HOME` — no environment plumbing points it at them.
+bootstrap to self-update. The rest is the persistent state: named volumes
+for the workspace and the approval snapshots (no browsable copy of the
+worker's repositories on the host, and no host `~/auto-issue-work`), host
+directories for the logs and configuration. Their in-container paths are
+deliberately the ones the worker resolves for itself from `HOME` — no
+environment plumbing points it at them.
 `.config.json` is layered read-only over the checkout, so the worker cannot
 rewrite its own configuration from inside the container.
 

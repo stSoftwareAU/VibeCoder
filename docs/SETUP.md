@@ -104,11 +104,16 @@ background service is offered, where files land — is covered in
    clone's git exclude patterns. A failure here is **fatal** — the hooks are
    part of the security posture, not a nicety.
 
-8. **Obsolete work-directory reminder** — reports any leftover host work
+8. **Obsolete work-directory clean-up** — handles any leftover host work
    directories (such as `~/auto-issue-work`) that the container's named
-   volumes made obsolete, with their size and the command to reclaim the
-   space. It only reports — setup never deletes operator data — and it cannot
-   fail the run.
+   volumes made obsolete, in two distinct cases. A directory holding nothing
+   beyond a stale `.vibe-cache` from an earlier setup is **removed**, with a
+   report of what went: setup keeps no cache on the host any more — it
+   re-queries the GitHub API for default branches each run instead — so such
+   a directory is setup's own leftover and safe to reclaim. A directory
+   holding real worker data still only gets a **reminder** with its size and
+   the command to reclaim the space — deleting operator data is never setup's
+   call. Neither case can fail the run.
 
 9. **Background-service offer** — platform-specific and terminal-only: each
    platform offers its own supervision mechanism, and declining also offers
@@ -150,7 +155,7 @@ flowchart TD
         BR --> BF["backfill-idle-task-labels"]
     end
     BF --> H["7 · hooks (fatal on failure)"]
-    H --> R["8 · work-directory reminder<br/>(reports only)"]
+    H --> R["8 · work-directory clean-up<br/>(cache-only: removed · real data: reminder)"]
     R --> SO["9 · background-service offer<br/>(platform-specific, terminal only)"]
     SO --> SC{"VIBE_SETUP_SCREENSHOT_SUPPORT<br/>= true?"}
     SC -->|yes| SS["10 · screenshot support"]
