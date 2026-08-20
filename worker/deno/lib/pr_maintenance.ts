@@ -377,6 +377,7 @@ export async function listActionablePrs(
     fields,
     ghCommandFn,
     log: (message) => logger.info(message),
+    cache: options.cache,
   });
   const seen = new Set(prs.map((pr) => pr.number));
   for (const pr of invited) {

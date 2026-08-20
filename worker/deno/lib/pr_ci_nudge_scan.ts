@@ -174,6 +174,7 @@ export async function findPrsNeedingCiNudge(
         limit: PR_LIST_LIMIT,
         ghCommandFn,
         log,
+        cache: opts.cache,
       })
     ) {
       if (prs.some((existing) => existing.number === pr.number)) continue;
