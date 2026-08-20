@@ -73,18 +73,26 @@ for required in jq curl sha256sum tar mktemp; do
         fail "\"${required}\" is required to install container tools."
 done
 
-jq empty "${SPEC_FILE}" > /dev/null 2>&1 ||
-    fail "Tool spec file \"${SPEC_FILE}\" is not valid JSON."
+# A blank or whitespace-only spec is the same "nothing selected" case as an
+# empty array — the Containerfile's own `[ -s "${spec}" ]` guard only skips a
+# truly zero-byte file, so a whitespace-only one still reaches here.
+STRIPPED_SPEC="$(tr -d '[:space:]' < "${SPEC_FILE}")"
+if [[ -z "${STRIPPED_SPEC}" ]]; then
+    SPEC_JSON="[]"
+else
+    jq empty "${SPEC_FILE}" > /dev/null 2>&1 ||
+        fail "Tool spec file \"${SPEC_FILE}\" is not valid JSON."
 
-# Accept the array itself or the .config.json object carrying it; anything else
-# is a shape the build must not guess at.
-SPEC_JSON="$(jq -c '
-    if type == "array" then .
-    elif type == "object" and ((.container_tools // null) | type) == "array"
-    then .container_tools
-    else empty end' "${SPEC_FILE}")"
-[[ -n "${SPEC_JSON}" ]] ||
-    fail "Tool spec file \"${SPEC_FILE}\" must be a container_tools array, or an object with one."
+    # Accept the array itself or the .config.json object carrying it; anything
+    # else is a shape the build must not guess at.
+    SPEC_JSON="$(jq -c '
+        if type == "array" then .
+        elif type == "object" and ((.container_tools // null) | type) == "array"
+        then .container_tools
+        else empty end' "${SPEC_FILE}")"
+    [[ -n "${SPEC_JSON}" ]] ||
+        fail "Tool spec file \"${SPEC_FILE}\" must be a container_tools array, or an object with one."
+fi
 
 # Query the spec: spec <jq-args...> '<program>'
 spec() {
