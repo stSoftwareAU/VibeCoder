@@ -385,6 +385,57 @@ may still fix it. Both sets are recorded as outstanding repairs on the parent
 silent pass. With no deadline supplied (tests, CLI paths) behaviour is unchanged
 and `deferred` is empty.
 
+#### ♻️ Resume pass finishes outstanding repairs (Issue #60)
+
+A `needs-failure-detection-repair` parent is only a better state than
+`failed-once` if a later cycle actually **finishes** the job. Priority **1.81**
+(`Failure-Detection Repair Resume`, registered in `run_core.ts` as an
+agent-backed handler) is that cycle. Each pass:
+
+1. lists the open issues carrying the label in every configured repository
+   (`worker/deno/lib/find_failure_detection_repair_issues.ts`);
+2. enumerates the parent's **native** sub-issues — the original run's
+   `subIssueUrls` are long gone by then — and re-runs the deterministic gate
+   over them;
+3. repairs only what is **still** offending, reusing
+   `repairFailureDetectionSections()`; and
+4. removes the label and posts a confirmation comment when nothing is left.
+
+Re-gating first is what makes the pass **idempotent and self-healing**: a
+sub-issue a human fixed by hand between cycles is no longer an offender, so an
+already-clean parent costs **zero Claude calls** and simply loses its label.
+Running outside the Planning handler also takes the repair off that handler's
+watchdog budget entirely; the pass gets the dispatcher's own deadline, so
+offenders it cannot fit are deferred exactly as they are inside planning.
+
+**Retries are bounded.** A cycle that genuinely attempted a repair and still
+failed records an attempt marker
+(`<!-- failure-detection-resume-attempt: N -->`) in its parent comment — the
+count lives in the comments so it survives a restart and reads the same for
+every worker in the fleet. Once
+`MAX_FAILURE_DETECTION_RESUME_ATTEMPTS` (3) attempts are spent, the parent goes
+through the existing `escalateToHuman()` chokepoint (`needs-human` + an
+explanation naming each sub-issue) and the resume label is dropped, so the pass
+stops re-picking a parent that is now a human's to finish. Offenders the budget
+merely **deferred** never spend an attempt: not having tried is no evidence that
+a repair is impossible. A parent whose native sub-issues cannot be enumerated is
+treated the same way as a failed repair — the label stays, the attempt is
+recorded, and repeated failure escalates rather than looping.
+
+```mermaid
+flowchart TD
+    A["Priority 1.81 — parents labelled<br/>needs-failure-detection-repair"] --> B[Re-gate the parent's native sub-issues]
+    B --> C{Any offender left?}
+    C -->|no — fixed by hand or earlier cycle| D["Remove label + confirmation comment<br/>zero Claude calls"]
+    C -->|yes| E{Retry budget spent?}
+    E -->|yes| F["escalateToHuman() — needs-human<br/>+ label dropped, no further retries"]
+    E -->|no| G[Repair only the still-offending sub-issues]
+    G --> H{Anything unresolved?}
+    H -->|no| I[Remove label + confirmation comment]
+    H -->|yes, model tried and failed| J["Keep label + progress comment<br/>records attempt N of 3"]
+    H -->|yes, budget deferred| K["Keep label · no attempt spent"]
+```
+
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
 
 When a planning run breaks an issue into **two or more** sub-issues **and the
