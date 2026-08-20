@@ -6,6 +6,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  preserveTimedOutWip,
   startWipCheckpoints,
   WIP_CHECKPOINT_COMMIT_MESSAGE,
   type WipCheckpointOutcome,
@@ -276,4 +277,86 @@ Deno.test("wip_checkpoint - an unknown pressure reading (non-Linux) never checkp
   } finally {
     handle.stop();
   }
+});
+
+// ---------------------------------------------------------------------------
+// One-shot preservation for a timed-out execute (Issue #47)
+// ---------------------------------------------------------------------------
+
+Deno.test("preserveTimedOutWip #47 - pushes the dirty tree with the caller's message", async () => {
+  const calls: Array<{ branch: string; message: string }> = [];
+  const outcome = await preserveTimedOutWip({
+    repoPath: "/repo",
+    branchName: "issue-47-x",
+    message:
+      "wip: execute timed out after 2012s at the cycle deadline (Issue #47)",
+    deps: {
+      currentBranch: () => Promise.resolve("issue-47-x"),
+      commitAndPush: (branch, message) => {
+        calls.push({ branch, message });
+        return Promise.resolve(okPush(true, 1));
+      },
+    },
+  });
+  assertEquals(outcome.kind, "pushed");
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]?.branch, "issue-47-x");
+  assertStringIncludes(calls[0]?.message ?? "", "timed out after 2012s");
+});
+
+Deno.test("preserveTimedOutWip #47 - refuses when HEAD is not the issue branch", async () => {
+  let pushed = 0;
+  const outcome = await preserveTimedOutWip({
+    repoPath: "/repo",
+    branchName: "issue-47-x",
+    message: "wip: timed out",
+    deps: {
+      currentBranch: () => Promise.resolve("main"),
+      commitAndPush: () => {
+        pushed++;
+        return Promise.resolve(okPush(true, 1));
+      },
+    },
+  });
+  assertEquals(outcome.kind, "skipped");
+  assertEquals(
+    pushed,
+    0,
+    "a checkpoint must never commit another branch's state",
+  );
+});
+
+Deno.test("preserveTimedOutWip #47 - refuses a protected branch outright", async () => {
+  let pushed = 0;
+  const outcome = await preserveTimedOutWip({
+    repoPath: "/repo",
+    branchName: "main",
+    message: "wip: timed out",
+    deps: {
+      currentBranch: () => Promise.resolve("main"),
+      commitAndPush: () => {
+        pushed++;
+        return Promise.resolve(okPush(true, 1));
+      },
+    },
+  });
+  assertEquals(outcome.kind, "skipped");
+  assertEquals(pushed, 0);
+});
+
+Deno.test("preserveTimedOutWip #47 - a failed push is reported, not thrown", async () => {
+  const outcome = await preserveTimedOutWip({
+    repoPath: "/repo",
+    branchName: "issue-47-x",
+    message: "wip: timed out",
+    deps: {
+      currentBranch: () => Promise.resolve("issue-47-x"),
+      commitAndPush: () =>
+        Promise.resolve({ ok: false, error: new Error("remote hung up") }),
+    },
+  });
+  assertEquals(outcome.kind, "failed");
+  assert(
+    outcome.kind === "failed" && outcome.reason.includes("remote hung up"),
+  );
 });

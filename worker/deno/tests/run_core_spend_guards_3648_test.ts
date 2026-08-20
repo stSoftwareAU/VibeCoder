@@ -474,3 +474,106 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "Issue #47 - the claim floor is raised to the full execute budget when the cycle fits one",
+  async () => {
+    const logs: string[] = [];
+    let now = 0;
+    let claims = 0;
+    const config = createDefaultRunCoreConfig();
+    const cycleMs = config.runDurationSeconds * 1000;
+    // Each run leaves 35% of the cycle — above the plain 10% floor, but
+    // below the 40%-of-cycle execute budget: only the #47 gate refuses it.
+    const perRunMs = cycleMs * 0.65;
+
+    const deps = createMockDeps({
+      log: (m) => logs.push(m),
+      now: () => now,
+      sleep: (ms?: number) => {
+        now += ms ?? 30_000;
+        return Promise.resolve();
+      },
+      minClaimRunwaySeconds: config.runDurationSeconds * 0.1,
+      fullExecuteBudgetSeconds: config.runDurationSeconds * 0.4,
+      findNextIssue: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            repo: "o/r",
+            issueNumber: 3,
+            issueTitle: "feature",
+            milestoneTitle: "",
+          },
+        }),
+      processIssue: () => {
+        claims++;
+        now += perRunMs;
+        return Promise.resolve({ ok: true, value: { success: true } });
+      },
+    });
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(
+      claims,
+      1,
+      `the full-budget gate must refuse the second claim, got ${claims}`,
+    );
+    assert(
+      logs.some((m) => m.includes("no longer fits this cycle (Issue #47)")),
+      `expected the #47 refusal log line, got: ${logs.join(" | ")}`,
+    );
+  },
+);
+
+Deno.test(
+  "Issue #47 - a cycle shorter than the budget keeps the plain floor and logs the exception",
+  async () => {
+    const logs: string[] = [];
+    let now = 0;
+    let claims = 0;
+    const config = createDefaultRunCoreConfig();
+    const cycleMs = config.runDurationSeconds * 1000;
+    // Two half-cycle runs fit under the plain 10% floor; the budget being
+    // twice the cycle must NOT refuse them — it is the documented exception.
+    const perRunMs = cycleMs * 0.5;
+
+    const deps = createMockDeps({
+      log: (m) => logs.push(m),
+      now: () => now,
+      sleep: (ms?: number) => {
+        now += ms ?? 30_000;
+        return Promise.resolve();
+      },
+      minClaimRunwaySeconds: config.runDurationSeconds * 0.1,
+      fullExecuteBudgetSeconds: config.runDurationSeconds * 2,
+      findNextIssue: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            repo: "o/r",
+            issueNumber: 4,
+            issueTitle: "small fix",
+            milestoneTitle: "",
+          },
+        }),
+      processIssue: () => {
+        claims++;
+        now += perRunMs;
+        return Promise.resolve({ ok: true, value: { success: true } });
+      },
+    });
+
+    await runCoreLoop(config, deps);
+
+    assert(
+      claims >= 1,
+      `claims must not be blocked outright on a short-cycle host, got ${claims}`,
+    );
+    assert(
+      logs.some((m) => m.includes("can never offer")),
+      `expected the documented-exception log line, got: ${logs.join(" | ")}`,
+    );
+  },
+);

@@ -1979,6 +1979,11 @@ export async function createProductionRunCoreDeps(
       return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1800;
     })(),
 
+    // Full-budget claim gate (Issue #47): when the cycle can fit a full
+    // execute, refuse a claim whose runway cannot — the deadline-bound
+    // regime becomes a documented exception, not the default cycle tail.
+    fullExecuteBudgetSeconds: config.claudeTimeout,
+
     // Slot-aware sweep (Issue #4178): only heartbeats no live slot owns are
     // stopped, so a sibling slot's healthy heartbeat is never mistaken for
     // a leak. The pool calls this; the serial loop keeps the variant below.
