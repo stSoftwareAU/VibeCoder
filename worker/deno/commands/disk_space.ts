@@ -33,7 +33,10 @@ function parseNumericArg(value: unknown, fallback: number): number {
  * Disk space command implementation.
  *
  * Args:
- *   --work-dir <string>          Directory to check (defaults to config workDir or WORK_DIR env)
+ *   --work-dir <string>          Directory to check (defaults to WORK_DIR env;
+ *                                with neither, the check reports "no directory
+ *                                specified" — deliberately no HOME-derived
+ *                                fallback, Issues #118/#135)
  *   --threshold <number>         Aggressive disk usage threshold (default: 90).
  *                                At or above this, the work directory is nuked
  *                                if incremental reclaim is insufficient.
@@ -48,13 +51,19 @@ export const diskSpaceCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
-    config: WorkerConfig,
+    _config: WorkerConfig,
   ): Promise<CommandResult<DiskCheckResult>> {
-    // Resolve work directory: args > config > env > default
+    // Resolve work directory: args > env. There is deliberately no
+    // HOME-derived default (Issues #118, #135): `checkAndCleanupDiskSpace`
+    // ensureDirs the directory it is handed, so the old fallback silently
+    // CREATED a stray ~/auto-issue-work on the host whenever this command
+    // ran without WORK_DIR. `config.workDir` is no fallback either — the
+    // loader hardcodes it to the same HOME-derived string (lib/config.ts),
+    // so consulting it here would be the identical bug in disguise. With
+    // nothing given, the check reports "no directory specified" instead.
     const workDir = typeof args["work-dir"] === "string"
       ? args["work-dir"]
-      : (config.workDir || Deno.env.get("WORK_DIR") ||
-        `${Deno.env.get("HOME") ?? "/tmp"}/auto-issue-work`);
+      : (Deno.env.get("WORK_DIR") || "");
 
     const threshold = parseNumericArg(
       args["threshold"],
