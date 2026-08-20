@@ -55,11 +55,15 @@ import { maybeCreateCarrierSubIssue } from "./planning_carrier.ts";
 import { getRepoConfig } from "./repo_config.ts";
 import { releaseClaim } from "./claim_release.ts";
 import {
-  buildParentGateFailureComment,
   buildSubIssueGateComment,
+  type FailureDetectionOffender,
   runFailureDetectionGate,
 } from "./failure_detection_gate.ts";
 import { repairFailureDetectionSections } from "./failure_detection_repair.ts";
+import {
+  FAILURE_DETECTION_REPAIR_LABEL,
+  recordPartialFailureDetectionRepair,
+} from "./failure_detection_repair_label.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,6 +85,15 @@ export interface PlanningResult {
    * degraded label.
    */
   degradation?: DegradationVerdict;
+  /**
+   * Sub-issue numbers this run published that still lack a filled
+   * `## Failure Detection` section after the self-repair (Issue #59).
+   *
+   * Present only on a *partial repair*: the run succeeded and published a
+   * usable plan, and the parent carries `needs-failure-detection-repair` so a
+   * later pass finishes the job. Absent on a fully-compliant run.
+   */
+  pendingFailureDetectionRepair?: number[];
 }
 
 /** Options for the planning processor. */
@@ -548,7 +561,8 @@ export const RESERVED_LABEL_PROHIBITION =
   "Add only descriptive labels (e.g. `bug`, `enhancement`, `documentation`) " +
   "to each sub-issue. Never add a reserved workflow label (`top-priority`, " +
   "`work-on`, `low-priority`, `failed`, `refine-issue`, `planning`, " +
-  "`question`, `best-model`, `needs-human`): the worker account is not on the " +
+  "`question`, `best-model`, `needs-human`, " +
+  "`needs-failure-detection-repair`): the worker account is not on the " +
   "trusted-author allowlist, so any reserved label is silently stripped by " +
   "the `label_security` check (Issue #1344) and applying it is wasted effort. " +
   "The canonical pickup-priority order is `top-priority` > `work-on` > " +
@@ -1598,13 +1612,18 @@ async function closePlanningIssue(
     ...new Set([...textSubIssueNumbers, ...nativeSubIssueNumbers]),
   ].sort((a, b) => a - b);
 
+  // Sub-issues this run published that still lack the criterion after the
+  // self-repair (Issue #59). Non-empty means a *partial repair*: the parent is
+  // labelled and commented on below, and the run still completes.
+  let pendingRepair: FailureDetectionOffender[] = [];
+
   // Issue #3246: deterministic Failure-Detection presence gate. Every sub-issue
   // this run published must carry a filled `## Failure Detection` section
   // (Issue #3245 makes the planner emit it). Gate the run's published set
   // (`textSubIssueNumbers` — the numbers in `subIssueUrls`, not the native union
-  // that could include a prior carrier) so a missing criterion becomes a loud,
-  // labelled planning failure instead of a silent pass. A run with zero
-  // sub-issues has nothing to gate — the carrier safety-net below is not gated.
+  // that could include a prior carrier) so a missing criterion is never a silent
+  // pass. A run with zero sub-issues has nothing to gate — the carrier
+  // safety-net below is not gated.
   if (textSubIssueNumbers.length > 0) {
     const offenders = await runFailureDetectionGate({
       repo,
@@ -1695,7 +1714,7 @@ async function closePlanningIssue(
 
       if (unresolved.length > 0) {
         logger.warn(
-          "Failure-Detection gate: sub-issue(s) still missing the criterion after self-repair — failing the planning run (Issue #3246/#3272)",
+          "Failure-Detection gate: sub-issue(s) still missing the criterion after self-repair — recording a partial repair on the parent, not a planning failure (Issue #59)",
           {
             repo,
             issueNumber,
@@ -1708,8 +1727,8 @@ async function closePlanningIssue(
 
         // Post a short comment on each unresolved sub-issue so the signal is
         // actionable at the sub-issue, not only on the parent. Best-effort — a
-        // per-sub-issue comment failure must not swallow the loud parent
-        // failure.
+        // per-sub-issue comment failure must not swallow the parent-side
+        // signal.
         for (const offender of unresolved) {
           try {
             await ghClient.postComment(
@@ -1729,31 +1748,15 @@ async function closePlanningIssue(
           }
         }
 
-        // Drive the existing loud-failure path: names each unresolved offender
-        // on the parent, runs the failed-once/failed label progression, posts
-        // run stats, and releases the claim. The run is NOT recorded as a
-        // success.
-        await handlePlanningFailure(
-          repo,
-          issueNumber,
-          githubUser,
-          buildParentGateFailureComment(unresolved),
-          config,
-          deps,
-          logger,
-          ghClient,
-          invocations,
-        );
-
-        const deferredNote = repair.deferred.length > 0
-          ? `, ${repair.deferred.length} deferred un-attempted on the handler budget`
-          : "";
-        return {
-          ok: false,
-          error: new Error(
-            `Planning failed: ${unresolved.length} published sub-issue(s) missing the \`## Failure Detection\` criterion (self-repair could not fix them${deferredNote})`,
-          ),
-        };
+        // Issue #59: this is a *partial repair*, not a planning failure. The
+        // run published a usable plan and those sub-issues stay published
+        // whatever we report, so `failed-once` on the parent only told the
+        // retry machinery to re-plan from the top — the wrong recovery. Record
+        // the outstanding repairs instead (label + parent comment, below) and
+        // let the run complete. `handlePlanningFailure` stays for genuine
+        // planning failures: no sub-issues published, a prompt failure, or a
+        // publish failure.
+        pendingRepair = unresolved;
       }
     }
   }
@@ -1865,6 +1868,32 @@ async function closePlanningIssue(
     logger,
   );
 
+  // Issue #59: partial repair — the plan is published, so the run completes,
+  // but the parent records exactly which sub-issues still need their criterion
+  // and is left open (reopened when Claude closed it inline) carrying
+  // `needs-failure-detection-repair` for the resume pass to finish.
+  if (pendingRepair.length > 0) {
+    const recorded = await recordPartialFailureDetectionRepair({
+      repo,
+      parentIssueNumber: issueNumber,
+      offenders: pendingRepair,
+      parentClosed: alreadyClosed,
+      ghCommandFn: deps.github.runGhCommand,
+      postComment: (r: string, n: number, body: string) =>
+        ghClient.postComment(r, n, body).then(() => undefined),
+      logger,
+    });
+    logger.warn(
+      "Planning run completed with outstanding Failure-Detection repairs (Issue #59)",
+      {
+        repo,
+        issueNumber,
+        pendingRepair: pendingRepair.map((o) => o.number).join(","),
+        label: recorded ? FAILURE_DETECTION_REPAIR_LABEL : "not-applied",
+      },
+    );
+  }
+
   if (!alreadyClosed) {
     const escalationReason = Deno.env.get("PLANNING_ESCALATION_REASON");
     let summaryComment = buildPlanningSummaryComment(
@@ -1920,7 +1949,9 @@ async function closePlanningIssue(
     // Non-critical
   }
 
-  if (!alreadyClosed) {
+  // Issue #59: a partial repair leaves the parent open — closing it would bury
+  // the outstanding repairs where the resume pass cannot pick them up.
+  if (!alreadyClosed && pendingRepair.length === 0) {
     const closeComment = carrier.created
       ? "Planning complete — created a carrier sub-issue for the remaining work (Issue #2995)."
       : subIssueUrls.length > 0
@@ -1958,6 +1989,10 @@ async function closePlanningIssue(
     closedInline: alreadyClosed,
   });
 
+  const repairNote = pendingRepair.length > 0
+    ? ` — ${pendingRepair.length} awaiting Failure-Detection repair`
+    : "";
+
   return {
     ok: true,
     value: {
@@ -1965,9 +2000,12 @@ async function closePlanningIssue(
       subIssueCount: subIssueUrls.length,
       subIssueUrls,
       summary: subIssueUrls.length > 0
-        ? `Created ${subIssueUrls.length} sub-issue(s)`
+        ? `Created ${subIssueUrls.length} sub-issue(s)${repairNote}`
         : "Planning complete — no sub-issues required",
       degradation: verdict,
+      ...(pendingRepair.length > 0
+        ? { pendingFailureDetectionRepair: pendingRepair.map((o) => o.number) }
+        : {}),
     },
   };
 }

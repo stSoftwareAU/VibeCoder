@@ -246,7 +246,7 @@ verifies that every published sub-issue body carries a filled `## Failure
 Detection` section (the planner emits it from `prompts/planning/` v19 onward,
 Issue #3245). This closes the "quality escape" of an unchecked prose rule: a
 prompt instruction alone can be silently ignored, so the gate turns a missing
-criterion into a **loud, labelled planning failure** rather than a silent pass.
+criterion into a **loud, labelled outcome** rather than a silent pass.
 
 A sub-issue **passes** when its body contains a `## Failure Detection` heading
 (or a bolded `**Failure detection:**` line) followed by non-whitespace content
@@ -256,17 +256,59 @@ the heading is missing, the section is empty, or it is left as the bracketed
 placeholder.
 
 When any published sub-issue fails the gate the worker first attempts a
-**model-driven self-repair** (see below) before recording a failure. Only the
-sub-issues the repair genuinely could not fix are recorded as **failed**: the
-worker posts a failure comment on the parent naming each un-repairable
-sub-issue, drives the existing failed-once/failed label progression, and posts a
-short actionable comment on each un-repairable sub-issue. The gate makes no
-GitHub mutation beyond those comments, the repair edits, and the label
-progression already used by the planning-failure path. A run whose sub-issues
-all carry the criterion (or that creates zero sub-issues) completes normally —
-no behaviour change. The gate is `worker/deno/lib/failure_detection_gate.ts`,
-wired into the single `closePlanningIssue()` chokepoint; an unreadable sub-issue
-body is skipped (best-effort) rather than mis-reported as a false failure.
+**model-driven self-repair** (see below). Whatever the repair cannot fix becomes
+a **partial repair**, not a planning failure (see the next section). A run whose
+sub-issues all carry the criterion (or that creates zero sub-issues) completes
+normally — no behaviour change. The gate is
+`worker/deno/lib/failure_detection_gate.ts`, wired into the single
+`closePlanningIssue()` chokepoint; an unreadable sub-issue body is skipped
+(best-effort) rather than mis-reported as a false failure.
+
+#### 🩹 Partial repair leaves a resumable state (Issue #59)
+
+A run that **published its sub-issues** and repaired only some of them is not a
+failed planning run. The plan is published and usable, and the published
+sub-issues stay published whatever the run reports — so marking the parent
+`failed-once` only told the retry machinery to re-plan from the top, which is
+the wrong recovery. On stSoftwareAU/GRQ-validation#835 that state was actively
+misleading: 8 sub-issues published, 6 compliant, and the parent nonetheless
+labelled `failed-once`.
+
+That outcome is now distinct from a planning failure. When the run published
+sub-issues but one or more still lack the criterion, the worker:
+
+- applies **`needs-failure-detection-repair`** to the parent (never
+  `failed-once` / `failed`);
+- posts **one** parent comment naming every sub-issue still needing repair and
+  the reason for each (shared wording with the failure comment — see
+  `buildParentPartialRepairComment()`);
+- posts the existing short, actionable comment on **each** offending sub-issue;
+- leaves the parent **open** — reopening it when the planner closed it inline —
+  so the repair stays discoverable; and
+- returns a **success-shaped** result carrying
+  `pendingFailureDetectionRepair`, so the run is not counted as a failed
+  planning run.
+
+`needs-failure-detection-repair` is **reserved** (`RESERVED_LABELS`), so the
+planner can never apply it to a sub-issue as a descriptive label and manufacture
+a phantom repair queue; the worker's own label guard allowlists it, because the
+worker is the only thing that may raise it. The label and its apply helper live
+in `worker/deno/lib/failure_detection_repair_label.ts`.
+
+The **loud failure path is unchanged for genuine planning failures** — a prompt
+failure, a timeout, or a publish failure still drives `handlePlanningFailure()`
+with the `failed-once` → `failed` progression. This change narrows *when* the
+gate fails a run, not the failure machinery itself.
+
+```mermaid
+flowchart TD
+    A[Planning run] --> B{Publish succeeded?}
+    B -->|no — prompt/publish failure| C["handlePlanningFailure()<br/>failed-once → failed"]
+    B -->|yes| D[Gate + self-repair]
+    D --> E{Every sub-issue compliant?}
+    E -->|yes| F[Close parent as completed]
+    E -->|no| G["needs-failure-detection-repair on parent<br/>+ one parent comment naming each<br/>+ per-sub-issue comments<br/>parent left open · run succeeds"]
+```
 
 #### 🔧 Model-driven self-repair (Issue #3272)
 
@@ -319,14 +361,14 @@ flowchart TD
     H --> I
     Y --> I
     I -->|no| J[Run completes successfully]
-    I -->|yes| K[handlePlanningFailure — loud, labelled hard-block]
+    I -->|yes| K["Partial repair (#59) — parent labelled<br/>needs-failure-detection-repair, run succeeds"]
 ```
 
 The repair is **best-effort and idempotent**: an offender whose body cannot be
 read, whose Claude call fails/times out/empties, that the batched output omits,
 whose draft still fails the gate, or whose `gh issue edit` throws stays in
-`stillOffending` and drives the loud, labelled `handlePlanningFailure` (repair
-impossible → hard-block remains the fallback, per #3270). Only a positively
+`stillOffending` and is recorded on the parent as an outstanding repair
+(Issue #59; before that it drove `handlePlanningFailure`). Only a positively
 confirmed repair is reported as repaired. The re-gate is performed on the
 constructed body *before* the patch, so a still-failing draft never overwrites
 the sub-issue.
@@ -349,9 +391,10 @@ pass stops cleanly and every un-attempted offender is returned in a separate
 `deferred` ("we never tried — out of budget") is deliberately distinct from
 `stillOffending` ("the model tried and could not produce a passing section"): a
 deferred offender is no evidence that a repair is impossible, so a resumed run
-may still fix it. Both sets still **block** the planning run — the criterion is
-missing either way, so a deferral is never a silent pass. With no deadline
-supplied (tests, CLI paths) behaviour is unchanged and `deferred` is empty.
+may still fix it. Both sets are recorded as outstanding repairs on the parent
+(Issue #59) — the criterion is missing either way, so a deferral is never a
+silent pass. With no deadline supplied (tests, CLI paths) behaviour is unchanged
+and `deferred` is empty.
 
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
 

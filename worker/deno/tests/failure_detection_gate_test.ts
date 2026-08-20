@@ -13,6 +13,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildParentGateFailureComment,
+  buildParentPartialRepairComment,
   buildSubIssueGateComment,
   type FailureDetectionOffender,
   runFailureDetectionGate,
@@ -247,6 +248,50 @@ Deno.test("buildParentGateFailureComment - names every offending sub-issue", () 
   assertStringIncludes(comment, "#61");
   assertStringIncludes(comment, "#62");
   assertStringIncludes(comment, "Failure Detection");
+});
+
+Deno.test("buildParentPartialRepairComment - names every sub-issue and denies a failed run (Issue #59)", () => {
+  const offenders: FailureDetectionOffender[] = [
+    {
+      number: 842,
+      title: "One",
+      reason: "missing `## Failure Detection` section",
+    },
+    {
+      number: 843,
+      title: "Two",
+      reason: "empty `## Failure Detection` section",
+    },
+  ];
+  const comment = buildParentPartialRepairComment(
+    offenders,
+    "needs-failure-detection-repair",
+  );
+  // Every offender, with its own reason.
+  assertStringIncludes(comment, "#842 (One) — missing");
+  assertStringIncludes(comment, "#843 (Two) — empty");
+  // States the outcome: not a failed run, and the label carrying the state.
+  assertStringIncludes(comment, "not** a failed planning run");
+  assertStringIncludes(comment, "`needs-failure-detection-repair`");
+  assertStringIncludes(comment, "not to re-run planning");
+  // Shares the failure comment's rule wording (single source — Issue #59).
+  assertStringIncludes(
+    comment,
+    "every published sub-issue must carry a non-empty",
+  );
+});
+
+Deno.test("buildParentPartialRepairComment - a single offender reads correctly", () => {
+  const comment = buildParentPartialRepairComment(
+    [{
+      number: 5,
+      title: "Solo",
+      reason: "empty `## Failure Detection` section",
+    }],
+    "needs-failure-detection-repair",
+  );
+  assertStringIncludes(comment, "- #5 (Solo) — empty");
+  assertEquals(comment.includes("#6"), false);
 });
 
 Deno.test("buildSubIssueGateComment - states the missing criterion", () => {
