@@ -53,6 +53,7 @@ export type GhGuardMarker =
   | "WRITE_REPO_BLOCKED"
   | "WRITE_TARGET_UNDETERMINABLE"
   | "WORKER_LABEL_REFUSED"
+  | "GH_BODY_UNREADABLE"
   | "GH_UNKNOWN_COMMAND";
 
 /** The guard's verdict for one `gh` argument vector. */
@@ -259,6 +260,28 @@ export function evaluateGhCommand(
         marker: "WORKER_LABEL_REFUSED",
         reason: `label=${forbidden} verb=${info.verb} ` +
           `caller=agent-subprocess reason=reserved_workflow_label`,
+      };
+    }
+
+    // Issue #11: a REST mutation whose body is supplied by `--input` (or an
+    // `@file`-sourced query) is argv-invisible, so `extractLabelValues` above
+    // saw nothing to reject — a prompt-injected agent could hide a reserved
+    // label in the file. Fail closed: refuse every unreadable-body REST
+    // mutation rather than sniff which endpoints carry a `labels` field (that
+    // denylist is unmaintainable and wrong the moment GitHub adds one). This
+    // sits WITH the reserved-label check, before the `ctx.active` early
+    // return, so the backstop is as unconditional as the denylist it guards —
+    // otherwise the bypass just returns whenever the write-repo allowlist is
+    // inert. The follow-up (#91) restores the legitimate readable-file case by
+    // actually scanning the file.
+    if (info.unreadableBody) {
+      return {
+        allowed: false,
+        marker: "GH_BODY_UNREADABLE",
+        reason: `Refused ${info.verb} from the agent subprocess — the ` +
+          `request body is supplied by \`--input\`, so this guard cannot ` +
+          `check it for reserved workflow labels. Pass the fields inline ` +
+          `with \`-f\`/\`--field\` instead.`,
       };
     }
   }

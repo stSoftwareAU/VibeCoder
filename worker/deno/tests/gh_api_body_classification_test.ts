@@ -301,14 +301,63 @@ Deno.test("enforceGhWriteAllowlist - refuses a graphql document read from a file
   }
 });
 
-Deno.test("evaluateGhCommand - refuses the agent's --input write to another repo", () => {
+Deno.test("evaluateGhCommand - an --input write is refused for its unreadable body, before the repo check even runs (Issue #90)", () => {
   const ctx = { active: true, allowedRepos: ["me/target"] };
   const decision = evaluateGhCommand(
     ["api", "repos/attacker/evil/issues/1/labels", "--input", "-"],
     ctx,
   );
   assertEquals(decision.allowed, false);
-  assertEquals(decision.marker, "WRITE_REPO_BLOCKED");
+  // The fail-closed unreadable-body backstop (#90) fires in the unconditional
+  // block before the write-repo allowlist, so this now reports the stronger,
+  // earlier marker rather than WRITE_REPO_BLOCKED.
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("evaluateGhCommand - fails closed on an --input REST mutation to the OWN repo, allowlist inert (Issue #90)", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "--input", "/tmp/b.json"],
+    { active: false, allowedRepos: [] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+  if (!decision.allowed) {
+    assertStringIncludes(decision.reason ?? "", "--input");
+    assertStringIncludes(decision.reason ?? "", "-f");
+  }
+});
+
+Deno.test("evaluateGhCommand - the unreadable-body refusal holds with an active allowlist naming the repo (Issue #90)", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "--input", "/tmp/b.json"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("evaluateGhCommand - a visible reserved label still wins over the unreadable-body marker (order preserved)", () => {
+  const decision = evaluateGhCommand(
+    [
+      "api",
+      "repos/o/r/issues/1/labels",
+      "--input",
+      "-",
+      "-f",
+      "labels[]=top-priority",
+    ],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+});
+
+Deno.test("evaluateGhCommand - an argv-visible body (-f only) is not blocked by the unreadable-body backstop", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "-f", "labels[]=bug"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, true);
 });
 
 Deno.test("evaluateGhCommand - refuses an unreadable graphql document", () => {
