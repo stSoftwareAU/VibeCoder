@@ -900,8 +900,10 @@ write_interactive_config() {
 # volumes (Issue #4186). In container mode the workspace lives on the
 # `vibe-work` / `vibe-approval-state` runtime volumes, so a leftover
 # ~/auto-issue-work (or its approval-state sibling) on the host is never
-# mounted again and only wastes disk. Reminder only — deleting operator data
-# is never setup's call.
+# mounted again and only wastes disk. A directory holding worker data gets a
+# reminder only — deleting operator data is never setup's call — but one that
+# holds nothing beyond setup's own `.vibe-cache` is setup's own doing and is
+# removed outright (Issue #134).
 # True when the directory holds anything besides setup's own `.vibe-cache`.
 # Setup's host-side steps (the workflow and best-practice audits) keep a small
 # lookup cache at `${WORK_DIR}/.vibe-cache`, so that entry is setup's doing,
@@ -915,6 +917,26 @@ host_work_dir_holds_worker_data() {
         return 0
     done
     return 1
+}
+
+# Remove a host work dir that holds nothing beyond setup's own `.vibe-cache`
+# (Issue #134). Callers have already established the directory exists and
+# holds no worker data; this deletes the cache subtree and the then-empty
+# directory, reporting what went — silent deletion is worse than none.
+#
+# Guarded: an empty path, `/`, or `${HOME}` itself is refused outright. A
+# bare `rm -rf` built from an unset variable is the failure mode this guard
+# exists for, so it stays even though today's callers cannot pass those.
+remove_cache_only_host_work_dir() {
+    local dir="$1"
+    if [[ -z "${dir}" || "${dir}" == "/" || "${dir}" == "${HOME}" ]]; then
+        print_warning "Refusing to remove '${dir}': not a disposable host work directory."
+        return 0
+    fi
+    rm -rf "${dir}/.vibe-cache"
+    if rmdir "${dir}" 2>/dev/null; then
+        print_info "Removed ${dir}: it held nothing but setup's own .vibe-cache (Issue #134); container mode keeps the workspace on named volumes."
+    fi
 }
 
 remind_obsolete_host_work_dirs() {
@@ -934,10 +956,14 @@ remind_obsolete_host_work_dirs() {
     local work_dir="${WORK_DIR:-${HOME}/auto-issue-work}"
     local dir size found=false
     for dir in "${work_dir}" "${work_dir}-approval-state"; do
-        if [[ -d "${dir}" ]] && host_work_dir_holds_worker_data "${dir}"; then
+        [[ -d "${dir}" ]] || continue
+        if host_work_dir_holds_worker_data "${dir}"; then
             size="$(du -sh "${dir}" 2>/dev/null | cut -f1)"
             print_warning "${dir} (${size:-size unknown}) is wasting disk: container mode keeps the workspace on named volumes (Issue #4186), so this host directory is never mounted again."
             found=true
+        else
+            # Cache-only (or empty) — setup's own doing, safe to reclaim.
+            remove_cache_only_host_work_dir "${dir}"
         fi
     done
     if [[ "${found}" == "true" ]]; then
