@@ -567,3 +567,69 @@ Deno.test("gh-guard #91 - an argv-visible reserved label still wins over a clean
   assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
   assert(decision.reason?.includes("work-on"));
 });
+
+// ---------------------------------------------------------------------------
+// Issue #93 — a `@file`-sourced `-F`/`--field` value is unreadable
+//
+// `gh -F 'labels[]=@/tmp/l.txt'` reads the label names from a file, so the
+// argv cannot show them. The classifier marks the body unreadable and the
+// backstop refuses; `extractLabelValues` must not emit the literal `@path` as
+// a label. `-f`/`--raw-field` do not expand `@`, so `@literal` there is a real
+// label name (the asymmetry the issue calls out).
+// ---------------------------------------------------------------------------
+
+Deno.test("gh-guard #93 - refuses an @file -F label field (GH_BODY_UNREADABLE)", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "-F", "labels[]=@/tmp/l.txt"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #93 - the --field=labels[]=@path equals form is refused too", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "--field=labels[]=@/tmp/l.txt"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #93 - extractLabelValues emits no label for an @file -F value", () => {
+  // Returning "@/tmp/l.txt" as a label would falsely look inspected.
+  assertEquals(
+    extractLabelValues(["-F", "labels[]=@/tmp/l.txt"]),
+    [],
+  );
+});
+
+Deno.test("gh-guard #93 - a raw-field -f @literal IS the literal label name (asymmetry)", () => {
+  assertEquals(
+    extractLabelValues(["-f", "labels[]=@literal"]),
+    ["@literal"],
+  );
+});
+
+Deno.test("gh-guard #93 - a plain -F label with no @ is extracted unchanged", () => {
+  assertEquals(extractLabelValues(["-F", "labels[]=bug"]), ["bug"]);
+});
+
+Deno.test("gh-guard #93 - a plain -F label with no @ is allowed on an allowlisted repo", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "-F", "labels[]=bug"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, true);
+});
+
+Deno.test("gh-guard #93 - a reserved label via a literal -f value is still refused", () => {
+  // The @-asymmetry must not weaken the reserved-label check for literals.
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "-f", "labels[]=top-priority"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  assert(decision.reason?.includes("top-priority"));
+});
