@@ -1405,6 +1405,82 @@ Deno.test("executeClaude - self-heals when PR exists despite timeout", async () 
   assertEquals(result.status, "continue");
 });
 
+Deno.test("executeClaude #47 - a timeout with a dirty tree reports uncommitted changes, not 'no changes'", async () => {
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 124,
+            output: "…ran quality.sh on my changes…",
+            timedOut: true,
+          },
+        }) as never,
+    },
+    git: {
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: args[0] === "status" ? " M a.ts\n M b.ts" : "",
+            stderr: "",
+          },
+        }),
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("no PR") }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "failure");
+  assertStringIncludes(
+    (result as { reason: string }).reason,
+    "uncommitted changes (2 files)",
+  );
+});
+
+Deno.test("executeClaude #47 - a timeout with a clean tree still says 'without creating changes'", async () => {
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 124,
+            output: "…thinking, no edits…",
+            timedOut: true,
+          },
+        }) as never,
+    },
+    git: {
+      runGitCommand: () =>
+        Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        }),
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("no PR") }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "failure");
+  assertStringIncludes(
+    (result as { reason: string }).reason,
+    "without creating changes",
+  );
+});
+
 Deno.test("executeClaude - passes quality and custom instructions from repo config to prompt builder", async () => {
   const ctx = makeContext({
     config: makeConfig({

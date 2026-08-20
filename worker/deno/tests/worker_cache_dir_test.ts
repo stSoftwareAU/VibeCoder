@@ -31,15 +31,30 @@ function withEnv(
   });
 }
 
-Deno.test("worker_cache_dir - WORK_DIR wins; HOME/auto-issue-work is the fallback", async () => {
+Deno.test("worker_cache_dir - WORK_DIR set: `${WORK_DIR}/.vibe-cache` exactly", async () => {
   await withEnv({ WORK_DIR: "/vol/work", HOME: "/Users/op" }, () => {
     assertEquals(workerCacheDir(), "/vol/work/.vibe-cache");
     assertEquals(workerCachePath("x.json"), "/vol/work/.vibe-cache/x.json");
     assertEquals(legacyHomeCachePath("x.json"), "/Users/op/.vibe-coder/x.json");
   });
-  await withEnv({ WORK_DIR: undefined, HOME: "/Users/op" }, () => {
-    assertEquals(workerCacheDir(), "/Users/op/auto-issue-work/.vibe-cache");
-  });
+});
+
+Deno.test("worker_cache_dir - WORK_DIR unset: no cache dir at all, never a HOME/USERPROFILE/'.' fallback (Issue #131)", async () => {
+  await withEnv(
+    { WORK_DIR: undefined, HOME: "/Users/op", USERPROFILE: "C:\\Users\\op" },
+    () => {
+      assertEquals(workerCacheDir(), undefined);
+      assertEquals(workerCachePath("x.json"), undefined);
+    },
+  );
+  // Even with no HOME/USERPROFILE either, "." must not be used.
+  await withEnv(
+    { WORK_DIR: undefined, HOME: undefined, USERPROFILE: undefined },
+    () => {
+      assertEquals(workerCacheDir(), undefined);
+      assertEquals(workerCachePath("x.json"), undefined);
+    },
+  );
 });
 
 Deno.test("worker_cache_dir - the legacy HOME file is read when the new one is absent, and ignored once it exists", async () => {

@@ -87,6 +87,12 @@ export interface SetupContract {
   validatesClaudeCredential: boolean;
   /** True when the script can mint a token with `claude setup-token`. */
   capturesSetupToken: boolean;
+  /**
+   * True when the script removes a host work dir that holds only setup's own
+   * `.vibe-cache` (Issue #134). A directory holding worker data still gets a
+   * reminder only — this field covers reclaiming setup's own leftovers.
+   */
+  removesCacheOnlyWorkDir: boolean;
 }
 
 /**
@@ -149,6 +155,11 @@ export function extractSetupContract(
     provisionsGhCredential: runs(code, "hosts.yml"),
     validatesClaudeCredential: runs(code, "claude", "-p"),
     capturesSetupToken: runs(code, "claude setup-token"),
+    // The removal is detected by its command, not its message: the one line
+    // that recursively deletes the `.vibe-cache` subtree (Issue #134).
+    removesCacheOnlyWorkDir: dialect === "bash"
+      ? runs(code, "rm -rf", ".vibe-cache")
+      : runs(code, "Remove-Item", ".vibe-cache"),
   };
 }
 
@@ -165,7 +176,8 @@ export type SetupComparedField =
   | "supervisorSubcommands"
   | "providerProvisionVars"
   | "provisionsGhCredential"
-  | "validatesClaudeCredential";
+  | "validatesClaudeCredential"
+  | "removesCacheOnlyWorkDir";
 
 /** What each compared field is called in a divergence message. */
 const COMPARED_FIELDS: Record<SetupComparedField, string> = {
@@ -176,6 +188,7 @@ const COMPARED_FIELDS: Record<SetupComparedField, string> = {
   providerProvisionVars: "provider provisioning variables",
   provisionsGhCredential: "gh credential provisioning",
   validatesClaudeCredential: "live credential validation",
+  removesCacheOnlyWorkDir: "cache-only host work dir removal",
 };
 
 /**
@@ -317,6 +330,13 @@ export function setupContractFaults(contract: SetupContract): string[] {
       `${contract.name} stores a credential without proving it works, so an ` +
         `expired token is discovered by the unattended worker instead ` +
         `(Issues #3234, #4161)`,
+    );
+  }
+  if (!contract.removesCacheOnlyWorkDir) {
+    faults.push(
+      `${contract.name} never removes a host work dir that holds only ` +
+        `setup's own .vibe-cache, so the inert directory survives setup ` +
+        `forever (Issue #134)`,
     );
   }
 

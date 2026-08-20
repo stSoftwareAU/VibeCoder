@@ -26,6 +26,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
+import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import {
   cachedPassAt,
@@ -467,6 +468,74 @@ async function runGhSpawnChokepointCheck(
     name,
     status: "FAILED",
     output: `gh spawn chokepoint: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the host work-dir guard check (Issue #135, parent #118).
+ *
+ * Scans the Deno source tree (tests excluded — fixtures legitimately build
+ * these paths) for constructions of a work-dir path
+ * (`…/auto-issue-work`) from `HOME`/`USERPROFILE` or any other base outside
+ * the explicit, commented allowlist in `home_workdir_check.ts`. A new
+ * HOME-derived default would silently recreate a stray `~/auto-issue-work`
+ * on the host — the regression class Issues #131/#132/#133 removed.
+ */
+async function runHomeWorkDirGuardCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "host work-dir guard";
+  const relDirs = ["worker/deno"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForHomeWorkDir(
+    config.scriptDir,
+    relDirs,
+  );
+
+  if (result.violations.length === 0 && result.staleAllowlist.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `host work-dir guard: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map(
+      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
+    ),
+    ...result.staleAllowlist.map((s) => `STALE ALLOWLIST: ${s}`),
+    "",
+    "A work-dir path (…/auto-issue-work) is being built from HOME/USERPROFILE",
+    "(or another base) outside the commented allowlist (Issue #135, parent",
+    "#118). Such a default silently creates a stray work dir under the host's",
+    "home. Read WORK_DIR (exported by the run driver, Issue #4370) or",
+    "take an explicit work dir; if the site is genuinely legitimate, add it to",
+    "HOME_WORKDIR_ALLOWLIST in worker/deno/lib/home_workdir_check.ts with a",
+    "comment saying why.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `host work-dir guard: FAILED\n${output}`,
   };
 }
 
@@ -1122,6 +1191,14 @@ export async function runQualityGate(
   const ghSpawnResult = await runGhSpawnChokepointCheck(config);
   allOutput.push(ghSpawnResult.output);
   recordCheck(checks, ghSpawnResult.name, ghSpawnResult.status);
+
+  // host work-dir guard (Issue #135, parent #118) — no source file may build
+  // a work-dir path from HOME/USERPROFILE outside the commented allowlist,
+  // so a host-side entry point can never grow back a ~/auto-issue-work
+  // default.
+  const homeWorkDirResult = await runHomeWorkDirGuardCheck(config);
+  allOutput.push(homeWorkDirResult.output);
+  recordCheck(checks, homeWorkDirResult.name, homeWorkDirResult.status);
 
   // git ref chokepoint (Issue #12) — a PR head branch name must reach git
   // only through the ref-arg builders, never as an inline positional.

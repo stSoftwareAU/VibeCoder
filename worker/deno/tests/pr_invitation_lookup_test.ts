@@ -11,9 +11,11 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  INVITATION_CACHE_FIELDS,
   INVITATION_PR_FIELDS,
   listInvitedHumanPrs,
 } from "../lib/pr_invitation_lookup.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
 
 const REPO = "owner/repo";
 const HOST = "Vibecoderbot";
@@ -179,4 +181,50 @@ Deno.test("listInvitedHumanPrs - a --limit is passed through when supplied", asy
 
   const list = calls.find((c) => c[0] === "pr" && c[1] === "list")!;
   assertEquals(list[list.indexOf("--limit") + 1], "50");
+});
+
+// --- Issue #41: per-cycle invitation listing cache -----------------------
+
+Deno.test("listInvitedHumanPrs - cache: repeated scans cost one gh list per author (Issue #41)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "invite_cache_" });
+  const cache = new IssueCache(dir);
+  try {
+    const calls: string[][] = [];
+    // Three scans in the same cycle, each asking for different fields —
+    // exactly the #4303 shape applied to the #4077 invitation door.
+    const scanFields = [
+      "number,headRefName,headRefOid,createdAt,updatedAt",
+      "number,title,baseRefName,autoMergeRequest",
+      "number,mergeable",
+    ];
+    for (const fields of scanFields) {
+      await run({ calls }, { fields, cache });
+    }
+
+    const listCalls = calls.filter((c) => c[0] === "pr" && c[1] === "list");
+    // One `pr list` for the single human author — served to all three scans.
+    assertEquals(listCalls.length, 1, "three scans must cost one gh list");
+    // The one real listing requested the fixed superset, not scan-1's fields.
+    const listCall = listCalls[0]!;
+    const json = listCall[listCall.indexOf("--json") + 1];
+    assertEquals(json, INVITATION_CACHE_FIELDS);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("listInvitedHumanPrs - cache: superset serves a labelled admission (Issue #41)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "invite_cache_" });
+  const cache = new IssueCache(dir);
+  try {
+    // A caller that asked for only bare fields still gets an admission,
+    // because the cached listing carries labels/comments/reviews.
+    const admitted = await run(
+      { labels: [{ name: "work-on" }], labelledBy: HUMAN },
+      { fields: "number,headRefName", cache },
+    );
+    assertEquals(admitted.map((pr) => pr.number), [PR_NUMBER]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

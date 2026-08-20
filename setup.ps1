@@ -1002,13 +1002,52 @@ function Write-VibeInteractiveConfig {
 
 <#
 .SYNOPSIS
+    Remove a host work dir that holds only a stale .vibe-cache entry.
+
+.DESCRIPTION
+    Setup caches nothing on the host any more (Issue #132), so a .vibe-cache
+    is only a leftover an earlier setup version wrote. Callers have already
+    established the directory exists and holds no worker data (Issue #134);
+    this deletes the cache subtree and the then-empty directory, reporting
+    what went — silent deletion is worse than none.
+
+    Guarded: an empty path, a filesystem root, or the home directory itself is
+    refused outright. A recursive delete built from an unset variable is the
+    failure mode this guard exists for, so it stays even though today's
+    callers cannot pass those.
+#>
+function Remove-VibeCacheOnlyWorkDir {
+    param([string]$Dir)
+
+    $homeDir = Get-VibeHomeDirectory
+    if ([string]::IsNullOrEmpty($Dir) -or
+        $Dir -eq [System.IO.Path]::GetPathRoot($Dir) -or
+        $Dir -eq $homeDir) {
+        Write-VibeWarning "Refusing to remove '$Dir': not a disposable host work directory."
+        return
+    }
+    Remove-Item -LiteralPath (Join-Path $Dir ".vibe-cache") -Recurse -Force -ErrorAction SilentlyContinue
+    if ((Test-Path -LiteralPath $Dir -PathType Container) -and
+        -not (Get-ChildItem -LiteralPath $Dir -Force | Select-Object -First 1)) {
+        Remove-Item -LiteralPath $Dir -Force
+        Write-VibeInfo ("Removed ${Dir}: it held nothing but a stale " +
+            ".vibe-cache from an earlier setup (Issue #134); container " +
+            "mode keeps the workspace on named volumes.")
+    }
+}
+
+<#
+.SYNOPSIS
     Remind about host work directories the named volumes made obsolete.
 
 .DESCRIPTION
     In container mode the workspace lives on the `vibe-work` /
     `vibe-approval-state` runtime volumes (Issue #4186), so a leftover
     auto-issue-work directory on the host is never mounted again and only
-    wastes disk. Reminder only — deleting operator data is never setup's call.
+    wastes disk. A directory holding worker data gets a reminder only —
+    deleting operator data is never setup's call — but one that holds nothing
+    beyond a .vibe-cache entry is setup's own leftover and is removed
+    outright (Issue #134).
 #>
 function Show-VibeObsoleteWorkDirs {
     $deno = Get-VibeDenoCommand
@@ -1031,18 +1070,23 @@ function Show-VibeObsoleteWorkDirs {
 
     $found = $false
     foreach ($dir in @($workDir, "$workDir-approval-state")) {
-        # Setup's own host-side steps (the workflow and best-practice audits)
-        # keep a small lookup cache at `$WORK_DIR/.vibe-cache`, so that entry
-        # is setup's doing, not a leftover workspace: only repository checkouts
-        # and other worker data count as wasted disk.
-        if ((Test-Path -LiteralPath $dir -PathType Container) -and
-            (Get-ChildItem -LiteralPath $dir -Force |
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        # Setup caches nothing on the host (Issue #132 — host-side runs
+        # re-query the GitHub API instead), so a `.vibe-cache` here is only a
+        # harmless leftover from an earlier version, not a live workspace:
+        # only repository checkouts and other worker data count as wasted
+        # disk.
+        if (Get-ChildItem -LiteralPath $dir -Force |
                 Where-Object { $_.Name -ne ".vibe-cache" } |
-                Select-Object -First 1)) {
+                Select-Object -First 1) {
             Write-VibeWarning ("$dir is wasting disk: container mode keeps the " +
                 "workspace on named volumes (Issue #4186), so this host " +
                 "directory is never mounted again.")
             $found = $true
+        } else {
+            # Cache-only (or empty) — setup's own leftover, safe to reclaim
+            # (Issue #134).
+            Remove-VibeCacheOnlyWorkDir -Dir $dir
         }
     }
     if ($found) {
