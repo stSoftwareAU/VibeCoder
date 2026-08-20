@@ -3331,3 +3331,116 @@ Deno.test("workOnIssue - handles unexpected error in phase", async () => {
   assertEquals(result.phase, "setup");
   assertEquals(result.reason.includes("Unexpected error"), true);
 });
+
+Deno.test("executeClaude #47 - a deadline timeout with a dirty tree preserves WIP on the issue branch", async () => {
+  const tempWorkDir = await Deno.makeTempDir({ prefix: "issue47-wip-" });
+  try {
+    const ctx = makeContext({ config: makeConfig({ workDir: tempWorkDir }) });
+    const state = makeState();
+    const pushes: Array<{ branch: string; message: string }> = [];
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              exitCode: 124,
+              output: "…mid test run…",
+              timedOut: true,
+            },
+          }) as never,
+      },
+      git: {
+        runGitCommand: (args: string[]) =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "status"
+                ? " M a.ts\n M b.ts"
+                : args[0] === "rev-parse"
+                ? state.branchName
+                : "",
+              stderr: "",
+            },
+          }),
+        commitAndPushPending: ((branch: string, message: string) => {
+          pushes.push({ branch, message });
+          return Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          });
+        }) as never,
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("no PR") }),
+      },
+    });
+
+    const result = await workOnIssueExecuteClaude(ctx, state, deps);
+    assertEquals(result.status, "failure");
+    const reason = (result as { reason: string }).reason;
+    assertStringIncludes(reason, "uncommitted changes (2 files)");
+    assertStringIncludes(reason, "WIP preserved");
+    assertEquals(pushes.length, 1);
+    assertEquals(pushes[0]?.branch, state.branchName);
+    assertStringIncludes(pushes[0]?.message ?? "", "wip: execute timed out");
+    assertStringIncludes(pushes[0]?.message ?? "", "Issue #47");
+  } finally {
+    await Deno.remove(tempWorkDir, { recursive: true });
+  }
+});
+
+Deno.test("executeClaude #47 - a failed WIP push is reported in the failure reason", async () => {
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 124,
+            output: "…mid test run…",
+            timedOut: true,
+          },
+        }) as never,
+    },
+    git: {
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: args[0] === "status"
+              ? " M a.ts"
+              : args[0] === "rev-parse"
+              ? state.branchName
+              : "",
+            stderr: "",
+          },
+        }),
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("push rejected"),
+        })) as never,
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("no PR") }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "failure");
+  const reason = (result as { reason: string }).reason;
+  assertStringIncludes(reason, "uncommitted changes (1 file)");
+  assertStringIncludes(reason, "WIP preservation failed");
+  assertStringIncludes(reason, "push rejected");
+});

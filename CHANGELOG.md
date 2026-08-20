@@ -11,6 +11,20 @@ This changelog is a human-readable digest grouped by version.
 
 ## [Unreleased]
 
+### Changed
+
+- **A deadline-killed execute no longer discards its work, and late-cycle
+  claims that cannot fit a full execute are refused (Issue #47).** On a hard
+  timeout with a dirty tree the run's work is committed as a WIP commit and
+  pushed to the claim-locked issue branch through the guarded chokepoint —
+  regardless of `enable_session_resume` — and the release comment names the
+  branch so the next claimant (or a human) resumes from it instead of
+  starting from zero. The claim-runway floor (#4304) is raised to the
+  configured `claudeTimeout` whenever the cycle is long enough to offer one,
+  so a deadline-bound execute becomes a documented exception; on hosts whose
+  whole cycle is shorter than the budget the plain floor stands and the
+  worker logs that permanent exception once per cycle.
+
 ### Removed
 
 - **Containment is mandatory: the `native` and `seatbelt` run modes are gone

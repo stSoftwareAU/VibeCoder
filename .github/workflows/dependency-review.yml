@@ -1,0 +1,59 @@
+# Dependency Review (Issue #19 — GHA supply-chain).
+#
+# Gates the dependency *delta* a pull request introduces: the
+# dependency-review-action reads the manifests changed in the PR and fails
+# the check before a known-vulnerable — or disallowed-licence — dependency
+# can merge. This complements dependency-audit.yml, which scans the whole
+# committed tree on a schedule (detect-after-merge); this one is the
+# pre-merge gate on what the PR adds.
+#
+# GitHub's dependency graph understands the Ruby/Jekyll `Gemfile.lock`, so
+# that ecosystem is covered here. The Deno tree keeps its own advisory
+# coverage via `deno audit` in dependency-audit.yml (GitHub's graph does not
+# parse `deno.lock`), so nothing is lost by the graph not seeing it.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue #2123)
+# so a hijacked tag cannot inject code; the tag each SHA resolves to is
+# recorded in a leading comment.
+
+name: Dependency Review
+
+on:
+  pull_request:
+    # Issue #3360 — milestone sub-issue PRs target a shared
+    # `milestone/<name>` branch (Issue #1300); include it so the gate runs
+    # before those PRs merge, not only on Develop/main PRs.
+    branches: [Develop, main, milestone/*]
+
+# Rule of Two (Issue #2382): a read-only static check. The review runs
+# against the PR diff and needs no write scope — it fails the check rather
+# than commenting, so no `pull-requests: write` is required.
+permissions:
+  contents: read
+
+# Issue #2972: cancel superseded PR runs. Only the latest commit's result
+# matters for a check, so a per-ref group with cancellation stops rapid
+# pushes spawning parallel, redundant runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Review dependency changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Issue #606: opt into Node.js 24 to avoid deprecation warnings for
+      # JS actions still bundled with Node.js 20.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Dependency Review
+        # actions/dependency-review-action@v5.0.0
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294

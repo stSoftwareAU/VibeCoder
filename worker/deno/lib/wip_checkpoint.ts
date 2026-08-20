@@ -118,6 +118,108 @@ async function defaultCurrentBranch(repoPath: string): Promise<string | null> {
   return branch.length > 0 ? branch : null;
 }
 
+/** One guarded checkpoint attempt, shared by the loop and the one-shot. */
+async function attemptWipCheckpoint(opts: {
+  repoPath: string;
+  branchName: string;
+  message: string;
+  currentBranch: (repoPath: string) => Promise<string | null>;
+  commitAndPush: (
+    branch: string,
+    message: string,
+    repoPath: string,
+  ) => Promise<Result<CommitAndPushPendingResult>>;
+  logger?: {
+    info: (message: string) => void;
+    warn: (message: string) => void;
+  };
+}): Promise<WipCheckpointOutcome> {
+  try {
+    if (isProtectedBranch(opts.branchName)) {
+      return {
+        kind: "skipped",
+        reason: `'${opts.branchName}' is a protected branch`,
+      };
+    }
+    const head = await opts.currentBranch(opts.repoPath);
+    if (head !== opts.branchName) {
+      return {
+        kind: "skipped",
+        reason: `HEAD is '${head ?? "unknown"}', expected '${opts.branchName}'`,
+      };
+    }
+    const result = await opts.commitAndPush(
+      opts.branchName,
+      opts.message,
+      opts.repoPath,
+    );
+    if (!result.ok) {
+      opts.logger?.warn(
+        `WIP checkpoint on ${opts.branchName} failed (non-fatal): ` +
+          result.error.message,
+      );
+      return { kind: "failed", reason: result.error.message };
+    }
+    const { committedNewChanges, commitsPushed } = result.value;
+    if (committedNewChanges || commitsPushed > 0) {
+      opts.logger?.info(
+        `WIP checkpoint: pushed ${commitsPushed} commit(s) to ` +
+          `${opts.branchName}` +
+          (committedNewChanges ? " (snapshotted uncommitted work)" : ""),
+      );
+      return {
+        kind: "pushed",
+        committed: committedNewChanges,
+        commitsPushed,
+      };
+    }
+    return { kind: "clean" };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    opts.logger?.warn(`WIP checkpoint threw (non-fatal): ${reason}`);
+    return { kind: "failed", reason };
+  }
+}
+
+/**
+ * One-shot WIP preservation for a timed-out or killed execute (Issue #47).
+ *
+ * Unlike {@link startWipCheckpoints} this is NOT gated on session resume —
+ * a hard timeout that leaves a dirty tree preserves the work
+ * unconditionally: one commit on the claim-locked issue branch, pushed
+ * through the same `commitAndPushPending` chokepoint (default-branch guard
+ * #2584, secret/hidden-file gate #1758, run-id trailer #2381). The caller
+ * reports the outcome in the release comment so the next claimant (or a
+ * human) knows the branch carries the work.
+ */
+export function preserveTimedOutWip(options: {
+  /** The issue clone the agent was working in. */
+  repoPath: string;
+  /** The claim-locked issue branch to preserve onto. */
+  branchName: string;
+  /** Commit message; explain the timeout so the WIP is self-describing. */
+  message: string;
+  logger?: {
+    info: (message: string) => void;
+    warn: (message: string) => void;
+  };
+  /** Injectable seams for tests. */
+  deps?: WipCheckpointDeps;
+}): Promise<WipCheckpointOutcome> {
+  const currentBranch = options.deps?.currentBranch ?? defaultCurrentBranch;
+  const commitAndPush = options.deps?.commitAndPush ??
+    ((branch: string, message: string, repoPath: string) =>
+      commitAndPushPending(branch, message, { cwd: repoPath }));
+  return attemptWipCheckpoint({
+    repoPath: options.repoPath,
+    branchName: options.branchName,
+    message: options.message,
+    currentBranch,
+    commitAndPush,
+    logger: options.logger,
+  });
+}
+
 /**
  * Start the periodic checkpoint loop. The caller must `stop()` the handle
  * (typically in a `finally` around the agent run) and may call `runNow()`
@@ -140,55 +242,18 @@ export function startWipCheckpoints(
     }
     running = true;
     try {
-      if (isProtectedBranch(options.branchName)) {
-        return {
-          kind: "skipped",
-          reason: `'${options.branchName}' is a protected branch`,
-        };
+      const outcome = await attemptWipCheckpoint({
+        repoPath: options.repoPath,
+        branchName: options.branchName,
+        message: WIP_CHECKPOINT_COMMIT_MESSAGE,
+        currentBranch,
+        commitAndPush,
+        logger,
+      });
+      if (outcome.kind === "pushed" || outcome.kind === "clean") {
+        await options.onCheckpoint?.(outcome);
       }
-      const head = await currentBranch(options.repoPath);
-      if (head !== options.branchName) {
-        return {
-          kind: "skipped",
-          reason: `HEAD is '${
-            head ?? "unknown"
-          }', expected '${options.branchName}'`,
-        };
-      }
-      const result = await commitAndPush(
-        options.branchName,
-        WIP_CHECKPOINT_COMMIT_MESSAGE,
-        options.repoPath,
-      );
-      if (!result.ok) {
-        logger?.warn(
-          `WIP checkpoint on ${options.branchName} failed (non-fatal, ` +
-            `next tick retries): ${result.error.message}`,
-        );
-        return { kind: "failed", reason: result.error.message };
-      }
-      const { committedNewChanges, commitsPushed } = result.value;
-      let outcome: WipCheckpointOutcome;
-      if (committedNewChanges || commitsPushed > 0) {
-        outcome = {
-          kind: "pushed",
-          committed: committedNewChanges,
-          commitsPushed,
-        };
-        logger?.info(
-          `WIP checkpoint: pushed ${commitsPushed} commit(s) to ` +
-            `${options.branchName}` +
-            (committedNewChanges ? " (snapshotted uncommitted work)" : ""),
-        );
-      } else {
-        outcome = { kind: "clean" };
-      }
-      await options.onCheckpoint?.(outcome);
       return outcome;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      logger?.warn(`WIP checkpoint threw (non-fatal): ${reason}`);
-      return { kind: "failed", reason };
     } finally {
       running = false;
     }
