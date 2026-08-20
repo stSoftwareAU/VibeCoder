@@ -185,3 +185,72 @@ Deno.test("gh-guard-cli - fails closed on a malformed invocation", () => {
     assertStringIncludes(result.stderr, "GH_GUARD_ERROR");
   }
 });
+
+// ---------------------------------------------------------------------------
+// Issue #91 — end-to-end: the CLI wires `denoBodyFileReader` into the decision
+// so a `gh api --input <file>` body is read from disk and scanned. These use a
+// real temp file (not the default reader override) to prove the wiring: if the
+// reader were never injected, the reserved-label body below would slip through
+// as GH_BODY_UNREADABLE instead of being named.
+// ---------------------------------------------------------------------------
+
+Deno.test("gh-guard-cli #91 - refuses a reserved label carried by a real --input file", async () => {
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(path, '{"labels":["top-priority"]}');
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--",
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues/1/labels",
+      "--input",
+      path,
+    ]);
+    assertEquals(result.exitCode, 1);
+    assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+    assertStringIncludes(result.stderr, "[SECURITY] [WORKER_LABEL_REFUSED]");
+    assertStringIncludes(result.stderr, "top-priority");
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("gh-guard-cli #91 - allows a clean --input file on the allowlisted repo", async () => {
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(path, '{"labels":["confidence:high","security"]}');
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--",
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues/1/labels",
+      "--input",
+      path,
+    ]);
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.stdout, GH_GUARD_ALLOW_MARKER);
+    assertEquals(result.stderr, "");
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("gh-guard-cli #91 - fails closed when the --input path does not exist", () => {
+  const result = runGhGuardCli([
+    "--active",
+    "--allow-repo",
+    "stSoftwareAU/VibeCoder",
+    "--",
+    "api",
+    "repos/stSoftwareAU/VibeCoder/issues/1/labels",
+    "--input",
+    "/tmp/does-not-exist-91.json",
+  ]);
+  assertEquals(result.exitCode, 1);
+  assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+  assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREADABLE]");
+});

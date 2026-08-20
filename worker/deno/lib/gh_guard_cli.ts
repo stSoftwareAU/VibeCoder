@@ -154,6 +154,10 @@ export function runGhGuardCli(
   const decision = evaluateGhCommand(parsed.ghArgs, {
     active: parsed.active,
     allowedRepos: parsed.allowedRepos,
+    // Issue #91: let the decision scan a readable `--input <file>` body for
+    // reserved labels instead of failing closed on every one. The decision
+    // module stays pure; the filesystem reader is injected here.
+    readBodyFile,
   });
   if (decision.allowed) return allowWithRedactedBody(parsed, readBodyFile);
 

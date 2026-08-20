@@ -103,6 +103,7 @@ Deno.test("classifyGhMutation - REST --input surfaces unreadableBody", () => {
     target: "repos/o/r/issues/1/labels",
     scope: "explicit",
     unreadableBody: true,
+    bodyFilePath: "/tmp/b.json",
   });
 });
 
@@ -396,4 +397,40 @@ Deno.test("evaluateGhCommand - a GET with --input stays a read", () => {
     ).allowed,
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #91 — the classifier surfaces a readable `--input` path so the guard
+// can scan it, and leaves it absent for the unscannable `-` (stdin) form.
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyGhMutation - captures a readable --input path as bodyFilePath (#91)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input",
+    "/tmp/body.json",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+  assertEquals(info?.bodyFilePath, "/tmp/body.json");
+});
+
+Deno.test("classifyGhMutation - captures the --input=<path> equals form too (#91)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input=/tmp/body.json",
+  ]);
+  assertEquals(info?.bodyFilePath, "/tmp/body.json");
+});
+
+Deno.test("classifyGhMutation - leaves bodyFilePath absent for --input - (stdin) (#91)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input",
+    "-",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+  assertEquals(info?.bodyFilePath, undefined);
 });
