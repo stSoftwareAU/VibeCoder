@@ -38,6 +38,8 @@ interface PrFixture {
   authorLogin: string;
   /** Status returned by getCiStartStatus stub for this PR. */
   ciStatus?: "started" | "queued" | "none";
+  /** GitHub mergeability the `gh pr list` stub reports (Issue #52). */
+  mergeable?: string;
 }
 
 /** Build a stub `gh` runner driven by per-repo PR fixtures and a status map. */
@@ -62,6 +64,7 @@ function buildGhStub(
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
         author: { login: p.authorLogin },
+        mergeable: p.mergeable,
       }));
       return Promise.resolve(JSON.stringify(json));
     }
@@ -658,4 +661,49 @@ Deno.test("findPrsNeedingCiNudge - an uninvited human PR is still never nudged (
 
   assert(result.ok);
   assertEquals(result.value.length, 0);
+});
+
+Deno.test("findPrsNeedingCiNudge - skips a CONFLICTING PR (CI cannot start) (Issue #52)", async () => {
+  const fixtures: Record<string, PrFixture[]> = {
+    [REPO]: [
+      {
+        number: 48,
+        headRefName: "issue-16-fix",
+        headRefOid: "sha48",
+        createdAt: "2026-05-18T00:00:00Z",
+        updatedAt: "2026-05-18T00:00:00Z",
+        authorLogin: USER,
+        ciStatus: "none",
+        mergeable: "CONFLICTING",
+      },
+      {
+        number: 49,
+        headRefName: "issue-17-fix",
+        headRefOid: "sha49",
+        createdAt: "2026-05-18T00:00:00Z",
+        updatedAt: "2026-05-18T00:00:00Z",
+        authorLogin: USER,
+        ciStatus: "none",
+        mergeable: "MERGEABLE",
+      },
+    ],
+  };
+  const now = Math.floor(Date.parse("2026-05-18T00:10:00Z") / 1000);
+  const logs: string[] = [];
+
+  const result = await findPrsNeedingCiNudge({
+    githubUser: USER,
+    repos: [REPO],
+    ghCommandFn: buildGhStub(fixtures),
+    nowSeconds: () => now,
+    log: (m) => logs.push(m),
+  });
+
+  assert(result.ok);
+  // Only the mergeable PR is a candidate; the conflicting one is skipped.
+  assertEquals(result.value.map((c) => c.prNumber), [49]);
+  assert(
+    logs.some((l) => l.includes("#48") && l.includes("conflicting")),
+    `expected a skip log for #48: ${logs.join(" | ")}`,
+  );
 });
