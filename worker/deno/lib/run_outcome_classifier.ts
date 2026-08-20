@@ -55,6 +55,7 @@ export interface RunFailureClassification {
 /** Every slug the classifier can emit, for tests and the auto-filer. */
 export const RUN_FAILURE_CLASSES = [
   "usage-limit",
+  "interrupted",
   "out-of-credit",
   "oom",
   "killed-unknown",
@@ -124,6 +125,16 @@ export function classifyRunFailure(
       failureClass: "usage-limit",
       rationale:
         "The run hit a usage or rate limit (account/quota state, not a worker defect).",
+    };
+  }
+  // A run cut off before finishing is transient infrastructure, never a worker
+  // defect and never auto-filed — the loop simply retries it (Issue #108).
+  if (category === "interrupted") {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "interrupted",
+      rationale:
+        "The run was cut off before finishing (still working, not concluding) — transient, retried rather than filed.",
     };
   }
   if (OUT_OF_CREDIT_RE.test(message)) {
