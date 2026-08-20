@@ -1367,7 +1367,7 @@ Deno.test("processCiFailure - a PR whose branch no longer exists on origin (merg
       git: {
         runGitCommand: ((args: string[]) => {
           gitCalls.push(args);
-          if (args[0] === "fetch" && args[1] === "origin") {
+          if (args[0] === "fetch" && args.includes("origin")) {
             return Promise.resolve({
               ok: true,
               value: {
