@@ -8,7 +8,7 @@
  * Claude invocation and hand the issue to a human.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -143,7 +143,7 @@ Deno.test(
         runGitCommand: (() =>
           Promise.resolve({
             ok: true,
-            value: { stdout: "M src/main.ts", stderr: "", exitCode: 0 },
+            value: { stdout: "M src/main.ts", stderr: "", code: 0 },
           })) as never,
       },
     });
@@ -179,7 +179,7 @@ Deno.test(
         runGitCommand: (() =>
           Promise.resolve({
             ok: true,
-            value: { stdout: "M src/main.ts", stderr: "", exitCode: 0 },
+            value: { stdout: "M src/main.ts", stderr: "", code: 0 },
           })) as never,
       },
     });
@@ -189,5 +189,125 @@ Deno.test(
     assertEquals(result.status, "continue");
     assertEquals(claudeCalls, 1);
     assertEquals(calls.addLabel.length, 0);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #106 — change detection resolves an origin-only milestone base and
+// fails loud on a git error rather than misclassifying a run as no-changes.
+// ---------------------------------------------------------------------------
+
+/** A git runner deciding each command by `handler`; unknowns succeed empty. */
+function gitRunnerFrom(
+  handler: (args: string[]) => { code: number; stdout?: string } | undefined,
+) {
+  return ((args: string[]) => {
+    const r = handler(args) ?? { code: 0, stdout: "" };
+    return Promise.resolve({
+      ok: true,
+      value: { code: r.code, stdout: r.stdout ?? "", stderr: "" },
+    });
+  }) as never;
+}
+
+const MILESTONE = "milestone/4136-promotion-gate";
+const OKCLAUDE = {
+  runClaudeWithRetry: (() =>
+    Promise.resolve({
+      ok: true,
+      value: { output: "done", exitCode: 0, timedOut: false },
+    })) as never,
+};
+
+Deno.test(
+  "execute_phase - change detection resolves an origin-only milestone base (Issue #106)",
+  async () => {
+    const calls: StubGhCalls = { addLabel: [], postComment: [] };
+    const ctx = makeContext(makeConfig());
+    const state = { ...makeState(), baseBranch: MILESTONE };
+
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+      claude: OKCLAUDE,
+      git: {
+        runGitCommand: gitRunnerFrom((args) => {
+          // Local milestone branch is absent in this clone …
+          if (
+            args[0] === "rev-parse" && args.includes(`${MILESTONE}^{commit}`)
+          ) {
+            return { code: 1 };
+          }
+          // … but the remote-tracking ref resolves.
+          if (
+            args[0] === "rev-parse" &&
+            args.includes(`origin/${MILESTONE}^{commit}`)
+          ) {
+            return { code: 0, stdout: "a".repeat(40) };
+          }
+          // Not shallow — ensureHistoryDepth returns early.
+          if (args.includes("--is-shallow-repository")) {
+            return { code: 0, stdout: "false" };
+          }
+          // No uncommitted changes …
+          if (args[0] === "diff") return { code: 0, stdout: "" };
+          // … but the branch is ahead of the resolved base (the real work).
+          if (args[0] === "log" && args.includes(`origin/${MILESTONE}..HEAD`)) {
+            return { code: 0, stdout: "abc123 the delivered commit" };
+          }
+          return undefined;
+        }),
+      },
+    });
+
+    const result = await workOnIssueExecuteClaude(ctx, state, deps);
+
+    // Resolved base + real commits → continue, NOT a no_changes early_exit.
+    assertEquals(result.status, "continue");
+    assertEquals(
+      calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+      false,
+      "a resolved-base run must not be escalated to needs-human",
+    );
+  },
+);
+
+Deno.test(
+  "execute_phase - a git-log error fails loud, not silently as no_changes (Issue #106)",
+  async () => {
+    const calls: StubGhCalls = { addLabel: [], postComment: [] };
+    const ctx = makeContext(makeConfig());
+    const state = makeState(); // baseBranch "main"
+
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+      claude: OKCLAUDE,
+      pr: {
+        // No existing PR to self-heal from.
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: undefined })) as never,
+      },
+      git: {
+        runGitCommand: gitRunnerFrom((args) => {
+          if (args[0] === "rev-parse" && args.includes("main^{commit}")) {
+            return { code: 0, stdout: "a".repeat(40) }; // base resolves
+          }
+          if (args.includes("--is-shallow-repository")) {
+            return { code: 0, stdout: "false" };
+          }
+          if (args[0] === "diff") return { code: 0, stdout: "" };
+          // The range comparison itself errors (e.g. a corrupt object).
+          if (args[0] === "log") return { code: 128, stdout: "" };
+          return undefined;
+        }),
+      },
+    });
+
+    const result = await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assertEquals(result.status, "failure");
+    assertStringIncludes(
+      (result as { reason: string }).reason,
+      "change detection failed",
+    );
   },
 );

@@ -30,6 +30,7 @@ import {
   recordPhaseCompletion,
 } from "../session_resume.ts";
 import { ensureHistoryDepth } from "../git_history.ts";
+import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import {
   PRIOR_PROGRESS_PROMPT_NOTE,
   saveResumeState,
@@ -516,30 +517,73 @@ async function executeClaudeBody(
     ["diff", "--stat", "HEAD"],
     { cwd: state.repoPath },
   );
+
+  // Issue #106: resolve the base to a ref this clone can actually compare
+  // against. A milestone base is frequently present only as `origin/<base>`,
+  // so a bare `<base>..HEAD` fails with exit 128 — and the old check inspected
+  // only whether the command ran, never its exit code, so the failure read as
+  // "no commits" and a run that had produced a merged PR was escalated as
+  // analysis-only. Resolve loudly: on an unresolvable base, fall back to the
+  // existing-PR backstop and otherwise surface the error, never "no changes".
+  const baseRef = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    state.baseBranch,
+    { cwd: state.repoPath },
+  );
+  if (!baseRef.ok) {
+    logger.warn("Could not resolve the base ref for change detection", {
+      baseBranch: state.baseBranch,
+      error: baseRef.error.message,
+    });
+    const existingPr = await deps.pr.findExistingPrForIssue(repo, issueNumber);
+    if (existingPr.ok && existingPr.value) {
+      logger.info(
+        "PR already exists — treating the base-ref resolution failure as non-fatal",
+      );
+      return { status: "continue" };
+    }
+    return {
+      status: "failure",
+      reason:
+        `change detection could not resolve base ref '${state.baseBranch}': ${baseRef.error.message}`,
+    };
+  }
+
   // Ensure enough history for the commit-range log on a shallow clone (Issue #1502)
-  await ensureHistoryDepth([state.baseBranch, "HEAD"], { cwd: state.repoPath });
+  await ensureHistoryDepth([baseRef.value, "HEAD"], { cwd: state.repoPath });
   const logResult = await deps.git.runGitCommand(
-    ["log", `${state.baseBranch}..HEAD`, "--oneline"],
+    ["log", `${baseRef.value}..HEAD`, "--oneline"],
     { cwd: state.repoPath },
   );
 
   const hasUncommitted = diffResult.ok &&
     diffResult.value.stdout.trim().length > 0;
-  const hasNewCommits = logResult.ok &&
-    logResult.value.stdout.trim().length > 0;
+  // Issue #106: a non-zero git exit is an ERROR, never "no commits". Only a
+  // command that ran AND exited 0 with empty output means the branch is level
+  // with its base.
+  const logOk = logResult.ok && logResult.value.code === 0;
+  const hasNewCommits = logOk && logResult.value.stdout.trim().length > 0;
 
   if (!hasUncommitted && !hasNewCommits) {
+    if (!logOk) {
+      logger.warn("git log <base>..HEAD failed during change detection", {
+        baseRef: baseRef.value,
+        code: logResult.ok ? logResult.value.code : undefined,
+        stderr: logResult.ok ? logResult.value.stderr.trim() : undefined,
+      });
+    }
+
     // Self-healing: check for remote commits (Issue #585)
     // Ensure enough history for the commit-range log on a shallow clone (Issue #1502)
     await ensureHistoryDepth(
-      [state.baseBranch, `origin/${state.branchName}`],
+      [baseRef.value, `origin/${state.branchName}`],
       { cwd: state.repoPath },
     );
     const remoteDiff = await deps.git.runGitCommand(
-      ["log", `${state.baseBranch}..origin/${state.branchName}`, "--oneline"],
+      ["log", `${baseRef.value}..origin/${state.branchName}`, "--oneline"],
       { cwd: state.repoPath },
     );
-    const hasRemoteCommits = remoteDiff.ok &&
+    const hasRemoteCommits = remoteDiff.ok && remoteDiff.value.code === 0 &&
       remoteDiff.value.stdout.trim().length > 0;
 
     if (hasRemoteCommits) {
@@ -552,6 +596,19 @@ async function executeClaudeBody(
     if (existingPr.ok && existingPr.value) {
       logger.info("PR already exists despite no local changes");
       return { status: "continue" };
+    }
+
+    // Issue #106: if the range comparison itself errored and nothing else
+    // found work, the state is undetermined — surface it, never silently
+    // conclude no_changes (which escalates to analysis-only).
+    if (!logOk) {
+      return {
+        status: "failure",
+        reason: `change detection failed: git log ${baseRef.value}..HEAD ` +
+          (logResult.ok
+            ? `exited ${logResult.value.code}: ${logResult.value.stderr.trim()}`
+            : `could not run: ${logResult.error.message}`),
+      };
     }
 
     return { status: "early_exit", reason: "no_changes" };
