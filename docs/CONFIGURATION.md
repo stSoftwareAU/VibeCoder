@@ -138,6 +138,7 @@ explicitly overridden.
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `container_tools`            | `[]`                      | Extra build-time tools this deployment's container image bakes in (see [Container Build-Time Tools](#-container-build-time-tools))                                                                                                                                                    |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`). See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                       |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
@@ -300,6 +301,92 @@ resolves to `claude-opus-5` once the CLI is at (or above) an Opus-5-resolving
 version; raising the floor to that release is tracked separately in. Until
 the floor is raised, an older CLI resolves `opus` to Opus 4.8 — still priced
 identically ($5 / $25 per MTok), so cost tracking is unaffected.
+
+### 🧰 Container Build-Time Tools
+
+Some monitored repositories need tools no other fleet member wants — a specific
+Java or Maven, say. `container_tools` lets a deployment declare those tools in
+its own `.config.json` instead of forcing them into every image (parent
+issue #5):
+
+```json
+{
+  "container_tools": [
+    {
+      "id": "java",
+      "version": "21.0.5+11",
+      "url": {
+        "amd64": "https://github.com/adoptium/.../OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz",
+        "arm64": "https://github.com/adoptium/.../OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.5_11.tar.gz"
+      },
+      "sha256": {
+        "amd64": "a1b2…",
+        "arm64": "c3d4…"
+      },
+      "stripComponents": 1,
+      "bin": ["bin"],
+      "env": { "JAVA_HOME": "" }
+    }
+  ]
+}
+```
+
+- `id` — lower-case letters, digits and hyphens (the same rule as a provider id
+  in `container/install-providers.sh`), unique within the array.
+- `url` / `sha256` — keyed per architecture (`amd64`, `arm64`, `noarch`), the
+  same convention `container/tools.json` uses. A single-architecture deployment
+  supplies only the architecture it builds.
+- Install prefix is fixed at `/opt/vibe-tools/<id>`; `bin` and `env` values are
+  **relative to that prefix** (`""` is the prefix root), so no spec can aim PATH
+  or `JAVA_HOME` at an arbitrary host path.
+- Declarative archive install only: download → verify SHA-256 → extract → expose
+  `bin` on PATH → set `env`. No install commands, apt packages or installer
+  scripts.
+
+**Validation fails loud** (`worker/deno/lib/container_tools_config.ts`). The
+config load stops with a message naming the offending tool id and field when a
+spec has a malformed or duplicate `id`, a missing `version`, an architecture key
+outside the three above, a `url` without a matching `sha256` (or the reverse — an
+unverified download must be impossible to express), a non-`https:` URL, a
+`sha256` that is not 64 hex characters, a `bin`/`env` value that is absolute or
+escapes the prefix, a non-integer or negative `stripComponents`, or an unknown
+key. Nothing is repaired and nothing is partially applied.
+
+**The image build installs them** with `container/install-tools.sh <spec.json>`,
+which takes the same array (or the `.config.json` object carrying it). It
+validates the whole set first — id shape, duplicate ids, no download for the
+build architecture, a non-https URL, a missing or malformed digest, an archive
+that is not `.tar.gz`/`.tar.xz`/`.zip`, a `bin`/`env` value escaping the prefix,
+two tools claiming one environment variable — so a bad set is rejected **before
+the first byte is downloaded**. Each tool is then downloaded, verified with
+`sha256sum -c -`, extracted into `/opt/vibe-tools/<id>` honouring
+`stripComponents`, and its archive removed. Any failure aborts the build
+non-zero naming the tool: no half-installed image.
+
+Every resolved value lands in `/opt/vibe-tools/environment`, one `KEY=value`
+line per entry, in spec order — a `PATH=<dir>` line per `bin` directory
+(additive; each names one directory to put on PATH) and one line per `env`
+value. A declared `bin` directory or `env` path the archive does not actually
+contain fails the build too, rather than leaving a PATH entry pointing at
+nothing.
+
+```mermaid
+flowchart LR
+    C[".config.json<br/>container_tools"] --> P["parseContainerTools()"]
+    P -->|fault| F["❌ config load fails,<br/>naming id + field"]
+    P -->|valid| S["✅ ContainerToolSpec[]"]
+    S --> I["install-tools.sh<br/>validate whole set"]
+    I -->|bad set| F2["❌ build aborts,<br/>nothing downloaded"]
+    I -->|per tool| D["download → sha256 → extract<br/>/opt/vibe-tools/&lt;id&gt;"]
+    D -->|mismatch or<br/>extraction failure| F2
+    D --> E["/opt/vibe-tools/environment<br/>PATH= / KEY= lines"]
+    style F fill:#c9184a,stroke:#800f2f,color:#fff
+    style F2 fill:#c9184a,stroke:#800f2f,color:#fff
+    style S fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+The Containerfile wiring, the image hash and exposing the recorded values at
+container start are separate slices of #5.
 
 ### 🧭 Run Mode
 
