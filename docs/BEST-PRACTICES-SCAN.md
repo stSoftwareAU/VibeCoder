@@ -2,10 +2,10 @@
 
 This document is the operator-facing reference for the Vibe Coder's
 LLM-driven best-practices review. The intent is documented in the
-parent issue (#2143) and the sub-issues that built it: bucket picker (#2144),
-linter-in-CI check extended by #2175 to also enforce a compile/syntax gate
-(#2145), prompt + bucket guides (#2147), template (#2148), 50/50 dispatch
-(#2149), and this manual (#2150).
+parent issue and the sub-issues that built it: bucket picker,
+linter-in-CI check extended by to also enforce a compile/syntax gate
+, prompt + bucket guides, template, 50/50 dispatch
+, and this manual.
 
 The best-practices scan is **template #2 of the idle-task framework**
 — the generic mechanism for "things the worker does when no claimable
@@ -19,7 +19,7 @@ template that this manual mirrors structurally.
 
 For the **agent-facing** rules (label policy, suppression syntax,
 trigger summary) see
-[DESIGN-PRINCIPLES.md → Idle-task scans](../DESIGN-PRINCIPLES.md#security-scans-issue-1933-1944-simplified-by-2023).
+[DESIGN-PRINCIPLES.md → Idle-task scans](../DESIGN-PRINCIPLES.md#security-scans-simplified-by).
 
 ## Design intent — LLM-only review of code
 
@@ -30,7 +30,7 @@ instructs Claude to read the source tree, apply the per-bucket
 checklist, and file each surviving finding as its own GitHub issue.
 
 **Linters and compilers only ever *corroborate* here.** From prompt
-v7 (#3552) a bucket guide may nominate a **read-only language
+v7 a bucket guide may nominate a **read-only language
 analyser** — today only the `rust` guide does, nominating `cargo
 clippy` and `cargo check` — which the scan may run to corroborate a
 candidate when the checkout builds offline. The relaxation is bounded:
@@ -60,7 +60,7 @@ abstractions, weak error handling) that linters cannot see.
 The CI-gate check reads the workflow files from the repo's **checked-out
 root** — `${workDir}/${repoName}`, where `workDir` is the parent
 directory that holds every clone. Passing the parent `workDir` directly
-(Issue #2880) made the check read a non-existent `.github/workflows`,
+ made the check read a non-existent `.github/workflows`,
 load zero workflows, and file a false `BP-LINTER-<bucket>` finding even
 when the repo's workflows ran both gates. The call site now derives the
 checkout path via `repoCheckoutPath()`, and `loadWorkflows()` logs a
@@ -68,8 +68,8 @@ checkout path via `repoCheckoutPath()`, and `loadWorkflows()` logs a
 missing directory from a genuinely workflow-free repo.
 
 The two cross-bucket checks added from v3 onward — **dead
-dependencies** (#2263) and **deprecated config on framework bump**
-(#2263) — are also **static-evidence only**. The scanner reads
+dependencies** and **deprecated config on framework bump**
+ — are also **static-evidence only**. The scanner reads
 manifests (`package.json`, `Cargo.toml`, `pom.xml`, `build.gradle`,
 `deno.json`, `next.config.*`, `tsconfig.json`) and greps the source
 tree for the relevant import / use sites; it does **not** invoke
@@ -77,8 +77,8 @@ tree for the relevant import / use sites; it does **not** invoke
 Findings without both a manifest citation and a "where imports were
 searched" citation are dropped at Phase 3 triage.
 
-From v8 onward (#3610) the prompt opens with the shared
-[Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project-issue-3610)
+From v8 onward the prompt opens with the shared
+[Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project)
 stanza: the scan reads the target repo's `README.md`, agent instructions,
 `CONTRIBUTING.md`, and `docs/` style guide first, and a **documented**
 project convention beats a check below — so the header-policy and
@@ -94,7 +94,7 @@ named once in the prompt; the per-language detection sits in the
 matching bucket guide under
 [`prompts/best_practices/buckets/`](../prompts/best_practices/buckets/).
 
-- **Supply-chain hardening (Issue #2184).** Pin-to-immutable-artefact
+- **Supply-chain hardening.** Pin-to-immutable-artefact
   hygiene, install-time hardening (`--ignore-scripts`-by-default),
   quarantine of external deps, anomalous-publish detection,
   provenance-as-defence-in-depth, workflow scope minimisation, and
@@ -107,8 +107,8 @@ matching bucket guide under
   `permissions:` minimisation, `pull_request_target` justification)
   moved to the weekly
   [`github-actions-audit`](GITHUB-ACTIONS-AUDIT-SCAN.md) scan
-  (Issue #2257) and is no longer a best-practices bucket.
-- **Dead dependencies (Issue #2263).** Declared dependencies with no
+  and is no longer a best-practices bucket.
+- **Dead dependencies.** Declared dependencies with no
   source-import reference are flagged so the manifest stays an honest
   record of what the code actually uses. The check is static-evidence
   only (manifest line + import-grep cite) and clamped to
@@ -117,9 +117,8 @@ matching bucket guide under
   [`buckets/rust.md`](../prompts/best_practices/buckets/rust.md), and
   [`buckets/java.md`](../prompts/best_practices/buckets/java.md). The
   `github-actions` bucket is deliberately out of scope — workflow-dep
-  hygiene is owned by the github-actions-audit work (#2255 / #2256 /
-  #2258).
-- **Deprecated config on framework bump (Issue #2263).** Config
+  hygiene is owned by the github-actions-audit work.
+- **Deprecated config on framework bump.** Config
   fields that became no-ops or removed-option warnings after a
   framework bump (TypeScript, Next.js, React, Spring Boot, Gradle,
   Maven) are flagged at `severity:medium`. The check reads the
@@ -135,7 +134,7 @@ matching bucket guide under
   `github-actions` bucket is again out of scope; workflow-config
   deprecations are owned by the github-actions-audit scan.
 
-### Rust bug-class checks (Issue #3552)
+### Rust bug-class checks
 
 [`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) carries
 the nine original idiom/hygiene checks plus fourteen **bug-class
@@ -155,7 +154,7 @@ items, `extern "C"` functions, `#[no_mangle]` exports, and their
 direct helpers — never repo-wide. The wording is our own; no external
 review plugin is vendored, installed, or invoked.
 
-### Rust build profiles (Issue #4159)
+### Rust build profiles
 
 [`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) also
 carries three **build-profile** checks, so a Rust repo compiles as
@@ -178,7 +177,7 @@ The guidance is **stable-Rust only**: the nightly parallel front-end
 the scan cannot file a finding that would break a repo's pinned
 toolchain. Findings are `severity:low`, one per manifest. `.cargo/config.toml`
 joins `*.rs` and `Cargo.toml` in the bucket's file scope for this check;
-per repo isolation (Issue #3239) the manifest edits themselves ride each
+per repo isolation the manifest edits themselves ride each
 repo's own PR.
 
 ## Idle trigger
@@ -252,7 +251,7 @@ flowchart TD
 
 ## Wrapper issue layout
 
-The wrapper issue is **human-style** (Issue #2077) — no hidden marker,
+The wrapper issue is **human-style** — no hidden marker,
 no parameters block. Anyone can paste the same prompt into a fresh
 issue with the `idle-task` label and the worker will run it
 identically.
@@ -307,7 +306,7 @@ Production uses `Math.random`.
 > composite-action review is **not** a best-practices bucket. It moved
 > to the dedicated weekly
 > [`github-actions-audit`](GITHUB-ACTIONS-AUDIT-SCAN.md) template
-> (Issue #2256/#2257), so the buckets below cover application and
+>, so the buckets below cover application and
 > infrastructure code only.
 
 Each bucket has a dedicated guide under
@@ -330,28 +329,28 @@ to that bucket's own run.
 
 The `general` bucket is repo-level hygiene only — README, licence,
 CI/CD presence, dependency tooling, SBOM/lockfile pinning, repo
-structure, **runtime unambiguity** (Issue #2224: a mixed Deno+Node
+structure, **runtime unambiguity** (a mixed Deno+Node
 repo earns a single `severity:medium` "choose one runtime or document
-the split" finding), **GitHub-native security scanning** (Issue #2360: a security-sensitive repo with no code scanning earns a single
+the split" finding), **GitHub-native security scanning** (a security-sensitive repo with no code scanning earns a single
 `severity:medium` "enable CodeQL / Dependabot security updates"
 finding — see below), **branch-protection / CODEOWNERS depth**
-(Issue #2361: a repo with privileged workflows but no CODEOWNERS
+(a repo with privileged workflows but no CODEOWNERS
 coverage on `.github/workflows/`, or unsigned recent commits, earns a
 single finding — `severity:high` for the CODEOWNERS gap on a
 privileged-workflow repo, otherwise `severity:medium` — see below),
-and **vulnerability-disclosure policy** (Issue #2359: a repo with no
+and **vulnerability-disclosure policy** (a repo with no
 `SECURITY.md` in any of the three GitHub-recognised locations earns a
 single finding — `severity:low` by default, `severity:medium` for a
 repo that publishes a library or service consumed externally — see
 below), and **hardcoded success in a production code path**
-(Issue #3608: a production function that returns a canned success
+(a production function that returns a canned success
 value or fixture data instead of doing the work earns a finding —
 `severity:high` when its result gates a decision, otherwise
 `severity:medium` — see below). It does **not** review
 language-specific code quality; that belongs to the per-language
 buckets.
 
-### GitHub-native security scanning (Issue #2360)
+### GitHub-native security scanning
 
 Complementing the dependency *update* hygiene of general check #5
 (Renovate / Dependabot version-bump cadence and quarantine), the
@@ -375,7 +374,7 @@ missing features and their remediation. It counts against the
 six-issue cap. A repo that already commits a CodeQL workflow and a
 secret-scanning gate is silent on this check.
 
-### Branch protection and CODEOWNERS depth (Issue #2361)
+### Branch protection and CODEOWNERS depth
 
 Complementing the CI/CD posture of general check #3 (CI runs on PRs,
 required status checks configured), the `general` bucket also flags
@@ -406,7 +405,7 @@ cap like any other. A repo with CODEOWNERS covering
 `.github/workflows/`, signed recent commits, and a documented
 branch-protection policy is silent on this check.
 
-### Vulnerability disclosure policy (Issue #2359)
+### Vulnerability disclosure policy
 
 `SECURITY.md` is the canonical, GitHub-recognised place for a repo's
 vulnerability **disclosure policy** — how to report a vulnerability
@@ -436,9 +435,9 @@ vulnerability reporting or a security email), an expected response
 time, and a supported-versions table. The finding counts against the
 six-issue cap like any other.
 
-### Hardcoded success in a production code path (Issue #3608)
+### Hardcoded success in a production code path
 
-The **Never Fail Silently — Fail Loud** rule (Issue #3234) enforced at
+The **Never Fail Silently — Fail Loud** rule enforced at
 PR time has no counterpart that audits an *already-merged* stub, so a
 function whose body is fiction can return a green result for weeks —
 the shape that produced the FLEET Discovery outage. The `general` bucket
@@ -454,7 +453,7 @@ the fleet.
 | A hardcoded sample record standing in for a fetched or computed one | Factory / builder / seed / mock helpers whose declared purpose *is* canned data |
 | A stubbed return under a `TODO` / `FIXME` / "for now" comment | A **documented** default ("returns empty when absent") — an *undocumented* one masking a failed fetch is a finding |
 | A `catch` block that converts a failure into a success-shaped value | A genuinely constant answer (version string, feature-flag constant, pure lookup table) |
-| Reconciliation that reads the absence of an explicit failure marker as success (#3234's other half) | |
+| Reconciliation that reads the absence of an explicit failure marker as success ('s other half) | |
 
 Severity is `severity:high` when the function sits on a path whose
 result gates a decision — a health check, a verification step, a
@@ -465,22 +464,22 @@ non-zero, emit a failure marker), never to return a plausible success.
 The finding uses the standard `BP-<12 hex>` id recipe and counts
 against the six-issue cap like any other.
 
-> **Retired bucket — `github-actions` (Issue #2257).** GitHub Actions
+> **Retired bucket — `github-actions`.** GitHub Actions
 > workflow and composite-action review moved to the dedicated weekly
 > [`github-actions-audit`](GITHUB-ACTIONS-AUDIT-SCAN.md) template
-> (Issue #2256). The daily best-practices scan no longer picks the
+>. The daily best-practices scan no longer picks the
 > `github-actions` bucket, the linter-in-CI pre-check no longer routes
 > it, and the bucket guide was deleted.
 
 ## Deno regression prevention
 
 Two buckets cooperate to stop a Deno repo regressing to Node tooling
-(Issue #2204). A repo is a **Deno repo** when its root holds any of
+. A repo is a **Deno repo** when its root holds any of
 `deno.json`, `deno.jsonc`, or `deno.lock` — even alongside a
 `package.json`. Node-only repos (no Deno marker) are silent on every
 check below.
 
-**`typescript` bucket — regression flags (Issue #2223).** When the repo
+**`typescript` bucket — regression flags.** When the repo
 is a Deno repo, the bucket files each of the following at `severity:high`
 with a cited path and line range, and a suggested fix that names the
 Deno-native equivalent (`deno test`, `deno run`, `deno task`,
@@ -494,7 +493,7 @@ Deno-native equivalent (`deno test`, `deno run`, `deno task`,
 | Root `tsconfig.json` with a non-empty `compilerOptions` overriding Deno | Move the settings into `deno.json`'s `compilerOptions` and delete `tsconfig.json` (or scope it to a Node sub-directory). |
 | Node-only bundler configs (Webpack/Vite/esbuild) at the root | Replace with `deno bundle` / `deno task bundle`, or relocate the Node sub-package and its config into a scoped sub-directory. |
 
-**`general` bucket — mixed-runtime finding (Issue #2224).** When a Deno
+**`general` bucket — mixed-runtime finding.** When a Deno
 marker **and** a root `package.json` with a non-empty `dependencies`
 block are both present, the bucket files **exactly one**
 `severity:medium` finding titled *"Repo mixes Deno and Node — choose one
@@ -567,7 +566,7 @@ drops the finding in Phase 3 triage).
 
 The canonical form is
 `best-practice-ignore: BP-<id> — author=<login> expires=<YYYY-MM-DD> <reason>`.
-Author, expiry, and reason are all **mandatory** (Issue #3712): a marker
+Author, expiry, and reason are all **mandatory**: a marker
 missing any of them, carrying a malformed or past expiry, or naming an
 author outside a configured allowlist is parsed and reported but never
 suppresses. Every marker seen during a run is listed in that run's scan
@@ -636,8 +635,8 @@ A linter that incidentally typechecks (e.g. ESLint with
 `@typescript-eslint`) does **not** satisfy the compile gate — the
 gates are detected independently.
 
-**Rationale.** The compile half was added in #2175 after
-[`stSoftwareAU/private-repo-19#201`](https://github.com/stSoftwareAU/private-repo-19/pull/201)
+**Rationale.** The compile half was added in after
+[`stSoftwareAU/private-repo-19`](https://github.com/stSoftwareAU/private-repo-19/pull/201)
 — a simple Deno syntax error reached `main` because no `deno check`
 ran in CI. A clean lint pass does not prove the code compiles, so
 the two gates are checked separately.
@@ -673,7 +672,7 @@ The check fires only on **language-targeted** runs. The `general`
 bucket is repo-level hygiene; the per-language linter and compile
 invocations belong to their own bucket's run.
 
-### Fail safe — zero workflows loaded (Issue #2881)
+### Fail safe — zero workflows loaded
 
 A count of **zero** workflow files loaded under `.github/workflows/`
 is treated as a likely **scan glitch** (wrong path, mid-clone,
@@ -681,7 +680,7 @@ checkout race), not a confirmed absence of CI. Filing
 `severity:high` off a transient glitch would turn it into a false
 high-severity issue on the target repo — exactly what produced the
 false finding against
-[`stSoftwareAU/private-repo-14#2990`](https://github.com/stSoftwareAU/private-repo-14/issues/2990).
+[`stSoftwareAU/private-repo-14`](https://github.com/stSoftwareAU/private-repo-14/issues/2990).
 
 So when `loadWorkflows()` returns an empty list, the check sets
 `workflowsLoaded: false` on its `LinterCheckResult` and the template
@@ -693,7 +692,7 @@ files `severity:high`. The same fail-safe applies to the actionlint
 (`github-actions`) check in the weekly
 [github-actions-audit scan](GITHUB-ACTIONS-AUDIT-SCAN.md).
 
-This is defence in depth: the sibling root-cause fix (parent #2875)
+This is defence in depth: the sibling root-cause fix (parent)
 makes the zero-load *stop happening*; this fail-safe makes a zero-load
 *harmless* if it ever recurs.
 
@@ -732,5 +731,5 @@ individually.
   per-finding body shape live in the prompt, not in Deno code.
 - [`prompts/best_practices/buckets/`](../prompts/best_practices/buckets/)
   — Per-bucket checklists inlined into the wrapper body.
-- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#security-scans-issue-1933-1944-simplified-by-2023) —
+- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#security-scans-simplified-by) —
   Worker-side design principles for the idle-task scans.

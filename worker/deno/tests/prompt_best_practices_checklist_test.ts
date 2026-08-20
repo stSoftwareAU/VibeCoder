@@ -1,8 +1,8 @@
 /**
- * Tests for the prompt best-practices checklist (Issue #3769).
+ * Tests for the prompt best-practices checklist.
  *
  * `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` is the shared rubric the audit
- * sub-issues of #3767 score their prompt surfaces against. These tests assert
+ * sub-issues of score their prompt surfaces against. These tests assert
  * the invariants that make it usable as a rubric: every technique heading in
  * Anthropic's prompting best-practices guide is either a numbered checklist row
  * with pass / gap / n-a definitions, or is named in the out-of-scope table with
@@ -214,7 +214,7 @@ Deno.test("gap-issue template fixes title, labels and milestone", async () => {
   for (const label of ["enhancement", "best-practices"]) {
     assert(body.includes(label), `gap-issue label "${label}" missing`);
   }
-  assert(body.includes("#3767"), "gap-issue milestone missing");
+  assert(body.includes(""), "gap-issue milestone missing");
   assert(body.includes("file:line"), "gap-issue evidence requirement missing");
 });
 

@@ -1,7 +1,7 @@
 # 📚 Documentation-Audit Scans — Operator Manual
 
 The documentation-audit scan is the thirteenth registered
-[idle-task](IDLE-TASK-FRAMEWORK.md) template (Issue #3319). When the worker has
+[idle-task](IDLE-TASK-FRAMEWORK.md) template. When the worker has
 no claimable work it may pick this template, clone one monitored repository, and
 run a static, evidence-backed audit of that repo's **prose documentation** —
 READMEs, `docs/**`, AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, and
@@ -42,8 +42,8 @@ The scan **files issues only** — it never edits a file or raises a PR. The
 actual documentation changes ride the normal `work-on` flow on the filed issues,
 so a human approves each grouped change before it lands.
 
-From v5 onward (#3610) the prompt opens with the shared
-[Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project-issue-3610)
+From v5 onward the prompt opens with the shared
+[Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project)
 stanza: a repo that has documented its own agent-file hierarchy or doc
 layout no longer collects a check-9 false positive, because a
 **documented** convention beats a check. An unsafe convention is filed as
@@ -163,7 +163,7 @@ sequenceDiagram
 
 ## Wrapper issue layout
 
-The wrapper issue is **human-style** (Issue #2077) — no hidden marker, no
+The wrapper issue is **human-style** — no hidden marker, no
 parameters block. Anyone can paste the same prompt into a fresh issue with the
 `idle-task` label and the worker will run it identically.
 
@@ -176,7 +176,7 @@ parameters block. Anyone can paste the same prompt into a fresh issue with the
   the real known-open list is rebuilt from live issues at claim time).
 - **Body fingerprint:** the prompt's H1 begins `# Documentation Audit …`,
   matched by `DOCUMENTATION_AUDIT_BODY_FINGERPRINT` so dispatch recognises the
-  wrapper even if the title was edited (Issue #2087 body-fingerprint dispatch).
+  wrapper even if the title was edited (body-fingerprint dispatch).
 - **Label:** the canonical `idle-task` label. No workflow labels.
 - **No milestone** — the template sets `skipMilestone: true`, so the wrapper
   never gates a milestone-merge PR.

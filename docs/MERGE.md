@@ -3,7 +3,7 @@
 This document is the operator-facing reference for how the Vibe Coder
 guarantees that **every required CI status check passes _before_ a feature
 branch is merged into a repository's default branch — never after**. The
-intent is documented in the parent issue (#2561) and the sub-issues that built
+intent is documented in the parent issue and the sub-issues that built
 it.
 
 A post-merge check failure is too late: by the time the default branch has
@@ -13,7 +13,7 @@ live. The worker therefore enforces correctness ahead of the merge with a
 ever change through a verified merge.
 
 For the **agent-facing** summary see
-[DESIGN-PRINCIPLES.md → Dual-layer pre-merge enforcement](../DESIGN-PRINCIPLES.md#dual-layer-pre-merge-enforcement-issue-2561).
+[DESIGN-PRINCIPLES.md → Dual-layer pre-merge enforcement](../DESIGN-PRINCIPLES.md#dual-layer-pre-merge-enforcement).
 For the ruleset **setup note** see
 [Layer 1 — the GitHub ruleset "wall"](#layer-1--the-github-ruleset-wall)
 below.
@@ -62,7 +62,7 @@ monitored repo, idempotently. It sets two things:
   be brought current with its target before the merge is allowed, so green CI
   results are never trusted against an out-of-date head.
 
-### Rulesets only — classic branch protection is never written (Issue #4163)
+### Rulesets only — classic branch protection is never written
 
 GitHub has moved enforcement to **repository rulesets**; classic branch
 protection (`PUT /repos/<repo>/branches/<branch>/protection`) is the legacy
@@ -84,7 +84,7 @@ Two boundaries follow:
   `gh api -X DELETE …` command to clear it. Deleting it stays a deliberate
   human action.
 
-### Never lock a direct-push branch (Issue #4356)
+### Never lock a direct-push branch
 
 A required-status-checks ruleset assumes every change arrives through a pull
 request. On a **data repo whose default branch the fleet pushes to directly**
@@ -174,7 +174,7 @@ flowchart TD
 
 ### Additive convergence — foreign checks are never deleted
 
-Convergence **only ever adds** (Issue #3656). An update to the worker's own
+Convergence **only ever adds**. An update to the worker's own
 ruleset sends the **union** of its current required contexts and the worker's
 desired set, so a required check the worker did not create — an org security
 scan, a compliance gate, another team's workflow — survives the sync instead of
@@ -189,7 +189,7 @@ side effect of onboarding or a setup run.
 
 The walk over every monitored repo is performed by
 [`syncBranchProtectionForAllRepos()`](../worker/deno/setup/branch_protection_sync.ts)
-(Issue #2588). For each repo it resolves visibility via `getRepoVisibility()`
+. For each repo it resolves visibility via `getRepoVisibility`
 and the default branch via `gh api repos/<repo> --jq .default_branch`, then
 calls `ensureDefaultBranchRuleset()`. It is wired into `setup.sh` as the
 `branch-protection-sync` subcommand of `setup_cli.ts`, run **after** the
@@ -199,7 +199,7 @@ non-fatal warning.
 
 Setup respects a setup-time-only rate-limit budget — the metadata reads, a
 small number of ruleset/check-name reads, the direct-push detection reads
-(three, plus one per sampled commit lacking a PR marker; Issue #4356), and at
+(three, plus one per sampled commit lacking a PR marker;), and at
 most **one** ruleset write or delete per repo — and never runs in the per-tick
 main loop. A repo already covered by someone else's ruleset short-circuits
 before the direct-push detection and the check-name discovery.
@@ -223,7 +223,7 @@ Immediately before merging, the gate:
 Both signals are re-fetched **at merge time**, not reused from PR-creation
 time.
 
-### The merge is pinned to the SHA its checks were read for (Issue #3946)
+### The merge is pinned to the SHA its checks were read for
 
 Re-fetching at merge time still leaves a window: the gate reads the checks for
 one specific head commit, and two-to-three `gh` round trips later the merge
@@ -243,7 +243,7 @@ verdict was formed against.
   tied to the verdict that allowed it, so the worker fails closed and retries
   on the next scan rather than merging whatever the head happens to be now.
 
-### The CI verdict is an allowlist (Issue #3945)
+### The CI verdict is an allowlist
 
 `determineCiStatus()` decides "green" from an **allowlist**, never a denylist.
 A check run passes only when its conclusion is `success`, `skipped` or
@@ -273,7 +273,7 @@ flowchart TD
     E -- yes --> G[Worse of the two verdicts wins]
 ```
 
-### Zero checks is not "passed" (Issue #3705)
+### Zero checks is not "passed"
 
 A head commit with **no check runs and no commit statuses** has been verified
 by nothing. `checkCiStatus()` reports it as `no_checks` — a status distinct
@@ -296,7 +296,7 @@ The override relaxes the "no checks" refusal only. Every other requirement —
 non-default target branch, branch freshness, repo allowlist, PR authorship —
 still applies.
 
-### Who may call `merge-if-checks-passed` (Issue #3705)
+### Who may call `merge-if-checks-passed`
 
 The command applies the same two gates the maintenance scan applies before it
 touches GitHub:
@@ -329,7 +329,7 @@ sequenceDiagram
     G->>G: next cycle: CI passed + behindBy == 0 → merge
 ```
 
-## Hands-off landing — precedence and loud failure (Issue #3584)
+## Hands-off landing — precedence and loud failure
 
 The auto-fix loop (fetch → diagnose → fix → merge) is only hands-off if a green
 fix PR actually lands. Two things make that true.
@@ -351,10 +351,10 @@ which maps it to exactly one of four dispositions:
 | Outcome | Disposition | Worker behaviour |
 | --- | --- | --- |
 | Merged, or native auto-merge armed | `landed` | Nothing — the PR will land unattended |
-| Checks pending or failed | `await_checks` | Log and wait; the CI-fix loop owns a red check and escalates on its own 3-attempt cap (#3582) |
+| Checks pending or failed | `await_checks` | Log and wait; the CI-fix loop owns a red check and escalates on its own 3-attempt cap |
 | Branch behind its base | `update_branch` | `PUT .../update-branch` so the checks re-run against the merged state |
-| No checks at all on the head commit | `escalate` | Explanatory PR comment **and** `needs-human` — nothing verified the head, and no check is coming (#3705) |
-| Head moved after its checks were read | `await_checks` | Log and wait; the new head's checks are on their way and the next cycle re-evaluates (#3946) |
+| No checks at all on the head commit | `escalate` | Explanatory PR comment **and** `needs-human` — nothing verified the head, and no check is coming |
+| Head moved after its checks were read | `await_checks` | Log and wait; the new head's checks are on their way and the next cycle re-evaluates |
 | Merge refused (protection rule, conflict, unmergeable) | `escalate` | Explanatory PR comment **and** the `needs-human` label |
 
 Escalation routes through the shared `escalateToHuman()` chokepoint, so the
@@ -458,9 +458,9 @@ surface at the only point where they are actionable.
 | Required CI check **pending** | Backstop returns blocked; PR left open | Next cycle re-checks once CI completes |
 | Required CI check **failed** | Backstop returns blocked; PR left open | Fix lands on the feature branch; CI re-runs; re-evaluated next cycle |
 | Feature branch **behind target** | Backstop defers; PR left open | Branch-update maintenance rebases → CI re-runs → merge-if-green |
-| Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open (#3946) | The new head's checks run; next cycle re-evaluates the gate |
-| Green PR **refused by the merge** | Explanatory PR comment + `needs-human` (#3584) | Human unblocks the merge; the worker does not retry while the label is applied |
-| **Branch update fails** on a behind PR | Escalated the same way — never left silently open (#3584) | Human resolves the conflict on the feature branch |
+| Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate |
+| Green PR **refused by the merge** | Explanatory PR comment + `needs-human` | Human unblocks the merge; the worker does not retry while the label is applied |
+| **Branch update fails** on a behind PR | Escalated the same way — never left silently open | Human resolves the conflict on the feature branch |
 | Push **targets default branch** | Push rejected with explicit error | Change is redirected through a feature-branch PR |
 | Default branch **cannot be resolved** | Push allowed (fail-open) | Feature-branch pushes are never blocked by a transient lookup failure |
 | Ruleset write **fails for one repo** | Logged as a non-fatal warning | Setup continues; the next setup run retries idempotently |
@@ -473,13 +473,13 @@ surface at the only point where they are actionable.
   (`getRequiredChecksForRepo()`).
 - [`worker/deno/lib/repo_rulesets.ts`](../worker/deno/lib/repo_rulesets.ts) —
   ruleset read/write primitives; the only classic-protection endpoint touched
-  anywhere is its read (Issue #4163).
+  anywhere is its read.
 - [`worker/deno/lib/reported_check_names.ts`](../worker/deno/lib/reported_check_names.ts)
   — `getReportedCheckNames()`, the genuinely-reported check names the
   candidates are intersected with.
 - [`worker/deno/lib/branch_push_policy.ts`](../worker/deno/lib/branch_push_policy.ts)
   — `assessBranchPushPolicy()`, the direct-push / opt-out detection that
-  keeps a data repo's branch unlocked (Issue #4356).
+  keeps a data repo's branch unlocked.
 - [`worker/deno/lib/default_branch_ruleset.ts`](../worker/deno/lib/default_branch_ruleset.ts)
   — `planDefaultBranchRuleset()` (read-only decision) and
   `ensureDefaultBranchRuleset()`, the idempotent ruleset configurator.

@@ -4,7 +4,7 @@ This document is the design specification for the Vibe Coder's
 supply-chain **detection** scan — the active-detection counterpart to
 the posture audit documented in
 [`docs/SUPPLY-CHAIN-READINESS-SCAN.md`](SUPPLY-CHAIN-READINESS-SCAN.md).
-The intent is set by the parent epic (#2406); this document and the
+The intent is set by the parent epic; this document and the
 prompt at [`prompts/supply_chain_detection/`](../prompts/supply_chain_detection/)
 are the foundational design deliverable that blocks the implement
 sub-issue.
@@ -13,7 +13,7 @@ sub-issue.
 > the new-template-vs-extend decision, and the orchestrating prompt. The
 > Deno idle-task template that wires this prompt into the idle-task
 > framework (registry, claim handler, snapshot/diff, cadence) is
-> delivered by the **implement sub-issue** under epic #2406. Until that
+> delivered by the **implement sub-issue** under epic. Until that
 > lands, the prompt is loadable and validated but is not yet selected by
 > the idle-task filer.
 
@@ -75,7 +75,7 @@ flowchart TD
 
 ### The network-data tension, resolved
 
-Several candidate detections in epic #2406 want **network / registry /
+Several candidate detections in epic want **network / registry /
 package-manager** data: OSV "malicious package" advisories, registry
 metadata for maintainer-change signals, and version-diff to spot a
 release that *adds* a lifecycle script. That conflicts with the
@@ -85,7 +85,7 @@ follows — no package-manager invocation, no registry calls, no network.
 **Resolution for v1: constrain detection to what is statically decidable
 from the committed manifests, lockfiles, and install scripts.** The
 network/registry-sourced checks are explicitly **deferred** and recorded
-in the catalogue as cross-link-only rows pointing at epic #2406, so the
+in the catalogue as cross-link-only rows pointing at epic, so the
 design captures them without v1 reaching for the network. This keeps v1
 consistent with its siblings, low-noise, and re-runnable offline. A
 future version may introduce a vetted, read-only OSV/registry
@@ -97,7 +97,7 @@ Phase 2 of the prompt walks the detected ecosystems against the
 catalogue below. A finding is only valid when Claude can cite the
 specific committed file (and line range) that demonstrates the signal.
 The **cross-link only** rows are owned by another template, or deferred
-to epic #2406, and are never filed here.
+to epic, and are never filed here.
 
 | ID prefix | Owner | Scope (ecosystems) | Severity | What it detects |
 | --------- | ----- | ------------------ | -------- | --------------- |
@@ -106,9 +106,9 @@ to epic #2406, and are never filed here.
 | `SCD-TYPOSQUAT` | this template | Node, Python, Rust | low / medium | A direct dependency whose name is a small edit-distance variant of a well-known popular package. |
 | `SCD-FLOATING-PIN` | this template | all manifest-based | medium | A direct dependency declared with a mutable resolution (`*`/`latest`/wildcard major/git branch/tarball URL) that lets an attacker's next publish land without review. |
 | `SCD-UNVERIFIED-SOURCE` | this template | Node, Python, Rust, Go | medium | A lockfile entry resolved over `http://` or from a non-canonical registry, or missing its integrity/hash field. |
-| `SCD-OSV-MALICIOUS` | **cross-link / deferred** | n/a | n/a | OSV malicious-package / GitHub malware advisory cross-check. Needs network → deferred to epic #2406. |
-| `SCD-MAINTAINER-CHANGE` | **cross-link / deferred** | n/a | n/a | Abrupt maintainer change. Needs registry metadata → deferred to epic #2406. |
-| `SCD-SCRIPT-ADDED` | **cross-link / deferred** | n/a | n/a | A version that *adds* a lifecycle script vs its predecessor. Needs registry version-diff → deferred to epic #2406. Committed-script variant is `SCD-INSTALL-SCRIPT`. |
+| `SCD-OSV-MALICIOUS` | **cross-link / deferred** | n/a | n/a | OSV malicious-package / GitHub malware advisory cross-check. Needs network → deferred to epic. |
+| `SCD-MAINTAINER-CHANGE` | **cross-link / deferred** | n/a | n/a | Abrupt maintainer change. Needs registry metadata → deferred to epic. |
+| `SCD-SCRIPT-ADDED` | **cross-link / deferred** | n/a | n/a | A version that *adds* a lifecycle script vs its predecessor. Needs registry version-diff → deferred to epic. Committed-script variant is `SCD-INSTALL-SCRIPT`. |
 | `SCD-CURRENT-VULN` | **cross-link only** | n/a | n/a | Owned by `security-scan` (#1). |
 | `SCD-QUARANTINE-WINDOW` | **cross-link only** | n/a | n/a | Owned by `security-scan` (#1) via the dependency-update quarantine audit. |
 | `SCD-ACTIONS-PIN` | **cross-link only** | n/a | n/a | Owned by `github-actions-audit` (#4). |
@@ -134,7 +134,7 @@ Mirroring the readiness catalogue's discipline:
   manifest/lockfile/script line. No package-manager, registry, or
   network calls. At most **6 findings per run**, severity-ordered.
 - **Cross-link, never duplicate.** Concerns owned by #1/#4/#5 — and the
-  network-sourced classes owned by epic #2406 — are referenced in prose,
+  network-sourced classes owned by epic — are referenced in prose,
   never re-filed.
 
 ## Issue label scheme
@@ -144,7 +144,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `security` | (constant) | Always present (per epic #2406); shared with `security-scan`. Used by the dedup, snapshot, and known-open queries. |
+| `security` | (constant) | Always present (per epic); shared with `security-scan`. Used by the dedup, snapshot, and known-open queries. |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 
 There is **no `lang:<bucket>` label** — the scan is single-scope and
@@ -220,5 +220,5 @@ normal triage → planning → work-on pipeline.
   discriminator to stay disjoint.
 - [`docs/IDLE-TASK-FRAMEWORK.md`](IDLE-TASK-FRAMEWORK.md) — Framework
   operator manual and lifecycle diagram common to every template.
-- Epic #2406 — proactive supply-chain compromise detection, which owns
+- Epic — proactive supply-chain compromise detection, which owns
   the deferred network/registry-sourced checks.

@@ -12,10 +12,10 @@ today.
 
 | Report | What it covers |
 | ------ | -------------- |
-| **[Idle-task scans vs Anthropic & Visa harnesses](idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md)** | Gap analysis (Issue [#3535](https://github.com/stSoftwareAU/VibeCoder/issues/3535)) of the scan pipeline against the Anthropic and Visa agentic security harnesses — the G1–G4 gaps that drove the #3537–#3540 scan upgrades |
-| **[Cloudflare `security-audit-skill` coverage gap analysis](cloudflare-security-audit-gap-analysis.md)** | Detection-class comparison (Issue [#3440](https://github.com/stSoftwareAU/VibeCoder/issues/3440)) mapping every Cloudflare `security-audit-skill` class to its owning VibeCoder idle task |
-| **[GhostCommit — image prompt-injection threat model](ghostcommit-image-injection-assessment.md)** | The repo's threat model for image-based prompt injection (Issue [#3387](https://github.com/stSoftwareAU/VibeCoder/issues/3387)): attack surface, detect-and-flag posture, and the mitigation sub-issues it scoped |
-| **[GhostCommit canary regression tests](ghostcommit-canary-tests.md)** | The empirical half of the same work (Issue [#3390](https://github.com/stSoftwareAU/VibeCoder/issues/3390)): canary tests that prove the posture at runtime and guard against regressions |
+| **[Idle-task scans vs Anthropic & Visa harnesses](idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md)** | Gap analysis of the scan pipeline against the Anthropic and Visa agentic security harnesses — the G1–G4 gaps that drove the – scan upgrades |
+| **[Cloudflare `security-audit-skill` coverage gap analysis](cloudflare-security-audit-gap-analysis.md)** | Detection-class comparison mapping every Cloudflare `security-audit-skill` class to its owning VibeCoder idle task |
+| **[GhostCommit — image prompt-injection threat model](ghostcommit-image-injection-assessment.md)** | The repo's threat model for image-based prompt injection: attack surface, detect-and-flag posture, and the mitigation sub-issues it scoped |
+| **[GhostCommit canary regression tests](ghostcommit-canary-tests.md)** | The empirical half of the same work: canary tests that prove the posture at runtime and guard against regressions |
 
 Related index entries outside this directory:
 
@@ -23,11 +23,11 @@ Related index entries outside this directory:
   point-in-time reports feed: assets, attacker capabilities per GitHub surface,
   attack paths, control→code→test traceability, gaps and residual risks.
 - Public Export — the boundary control for the
-  clean-publish plan (#4160): the allowlist manifest and hard-deny gate
-  (#4195), the export-time branding transform (#4197) and the mandatory,
+  clean-publish plan: the allowlist manifest and hard-deny gate
+ , the export-time branding transform and the mandatory,
   comment-required-allowlist, no-bypass scrub gate that blocks operator
   identifiers, e-mails, key shapes, home paths and private-repo references
-  from leaving the machine (#4196).
+  from leaving the machine.
 - [OWASP Top 10 2025 coverage matrix](../OWASP-TOP-10-2025-COVERAGE-MATRIX.md)
   — which idle-task template covers which OWASP category.
 - [Whole-tree security sweep](../SECURITY-TREE-SWEEP.md) — the one-shot
@@ -37,7 +37,7 @@ Related index entries outside this directory:
   [Supply-chain triage](../SUPPLY-CHAIN-TRIAGE.md) — what happens to findings
   after a scan files them.
 - [Supply-chain gate](../SUPPLY-CHAIN-GATE.md) — the CI job and command
-  (Issue #4192) that fail on an unpinned `uses:`, an unfrozen `deno`
+  that fail on an unpinned `uses:`, an unfrozen `deno`
   invocation, a tag-referenced container base, a permissive Renovate
   auto-merge policy or a stale
   dependency inventory.

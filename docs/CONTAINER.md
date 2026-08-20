@@ -2,27 +2,27 @@
 
 The Vibe Coder ships a Linux container definition under
 [`container/`](../container/) so the worker runs against a toolchain the image
-owns, rather than whatever a host happens to have installed (Issue #4061).
+owns, rather than whatever a host happens to have installed.
 
-`run.sh` (Issue #4065) and `run.ps1` (Issue #4066) launch the worker inside
+`run.sh` and `run.ps1` launch the worker inside
 that image, and both build the same launch plan, so a Windows host is
 contained exactly as a macOS one is. The image is also built and exercised by
 CI (`.github/workflows/container-build.yml`) — on every push to `Develop`/`main`,
 and on a pull request only when it touches something that can change the image
 (`container/**` — the Containerfile, entrypoint, tools manifest, provider
 scripts — or the workflow itself); any other PR gets the required `container`
-check reported as passed without a build (Issue #4334). Inside the image CI runs the
+check reported as passed without a build. Inside the image CI runs the
 container-specific checks (`deno check` plus the entrypoint, launch-plan,
 runtime, manifest, run-mode and launcher-contract tests), not the whole test
 suite — that runs on the same commit in the sharded `validate (tests N/4)`
 legs. The second-engine (Podman) build is a push-time acceptance criterion.
 
-**Container is the only mode** (Issues #4146, #4). The former host-native
-opt-in (Issue #4148) and the macOS `seatbelt` profile (Issue #4300) were
+**Container is the only mode** (Issue #4). The former host-native
+opt-in and the macOS `seatbelt` profile were
 removed by Issue #4 — containment is mandatory. A configuration that still
 names one fails loud with the removal explained, and a missing container
-runtime stays the loud failure it is today (Issue #3234), with no host path to
-fall back to. See [`run_mode`](CONFIGURATION.md#-run-mode-issue-4146) for the
+runtime stays the loud failure it is today, with no host path to
+fall back to. See [`run_mode`](CONFIGURATION.md#-run-mode) for the
 setting and [Containment](CONTAINMENT.md) for the boundary.
 
 ## What is in the image
@@ -45,10 +45,10 @@ because the digest-pinned base already ships the system tools.
 The base is the official Ruby image, which is itself built on
 `buildpack-deps:trixie`, so one digest supplies the system tools *and* the
 `ruby` the gate needs — the Pages scripts under `.github/scripts/*.rb` are
-spawned by the test suite (Issue #4090). Two floors are load-bearing and are
+spawned by the test suite. Two floors are load-bearing and are
 recorded as `minVersions` in `container/tools.json`: `git` ≥ 2.41, below which
 a literal `--end-of-options` survives into `argv` and is taken as a revision
-(Issue #3714), and `ruby` ≥ 3.1 for `Psych.safe_load_file` (Issue #3661).
+, and `ruby` ≥ 3.1 for `Psych.safe_load_file`.
 `container-build.yml` asserts the built image clears both, so a base-image
 downgrade fails at build time rather than as a puzzling test failure.
 
@@ -68,7 +68,7 @@ toolchains below were enumerated by reading each `repos` entry in
 `.config.json` at its own quality gate, and each records in
 `container/tools.json` the repositories it exists for — so a repository
 leaving the fleet makes its toolchain removable rather than permanent image
-weight (Issue #4068).
+weight.
 
 | Toolchain                                          | Commands                                  | Exists for                                                                                    |
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -93,7 +93,7 @@ Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
 provider need; the worker itself is Deno. Its layer is built **before** the
 coding-agent provider layer, because a provider whose CLI ships as a
 JavaScript bundle needs the runtime at install time to prove the agent runs
-(Issue #4107) — the image contents are the same either way, only the layer
+ — the image contents are the same either way, only the layer
 order changed. The npm release tarball is downloaded and checksum-verified
 before installation, so a compromised registry response fails the build rather
 than shipping.
@@ -123,7 +123,7 @@ flowchart TD
 
 The worker captures PR evidence through the Playwright MCP server, and a
 contained worker has no host browser and no desktop session to borrow. So the
-image bakes Chromium at build time (Issue #4069): `container/Containerfile`
+image bakes Chromium at build time: `container/Containerfile`
 installs the checksum-verified `playwright-core` tarball, runs
 `playwright-core install --with-deps chromium chromium-headless-shell` into
 `PLAYWRIGHT_BROWSERS_PATH` (`/opt/playwright-browsers`), makes that tree
@@ -167,9 +167,9 @@ flowchart TD
   the isolation that matters there. On a host with no baked browser the sandbox
   stays on.
 - **The secrets denylist is unchanged.** `--deny-env` still hides the worker's
-  tokens and keys from the MCP process (Issue #2308), and the npm registry age
-  gate (Issue #2799) still guards the pinned specifiers.
-- **The server is handed to the agent on every run (Issue #4355).** The
+  tokens and keys from the MCP process, and the npm registry age
+  gate still guards the pinned specifiers.
+- **The server is handed to the agent on every run.** The
   worker generates this configuration per clone into
   `${WORK_DIR}/.vibe-cache/mcp/` and passes it as `--mcp-config` on each
   Claude invocation — it does not depend on a `.mcp.json` in a directory the
@@ -210,7 +210,7 @@ image with both Docker and Podman and runs `./quality.sh` inside it.
 
 The image reference is derived from the container definition itself, so a
 changed definition is a different image and nobody has to remember to bump a
-version by hand (Issue #4062):
+version by hand:
 
 ```bash
 deno run --allow-read worker/deno/mod.ts container-image-hash
@@ -254,7 +254,7 @@ committed `container/` file is not enumerated. A missing enumerated input
 exits non-zero naming the path rather than hashing a shorter list and quietly
 producing a different tag.
 
-### Superseded tags are pruned, every launch (Issue #4162)
+### Superseded tags are pruned, every launch
 
 A content-derived tag rebuilds on every change to the container definition, and
 nothing used to delete the tag it replaced. On an unattended host that leaks a
@@ -280,13 +280,13 @@ watching:
 | ----------------------- | ---------------------------------------------------------------------------------------------------- |
 | Only our own image      | Same repository as the kept reference (Podman's `localhost/` prefix included) and a different tag. A foreign `vibe-coder` from a registry, a dangling `<none>` layer and every other image are untouched |
 | The builder cache stays | Never pruned — it is what makes a definition-change rebuild, or a rollback, cheap                     |
-| Fails loud              | A refused listing, unreadable output or a refused removal exits non-zero and is logged; the launcher treats it as a warning and launches anyway, and the next launch prunes again (Issues #3234, #4162) |
+| Fails loud | A refused listing, unreadable output or a refused removal exits non-zero and is logged; the launcher treats it as a warning and launches anyway, and the next launch prunes again |
 
 `worker/deno/lib/container_image_prune.ts` owns the rule and each runtime's
 listing/removal spelling lives with the rest of its dialect in
 `container_runtime.ts` (`docker image rm`, `container image delete`).
 
-### A builder that ran out of storage heals itself (Issue #4441)
+### A builder that ran out of storage heals itself
 
 Pruning stops the store filling; this is what happens when it filled anyway.
 On host-23 the host dropped to 135 MiB free and `container build` died
@@ -340,7 +340,7 @@ Four boundaries keep that safe on a machine nobody is watching:
 | A narrow signature list | Only `no space left on device`, `read-only file system`, `ENOSPC` and BuildKit's `ResourceExhausted` are healed. A broken `RUN` step, a missing package or a syntax error is untouched — "healing" a genuine build error is how a launcher starts looping on it |
 | One retry, never a loop | Exactly one heal and one retry per launch. A second failure in the same launch escalates to a builder *recreate* (`builder delete` + `builder start`) so the **next** launch starts clean, and this launch still fails |
 | Per-runtime, in one place | Apple container bounces its builder VM; Docker and Podman build in-process and prune the build cache instead. Both spellings live with the rest of the dialect in `container_runtime.ts` |
-| Fails loud              | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `~/logs/run_core.log` (Issues #3234, #4441) |
+| Fails loud | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `~/logs/run_core.log` |
 
 `worker/deno/lib/container_build_heal.ts` owns the classifier and the
 escalation; the runtime is driven through an injected seam, so the tests never
@@ -350,7 +350,7 @@ start a builder VM.
 
 `run.sh` and `run.ps1` must resolve a supported container runtime before they
 do anything else, and the rule lives in one tested module rather than twice in
-two thin launchers (Issue #4063):
+two thin launchers:
 
 ```bash
 OUTPUT_JSON=true deno run --allow-run --allow-env \
@@ -374,10 +374,10 @@ Two properties matter more than the list:
 - **Detection never falls back to the host.** In container mode the outcome is
   either a descriptor naming a container runtime or a non-zero exit whose
   message names the platform, every runtime probed with the reason it was
-  rejected, and how to install one (Issue #3234). There is no host mode
+  rejected, and how to install one. There is no host mode
   (Issue #4), so nothing here can select one because a runtime is absent.
 
-**The runtime is not a manual-only checklist** (Issues #4136, #4137). Run
+**The runtime is not a manual-only checklist**. Run
 `./setup.sh` in a terminal and the same probe drives an offer to fix what it
 found, with the exact commands shown before they run:
 
@@ -425,7 +425,7 @@ container is already its own lightweight VM). Passing
 parameters, so `worker/deno/tests/container_runtime_test.ts` exercises every
 branch on a host with none of the runtimes installed.
 
-## Per-launch caches — nothing is re-downloaded each cycle (Issue #4302)
+## Per-launch caches — nothing is re-downloaded each cycle
 
 The container is replaced every cycle (`--rm`), which used to throw away the
 Deno module/emit cache and re-fetch plus re-type-check the entire worker
@@ -444,14 +444,14 @@ over the virtiofs `/workspace` mount. The entrypoint now:
 
 ## The launcher — `run.sh` is the containment boundary
 
-`run.sh` is a thin, trusted, host-side launcher (Issue #4065). It asks the
+`run.sh` is a thin, trusted, host-side launcher. It asks the
 `container-launch-plan` command what to run and then runs exactly that, so
 every containment decision lives in one auditable Deno module
 ([`container_launch.ts`](../worker/deno/lib/container_launch.ts)) instead of
 being restated in shell — code running *inside* the container cannot broaden
 its own mounts or capabilities by editing the launcher.
 
-It resolves the run mode first (Issue #4146) so that a configuration naming a
+It resolves the run mode first so that a configuration naming a
 removed mode fails loud in one place (Issue #4) — then builds the launch plan
 below. There is no other branch: the worker runs in the container or not at
 all.
@@ -492,19 +492,18 @@ flowchart TD
 | `…/credentials/gh`           | `/home/vibe/.vibe-coder/credentials/gh` | ro |
 | `…/credentials/<provider>`   | `/home/vibe/.vibe-coder/credentials/<provider>` | ro |
 
-One credential mount per **enabled** provider (Issue #4108), so a
+One credential mount per **enabled** provider, so a
 multi-provider run carries three of them and a default run exactly one.
 
 The checkout is the worker's own code, not host data: the image ships only the
 entrypoint, so without it there is no driver to run and no tree for the
-bootstrap to self-update. The rest are the persistent host state Issue #4060
+bootstrap to self-update. The rest are the persistent host state
 enumerates, and their in-container paths are deliberately the ones the worker
 resolves for itself from `HOME` — no environment plumbing points it at them.
 `.config.json` is layered read-only over the checkout, so the worker cannot
 rewrite its own configuration from inside the container.
 
-Credentials are exposed **per sub-directory**, not wholesale (Issues #4067
-and #4108): the worker's own `gh` material and each *enabled* provider's,
+Credentials are exposed **per sub-directory**, not wholesale: the worker's own `gh` material and each *enabled* provider's,
 and nothing else that happens to sit beside them. The sub-directory names come
 from the provider descriptors, so which credential directories are mounted
 follows the enabled set without touching the mount construction. A provider
@@ -519,13 +518,13 @@ characters the launcher's NUL framing could not pass. The finished argument
 list is re-checked for `--privileged`, `--cap-add`, `--device`, published
 ports and host namespaces before it is returned.
 
-### VM sizing — generous by default, tunable per host (Issues #4229, #4272, #4301)
+### VM sizing — generous by default, tunable per host
 
 The launch plan sizes the VM from the host: memory is everything minus an
 8 GiB reserve (8 GiB floor), and CPUs are the host's cores minus a reserve
 of `4` (floor 4, never above the host's count). The CPU reserve exists
 because an 8-vCPU VM on a shared 10-core laptop stalled wholesale under
-host bursts (#4272); a dedicated fleet host has nothing to defend against
+host bursts; a dedicated fleet host has nothing to defend against
 and should hand the VM every core:
 
 | Env | Effect |
@@ -537,7 +536,7 @@ and should hand the VM every core:
 The guest has no swap: a swapfile needs `CAP_SYS_ADMIN`, which the launch
 plan forbids (see below), so a memory peak inside the VM is an exit-137
 SIGKILL of the agent, not a slowdown. What *can* be done from inside the
-boundary is bounding the blast radius: the WIP-checkpoint loop (#4170)
+boundary is bounding the blast radius: the WIP-checkpoint loop
 probes `/proc/meminfo` every minute and, when available memory drops under
 10 %, takes an early checkpoint with a loud warning — so a kill loses at
 most the last minute, and the warning tells you the VM needs more memory
@@ -559,7 +558,7 @@ most the last minute, and the warning tells you the VM needs more memory
 - No supported runtime is a non-zero exit carrying the detection module's
   message. There is no fallback to running the worker on the host.
 - The wait on the runtime client is **bounded** by the plan's `watchdog`
-  deadline (Issue #4173) — see
+  deadline — see
   [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog).
   A container that outlives it is reaped and the launcher exits `87`, so a
   wedged VM costs one cycle instead of blocking the supervisor indefinitely.
@@ -571,12 +570,12 @@ privileges fails in the `Validate Scripts` workflow.
 
 ### Containment is tested from inside the container
 
-Those tests assert on *arguments*. `container_containment_test.ts` (Issue #4071)
+Those tests assert on *arguments*. `container_containment_test.ts`
 asserts on *reachability*: it starts the real container from a real launch
 plan and asks the container itself what it can get at. A launcher or
 image change that exposes a prohibited host path, a container-runtime socket,
 or the host home directory fails the `Container Build` workflow rather than
-surfacing after deployment — the boundary #3643 showed cannot be enforced by
+surfacing after deployment — the boundary showed cannot be enforced by
 prompts or application policy.
 
 ```mermaid
@@ -620,7 +619,7 @@ image with `VIBE_CONTAINMENT_IMAGE`.
 
 ## The coding-agent provider layer
 
-The coding agent is a **separable layer** (Issue #4067), so Codex can be added
+The coding agent is a **separable layer**, so Codex can be added
 without redesigning containment. One module —
 [`worker/deno/lib/agent_provider.ts`](../worker/deno/lib/agent_provider.ts) —
 describes a provider as data, and the worker resolves everything provider-
@@ -652,7 +651,7 @@ flowchart LR
 The **enabled set** — which providers are provisioned, preflighted and
 mounted for a run — is `VIBE_AGENT_PROVIDERS` (comma-separated), then the
 `.config.json` `agent_providers` key, then the active provider alone, so a
-deployment that configures neither is unchanged (Issue #4108). A set that
+deployment that configures neither is unchanged. A set that
 excludes the active provider fails loudly: its agent would have no credential
 mounted.
 
@@ -662,7 +661,7 @@ registered fails loudly at startup with the supported ids named — it never
 falls back to the default, which would run the wrong agent under an explicit
 selection.
 
-### Per-invocation selection (Issue #4109)
+### Per-invocation selection
 
 Selection above is process-wide — it answers "which agent does this run use?".
 Quorum needs a different question answered: "which agent does *this call*
@@ -705,7 +704,7 @@ Every result is attributed to the agent that produced it: the run result and
 its `runStats` carry a `provider` id, the credit-log entry records `provider`,
 and the runner's log lines name the provider's display name. Naming a provider
 the running image did not install fails loudly at the call, listing what the
-image did install (Issue #3234) — it never falls back to the default.
+image did install — it never falls back to the default.
 
 Model and effort routing stays **per provider**. Claude applies the per-phase
 `buildClaudeModelArgs` / `buildClaudeEffortArgs` chain; Codex carries effort in
@@ -722,8 +721,8 @@ construction and the containment boundary do not change.
 | id       | binary   | fragment | credential variables               | notes |
 | -------- | -------- | -------- | ---------------------------------- | ----- |
 | `claude` | `claude` | `container/providers/claude.sh` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build |
-| `codex`  | `codex`  | `container/providers/codex.sh`  | `OPENAI_API_KEY`, `CODEX_API_KEY`  | Pinned and selectable; add it to `AGENT_PROVIDERS` to install it (Issue #4106) |
-| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, add it to `AGENT_PROVIDERS` to install it (Issue #4107) |
+| `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; add it to `AGENT_PROVIDERS` to install it |
+| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, add it to `AGENT_PROVIDERS` to install it |
 
 Each vendor's credential is provisioned into its own
 `<credential dir>/<id>/provider.env` by `setup.sh` — the variables per vendor
@@ -731,13 +730,13 @@ are in Deployment, and the rule that no
 vendor's credential reaches another vendor's subprocess is in
 Quorum.
 
-Codex (Issue #4106) was the first addition made purely through the seam. Two
+Codex was the first addition made purely through the seam. Two
 Codex facts shape its descriptor, and both are handled in the Codex-owned
 modules (`codex_executor.ts`, `codex_env.ts`, `codex_auth.ts`) rather than in
 the registry:
 
 - **`codex exec` takes one prompt and no `--system-prompt`.** The static system
-  prompt — which is how the sandboxed-environment guidance of Issue #4070
+  prompt — which is how the sandboxed-environment guidance of
   reaches the agent — is composed into that single prompt rather than dropped,
   as is any disallowed-tools list, since Codex has no per-tool disable flag.
   Session continuity across phases is `codex exec resume --last`.
@@ -747,7 +746,7 @@ the registry:
   would otherwise let it through. `worker/deno/lib/agent_env.ts` holds the
   shared filter; each provider module holds only its three lists.
 
-Gemini (Issue #4107) is the third, and in Quorum mode it is the **judge**
+Gemini is the third, and in Quorum mode it is the **judge**
 rather than a planner: it reads the two planners' candidate plans and picks a
 winner. That role shapes two of its facets:
 
@@ -767,7 +766,7 @@ winner. That role shapes two of its facets:
 
 Selecting `codex` or `gemini` needs that provider's credential in
 `<credential dir>/<id>/provider.env` — `setup.sh` offers every registered
-provider its own variables (Issue #4108) and writes only the files it has
+provider its own variables and writes only the files it has
 credentials for. The default image still installs Claude alone, so a run using
 another provider also needs it in the image's `AGENT_PROVIDERS` set.
 
@@ -784,7 +783,7 @@ manifest's provider set.
 ### One image, a set of providers
 
 Quorum mode needs several agent CLIs resident in **one** container, so the
-build installs a **set** (Issue #4105): `AGENT_PROVIDERS` is a comma-separated
+build installs a **set**: `AGENT_PROVIDERS` is a comma-separated
 list of provider ids, defaulting to `container/tools.json`'s
 `installedProviders` — today just `claude`, so the default image is what it
 always was.
@@ -800,14 +799,14 @@ docker build -f container/Containerfile \
 requested order, and validates the whole set before installing anything — an
 empty list, an empty entry, a malformed or duplicated id, an id with no
 fragment, or a fragment that fails aborts the build naming the fragments that
-do exist (Issue #3234). Nothing is half-installed and nothing is skipped
+do exist. Nothing is half-installed and nothing is skipped
 silently.
 
 Two invariants keep the set honest:
 
 - **The tag follows the set.** `AGENT_PROVIDERS`' default lives in the
   Containerfile and `container/install-providers.sh` is an enumerated hash
-  input, so changing the set changes `vibe-coder:<hash>` (Issue #4062) instead
+  input, so changing the set changes `vibe-coder:<hash>` instead
   of reusing a tag whose contents differ.
 - **The image says what it carries.** The build stamps
   `VIBE_IMAGE_AGENT_PROVIDERS` into the image;

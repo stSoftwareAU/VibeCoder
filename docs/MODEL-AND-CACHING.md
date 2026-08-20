@@ -11,25 +11,25 @@ the worker.
   - [Phase-Specific Defaults](#phase-specific-defaults)
   - [Model/effort precedence chain](#-modeleffort-precedence-chain)
   - [Model Fallback on Rate Limit](#model-fallback-on-rate-limit)
-  - [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow-issue-2648)
-  - [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection-issue-2649)
-  - [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal-issue-2720)
-  - [Pre-flight Fable reroute](#pre-flight-fable-reroute-issue-3231)
+  - [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow)
+  - [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection)
+  - [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)
+  - [Pre-flight Fable reroute](#pre-flight-fable-reroute)
 - [Session Management](#session-management)
-  - [Per-Repository Session Persistence](#per-repository-session-persistence-issue-1321)
-  - [Milestone-Aware Session Branching](#milestone-aware-session-branching-issue-1322)
-  - [Session Compaction](#session-compaction-issue-1328)
-  - [Session Resume](#session-resume-issue-1324)
+  - [Per-Repository Session Persistence](#per-repository-session-persistence)
+  - [Milestone-Aware Session Branching](#milestone-aware-session-branching)
+  - [Session Compaction](#session-compaction)
+  - [Session Resume](#session-resume)
   - [Issue Claiming](#issue-claiming)
   - [Heartbeat Tracking](#heartbeat-tracking)
   - [Processing Phases](#processing-phases)
 - [Prompt Caching](#prompt-caching)
   - [Layer 1: Prompt Compilation Cache (Disk)](#layer-1-prompt-compilation-cache-disk)
   - [Layer 2: Claude Built-in Prompt Caching](#layer-2-claude-built-in-prompt-caching)
-  - [Stable Prefix Ordering](#stable-prefix-ordering-issue-4282)
-  - [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry-issue-4282)
+  - [Stable Prefix Ordering](#stable-prefix-ordering)
+  - [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry)
   - [SHA-256 Invalidation](#sha-256-invalidation)
-  - [Codebase Map](#codebase-map-issue-4281)
+  - [Codebase Map](#codebase-map)
 - [Batch API: considered and not wired](#batch-api)
   - [Why it was rejected](#why-it-was-rejected)
   - [What remains in the code](#what-remains-in-the-code)
@@ -37,7 +37,7 @@ the worker.
   - [Token Extraction](#token-extraction)
   - [Model Pricing](#model-pricing)
   - [Credit Logging](#credit-logging)
-  - [Context Window Budget Monitoring](#context-window-budget-monitoring-issue-1327)
+  - [Context Window Budget Monitoring](#context-window-budget-monitoring)
 - [Token Saving Strategies](#token-saving-strategies)
 - [Configuration](#configuration)
 
@@ -45,10 +45,10 @@ the worker.
 
 ## Model Selection
 
-VibeCoder uses **effort-first cost routing** (Issue #2391): the worker varies
+VibeCoder uses **effort-first cost routing**: the worker varies
 **effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
 switching model families per phase. Model tier is the *secondary* lever, applied
-at **both** extremes (Issues #2621, #3217, #4112): the **eight planning-shaped
+at **both** extremes: the **eight planning-shaped
 phases** (`planning`, `grill_me`, `refinement`, `revision`, `question`,
 `clarification`, `quorum`, `quorum_judge`)
 run on the **Fable 5** tier above Opus at `high` effort — wherever the Vibe Coder
@@ -56,20 +56,20 @@ interprets the user's words into an implementable state, a better result compoun
 downstream — while the three trivial phases stay on **Haiku**. Everything in
 between runs on **Opus**. The worker passes tier *aliases* (`fable`, `opus`,
 `haiku`) to the Claude CLI, which resolves each to the latest model of that tier;
-combined with the CLI minimum-version floor (Issue #2622), the tiers stay current
+combined with the CLI minimum-version floor, the tiers stay current
 with no per-release config change.
 
 ### Phase-Specific Defaults
 
 Each phase has a hardcoded default model **and** a default effort level. The
-guiding rule (Issue #3217): **wherever the Vibe Coder interprets the user's words
+guiding rule: **wherever the Vibe Coder interprets the user's words
 into an implementable state, use the highest model available.** That names
 eight *planning-shaped* phases — `planning`, `grill_me`, `refinement`,
 `revision`, `question`, `clarification`, and the two Quorum phases `quorum` and
-`quorum_judge` (Issues #4112, #4429) — each of which defaults to the **Fable 5** top
+`quorum_judge` — each of which defaults to the **Fable 5** top
 tier at `high` effort. When Fable is unavailable they reroute to **Opus at `max`
 effort** and the run is recorded degraded (see
-[Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal-issue-2720)).
+[Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)).
 Everything else runs on **Opus** (implementation and reactive fixes) or **Haiku**
 (the three trivial phases) and is unaffected by Fable availability.
 
@@ -88,25 +88,25 @@ Everything else runs on **Opus** (implementation and reactive fixes) or **Haiku*
 | pr_feedback | Opus | medium | unchanged |
 | quality_fix | Opus | medium | unchanged |
 | spelling_fix | Haiku | low | unchanged |
-| summarise | Haiku | low | unchanged (large-input escalation #2393 still applies) |
+| summarise | Haiku | low | unchanged (large-input escalation still applies) |
 | health | Haiku | low | unchanged — gains the new Fable probe |
 
 These defaults are defined in `PHASE_MODEL_DEFAULTS` and `PHASE_EFFORT_DEFAULTS`
 in [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts);
 `worker/deno/tests/model_routing_docs_test.ts` keeps this table in step with
-them (Issue #3349).
+them.
 
-> **Note — the two Quorum phases (Issues #4112, #4429, #4434).** `quorum` and
+> **Note — the two Quorum phases.** `quorum` and
 > `quorum_judge` are Fable-preferring like the other six, so the pre-flight
 > reroute below applies to them. Because one plan-off is three invocations
 > across both phases, the orchestrator carries each invocation's served-model
 > observation on its result and `quorum_run_stats.ts` reports the **round** —
 > one `degraded-model` label and one `## Quorum run model stats` comment
-> covering all three invocations, not one per agent (Issue #4434). A healthy
+> covering all three invocations, not one per agent. A healthy
 > plan-off stays quiet: the result comment it already posts is the round's
 > output.
 
-### Design note — effort-first vs tier-first (Issue #2391)
+### Design note — effort-first vs tier-first
 
 Earlier routing was **tier-first**: each phase was assigned a different model
 family (Opus / Sonnet / Haiku) and effort was a secondary tweak. Two changes
@@ -125,35 +125,35 @@ extremes.**
 - The substantive and the reactive-fix phases are differentiated by **effort**
   (`high` → implementation, `medium` → the reactive fixes `ci_fix`,
   `pr_feedback`, `quality_fix`) on **Opus**. This gives one quality bar with a
-  tunable depth dial and sidesteps the Opus alias→pricing mismatch fixed in #2389.
-- The planning-shaped phases run on the **Fable 5** tier above Opus (Issue #2621,
+  tunable depth dial and sidesteps the Opus alias→pricing mismatch fixed in.
+- The planning-shaped phases run on the **Fable 5** tier above Opus (
   extended from two phases at `max` effort to six phases at `high` effort by
-  #3217). A better result compounds across every downstream sub-issue or run, so
-  the ~2× Fable premium is spent only on these phases — see the #2621 and #3217
+  ). A better result compounds across every downstream sub-issue or run, so
+  the ~2× Fable premium is spent only on these phases — see the and
   decision-log rows below.
 - The three trivial phases (**spelling_fix**, **summarise**, **health**) stay
   on **Haiku**. The Opus↔Haiku gap is still ~5×; these tasks are mechanical;
   `summarise` in particular is fed the largest inputs, so the cheaper tier
   matters most there. The large-input escalation
   ([`phase_model_escalation.ts`](../worker/deno/lib/phase_model_escalation.ts),
-  Issue #2393) still lifts a Haiku phase to a 1M-window tier whenever an input
+  ) still lifts a Haiku phase to a 1M-window tier whenever an input
   would otherwise truncate.
 
 Tier remains fully tunable through the override chain below, so an operator can
 pin any phase to a different tier without code changes.
 
-### Per-phase decision log (Issue #2390)
+### Per-phase decision log
 
-Issue #2390 asked, after the Opus↔Sonnet premium collapsed from ~5× to ~1.7×,
+ asked, after the Opus↔Sonnet premium collapsed from ~5× to ~1.7×,
 whether the phases previously parked on Sonnet for cost should move to
 **Opus at low effort** instead, and whether `refinement` / `clarification` /
 `question` should drop from Sonnet to Haiku now that Haiku 4.5 is far stronger
 than the 3.5-Haiku those defaults were tuned for. The effort-first
-consolidation in #2391 answered both questions — this log records the
+consolidation in answered both questions — this log records the
 per-candidate-phase decision so the rationale is explicit alongside the
 defaults.
 
-| Candidate phase | Before (pre-#2391) | Proposal in #2390 | Decision (post-#2391) | Why |
+| Candidate phase | Before (pre-) | Proposal in | Decision (post-) | Why |
 |---|---|---|---|---|
 | `ci_fix` | sonnet + medium | opus + low | **opus + medium** | Reactive but not trivial — CI failures cover the full diagnostic spectrum (flaky tests, build breaks, lint regressions). Raising tier without dropping effort keeps quality on the harder cases; an effort downgrade to `low` would have lost reasoning depth right when it matters most. |
 | `pr_feedback` | sonnet + medium | opus + low | **opus + medium** | Reviewer feedback often demands non-trivial rework (re-architecting a function, tightening a contract). Same logic as `ci_fix` — preserve effort, raise tier. |
@@ -169,20 +169,20 @@ a specific phase down — e.g. `clarification` to Haiku on a low-stakes repo —
 can do so with a one-line override in `phase_model_overrides` without
 touching code.
 
-#### Fable 5 for top-tier phases (Issue #2621)
+#### Fable 5 for top-tier phases
 
-Once Fable 5 (`claude-fable-5`, the tier above Opus — Issue #2619) and its
+Once Fable 5 (`claude-fable-5`, the tier above Opus —) and its
 fallback plumbing landed, the per-phase routing gained a *top* tier as well as
 the existing Haiku floor. The effort-first design is unchanged; tier becomes a
 second lever spent only where plan quality compounds.
 
-| Phase | Before (#2391) | Decision (#2621) | Why |
+| Phase | Before | Decision | Why |
 |---|---|---|---|
 | `planning` | opus + max | **fable + max** | The best plan is the highest-leverage spend — a planning error cascades into every sub-issue. Fable is ~2× Opus pricing ($10/$50 vs $5/$25 per MTok), but the spend is confined to this one phase. |
 | `grill_me` | *(no entry — silently rode the global fallbacks, opus + high)* | **fable + max** | Same plan-quality argument: requirements interrogation shapes everything after it. Now has explicit `PHASE_MODEL_DEFAULTS` / `PHASE_EFFORT_DEFAULTS` entries instead of depending on the global fallback. |
-| `issue` (coding) | opus + high | **opus + high (unchanged)** | The `xhigh` effort level is now plumbed in (Issue #2620) — the worker recognises `low`/`medium`/`high`/`xhigh`/`max` and an operator can set `opus + xhigh` via `phase_effort_overrides` today. The **default** stays `high`: #2620 deliberately landed the vocabulary without changing any per-phase default; the `opus + xhigh` (or `fable + xhigh`) default bump is now tracked in the Opus 5 effort-sweep sub-issue (#3561), to be decided on measured runs rather than deferred indefinitely. |
+| `issue` (coding) | opus + high | **opus + high (unchanged)** | The `xhigh` effort level is now plumbed in — the worker recognises `low`/`medium`/`high`/`xhigh`/`max` and an operator can set `opus + xhigh` via `phase_effort_overrides` today. The **default** stays `high`: deliberately landed the vocabulary without changing any per-phase default; the `opus + xhigh` (or `fable + xhigh`) default bump is now tracked in the Opus 5 effort-sweep sub-issue, to be decided on measured runs rather than deferred indefinitely. |
 
-> **Routing fix (Issue #2709).** The coding run now passes `phase: "issue"` to
+> **Routing fix.** The coding run now passes `phase: "issue"` to
 > `runClaudeWithRetry`, and `PHASE_MODEL_DEFAULTS` gained an explicit `issue`
 > entry (`DEFAULT_CLAUDE_MODEL_ISSUE = opus`). Previously the implementation
 > phase passed no `phase`, so model/effort resolution skipped every
@@ -195,10 +195,10 @@ second lever spent only where plan quality compounds.
 
 The reactive phases (`refinement`, `revision`, `ci_fix`, `pr_feedback`,
 `quality_fix`, `question`, `clarification`) and the trivial phases
-(`spelling_fix`, `summarise`, `health`) were left **unchanged** by #2621 — their
-cost profile did not justify the top tier at that time. (Issue #3217 later
+(`spelling_fix`, `summarise`, `health`) were left **unchanged** by — their
+cost profile did not justify the top tier at that time. (later
 promoted `refinement`, `revision`, `question`, and `clarification` to Fable — see
-the [#3217 decision-log row](#planning-shaped-phases-promoted-to-fable-issue-3217)
+the [decision-log row](#planning-shaped-phases-promoted-to-fable)
 below.)
 
 **Rate-limit fallback.** A fable phase that exhausts its rate-limit retries
@@ -207,17 +207,17 @@ degrades to **opus** (then `sonnet` → `haiku`) via `MODEL_FALLBACK_MAP`
 runs at the next tier down. This is covered by the routing-level fallback tests
 in `model_fallback_test.ts`.
 
-#### Planning-shaped phases promoted to Fable (Issue #3217)
+#### Planning-shaped phases promoted to Fable
 
-Issue #3217 applied one guiding rule — *wherever the Vibe Coder interprets the
+ applied one guiding rule — *wherever the Vibe Coder interprets the
 user's words into an implementable state, use the highest model available* — and
 found the four **reactive** planning-shaped phases share the same plan-quality
 profile as `planning` and `grill_me`. They were promoted to the Fable 5 top tier,
 and the two original top-tier phases had their effort re-set from `max` to `high`
 (the `max` spend now lands on the Opus fallback when Fable is unavailable). This
-**supersedes** the corresponding `opus + medium` rows in the #2390 log above.
+**supersedes** the corresponding `opus + medium` rows in the log above.
 
-| Phase | Before (#2621 / #2390) | Decision (#3217) | Why |
+| Phase | Before | Decision | Why |
 |---|---|---|---|
 | `refinement` | opus + medium | **fable + high** | Rewords the issue title/description into an implementable state — the same plan-quality argument as planning. |
 | `revision` | opus + medium | **fable + high** | Rewrites a PR from review feedback into the intended change — interprets the reviewer's words. |
@@ -227,34 +227,34 @@ and the two original top-tier phases had their effort re-set from `max` to `high
 | `grill_me` | fable + max | **fable + high** | Same effort re-set as planning. |
 
 All eight phases share the pre-flight Fable probe described in
-[Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal-issue-2720),
-and — since Issue #4434 — the degraded-model recording described in
-[Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal-issue-2720)
-and [Pre-flight Fable reroute](#pre-flight-fable-reroute-issue-3231).
+[Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal),
+and — since — the degraded-model recording described in
+[Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)
+and [Pre-flight Fable reroute](#pre-flight-fable-reroute).
 
 ### 🎚️ Model/effort precedence chain
 
 Model **and** effort selection follow a strict precedence chain (most specific
-wins). Per-repo overrides (Issue #2625) slot between the operator escape-hatch
+wins). Per-repo overrides slot between the operator escape-hatch
 env vars and the global config / built-in defaults, so a high-value repo can be
 routed to the best tier while a filler repo stays cheap — see
-[Per-repository model/effort routing](CONFIGURATION.md#-per-repository-modeleffort-routing-issue-2625).
+[Per-repository model/effort routing](CONFIGURATION.md#-per-repository-modeleffort-routing).
 
 **Model** (`buildClaudeModelArgs()`):
 
 1. **Phase-specific environment variable** — `CLAUDE_MODEL_<PHASE>` (uppercase),
    e.g. `CLAUDE_MODEL_PLANNING=sonnet` (operator escape hatch)
 2. **Per-repo phase override** — `phase_model_overrides` in the repo's
-   `repo_config` entry (Issue #2625)
+   `repo_config` entry
 3. **Per-repo base model** — `claude_model` in the repo's `repo_config` entry;
-   applies to every phase in that repo (Issue #2625)
+   applies to every phase in that repo
 4. **Global config phase overrides** — `phase_model_overrides` in `.config.json`
 5. **Phase-specific hardcoded defaults** — `PHASE_MODEL_DEFAULTS` (table above)
 6. **Global environment variable** — `CLAUDE_MODEL`; if nothing is set the
    Claude CLI uses its own default
 
 > **⚠️ A per-repo `claude_model` base tier demotes the Fable planning/grill-me
-> tiers (audit [#2702](https://github.com/stSoftwareAU/VibeCoder/issues/2702)
+> tiers (audit
 > F2/F3).** Level 3 (per-repo base `claude_model`) sits **above** level 5
 > (`PHASE_MODEL_DEFAULTS`). So setting `claude_model` in a repo's `repo_config`
 > to cheapen its ordinary phases **also silently reroutes `planning` and
@@ -282,7 +282,7 @@ routed to the best tier while a filler repo stays cheap — see
 > here because the lost Fable escalation is an easy routing surprise to trip
 > over.
 >
-> **Observability (Issue #2716).** When a repo's `claude_model` base tier
+> **Observability.** When a repo's `claude_model` base tier
 > reroutes one or more phases off their `PHASE_MODEL_DEFAULTS` entry,
 > `setActiveRepoModelEffortOverrides()` logs a single informational line on the
 > repo switch naming each rerouted phase and its `default→base` change (e.g.
@@ -295,7 +295,7 @@ of `claude_model`; a repo tunes effort per phase only:
 
 1. **Phase-specific environment variable** — `CLAUDE_EFFORT_<PHASE>`
 2. **Per-repo phase override** — `phase_effort_overrides` in the repo's
-   `repo_config` entry (Issue #2625)
+   `repo_config` entry
 3. **Global config phase overrides** — `phase_effort_overrides` in `.config.json`
 4. **Phase-specific hardcoded defaults** — `PHASE_EFFORT_DEFAULTS` (table above)
 5. **Global environment variable** — `CLAUDE_EFFORT`
@@ -320,7 +320,7 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
 
 - Enabled by default; disable via `enable_model_fallback: false` in
   `.config.json`
-- **Model-unavailable (export-control) downgrade (Issues #2724, #2735).** When
+- **Model-unavailable (export-control) downgrade.** When
   the requested tier is *unavailable or not permitted* — rather than
   rate-limited — `detectModelUnavailable()` matches the error tail (403 /
   `permission_error`, "disabled", "not available", and the export-control
@@ -331,17 +331,16 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   base tier. The substitution is **per-run and config keeps pointing at Fable**,
   so once Fable returns the next run requests it again with no manual change
   (self-heal) — there is no persistent "Fable is down" circuit-breaker.
-- Fallback transitions are recorded in credit logs as `fallbackFrom` (Issue
-  #2707): `runClaudeWithRetry()` threads the pre-fallback model into the
+- Fallback transitions are recorded in credit logs as `fallbackFrom`: `runClaudeWithRetry` threads the pre-fallback model into the
   re-invocation via the `fallbackFrom` option, so the post-fallback
   `logInvocation()` records the original→cheaper transition and the
   daily-summary `byFallback` map (e.g. `opus→sonnet: 1`) is populated. This
-  covers both the rate-limit and the model-unavailable (#2724) fallback paths.
+  covers both the rate-limit and the model-unavailable fallback paths.
 - Implementation:
   [`worker/deno/lib/model_fallback.ts`](../worker/deno/lib/model_fallback.ts),
   [`worker/deno/lib/claude_runner.ts`](../worker/deno/lib/claude_runner.ts)
 
-### Two-stage planning self-critique flow (Issue #2648)
+### Two-stage planning self-critique flow
 
 Planning runs **attack their own answer** before publishing. Rather than a
 single agentic Claude call that creates sub-issues directly, a planning run is
@@ -353,9 +352,9 @@ to criticise rather than anchoring on the reasoning that produced it:
    acceptance criteria, dependency edges) as **text only** — it is explicitly
    forbidden from running `gh issue create` or closing the parent issue.
 2. **Critique → revise → execute turn.** Resuming the same Claude session
-   (Issue #1324), the worker embeds the stage-1 draft as a **sanitised**
+  , the worker embeds the stage-1 draft as a **sanitised**
    artefact (the draft derives from untrusted issue text, so it is framed and
-   passed through `sanitiseDelimiterPatterns()`, Issue #2608) and instructs
+   passed through `sanitiseDelimiterPatterns`,) and instructs
    Claude to adversarially critique the draft — *what is wrong with this
    approach: missing work, mis-scoping, wrong dependencies, over-engineering,
    duplication, weak acceptance criteria* — revise the plan **once** (single
@@ -368,7 +367,7 @@ turn fails, times out, or returns an empty draft, the run falls back to the
 original single-invocation planning prompt. If the draft turn disobeys and
 creates real sub-issues despite the text-only instruction, those are accepted
 and the critique turn is skipped. The existing three-tier sub-issue detection,
-the zero-sub-issue retry (Issue #1219), and `closePlanningIssue()` all apply to
+the zero-sub-issue retry, and `closePlanningIssue` all apply to
 the publish turn's output unchanged.
 
 ```mermaid
@@ -392,7 +391,7 @@ sequenceDiagram
 ```
 
 Each turn is one planning-phase invocation, so a normal run records **two**
-invocations (draft + publish), or **three** when the #1219 retry fires — the
+invocations (draft + publish), or **three** when the retry fires — the
 list the stats section below aggregates over. The prompt assets live in
 [`prompts/planning/`](../prompts/planning/); the worker always loads the latest
 version at runtime.
@@ -400,7 +399,7 @@ version at runtime.
 - Implementation:
   [`worker/deno/lib/planning_processor.ts`](../worker/deno/lib/planning_processor.ts)
 
-### Planning-run stats + degraded-model detection (Issue #2649)
+### Planning-run stats + degraded-model detection
 
 Every planning run posts a short model-usage stats block on the parent issue
 and computes a **degradation verdict**. The block reports the requested model,
@@ -411,19 +410,19 @@ duration (when the CLI reports them), the number of planning invocations, and
 A run is **degraded** when **no** planning-phase response was served by the
 configured best planning model, or an explicit rate-limit fallback fired:
 
-- **Expected model** is the configured best planning model (Issue #2654). The
+- **Expected model** is the configured best planning model. The
   `best_planning_model` config key (global, or per-repo via `repo_config`)
   **pins** a specific model the run is expected to be served by. When it is left
   empty — the default — the expected model is derived from the `planning` phase
   resolution chain by reusing
   [`buildClaudeModelArgs()`](../worker/deno/lib/claude_executor.ts) (single
   source of truth, no duplicated chain), so a repo that deliberately routes
-  planning to a different tier via `repo_config` (#2625) is never falsely
+  planning to a different tier via `repo_config` is never falsely
   flagged. Set it to expect an exact model regardless of routing.
 - **Served-model match** is prefix/alias-aware: requested `fable` (or
   `claude-fable-5`) vs served `claude-fable-5-<date>` is **OK**; a served
   `claude-opus-*` alone is **degraded**.
-- **The served-model rule is lenient at run level** (Issue #3593). The verdict
+- **The served-model rule is lenient at run level**. The verdict
   looks at the union of served models across every judged invocation: the run is
   degraded only when **none** of them match. A **mixed** run — Fable served part
   of the work, another tier served the rest — is therefore **not** degraded; the
@@ -433,14 +432,14 @@ configured best planning model, or an explicit rate-limit fallback fired:
   no longer disagree. Every served model is still listed in the stats comment,
   so partial service by a lower tier stays visible.
 - **Explicit signals stay unconditional.** A recorded `fallbackModel`
-  (rate-limit downgrade, #1113) or `preflightDegraded` flag (pre-flight Fable
-  reroute, #3232) flags the run even on a mixed run where Fable also served.
+  (rate-limit downgrade,) or `preflightDegraded` flag (pre-flight Fable
+  reroute,) flags the run even on a mixed run where Fable also served.
   These are out-of-band signals the served-model data cannot contradict —
-  silencing a known downgrade would report it as clean (fail-loud, #3234).
+  silencing a known downgrade would report it as clean (fail-loud,).
 - Only `phase: "planning"` invocations are judged — auxiliary calls (e.g.
   `summarise`/haiku helpers) never trigger the flag.
 
-The served `model` field captured per-run (#2647) is the only observable source
+The served `model` field captured per-run is the only observable source
 of truth. Stats land on the parent on **every** planning run: folded into the
 existing summary comment on closure (one comment, less noise), or posted
 standalone on a run that failed after at least one invocation. Posting is
@@ -472,7 +471,7 @@ block like this to the planning summary comment:
 - **Degraded:** no
 ```
 
-The **estimate-only** cost block (Issue #3557) prices the recorded tokens
+The **estimate-only** cost block prices the recorded tokens
 against the shared `MODEL_PRICING` table (`worker/deno/lib/token_usage.ts`) — the
 single source of truth for rates — via `formatCostEstimateLines()`
 (`worker/deno/lib/cost_estimate.ts`). Currency is USD as billed by Anthropic and
@@ -480,7 +479,7 @@ the figure is always labelled an estimate. A run that mixes models (e.g. a
 Fable→Opus fallback across invocations) is costed **per model**, each on its own
 sub-bullet, and the totals are summed. When a served model has no pricing row its
 sub-bullet reads `_pricing unknown_` and the summary is marked `(partial …)`
-rather than silently costed at zero (fail-loud, Issue #3234). The block is
+rather than silently costed at zero (fail-loud,). The block is
 omitted entirely when no priced tokens were recorded.
 
 When the same run is served by a different tier — and the expected tier served
@@ -496,7 +495,7 @@ When several non-matching tiers served the run, all of them are named:
 - **Degraded:** ⚠️ yes — no served model matches expected `claude-fable-5` (served: `claude-opus-4-7`, `claude-sonnet-4-5`)
 ```
 
-An explicit rate-limit downgrade (Issue #1113) reads instead:
+An explicit rate-limit downgrade reads instead:
 
 ```markdown
 - **Degraded:** ⚠️ yes — explicit rate-limit fallback to `claude-opus` (expected `claude-fable-5`)
@@ -505,7 +504,7 @@ An explicit rate-limit downgrade (Issue #1113) reads instead:
 When a planning invocation ran and produced output but **no** served model could
 be observed (older Claude CLI versions omit `message.model`, or every assistant
 line fails to parse), the verdict is **indeterminate** rather than a clean
-`Degraded: no` (Issue #2745). The verdict cannot legitimately assert health when
+`Degraded: no`. The verdict cannot legitimately assert health when
 it observed no served model, so it reports `unknown` and the served-model line
 reads `_none reported_`:
 
@@ -518,10 +517,9 @@ An indeterminate verdict is **not** a confirmed degradation: `degraded` stays
 `false`, so the `degraded-model` label is **not** applied — only the stats line
 changes, distinguishing "served model confirmed to match" from "served model
 could not be captured". The indeterminate check is skipped when the expected
-model itself is unresolvable (the routing chain resolved to the CLI default,
-Issue #2746).
+model itself is unresolvable (the routing chain resolved to the CLI default,).
 
-#### `degraded-model` label lifecycle (Issue #2650)
+#### `degraded-model` label lifecycle
 
 When the verdict is degraded, the worker tags the **parent issue being planned
 and every sub-issue that run created** with the non-reserved `degraded-model`
@@ -547,7 +545,7 @@ The **expected** model is whatever the `planning` phase resolution chain
 requests (env var > per-repo `phase_model_overrides` > per-repo `claude_model` >
 global overrides > `PHASE_MODEL_DEFAULTS.planning`), unless `best_planning_model`
 pins an exact model. Because operators already steer per-repo model and effort
-through `repo_config` (Issue #2625) and per-phase effort overrides (Issue #2620),
+through `repo_config` and per-phase effort overrides,
 a repo that *deliberately* routes planning to a different tier is judged against
 **its own** configured model and is never falsely flagged. Pin
 `best_planning_model` only when you want a run flagged whenever it deviates from
@@ -560,11 +558,11 @@ one specific model regardless of routing.
   (label application), wired into
   [`worker/deno/lib/planning_processor.ts`](../worker/deno/lib/planning_processor.ts)
 
-#### Grill-me degraded-model detection (Issue #2717)
+#### Grill-me degraded-model detection
 
 The `grill_me` phase routes to the **same** Fable 5 top tier as planning
 (`DEFAULT_CLAUDE_MODEL_GRILL_ME = DEFAULT_CLAUDE_MODEL_TOP_TIER`) with the same
-"plan-quality compounds across every downstream sub-issue" rationale (#2621), so
+"plan-quality compounds across every downstream sub-issue" rationale, so
 a silent Fable→Opus degradation on a requirements-interrogation round is exactly
 the failure class this family surfaces. The detection helpers in
 `planning_run_stats.ts` are therefore **phase-parametric**:
@@ -585,9 +583,9 @@ developer is reading. Grill-me therefore applies the `degraded-model` label
 round, so only the grill-me issue itself is labelled. Every GitHub operation is
 non-fatal and never aborts the round.
 
-> **Superseded in part by Issue #3756.** Healthy rounds no longer report
+> **Superseded in part by.** Healthy rounds no longer report
 > *nothing*: they post the stats block **once per issue**. See
-> [One cost/model stats comment per issue](#one-costmodel-stats-comment-per-issue-issue-3756).
+> [One cost/model stats comment per issue](#one-costmodel-stats-comment-per-issue).
 
 - Implementation:
   [`worker/deno/lib/grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts)
@@ -595,7 +593,7 @@ non-fatal and never aborts the round.
   shared `degraded-model` label), wired into the success path of
   [`worker/deno/lib/grill_me_processor.ts`](../worker/deno/lib/grill_me_processor.ts)
 
-#### Extended to the four reactive planning-shaped phases (Issue #3232)
+#### Extended to the four reactive planning-shaped phases
 
 The same grill-me shape now covers **all six** Fable-preferring planning-shaped
 phases — the four reactive single-issue phases `refinement`, `revision`,
@@ -604,7 +602,7 @@ Fable→Opus substitution on any of them was previously invisible; each now post
 `## <Phase> run model stats` comment and applies the `degraded-model` label to
 **the issue itself** (no sub-issue fan-out) **only on a degraded round** —
 healthy Fable-served rounds apply no label, exactly like grill-me. (Since
-Issue #3756 a healthy round still posts its stats block once per issue; only
+ a healthy round still posts its stats block once per issue; only
 the label is degraded-only.)
 
 The verdict helpers are **not** forked: the four phases call the generic
@@ -615,13 +613,13 @@ one recorder.
 
 **Two trigger paths, both honoured:**
 
-- **Explicit pre-flight reroute** (#3231 — the probe said Fable was unavailable,
+- **Explicit pre-flight reroute** (the probe said Fable was unavailable,
   so the phase was dispatched on Opus @ `max`). The run carries an explicit
   `preflightDegraded` flag + reason, which `assessDegradation` now treats as a
   first-class degraded cause — flagged **even when the served model matches the
   (fable) expected model**, since the reroute deliberately leaves
   `buildClaudeModelArgs(phase)` resolving to `fable`.
-- **Mid-run fallback** (#2720/#2724 — the probe said available but the live call
+- **Mid-run fallback** (the probe said available but the live call
   fell back to Opus @ `high`). Recorded via the existing served-model /
   `fallbackModel` checks now that these phases run the verdict. This path is an
   FYI only — no effort bump, no cache flip.
@@ -641,10 +639,10 @@ the phase.
   [`clarity_phase.ts`](../worker/deno/lib/clarity_phase.ts) /
   [`clarity_assessment.ts`](../worker/deno/lib/clarity_assessment.ts). The
   explicit pre-flight signal originates in
-  [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) (#3231) and is carried
+  [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) and is carried
   on the run record by `claude_runner.ts`.
 
-#### One cost/model stats comment per issue (Issue #3756)
+#### One cost/model stats comment per issue
 
 Only the planning close path posted stats on a healthy run. Every other phase
 reported them **only when the round was degraded**, and a `work-on` issue —
@@ -704,9 +702,9 @@ flowchart TD
   `recordClaudeRunStats` in
   [`phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts).
 
-#### One-off vs systemic: the fable→Opus mismatch was systemic (Issue #2705)
+#### One-off vs systemic: the fable→Opus mismatch was systemic
 
-FLEET#2569 was the first planning run to post model stats (#2649), so a single
+FLEET was the first planning run to post model stats, so a single
 data point could not tell whether the `fable`→`claude-opus-4-8` substitution was
 a one-off blip (transient capacity) or systemic. As more runs reported, the
 answer became unambiguous: **systemic**.
@@ -715,19 +713,19 @@ Observed planning runs (requested `fable`, served model the API declared):
 
 | When (UTC) | Repo / issue | Requested | Served | Degraded |
 | --- | --- | --- | --- | --- |
-| 2026-06-12 22:32 | `stSoftwareAU/private-repo-1#2569` | `fable` | `claude-opus-4-8` | yes |
-| 2026-06-13 00:04 | `stSoftwareAU/private-repo-1#2569` | `fable` | `claude-opus-4-8` | yes |
-| 2026-06-13 06:55 | `stSoftwareAU/VibeCoder#2720` | `fable` | `claude-opus-4-8` | yes |
+| 2026-06-12 22:32 | `stSoftwareAU/private-repo-1` | `fable` | `claude-opus-4-8` | yes |
+| 2026-06-13 00:04 | `stSoftwareAU/private-repo-1` | `fable` | `claude-opus-4-8` | yes |
+| 2026-06-13 06:55 | `stSoftwareAU/VibeCoder` | `fable` | `claude-opus-4-8` | yes |
 
 Three of three `fable` planning runs across two repos were served
 `claude-opus-4-8` (100% mismatch). The **root cause is external and documented**:
 on 2026-06-12 Anthropic globally disabled Fable 5 (and Mythos 5) under a US
-government export-control directive (#2720). VibeCoder routes its top-tier
-phases (`planning`, `grill_me`) to Fable 5 (#2621), so every such run is served
+government export-control directive. VibeCoder routes its top-tier
+phases (`planning`, `grill_me`) to Fable 5, so every such run is served
 Opus for the duration of the outage — not a transient capacity blip. The
-host-level fix reflects this severity: #2735 completes the automatic
+host-level fix reflects this severity: completes the automatic
 Fable-unavailable → Opus 4.8 fallback with self-heal once Fable is
-restored, #2736 documents the behaviour, and #2737 adds the regression test.
+restored, documents the behaviour, and adds the regression test.
 
 The verdict is reproducible from the existing per-run stats with the lightweight
 aggregator
@@ -739,21 +737,21 @@ mismatch, `one-off` when isolated, `none` when all served `fable`). It reuses th
 existing comment format and the daily credit summary — it does **not** add a new
 dashboard.
 
-### Fable-unavailable auto-fallback + self-heal (Issue #2720)
+### Fable-unavailable auto-fallback + self-heal
 
 The eight **Fable-preferring** planning-shaped phases — `planning`, `grill_me`,
-`refinement`, `revision`, `question`, `clarification` (#3217), `quorum` and
-`quorum_judge` (#4112, #4429) — request
+`refinement`, `revision`, `question`, `clarification`, `quorum` and
+`quorum_judge` — request
 **Fable 5** (`claude-fable-5`) because plan quality compounds across every
-downstream sub-issue or run (#2621). When Fable 5 is **globally unavailable** —
-the export-control suspension documented in the [one-off vs systemic](#one-off-vs-systemic-the-fableopus-mismatch-was-systemic-issue-2705)
+downstream sub-issue or run. When Fable 5 is **globally unavailable** —
+the export-control suspension documented in the [one-off vs systemic](#one-off-vs-systemic-the-fableopus-mismatch-was-systemic)
 section above, an account suspension, an HTTP `403`, or a silent server-side
 substitution — the worker does **not** fail those runs and does **not** need an
 operator to repoint the config. It serves the run on **Opus 4.8**, flags it, and
 self-heals the moment Fable returns. The behaviour is assembled from existing
-parts — the pre-flight probe (#3230 / #3231), the in-run model-unavailable
-fallback (#2724), and degraded detection (#2704, extended to `grill_me` in #2717
-and to the four reactive phases in #3232) — so this section ties them into one
+parts — the pre-flight probe, the in-run model-unavailable
+fallback, and degraded detection (extended to `grill_me` in
+and to the four reactive phases in) — so this section ties them into one
 coherent story.
 
 #### Three manifestations, all covered
@@ -764,12 +762,12 @@ reroute bumps effort to `max`**; both **mid-run fallbacks keep the requested
 `high` effort** (record-only, KISS — no bump, no cache flip).
 
 1. **Pre-flight reroute (before the call).** When the cached Fable-availability
-   probe — a new check type in the 15-minute health cache (#3230) — already says
+   probe — a new check type in the 15-minute health cache — already says
    `unavailable`, the phase is rerouted **before dispatch** onto **Opus at `max`
    effort** and flagged degraded via an explicit signal, so no first Fable call
    is wasted. This is the deliberate `high` → `max` "request the higher effort"
    bump. Full rules in
-   [Pre-flight Fable reroute](#pre-flight-fable-reroute-issue-3231).
+   [Pre-flight Fable reroute](#pre-flight-fable-reroute).
 2. **Outright unavailable / `403` / suspended error (during the run).** The CLI
    exits non-zero with model-access wording. `detectModelUnavailable()` (matching
    `MODEL_UNAVAILABLE_RE` over the error tail in
@@ -781,14 +779,14 @@ reroute bumps effort to `max`**; both **mid-run fallbacks keep the requested
    `fable → opus → sonnet → haiku`), wired into the retry loop in
    [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts), keeping the
    requested `high` effort. The transition is recorded in the credit log as
-   `fallbackFrom` (#2707) and logged as a `MODEL_UNAVAILABLE` security event.
+   `fallbackFrom` and logged as a `MODEL_UNAVAILABLE` security event.
 3. **Silent served-model substitution (during the run).** The run "succeeds" but
    the API serves a different model than requested (requested `fable`, served
    `claude-opus-4-8`). No error fires, so the fallback path is never taken —
    instead the **degraded-model served-model check** catches it: no per-response
-   served `model` field (#2647) in the run passes the prefix/alias-aware match
+   served `model` field in the run passes the prefix/alias-aware match
    against the expected top-tier model, and the run is flagged degraded (see
-   below). A run the expected tier served *part* of is not flagged (#3593).
+   below). A run the expected tier served *part* of is not flagged.
    Effort is left unchanged.
 
 #### Flagging — `degraded-model` label + model-stats comment
@@ -796,7 +794,7 @@ reroute bumps effort to `max`**; both **mid-run fallbacks keep the requested
 Any of the three manifestations flags the run so an operator can see the
 substitution is expected, automatic, and temporary rather than a
 misconfiguration. The flagging now covers **all six** Fable-preferring
-planning-shaped phases (extended from planning + grill_me by #3232):
+planning-shaped phases (extended from planning + grill_me by):
 
 - A **model-stats comment** is posted on the issue under a
   `## <Phase> run model stats` heading — e.g. `## Planning run model stats`,
@@ -812,9 +810,9 @@ planning-shaped phases (extended from planning + grill_me by #3232):
   verdict and label logic is the phase-parametric detection in
   [`planning_run_stats.ts`](../worker/deno/lib/planning_run_stats.ts), reused for
   `grill_me` via
-  [`grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts) (#2717) and
+  [`grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts) and
   for the four reactive phases via
-  [`phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts) (#3232).
+  [`phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts).
 
 #### Self-heal — no persistent "Fable down" switch
 
@@ -864,11 +862,11 @@ flowchart TD
   [`grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts)
   (degraded verdict + flagging).
 
-### Pre-flight Fable reroute (Issue #3231)
+### Pre-flight Fable reroute
 
 The mid-run fallback above self-corrects **after** a wasted first Fable call. A
 **pre-flight** reroute avoids even that wasted call: when the cached Fable
-probe (#3230, [`health_check_cache.ts`](../worker/deno/lib/health_check_cache.ts)
+probe ([`health_check_cache.ts`](../worker/deno/lib/health_check_cache.ts)
 → `readFableAvailability`) already says Fable is **unavailable**, a
 Fable-preferring phase is dispatched straight onto **Opus at `max` effort** for
 that one invocation, and the run is flagged **degraded** with the reason
@@ -890,7 +888,7 @@ that one invocation, and the run is flagged **degraded** with the reason
 - **Regression guard.** The override is applied at the **invocation layer** (an
   explicit `model`/`effort` on the run options passed to `runClaudeWithRetry`),
   never by rewriting `PHASE_MODEL_DEFAULTS`. So `buildClaudeModelArgs("planning")`
-  still resolves to `fable` and the served-vs-expected degraded check (#2720)
+  still resolves to `fable` and the served-vs-expected degraded check
   keeps working. The pre-flight degraded flag is threaded onto the run record
   (`ClaudeRunResult.preflightDegraded` / `preflightDegradedReason`) as an
   **explicit** signal the recording sub-issue consumes — it never depends on a
@@ -924,12 +922,12 @@ but the `.claude/` session directory is preserved between invocations so
 that context from previous work (learnt conventions, codebase familiarity)
 carries forward.
 
-### Per-Repository Session Persistence (Issue #1321)
+### Per-Repository Session Persistence
 
 Claude session state (the `.claude/` directory) is stored in a per-repo
 session store, isolated so that sessions are never shared across
 repositories. This replaced the earlier blanket deletion of `.claude/`
-on every invocation (Issue #384).
+on every invocation.
 
 **Directory structure:**
 
@@ -952,14 +950,14 @@ ${workDir}/.claude-sessions/
 3. **Save** — After Claude finishes, the `.claude/` directory is copied
    back to the per-repo store, preserving any new context for the next
    invocation. Both the restore and the save copy only allowlisted session
-   data (see [Session Persistence Allowlist](#session-persistence-allowlist-issue-3663)).
+   data (see [Session Persistence Allowlist](#session-persistence-allowlist)).
 4. **Cleanup** — Size and age limits are enforced on each save (see
-   [Session Compaction](#session-compaction-issue-1328)).
+   [Session Compaction](#session-compaction)).
 
 Implementation:
 [`worker/deno/lib/session_manager.ts`](../worker/deno/lib/session_manager.ts)
 
-### Session Persistence Allowlist (Issue #3663)
+### Session Persistence Allowlist
 
 `.claude/` sits inside the working tree the Claude CLI runs in, so the model
 can write anything there — including `settings.json`, whose `hooks` entries
@@ -992,7 +990,7 @@ logged as `[SECURITY] [SESSION_ENTRY_BLOCKED]` rather than dropped silently.
 Implementation:
 [`worker/deno/lib/session_file_policy.ts`](../worker/deno/lib/session_file_policy.ts)
 
-### Milestone-Aware Session Branching (Issue #1322)
+### Milestone-Aware Session Branching
 
 Each work stream gets its own session directory. This ensures milestone
 work does not pollute the default branch session with milestone-specific
@@ -1010,11 +1008,11 @@ session independently — no re-copy from default.
 If no default branch session exists when a milestone starts, the milestone
 begins with a clean session.
 
-**Migration:** Sessions created before Issue #1322 (stored directly in
+**Migration:** Sessions created before (stored directly in
 `${owner}/${repo}/` without a `default/` subdirectory) are automatically
 migrated to the new `default/` location on first access.
 
-### Session Compaction (Issue #1328)
+### Session Compaction
 
 Session stores grow over time as Claude accumulates context. To prevent
 unbounded growth, VibeCoder implements a **three-tier progressive
@@ -1069,9 +1067,9 @@ left behind are cleaned up automatically (bottom-up traversal).
 Implementation:
 [`worker/deno/lib/session_compaction.ts`](../worker/deno/lib/session_compaction.ts)
 
-### Session Resume (Issue #1324)
+### Session Resume
 
-While [per-repository session persistence](#per-repository-session-persistence-issue-1321)
+While [per-repository session persistence](#per-repository-session-persistence)
 preserves the `.claude/` directory between invocations (file-system-level
 state), **session resume** provides **CLI-level session continuity**
 across phases of the same issue. This allows subsequent phases (e.g.,
@@ -1228,7 +1226,7 @@ consecutive requests. VibeCoder maximises cache hits by:
    while issue-specific content goes in the user message. Repository
    `CLAUDE.md`/`AGENTS.md` is deliberately **not** in the system prompt:
    it is repository-supplied and therefore untrusted, so it is fenced in
-   the user turn instead ([#3706](https://github.com/stSoftwareAU/VibeCoder/issues/3706)).
+   the user turn instead.
    That costs its tokens per invocation rather than at cache-read rates —
    an accepted trade for not letting branch-supplied text outrank the task
 2. **Consistent prompt assembly** — the disk cache (Layer 1) ensures
@@ -1241,7 +1239,7 @@ consecutive requests. VibeCoder maximises cache hits by:
 cost a fraction of regular input tokens (see
 [Model Pricing](#model-pricing)).
 
-**Minimum cacheable prefix (Opus 4.8, Issue #2395).** Opus 4.8 lowered
+**Minimum cacheable prefix (Opus 4.8,).** Opus 4.8 lowered
 the prompt-cache minimum to **1,024 tokens**, so shorter system
 prompts now qualify for cache reuse. Every short-prompt Haiku phase
 the worker drives — `summarise`, `spelling_fix`, and so on — should
@@ -1253,7 +1251,7 @@ the specific change for the `summarise` phase are documented in
 Implementation:
 [`worker/deno/lib/claude_runner.ts`](../worker/deno/lib/claude_runner.ts)
 
-### Stable Prefix Ordering (Issue #4282)
+### Stable Prefix Ordering
 
 Anthropic prompt caching reuses the **longest byte-identical prefix** of a
 request. Everything from the first differing byte onwards is re-read at
@@ -1269,7 +1267,7 @@ flowchart TD
     subgraph Stable["Cacheable prefix — same bytes every run"]
         A["--system-prompt<br/>coding guidelines (v37)"]
         B["repo context<br/>CLAUDE.md / AGENTS.md (fenced)"]
-        C["codebase map<br/>generated, fenced (#4281)"]
+        C["codebase map<br/>generated, fenced"]
         D["repo-specific instructions"]
     end
     subgraph Volatile["Volatile tail — differs per issue and per turn"]
@@ -1288,7 +1286,7 @@ order a caller happened to assemble the sections in.
 Two things are deliberately **not** stable:
 
 - **The untrusted-content fence nonce** is randomised per invocation on
-  purpose ([#1343](https://github.com/stSoftwareAU/VibeCoder/issues/1343)).
+  purpose.
   It sits inside the fenced repo context, so the *user turn* re-caches per
   run; it is constant within a session, which is where the many-turn win
   lives. The `--system-prompt` block carries no nonce and caches across
@@ -1306,7 +1304,7 @@ The CLI invocation itself passes nothing per-turn that busts the cache:
 `buildInvocation()` emits a fixed flag order with `--system-prompt` ahead
 of `-p`, and identical requests produce byte-identical argument lists.
 
-### Cache Hit-Rate Telemetry (Issue #4282)
+### Cache Hit-Rate Telemetry
 
 The API reports, per invocation, how many prompt tokens were read from the
 cache, written to it, and charged as plain input. The cached share of those
@@ -1350,11 +1348,11 @@ The worker logs SHA changes:
 Prompt SHA changed for org/repo: abc123... → def456... (cache invalidated)
 ```
 
-### Codebase Map (Issue #4281)
+### Codebase Map
 
 Every session used to start with no memory of the repository. The
 agent-progress telemetry from
-[#4271](https://github.com/stSoftwareAU/VibeCoder/issues/4271) caught a run
+ caught a run
 spending its first ~7 minutes on `ls`/`grep`/`sed` calls just to locate the
 code it had been asked to change — a rediscovery tax paid once per session,
 every session.
@@ -1388,9 +1386,9 @@ Invalidation has two triggers, because one is not enough:
 The map is **repo-derived and therefore untrusted**: a docstring is checked
 into the branch under work, so whoever authored that branch controls it. It is
 fenced in the run's boundary markers exactly as `CLAUDE.md` is
-([#3706](https://github.com/stSoftwareAU/VibeCoder/issues/3706)), scrubbed of
+, scrubbed of
 delimiter-shaped patterns at extraction time, and wrapped in a code fence it
-cannot close ([#3646](https://github.com/stSoftwareAU/VibeCoder/issues/3646)).
+cannot close.
 
 Both caps announce what they dropped (`… 33 more entries`, `[... module index
 bounded — 542 further source files not listed ...]`) — a silently capped index
@@ -1415,10 +1413,10 @@ off. Implementation:
 
 The Anthropic Batch API offers a **50% cost discount** for requests that can
 tolerate up to **24 hours** of asynchronous processing (results often arrive
-sooner, but the deadline is the design constraint). During Issue #1264 a batch
+sooner, but the deadline is the design constraint). During a batch
 client was built and its phase-eligibility was analysed, but the live
 submission lifecycle was **never wired into the run loop** and was later removed
-as dead code (Issues #2951, #2952). No batch function is called from the worker.
+as dead code. No batch function is called from the worker.
 
 ### Why it was rejected
 
@@ -1486,17 +1484,17 @@ Approximate list prices (USD per million tokens, as of July 2026):
 Opus 5 (model id `claude-opus-5`, alias `opus`) lands at the **same** price point
 as the modern Opus 4.5–4.8 line ($5 / $25 per MTok, cache $6.25 / $0.50) — a
 step-change in capability over Opus 4.8 for free. The `claude-opus-5` pricing row
-and the 5-family fallback parser were added in Issue #3559 so Opus 5 traffic is
+and the 5-family fallback parser were added in so Opus 5 traffic is
 never dropped from cost tracking. These rows mirror `MODEL_PRICING` in
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts).
 
 Fable 5 (model id `claude-fable-5`, alias `fable`) is the top tier above Opus
-with a 1M-token context window (Issue #2619). It is the default for the eight
+with a 1M-token context window. It is the default for the eight
 planning-shaped phases (`planning`, `grill_me`, `refinement`, `revision`,
-`question`, `clarification`, `quorum`, `quorum_judge`) under Issues #2621, #3229
-and #4112.
+`question`, `clarification`, `quorum`, `quorum_judge`) under,
+and.
 
-#### Tier ordering after Opus 5 (Issue #3563 — decision, no code)
+#### Tier ordering after Opus 5 (decision, no code)
 
 Opus 5 does **not** change the tier ordering. Fable 5 remains the top tier at
 $10 / $50 per MTok; Opus 5 is a step-change over Opus 4.8 at **half** Fable 5's
@@ -1507,7 +1505,7 @@ Fable and degrade to Opus. The only change is that the `fable → opus` fallback
 now lands on a strictly better model (Opus 5 rather than Opus 4.8) at no extra
 cost. No code change is required; this row records the confirmation.
 
-#### Rate-limit bucket after Opus 5 (Issue #3564 — ops watch, no code)
+#### Rate-limit bucket after Opus 5 (ops watch, no code)
 
 Opus 5 draws on a **separate rate-limit bucket** from the combined Opus 4.x
 pool. Shifting traffic to Opus 5 when the CLI flips the `opus` alias to the
@@ -1533,7 +1531,7 @@ If the fallback counters spike, the behaviour is expected and self-correcting;
 no action beyond monitoring is required unless the elevated fallback rate
 persists past the initial bucket warm-up.
 
-#### Model-generation prompt tuning (Issue #3562)
+#### Model-generation prompt tuning
 
 Prompt templates are tuned to the behaviour of the generation that runs them, so
 a tuning that helped one generation can *harm* the next. Opus 5 behaves
@@ -1589,8 +1587,8 @@ delimited JSON):
 - Total invocations by worker, phase, and model
 - Fallback transitions (e.g. `opus → sonnet: 5`)
 - Total, per-phase, and per-model token usage
-- Estimated cost breakdown (USD) per model **and per phase** (Issue #2392)
-- The distinct model+effort combinations each phase ran with (Issue #2392)
+- Estimated cost breakdown (USD) per model **and per phase**
+- The distinct model+effort combinations each phase ran with
 
 Per-phase cost is summed from per-invocation costs, so a phase that spans
 several models (for example an Opus run that fell back to Sonnet) accumulates
@@ -1598,10 +1596,10 @@ the correct blended cost. Cache-read and cache-write tokens are priced with
 their dedicated rates in every breakdown, so prompt-cache savings are visible
 per phase.
 
-#### Unpriced model ids (Issue #3870)
+#### Unpriced model ids
 
 A model id with no row in `MODEL_PRICING` used to contribute **`$0`** to the
-daily total — so the [spend ceiling](CONFIGURATION.md#-daily-spend-ceiling-issues-3648-3684)
+daily total — so the [spend ceiling](CONFIGURATION.md#-daily-spend-ceiling)
 guarded a smaller budget than the operator configured. Unpriced tokens are now
 charged at a conservative **upper bound** (the dearest rate of every known row)
 and reported separately:
@@ -1625,7 +1623,7 @@ automatically.
 Implementation:
 [`worker/deno/lib/credit_tracker.ts`](../worker/deno/lib/credit_tracker.ts)
 
-### Context Window Budget Monitoring (Issue #1327)
+### Context Window Budget Monitoring
 
 VibeCoder monitors how much of each model's context window is consumed
 by the assembled prompt, providing early warning when prompts grow too
@@ -1642,7 +1640,7 @@ for consistency.
 #### Context Window Sizes
 
 As of the Claude 5 generation, Fable, Opus and Sonnet have 1M-token context
-windows, while Haiku retains the original 200k window (Issues #1399, #2619):
+windows, while Haiku retains the original 200k window:
 
 | Model | Context Window |
 |-------|---------------|
@@ -1671,7 +1669,7 @@ configuration), and others.
 |-----------|---------|--------|
 | **Warning** | 50% | Logs a warning — prompt is large but functional |
 | **Error** | 80% | Logs an error — risk of degraded responses |
-| **Block** | 95% | Stops the execution phase before the billed invocation and escalates to `needs-human` (Issue #3713) |
+| **Block** | 95% | Stops the execution phase before the billed invocation and escalates to `needs-human` |
 
 These thresholds are configurable via `contextBudgetWarningPercent`,
 `contextBudgetErrorPercent` and `contextBudgetBlockPercent` in `.config.json`.
@@ -1696,7 +1694,7 @@ Each invocation's budget data is logged to a daily budget log file
 - **File format:** `.context_budget_YYYY-MM-DD.json`
 - **Entry fields:** timestamp, repo, phase, model, component breakdowns,
   total tokens, usage percentage, warning/error messages, and `blocked` when
-  the hard ceiling stopped the phase (Issue #3713)
+  the hard ceiling stopped the phase
 
 #### Aggregated Statistics
 
@@ -1758,7 +1756,7 @@ subsequent restores are faster and avoid wasting tokens on stale context.
 
 **Saving:** Prevents token waste from bloated session state.
 
-### 5. Verbosity Configuration (Issue #1329)
+### 5. Verbosity Configuration
 
 Output verbosity is configurable per phase, reducing output tokens for
 phases that don't require detailed explanations (e.g., health checks,
@@ -1775,7 +1773,7 @@ reasoning.
 |-------|-----------|
 | `minimal` | One sentence naming what changed; that sentence is the whole response. |
 | `concise` | Brief response (2–3 sentences). Key changes and rationale only. |
-| `standard` | Balanced detail — the default. End-of-run summary, no running commentary (Issue #3813). |
+| `standard` | Balanced detail — the default. End-of-run summary, no running commentary. |
 | `verbose` | Standard summary plus a short section per genuinely close decision — the option taken, the alternative rejected, and the fact that settled it. |
 
 **Phase-specific defaults:**
@@ -1823,7 +1821,7 @@ level injects nothing, preserving backward-compatible behaviour.
 | `verbose` | ~20–40% more output tokens |
 
 **Saving:** ~30–80% fewer output tokens on routine phases, depending on
-level. See [Verbosity Configuration](CONFIGURATION.md#-verbosity-configuration-issue-1329)
+level. See [Verbosity Configuration](CONFIGURATION.md#-verbosity-configuration)
 for full configuration options.
 
 Implementation:
@@ -1850,11 +1848,11 @@ composition.
 
 ### 8. Effort-First Routing by Phase
 
-Under effort-first routing (Issue #2391) the worker stays on one top tier
+Under effort-first routing the worker stays on one top tier
 (Opus) and varies **effort** as the primary cost lever; tier is the secondary
 lever, keeping the three trivial phases (spelling, summarise, health) on Haiku.
 See [Phase-Specific Defaults](#phase-specific-defaults) and the
-[design note](#design-note--effort-first-vs-tier-first-issue-2391).
+[design note](#design-note--effort-first-vs-tier-first).
 
 **Saving:** Lower effort cuts output tokens (the dominant cost) on every Opus
 phase; the trivial phases retain the ~5× Haiku-vs-Opus per-token saving.
@@ -1884,14 +1882,14 @@ Model selection and caching behaviour can be customised in `.config.json`:
 |-----|------|---------|-------------|
 | `claude_model` | string | `"opus"` | Global default model |
 | `phase_model_overrides` | object | `{}` | Per-phase model overrides |
-| `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by Issue #1824). Issue-work runs may extend it while both progress signals hold — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline-issue-4290) |
+| `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while both progress signals hold — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
 | `claude_kill_after` | number | `30` | Grace period (seconds) before SIGKILL |
 | `enable_model_fallback` | boolean | `true` | Auto-downgrade model on rate limit |
-| `enable_session_resume` | boolean | `false` | Enable CLI-level session continuity (Issue #1324) |
-| `maxSessionSizeBytes` | number | `52428800` (50 MB) | Maximum session store size before compaction (Issue #1328) |
-| `maxSessionAgeDays` | number | `7` | Maximum session age before cleanup (Issue #1328) |
-| `contextBudgetWarningPercent` | number | `50` | Context usage warning threshold (Issue #1327) |
-| `contextBudgetErrorPercent` | number | `80` | Context usage error threshold (Issue #1327) |
+| `enable_session_resume` | boolean | `false` | Enable CLI-level session continuity |
+| `maxSessionSizeBytes` | number | `52428800` (50 MB) | Maximum session store size before compaction |
+| `maxSessionAgeDays` | number | `7` | Maximum session age before cleanup |
+| `contextBudgetWarningPercent` | number | `50` | Context usage warning threshold |
+| `contextBudgetErrorPercent` | number | `80` | Context usage error threshold |
 
 Environment variables:
 - `CLAUDE_MODEL` — global model override

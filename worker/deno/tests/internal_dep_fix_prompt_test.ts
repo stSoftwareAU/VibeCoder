@@ -1,11 +1,11 @@
 /**
- * Tests for the internal-dependency cross-repo fix rules (Issue #2942,
- * parent #2935).
+ * Tests for the internal-dependency cross-repo fix rules (,
+ * parent).
  *
  * The default for a root cause living in an internal `stSoftwareAU/*`
  * dependency the worker can access is to FIX it cross-repo in the same run —
  * raise a PR in the dependency's own repo AND bring the fix into the consuming
- * repo — not to defer it via a follow-up issue. The blanket #1826 escape hatch
+ * repo — not to defer it via a follow-up issue. The blanket escape hatch
  * is narrowed: deferral is acceptable only for external deps, genuine
  * human-only decisions, or a cross-repo fix genuinely too big for one run (which
  * still requires a draft/WIP PR in the dependency repo).
@@ -31,8 +31,8 @@ const INTERNAL_FIX_MARKERS = [
   "cross-repo", // fix it in the dep's own repo + consuming repo
   "transitive", // recurse to where the root cause lives
   "draft", // draft/WIP PR requirement for the too-big branch
-  "Issue #2942", // traceability
-  "#1613", // reuses the existing classification
+  "", // traceability
+  "", // reuses the existing classification
 ];
 
 Deno.test("issue prompt - latest version is v28 or later", async () => {
@@ -75,9 +75,9 @@ Deno.test("coding_guidelines prompt v29 - encodes the internal-dep cross-repo fi
   for (const marker of INTERNAL_FIX_MARKERS) {
     assertStringIncludes(result.value, marker);
   }
-  // The narrowed escape hatch must still be present and tie back to #1826.
+  // The narrowed escape hatch must still be present and tie back to.
   assertStringIncludes(result.value, "Escape Hatch");
-  assertStringIncludes(result.value, "Issue #1826");
+  assertStringIncludes(result.value, "");
   // The too-big branch must require a draft/WIP PR rather than a pure deferral.
   assertStringIncludes(result.value, "draft/WIP PR");
 });

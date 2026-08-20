@@ -4,7 +4,7 @@
  *   - issue/v13.md
  *   - planning/v11.md
  *
- * See Issue #1471.
+ * See.
  *
  * These tests verify that the new prompt versions:
  *   1. Load via loadPrompt and are at least as new as the required version.
@@ -39,7 +39,7 @@ Deno.test("coding_guidelines v11 - has Human Escalation section with needs-human
   const result = await loadPrompt("coding_guidelines", "v11", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertStringIncludes(result.value, "## Human Escalation (Issue #1471)");
+    assertStringIncludes(result.value, "## Human Escalation");
     assertStringIncludes(result.value, "`needs-human`");
   }
 });
@@ -76,7 +76,7 @@ Deno.test("coding_guidelines v10 - remains immutable (no needs-human directive)"
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(
-      result.value.includes("## Human Escalation (Issue #1471)"),
+      result.value.includes("## Human Escalation"),
       false,
       "v10 must not contain the v11 Human Escalation section",
     );
@@ -103,7 +103,7 @@ Deno.test("issue v13 - has Human Escalation section directing the worker to need
   const result = await loadPrompt("issue", "v13", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertStringIncludes(result.value, "## Human Escalation (Issue #1471)");
+    assertStringIncludes(result.value, "## Human Escalation");
     assertStringIncludes(result.value, "`needs-human`");
     // Forbids self-applying work-on
     assertStringIncludes(result.value, "`work-on`");
@@ -155,7 +155,7 @@ Deno.test("issue v12 - remains immutable (no needs-human directive)", async () =
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(
-      result.value.includes("## Human Escalation (Issue #1471)"),
+      result.value.includes("## Human Escalation"),
       false,
       "v12 must not contain the v13 Human Escalation section",
     );
@@ -217,7 +217,7 @@ Deno.test("planning v10 - remains immutable (needs-human not in reserved list)",
   }
 });
 
-// --- Universal "label + same-run comment" rule (Issue #2213) ----------------
+// --- Universal "label + same-run comment" rule ----------------
 //
 // Every `needs-human` application must be paired with a same-run explanation
 // comment. The four new prompt versions state this as a universal rule; the
@@ -275,7 +275,7 @@ for (const [name, version] of UNIVERSAL_RULE_OLD) {
       assertEquals(
         result.value.includes(UNIVERSAL_RULE),
         false,
-        `${name} ${version} must not contain the Issue #2213 universal-rule wording`,
+        `${name} ${version} must not contain the universal-rule wording`,
       );
     }
   });

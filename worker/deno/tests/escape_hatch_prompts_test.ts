@@ -1,5 +1,5 @@
 /**
- * Tests for the escape-hatch prompt sections (Issue #1826).
+ * Tests for the escape-hatch prompt sections.
  *
  * Verifies that:
  *   - coding_guidelines/v17 contains the escape-hatch rule.
@@ -19,7 +19,7 @@ Deno.test("coding_guidelines v17 - contains the escape-hatch rule", async () => 
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertStringIncludes(result.value, "Escape Hatch");
-  assertStringIncludes(result.value, "Issue #1826");
+  assertStringIncludes(result.value, "escape hatch");
   assertStringIncludes(result.value, "follow-up");
   assertStringIncludes(result.value, "out of scope");
   assertStringIncludes(result.value, "needs-human");
@@ -38,7 +38,7 @@ Deno.test("pr_feedback v6 - references the escape-hatch rule", async () => {
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertStringIncludes(result.value, "Escape Hatch");
-  assertStringIncludes(result.value, "Issue #1826");
+  assertStringIncludes(result.value, "escape hatch");
   assertStringIncludes(result.value, ".pr_response_message");
 });
 
@@ -55,7 +55,7 @@ Deno.test("ci_fix v5 - references the escape-hatch rule", async () => {
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertStringIncludes(result.value, "Escape Hatch");
-  assertStringIncludes(result.value, "Issue #1826");
+  assertStringIncludes(result.value, "escape hatch");
 });
 
 Deno.test("ci_fix v5 - is the latest version", async () => {
@@ -71,7 +71,7 @@ Deno.test("issue v18 - references the escape-hatch rule", async () => {
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertStringIncludes(result.value, "Escape Hatch");
-  assertStringIncludes(result.value, "Issue #1826");
+  assertStringIncludes(result.value, "escape hatch");
   assertStringIncludes(result.value, "follow-up issue");
 });
 
