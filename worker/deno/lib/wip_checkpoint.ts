@@ -49,6 +49,25 @@ export const DEFAULT_PRESSURE_PROBE_INTERVAL_MS = 60_000;
 export const WIP_CHECKPOINT_COMMIT_MESSAGE =
   "WIP checkpoint: periodic agent progress snapshot (Issue #4170)";
 
+/**
+ * Commit message for the one-shot preservation of a timed-out execute
+ * (Issue #47). Built here rather than inline at the call site so the
+ * completion phase's WIP-only gate (Issue #148) recognises the same
+ * subjects this worker writes — see `wip_commit_marker.ts`.
+ */
+export function buildTimedOutWipCommitMessage(options: {
+  /** Seconds the execute ran before the watchdog fired. */
+  elapsedSeconds: number;
+  /** True when the kill was the cycle deadline rather than the budget. */
+  deadlineBound: boolean;
+  /** Uncommitted files the timeout left behind. */
+  dirtyFiles: number;
+}): string {
+  return `wip: execute timed out after ${options.elapsedSeconds}s` +
+    (options.deadlineBound ? " at the cycle deadline" : "") +
+    ` — preserving ${options.dirtyFiles} uncommitted file(s) (Issue #47)`;
+}
+
 /** What a single checkpoint attempt did. */
 export type WipCheckpointOutcome =
   | { kind: "pushed"; committed: boolean; commitsPushed: number }

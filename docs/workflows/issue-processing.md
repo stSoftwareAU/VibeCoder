@@ -381,6 +381,7 @@ gitGraph
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
+- **Timed-out run — WIP preserved, but no half-done PR:** A hard timeout with a dirty tree commits the work as a `wip:` commit on the claim-locked issue branch and pushes it, so the next claim (or a human) resumes from the branch instead of starting from zero; the release comment names the branch. Because that commit leaves the branch *ahead of base*, the completion phase adds a second guard beside the ahead-of-base check: when **every** commit ahead of base is a worker-authored WIP marker (`wip: …` or `WIP checkpoint: …`) **and** the branch tip is exactly where it stood before this run's agent started, no PR is raised — the resume must advance the branch first. Anything the guard cannot determine (the pre-run HEAD was unreadable, the commit log failed) fails open and the PR proceeds. See [`wip_commit_marker.ts`](../../worker/deno/lib/wip_commit_marker.ts) and [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 
 ## 🤝 Worker escalation via `needs-human`
 

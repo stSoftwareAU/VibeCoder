@@ -23,6 +23,7 @@ import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { getRepoConfig } from "../repo_config.ts";
 import {
@@ -308,6 +309,80 @@ async function postWorkOnRunStats(
   });
 }
 
+/**
+ * Refuse a PR built from nothing but an earlier run's WIP commits (Issue #148).
+ *
+ * WIP preservation (#47) and the periodic checkpoints (#4170) both leave
+ * placeholder commits on the claim-locked issue branch so a killed run's work
+ * survives. Those commits make the branch "ahead of base", so the guard above
+ * — which only knows the *count* — waves through a re-claim that added
+ * nothing, and a half-done PR is raised from work nobody finished.
+ *
+ * Two conditions must both hold before the PR is refused:
+ *
+ *  1. every commit ahead of base is a worker-authored WIP marker, and
+ *  2. the branch tip is exactly where it stood before this run's agent
+ *     started — the resume did not advance it.
+ *
+ * Condition 2 is what keeps a genuine run safe: an agent that finished its
+ * work and left the phase-end checkpoint to commit it *did* move the tip, so
+ * its PR is raised as normal. Anything the gate cannot determine (no captured
+ * SHA, an unreadable log) fails open — this refuses a PR, so it must never
+ * act on a guess.
+ *
+ * @returns the failure reason when the branch is half-done, otherwise null.
+ */
+async function detectHalfDoneWipBranch(
+  state: PhaseState,
+  deps: WorkerDeps,
+  comparableBase: string,
+): Promise<string | null> {
+  const startSha = state.executeStartHeadSha;
+  if (!startSha) return null;
+
+  // One call yields both the tip (first line — `git log` is newest first) and
+  // every subject in the range.
+  const logResult = await deps.git.runGitCommand(
+    [
+      "log",
+      "--format=%H%x09%s",
+      "--end-of-options",
+      `${comparableBase}..${state.branchName}`,
+    ],
+    { cwd: state.repoPath },
+  );
+  if (!logResult.ok || logResult.value.code !== 0) {
+    deps.logger.warn(
+      "WIP-only guard could not run — proceeding to PR creation without it",
+      {
+        error: logResult.ok
+          ? logResult.value.stderr.trim() || `exit ${logResult.value.code}`
+          : logResult.error.message,
+      },
+    );
+    return null;
+  }
+
+  const entries = logResult.value.stdout.split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const tab = line.indexOf("\t");
+      return tab < 0
+        ? { sha: line, subject: "" }
+        : { sha: line.slice(0, tab), subject: line.slice(tab + 1) };
+    });
+  if (entries.length === 0) return null;
+  // The run moved the branch on — whatever it produced is this run's work.
+  if (entries[0]!.sha !== startSha) return null;
+  if (!isWipOnlyCommitLog(entries.map((entry) => entry.subject))) return null;
+
+  return `Branch \`${state.branchName}\` carries only WIP commits preserved ` +
+    `from an earlier timed-out run, and this run did not advance it — ` +
+    `refusing to raise a half-done PR (Issue #148). The next claim resumes ` +
+    `from the branch and must add to it before a PR can be raised.`;
+}
+
 /** Single-attempt completion-phase body — see `workOnIssueCompletion`. */
 async function completionBody(
   ctx: IssueContext,
@@ -437,6 +512,14 @@ async function completionBody(
     }
     if (aheadCountResult.ok && aheadCountResult.value.code === 0) {
       const aheadCount = parseInt(aheadCountResult.value.stdout.trim(), 10);
+      if (Number.isFinite(aheadCount) && aheadCount > 0) {
+        const halfDone = await detectHalfDoneWipBranch(
+          state,
+          deps,
+          comparableBase.value,
+        );
+        if (halfDone) return { status: "failure", reason: halfDone };
+      }
       if (Number.isFinite(aheadCount) && aheadCount === 0) {
         const statusResult = await deps.git.runGitCommand(
           ["status", "--porcelain"],

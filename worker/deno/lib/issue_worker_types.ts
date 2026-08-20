@@ -96,6 +96,15 @@ export interface PhaseState {
    */
   resumedFromCheckpoint?: boolean;
   /**
+   * HEAD SHA captured immediately before the agent ran (Issue #148).
+   *
+   * The completion phase compares it with the branch tip to answer "did this
+   * run advance the branch?" — a resumed claim that adds nothing must not
+   * raise a PR from an earlier run's WIP commits alone. Absent when Claude
+   * never ran or the capture failed; the gate then fails open.
+   */
+  executeStartHeadSha?: string;
+  /**
    * Per-phase in-process infrastructure retry counter (Issue #1550).
    *
    * Tracks how many times each phase has already been retried in-process for
