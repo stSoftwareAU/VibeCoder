@@ -466,3 +466,72 @@ Deno.test(
     assertEquals(calls.closeIssue.length, 0);
   },
 );
+
+// -------------------------------------------------------------------------
+// Issue #108 — a truncated/interrupted run is retried, not handed off
+// -------------------------------------------------------------------------
+
+// The exact shape seen on GRQ#4138: the run's only output is a "still
+// working / I'll pick up" status line because it was blocked on a slow first
+// quality-gate pass. Over 100 chars, so under the old ordering it reached the
+// analysis-only branch and was escalated to needs-human.
+const INTERRUPTED_OUTPUT =
+  "Quality gate is still running (it re-clones sibling repos on a >24h " +
+  "cache miss, so the first run is slow). I'll pick up as soon as it finishes.";
+
+Deno.test(
+  "handle_no_changes_phase - an interrupted run is a retryable failure, not analysis-only (Issue #108)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({ claudeOutput: INTERRUPTED_OUTPUT });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    // Retryable failure — NOT the analysis-only early_exit.
+    assertEquals(result.status, "failure");
+    assertStringIncludes(
+      (result as { reason: string }).reason,
+      "interrupted before completing",
+    );
+    // No Partial Answer, no needs-human hand-off, no claim release.
+    assertEquals(calls.postComment.length, 0);
+    assert(
+      !calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+      "must NOT apply needs-human for an interrupted run",
+    );
+    assertEquals(calls.unassignIssue.length, 0);
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - a usage limit that left >100 chars is infrastructure, not analysis-only (Issue #108)",
+  async () => {
+    // Regression for the ordering bug: a mid-run usage limit whose message is
+    // over 100 chars previously reached the analysis-only branch below.
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput: "A".repeat(150) +
+        "\nClaude AI usage limit reached. Your limit will reset at 3pm.",
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals(result.status, "failure");
+    assertStringIncludes(
+      (result as { reason: string }).reason,
+      "usage limit",
+    );
+    assert(
+      !calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+      "must NOT apply needs-human for a usage-limit run",
+    );
+  },
+);
