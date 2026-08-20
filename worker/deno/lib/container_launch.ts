@@ -155,6 +155,14 @@ export interface ContainerLaunchInputs {
    */
   agentProviders?: readonly AgentProviderDescriptor[];
   /**
+   * The deployer-selected build-time tools (#5), as the compact JSON the
+   * Containerfile's `VIBE_CONTAINER_TOOLS` build arg carries and
+   * install-tools.sh (#70) consumes (Issue #72). Absent or empty → no
+   * `--build-arg`, so the default fleet build is byte-for-byte unchanged.
+   * The caller validates the spec (#69) before setting this.
+   */
+  containerToolsSpecJson?: string;
+  /**
    * The host's own short hostname, passed into the container as
    * VIBE_HOST_ID so fleet telemetry (private-repo-6) names the real machine
    * rather than the ephemeral container hostname. Optional: absent means
@@ -811,8 +819,17 @@ export function buildContainerLaunchPlan(
     inputs.containerfile ?? joinPath(base, "container/Containerfile", style),
     "--tag",
     image,
-    joinPath(base, "container", style),
   ];
+  // Issue #72: carry the deployer's validated container_tools spec into the
+  // build (before the context path — options precede PATH). Nothing appended
+  // when unset, so the default fleet build is byte-for-byte unchanged.
+  if (inputs.containerToolsSpecJson) {
+    buildArgs.push(
+      "--build-arg",
+      `VIBE_CONTAINER_TOOLS=${inputs.containerToolsSpecJson}`,
+    );
+  }
+  buildArgs.push(joinPath(base, "container", style));
 
   return {
     runtime: descriptor.executable,

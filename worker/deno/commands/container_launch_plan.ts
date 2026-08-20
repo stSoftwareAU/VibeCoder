@@ -47,6 +47,7 @@ import {
   ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
   enabledAgentProviders,
 } from "../lib/agent_provider.ts";
+import { assertContainerTools } from "../lib/container_tools_config.ts";
 
 /** What the command reports alongside the rendered plan. */
 export interface ContainerLaunchPlanResult {
@@ -138,6 +139,43 @@ export async function readAgentProviderSelection(
   };
 }
 
+/**
+ * Read and validate the `container_tools` selection out of `.config.json`
+ * (Issue #72, parent #5), returning the compact JSON to carry into the build
+ * as `VIBE_CONTAINER_TOOLS` — or `undefined` when the deployment selects none.
+ *
+ * The launcher runs on the host, before the worker loads its configuration, so
+ * the selection is read here. Validation is fail-loud at plan time (#69's
+ * `assertContainerTools`): a malformed spec stops the launch here rather than
+ * reaching the image build. The deployer's original spec is carried verbatim
+ * (compact), never a re-serialised normalisation, so install-tools.sh (#70)
+ * parses exactly what was written.
+ */
+export async function readContainerToolsSpecJson(
+  configFile: string,
+): Promise<string | undefined> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await Deno.readTextFile(configFile));
+  } catch (error) {
+    throw new Error(
+      `Cannot launch: ${configFile} is not readable JSON ` +
+        `(${(error as Error).message}). Fix it, or re-run ./setup.sh.`,
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `Cannot launch: ${configFile} does not hold a JSON object.`,
+    );
+  }
+  // `container_tools` is the shared #5 config key; assertContainerTools throws
+  // loud on a malformed spec and returns [] for an absent/null one.
+  const raw = (parsed as Record<string, unknown>)["container_tools"];
+  const validated = assertContainerTools(raw);
+  if (validated.length === 0) return undefined;
+  return JSON.stringify(raw);
+}
+
 /** Build the plan for one launch. Separated so the tests can call it. */
 export async function buildLaunchPlanForCommand(
   baseDir: string,
@@ -179,6 +217,9 @@ export async function buildLaunchPlanForCommand(
     "Run ./setup.sh to create it, or set CONFIG_PATH.",
   );
   const selection = await readAgentProviderSelection(hostPaths.configFile);
+  const containerToolsSpecJson = await readContainerToolsSpecJson(
+    hostPaths.configFile,
+  );
 
   // Stage the configuration into its own directory for the read-only mount.
   // Apple container cannot mount a single file (a file mount silently
@@ -254,6 +295,7 @@ export async function buildLaunchPlanForCommand(
     watchdogSeconds,
     hostPaths,
     agentProviders: enabledAgentProviders(selection),
+    ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
     resources,
     ...(containerfile ? { containerfile } : {}),

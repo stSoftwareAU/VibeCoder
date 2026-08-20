@@ -833,3 +833,86 @@ async function exists(path: string): Promise<boolean> {
     return false;
   }
 }
+
+Deno.test("run.sh - carries the container_tools spec into the build (Issue #72)", async () => {
+  // STUB_IMAGE_INSPECT_EXIT=1 makes the image absent, so a build is recorded.
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+  try {
+    const spec = [
+      {
+        id: "java",
+        version: "21.0.5+11",
+        url: { noarch: "https://example.com/openjdk21.tar.gz" },
+        sha256: { noarch: "a".repeat(64) },
+        stripComponents: 1,
+        bin: ["bin"],
+        env: { JAVA_HOME: "" },
+      },
+    ];
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/config.json`,
+      JSON.stringify({ repos: ["org/repo1"], container_tools: spec }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const build = await recorded(harness, "build");
+    assert(build, "an absent image reference must trigger a build");
+    const at = build.indexOf("--build-arg");
+    assert(at !== -1, `build carried no --build-arg: ${build.join(" ")}`);
+    // The JSON spec survives the plan → run.sh → runtime hand-off verbatim.
+    assertEquals(build[at + 1], `VIBE_CONTAINER_TOOLS=${JSON.stringify(spec)}`);
+    // Options precede the build-context path (the last argument).
+    assert(
+      at + 1 < build.length - 1,
+      "the --build-arg must precede the context",
+    );
+    assertEquals(build.at(-1), `${REPO_ROOT}/container`);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - no container_tools means no extra build arg (Issue #72)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+  try {
+    // The default harness config selects no tools.
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const build = await recorded(harness, "build");
+    assert(build, "an absent image reference must trigger a build");
+    assertEquals(
+      build.some((a) => a.startsWith("VIBE_CONTAINER_TOOLS=")),
+      false,
+      "the default build must carry no tool spec",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a malformed container_tools spec fails the launch loudly (Issue #72)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+  try {
+    // Missing the required `version` — the #69 validator must reject it at
+    // plan time so a bad spec never reaches the build.
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/config.json`,
+      JSON.stringify({
+        repos: ["org/repo1"],
+        container_tools: [{
+          id: "java",
+          url: { noarch: "https://x/y.tar.gz" },
+        }],
+      }),
+    );
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a malformed spec must fail the launch");
+    assertStringIncludes(outcome.stderr, "container_tools");
+    // Nothing was built from the bad spec.
+    assertEquals(await recorded(harness, "build"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
