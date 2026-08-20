@@ -9,11 +9,11 @@
  */
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
-import { runWithTimeout } from "./subprocess_timeout.ts";
+import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import {
   compareWorktreeFingerprints,
   probeWorktreeFingerprint,
-} from "./worktree_progress.ts";
+} from "../lib/worktree_progress.ts";
 
 /** Run a git command in `cwd`, failing loudly when it does not succeed. */
 async function git(cwd: string, ...args: string[]): Promise<string> {

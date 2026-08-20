@@ -15,6 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { assertSafeGitRef, buildPullArgs } from "./git_ref_args.ts";
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
@@ -60,13 +61,22 @@ export async function recoverFromPushRejection(
   branchName: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
+  // Refuse an empty or option-injecting ref before any git runs (Issue #12).
+  try {
+    assertSafeGitRef(branchName, "PR head branch name");
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
   // Issue #3723: capture the remote-tracking ref *before* the pull refreshes
   // it, so the last-resort lease below is pinned to what we actually saw.
   const leaseBaseline = await captureRemoteTrackingSha(branchName, options);
 
   // Pull with rebase to integrate remote changes
   const pullResult = await runGitCommand(
-    ["pull", "--rebase", "origin", branchName],
+    buildPullArgs("origin", branchName, { rebase: true }),
     options,
   );
 

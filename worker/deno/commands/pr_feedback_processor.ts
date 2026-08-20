@@ -16,6 +16,12 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
+  assertSafeGitRef,
+  buildCheckoutArgs,
+  buildFetchArgs,
+  buildPullArgs,
+} from "../lib/git_ref_args.ts";
+import {
   buildFeedbackCommitMessage,
   decodeCommentBody,
   type PrFeedbackInput,
@@ -90,6 +96,17 @@ export const prFeedbackProcessorCommand: Command = {
         };
       }
 
+      try {
+        assertSafeGitRef(branchName, "PR head branch name");
+      } catch (err) {
+        return {
+          success: false,
+          message: `Refusing to process PR #${prNumber}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        };
+      }
+
       const deps = createDefaultDeps();
 
       // Top-level try/catch to prevent silent crashes (Issue #1230)
@@ -109,15 +126,15 @@ export const prFeedbackProcessorCommand: Command = {
 
         // Checkout and sync the PR branch
         await deps.git.runGitCommand(
-          ["fetch", "origin", branchName],
+          buildFetchArgs("origin", branchName),
           { cwd: repoWorkDir },
         );
         await deps.git.runGitCommand(
-          ["checkout", branchName],
+          buildCheckoutArgs(branchName),
           { cwd: repoWorkDir },
         );
         await deps.git.runGitCommand(
-          ["pull", "origin", branchName],
+          buildPullArgs("origin", branchName),
           { cwd: repoWorkDir },
         );
 

@@ -26,6 +26,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
+import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
 import { runPagesLiquidCheck } from "./pages_liquid_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
@@ -440,6 +441,55 @@ async function runGhSpawnChokepointCheck(
     name,
     status: "FAILED",
     output: `gh spawn chokepoint: FAILED\n${output}`,
+  };
+}
+
+async function runGitRefArgvCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "git ref chokepoint";
+  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForGitRefArgv(config.scriptDir, relDirs);
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `git ref chokepoint: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+  const output = [
+    ...result.violations.map((v) =>
+      `VIOLATION: ${v.file}:${v.line}: ${v.text}`
+    ),
+    "",
+    "A PR head branch name reached a git ref argument inline (Issue #12,",
+    "CWE-88). A dash-leading branch (e.g. `--upload-pack=…`) would be parsed",
+    "as an option, not a ref. Route it through the builders in",
+    "`worker/deno/lib/git_ref_args.ts` (buildFetchArgs / buildPullArgs /",
+    "buildCheckoutArgs / buildCheckoutNewBranchArgs), which validate the ref",
+    "and insert `--end-of-options`.",
+  ].join("\n");
+  return {
+    name,
+    status: "FAILED",
+    output: `git ref chokepoint: FAILED\n${output}`,
   };
 }
 
@@ -1010,6 +1060,12 @@ export async function runQualityGate(
   const ghSpawnResult = await runGhSpawnChokepointCheck(config);
   allOutput.push(ghSpawnResult.output);
   recordCheck(checks, ghSpawnResult.name, ghSpawnResult.status);
+
+  // git ref chokepoint (Issue #12) — a PR head branch name must reach git
+  // only through the ref-arg builders, never as an inline positional.
+  const gitRefResult = await runGitRefArgvCheck(config);
+  allOutput.push(gitRefResult.output);
+  recordCheck(checks, gitRefResult.name, gitRefResult.status);
 
   // Workflow hygiene (Issue #3716) — strict-mode `run:` blocks and
   // consistent SHA/version pin comments across .github/workflows.

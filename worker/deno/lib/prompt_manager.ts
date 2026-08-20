@@ -67,6 +67,16 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     "QUESTION_LABEL",
   ],
   ci_fix: ["PR_NUMBER", "QUALITY_INSTRUCTIONS"],
+  // Issue #84: the conflict-resolution pass. The template names the PR, the
+  // base branch being merged in, and the conflicted paths the worker found
+  // after starting the merge — all three are load-bearing, so all three are
+  // required from v1.
+  merge_conflict: [
+    "PR_NUMBER",
+    "QUALITY_INSTRUCTIONS",
+    "BASE_BRANCH",
+    "CONFLICTED_FILES",
+  ],
   workflow_setup: [
     "REPO",
     "LANGUAGES",
@@ -210,6 +220,9 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
     "CODING_GUIDELINES",
   ],
   workflow_setup: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
+  // Issue #84: the coding guidelines ride in the system prompt, so only the
+  // verbosity block is substituted into the merge-conflict body.
+  merge_conflict: ["VERBOSITY_INSTRUCTIONS"],
   // Issue #2439: `ATTRIBUTION_FOOTER` is the attribution-footer
   // placeholder added in the v11 / v4 / v2 / v7 prompt bumps. It is
   // *optional* so the immutability tests pinned to the previous

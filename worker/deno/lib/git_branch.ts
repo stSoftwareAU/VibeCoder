@@ -13,6 +13,11 @@ import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
 import { buildBranchDeleteArgs } from "./git_branch_args.ts";
+import {
+  buildCheckoutNewBranchArgs,
+  buildCheckoutResetBranchArgs,
+  buildFetchArgs,
+} from "./git_ref_args.ts";
 
 /** Protected branch names (case-insensitive). */
 const PROTECTED_BRANCHES = new Set([
@@ -123,7 +128,7 @@ export async function createFeatureBranchFromBase(
   // Fetch the latest upstream base branch before creating the feature branch
   // (Issue #1501). Non-fatal — if this fails we fall back to local refs.
   const fetchResult = await runGitCommand(
-    ["fetch", "origin", baseBranch],
+    buildFetchArgs("origin", baseBranch),
     options,
   );
   const fetchOk = fetchResult.ok && fetchResult.value.code === 0;
@@ -142,7 +147,7 @@ export async function createFeatureBranchFromBase(
   // starts from the freshest remote commit.
   if (fetchOk) {
     const freshRemote = await runGitCommand(
-      ["checkout", "-b", branchName, `origin/${baseBranch}`],
+      buildCheckoutNewBranchArgs(branchName, `origin/${baseBranch}`),
       options,
     );
     if (freshRemote.ok && freshRemote.value.code === 0) {
@@ -156,7 +161,7 @@ export async function createFeatureBranchFromBase(
 
   // Try creating from local ref (Issue #476)
   const localResult = await runGitCommand(
-    ["checkout", "-b", branchName, baseBranch],
+    buildCheckoutNewBranchArgs(branchName, baseBranch),
     options,
   );
 
@@ -169,7 +174,7 @@ export async function createFeatureBranchFromBase(
 
   // Fall back to the remote tracking branch (if we did not already try it)
   const remoteResult = await runGitCommand(
-    ["checkout", "-b", branchName, `origin/${baseBranch}`],
+    buildCheckoutNewBranchArgs(branchName, `origin/${baseBranch}`),
     options,
   );
 
@@ -207,7 +212,7 @@ export async function resumeFeatureBranchFromRemote(
   options: GitCommandOptions = {},
 ): Promise<Result<boolean>> {
   const fetchResult = await runGitCommand(
-    ["fetch", "origin", branchName],
+    buildFetchArgs("origin", branchName),
     options,
   );
   if (!fetchResult.ok || fetchResult.value.code !== 0) {
@@ -226,7 +231,7 @@ export async function resumeFeatureBranchFromRemote(
   }
 
   const checkoutResult = await runGitCommand(
-    ["checkout", "-b", branchName, `origin/${branchName}`],
+    buildCheckoutNewBranchArgs(branchName, `origin/${branchName}`),
     options,
   );
   return {
@@ -310,13 +315,16 @@ export async function reconcileHeadToBranch(
 
   // Fast-forward the worker branch to HEAD and check it out, keeping the
   // working tree exactly as the agent left it.
-  const move = await runGitCommand(["checkout", "-B", branchName], options);
+  const move = await runGitCommand(
+    buildCheckoutResetBranchArgs(branchName),
+    options,
+  );
   if (!move.ok || move.value.code !== 0) {
     return {
       ok: false,
       error: new Error(
         `Could not move '${branchName}' to HEAD ('${head}'): ` +
-          describeGitFailure(["checkout", "-B", branchName], move),
+          describeGitFailure(buildCheckoutResetBranchArgs(branchName), move),
       ),
     };
   }
