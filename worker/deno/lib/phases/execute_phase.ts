@@ -35,7 +35,11 @@ import {
   PRIOR_PROGRESS_PROMPT_NOTE,
   saveResumeState,
 } from "../resume_state_store.ts";
-import { preserveTimedOutWip, startWipCheckpoints } from "../wip_checkpoint.ts";
+import {
+  buildTimedOutWipCommitMessage,
+  preserveTimedOutWip,
+  startWipCheckpoints,
+} from "../wip_checkpoint.ts";
 import { buildProgressExtension } from "../progress_extension_runtime.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
 import { describeMemoryPressure } from "../memory_pressure.ts";
@@ -304,6 +308,21 @@ async function executeClaudeBody(
     );
   }
 
+  // Where the branch stood before the agent ran (Issue #148). A re-claim
+  // resumes a branch that may already carry an earlier run's WIP commits;
+  // the completion phase needs this SHA to tell "the resume advanced the
+  // branch" from "nothing new happened, do not raise a half-done PR". Best
+  // effort: an unreadable HEAD leaves it unset and the gate fails open.
+  const headBeforeExecute = await deps.git.runGitCommand(
+    ["rev-parse", "HEAD"],
+    { cwd: state.repoPath },
+  );
+  state.executeStartHeadSha =
+    headBeforeExecute.ok && headBeforeExecute.value.code === 0 &&
+      headBeforeExecute.value.stdout.trim().length > 0
+      ? headBeforeExecute.value.stdout.trim()
+      : undefined;
+
   // Periodic WIP checkpoints (Issue #4170): while the agent runs, commit
   // and push its progress to the claim-locked issue branch every ~10
   // minutes, and refresh the durable resume state so a killed session
@@ -429,9 +448,11 @@ async function executeClaudeBody(
       const preserved = await preserveTimedOutWip({
         repoPath: state.repoPath,
         branchName: state.branchName,
-        message: `wip: execute timed out after ${elapsedSeconds}s` +
-          (executeTimeout.deadlineBound ? " at the cycle deadline" : "") +
-          ` — preserving ${dirtyFiles} uncommitted file(s) (Issue #47)`,
+        message: buildTimedOutWipCommitMessage({
+          elapsedSeconds,
+          deadlineBound: executeTimeout.deadlineBound === true,
+          dirtyFiles,
+        }),
         logger: {
           info: (m: string) => logger.info(m),
           warn: (m: string) => logger.warn(m),

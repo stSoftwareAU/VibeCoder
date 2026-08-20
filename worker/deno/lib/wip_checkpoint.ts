@@ -38,6 +38,7 @@ import {
   type MemoryPressureReading,
   probeMemoryPressure,
 } from "./memory_pressure.ts";
+import { WIP_CHECKPOINT_COMMIT_PREFIX } from "./wip_markers.ts";
 
 /** Default milliseconds between checkpoint attempts. */
 export const DEFAULT_WIP_CHECKPOINT_INTERVAL_MS = 10 * 60_000;
@@ -47,7 +48,26 @@ export const DEFAULT_PRESSURE_PROBE_INTERVAL_MS = 60_000;
 
 /** Commit message for automatic checkpoints (squashed on PR merge). */
 export const WIP_CHECKPOINT_COMMIT_MESSAGE =
-  "WIP checkpoint: periodic agent progress snapshot (Issue #4170)";
+  `${WIP_CHECKPOINT_COMMIT_PREFIX} periodic agent progress snapshot (Issue #4170)`;
+
+/**
+ * Commit message for the one-shot preservation of a timed-out execute
+ * (Issue #47). Built here rather than inline at the call site so the
+ * completion phase's WIP-only gate (Issue #148) recognises the same
+ * subjects this worker writes — see `wip_commit_marker.ts`.
+ */
+export function buildTimedOutWipCommitMessage(options: {
+  /** Seconds the execute ran before the watchdog fired. */
+  elapsedSeconds: number;
+  /** True when the kill was the cycle deadline rather than the budget. */
+  deadlineBound: boolean;
+  /** Uncommitted files the timeout left behind. */
+  dirtyFiles: number;
+}): string {
+  return `wip: execute timed out after ${options.elapsedSeconds}s` +
+    (options.deadlineBound ? " at the cycle deadline" : "") +
+    ` — preserving ${options.dirtyFiles} uncommitted file(s) (Issue #47)`;
+}
 
 /** What a single checkpoint attempt did. */
 export type WipCheckpointOutcome =

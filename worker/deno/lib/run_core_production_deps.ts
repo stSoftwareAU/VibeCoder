@@ -189,7 +189,10 @@ import {
   releaseClaim as libReleaseClaim,
   type StuckIssueConfig,
 } from "./stuck_issue_detector.ts";
-import { deleteResumeState } from "./resume_state_store.ts";
+import {
+  deleteResumeState,
+  resumeStateSurvivesRelease,
+} from "./resume_state_store.ts";
 import {
   type FleetAuthorSetInput,
   resolveFleetAuthors,
@@ -2385,7 +2388,19 @@ export async function createProductionRunCoreDeps(
       }
       // Issue #4170: a released claim ends the attempt deliberately, so the
       // durable resume state must not make the next attempt "resume" it.
-      await deleteResumeState(workDir, repo, issueNumber);
+      // Issue #148 carves out the one release that did NOT end deliberately:
+      // a timed-out run that preserved its work as a WIP commit on the issue
+      // branch. There the pointer is how the next claim finds that commit, so
+      // deleting it would leave the work stranded on the branch.
+      if (resumeStateSurvivesRelease(outcome)) {
+        logger.info(
+          `Keeping the resume state for ${repo}#${issueNumber} — the run ` +
+            `preserved WIP on its issue branch, so the next claim resumes ` +
+            `from it (Issue #148)`,
+        );
+      } else {
+        await deleteResumeState(workDir, repo, issueNumber);
+      }
     },
     async cleanupInProgressIssue() {
       try {

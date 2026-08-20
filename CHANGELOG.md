@@ -32,6 +32,15 @@ This changelog is a human-readable digest grouped by version.
 
 ### Changed
 
+- **A preserved WIP commit can no longer become a half-done PR (Issue #148).**
+  The `wip:` commit left by a timed-out run makes the issue branch ahead of
+  base, so a later claim that added nothing used to pass the completion
+  phase's ahead-of-base guard and raise a PR from work nobody finished.
+  Completion now refuses when every commit ahead of base is a worker-authored
+  WIP marker *and* the branch tip has not moved since this run's agent
+  started — the resume must advance the branch first. A run that did produce
+  work (including one whose only commits are its own checkpoints) is
+  unaffected, and a guard that cannot determine either fact fails open.
 - **A deadline-killed execute no longer discards its work, and late-cycle
   claims that cannot fit a full execute are refused (Issue #47).** On a hard
   timeout with a dirty tree the run's work is committed as a WIP commit and

@@ -3444,3 +3444,61 @@ Deno.test("executeClaude #47 - a failed WIP push is reported in the failure reas
   assertStringIncludes(reason, "WIP preservation failed");
   assertStringIncludes(reason, "push rejected");
 });
+
+Deno.test("executeClaude #148 - a timeout with a CLEAN tree commits nothing and pushes nothing", async () => {
+  const ctx = makeContext();
+  const state = makeState();
+  const pushes: Array<{ branch: string; message: string }> = [];
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 124,
+            output: "…mid test run…",
+            timedOut: true,
+          },
+        }) as never,
+    },
+    git: {
+      // `git status --porcelain` reports nothing: there is no work to park.
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: args[0] === "rev-parse" ? state.branchName : "",
+            stderr: "",
+          },
+        }),
+      commitAndPushPending: ((branch: string, message: string) => {
+        pushes.push({ branch, message });
+        return Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        });
+      }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("no PR") }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+
+  assertEquals(result.status, "failure");
+  const reason = (result as { reason: string }).reason;
+  assertStringIncludes(reason, "without creating changes");
+  assertEquals(pushes, [], "a clean tree must produce no WIP commit or push");
+  assertEquals(
+    reason.includes("WIP preserved"),
+    false,
+    `a clean tree claims no preservation: ${reason}`,
+  );
+});

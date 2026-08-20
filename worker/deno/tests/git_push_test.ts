@@ -557,3 +557,36 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "pushUnpushedCommits - refuses a dash-leading branch name loudly (Issue #148)",
+  async () => {
+    const tmp = await Deno.makeTempDir({ prefix: "push_dash_branch_" });
+    try {
+      assertEquals((await runGit(["init", "-b", "main", tmp], tmp)).code, 0);
+      await Deno.writeTextFile(`${tmp}/README.md`, "seed\n");
+      await runGit(["add", "."], tmp);
+      await runGit(["commit", "-m", "seed"], tmp);
+
+      // A dash-leading ref is an argument-injection attempt, never a branch:
+      // git would read it as an option (`--receive-pack=<cmd>`), so the push
+      // must fail with a named error rather than run.
+      const result = await pushUnpushedCommits(
+        "--receive-pack=touch /tmp/pwned",
+        { cwd: tmp },
+      );
+      assert(!result.ok, "a dash-leading branch must not be pushed");
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, "must not begin with '-'");
+        assertStringIncludes(result.error.message, "push branch name");
+      }
+      // Nothing was executed on its behalf.
+      const pwned = await Deno.stat(`${tmp}/pwned`).then(() => true).catch(
+        () => false,
+      );
+      assertEquals(pwned, false);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
