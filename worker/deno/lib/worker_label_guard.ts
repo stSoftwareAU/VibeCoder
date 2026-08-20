@@ -63,6 +63,10 @@ import type { Result } from "../types.ts";
  *     applies to a PR stuck at `mergeable == CONFLICTING`, so the stuck
  *     set is readable at a glance instead of buried in per-pass log noise
  *     (Issue #84).
+ *   - `needs-failure-detection-repair` — the resumable marker the planning
+ *     flow raises on a parent whose published sub-issues still lack their
+ *     `## Failure Detection` criterion, and the Priority 1.81 resume pass
+ *     clears once the repairs are finished (Issues #59, #60).
  */
 export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "failed",
@@ -77,6 +81,7 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "github-actions-audit",
   "degraded-model",
   "merge-conflict",
+  "needs-failure-detection-repair",
 ]);
 
 /**

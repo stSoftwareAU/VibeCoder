@@ -47,6 +47,7 @@ import { analyseIssueClarity } from "../commands/assess_clarity.ts";
 import {
   buildDegradationReport,
   type DegradationVerdict,
+  type FailureDetectionGateStats,
   type PlanningInvocationStats,
 } from "./planning_run_stats.ts";
 import { applyDegradedModelLabel } from "./planning_degraded_label.ts";
@@ -55,11 +56,15 @@ import { maybeCreateCarrierSubIssue } from "./planning_carrier.ts";
 import { getRepoConfig } from "./repo_config.ts";
 import { releaseClaim } from "./claim_release.ts";
 import {
-  buildParentGateFailureComment,
   buildSubIssueGateComment,
+  type FailureDetectionOffender,
   runFailureDetectionGate,
 } from "./failure_detection_gate.ts";
 import { repairFailureDetectionSections } from "./failure_detection_repair.ts";
+import {
+  FAILURE_DETECTION_REPAIR_LABEL,
+  recordPartialFailureDetectionRepair,
+} from "./failure_detection_repair_label.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,6 +86,15 @@ export interface PlanningResult {
    * degraded label.
    */
   degradation?: DegradationVerdict;
+  /**
+   * Sub-issue numbers this run published that still lack a filled
+   * `## Failure Detection` section after the self-repair (Issue #59).
+   *
+   * Present only on a *partial repair*: the run succeeded and published a
+   * usable plan, and the parent carries `needs-failure-detection-repair` so a
+   * later pass finishes the job. Absent on a fully-compliant run.
+   */
+  pendingFailureDetectionRepair?: number[];
 }
 
 /** Options for the planning processor. */
@@ -548,12 +562,42 @@ export const RESERVED_LABEL_PROHIBITION =
   "Add only descriptive labels (e.g. `bug`, `enhancement`, `documentation`) " +
   "to each sub-issue. Never add a reserved workflow label (`top-priority`, " +
   "`work-on`, `low-priority`, `failed`, `refine-issue`, `planning`, " +
-  "`question`, `best-model`, `needs-human`): the worker account is not on the " +
+  "`question`, `best-model`, `needs-human`, " +
+  "`needs-failure-detection-repair`): the worker account is not on the " +
   "trusted-author allowlist, so any reserved label is silently stripped by " +
   "the `label_security` check (Issue #1344) and applying it is wasted effort. " +
   "The canonical pickup-priority order is `top-priority` > `work-on` > " +
   "`low-priority` > `idle-task`; only `idle-task` is self-appliable by the " +
   "Vibe Coder.";
+
+/**
+ * Canonical `## Failure Detection` requirement for the in-code fallback publish
+ * prompts (Issue #61).
+ *
+ * The instruction previously existed only on the main publish path
+ * (`prompts/planning/` and `prompts/planning_critique/`), so a run that took an
+ * in-code fallback published sub-issues with no instruction to include the
+ * section at all — every one of them then a presence-gate offender needing a
+ * model-driven repair. Holding the wording in one exported constant keeps the
+ * fallbacks (and any future prompt) from drifting apart, and pins them to the
+ * acceptance rule `validateFailureDetectionCriteria()` actually implements in
+ * `failure_detection_gate.ts`: either heading shape is accepted, and a wholly
+ * bracketed body is rejected.
+ */
+export const FAILURE_DETECTION_REQUIREMENT =
+  "Every sub-issue body must include a `## Failure Detection` section stating " +
+  "how a failure or regression in that work is detected, and where. Fill it " +
+  "with a concrete criterion — a named automated test, a CI quality gate, or " +
+  "a post-release alert (a console log alone never qualifies, because workers " +
+  "run unattended) — or, when the work has no runtime failure surface " +
+  "(docs-only or prompt-only), an explicit `N/A — <reason>` line. A bracketed " +
+  "placeholder such as `[how a regression is detected]` does NOT count as " +
+  "filled. Either a `## Failure Detection` heading or a bolded " +
+  "`**Failure detection:**` line is accepted. A deterministic post-publish " +
+  "gate rejects any sub-issue whose section is missing, empty, or still a " +
+  "bracketed placeholder, so fill it in before you run `gh issue create` — " +
+  "if you cannot state a real criterion for a sub-issue, re-scope, merge, or " +
+  "drop it rather than publishing a non-conforming one.";
 
 /**
  * Build a single-invocation planning prompt that plans AND creates sub-issues
@@ -621,7 +665,7 @@ ${delimiters.bodyEnd}
 ${commentsSection}${delimiters.untrustedEnd}
 ${buildBoundaryIntegrityInstruction(delimiters.boundaryId)}
 
-Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed.${milestoneNote}`;
+Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed.${milestoneNote}`;
 }
 
 /**
@@ -778,7 +822,7 @@ export function buildCritiqueFallbackPublishPrompt(opts: {
     }"\` in every \`gh issue create\` command.`
     : "";
 
-  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
+  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -934,6 +978,7 @@ async function _processPlanningWithHeartbeat(
       [],
       issueTitle,
       ctx.milestoneTitle,
+      ctx.handlerDeadlineEpochMs,
     );
   }
 
@@ -964,6 +1009,7 @@ async function _processPlanningWithHeartbeat(
       [],
       issueTitle,
       ctx.milestoneTitle,
+      ctx.handlerDeadlineEpochMs,
     );
   }
 
@@ -1138,6 +1184,7 @@ async function _processPlanningWithHeartbeat(
         invocations,
         issueTitle,
         ctx.milestoneTitle,
+        ctx.handlerDeadlineEpochMs,
       );
     }
   }
@@ -1424,6 +1471,7 @@ async function _processPlanningWithHeartbeat(
     invocations,
     issueTitle,
     ctx.milestoneTitle,
+    ctx.handlerDeadlineEpochMs,
   );
 }
 
@@ -1483,22 +1531,29 @@ function resolveConfiguredBestPlanningModel(
 /**
  * Compute the degradation verdict and build the stats markdown section
  * (Issue #2649). Returns the verdict and the section (empty string when no
- * planning invocation produced stats — e.g. a recovery path that skipped
- * Claude). The configured best planning model (Issue #2654) determines the
- * expected model the run is judged against.
+ * planning invocation produced stats and no gate stats were recorded — e.g. a
+ * recovery path that skipped Claude and published nothing). The configured best
+ * planning model (Issue #2654) determines the expected model the run is judged
+ * against.
  *
  * Delegates to the shared {@link buildDegradationReport} helper (Issue #2734)
  * so the planning and grill-me paths run the identical resolve → assess →
  * build triple and cannot drift.
+ *
+ * `gate` (Issue #63) carries the Failure-Detection gate/repair counters for the
+ * run. Only the closure path supplies it — it is the sole path that gates
+ * published sub-issues.
  */
 function buildRunStats(
   invocations: PlanningInvocationStats[],
   configuredBestModel?: string,
+  gate?: FailureDetectionGateStats,
 ): { verdict: DegradationVerdict; section: string } {
   const report = buildDegradationReport({
     invocations,
     configuredBestModel,
     phase: "planning",
+    ...(gate ? { gate } : {}),
   });
   return { verdict: report.verdict, section: report.section };
 }
@@ -1556,15 +1611,13 @@ async function closePlanningIssue(
   invocations: PlanningInvocationStats[] = [],
   parentIssueTitle = "",
   parentMilestoneTitle: string | undefined = undefined,
+  /**
+   * Epoch-ms instant the dispatch watchdog will abandon this handler at
+   * (Issue #58), threaded from `IssueContext.handlerDeadlineEpochMs`. Bounds
+   * the Failure-Detection self-repair below. Undefined: unbounded, as before.
+   */
+  handlerDeadlineEpochMs: number | undefined = undefined,
 ): Promise<Result<PlanningResult>> {
-  // Per-run model stats + degraded-model verdict (Issue #2649). The configured
-  // best planning model (Issue #2654, per-repo override aware) is the model the
-  // run is expected to be served by.
-  let { verdict, section } = buildRunStats(
-    invocations,
-    resolveConfiguredBestPlanningModel(config, repo),
-  );
-
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
   // GitHub sub-issues. Text extraction is fragile — when Claude printed the
@@ -1588,13 +1641,32 @@ async function closePlanningIssue(
     ...new Set([...textSubIssueNumbers, ...nativeSubIssueNumbers]),
   ].sort((a, b) => a - b);
 
+  // Sub-issues this run published that still lack the criterion after the
+  // self-repair (Issue #59). Non-empty means a *partial repair*: the parent is
+  // labelled and commented on below, and the run still completes.
+  let pendingRepair: FailureDetectionOffender[] = [];
+
+  // Issue #63: the gate + self-repair outcome, recorded on **every** path so
+  // the hit rate is measurable from the run-stats comment instead of by
+  // grepping worker logs. Seeded with explicit zeros — a clean run must report
+  // "gate ran, nothing offended", not omit the fields, because a metric only
+  // emitted on the unhappy path cannot distinguish healthy from not reporting.
+  const gateStats: FailureDetectionGateStats = {
+    published: textSubIssueNumbers.length,
+    offenders: 0,
+    repaired: 0,
+    stillOffending: 0,
+    deferred: 0,
+    repairDurationMs: 0,
+  };
+
   // Issue #3246: deterministic Failure-Detection presence gate. Every sub-issue
   // this run published must carry a filled `## Failure Detection` section
   // (Issue #3245 makes the planner emit it). Gate the run's published set
   // (`textSubIssueNumbers` — the numbers in `subIssueUrls`, not the native union
-  // that could include a prior carrier) so a missing criterion becomes a loud,
-  // labelled planning failure instead of a silent pass. A run with zero
-  // sub-issues has nothing to gate — the carrier safety-net below is not gated.
+  // that could include a prior carrier) so a missing criterion is never a silent
+  // pass. A run with zero sub-issues has nothing to gate — the carrier
+  // safety-net below is not gated.
   if (textSubIssueNumbers.length > 0) {
     const offenders = await runFailureDetectionGate({
       repo,
@@ -1602,6 +1674,7 @@ async function closePlanningIssue(
       ghCommandFn: deps.github.runGhCommand,
       logger,
     });
+    gateStats.offenders = offenders.length;
     if (offenders.length > 0) {
       logger.warn(
         "Failure-Detection gate: published sub-issue(s) missing the `## Failure Detection` criterion — attempting model-driven self-repair (Issue #3272)",
@@ -1618,9 +1691,20 @@ async function closePlanningIssue(
       // `## Failure Detection` section for each offender, patch it in, and
       // re-gate. Only the sub-issues that genuinely could not be repaired drive
       // the loud, labelled `handlePlanningFailure` (hard-block fallback, #3270).
+      //
+      // Issue #58: the repair is deadline-aware. `handlerDeadlineEpochMs` is
+      // the instant the dispatcher's watchdog will abandon this handler —
+      // derived from the watchdog's own budget, never a fresh constant, so the
+      // two cannot drift. Offenders the budget cannot fit are reported as
+      // `deferred` (never attempted) instead of the repair being killed
+      // mid-flight and its in-flight calls mislabelled as model timeouts.
+      const repairStartedAt = Date.now();
       const repair = await repairFailureDetectionSections({
         repo,
         offenders,
+        ...(handlerDeadlineEpochMs !== undefined
+          ? { deadlineMs: handlerDeadlineEpochMs }
+          : {}),
         ghCommandFn: deps.github.runGhCommand,
         runClaude: (repairPrompt: string) =>
           deps.claude.runClaudeWithRetry(
@@ -1636,15 +1720,15 @@ async function closePlanningIssue(
           ),
         logger,
       });
+      gateStats.repairDurationMs = Date.now() - repairStartedAt;
+      gateStats.repaired = repair.repaired.length;
+      gateStats.stillOffending = repair.stillOffending.length;
+      gateStats.deferred = repair.deferred.length;
 
-      // Fold the repair's Claude call(s) into the run's invocations and
-      // recompute the stats so they reflect the repair invocation — the run no
+      // Fold the repair's Claude call(s) into the run's invocations so the
+      // stats (built once below) reflect the repair invocation — the run no
       // longer reports "no served model observed" on this path (Issue #3272).
       invocations.push(...repair.invocations);
-      ({ verdict, section } = buildRunStats(
-        invocations,
-        resolveConfiguredBestPlanningModel(config, repo),
-      ));
 
       if (repair.repaired.length > 0) {
         logger.info(
@@ -1657,23 +1741,40 @@ async function closePlanningIssue(
         );
       }
 
-      if (repair.stillOffending.length > 0) {
+      if (repair.deferred.length > 0) {
         logger.warn(
-          "Failure-Detection gate: sub-issue(s) could not be repaired — failing the planning run (Issue #3246/#3272)",
+          "Failure-Detection self-repair: sub-issue(s) deferred un-attempted — the handler budget could not fit their repair (Issue #58)",
+          {
+            repo,
+            issueNumber,
+            deferred: repair.deferred.map((o) => o.number).join(","),
+          },
+        );
+      }
+
+      // A deferred offender was never attempted, so it is not evidence that a
+      // repair is impossible — but its criterion is still missing, so it must
+      // never pass silently. Both sets block the run (Issue #58).
+      const unresolved = [...repair.stillOffending, ...repair.deferred];
+
+      if (unresolved.length > 0) {
+        logger.warn(
+          "Failure-Detection gate: sub-issue(s) still missing the criterion after self-repair — recording a partial repair on the parent, not a planning failure (Issue #59)",
           {
             repo,
             issueNumber,
             stillOffending: repair.stillOffending.map((o) => o.number).join(
               ",",
             ),
+            deferred: repair.deferred.map((o) => o.number).join(","),
           },
         );
 
-        // Post a short comment on each un-repairable sub-issue so the signal is
+        // Post a short comment on each unresolved sub-issue so the signal is
         // actionable at the sub-issue, not only on the parent. Best-effort — a
-        // per-sub-issue comment failure must not swallow the loud parent
-        // failure.
-        for (const offender of repair.stillOffending) {
+        // per-sub-issue comment failure must not swallow the parent-side
+        // signal.
+        for (const offender of unresolved) {
           try {
             await ghClient.postComment(
               repo,
@@ -1692,31 +1793,30 @@ async function closePlanningIssue(
           }
         }
 
-        // Drive the existing loud-failure path: names each un-repairable
-        // offender on the parent, runs the failed-once/failed label
-        // progression, posts run stats, and releases the claim. The run is NOT
-        // recorded as a success.
-        await handlePlanningFailure(
-          repo,
-          issueNumber,
-          githubUser,
-          buildParentGateFailureComment(repair.stillOffending),
-          config,
-          deps,
-          logger,
-          ghClient,
-          invocations,
-        );
-
-        return {
-          ok: false,
-          error: new Error(
-            `Planning failed: ${repair.stillOffending.length} published sub-issue(s) missing the \`## Failure Detection\` criterion (self-repair could not fix them)`,
-          ),
-        };
+        // Issue #59: this is a *partial repair*, not a planning failure. The
+        // run published a usable plan and those sub-issues stay published
+        // whatever we report, so `failed-once` on the parent only told the
+        // retry machinery to re-plan from the top — the wrong recovery. Record
+        // the outstanding repairs instead (label + parent comment, below) and
+        // let the run complete. `handlePlanningFailure` stays for genuine
+        // planning failures: no sub-issues published, a prompt failure, or a
+        // publish failure.
+        pendingRepair = unresolved;
       }
     }
   }
+
+  // Per-run model stats + degraded-model verdict (Issue #2649). The configured
+  // best planning model (Issue #2654, per-repo override aware) is the model the
+  // run is expected to be served by. Built once, here — after the gate, so the
+  // block carries both the repair's invocations (Issue #3272) and the gate's
+  // own counters (Issue #63) on every path: clean, fully repaired, and
+  // partially repaired.
+  const { verdict, section } = buildRunStats(
+    invocations,
+    resolveConfiguredBestPlanningModel(config, repo),
+    gateStats,
+  );
 
   // Issue #2995 (part of #2993): carrier safety net. When the run ends with
   // *zero* sub-issues and the close is not an explicit nothing-to-do close,
@@ -1825,6 +1925,32 @@ async function closePlanningIssue(
     logger,
   );
 
+  // Issue #59: partial repair — the plan is published, so the run completes,
+  // but the parent records exactly which sub-issues still need their criterion
+  // and is left open (reopened when Claude closed it inline) carrying
+  // `needs-failure-detection-repair` for the resume pass to finish.
+  if (pendingRepair.length > 0) {
+    const recorded = await recordPartialFailureDetectionRepair({
+      repo,
+      parentIssueNumber: issueNumber,
+      offenders: pendingRepair,
+      parentClosed: alreadyClosed,
+      ghCommandFn: deps.github.runGhCommand,
+      postComment: (r: string, n: number, body: string) =>
+        ghClient.postComment(r, n, body).then(() => undefined),
+      logger,
+    });
+    logger.warn(
+      "Planning run completed with outstanding Failure-Detection repairs (Issue #59)",
+      {
+        repo,
+        issueNumber,
+        pendingRepair: pendingRepair.map((o) => o.number).join(","),
+        label: recorded ? FAILURE_DETECTION_REPAIR_LABEL : "not-applied",
+      },
+    );
+  }
+
   if (!alreadyClosed) {
     const escalationReason = Deno.env.get("PLANNING_ESCALATION_REASON");
     let summaryComment = buildPlanningSummaryComment(
@@ -1880,7 +2006,9 @@ async function closePlanningIssue(
     // Non-critical
   }
 
-  if (!alreadyClosed) {
+  // Issue #59: a partial repair leaves the parent open — closing it would bury
+  // the outstanding repairs where the resume pass cannot pick them up.
+  if (!alreadyClosed && pendingRepair.length === 0) {
     const closeComment = carrier.created
       ? "Planning complete — created a carrier sub-issue for the remaining work (Issue #2995)."
       : subIssueUrls.length > 0
@@ -1918,6 +2046,10 @@ async function closePlanningIssue(
     closedInline: alreadyClosed,
   });
 
+  const repairNote = pendingRepair.length > 0
+    ? ` — ${pendingRepair.length} awaiting Failure-Detection repair`
+    : "";
+
   return {
     ok: true,
     value: {
@@ -1925,9 +2057,12 @@ async function closePlanningIssue(
       subIssueCount: subIssueUrls.length,
       subIssueUrls,
       summary: subIssueUrls.length > 0
-        ? `Created ${subIssueUrls.length} sub-issue(s)`
+        ? `Created ${subIssueUrls.length} sub-issue(s)${repairNote}`
         : "Planning complete — no sub-issues required",
       degradation: verdict,
+      ...(pendingRepair.length > 0
+        ? { pendingFailureDetectionRepair: pendingRepair.map((o) => o.number) }
+        : {}),
     },
   };
 }

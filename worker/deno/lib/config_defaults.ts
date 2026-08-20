@@ -81,6 +81,17 @@ export const DISCOVERY_LABELS: readonly string[] = [
 ] as const;
 
 /**
+ * Partial Failure-Detection repair label (Issue #59, part of #54).
+ *
+ * Marks a planning parent whose run published a usable plan but left one or
+ * more sub-issues without a filled `## Failure Detection` section. Defined here
+ * rather than beside its apply helper because being *reserved* is the property
+ * that governs it: the worker raises it, and the planner must never be able to
+ * apply it as a descriptive label on a sub-issue. Not configurable.
+ */
+export const FAILURE_DETECTION_REPAIR_LABEL = "needs-failure-detection-repair";
+
+/**
  * Reserved labels that must not be applied when the worker creates issues.
  *
  * These labels are used by the worker for operational purposes (issue discovery,
@@ -129,6 +140,12 @@ export const RESERVED_LABELS: readonly string[] = [
   // triple-billed phase. It is human-applied only, so it is reserved here and
   // the worker's own label guard refuses it.
   LABEL_DEFAULTS.quorumLabel,
+  // Issue #59 (part of #54): `needs-failure-detection-repair` marks a planning
+  // parent whose published sub-issues still need their `## Failure Detection`
+  // criterion. The worker raises it (see `failure_detection_repair_label.ts`);
+  // reserved so the planner can never apply it as a descriptive label on a
+  // sub-issue and manufacture a phantom repair queue.
+  FAILURE_DETECTION_REPAIR_LABEL,
 ];
 
 /**

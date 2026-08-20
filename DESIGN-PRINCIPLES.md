@@ -481,6 +481,15 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
 - **Soft warning** (`handlerSoftTimeoutSeconds`, default 120s): a handler that
   returns but exceeds this threshold emits a `[watchdog]` soft-warning so slow
   handlers stay visible in the logs.
+- **Agent floor** (Issue #62): a handler that keeps working *after* its agent
+  returns declares a floor — the wrapped agent's own timeout plus a named tail
+  allowance — and its budget is never smaller than that, whatever the cycle has
+  left. Planning Mode's floor is `planningTimeout` (1800s) +
+  `PLANNING_TAIL_SECONDS` (600s for the Failure-Detection gate's per-sub-issue
+  reads and the self-repair's one Claude call per offender) = 2400s. Without it,
+  a planning run that started late in a cycle fell back to the flat 600s — a
+  third of the agent timeout it was meant to contain — and was abandoned
+  mid-repair. Non-agent handlers keep exactly the flat budget.
 - **Deterministic testing**: the timer (`watchdogDelay`) and clock (`now`) are
   injected, following the existing `nowFn` style, so timeouts are tested with no
   real sleep. Production wires an **unref'd** `setTimeout` so a fast handler
@@ -492,8 +501,11 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
 
 **Implementation:** `runWithWatchdog()` in
 `worker/deno/lib/handler_watchdog.ts`, wired into the priority dispatch in
-`worker/deno/lib/run_core.ts`. Tests: `tests/handler_watchdog_test.ts` (unit)
-and `tests/run_core_watchdog_test.ts` (loop integration).
+`worker/deno/lib/run_core.ts` (`handlerHardTimeoutMs()` /
+`agentHandlerFloorMs()`). Tests: `tests/handler_watchdog_test.ts` (unit),
+`tests/run_core_watchdog_test.ts` (loop integration) and
+`tests/agent_run_termination_test.ts` (agent-backed bounds and the agent
+floor).
 
 ### Per-cycle stale-assignment recovery
 
