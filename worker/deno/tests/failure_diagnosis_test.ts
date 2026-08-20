@@ -524,3 +524,14 @@ Deno.test("interrupted category - diagnosis, oneliner, display and validation al
   assertStringIncludes(getFailureDiagnosis("interrupted"), "cut off before");
   assertStringIncludes(getFailureDiagnosisOneliner("interrupted"), "cut off");
 });
+
+// Issue #46 — an external SIGTERM is an environment kill (infrastructure).
+Deno.test("detectFailureCategory - an external SIGTERM classifies as killed (Issue #46)", () => {
+  assertEquals(
+    detectFailureCategory(
+      "Claude was killed by an external SIGTERM (exit 143) — the worker did " +
+        "not request this shutdown",
+    ),
+    "killed",
+  );
+});

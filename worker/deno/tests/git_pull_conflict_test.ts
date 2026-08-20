@@ -480,3 +480,60 @@ Deno.test("syncMilestoneBranchWithDefault - a non-conflict merge failure is a fa
     await cleanup(tmpDir);
   }
 });
+
+Deno.test("syncMilestoneBranchWithDefault - a blocked checkout surfaces git's stderr (Issue #49)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    const { remotePath, localPath: seedPath } = await setupTestRepos(tmpDir);
+
+    const shallowPath = `${tmpDir}/shallow`;
+    await runGitCommand(
+      ["clone", "--depth=1", "--no-single-branch", remotePath, shallowPath],
+      { cwd: tmpDir },
+    );
+    await runGitCommand(["config", "user.email", "test@example.com"], {
+      cwd: shallowPath,
+    });
+    await runGitCommand(["config", "user.name", "Test User"], {
+      cwd: shallowPath,
+    });
+
+    // A milestone branch on the remote adds `milestone.ts`.
+    await runGitCommand(["checkout", "-b", "milestone/v1-0"], {
+      cwd: seedPath,
+    });
+    await Deno.writeTextFile(
+      `${seedPath}/milestone.ts`,
+      "export const m = 1;\n",
+    );
+    await runGitCommand(["add", "milestone.ts"], { cwd: seedPath });
+    await runGitCommand(["commit", "-m", "Milestone seed"], { cwd: seedPath });
+    await runGitCommand(["push", "origin", "milestone/v1-0"], {
+      cwd: seedPath,
+    });
+
+    // The shallow clone has a DIRTY tree: an untracked `milestone.ts` (as a
+    // timed-out prior claim might leave). `git checkout milestone/v1-0` refuses
+    // to overwrite it — the exact production scenario.
+    await Deno.writeTextFile(
+      `${shallowPath}/milestone.ts`,
+      "leftover uncommitted work\n",
+    );
+
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/v1-0",
+      "main",
+      { cwd: shallowPath },
+    );
+
+    assertEquals(result.ok, false, "a blocked checkout must fail");
+    if (!result.ok) {
+      // The message names the branch AND carries git's own diagnosis.
+      assertStringIncludes(result.error.message, "milestone/v1-0");
+      assertStringIncludes(result.error.message, "overwritten");
+      assertStringIncludes(result.error.message, "milestone.ts");
+    }
+  } finally {
+    await cleanup(tmpDir);
+  }
+});

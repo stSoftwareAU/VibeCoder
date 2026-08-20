@@ -87,6 +87,13 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
     return "killed";
   }
 
+  // Issue #46: an external SIGTERM the worker never requested is an
+  // environment kill too — not a property of the issue. Classify it as
+  // `killed` (infrastructure) so it is retried and not blamed on the issue.
+  if (failureMessage.includes("SIGTERM")) {
+    return "killed";
+  }
+
   // Timeout with zero output is zero_output, not timeout
   if (
     failureMessage.includes("timed out") || failureMessage.includes("timeout")

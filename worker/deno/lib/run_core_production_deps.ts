@@ -1938,8 +1938,11 @@ export async function createProductionRunCoreDeps(
     inFlightRepos,
     slotCeiling,
     // Issue #4369: no agent runs detached or is relaunched after run end.
-    terminateActiveAgentRuns: async (reason: string) => {
-      await terminateActiveAgentRuns(reason, logger);
+    terminateActiveAgentRuns: async (
+      reason: string,
+      options?: { keepTerminating?: boolean },
+    ) => {
+      await terminateActiveAgentRuns(reason, logger, options);
     },
 
     // Minimum claim runway (Issue #4304): default 30 minutes — a Priority-2
