@@ -58,13 +58,15 @@ async function spawnCount(spawnLog: string): Promise<number> {
 
 Deno.test({
   name:
-    "claude runner - an agent that dies from SIGTERM with 'rate limit exceeded' in its output is terminated, not rate-limited: one spawn, no wait, no retry (Issue #4369)",
+    "claude runner - an agent that dies from a SIGTERM the worker never requested, with 'rate limit exceeded' in its output, is an external kill, not rate-limited: one spawn, no wait, no retry (Issue #4369, Issue #46)",
   ignore: Deno.build.os === "windows",
   async fn() {
     resetAgentRunsTerminating();
     // The agent prints text that matches the primary rate-limit pattern
     // (a CI-fix agent grepping the runner source does exactly this), then
-    // is SIGTERMed — as the run-end cleanup does.
+    // SIGTERMs itself. Nothing set the terminating flag, so this is an
+    // EXTERNAL kill (Issue #46) — but the #4369 invariant still holds: a
+    // SIGTERM's output must never reach the rate-limit path.
     const body = [
       `printf '%s\\n' '{"type":"assistant","message":"grep: rate limit exceeded credit quota"}'`,
       `kill -TERM $$`,
@@ -83,7 +85,12 @@ Deno.test({
         { maxRetries: 2, maxWaitSeconds: 600, initialWaitInterval: 300 },
       );
       assert(result.ok, "runner resolves");
-      assertEquals(result.value.terminated, true, JSON.stringify(result.value));
+      assertEquals(
+        result.value.externalSigterm,
+        true,
+        JSON.stringify(result.value),
+      );
+      assertEquals(result.value.terminated, undefined, "not our shutdown");
       assertEquals(result.value.exitCode, 143);
       assertEquals(await spawnCount(spawnLog), 1, "no retry spawn");
       assert(Date.now() - startedAt < 20_000, "no rate-limit wait");

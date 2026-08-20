@@ -1231,6 +1231,69 @@ Deno.test("executeClaude - fails on Claude auth error", async () => {
   );
 });
 
+Deno.test("executeClaude #46 - an external SIGTERM fails the phase, not continue", async () => {
+  // The old code let a `terminated` result fall through to change detection
+  // and `continue`, so completion ran over a half-done tree and failed for the
+  // wrong reason. An external SIGTERM must fail the phase with the kill reason.
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 143,
+            rawExitCode: 143,
+            externalSigterm: true,
+            output: "…26 tool calls…",
+            stderr: "",
+            timedOut: false,
+          },
+        }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("no PR") }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "failure");
+  assertStringIncludes((result as { reason: string }).reason, "SIGTERM");
+});
+
+Deno.test("executeClaude #46 - an external SIGTERM self-heals when a PR already exists", async () => {
+  const ctx = makeContext();
+  const state = makeState();
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            exitCode: 143,
+            rawExitCode: 143,
+            externalSigterm: true,
+            output: "…",
+            stderr: "",
+            timedOut: false,
+          },
+        }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({
+          ok: true,
+          value: "https://github.com/org/repo/pull/7",
+        }),
+    },
+  });
+
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  assertEquals(result.status, "continue");
+});
+
 Deno.test("executeClaude #45 - a clean exit is never an auth error, even if the transcript mentions api keys", async () => {
   // Reproduces VibeCoder#36: a redaction issue whose prose says "api key" and
   // exits 0 having produced commits must NOT be recorded as an auth failure.

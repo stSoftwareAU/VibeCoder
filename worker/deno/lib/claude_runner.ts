@@ -278,6 +278,14 @@ export interface ClaudeRunResult {
    * abandoned. Terminal: never classified as a rate limit, never retried.
    */
   terminated?: boolean;
+  /**
+   * The agent received a SIGTERM the worker never requested (Issue #46):
+   * `isAgentRunsTerminating()` was false, so it came from outside — a tool the
+   * agent ran, the CLI, the container, a stray signal. Unlike {@link
+   * terminated} (our own shutdown), this is an external kill: it carries the
+   * kill diagnostics and is a retryable failure, never a silent run-end.
+   */
+  externalSigterm?: boolean;
   /** The fallback model used when the original was rate-limited (Issue #1113). */
   fallbackModel?: string;
   /**
@@ -1483,14 +1491,21 @@ export async function runClaudeWithTimeout(
     const extensions = killTelemetry ?? snapshotExtensions(Date.now());
 
     activeAgentRuns.delete(childPid);
-    // SIGTERM that no watchdog of ours requested (Issue #4369): the run-end
-    // cleanup or a handler abandonment killed the agent. Terminal.
-    const terminated = !timedOut &&
+    const gotSigterm = !timedOut &&
       (status.signal === "SIGTERM" || status.code === 143);
+    // Issue #46: a SIGTERM is only "our shutdown" when the worker actually
+    // requested the termination (`terminateActiveAgentRuns` set the flag).
+    // #4369 fixed the flag-true case; the flag-FALSE case is an external kill
+    // — a tool the agent ran, the CLI, the container, a stray signal — and
+    // must be surfaced and retried like the SIGKILL path, not accepted as a
+    // silent run-end that lets the phase continue over a half-done tree.
+    const ourShutdown = isAgentRunsTerminating();
+    const terminated = gotSigterm && ourShutdown;
+    const externalSigterm = gotSigterm && !ourShutdown;
     // The child died from outside, or our kill never settled: collect the
     // descendants it left behind before anything else starts (Issue #4382).
     const externallyKilled = !timedOut &&
-      (status.code === 137 || status.signal === "SIGKILL" || terminated);
+      (status.code === 137 || status.signal === "SIGKILL" || gotSigterm);
     // Who held the memory at the kill (Issue #4382)? Captured before the
     // orphans are collected, so the table still shows them.
     let killDiagnostics: string | undefined;
@@ -1552,6 +1567,7 @@ export async function runClaudeWithTimeout(
         timedOut,
         timeoutReason,
         ...(terminated ? { terminated: true } : {}),
+        ...(externalSigterm ? { externalSigterm: true } : {}),
         ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
           ? { watchdogLateSeconds }
           : {}),
@@ -1845,6 +1861,36 @@ export async function runClaudeWithRetry(
         `Agent terminated (SIGTERM, exit ${
           result.value.rawExitCode ?? 143
         }) — the run is ending; no retry, no wait.`,
+      );
+      return { ok: true, value: withPreflight(result.value) };
+    }
+    if (result.value.externalSigterm) {
+      // Issue #46: a SIGTERM the worker never requested — an external kill.
+      // Surface it like the SIGKILL path (stderr tail, elapsed, kill
+      // diagnostics) instead of accepting it as run-end; the execute phase
+      // then fails the phase (not `continue`) and the bounded infrastructure
+      // retry applies.
+      const stderrTail = redactSecrets(
+        (result.value.stderr ?? "").trim().split("\n").slice(-5).join("\n"),
+      );
+      const elapsedSeconds = Math.round(
+        (result.value.runStats?.wallClockMs ?? 0) / 1000,
+      );
+      currentOptions.logger?.warn(
+        `Agent killed by an external SIGTERM (exit ${
+          result.value.rawExitCode ?? 143
+        }) after ${elapsedSeconds}s — the worker did not request this ` +
+          `shutdown` +
+          (stderrTail ? `; stderr tail:\n${stderrTail}` : " (stderr empty)") +
+          (result.value.killDiagnostics
+            ? `\nKill diagnostics:\n${result.value.killDiagnostics}`
+            : ""),
+      );
+      currentOptions.logger?.security?.(
+        "AGENT_KILLED",
+        `raw_exit_code=${
+          result.value.rawExitCode ?? 143
+        } external_sigterm=true`,
       );
       return { ok: true, value: withPreflight(result.value) };
     }
