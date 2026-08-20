@@ -6,9 +6,10 @@
  * named volumes, so a leftover host `~/auto-issue-work` (or its approval-state
  * sibling) is never mounted again and only wastes disk. A directory holding
  * worker data gets a warning and a manual `rm -rf` hint — deleting operator
- * data is never setup's call — while one holding nothing beyond setup's own
- * `.vibe-cache` is setup's own doing and is removed outright, with an
- * informational line saying so (Issue #134). The step stays quiet on a host
+ * data is never setup's call — while one holding nothing beyond a stale
+ * `.vibe-cache` (setup caches nothing on the host any more, Issue #132) is
+ * setup's own leftover and is removed outright, with an informational line
+ * saying so (Issue #134). The step stays quiet on a host
  * whose run mode cannot be resolved (container is the only mode, Issue #4).
  *
  * Behavioural: each test sources the real setup.sh and calls the real
@@ -136,8 +137,8 @@ Deno.test("remind_obsolete_host_work_dirs - removes an empty leftover work dir a
 Deno.test("remind_obsolete_host_work_dirs - removes a work dir holding only setup's own .vibe-cache (Issue #134)", async () => {
   const tmp = await Deno.makeTempDir();
   try {
-    // Setup's host-side audits cache default-branch lookups under the work
-    // dir; a directory setup itself just wrote is setup's to reclaim.
+    // Setup no longer caches on the host (Issue #132), so a .vibe-cache is
+    // a leftover an earlier setup version wrote — setup's to reclaim.
     await Deno.mkdir(`${tmp}/auto-issue-work/.vibe-cache`, {
       recursive: true,
     });

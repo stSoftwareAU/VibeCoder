@@ -118,7 +118,9 @@ export function isBaselineQualityCacheEnabled(
  * #4318): `$HOME/.vibe-coder` is root-owned in container mode, so writes
  * there failed silently every issue and the cache never persisted.
  * Returns `undefined` when `WORK_DIR` is unset — there is no cache
- * directory then (Issue #131); the full no-op semantics land in Issue #133.
+ * directory then, and the whole cache is a no-op (Issues #131, #133):
+ * nothing is read, nothing is written, and no directory is ever created
+ * on the host.
  */
 export function baselineQualityCachePath(): string | undefined {
   return workerCachePath(BASELINE_QUALITY_CACHE_FILE);
@@ -159,18 +161,21 @@ export async function computeBaselineQualityCacheKey(
 async function loadCache(
   path: string | undefined,
 ): Promise<Map<string, BaselineQualityCacheEntry>> {
+  // No cache directory (WORK_DIR unset — Issue #133): report "no cached
+  // baseline" without touching the filesystem, so the caller re-runs the
+  // baseline gate — the correct uncached behaviour on a host-side run.
+  if (path === undefined) return new Map();
+
   let text: string | null = null;
-  if (path !== undefined) {
-    try {
-      text = await Deno.readTextFile(path);
-    } catch {
-      // Fall through to the legacy location below.
-    }
+  try {
+    text = await Deno.readTextFile(path);
+  } catch {
+    // Fall through to the legacy location below.
   }
   if (text === null) {
     // Legacy-location fallback (Issue #4318): a native host that cached
-    // under $HOME/.vibe-coder keeps its warm cache across the move. Also
-    // the only read when WORK_DIR is unset (path undefined — Issue #131).
+    // under $HOME/.vibe-coder keeps its warm cache across the move. Read
+    // only — it never creates a directory.
     if (path === baselineQualityCachePath()) {
       try {
         text = await Deno.readTextFile(
@@ -265,7 +270,9 @@ function validateFindings(value: unknown): GenericFinding[] | null {
 
 /**
  * Return the recorded outcome for `key` when it is present, current, and
- * written by this cache version; otherwise `null`.
+ * written by this cache version; otherwise `null`. An `undefined` path (no
+ * cache directory — WORK_DIR unset, Issue #133) always misses, so the
+ * caller re-runs the baseline gate.
  */
 export async function readBaselineQualityCache(
   key: string,
@@ -295,8 +302,9 @@ function nextSequence(cache: Map<string, BaselineQualityCacheEntry>): number {
  * Record the baseline outcome for `key`, pruning the oldest entries so the
  * file stays bounded. Throws only if the file cannot be written — callers
  * treat a write failure as non-fatal. An `undefined` path (no cache
- * directory — WORK_DIR unset, Issue #131) skips the write rather than
- * inventing a location; the full no-op semantics land in Issue #133.
+ * directory — WORK_DIR unset, Issue #133) returns without creating any
+ * directory or file, and without throwing: an absent cache dir is expected
+ * on a host-side run, not a fault, so no warning is logged either.
  */
 export async function writeBaselineQualityCache(
   key: string,
