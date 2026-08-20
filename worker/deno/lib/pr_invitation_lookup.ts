@@ -20,6 +20,7 @@
  */
 
 import { getLabelLastAddInfoComplete } from "./issue_query.ts";
+import type { IssueCache } from "./issue_cache.ts";
 import { sanitiseLogField } from "./issue_finder_logger.ts";
 import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
 import {
@@ -43,6 +44,18 @@ export const INVITATION_PR_FIELDS: readonly string[] = [
   "reviews",
 ] as const;
 
+/**
+ * The fixed field superset the invitation listing fetches when a per-cycle
+ * cache is supplied (Issue #41). It must cover every scan's needs — the same
+ * union the cached fleet listing (`PR_MAINTENANCE_LIST_FIELDS`) carries plus
+ * the invitation predicate's fields — so a single fetch per repo×author per
+ * cycle can be served to all 4–6 scans regardless of the fields each asked
+ * for. Kept a literal here to avoid a cycle with pr_maintenance.ts.
+ */
+export const INVITATION_CACHE_FIELDS =
+  "number,title,headRefName,headRefOid,baseRefName,autoMergeRequest," +
+  "createdAt,updatedAt,author,mergeable,labels,comments,reviews";
+
 /** Options for {@link listInvitedHumanPrs}. */
 export interface ListInvitedHumanPrsOptions {
   /** Repository in "owner/repo" format. */
@@ -63,6 +76,13 @@ export interface ListInvitedHumanPrsOptions {
   ghCommandFn: (args: string[]) => Promise<string>;
   /** Optional log sink for admissions and failures. */
   log?: (message: string) => void;
+  /**
+   * Per-cycle listing cache (Issue #41). When supplied, each repo×author
+   * invitation listing is fetched once per cycle (with {@link
+   * INVITATION_CACHE_FIELDS}) and served to every scan, instead of one
+   * `gh pr list` per author per scan — the #4303 saving applied to #4077.
+   */
+  cache?: IssueCache;
 }
 
 /** Merge the caller's fields with the invitation fields, preserving order. */
@@ -139,10 +159,51 @@ function labelNames(value: unknown): string[] {
  *   number. Typed as the caller's own listing shape — the entries are the
  *   parsed `gh pr list` objects with the invitation fields added.
  */
+/**
+ * Run one `gh pr list --author <author>` invitation listing with the given
+ * (already-merged) `--json` fields. Returns the parsed array, or `null` when
+ * the listing could not be read — logged, never silent (no PR is admitted
+ * from an unreadable listing).
+ */
+async function fetchInvitationListing(
+  repo: string,
+  author: string,
+  jsonFields: string,
+  options: ListInvitedHumanPrsOptions,
+): Promise<unknown[] | null> {
+  const args = [
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--author",
+    author,
+    "--json",
+    jsonFields,
+  ];
+  if (typeof options.limit === "number") {
+    args.push("--limit", String(options.limit));
+  }
+  try {
+    const parsed = JSON.parse(await options.ghCommandFn(args));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    options.log?.(
+      `[pr-invitation] ${repo}: invitation listing for author ` +
+        `${sanitiseLogField(author)} failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
+    return null;
+  }
+}
+
 export async function listInvitedHumanPrs<T extends { number: number }>(
   options: ListInvitedHumanPrsOptions,
 ): Promise<T[]> {
-  const { repo, ghCommandFn, log } = options;
+  const { repo, log } = options;
   const humans = resolveHumanAuthors(options);
   if (humans.length === 0) return [];
 
@@ -152,35 +213,36 @@ export async function listInvitedHumanPrs<T extends { number: number }>(
   const seen = new Set<number>();
 
   for (const author of humans) {
-    const args = [
-      "pr",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--author",
-      author,
-      "--json",
-      fields,
-    ];
-    if (typeof options.limit === "number") {
-      args.push("--limit", String(options.limit));
-    }
-
+    // Issue #41: served once per cycle from the cache when one is supplied,
+    // fetched with the fixed superset so every scan reads the fields it needs.
+    const cacheKey = `prs_invited_${author}`;
     let parsed: unknown;
-    try {
-      parsed = JSON.parse(await ghCommandFn(args));
-    } catch (err) {
-      // Never silent: an unreadable listing is reported, and no PR is
-      // admitted from it.
-      log?.(
-        `[pr-invitation] ${repo}: invitation listing for author ` +
-          `${sanitiseLogField(author)} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+    if (options.cache) {
+      const cached = await options.cache.read<unknown[]>(repo, cacheKey);
+      if (cached !== null) {
+        parsed = cached;
+      } else {
+        const fetched = await fetchInvitationListing(
+          repo,
+          author,
+          INVITATION_CACHE_FIELDS,
+          options,
+        );
+        if (fetched === null) continue;
+        parsed = fetched;
+        if (Array.isArray(parsed)) {
+          await options.cache.write(repo, cacheKey, parsed);
+        }
+      }
+    } else {
+      const fetched = await fetchInvitationListing(
+        repo,
+        author,
+        fields,
+        options,
       );
-      continue;
+      if (fetched === null) continue;
+      parsed = fetched;
     }
     if (!Array.isArray(parsed)) continue;
 
