@@ -254,3 +254,96 @@ Deno.test("gh-guard-cli #91 - fails closed when the --input path does not exist"
   assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
   assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREADABLE]");
 });
+
+// ---------------------------------------------------------------------------
+// Issue #92 — end-to-end: `gh api …/comments --input <file>` through the guard.
+// The default reader + writer are wired, so a secret in the JSON body is masked
+// into a fresh temp file the executed argv points at — the agent's file and the
+// secret never reach GitHub.
+// ---------------------------------------------------------------------------
+
+Deno.test("gh-guard-cli #92 - masks a secret in a real --input body, pointing --input at the redacted copy", async () => {
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({ body: `token ${GH_TOKEN_SAMPLE}` }),
+    );
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--",
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues/1/comments",
+      "--input",
+      path,
+    ]);
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.stdout, GH_GUARD_ALLOW_MARKER);
+    assertStringIncludes(result.stderr, "[GH_BODY_REDACTED]");
+    const inputIdx = (result.ghArgs ?? []).indexOf("--input");
+    const materialised = (result.ghArgs ?? [])[inputIdx + 1] ?? "";
+    // A fresh path, not the agent's file.
+    assertEquals(materialised === path, false);
+    const sent = await Deno.readTextFile(materialised);
+    assertStringIncludes(sent, REDACTION_PLACEHOLDER);
+    assertEquals(sent.includes(GH_TOKEN_SAMPLE), false);
+    // The agent's own file is left untouched.
+    assertStringIncludes(await Deno.readTextFile(path), GH_TOKEN_SAMPLE);
+    await Deno.remove(materialised);
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("gh-guard-cli #92 - refuses a JSON body that passes the label scan but hides a secret outside its body field", async () => {
+  // The label guard (#91) allows this — no reserved label — so redaction is
+  // reached, and it fails closed on the secret it cannot place structurally.
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({ body: "clean", title: `t ${GH_TOKEN_SAMPLE}` }),
+    );
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--",
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues",
+      "--input",
+      path,
+    ]);
+    assertEquals(result.exitCode, 1);
+    assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+    assertStringIncludes(result.stderr, "[GH_BODY_UNREDACTABLE]");
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("gh-guard-cli #92 - the label guard refuses a non-JSON --input body first (GH_BODY_UNREADABLE)", async () => {
+  // A non-JSON body never reaches redaction: the #91 label scan cannot
+  // understand its shape, so the guard refuses it at the earlier check.
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(path, `raw leak ${GH_TOKEN_SAMPLE}`);
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--",
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues/1/comments",
+      "--input",
+      path,
+    ]);
+    assertEquals(result.exitCode, 1);
+    assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+    assertStringIncludes(result.stderr, "[GH_BODY_UNREADABLE]");
+  } finally {
+    await Deno.remove(path);
+  }
+});

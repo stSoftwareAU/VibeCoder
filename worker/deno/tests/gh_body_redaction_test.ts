@@ -139,3 +139,193 @@ Deno.test("redactGhBodyArgs - still masks argv bodies when a reader is supplied"
     ["issue", "comment", "1", "--body", `x ${REDACTION_PLACEHOLDER}`],
   );
 });
+
+// ---------------------------------------------------------------------------
+// Issue #92 — `gh api --input <file>` bodies
+//
+// `gh api …/comments --input body.json` POSTs the file's JSON as the request
+// body: a public sink the argv cannot show. A secret in the body's published
+// text must be masked into a fresh temp file (never the agent's own file), and
+// a body that cannot be safely masked must refuse rather than publish unscanned.
+// ---------------------------------------------------------------------------
+
+import { type BodyFileWriter } from "../lib/gh_body_redaction.ts";
+
+/** A writer that records every content it materialises and hands back a path. */
+function capturingWriter(): { writer: BodyFileWriter; written: string[] } {
+  const written: string[] = [];
+  const writer: BodyFileWriter = (content) => {
+    written.push(content);
+    return `/tmp/gh-input-${written.length}.json`;
+  };
+  return { writer, written };
+}
+
+Deno.test("redactGhBodyArgs #92 - masks a secret in an --input JSON body into a fresh file", () => {
+  const read = readerFor({
+    "/tmp/c.json": JSON.stringify({ body: `see ${GH_TOKEN_SAMPLE}` }),
+  });
+  const { writer, written } = capturingWriter();
+  const out = redactGhBodyArgs(
+    ["api", "repos/o/r/issues/1/comments", "--input", "/tmp/c.json"],
+    read,
+    writer,
+  );
+  // --input now points at the materialised copy, not the agent's file.
+  assertEquals(out[0], "api");
+  assertEquals(out[2], "--input");
+  assertEquals(out[3], "/tmp/gh-input-1.json");
+  // The secret reaches neither the argv nor the written body.
+  assertEquals(out.some((a) => a.includes(GH_TOKEN_SAMPLE)), false);
+  assertEquals(written.length, 1);
+  assertStringIncludes(written[0] ?? "", REDACTION_PLACEHOLDER);
+  assertEquals((written[0] ?? "").includes(GH_TOKEN_SAMPLE), false);
+  // The parsed masked body still carries the redaction in `body`.
+  assertEquals(
+    JSON.parse(written[0] ?? "{}").body,
+    `see ${REDACTION_PLACEHOLDER}`,
+  );
+});
+
+Deno.test("redactGhBodyArgs #92 - the --input=<path> equals form is handled too", () => {
+  const read = readerFor({
+    "/tmp/c.json": JSON.stringify({ message: `x ${GH_TOKEN_SAMPLE}` }),
+  });
+  const { writer, written } = capturingWriter();
+  const out = redactGhBodyArgs(
+    ["api", "repos/o/r/commits/sha/comments", "--input=/tmp/c.json"],
+    read,
+    writer,
+  );
+  assertEquals(out[out.length - 1], "--input=/tmp/gh-input-1.json");
+  assertEquals(written.length, 1);
+  assertEquals((written[0] ?? "").includes(GH_TOKEN_SAMPLE), false);
+});
+
+Deno.test("redactGhBodyArgs #92 - a clean --input body is left byte-for-byte alone, no temp file", () => {
+  const original = [
+    "api",
+    "repos/o/r/issues/1/comments",
+    "--input",
+    "/tmp/c.json",
+  ];
+  const read = readerFor({
+    "/tmp/c.json": JSON.stringify({ body: "an ordinary comment" }),
+  });
+  const { writer, written } = capturingWriter();
+  const out = redactGhBodyArgs(original, read, writer);
+  assertEquals(out, original);
+  assertEquals(written.length, 0);
+});
+
+Deno.test("redactGhBodyArgs #92 - the agent's own --input file is never rewritten", () => {
+  const files = {
+    "/tmp/c.json": JSON.stringify({ body: `t ${GH_TOKEN_SAMPLE}` }),
+  };
+  const before = files["/tmp/c.json"];
+  const { writer } = capturingWriter();
+  redactGhBodyArgs(
+    ["api", "repos/o/r/issues/1/comments", "--input", "/tmp/c.json"],
+    readerFor(files),
+    writer,
+  );
+  // The reader-backed store still holds the original, unmasked content.
+  assertEquals(files["/tmp/c.json"], before);
+});
+
+Deno.test("redactGhBodyArgs #92 - --input - (stdin) refuses: it cannot be scanned", () => {
+  const { writer } = capturingWriter();
+  const err = assertThrows(
+    () =>
+      redactGhBodyArgs(
+        ["api", "repos/o/r/issues/1/comments", "--input", "-"],
+        readerFor({}),
+        writer,
+      ),
+    UnredactableBodyError,
+  );
+  assertEquals((err as UnredactableBodyError).source, "-");
+});
+
+Deno.test("redactGhBodyArgs #92 - an unreadable --input path refuses", () => {
+  const { writer } = capturingWriter();
+  assertThrows(
+    () =>
+      redactGhBodyArgs(
+        ["api", "repos/o/r/issues/1/comments", "--input", "/tmp/missing.json"],
+        readerFor({}),
+        writer,
+      ),
+    UnredactableBodyError,
+  );
+});
+
+Deno.test("redactGhBodyArgs #92 - a non-JSON --input body with a secret refuses (unparseable is not unscanned)", () => {
+  const read = readerFor({
+    "/tmp/c.json": `not json, but leaks ${GH_TOKEN_SAMPLE}`,
+  });
+  const { writer } = capturingWriter();
+  assertThrows(
+    () =>
+      redactGhBodyArgs(
+        ["api", "repos/o/r/issues/1/comments", "--input", "/tmp/c.json"],
+        read,
+        writer,
+      ),
+    UnredactableBodyError,
+  );
+});
+
+Deno.test("redactGhBodyArgs #92 - a secret outside the body field refuses rather than pass unscanned", () => {
+  const read = readerFor({
+    "/tmp/c.json": JSON.stringify({
+      body: "clean",
+      title: `t ${GH_TOKEN_SAMPLE}`,
+    }),
+  });
+  const { writer } = capturingWriter();
+  assertThrows(
+    () =>
+      redactGhBodyArgs(
+        ["api", "repos/o/r/issues", "--input", "/tmp/c.json"],
+        read,
+        writer,
+      ),
+    UnredactableBodyError,
+  );
+});
+
+Deno.test("redactGhBodyArgs #92 - without a reader, --input arguments pass through untouched", () => {
+  const original = [
+    "api",
+    "repos/o/r/issues/1/comments",
+    "--input",
+    "/tmp/c.json",
+  ];
+  // No reader: the worker argv-only chokepoint must not touch --input.
+  assertEquals(redactGhBodyArgs(original), original);
+});
+
+Deno.test("redactGhBodyArgs #92 - masking needed but no writer supplied refuses", () => {
+  const read = readerFor({
+    "/tmp/c.json": JSON.stringify({ body: `t ${GH_TOKEN_SAMPLE}` }),
+  });
+  // Reader present, writer omitted: a body that needs masking cannot be
+  // materialised, so it must fail closed rather than publish from the original.
+  assertThrows(
+    () =>
+      redactGhBodyArgs(
+        ["api", "repos/o/r/issues/1/comments", "--input", "/tmp/c.json"],
+        read,
+      ),
+    UnredactableBodyError,
+  );
+});
+
+Deno.test("redactGhBodyArgs #92 - a non-object JSON body with no secret is left alone", () => {
+  const original = ["api", "repos/o/r/x", "--input", "/tmp/c.json"];
+  const read = readerFor({ "/tmp/c.json": JSON.stringify(["a", "b"]) });
+  const { writer, written } = capturingWriter();
+  assertEquals(redactGhBodyArgs(original, read, writer), original);
+  assertEquals(written.length, 0);
+});
