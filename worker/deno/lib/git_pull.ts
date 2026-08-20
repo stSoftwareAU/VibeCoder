@@ -88,9 +88,19 @@ export async function syncFeatureBranchWithDefault(
       options,
     );
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
+      // Surface git's own stderr (Issue #49): a dirty tree or a missing ref is
+      // the whole diagnosis, and the old error discarded it.
+      const stderrTail = (checkoutResult.ok
+        ? checkoutResult.value.stderr
+        : checkoutResult.error.message)
+        .trim().split("\n").slice(0, 6).join(" | ");
       return {
         ok: false,
-        error: new Error(`Failed to checkout branch '${branchName}'`),
+        error: new Error(
+          `Failed to checkout branch '${branchName}': ${
+            stderrTail || "git reported no stderr"
+          }`,
+        ),
       };
     }
   }
@@ -266,10 +276,21 @@ export async function syncMilestoneBranchWithDefault(
       options,
     );
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
+      // Surface git's own stderr (Issue #49): "error: Your local changes to the
+      // following files would be overwritten by checkout: …" — usually a dirty
+      // tree a timed-out claim left on this shared clone — is the whole
+      // diagnosis, and the old error discarded it. Same shape as the #4260
+      // merge-failure surfacing below.
+      const stderrTail = (checkoutResult.ok
+        ? checkoutResult.value.stderr
+        : checkoutResult.error.message)
+        .trim().split("\n").slice(0, 6).join(" | ");
       return {
         ok: false,
         error: new Error(
-          `Failed to checkout milestone branch '${milestoneBranch}'`,
+          `Failed to checkout milestone branch '${milestoneBranch}': ${
+            stderrTail || "git reported no stderr"
+          }`,
         ),
       };
     }
