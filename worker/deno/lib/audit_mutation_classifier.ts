@@ -52,6 +52,14 @@ export interface MutationInfo {
    * the argv cannot show. Left absent when the body is fully argv-visible.
    */
   unreadableBody?: boolean;
+  /**
+   * Path of a readable `--input <file>` body, when the argv names one
+   * (Issue #91). Absent for `--input -` (stdin) and `@file`-sourced field
+   * values, which are unscannable by construction. Present so a caller with a
+   * filesystem reader can scan the file for reserved labels rather than
+   * failing closed on every `--input` mutation.
+   */
+  bodyFilePath?: string;
 }
 
 /** Mutating sub-verbs per `gh` root command. */
@@ -418,6 +426,8 @@ function classifyGhApi(
   let skipNext = false;
   /** A body component the argv cannot show: `--input`, or a `@file` value. */
   let unreadableBody = false;
+  /** Path of a readable `--input <file>` body (Issue #91); `-` stays absent. */
+  let bodyFilePath: string | undefined;
   const queryDocuments: string[] = [];
 
   /**
@@ -473,11 +483,15 @@ function classifyGhApi(
       hasBody = true;
       unreadableBody = true;
       skipNext = true;
+      const path = args[i + 1];
+      if (path !== undefined && path !== "-") bodyFilePath = path;
       continue;
     }
     if (token.startsWith("--input=")) {
       hasBody = true;
       unreadableBody = true;
+      const path = token.slice("--input=".length);
+      if (path !== "-") bodyFilePath = path;
       continue;
     }
     if (GH_VALUE_FLAGS.has(token)) {
@@ -514,6 +528,7 @@ function classifyGhApi(
     // Issue #11: surface a body the argv cannot show. Left absent — never
     // `false` — when the body is fully argv-visible.
     ...(unreadableBody ? { unreadableBody: true } : {}),
+    ...(bodyFilePath !== undefined ? { bodyFilePath } : {}),
   };
 }
 

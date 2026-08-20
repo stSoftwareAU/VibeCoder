@@ -395,3 +395,175 @@ Deno.test("gh-guard - allows an invocation that names no command at all", () => 
   assertEquals(evaluateGhCommand([], ACTIVE).allowed, true);
   assertEquals(evaluateGhCommand(["--version"], ACTIVE).allowed, true);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #91 — scan a readable `--input <file>` body for reserved labels
+//
+// #90 fails closed on every `--input` body. #91 restores the legitimate case:
+// when the argv names a readable file and the caller injects a reader, the
+// decision reads and scans it. A reserved label anywhere in the body refuses
+// with WORKER_LABEL_REFUSED (naming it); a clean body is allowed; anything the
+// scanner cannot fully understand stays refused with GH_BODY_UNREADABLE.
+//
+// The reader is a fake `(path) => string`; because the decision uses the
+// injected reader (never `Deno`), these tests double as the purity check —
+// the module reaches the canned content only through the injected function.
+// ---------------------------------------------------------------------------
+
+/** Build a context whose `--input` reader returns a fixed body. */
+function inputCtx(body: string) {
+  return {
+    active: true,
+    allowedRepos: ["o/r"],
+    readBodyFile: (_path: string) => body,
+  } as const;
+}
+
+/** A context whose reader throws, standing in for an unreadable path. */
+const UNREADABLE_INPUT_CTX = {
+  active: true,
+  allowedRepos: ["o/r"],
+  readBodyFile: (path: string) => {
+    throw new Deno.errors.NotFound(`no such file: ${path}`);
+  },
+} as const;
+
+const LABELS_ENDPOINT = "repos/o/r/issues/1/labels";
+
+Deno.test('gh-guard #91 - refuses a reserved label in {"labels":[...]}, naming it', () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":["top-priority"]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  assert(decision.reason?.includes("top-priority"));
+});
+
+Deno.test("gh-guard #91 - refuses a reserved label in the {name} object shape", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":[{"name":"work-on"}]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  assert(decision.reason?.includes("work-on"));
+});
+
+Deno.test("gh-guard #91 - refuses a reserved label in a bare top-level array", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('["question"]'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  assert(decision.reason?.includes("question"));
+});
+
+Deno.test("gh-guard #91 - reserved-label matching in a body is case-insensitive", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":["Top-Priority"]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  assert(decision.reason?.includes("Top-Priority"));
+});
+
+Deno.test("gh-guard #91 - allows a body whose labels are all legitimate content labels", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":["confidence:high","security"]}'),
+  );
+  assertEquals(decision.allowed, true);
+});
+
+Deno.test("gh-guard #91 - allows an issue-create body that carries no labels field", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues", "--input", "/tmp/body.json"],
+    inputCtx('{"title":"x","body":"y"}'),
+  );
+  assertEquals(decision.allowed, true);
+});
+
+Deno.test("gh-guard #91 - a clean body still fails the write-repo allowlist for an off-list repo", () => {
+  // Scanning the body clean does not exempt the mutation from the allowlist:
+  // the endpoint names a repo not on the list, so it is still blocked.
+  const decision = evaluateGhCommand(
+    ["api", "repos/attacker/evil/issues/1/labels", "--input", "/tmp/body.json"],
+    inputCtx('{"labels":["security"]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WRITE_REPO_BLOCKED");
+});
+
+Deno.test("gh-guard #91 - fails closed on an unreadable path", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/missing.json"],
+    UNREADABLE_INPUT_CTX,
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #91 - fails closed on --input - (stdin, no readable path)", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "-"],
+    inputCtx('{"labels":["security"]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #91 - fails closed on malformed JSON", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx("{not json"),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #91 - fails closed on a labels field of an unrecognised shape", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":"top-priority"}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #91 - fails closed on an array element that is neither string nor {name}", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":[123]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #91 - with no reader injected, still fails closed (the safe default)", () => {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #91 - an argv-visible reserved label still wins over a clean input body", () => {
+  const decision = evaluateGhCommand(
+    [
+      "api",
+      LABELS_ENDPOINT,
+      "--input",
+      "/tmp/body.json",
+      "-f",
+      "labels[]=work-on",
+    ],
+    inputCtx('{"labels":["security"]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  assert(decision.reason?.includes("work-on"));
+});
