@@ -902,11 +902,11 @@ write_interactive_config() {
 # ~/auto-issue-work (or its approval-state sibling) on the host is never
 # mounted again and only wastes disk. Reminder only — deleting operator data
 # is never setup's call.
-# True when the directory holds anything besides setup's own `.vibe-cache`.
-# Setup's host-side steps (the workflow and best-practice audits) keep a small
-# lookup cache at `${WORK_DIR}/.vibe-cache`, so that entry is setup's doing,
-# not a leftover workspace: only repository checkouts and other worker data
-# count as wasted disk.
+# True when the directory holds anything besides a `.vibe-cache` entry.
+# Setup caches nothing on the host (Issue #132 — host-side runs re-query the
+# GitHub API instead), so a `.vibe-cache` here is only a harmless leftover
+# from an earlier version, not a live workspace: only repository checkouts
+# and other worker data count as wasted disk.
 host_work_dir_holds_worker_data() {
     local entry
     for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do

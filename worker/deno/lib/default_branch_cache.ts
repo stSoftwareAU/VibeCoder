@@ -32,7 +32,9 @@ export interface DefaultBranchCacheEntry {
  * Honours `VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH` for overrides (used by
  * tests); otherwise uses `${WORK_DIR}/.vibe-cache/default-branch-cache.json`.
  * Returns `undefined` when `WORK_DIR` is unset — there is no cache directory
- * then (Issue #131); the full no-op semantics land in Issue #132.
+ * then (Issue #131), and every function in this module is a full no-op that
+ * never touches the filesystem (Issue #132): host-side runs (setup, launcher,
+ * housekeeping) cache nothing and re-query the GitHub API each time.
  */
 export function defaultBranchCachePath(): string | undefined {
   const override = Deno.env.get("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH");
@@ -48,21 +50,25 @@ export const DEFAULT_BRANCH_CACHE_FILE = "default-branch-cache.json";
 /**
  * Load the cache from disk. Returns an empty Map if the file is missing
  * or the contents cannot be parsed (corrupt cache must not crash the worker).
+ *
+ * An `undefined` path (no cache directory — WORK_DIR unset, Issue #132)
+ * returns an empty Map without touching the filesystem — not even the
+ * legacy HOME location is read.
  */
 export async function loadDefaultBranchCache(
   path: string | undefined = defaultBranchCachePath(),
 ): Promise<Map<string, DefaultBranchCacheEntry>> {
+  if (path === undefined) return new Map();
   let text: string | null = null;
-  if (path !== undefined) {
-    try {
-      text = await Deno.readTextFile(path);
-    } catch {
-      // Fall through to the legacy location below.
-    }
+  try {
+    text = await Deno.readTextFile(path);
+  } catch {
+    // Fall through to the legacy location below.
   }
   if (text === null) {
-    // Legacy-location fallback (Issue #4318) — read-only. Also the only
-    // read when WORK_DIR is unset (path undefined — Issue #131).
+    // Legacy-location fallback (Issue #4318) — read-only, and only for the
+    // module's own default path (an explicit caller-supplied path, e.g.
+    // from tests, reads nothing else).
     if (path !== defaultBranchCachePath()) return new Map();
     try {
       text = await Deno.readTextFile(
@@ -89,9 +95,10 @@ export async function loadDefaultBranchCache(
 
 /**
  * Persist the cache to disk, creating the parent directory if needed.
- * An `undefined` path (no cache directory — WORK_DIR unset, Issue #131)
- * skips the write rather than inventing a location; the full no-op
- * semantics land in Issue #132.
+ * An `undefined` path (no cache directory — WORK_DIR unset, Issue #132)
+ * returns without creating any directory or file: in particular the
+ * `Deno.mkdir` below must never run then — it is the call that used to
+ * create a stray `~/auto-issue-work/.vibe-cache` on the host (Issue #118).
  */
 export async function saveDefaultBranchCache(
   cache: Map<string, DefaultBranchCacheEntry>,
@@ -117,7 +124,9 @@ export async function saveDefaultBranchCache(
 
 /**
  * Return the cached default branch for `repo` if present and still inside
- * the TTL window; otherwise return `null`.
+ * the TTL window; otherwise return `null`. Always `null` when there is no
+ * cache directory (`path` undefined — Issue #132), without touching the
+ * filesystem.
  */
 export async function getCachedDefaultBranch(
   repo: string,
@@ -131,12 +140,17 @@ export async function getCachedDefaultBranch(
   return entry.branch;
 }
 
-/** Store the branch in the cache with the current timestamp. */
+/**
+ * Store the branch in the cache with the current timestamp. A no-op when
+ * there is no cache directory (`path` undefined — Issue #132): no
+ * directory or file is created anywhere.
+ */
 export async function setCachedDefaultBranch(
   repo: string,
   branch: string,
   path: string | undefined = defaultBranchCachePath(),
 ): Promise<void> {
+  if (path === undefined) return;
   const cache = await loadDefaultBranchCache(path);
   cache.set(repo, { branch, fetchedAt: Date.now() });
   await saveDefaultBranchCache(cache, path);
@@ -145,12 +159,14 @@ export async function setCachedDefaultBranch(
 /**
  * Remove `repo` from the cache. Used when a cached branch is detected to
  * be stale (e.g., `git fetch origin/<branch>` fails because the branch
- * was renamed on the remote).
+ * was renamed on the remote). A no-op when there is no cache directory
+ * (`path` undefined — Issue #132).
  */
 export async function invalidateCachedDefaultBranch(
   repo: string,
   path: string | undefined = defaultBranchCachePath(),
 ): Promise<void> {
+  if (path === undefined) return;
   const cache = await loadDefaultBranchCache(path);
   if (!cache.has(repo)) return;
   cache.delete(repo);
