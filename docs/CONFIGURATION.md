@@ -1041,7 +1041,14 @@ zero:
   base, passes `--resume` so the durable transcript replays the prior
   conversation, and tells the agent prior progress exists on the branch.
 - The resume file is deleted on successful PR creation and on claim release,
-  so deliberate outcomes always start the next attempt clean.
+  so deliberate outcomes always start the next attempt clean. The one
+  exception is a release whose run **preserved WIP** on the issue branch
+  (a deadline timeout with a dirty tree): the commit is the durable work and
+  the resume file is the pointer to it, so it is kept for the next claim.
+- A branch carrying **only** WIP markers does not become a PR: when a claim
+  resumed a checkpoint and added no commit of its own, the completion phase
+  refuses to raise a half-done PR from parked work and the issue returns to
+  the queue for a claim that can advance it.
 - Stale-workdir housekeeping pushes any unpushed branches before deleting a
   stale clone, and keeps the clone (with a loud warning) if the push fails.
 - The durable transcript store (`${WORK_DIR}/.claude-config`) participates in

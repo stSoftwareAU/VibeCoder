@@ -98,6 +98,37 @@ export function buildPullArgs(
   return ["pull", ...flags, "--end-of-options", remote, ref];
 }
 
+/** Options for {@link buildPushArgs}. */
+export interface PushArgsOptions {
+  /** Add `-u` so the first push of a branch sets its upstream. */
+  setUpstream?: boolean;
+}
+
+/**
+ * Build the argv for `git push [-u] <remote> <branch>` (Issue #148).
+ *
+ * The branch here is the worker's issue branch, which every automated
+ * commit path — including the WIP preservation a timed-out execute performs
+ * — pushes through. It reached git as a bare positional, so a dash-leading
+ * name would have been parsed as an option rather than a refspec. `-u` takes
+ * no value, so the separator sits directly before the first positional.
+ *
+ * @param remote - The remote to push to (usually "origin").
+ * @param branchName - The branch to push (untrusted positional).
+ * @param options - Push flags; see {@link PushArgsOptions}.
+ * @returns e.g. `["push", "-u", "--end-of-options", "origin", "issue-1-x"]`.
+ */
+export function buildPushArgs(
+  remote: string,
+  branchName: string,
+  options: PushArgsOptions = {},
+): string[] {
+  assertSafeGitRef(remote, "push remote");
+  assertSafeGitRef(branchName, "push branch name");
+  const flags = options.setUpstream ? ["-u"] : [];
+  return ["push", ...flags, "--end-of-options", remote, branchName];
+}
+
 /**
  * Build the argv for `git rebase <upstream>`.
  *
