@@ -1685,3 +1685,109 @@ ${ciFixTemplate}${customSection}
 
   return { ok: true, value: { systemPrompt, prompt } };
 }
+
+/**
+ * Options for building a merge-conflict resolution prompt (Issue #84).
+ */
+export interface MergeConflictPromptOptions {
+  repo: string;
+  prNumber: string;
+  /** Base branch being merged into the PR branch. */
+  baseBranch: string;
+  /** Paths left conflicted by the in-progress merge. */
+  conflictedFiles: readonly string[];
+  qualityInstructions?: string;
+  customInstructions?: string;
+  promptsDir?: string;
+  /**
+   * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
+   * behind an untrusted fence, not the system prompt (Issue #3706).
+   */
+  repoContextContent?: string;
+  /** Verbosity level for controlling response detail (Issue #1332). */
+  verbosityLevel?: VerbosityLevel;
+}
+
+/**
+ * Build the Claude prompt for resolving a PR's merge conflict (Issue #84).
+ *
+ * The conflict-resolution pass starts the merge itself and hands the agent a
+ * conflicted working tree, so the prompt carries the base branch and the
+ * conflicted paths. The #4373 contract — a real merge in which both sides'
+ * changes survive, never a side-pick — lives in the template.
+ *
+ * Returns structured PromptParts (Issue #1262) for prompt caching.
+ */
+export async function buildMergeConflictPrompt(
+  options: MergeConflictPromptOptions,
+): Promise<Result<PromptParts>> {
+  const {
+    repo,
+    prNumber,
+    baseBranch,
+    conflictedFiles,
+    qualityInstructions,
+    customInstructions,
+    promptsDir,
+    repoContextContent,
+    verbosityLevel,
+  } = options;
+
+  const templateResult = await loadPrompt(
+    "merge_conflict",
+    undefined,
+    promptsDir,
+  );
+  if (!templateResult.ok) return templateResult;
+
+  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  if (!guidelinesResult.ok) return guidelinesResult;
+
+  const qualityBlock = qualityInstructions ? `\n\n${qualityInstructions}` : "";
+
+  // Branch and path names come from GitHub and the repository tree, so they
+  // are attacker-influenceable (Issue #2606): sanitise delimiter-like
+  // patterns before they reach the template.
+  const fileList = conflictedFiles.length > 0
+    ? conflictedFiles.map((f) => `- \`${sanitiseDelimiterPatterns(f)}\``).join(
+      "\n",
+    )
+    : "- (none reported by git — run `git status` and resolve what it lists)";
+
+  const substitution = substitute(templateResult.value, {
+    PR_NUMBER: prNumber,
+    BASE_BRANCH: sanitiseDelimiterPatterns(baseBranch),
+    CONFLICTED_FILES: fileList,
+    QUALITY_INSTRUCTIONS: qualityBlock,
+    VERBOSITY_INSTRUCTIONS: buildVerbosityBlock(verbosityLevel),
+  });
+  if (!substitution.ok) return substitution;
+
+  const customSection = buildCustomInstructionsSection(customInstructions);
+  const systemPrompt = guidelinesResult.value;
+
+  const delimiters = createPromptDelimiters();
+  const repoContextSection = formatRepoContextSection(
+    repoContextContent,
+    delimiters.boundaryId,
+  );
+
+  const prompt =
+    `PR #${prNumber} in repository ${repo} conflicts with its base branch \`${
+      sanitiseDelimiterPatterns(baseBranch)
+    }\`, and a merge of the base into the PR branch is in progress in your working tree.
+${
+      buildBoundaryIntegrityInstruction(delimiters.boundaryId, [
+        "the branch and file names named below",
+        ...(repoContextSection
+          ? ["the repository-supplied guidance document"]
+          : []),
+      ])
+    }
+${repoContextSection}
+
+${substitution.value}${customSection}
+`;
+
+  return { ok: true, value: { systemPrompt, prompt } };
+}

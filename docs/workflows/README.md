@@ -54,7 +54,8 @@ each workflow page.
 
 **One loop, many queues.** Cron (or launchd) starts the worker; it runs a single
 loop that checks work in **priority order**: PR (Pull Request) feedback (1),
-spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6), CI nudges
+spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
+merge-conflict resolution (1.61), CI nudges
 and the blocking-PR watchdog (1.62, 1.63), auto-merge (1.65), issue closure
 (1.67), closed-PR recovery (1.68), milestone completion and branch sync (1.7,
 1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
@@ -118,6 +119,7 @@ Each workflow or topic is assigned to a dedicated document:
 | **Issue → PR implementation**                      | [issue-processing.md](issue-processing.md)                     | Flow from issue discovery through branch, Claude, quality gate, and PR creation                                                                          |
 | **PR feedback and upkeep**                         | [pr-feedback.md](pr-feedback.md)                               | Review feedback loop, spelling fixes, branch updates, auto-merge catch-up                                                                                |
 | **CI fix**                                         | [ci-fix.md](ci-fix.md)                                         | Automatic diagnosis and fix of CI check failures on open PRs                                                                                             |
+| **Merge-conflict resolution** | [merge-conflicts.md](merge-conflicts.md) | Real merge of the base into a `CONFLICTING` PR — both sides survive — with the `merge-conflict` label, attempt bounds and `needs-human` escalation |
 | **Planning, questions, refinement, clarification** | [planning-and-questions.md](planning-and-questions.md)         | Clarification phase (clear? small enough? too large → planning): question label, planning label, refine-issue                                            |
 | **Grill-me clarification (vague issues)**          | [grill-me.md](grill-me.md)                                     | Iterative, mobile-friendly back-and-forth that scopes vague issues into a clean requirement, then recommends the developer apply `planning` or `work-on` |
 | **Resilience and concurrency**                     | [resilience-and-concurrency.md](resilience-and-concurrency.md) | Self-healing, restart model, issue claiming, multi-worker coexistence, one PR per target branch                                                          |
@@ -140,7 +142,8 @@ flowchart TD
   P1 --> P15["1.5: Spelling"]
   P15 --> P155["1.55: CI checks"]
   P155 --> P16["1.6: Branch updates"]
-  P16 --> P162["1.62: Nudge stalled CI"]
+  P16 --> P161["1.61: Resolve merge conflicts"]
+  P161 --> P162["1.62: Nudge stalled CI"]
   P162 --> P163["1.63: Blocking-PR watchdog"]
   P163 --> P165["1.65: Auto-merge"]
   P165 --> P167["1.67: Issue closure"]
@@ -180,6 +183,7 @@ flowchart TD
 | 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
 | 1.55 | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs |
 | 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
+| 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick; labels the PR `merge-conflict`, bounded to two attempts before `needs-human` |
 | 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |
 | 1.63 | Blocking-PR stall watchdog | Detect and escalate PRs that block `work-on` issues; the fixes stay with 1.55 and 1 |
 | 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
