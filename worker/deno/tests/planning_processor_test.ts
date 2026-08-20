@@ -7,7 +7,7 @@
  */
 
 import { captureReleaseOutcomes } from "./fixtures/release_outcome_capture.ts";
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildCritiqueFallbackPublishPrompt,
   buildFallbackDraftPlanningPrompt,
@@ -1390,6 +1390,15 @@ Deno.test("processIssuePlanning - closes parent when no sub-issues created (Issu
   assertEquals(closeCalls[0]!.includes("completed"), true);
 });
 
+// Test modification note (Issue #63): this case previously asserted that the
+// inline-close path posts **zero** comments. That was incidental to the mock
+// Claude result carrying no `runStats` — with no model stats the stats section
+// rendered empty and `postStatsComment()` had nothing to post. The
+// Failure-Detection gate counts are now recorded on every gate path, so this
+// path posts the stats comment (carrying explicit zeros) even without model
+// stats. The assertion therefore pins the behaviour the test is actually about
+// — no duplicate **summary** comment and no extra close — and additionally
+// pins the new counts reaching the parent.
 Deno.test("processIssuePlanning - safety-net skips comment + close when Claude already closed inline (Issue #2465)", async () => {
   const ctx = makeContext();
 
@@ -1469,9 +1478,23 @@ Deno.test("processIssuePlanning - safety-net skips comment + close when Claude a
   if (result.ok) {
     assertEquals(result.value.subIssueCount, 2);
   }
-  // Safety-net detected inline close — no duplicate comment, no extra close.
-  assertEquals(postedComments.length, 0);
+  // Safety-net detected inline close — no duplicate summary comment, no extra
+  // close.
+  assertEquals(
+    postedComments.filter((b) => b.includes("## Planning Complete")).length,
+    0,
+  );
   assertEquals(closeCalls.length, 0);
+  // Issue #63: the gate still ran over the two published sub-issues and found
+  // no offenders, and that zero reaches the parent.
+  const statsComments = postedComments.filter((b) =>
+    b.includes("Failure-Detection gate:")
+  );
+  assertEquals(statsComments.length, 1);
+  assertStringIncludes(
+    statsComments[0]!,
+    "published 2 · offenders 0 · repaired 0 · still offending 0 · deferred 0",
+  );
 });
 
 /**
@@ -1640,6 +1663,125 @@ Deno.test("processIssuePlanning - records a partial repair (label, no failed-onc
   assertEquals(offenderComment !== undefined, true);
   assertStringIncludes(offenderComment!.body, "Failure Detection");
   assertEquals(subIssueComments.some((c) => c.number === 201), false);
+});
+
+// Issue #63: the gate + self-repair counts must reach the run-stats comment
+// posted on the parent, for a *partially repaired* run — the field can be
+// populated and still be silently dropped before it is rendered. Three
+// sub-issues are published: #201 compliant, #202 and #203 offending, and the
+// batched repair drafts a section for #202 only, so the run records
+// published 3 · offenders 2 · repaired 1 · still offending 1 · deferred 0.
+Deno.test("processIssuePlanning - the Failure-Detection gate counts reach the parent run-stats comment for a partially repaired run (Issue #63)", async () => {
+  const ctx = makeContext();
+
+  const parentComments: string[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (opts: { prompt: string }) => {
+        // Batched repair draft (Issue #57): a block for #202 only, so #203 is
+        // never repaired and stays offending.
+        if (opts.prompt.includes("missing a filled")) {
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: "<<<SUB_ISSUE_202>>>\n## Failure Detection\n\n" +
+                "`tests/foo_test.ts::rejects empty input` fails in CI.\n" +
+                "<<<END_SUB_ISSUE_202>>>",
+              exitCode: 0,
+              timedOut: false,
+              runStats: {
+                servedModels: ["claude-fable-5-20250101"],
+                requestedModel: "fable",
+                wallClockMs: 1_000,
+              },
+            },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output: [201, 202, 203]
+              .map((n) => `Created https://github.com/org/repo/issues/${n}`)
+              .join("\n"),
+            exitCode: 0,
+            timedOut: false,
+            runStats: {
+              servedModels: ["claude-fable-5-20250101"],
+              requestedModel: "fable",
+              wallClockMs: 1_000,
+            },
+          },
+        });
+      },
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          const jsonArg = args[args.indexOf("--json") + 1] ?? "";
+          if (jsonArg.includes("body")) {
+            const n = Number(args[2]);
+            const body = n === 201
+              ? "## Failure Detection\nA CI gate covers this.\n"
+              : "## Summary\nDo a thing.\n";
+            return Promise.resolve(
+              JSON.stringify({ number: n, title: "Sub-issue", body }),
+            );
+          }
+          return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+        }
+        if (args.includes("search")) return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: (_r: string, n: number) =>
+      Promise.resolve({
+        number: n,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: (_repo: string, n: number, body: string) => {
+      if (n === 100) parentComments.push(body);
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.pendingFailureDetectionRepair, [203]);
+  }
+
+  const statsComment = parentComments.find((b) =>
+    b.includes("## Planning run model stats")
+  );
+  assert(statsComment !== undefined, "a run-stats comment must be posted");
+  assertStringIncludes(
+    statsComment!,
+    "- **Failure-Detection gate:** published 3 · offenders 2 · repaired 1 · " +
+      "still offending 1 · deferred 0",
+  );
+  assertStringIncludes(statsComment!, "- **Failure-Detection repair:**");
 });
 
 // Issue #58: the processor threads its handler watchdog deadline into the

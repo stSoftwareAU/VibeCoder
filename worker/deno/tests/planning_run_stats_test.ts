@@ -10,6 +10,7 @@ import {
   assessDegradation,
   buildDegradationReport,
   buildPlanningStatsSection,
+  type FailureDetectionGateStats,
   modelFamily,
   modelsMatch,
   type PlanningInvocationStats,
@@ -838,4 +839,121 @@ Deno.test("buildDegradationReport - default phase only judges planning invocatio
   assertEquals(report.verdict.degraded, false);
   // No planning invocation produced stats → empty section.
   assertEquals(report.section, "");
+});
+
+// ============================================================================
+// Failure-Detection gate + self-repair counters (Issue #63)
+//
+// The gate's hit rate used to be visible only by grepping worker logs, so the
+// scale of the problem (8/8 offenders on one run) went unnoticed for weeks.
+// These cases pin the counters into the rendered stats block — including the
+// explicit-zero case, which is what distinguishes "healthy" from "not
+// reporting".
+// ============================================================================
+
+function gateStats(
+  overrides: Partial<FailureDetectionGateStats> = {},
+): FailureDetectionGateStats {
+  return {
+    published: 0,
+    offenders: 0,
+    repaired: 0,
+    stillOffending: 0,
+    deferred: 0,
+    repairDurationMs: 0,
+    ...overrides,
+  };
+}
+
+Deno.test("buildPlanningStatsSection - records the gate counts for a partially repaired run (Issue #63)", () => {
+  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const section = buildPlanningStatsSection({
+    invocations,
+    expectedModel: "fable",
+    verdict: { degraded: false },
+    gate: gateStats({
+      published: 8,
+      offenders: 8,
+      repaired: 6,
+      stillOffending: 1,
+      deferred: 1,
+      repairDurationMs: 64_000,
+    }),
+  });
+
+  assertStringIncludes(
+    section,
+    "- **Failure-Detection gate:** published 8 · offenders 8 · repaired 6 · " +
+      "still offending 1 · deferred 1",
+  );
+  assertStringIncludes(section, "- **Failure-Detection repair:** 1m 4s");
+});
+
+Deno.test("buildPlanningStatsSection - records explicit zeros when the gate found no offenders (Issue #63)", () => {
+  // The failure mode this issue exists to fix: a metric only emitted on the
+  // unhappy path cannot distinguish "healthy" from "not reporting".
+  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const section = buildPlanningStatsSection({
+    invocations,
+    expectedModel: "fable",
+    verdict: { degraded: false },
+    gate: gateStats({ published: 3 }),
+  });
+
+  assertStringIncludes(
+    section,
+    "- **Failure-Detection gate:** published 3 · offenders 0 · repaired 0 · " +
+      "still offending 0 · deferred 0",
+  );
+  assertStringIncludes(section, "- **Failure-Detection repair:** 0ms");
+});
+
+Deno.test("buildPlanningStatsSection - omits the gate lines entirely when no gate stats are supplied (Issue #63)", () => {
+  // Additive: the grill-me / phase / quorum callers pass no gate stats and
+  // their output is unchanged.
+  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const section = buildPlanningStatsSection({
+    invocations,
+    expectedModel: "fable",
+    verdict: { degraded: false },
+  });
+  assert(!section.includes("Failure-Detection gate:"));
+  assert(!section.includes("Failure-Detection repair:"));
+  // The pre-existing lines are untouched.
+  assertStringIncludes(section, "## Planning run model stats");
+  assertStringIncludes(section, "- **Degraded:** no");
+});
+
+Deno.test("buildPlanningStatsSection - reports the gate counts even when no planning invocation produced stats (Issue #63)", () => {
+  // A recovery close that skipped Claude still gated the published sub-issues,
+  // so the counts must not vanish with the model stats.
+  const section = buildPlanningStatsSection({
+    invocations: [{ phase: "planning" }],
+    expectedModel: "fable",
+    verdict: { degraded: false },
+    gate: gateStats({ published: 2, offenders: 1, repaired: 1 }),
+  });
+  assertStringIncludes(section, "## Planning run model stats");
+  assertStringIncludes(
+    section,
+    "- **Failure-Detection gate:** published 2 · offenders 1 · repaired 1 · " +
+      "still offending 0 · deferred 0",
+  );
+});
+
+Deno.test("buildDegradationReport - threads the gate counts into the rendered section (Issue #63)", () => {
+  for (const v of ["CLAUDE_MODEL_PLANNING", "CLAUDE_MODEL"]) Deno.env.delete(v);
+  setPhaseModelConfigOverrides({});
+  setActiveRepoModelEffortOverrides(undefined);
+
+  const report = buildDegradationReport({
+    invocations: [planningInvocation(["claude-fable-5-20250101"])],
+    gate: gateStats({ published: 5, offenders: 2, repaired: 2 }),
+  });
+
+  assertStringIncludes(
+    report.section,
+    "- **Failure-Detection gate:** published 5 · offenders 2 · repaired 2 · " +
+      "still offending 0 · deferred 0",
+  );
 });
