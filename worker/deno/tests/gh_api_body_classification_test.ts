@@ -51,6 +51,66 @@ Deno.test("classifyGhMutation - api --input=<file> implies POST", () => {
   assertEquals(info?.repo, "o/r");
 });
 
+// ---------------------------------------------------------------------------
+// unreadableBody plumbing (Issue #11) — the flag is surfaced on the REST path
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyGhMutation - a REST mutation with --input reports unreadableBody: true (Issue #11)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input",
+    "/tmp/b.json",
+  ]);
+  assertEquals(info?.verb, "api-post");
+  assertEquals(info?.scope, "explicit");
+  assertEquals(info?.unreadableBody, true);
+});
+
+Deno.test("classifyGhMutation - --input=<file> also reports unreadableBody: true", () => {
+  assertEquals(
+    classifyGhMutation([
+      "api",
+      "repos/o/r/issues/1/labels",
+      "--input=/tmp/b.json",
+    ])?.unreadableBody,
+    true,
+  );
+});
+
+Deno.test("classifyGhMutation - an argv-visible body leaves unreadableBody absent (deep-equal proof)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-f",
+    "labels[]=bug",
+  ]);
+  // Falsy (not `false`): the field must be absent, not explicitly false, so
+  // existing deep-equality assertions on MutationInfo keep passing.
+  assertEquals(info?.unreadableBody, undefined);
+  assertEquals(Object.hasOwn(info!, "unreadableBody"), false);
+  assertEquals(info, {
+    verb: "api-post",
+    repo: "o/r",
+    target: "repos/o/r/issues/1/labels",
+    scope: "explicit",
+  });
+});
+
+Deno.test("classifyGhMutation - a GET with --input stays a read (null), no unreadableBody surfaced (Issue #11)", () => {
+  assertEquals(
+    classifyGhMutation([
+      "api",
+      "repos/o/r/issues/1/labels",
+      "-X",
+      "GET",
+      "--input",
+      "/tmp/b.json",
+    ]),
+    null,
+  );
+});
+
 Deno.test("classifyGhMutation - an explicit method still wins over --input", () => {
   assertEquals(
     classifyGhMutation([

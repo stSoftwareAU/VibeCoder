@@ -44,6 +44,13 @@ export interface MutationInfo {
   target?: string;
   /** How the target repo was determined (Issue #3703). */
   scope: MutationScope;
+  /**
+   * True when part of the request body is not visible in argv (Issue #11):
+   * a REST body supplied by `--input`/`--input=<file>`, or an `@file`-sourced
+   * `query=` value. Left absent when the body is fully argv-visible, so a
+   * guard downstream can tell a checkable body from one the argv cannot show.
+   */
+  unreadableBody?: boolean;
 }
 
 /** Mutating sub-verbs per `gh` root command. */
@@ -503,6 +510,10 @@ function classifyGhApi(
     ...(repo ? { repo } : {}),
     ...(endpoint ? { target: endpoint } : {}),
     scope,
+    // Issue #11: surface an argv-invisible body so the guard's reserved-label
+    // check can fail closed on it. Absent when the body is fully readable so
+    // existing deep-equality assertions on MutationInfo keep passing.
+    ...(unreadableBody ? { unreadableBody: true } : {}),
   };
 }
 
