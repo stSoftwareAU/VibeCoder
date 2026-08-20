@@ -1510,3 +1510,71 @@ Deno.test("label manager - checkAndHealPlanningEscalation never calls label-add 
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// ensureLabelExists — quota-safe error handling (Issue #42)
+// ---------------------------------------------------------------------------
+
+Deno.test("label manager - ensureLabelExists treats a 422 already_exists as success", async () => {
+  const dir = await makeTempDir();
+  try {
+    const { ghCommandFn, calls } = createMockGh({
+      "label list": "bug\nfeature\n", // cache miss for the target label
+      "POST repos/org/repo/labels": new Error(
+        "gh: HTTP 422: Validation Failed (name already_exists)",
+      ),
+    });
+
+    const result = await ensureLabelExists(
+      "org/repo",
+      "needs-human",
+      "d73a4a",
+      "",
+      { ghCommandFn, cacheDir: dir },
+    );
+
+    // The label is already there — that is success, not a failed create.
+    assertEquals(result.ok, true);
+    // And we must NOT fall through to a second, redundant CLI create.
+    assertEquals(wasCalledWith(calls, "label create"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("label manager - ensureLabelExists surfaces the rate-limit cause, not a generic label bug", async () => {
+  const dir = await makeTempDir();
+  try {
+    const rateLimit = new Error(
+      "gh command failed (exit 1): GraphQL: API rate limit already exceeded",
+    );
+    // Every path — the initial list, the REST create, the CLI create, and the
+    // self-heal re-list — hits the exhausted quota.
+    const { ghCommandFn } = createMockGh({
+      "label list": rateLimit,
+      "POST repos/org/repo/labels": rateLimit,
+      "label create": rateLimit,
+    });
+
+    const result = await ensureLabelExists(
+      "org/repo",
+      "needs-human",
+      "d73a4a",
+      "",
+      { ghCommandFn, cacheDir: dir },
+    );
+
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      // The underlying cause must be carried so a quota outage does not
+      // masquerade as a permissions/label defect.
+      assertEquals(
+        /rate limit already exceeded/i.test(result.error.message),
+        true,
+        `error should name the rate-limit cause: ${result.error.message}`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -53,6 +53,7 @@ import {
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
+import { isPrimaryRateLimitMessage } from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import { runWithWatchdog } from "./handler_watchdog.ts";
 import { resolveStartPriority, type ScanCursor } from "./scan_cursor.ts";
@@ -1391,17 +1392,10 @@ async function runIssueScanLoop(
  * the failure budget, and a stop signal from any slot stops them all.
  */
 /** Detect the primary GitHub rate-limit message variants we treat as
- *  self-healing (Issue #1523, #1780). Secondary rate limits and 5xx
- *  errors continue down the fatal path. Module-level so the slot pool
- *  (Issue #4180) recognises the same signal the cycle loop pauses on. */
-export function isPrimaryRateLimitMessage(message: string): boolean {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("api rate limit already exceeded") ||
-    lower.includes("api rate limit exceeded") ||
-    lower.includes("rate limit has been exceeded")
-  );
-}
+ *  self-healing (Issue #1523, #1780, #42). Single-sourced in
+ *  `primary_quota_latch.ts` so the chokepoint latch and the cycle loop pause
+ *  on exactly the same signal; re-exported here for existing importers. */
+export { isPrimaryRateLimitMessage };
 
 /** Grace past the cycle deadline for an agent-backed handler's watchdog (Issue #4369). */
 export const AGENT_HANDLER_GRACE_MS = 5 * 60 * 1000;
