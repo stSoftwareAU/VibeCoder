@@ -24,6 +24,13 @@ export type FailureCategory =
   | "evidence_missing"
   | "internal_error"
   | "missing_tools"
+  /**
+   * The run was cut off before it could finish — the agent's own output shows
+   * it was still working (blocked on a slow quality gate, out of turn budget)
+   * rather than concluding. Infrastructure/transient, not an issue property:
+   * retried, never escalated to a human as analysis-only (Issue #108).
+   */
+  | "interrupted"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -106,6 +113,13 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
     return "rate_limit";
   }
 
+  // A run cut off before finishing (Issue #108). The message is one the worker
+  // constructs (handle_no_changes_phase) with this stable marker, so the match
+  // is exact rather than sniffing arbitrary agent prose.
+  if (lowered.includes("interrupted before completing")) {
+    return "interrupted";
+  }
+
   if (
     failureMessage.includes("zero output") ||
     failureMessage.includes("No output captured")
@@ -173,6 +187,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "evidence_missing",
   "internal_error",
   "missing_tools",
+  "interrupted",
   "unknown",
 ]);
 
@@ -207,6 +222,9 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     case "internal_error":
     case "push_failure":
     case "missing_tools":
+    // A run cut off before finishing is transient — retry, do not blame the
+    // issue or escalate it to a human (Issue #108).
+    case "interrupted":
     // A kill (SIGKILL, typically the VM's OOM killer under transient memory
     // pressure) is an environment failure, not a property of the issue —
     // one bounded retry is allowed (Issue #4202).
@@ -242,6 +260,7 @@ export function getFailureCategoryDisplay(
     case "push_failure":
     case "evidence_missing":
     case "internal_error":
+    case "interrupted":
       return "infrastructure-error";
     case "no_changes":
       return "task-not-understood";
@@ -433,6 +452,11 @@ export function getFailureDiagnosis(
 - This is an infrastructure failure, not related to the issue content; the worker retries once automatically
 - If it recurs, raise the container VM memory (VIBE_CONTAINER_MEMORY) or reduce concurrent load on the host`;
 
+    case "interrupted":
+      return `- The run was cut off before it could finish — the agent was still working (commonly a slow first quality-gate pass or an exhausted turn budget), not concluding
+- This is a transient infrastructure issue, not related to issue complexity or clarity
+- The issue is retried automatically on the next scan, not escalated to a human`;
+
     case "zero_output": {
       const baseLine =
         "- Claude produced no output, which typically indicates a startup failure or environment issue\n- This is not related to the issue complexity or description quality";
@@ -517,6 +541,8 @@ export function getFailureDiagnosisOneliner(
       return "Likely cause: Claude produced no output (startup or environment issue).";
     case "killed":
       return "Likely cause: the agent was killed (SIGKILL) — possibly the VM's out-of-memory killer.";
+    case "interrupted":
+      return "Likely cause: the run was cut off before finishing (slow quality gate or exhausted turn budget) — transient, retried automatically.";
     case "quality_check":
       return "Likely cause: changes failed quality checks.";
     case "missing_tools":

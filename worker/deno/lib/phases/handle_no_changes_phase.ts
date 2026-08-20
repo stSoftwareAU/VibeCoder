@@ -19,7 +19,7 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
-import { detectUsageLimit } from "../claude_executor.ts";
+import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
 import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
 import { redactSecrets } from "../secret_redaction.ts";
@@ -133,6 +133,53 @@ export async function workOnIssueHandleNoChanges(
     return { status: "early_exit", reason: "already_complete" };
   }
 
+  // Issue #108: a no-changes run that was CUT OFF before finishing — blocked on
+  // a slow first quality-gate pass, out of turn budget — is NOT analysis-only.
+  // Its output is a "still working / I'll pick up" status line, not a
+  // deliverable. Detect that (and a usage limit, which previously slipped past
+  // to the analysis-only branch below whenever it left >100 chars) BEFORE the
+  // analysis-only hand-off, and return a retryable infrastructure failure so
+  // the loop re-runs the issue instead of escalating it to `needs-human` — a
+  // dead end the worker cannot reverse. The message wording is what
+  // `detectFailureCategory` keys on: "usage limit" → rate_limit, "interrupted
+  // before completing" → interrupted; both are infrastructure, so the issue is
+  // retried, not blamed.
+  const truncationElapsed = state.executeStartTime > 0
+    ? Math.round((Date.now() - state.executeStartTime) / 1000)
+    : 0;
+  if (detectUsageLimit(claudeOutput)) {
+    logger.warn("Claude hit the subscription usage limit mid-run (no changes)");
+    return {
+      status: "failure",
+      reason: formatDetailedFailureMessage(
+        "Claude usage limit reached mid-run (subscription window) — no changes",
+        {
+          elapsedSeconds: truncationElapsed,
+          clarityStatus: state.clarityStatus,
+          outputSize: claudeOutput.length,
+          lastOutputSnippet: claudeOutput.slice(-500) || undefined,
+        },
+      ),
+    };
+  }
+  if (detectRunInterrupted(claudeOutput)) {
+    logger.warn(
+      "Claude run interrupted before completing (no changes) — retrying, not analysis-only",
+    );
+    return {
+      status: "failure",
+      reason: formatDetailedFailureMessage(
+        "Run interrupted before completing — the agent was still working (no changes yet)",
+        {
+          elapsedSeconds: truncationElapsed,
+          clarityStatus: state.clarityStatus,
+          outputSize: claudeOutput.length,
+          lastOutputSnippet: claudeOutput.slice(-500) || undefined,
+        },
+      ),
+    };
+  }
+
   // Check for partial text output (question disguised as issue)
   if (claudeOutput.trim().length > 100) {
     // Defence-in-depth (Issue #2098): if this issue matches a
@@ -214,27 +261,9 @@ export async function workOnIssueHandleNoChanges(
     : 0;
   const snippet = claudeOutput.slice(-500);
 
-  // A subscription usage limit hit MID-RUN (Issue #4315) leaves the agent's
-  // only output as the limit message and no changes — observed live as two
-  // 40- and 21-minute runs blamed as "no useful output" minutes before the
-  // health check named the weekly cap. Name it: the reason classifies as
-  // rate_limit → infrastructure, so the issue is not blamed and the loop's
-  // limit handling takes over.
-  if (detectUsageLimit(claudeOutput)) {
-    logger.warn("Claude hit the subscription usage limit mid-run (no changes)");
-    return {
-      status: "failure",
-      reason: formatDetailedFailureMessage(
-        "Claude usage limit reached mid-run (subscription window) — no changes",
-        {
-          elapsedSeconds,
-          clarityStatus: state.clarityStatus,
-          outputSize: claudeOutput.length,
-          lastOutputSnippet: snippet || undefined,
-        },
-      ),
-    };
-  }
+  // (The subscription usage-limit and interrupted-run cases — Issue #4315 /
+  // Issue #108 — are handled earlier, before the analysis-only branch, so a
+  // truncated run is never misclassified as analysis-only. See above.)
 
   // No useful output — treat as failure (Issue #1188 — detailed failure messages)
   logger.warn("Claude produced no changes and no useful output");
