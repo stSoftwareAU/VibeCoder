@@ -27,8 +27,139 @@ There are two supported routes, and they produce the same end state:
 
 ## What the automated setup does
 
-*Placeholder — this section will carry the numbered phase walkthrough of an
-automated setup run, with a Mermaid flow diagram (#78, parent #66).*
+`./setup.sh` (macOS and Linux) and `setup.ps1` (Windows) run the same ten
+phases in the same order — the two entry points (`main()` in `setup.sh`,
+`Invoke-VibeSetupMain` in `setup.ps1`) are deliberately step-for-step
+equivalent, and `worker/deno/tests/setup_parity_test.ts` holds them that way.
+The scripts themselves are thin orchestrators that own the terminal I/O; the
+real work is delegated to the Deno setup CLI
+(`worker/deno/setup/setup_cli.ts`). This section describes the behaviour that
+is identical on all three platforms; where they genuinely diverge — which
+background service is offered, where files land — is covered in
+[Platform differences in the automated setup](#platform-differences-in-the-automated-setup).
+
+1. **Prerequisites probe** — `setup prerequisites`. Verifies the host tools,
+   the container runtime and the worker image before anything is changed. A
+   host-fatal gap **exits 1** and stops the whole run; informational gaps are
+   reported and never fail setup. In a terminal (or with `--auto-install`)
+   each failed check with an install plan is offered as an interactive
+   install, and the final verdict always comes from a re-probe. The
+   classification table and the install-offer flow are documented in
+   [Deployment — Initial Setup](DEPLOYMENT.md#-initial-setup), so they are not
+   repeated here.
+
+2. **Credential provisioning** — writes the dedicated credential directory
+   (`~/.vibe-coder/credentials` by default) non-interactively from the
+   `VIBE_LAUNCHAGENT_*` environment variables: the GitHub token into
+   `gh/hosts.yml`, and each enabled coding-agent provider's credential into
+   its own sub-directory. It runs before any prompt, so the `gh` config
+   directory can default to it and no login prompt is offered for it. With no
+   credential variables set it leaves the directory unchanged, warns, and the
+   run continues. The variable table lives in
+   [Deployment — Credential Provisioning](DEPLOYMENT.md#-credential-provisioning-non-interactive).
+
+3. **Interactive credential top-up** — skipped entirely when no terminal is
+   attached. Fills whatever phase 2 left empty: offers to copy the existing
+   `gh` identity into the credential directory, and prompts for the
+   coding-agent OAuth token (minted with `claude setup-token`), validating it
+   before it is stored. Declining an offer never fails the run.
+
+4. **Interactive configuration prompts** — also terminal-only. Collects the
+   key configuration answers (repositories to monitor, allowed authors,
+   service accounts, SSH key path, `gh` config directory, screenshot-upload
+   key, fleet-health repository), showing any existing value as the default.
+   Nothing is written yet — the answers are held for the next phase. What
+   each key means is the [Configuration Reference](CONFIGURATION.md)'s job.
+
+5. **Config write** — `setup config` writes `.config.json` from the `VIBE_*`
+   environment variables, and then the interactive answers are merged over
+   the result. The order matters: an answered prompt wins over the
+   environment, and a prompt left at its default keeps the environment's
+   value — the prompts do not lose the environment, and the environment does
+   not lose the prompts. A failure here stops the run.
+
+6. **Repository sync phases** — seven subcommands, each acting on the
+   monitored GitHub repositories rather than the host, each idempotent, and
+   each **non-fatal**:
+
+   - `label-sync` — standardises the worker's label set in every monitored
+     repository.
+   - `workflow-sync` — audits each repository's CI workflows and files issues
+     for missing protections.
+   - `best-practices-sync` — audits the same workflows for best-practice
+     findings.
+   - `gitignore-sync` — applies the canonical `.gitignore` safety block to
+     every monitored repository.
+   - `verify-monitored-collaborator` — checks the worker account is a
+     collaborator on every monitored repository, filing an issue where it is
+     not.
+   - `branch-protection-sync` — applies the default-branch ruleset to every
+     monitored repository.
+   - `backfill-idle-task-labels` — adds the `idle-task` label to existing
+     security-scan wrapper issues that lack it; already-labelled wrappers are
+     not touched again.
+
+7. **Hooks** — `setup hooks` installs the pre-commit security hook into the
+   worker's own clone, removes the retired pre-push hook, and updates the
+   clone's git exclude patterns. A failure here is **fatal** — the hooks are
+   part of the security posture, not a nicety.
+
+8. **Obsolete work-directory reminder** — reports any leftover host work
+   directories (such as `~/auto-issue-work`) that the container's named
+   volumes made obsolete, with their size and the command to reclaim the
+   space. It only reports — setup never deletes operator data — and it cannot
+   fail the run.
+
+9. **Background-service offer** — platform-specific and terminal-only: each
+   platform offers its own supervision mechanism, and declining also offers
+   to remove a service an earlier run installed. Which platform offers what
+   is covered in
+   [Platform differences in the automated setup](#platform-differences-in-the-automated-setup),
+   and the services themselves in
+   [Deployment — Running as a Background Service](DEPLOYMENT.md#-running-as-a-background-service).
+   Declining never fails the run.
+
+10. **Optional screenshot support** — runs only when
+    `VIBE_SETUP_SCREENSHOT_SUPPORT=true` is set; otherwise the phase is
+    skipped entirely. See
+    [Deployment — Screenshot Support Setup](DEPLOYMENT.md#-screenshot-support-setup).
+
+**Fatal versus non-fatal, and why setup is re-runnable.** The sync phases
+(phase 6) warn and continue by design, so a rate-limited or
+partly-permissioned run still finishes configuring the host — only the
+prerequisites probe, the config write and the hooks install stop the run.
+And because every phase is idempotent, the recovery from any warning is
+simply to re-run setup: nothing is duplicated, and already-correct state is
+left alone.
+
+```mermaid
+flowchart TD
+    S["./setup.sh / setup.ps1"] --> P["1 · prerequisites probe"]
+    P -->|"host-fatal gap"| X["exit 1 — named gap + fix"]
+    P -->|ok| C["2 · credential provisioning<br/>from VIBE_LAUNCHAGENT_*"]
+    C --> IC["3 · interactive credential top-up<br/>(terminal only)"]
+    IC --> IP["4 · interactive configuration prompts<br/>(terminal only)"]
+    IP --> W["5 · config write<br/>env first, answers merged over"]
+    W --> L["label-sync"]
+    subgraph SY["6 · repository sync — warn and continue, never fatal"]
+        L --> WS["workflow-sync"]
+        WS --> BS["best-practices-sync"]
+        BS --> GI["gitignore-sync"]
+        GI --> VC["verify-monitored-collaborator"]
+        VC --> BR["branch-protection-sync"]
+        BR --> BF["backfill-idle-task-labels"]
+    end
+    BF --> H["7 · hooks (fatal on failure)"]
+    H --> R["8 · work-directory reminder<br/>(reports only)"]
+    R --> SO["9 · background-service offer<br/>(platform-specific, terminal only)"]
+    SO --> SC{"VIBE_SETUP_SCREENSHOT_SUPPORT<br/>= true?"}
+    SC -->|yes| SS["10 · screenshot support"]
+    SC -->|no| D["done"]
+    SS --> D
+    style X fill:#9d0208,stroke:#6a040f,color:#fff
+    style SY fill:none,stroke:#e09f3e,stroke-dasharray:5 5
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
 
 ## Platform differences in the automated setup
 
