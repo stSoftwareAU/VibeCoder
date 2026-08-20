@@ -91,13 +91,17 @@ export async function invalidateDefaultBranch(repo: string): Promise<void> {
  *
  * Lookup order (Issue #1509):
  *   1. In-process memory cache (fastest, cleared on process restart).
- *   2. Persistent disk cache with 7-day TTL
+ *   2. Persistent disk cache with 7-day TTL — only when `WORK_DIR` is set
  *      (`${WORK_DIR}/.vibe-cache/default-branch-cache.json`, Issue #4318).
+ *      With `WORK_DIR` unset (any host-side process — setup, launcher,
+ *      housekeeping) there is no cache directory and this layer is a
+ *      complete no-op (Issue #132): nothing is read or written on disk.
  *   3. GitHub REST API via `gh api repos/<repo>`.
  *
  * Successful API lookups are written back to both layers so subsequent
  * run_core cycles can answer the next several days' worth of lookups
- * without touching the quota-bounded REST API.
+ * without touching the quota-bounded REST API. Host-side callers simply
+ * re-query the API on every call (per process, thanks to layer 1).
  *
  * @param repo - Repository in "owner/repo" format
  * @param ghCommandFn - Optional gh command function for testing
