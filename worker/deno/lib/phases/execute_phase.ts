@@ -399,12 +399,34 @@ async function executeClaudeBody(
       (Date.now() - state.executeStartTime) / 1000,
     );
     const snippet = state.claudeOutput.slice(-500);
+    // Issue #47: "without creating changes" was misleading — a timed-out run
+    // usually left uncommitted work in the tree (on #5 the agent was running
+    // `deno test` on its own changes at the 38-minute kill). Count the dirty
+    // files so the release comment tells the truth: the work existed, it just
+    // was not committed. (Preserving that work — a WIP commit/push so the next
+    // claim resumes it — is the larger follow-up.)
+    let dirtyFiles = 0;
+    if (state.claudeOutput.length > 0) {
+      const statusResult = await deps.git.runGitCommand(
+        ["status", "--porcelain"],
+        { cwd: state.repoPath },
+      );
+      if (statusResult.ok && statusResult.value.code === 0) {
+        dirtyFiles = statusResult.value.stdout.trim().split("\n").filter((l) =>
+          l.trim().length > 0
+        ).length;
+      }
+    }
     // Issue #1550: When Claude times out with an empty output, classify the
     // failure as zero_output (infrastructure) so the infra-retry wrapper
     // fires. Pure timeouts with partial output remain in the generic
     // `timeout` category and are not retried.
     const baseReason = state.claudeOutput.length === 0
       ? "Claude timed out with zero output and made no changes"
+      : dirtyFiles > 0
+      ? `Claude timed out with uncommitted changes (${dirtyFiles} file${
+        dirtyFiles === 1 ? "" : "s"
+      })`
       : "Claude timed out without creating changes";
     const reason = formatDetailedFailureMessage(baseReason, {
       elapsedSeconds,
@@ -466,6 +488,47 @@ async function executeClaudeBody(
         lastOutputSnippet: snippet || undefined,
         rawExitCode: claudeResult.value.rawExitCode ?? 137,
         memoryPressureAtKill,
+        killDiagnostics: claudeResult.value.killDiagnostics,
+      },
+    );
+    return { status: "failure", reason };
+  }
+
+  // Issue #46: a SIGTERM the worker never requested — an external kill (a tool
+  // the agent ran, the CLI, the container, a stray signal). The old code let
+  // this `terminated` result fall through to change detection and `continue`,
+  // so quality-gate and completion ran over a half-done tree and failed for
+  // the wrong reason ("no commits ahead"). Fail the phase with the kill as the
+  // reason (which classifies as `killed` -> infrastructure, so the bounded
+  // retry applies), after the same pushed-PR self-heal the SIGKILL path uses.
+  if (claudeResult.value.externalSigterm) {
+    const existingPr = await deps.pr.findExistingPrForIssue(repo, issueNumber);
+    if (existingPr.ok && existingPr.value) {
+      logger.info(
+        "PR already exists despite the external SIGTERM, treating as success",
+      );
+      return { status: "continue" };
+    }
+    const elapsedSeconds = Math.round(
+      (Date.now() - state.executeStartTime) / 1000,
+    );
+    const stderrTail = (claudeResult.value.stderr ?? "").trim().slice(-400);
+    const snippet = [state.claudeOutput.slice(-500), stderrTail]
+      .filter((part) => part.length > 0)
+      .join("\n--- stderr ---\n");
+    logger.warn(
+      "Claude killed by an external SIGTERM (not a worker-requested shutdown)",
+      { rawExitCode: claudeResult.value.rawExitCode },
+    );
+    const reason = formatDetailedFailureMessage(
+      "Claude was killed by an external SIGTERM (exit 143) — the worker did " +
+        "not request this shutdown",
+      {
+        elapsedSeconds,
+        outputSize: state.claudeOutput.length,
+        clarityStatus: state.clarityStatus,
+        lastOutputSnippet: snippet || undefined,
+        rawExitCode: claudeResult.value.rawExitCode ?? 143,
         killDiagnostics: claudeResult.value.killDiagnostics,
       },
     );
