@@ -194,20 +194,39 @@ export interface PrBranchUpdateDeps {
 // Worker PR identification
 // ---------------------------------------------------------------------------
 
+/** The branch-name shape a worker-created PR uses: `issue-<n>-…`. */
+const WORKER_PR_BRANCH_RE = /^issue-\d+-/;
+
+/** True when `ref` is safe to hand git as a positional (no leading dash). */
+function isSafeGitRef(ref: string | undefined): boolean {
+  return ref !== undefined && ref !== "" && !ref.startsWith("-");
+}
+
 /**
  * Check whether a PR was created by the worker.
  *
- * Uses the body marker as the primary signal, with the branch name
- * pattern (issue-{N}-*) as a fallback for older PRs created before
- * the marker was added. This ensures the branch update scan works
- * correctly even if the worker identity changes.
+ * Two signals: the branch-name shape (`issue-<n>-…`), which the worker
+ * controls, and the body marker ({@link WORKER_PR_MARKER_PREFIX}), a fixed
+ * public HTML comment any PR author can paste into their own body. The
+ * marker is a legitimate fallback for worker PRs on other branch shapes
+ * (milestone PRs, older PRs), but on its own it is spoofable (Issue #12): an
+ * outside PR could carry the marker to be treated as worker-owned and route
+ * its attacker-controlled head branch into the maintenance git commands.
+ *
+ * So the marker path additionally requires the head branch to be a safe git
+ * ref (no leading dash — the argument-injection shape). The git commands are
+ * independently hardened (`git_ref_args.ts`); this keeps a spoofed PR from
+ * even being *selected* for maintenance. The `issue-<n>-` shape already
+ * excludes a dash-leading name, so it needs no extra check.
  */
 export function isWorkerPr(
   body: string | undefined,
   branchName?: string,
 ): boolean {
-  if (body && body.includes(WORKER_PR_MARKER_PREFIX)) return true;
-  if (branchName && /^issue-\d+-/.test(branchName)) return true;
+  if (branchName && WORKER_PR_BRANCH_RE.test(branchName)) return true;
+  if (body && body.includes(WORKER_PR_MARKER_PREFIX)) {
+    return isSafeGitRef(branchName);
+  }
   return false;
 }
 

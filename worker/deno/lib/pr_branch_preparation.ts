@@ -17,6 +17,12 @@
 import type { Logger } from "../types.ts";
 import type { GitDeps } from "./issue_worker_wiring.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import {
+  assertSafeGitRef,
+  buildCheckoutArgs,
+  buildFetchArgs,
+  buildPullArgs,
+} from "./git_ref_args.ts";
 
 /** Subset of GitDeps needed for branch preparation. */
 export type BranchPreparationGitDeps = Pick<GitDeps, "runGitCommand">;
@@ -65,8 +71,19 @@ export async function preparePrBranch(
 ): Promise<PreparePrBranchOutcome> {
   const { logger, git, cwd } = deps;
 
+  try {
+    assertSafeGitRef(branchName, "PR head branch name");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.warn("Refusing to prepare an unsafe PR branch", {
+      branchName,
+      error: detail,
+    });
+    return { ok: false, reason: "checkout_failed", detail };
+  }
+
   const fetchResult = await git.runGitCommand(
-    ["fetch", "origin", branchName],
+    buildFetchArgs("origin", branchName),
     { cwd },
   );
   if (!fetchResult.ok || fetchResult.value.code !== 0) {
@@ -84,7 +101,7 @@ export async function preparePrBranch(
   }
 
   const checkoutResult = await git.runGitCommand(
-    ["checkout", branchName],
+    buildCheckoutArgs(branchName),
     { cwd },
   );
   if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
@@ -98,7 +115,7 @@ export async function preparePrBranch(
 
   // Best-effort pull to sync with the remote — harmless if already up to date.
   const pullResult = await git.runGitCommand(
-    ["pull", "--ff-only", "origin", branchName],
+    buildPullArgs("origin", branchName, { ffOnly: true }),
     { cwd },
   );
   if (pullResult.ok && pullResult.value.code !== 0) {

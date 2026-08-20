@@ -18,6 +18,13 @@ import {
   buildCheckoutStrategyArgs,
 } from "./git_conflict_args.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
+import {
+  assertSafeGitRef,
+  buildCheckoutArgs,
+  buildCheckoutNewBranchArgs,
+  buildFetchArgs,
+  buildRebaseArgs,
+} from "./git_ref_args.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -41,6 +48,16 @@ export async function syncFeatureBranchWithDefault(
   defaultBranch: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
+  // Refuse an option-injecting ref before any git runs (Issue #12).
+  try {
+    assertSafeGitRef(branchName, "feature branch name");
+    assertSafeGitRef(defaultBranch, "default branch name");
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
   // Pre-check disk space before fetch/rebase (Issue #1174)
   if (options.cwd) {
     const spaceCheck = await requireDiskSpaceForGitOperation(
@@ -67,7 +84,7 @@ export async function syncFeatureBranchWithDefault(
 
   if (currentBranch !== branchName) {
     const checkoutResult = await runGitCommand(
-      ["checkout", branchName],
+      buildCheckoutArgs(branchName),
       options,
     );
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
@@ -116,7 +133,7 @@ export async function syncFeatureBranchWithDefault(
   await runGitCommand(["rebase", "--abort"], options);
 
   // Issue #586: Check if the remote has this branch with commits to preserve
-  await runGitCommand(["fetch", "origin", branchName], options);
+  await runGitCommand(buildFetchArgs("origin", branchName), options);
   const showRefResult = await runGitCommand(
     ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branchName}`],
     options,
@@ -141,14 +158,14 @@ export async function syncFeatureBranchWithDefault(
       await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
 
       const restoreResult = await runGitCommand(
-        ["checkout", "-b", branchName, `origin/${branchName}`],
+        buildCheckoutNewBranchArgs(branchName, `origin/${branchName}`),
         options,
       );
 
       if (!restoreResult.ok || restoreResult.value.code !== 0) {
         // Fall through to recreate
         await runGitCommand(
-          ["checkout", "-b", branchName, defaultBranch],
+          buildCheckoutNewBranchArgs(branchName, defaultBranch),
           options,
         );
         return {
@@ -188,7 +205,7 @@ export async function syncFeatureBranchWithDefault(
   // No remote branch or no remote commits — recreate from the default branch
   await runGitCommand(["checkout", defaultBranch], options);
   await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
-  await runGitCommand(["checkout", "-b", branchName], options);
+  await runGitCommand(buildCheckoutNewBranchArgs(branchName), options);
 
   return {
     ok: true,
@@ -481,6 +498,16 @@ export async function updatePrBranch(
   options: GitCommandOptions = {},
   reason?: "behind" | "conflicting",
 ): Promise<Result<string>> {
+  // Refuse an option-injecting ref before any git runs (Issue #12).
+  try {
+    assertSafeGitRef(branchName, "PR head branch name");
+    assertSafeGitRef(baseBranch, "PR base branch name");
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
   // Ensure the local base branch is current
   await ensureDefaultBranchCurrent(baseBranch, options);
 
@@ -495,7 +522,7 @@ export async function updatePrBranch(
 
   if (currentBranch !== branchName) {
     const checkoutResult = await runGitCommand(
-      ["checkout", branchName],
+      buildCheckoutArgs(branchName),
       options,
     );
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
@@ -536,7 +563,10 @@ export async function updatePrBranch(
   }
 
   // Attempt rebase (history already deepened above)
-  const rebaseResult = await runGitCommand(["rebase", baseBranch], options);
+  const rebaseResult = await runGitCommand(
+    buildRebaseArgs(baseBranch),
+    options,
+  );
 
   if (rebaseResult.ok && rebaseResult.value.code === 0) {
     return await forcePushFeatureBranch(branchName, options);
@@ -621,7 +651,7 @@ async function fetchAndForcePush(
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
   // Fetch to refresh the remote-tracking ref before the lease check
-  await runGitCommand(["fetch", "origin", branchName], options);
+  await runGitCommand(buildFetchArgs("origin", branchName), options);
   return await forcePushFeatureBranch(branchName, options);
 }
 
@@ -719,7 +749,7 @@ export async function ensurePrMergeable(
   // Ensure we are on the feature branch
   if (currentBranch !== branchName) {
     const checkoutResult = await runGitCommand(
-      ["checkout", branchName],
+      buildCheckoutArgs(branchName),
       options,
     );
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
@@ -751,7 +781,10 @@ export async function ensurePrMergeable(
   }
 
   // Attempt rebase
-  const rebaseResult = await runGitCommand(["rebase", baseBranch], options);
+  const rebaseResult = await runGitCommand(
+    buildRebaseArgs(baseBranch),
+    options,
+  );
 
   if (rebaseResult.ok && rebaseResult.value.code === 0) {
     return await forcePushFeatureBranch(branchName, options);
