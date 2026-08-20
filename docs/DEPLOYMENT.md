@@ -152,6 +152,11 @@ they are — they are exactly the paths mounted into the container.
 
 ## 📥 Installation
 
+> **📝 Note:** For the full setup manual — what the automated setup does phase
+> by phase, and the from-scratch manual path on macOS, Linux and Windows — see
+> the [Setup Guide](SETUP.md). This document owns what happens *after* setup:
+> background services, logs and screenshot support.
+
 ```bash
 # Clone the repository
 gh repo clone <your-org>/VibeCoder
@@ -197,6 +202,10 @@ actually look.
 ## 🏁 Initial Setup
 
 Before running the worker, configure it with your GitHub username and repositories using environment variables:
+
+> **📝 Note:** The [Setup Guide](SETUP.md) explains each phase of this run —
+> and how to reach the same end state entirely by hand if you would rather not
+> run the script at all.
 
 ```bash
 VIBE_ALLOWED_AUTHOR=myusername \
