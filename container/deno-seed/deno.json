@@ -1,5 +1,10 @@
 {
   "// Issue #4392": "Pre-warmed Deno cache for the container image. The Containerfile runs `deno cache --frozen` against this file and its lockfile so the pinned @playwright/mcp (with its own playwright-core) and the worker's JSR dependencies are in the image, then the entrypoint seeds the durable cache from it. Versions here are pins: @playwright/mcp must equal PLAYWRIGHT_MCP_VERSION in worker/deno/setup/screenshot.ts and the JSR entries must equal worker/deno/deno.lock \u2014 worker/deno/tests/container_manifest_test.ts fails the gate on drift. @std/internal is pinned explicitly because it is a transitive dependency the worker lock resolves to an exact version; without the pin a fresh resolution would float within its range.",
+  "// Issue #14": "Mirror worker/deno/deno.json's 24h dependency-age quarantine so a bumped pin here (e.g. @playwright/mcp) cannot adopt a package published less than a day ago \u2014 the same cooling-off window the worker's ecosystem already enforces against a compromised/malicious publish.",
+  "minimumDependencyAge": {
+    "age": "P1D",
+    "exclude": ["jsr:@stsoftware/*", "npm:@stsoftware/*"]
+  },
   "imports": {
     "@playwright/mcp": "npm:@playwright/mcp@0.0.75",
     "@std/assert": "jsr:@std/assert@1.0.18",

@@ -39,6 +39,8 @@ on:
     paths:
       - 'worker/deno/deno.json'
       - 'worker/deno/deno.lock'
+      - 'container/deno-seed/deno.json'
+      - 'container/deno-seed/deno.lock'
       - 'Gemfile'
       - 'Gemfile.lock'
       - '.github/workflows/dependency-audit.yml'
@@ -47,6 +49,8 @@ on:
     paths:
       - 'worker/deno/deno.json'
       - 'worker/deno/deno.lock'
+      - 'container/deno-seed/deno.json'
+      - 'container/deno-seed/deno.lock'
       - 'Gemfile'
       - 'Gemfile.lock'
       - '.github/workflows/dependency-audit.yml'
@@ -105,8 +109,7 @@ jobs:
       - name: Run deno audit
         run: |
           set -euo pipefail
-          echo "=== Auditing Deno dependencies (deno.lock) ==="
-          cd worker/deno
+          echo "=== Auditing Deno dependencies (worker/deno/deno.lock) ==="
           # Invoke the canonical `audit` task from deno.json so CI can
           # never drift from the local command. A known-vulnerable
           # dependency fails the job.
@@ -121,7 +124,18 @@ jobs:
           #
           # `pipefail` keeps deno's exit status through the tee; the log
           # lets the notify step below tell an outage from an advisory.
-          deno task audit 2>&1 | tee "$RUNNER_TEMP/deno-audit.log"
+          ( cd worker/deno && deno task audit ) 2>&1 \
+            | tee "$RUNNER_TEMP/deno-audit.log"
+
+          echo "=== Auditing Deno dependencies (container/deno-seed/deno.lock) ==="
+          # Issue #14: the container seed's npm/JSR pins (@playwright/mcp and
+          # its playwright-core, plus the seeded JSR entries) get the same
+          # fail-closed advisory scan as the worker's tree — previously they
+          # had none. `deno audit` here carries no registry-error opt-out for
+          # the same reason, and appends to the shared log so the
+          # scheduled-failure notifier still classifies outage vs advisory.
+          ( cd container/deno-seed && deno audit ) 2>&1 \
+            | tee -a "$RUNNER_TEMP/deno-audit.log"
 
       # Issue #2691 (SCR-AUTO-UPDATE): turn the detection above into a
       # notification channel. On a *scheduled* run only (a fresh advisory
