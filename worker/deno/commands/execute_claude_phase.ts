@@ -4,7 +4,7 @@
  * Wraps the full Claude execution flow: screenshot detection, prompt building,
  * Claude invocation with heartbeat, timeout/rate-limit error handling,
  * self-healing PR detection, and change detection. Callable from shell
- * via deno_bridge.sh.
+ * via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Arguments:
  *   --repo                      Repository in "owner/repo" format

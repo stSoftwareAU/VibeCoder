@@ -384,11 +384,11 @@ troubleshooting symptoms.
 
 ## 🔗 Shell Integration (Internal)
 
-`run.sh` and `run.ps1` launch the worker container, which `exec`s Deno on the `run-entrypoint` driver inside it (— no bash on the runtime path). In the opt-in native run mode `run.sh` starts the same `run-entrypoint` driver directly on the host instead. The remaining shell tooling (e.g. `quality.sh`) still calls Deno commands via `worker/shared/deno_bridge.sh`:
+`run.sh` and `run.ps1` launch the worker container, which `exec`s Deno on the `run-entrypoint` driver inside it (— no bash on the runtime path). In the opt-in native run mode `run.sh` starts the same `run-entrypoint` driver directly on the host instead. The remaining shell tooling (e.g. `quality.sh`) invokes Deno commands directly (the `deno_bridge.sh` bash bridge was retired in Issue #97 — nothing sourced it):
 
-- `deno_run_command "command-name" [--arg value ...]` — Executes a Deno command from shell
+- `deno run --allow-X worker/deno/mod.ts <command-name> [--arg value ...]`
 
-> **Note:** This bridge is an internal implementation detail. All new logic should be added as Deno TypeScript commands — do not add business logic to shell scripts.
+> **Note:** All new logic should be added as Deno TypeScript commands — do not add business logic to shell scripts.
 
 ## 🧪 Running Tests
 

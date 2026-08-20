@@ -3,7 +3,7 @@
  *
  * Posts crash notifications via GitHub issue comments and/or webhooks
  * when the worker exits unexpectedly.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - send: Send crash notification (main orchestrator)

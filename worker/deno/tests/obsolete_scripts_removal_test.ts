@@ -152,27 +152,6 @@ Deno.test("obsolete script removal - quality gate perf audit detects violations"
 // Remaining shell scripts are essential orchestration (Issue #1177)
 // =============================================================================
 
-Deno.test("obsolete script removal - remaining shell scripts exist", async () => {
-  const repoRoot = new URL("../../../", import.meta.url).pathname;
-  // Issue #3504: worker/run_core.sh was deleted — the worker driver now runs
-  // the migrated bootstrap + loop directly in Deno (run_worker.ts). The bash
-  // bridge scripts below remain until #3503 retires them (they no longer have a
-  // runtime sourcer once run_core.sh is gone).
-  const requiredScripts = [
-    "worker/shared/deno_bridge.sh",
-    "worker/shared/config_defaults.sh",
-  ];
-
-  for (const script of requiredScripts) {
-    try {
-      const stat = await Deno.stat(`${repoRoot}${script}`);
-      assertEquals(stat.isFile, true, `${script} should exist as a file`);
-    } catch {
-      throw new Error(`Required orchestration script missing: ${script}`);
-    }
-  }
-});
-
 Deno.test("obsolete script removal - removed scripts no longer exist", async () => {
   const repoRoot = new URL("../../../", import.meta.url).pathname;
   const removedScripts = [
@@ -185,6 +164,12 @@ Deno.test("obsolete script removal - removed scripts no longer exist", async () 
     // gone — it was still shipped and `git pull`-refreshed onto every worker
     // host despite nothing invoking it.
     "worker/issue_worker.sh",
+    // Issue #97: the last two bash bridges. Nothing sourced deno_bridge.sh at
+    // runtime, and config_defaults.sh's only reader (the quality gate's config
+    // integration check) now seeds its empty arrays inline. Both were shipped
+    // and `git pull`-refreshed onto every host with no runtime consumer.
+    "worker/shared/deno_bridge.sh",
+    "worker/shared/config_defaults.sh",
   ];
 
   for (const script of removedScripts) {

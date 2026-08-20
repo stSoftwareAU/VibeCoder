@@ -72,8 +72,6 @@ that a reviewer can re-derive the agent's reasoning.
   - [`worker/deno/lib/logger.ts`](../worker/deno/lib/logger.ts)
     `formatTimestamp` — `getUTC*` fields plus a literal `Z`
     (`YYYY-MM-DD HH:MM:SSZ`).
-  - [`worker/shared/deno_bridge.sh`](../worker/shared/deno_bridge.sh)
-    `_get_timestamp` / `log()` — `date -u '+%Y-%m-%d %H:%M:%SZ'`.
   - the Deno worker driver's bootstrap prelude
     ([`run_bootstrap.ts`](../worker/deno/lib/run_bootstrap.ts)) —
     `date -u +%Y-%m-%dT%H:%M:%SZ` equivalents; the worker-log preamble also

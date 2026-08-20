@@ -39,8 +39,6 @@ pressure.
 
 | File                               | Role                                                                                                                                        |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `worker/shared/deno_bridge.sh`     | Bash↔Deno bridge providing `deno_run_command`; still used by ops tooling such as `quality.sh`.                                             |
-| `worker/shared/config_defaults.sh` | Compatibility shim for default values; canonical defaults live in `worker/deno/lib/config_defaults.ts`. |
 
 Issue execution (`work_on_issue`, `process_issue_*`) runs in Deno via
 `worker/deno/lib/run_core_production_deps.ts` → `issue_worker.ts` /

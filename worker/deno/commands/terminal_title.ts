@@ -2,7 +2,7 @@
  * Terminal title command for the Vibe Coder worker.
  *
  * Sets the terminal window title to indicate the current task.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/terminal_title.sh (Issue #900).
  * Issue #263: Set window title to the task currently being worked on.

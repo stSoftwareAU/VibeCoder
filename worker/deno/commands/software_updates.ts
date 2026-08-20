@@ -2,7 +2,7 @@
  * Software updates command for the Vibe Coder worker.
  *
  * Orchestrates weekly software update checks for Claude CLI, GH CLI, and Deno.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/software_updates.sh (Issue #906).
  */

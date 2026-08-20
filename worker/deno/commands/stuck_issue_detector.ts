@@ -2,7 +2,7 @@
  * Stuck issue detector command for the Vibe Coder worker.
  *
  * Detects stale heartbeats and recovers stuck issues from crashed workers.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - record-heartbeat: Write/update heartbeat for an issue
