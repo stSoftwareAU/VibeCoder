@@ -2,7 +2,7 @@
  * Atomic write command for the Vibe Coder worker.
  *
  * Writes content to a file atomically (write-to-temp-then-rename),
- * callable from shell via deno_bridge.sh.
+ * callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/file_utils.sh (Issue #901).
  * Issue #693: Atomic file write utilities for state and cache files.

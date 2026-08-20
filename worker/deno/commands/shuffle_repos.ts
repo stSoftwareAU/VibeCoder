@@ -2,7 +2,7 @@
  * Shuffle repos command for the Vibe Coder worker.
  *
  * Conditionally shuffles or preserves repo scan order, callable from
- * shell via deno_bridge.sh.
+ * shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/array_utils.sh (Issue #901).
  * Issue #271: Randomise repo scan order for fair work distribution.

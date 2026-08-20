@@ -102,7 +102,7 @@ flowchart TD
 Every `deno run` launcher passes `--frozen --lock=worker/deno/deno.lock`, so a
 stale or missing lockfile is a hard error instead of a silent re-resolve that
 could pull unreviewed transitive code into the process.
-This covers `run.sh`, `worker/shared/deno_bridge.sh`, `quality.sh`, `setup.sh`
+This covers `run.sh`, `quality.sh`, `setup.sh`
 (the widest permission set — it handles `.config.json` credentials), and the
 `deno run` tasks in `worker/deno/deno.json`. Lockfile enforcement is separate
 from the dependency quarantine (`minimumDependencyAge`) and both apply.

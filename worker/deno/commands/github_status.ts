@@ -1,8 +1,8 @@
 /**
  * GitHub user status command for the Vibe Coder worker.
  *
- * Provides GitHub profile status management callable from shell via
- * deno_bridge.sh. Supports sub-operations:
+ * Provides GitHub profile status management callable from shell via the Deno
+ * CLI (`deno run mod.ts <command>`). Supports sub-operations:
  *   - set-status: Update the GitHub user status
  *   - clear-status: Clear the GitHub user status
  *   - check-available: Check if status updates are enabled and available

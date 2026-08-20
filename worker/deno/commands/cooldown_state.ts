@@ -2,7 +2,7 @@
  * Cooldown state command for the Vibe Coder worker.
  *
  * Manages issue retry cooldowns so the worker skips recently-failed issues
- * and processes other work first. Callable from shell via deno_bridge.sh.
+ * and processes other work first. Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations:
  *   - record-cooldown: Record that an issue failed (skip for cooldown period)

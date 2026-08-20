@@ -87,11 +87,100 @@ Deno.test("classifyGhMutation - --input does not turn its value into the endpoin
 });
 
 // ---------------------------------------------------------------------------
+// `unreadableBody` on the REST return path (Issue #89)
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyGhMutation - REST --input surfaces unreadableBody", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input",
+    "/tmp/b.json",
+  ]);
+  assertEquals(info, {
+    verb: "api-post",
+    repo: "o/r",
+    target: "repos/o/r/issues/1/labels",
+    scope: "explicit",
+    unreadableBody: true,
+    bodyFilePath: "/tmp/b.json",
+  });
+});
+
+Deno.test("classifyGhMutation - REST --input=<file> surfaces unreadableBody", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input=/tmp/b.json",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+});
+
+Deno.test("classifyGhMutation - a REST @file query= field surfaces unreadableBody", () => {
+  // `gh` reads a `@`-prefixed `-F`/`--field` value from that file, so the body
+  // it sends is not the one the argv shows — true on a REST endpoint too, not
+  // just on `graphql`. Only `-F`/`--field` expand `@` (Issue #93).
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-F",
+    "query=@/tmp/b.json",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+});
+
+Deno.test("classifyGhMutation - an argv-visible REST body leaves unreadableBody absent", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-f",
+    "labels[]=bug",
+  ]);
+  assertEquals(info?.unreadableBody, undefined);
+  // Deep equality: the field must be absent, not `false`, so existing
+  // assertions on argv-visible mutations keep passing.
+  assertEquals(info, {
+    verb: "api-post",
+    repo: "o/r",
+    target: "repos/o/r/issues/1/labels",
+    scope: "explicit",
+  });
+});
+
+Deno.test("classifyGhMutation - a GET with --input stays a read, flag or not", () => {
+  assertEquals(
+    classifyGhMutation([
+      "api",
+      "repos/o/r/issues",
+      "-X",
+      "GET",
+      "--input",
+      "/tmp/b.json",
+    ]),
+    null,
+  );
+});
+
+Deno.test("classifyGhMutation - an explicit PATCH with --input surfaces unreadableBody", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1",
+    "--method=PATCH",
+    "--input",
+    "-",
+  ]);
+  assertEquals(info?.verb, "api-patch");
+  assertEquals(info?.unreadableBody, true);
+});
+
+// ---------------------------------------------------------------------------
 // Shape B — a GraphQL document `gh` reads from a file
 // ---------------------------------------------------------------------------
 
-Deno.test("classifyGhMutation - graphql query=@file is undeterminable, not a read", () => {
-  for (const flag of ["-F", "-f", "--field", "--raw-field"]) {
+Deno.test("classifyGhMutation - graphql query=@file on -F/--field is undeterminable, not a read", () => {
+  // Only `-F`/`--field` read the document from the file, so only they hide it
+  // from the argv and must fail closed (Issue #93).
+  for (const flag of ["-F", "--field"]) {
     const info = classifyGhMutation([
       "api",
       "graphql",
@@ -100,6 +189,21 @@ Deno.test("classifyGhMutation - graphql query=@file is undeterminable, not a rea
     ]);
     assertEquals(info?.scope, "unknown", `flag ${flag}`);
     assertEquals(info?.verb, "api-graphql-unknown", `flag ${flag}`);
+  }
+});
+
+Deno.test("classifyGhMutation - graphql query=@file on -f/--raw-field is a visible literal, not a file read", () => {
+  // `-f`/`--raw-field` send `@/tmp/q.graphql` verbatim as the document — gh
+  // does not expand `@` — so it is argv-visible, not a mutation, hence a read
+  // (`classifyGhMutation` returns null). The argv shows exactly what gh sends.
+  for (const flag of ["-f", "--raw-field"]) {
+    const info = classifyGhMutation([
+      "api",
+      "graphql",
+      flag,
+      "query=@/tmp/q.graphql",
+    ]);
+    assertEquals(info, null, `flag ${flag}`);
   }
 });
 
@@ -215,14 +319,63 @@ Deno.test("enforceGhWriteAllowlist - refuses a graphql document read from a file
   }
 });
 
-Deno.test("evaluateGhCommand - refuses the agent's --input write to another repo", () => {
+Deno.test("evaluateGhCommand - an --input write is refused for its unreadable body, before the repo check even runs (Issue #90)", () => {
   const ctx = { active: true, allowedRepos: ["me/target"] };
   const decision = evaluateGhCommand(
     ["api", "repos/attacker/evil/issues/1/labels", "--input", "-"],
     ctx,
   );
   assertEquals(decision.allowed, false);
-  assertEquals(decision.marker, "WRITE_REPO_BLOCKED");
+  // The fail-closed unreadable-body backstop (#90) fires in the unconditional
+  // block before the write-repo allowlist, so this now reports the stronger,
+  // earlier marker rather than WRITE_REPO_BLOCKED.
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("evaluateGhCommand - fails closed on an --input REST mutation to the OWN repo, allowlist inert (Issue #90)", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "--input", "/tmp/b.json"],
+    { active: false, allowedRepos: [] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+  if (!decision.allowed) {
+    assertStringIncludes(decision.reason ?? "", "--input");
+    assertStringIncludes(decision.reason ?? "", "-f");
+  }
+});
+
+Deno.test("evaluateGhCommand - the unreadable-body refusal holds with an active allowlist naming the repo (Issue #90)", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "--input", "/tmp/b.json"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("evaluateGhCommand - a visible reserved label still wins over the unreadable-body marker (order preserved)", () => {
+  const decision = evaluateGhCommand(
+    [
+      "api",
+      "repos/o/r/issues/1/labels",
+      "--input",
+      "-",
+      "-f",
+      "labels[]=top-priority",
+    ],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+});
+
+Deno.test("evaluateGhCommand - an argv-visible body (-f only) is not blocked by the unreadable-body backstop", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues/1/labels", "-f", "labels[]=bug"],
+    { active: true, allowedRepos: ["o/r"] },
+  );
+  assertEquals(decision.allowed, true);
 });
 
 Deno.test("evaluateGhCommand - refuses an unreadable graphql document", () => {
@@ -235,6 +388,15 @@ Deno.test("evaluateGhCommand - refuses an unreadable graphql document", () => {
   assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE");
 });
 
+// Coverage boundary (Issue #94): this case proves only that an argv-VISIBLE
+// reserved label is refused on a command that also carries `--input`. The label
+// is duplicated in the argv (`-f labels[]=work-on`), so `extractLabelValues`
+// alone refuses it and the body is never consulted — it passed even before the
+// `--input` file was ever read. The actual #11 bypass, the label present *only*
+// in the `--input` file, is covered end-to-end by
+// `gh_guard_shim_test.ts::gh-guard-shim #11 - refuses the exploit when the
+// reserved label is present ONLY in the --input file`. Do not delete that
+// sibling on the strength of this test.
 Deno.test("evaluateGhCommand - refuses a reserved label added via --input POST argv", () => {
   const ctx = { active: true, allowedRepos: ["me/target"] };
   const decision = evaluateGhCommand(
@@ -261,4 +423,90 @@ Deno.test("evaluateGhCommand - a GET with --input stays a read", () => {
     ).allowed,
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #91 — the classifier surfaces a readable `--input` path so the guard
+// can scan it, and leaves it absent for the unscannable `-` (stdin) form.
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyGhMutation - captures a readable --input path as bodyFilePath (#91)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input",
+    "/tmp/body.json",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+  assertEquals(info?.bodyFilePath, "/tmp/body.json");
+});
+
+Deno.test("classifyGhMutation - captures the --input=<path> equals form too (#91)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input=/tmp/body.json",
+  ]);
+  assertEquals(info?.bodyFilePath, "/tmp/body.json");
+});
+
+Deno.test("classifyGhMutation - leaves bodyFilePath absent for --input - (stdin) (#91)", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input",
+    "-",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+  assertEquals(info?.bodyFilePath, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #93 — a `@file`-sourced `-F`/`--field` value is unreadable too
+//
+// `gh -F 'labels[]=@/tmp/l.txt'` reads the value from a file, so the argv
+// cannot show it — the same blind spot as `--input`, on the field path.
+// Verified against gh 2.97.0: only `-F`/`--field` expand a leading `@`;
+// `-f`/`--raw-field` add a static string and never expand it.
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyGhMutation #93 - an @file -F field value is unreadable", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-F",
+    "labels[]=@/tmp/l.txt",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+});
+
+Deno.test("classifyGhMutation #93 - the --field=key=@path equals form is unreadable too", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--field=labels[]=@/tmp/l.txt",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+});
+
+Deno.test("classifyGhMutation #93 - a raw-field -f @literal value is NOT unreadable (no @ expansion)", () => {
+  // `-f`/`--raw-field` send the value literally; `@literal` is a real string,
+  // not a file, so the body stays argv-visible.
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-f",
+    "labels[]=@literal",
+  ]);
+  assertEquals(info?.unreadableBody, undefined);
+});
+
+Deno.test("classifyGhMutation #93 - a plain -F value with no @ is unchanged", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-F",
+    "labels[]=bug",
+  ]);
+  assertEquals(info?.unreadableBody, undefined);
 });

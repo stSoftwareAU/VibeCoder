@@ -8,7 +8,7 @@
  * Design principle: A PR targeting the default branch must not block
  * issues in milestones. Milestones are independent work streams.
  *
- * Usage from shell (via deno_bridge.sh):
+ * Usage from shell (via the Deno CLI (`deno run mod.ts <command>`)):
  *   deno_run_command "check-repo-availability" --repo "owner/repo" --github-user "username"
  *
  * Output:

@@ -4,7 +4,7 @@
  * Wraps the quality gate phase orchestration: Docker image detection,
  * missing tool detection, quality check execution (Docker or native),
  * failure classification, and output formatting. Callable from shell
- * via deno_bridge.sh.
+ * via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Arguments:
  *   --repo                      Repository in "owner/repo" format
