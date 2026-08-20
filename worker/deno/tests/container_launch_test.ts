@@ -929,3 +929,27 @@ Deno.test("buildContainerLaunchPlan - carries the builder-stop arguments only fo
     true,
   );
 });
+
+Deno.test("buildContainerLaunchPlan - carries the container_tools spec as a build arg (Issue #72)", () => {
+  const spec =
+    '[{"id":"java","url":{"noarch":"file:///x.tar.gz"},"sha256":{"noarch":"ab"}}]';
+  const plan = buildContainerLaunchPlan(
+    inputs({ containerToolsSpecJson: spec }),
+  );
+  const at = plan.buildArgs.indexOf("--build-arg");
+  assert(at !== -1, "expected a --build-arg for the tool spec");
+  assertEquals(plan.buildArgs[at + 1], `VIBE_CONTAINER_TOOLS=${spec}`);
+  // Options precede the build-context PATH, which is the last build argument.
+  assert(
+    at + 1 < plan.buildArgs.length - 1,
+    "the --build-arg must come before the build-context path",
+  );
+
+  // Absent → no extra build arg, so the default fleet build is unchanged.
+  const bare = buildContainerLaunchPlan(inputs());
+  assertEquals(bare.buildArgs.includes("--build-arg"), false);
+  assertEquals(
+    bare.buildArgs.some((a) => a.startsWith("VIBE_CONTAINER_TOOLS=")),
+    false,
+  );
+});
