@@ -70,6 +70,40 @@ export interface PlanningInvocationStats {
   extensions?: ExtensionTelemetry;
 }
 
+/**
+ * Failure-Detection gate + self-repair counters for one planning run
+ * (Issue #63).
+ *
+ * The gate's hit rate was previously observable only by grepping worker logs —
+ * which is how the systemic scale of the omission was found (8/8 offenders on
+ * one run) and why it went unnoticed long enough for the self-repair to become
+ * a routine, load-bearing part of every planning run rather than a rare
+ * fallback. Recording the outcome here makes the rate measurable from the
+ * run-stats comment itself.
+ *
+ * Every field is **required** so a run with zero offenders records explicit
+ * zeros. A metric emitted only on the unhappy path cannot distinguish
+ * "healthy" from "not reporting", which is the failure mode this exists to fix.
+ */
+export interface FailureDetectionGateStats {
+  /** Sub-issues this run published and therefore gated. */
+  published: number;
+  /** Published sub-issues the gate flagged as missing the criterion. */
+  offenders: number;
+  /** Offenders the self-repair fixed so they now pass the gate (#3272). */
+  repaired: number;
+  /** Offenders the repair attempted but could not fix. */
+  stillOffending: number;
+  /**
+   * Offenders **never attempted** because the handler budget could not fit
+   * their repair (Issue #58). Distinct from {@link stillOffending}: no work was
+   * started for them.
+   */
+  deferred: number;
+  /** Wall-clock milliseconds spent in the self-repair (0 when it never ran). */
+  repairDurationMs: number;
+}
+
 /** Verdict on whether a planning run was served by a degraded model. */
 export interface DegradationVerdict {
   /** True when any planning invocation was served by a non-expected model. */
@@ -362,14 +396,41 @@ function formatDuration(ms: number): string {
 }
 
 /**
+ * Render the Failure-Detection gate + self-repair counters (Issue #63).
+ *
+ * Always emits both lines when gate stats are supplied — including all-zero
+ * counts — so a clean run positively reports "gate ran, nothing offended"
+ * rather than being indistinguishable from a run that never reported.
+ */
+function formatGateLines(gate: FailureDetectionGateStats): string[] {
+  return [
+    `- **Failure-Detection gate:** published ${
+      formatCount(gate.published)
+    } · offenders ${formatCount(gate.offenders)} · repaired ${
+      formatCount(gate.repaired)
+    } · still offending ${formatCount(gate.stillOffending)} · deferred ${
+      formatCount(gate.deferred)
+    }`,
+    `- **Failure-Detection repair:** ${formatDuration(gate.repairDurationMs)}`,
+  ];
+}
+
+/**
  * Build the planning-run stats markdown block.
  *
  * Aggregates across every planning-phase invocation with stats: requested
  * model, served model(s), effort, input/output/cache tokens, turn count and
  * duration (when available), the number of planning invocations, and the
  * degradation verdict. Returns an empty string when there is nothing to report
- * (no planning invocation produced stats — e.g. a recovery path that skipped
- * Claude), so callers can omit the section.
+ * (no planning invocation produced stats **and** no Failure-Detection gate
+ * stats were supplied — e.g. a recovery path that skipped Claude and published
+ * nothing), so callers can omit the section.
+ *
+ * When `gate` is supplied (Issue #63) the block additionally carries the
+ * Failure-Detection gate/repair counters, and the block is emitted even if no
+ * planning invocation produced stats — a recovery close that skipped Claude
+ * still gated its published sub-issues, and those counts must not vanish with
+ * the model stats.
  *
  * The optional `phase` (default `"planning"`) selects which invocations are
  * aggregated and drives the heading / "N invocations" label — Issue #2717
@@ -381,6 +442,7 @@ function formatDuration(ms: number): string {
  * @param args.expectedModel - The expected (configured/derived) model
  * @param args.verdict - The degradation verdict (computed by the caller)
  * @param args.phase - The phase to aggregate (default `"planning"`)
+ * @param args.gate - Failure-Detection gate/repair counters for the run (#63)
  * @returns The markdown block, or "" when no stats are available
  */
 export function buildPlanningStatsSection(args: {
@@ -388,14 +450,15 @@ export function buildPlanningStatsSection(args: {
   expectedModel: string;
   verdict: DegradationVerdict;
   phase?: string;
+  gate?: FailureDetectionGateStats;
 }): string {
-  const { invocations, expectedModel, verdict } = args;
+  const { invocations, expectedModel, verdict, gate } = args;
   const phase = args.phase ?? "planning";
   const displayPhase = phaseDisplayName(phase);
   const planning = invocations.filter(
     (inv) => inv.phase === phase && inv.runStats,
   );
-  if (planning.length === 0) return "";
+  if (planning.length === 0 && !gate) return "";
 
   // Union of served models, preserving first-seen order.
   const served: string[] = [];
@@ -510,6 +573,11 @@ export function buildPlanningStatsSection(args: {
       ? `- **Degraded:** ❓ unknown — ${verdict.reason}`
       : `- **Degraded:** no`,
   );
+  // Failure-Detection gate + self-repair counters (Issue #63), appended after
+  // the pre-existing block so the established lines keep their exact shape and
+  // order. Always rendered when supplied, zeros included — the whole point is
+  // that a healthy run is distinguishable from a run that never reported.
+  if (gate) lines.push(...formatGateLines(gate));
 
   return lines.join("\n");
 }
@@ -542,12 +610,16 @@ export function buildPlanningStatsSection(args: {
  *   to derive the expected model from {@link phase}'s routing chain
  * @param args.phase - The top-tier phase to judge (default `"planning"`;
  *   grill-me passes `"grill_me"`)
+ * @param args.gate - Failure-Detection gate/repair counters for the run (#63);
+ *   supplied only by the planning closure, which is the sole path that gates
+ *   published sub-issues
  * @returns The resolved expected model, the verdict, and the stats section
  */
 export function buildDegradationReport(args: {
   invocations: PlanningInvocationStats[];
   configuredBestModel?: string;
   phase?: string;
+  gate?: FailureDetectionGateStats;
 }): DegradationReport {
   const phase = args.phase ?? "planning";
   const expectedModel = resolveExpectedPlanningModel(
@@ -560,6 +632,7 @@ export function buildDegradationReport(args: {
     expectedModel,
     verdict,
     phase,
+    ...(args.gate ? { gate: args.gate } : {}),
   });
   return { expectedModel, verdict, section };
 }
