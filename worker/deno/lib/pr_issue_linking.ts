@@ -37,10 +37,15 @@ const PR_URL_PATTERN = /^https?:\/\/.+\/pull\/\d+$/;
 
 /**
  * Return true if a PR title contains a reference to the given issue number.
- * Matches worker title conventions: "(#N)", "(Issue #N)", "(issue #N)".
+ * Matches worker title conventions in both paren and bracket delimiter styles:
+ * "(#N)", "(Issue #N)", "(issue #N)", "[#N]", "[Issue #N]", "[issue #N]"
+ * (Issue #106: PR GRQ-validation#844 was titled "[#836] …", which the
+ * paren-only match missed, so the existing-PR backstop failed to recognise a
+ * completed run).
  *
  * Uses string-includes rather than a dynamic RegExp to avoid any ReDoS risk
- * from interpolating external values into a regular expression.
+ * from interpolating external values into a regular expression. The closing
+ * delimiter also rejects digit-prefix variants for free (`[#142]` ⊉ `[#42]`).
  */
 export function prTitleMatchesIssue(
   title: string,
@@ -49,7 +54,10 @@ export function prTitleMatchesIssue(
   const n = String(Math.trunc(issueNumber));
   return title.includes(`(#${n})`) ||
     title.includes(`(Issue #${n})`) ||
-    title.includes(`(issue #${n})`);
+    title.includes(`(issue #${n})`) ||
+    title.includes(`[#${n}]`) ||
+    title.includes(`[Issue #${n}]`) ||
+    title.includes(`[issue #${n}]`);
 }
 
 /** Default gh command function — routed through the shared chokepoint. */
@@ -362,8 +370,6 @@ export async function findExistingPrForIssue(
   cache?: IssueCache,
 ): Promise<Result<string, Error>> {
   const issueStr = String(issueNumber);
-  // Match worker-style "(#1574)" and human-style "(Issue #1574)" / "(issue #1574)".
-  const titlePattern = new RegExp(`\\((?:[Ii]ssue\\s+)?#${issueStr}\\)`);
 
   // Issue #1796: when a cache is available, route every state through
   // `fetchPRsForIssueByTitle` so the per-issue search collapses to one
@@ -380,7 +386,9 @@ export async function findExistingPrForIssue(
       cache,
       ghCommandFn,
     );
-    const openMatch = openPrs.find((pr) => titlePattern.test(pr.title));
+    const openMatch = openPrs.find((pr) =>
+      prTitleMatchesIssue(pr.title, issueNumber)
+    );
     if (openMatch) {
       return { ok: true, value: buildPrUrl(repo, openMatch.number) };
     }
@@ -393,7 +401,9 @@ export async function findExistingPrForIssue(
       cache,
       ghCommandFn,
     );
-    const mergedMatch = mergedPrs.find((pr) => titlePattern.test(pr.title));
+    const mergedMatch = mergedPrs.find((pr) =>
+      prTitleMatchesIssue(pr.title, issueNumber)
+    );
     if (mergedMatch) {
       return { ok: true, value: buildPrUrl(repo, mergedMatch.number) };
     }
@@ -408,7 +418,7 @@ export async function findExistingPrForIssue(
     );
     const closedMatch = pickRecentlyClosedMatch(
       closedPrs,
-      titlePattern,
+      issueNumber,
       closedCooldownMs,
     );
     if (closedMatch) {
@@ -452,7 +462,7 @@ export async function findExistingPrForIssue(
       }> = JSON.parse(output.trim() || "[]");
 
       for (const pr of prs) {
-        const titleMatch = titlePattern.test(pr.title);
+        const titleMatch = prTitleMatchesIssue(pr.title, issueNumber);
         const markerMatch = pr.body ? markerPattern.test(pr.body) : false;
 
         if (!titleMatch && !markerMatch) continue;
@@ -483,12 +493,12 @@ export async function findExistingPrForIssue(
  */
 function pickRecentlyClosedMatch(
   prs: TitleSearchPR[],
-  titlePattern: RegExp,
+  issueNumber: number,
   cooldownMs: number,
 ): TitleSearchPR | null {
   const now = Date.now();
   for (const pr of prs) {
-    if (!titlePattern.test(pr.title)) continue;
+    if (!prTitleMatchesIssue(pr.title, issueNumber)) continue;
     if (pr.mergedAt) continue;
     const closedMs = pr.closedAt ? new Date(pr.closedAt).getTime() : 0;
     if (now - closedMs > cooldownMs) continue;
