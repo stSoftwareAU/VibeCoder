@@ -197,10 +197,10 @@ Deno.test("syncLabelsForRepo - skips UI labels for non-UI repos", async () => {
     runCommand: runner,
   });
   assertEquals(result.ok, true);
-  // Only workflow labels (16, after Issue #2022 + Issue #2031 + Issue #2030 +
+  // Only workflow labels (17, after Issue #2022 + Issue #2031 + Issue #2030 +
   // Issue #2029 + Issue #2055 + Issue #2077 + Issue #2650 + Issue #2904 +
-  // Issue #4112) should be created.
-  assertEquals(state.created.length, 16);
+  // Issue #4112 + Issue #59) should be created.
+  assertEquals(state.created.length, 17);
   assertEquals(result.skipped, 1); // 1 UI label skipped
 });
 

@@ -59,6 +59,11 @@ import type { Result } from "../types.ts";
  *   - `degraded-model` — non-reserved signal the planning flow applies to
  *     the parent issue and every sub-issue when a planning run was served
  *     by a model other than the configured planning model (Issue #2650).
+ *   - `needs-failure-detection-repair` — partial-repair marker the planning
+ *     flow applies to the parent when the run published a usable plan but
+ *     one or more sub-issues still lack their `## Failure Detection`
+ *     criterion (Issue #59). Reserved against the *planner*, but the worker
+ *     is the one thing that may raise it — hence its place here.
  */
 export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "failed",
@@ -72,6 +77,7 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "test-audit",
   "github-actions-audit",
   "degraded-model",
+  "needs-failure-detection-repair",
 ]);
 
 /**
