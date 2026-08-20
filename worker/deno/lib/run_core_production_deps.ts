@@ -92,6 +92,8 @@ import {
   processCiNudgeCandidate,
 } from "./pr_ci_nudge_scan.ts";
 import { scanBlockingPrStalls as libScanBlockingPrStalls } from "./blocking_pr_stall_detector.ts";
+import { findConflictingPr } from "./pr_merge_conflict_scan.ts";
+import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
   mergedReconcileWatermarkPath,
@@ -1363,6 +1365,79 @@ export async function createProductionRunCoreDeps(
           error: err instanceof Error ? err : new Error(String(err)),
         };
       }
+    },
+
+    // -- Priority 1.61: Resolve conflicting PRs (Issue #84) --
+    async findAndProcessMergeConflict() {
+      const scan = await findConflictingPr({
+        githubUser,
+        allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+        fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+        repos,
+        logger,
+        isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+        ghCommandFn: runGhCommand,
+        // Shared PR-list cache (Issue #4303): one superset listing per
+        // repo×author serves every Priority-1.x scan this cycle.
+        cache: issueCache,
+        shuffleRepos: shuffleArray,
+      });
+
+      if (!scan.ok || scan.value === null) {
+        return { ok: true, value: { processed: false } };
+      }
+
+      const conflict = scan.value;
+
+      const repoSetupResult = await setupRepo(conflict.repo, workDir);
+      if (!repoSetupResult.success) {
+        logger.error("Failed to set up repo for merge-conflict resolution", {
+          repo: conflict.repo,
+          error: repoSetupResult.message,
+        });
+        return { ok: true, value: { processed: false } };
+      }
+
+      const result = await processMergeConflict(conflict, {
+        logger,
+        deps: workerDeps,
+        workDir: repoSetupResult.message,
+        qualityInstructions: buildQualityInstructions(
+          config.repoConfig,
+          conflict.repo,
+        ),
+        customInstructions: getCustomInstructions(
+          config.repoConfig,
+          conflict.repo,
+        ),
+        claudeTimeout: config.claudeTimeout,
+        claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+        maxRateLimitRetries: config.maxRateLimitRetries,
+        workerId: getWorkerUniqueId(config.workerName),
+        needsHumanLabel: config.needsHumanLabel,
+        repoConfigs: config.repoConfig,
+      });
+
+      if (!result.ok) {
+        logger.error("Merge-conflict resolution failed", {
+          repo: conflict.repo,
+          prNumber: conflict.prNumber,
+          error: result.error.message,
+        });
+        return { ok: true, value: { processed: false } };
+      }
+
+      // A pushed merge changes the PR's state, so the iteration-scoped
+      // open-PR cache must not serve the stale listing (Issue #1799).
+      if (result.value.merged) {
+        await issueCache.invalidate(conflict.repo, "prs_open_all");
+      }
+
+      logger.info(result.value.summary, {
+        repo: conflict.repo,
+        prNumber: conflict.prNumber,
+      });
+      return { ok: true, value: { processed: result.value.processed } };
     },
 
     // -- Priority 1.62: Nudge stalled CI on Vibe Coder PRs (Issue #2100) --

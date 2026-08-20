@@ -191,6 +191,42 @@ export interface PrBranchUpdateDeps {
 }
 
 // ---------------------------------------------------------------------------
+// Conflict warning suppression (Issue #84)
+// ---------------------------------------------------------------------------
+
+/**
+ * PRs already warned about this process, keyed `repo#number`.
+ *
+ * The "needs a real merge" warning used to fire on every ~2.5-minute pass
+ * for as long as the PR stayed conflicting — six hours of identical log
+ * lines in the observed case. The queue is now visible as the
+ * `merge-conflict` label the conflict pass applies, so the log line only
+ * needs to fire once per PR.
+ */
+const warnedConflicts = new Set<string>();
+
+/**
+ * Whether the conflict warning for this PR has yet to be emitted.
+ *
+ * Returns true exactly once per PR per process; subsequent calls for the
+ * same PR return false.
+ */
+export function shouldWarnPrConflictOnce(
+  repo: string,
+  prNumber: number,
+): boolean {
+  const key = `${repo}#${prNumber}`;
+  if (warnedConflicts.has(key)) return false;
+  warnedConflicts.add(key);
+  return true;
+}
+
+/** Clear the warned-PR set. Exported for tests. */
+export function resetPrConflictWarnings(): void {
+  warnedConflicts.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Worker PR identification
 // ---------------------------------------------------------------------------
 
@@ -528,13 +564,20 @@ export async function executePrBranchUpdates(
     } else if (isPrBranchConflictError(updateResult.error)) {
       // Issue #4373: the PR's changes collide with the base and the worker
       // will not pick a side. Distinct status and a loud line — this PR
-      // needs a real merge (PR-feedback agent or a human), and it stays
-      // exactly as its author left it until then.
+      // needs a real merge, and it stays exactly as its author left it
+      // until then.
+      //
+      // Issue #84: the hand-off now has a receiver — the Priority 1.61
+      // conflict-resolution pass, which labels the PR `merge-conflict` and
+      // merges the base in for real. The warning fires once per PR rather
+      // than on every pass, because the label is the visible queue.
       conflictCount++;
-      deps.logger.warn(
-        `PR #${action.prNumber} (${action.branchName}) conflicts with ${action.baseBranch} — left untouched, needs a real merge (Issue #4373)`,
-        { repo: action.repo, prNumber: action.prNumber },
-      );
+      if (shouldWarnPrConflictOnce(action.repo, action.prNumber)) {
+        deps.logger.warn(
+          `PR #${action.prNumber} (${action.branchName}) conflicts with ${action.baseBranch} — left untouched, needs a real merge; handed to the merge-conflict pass (Issue #4373, Issue #84)`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+      }
       details.push({
         repo: action.repo,
         prNumber: action.prNumber,

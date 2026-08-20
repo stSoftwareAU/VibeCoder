@@ -59,6 +59,10 @@ import type { Result } from "../types.ts";
  *   - `degraded-model` — non-reserved signal the planning flow applies to
  *     the parent issue and every sub-issue when a planning run was served
  *     by a model other than the configured planning model (Issue #2650).
+ *   - `merge-conflict` — visible queue marker the conflict-resolution pass
+ *     applies to a PR stuck at `mergeable == CONFLICTING`, so the stuck
+ *     set is readable at a glance instead of buried in per-pass log noise
+ *     (Issue #84).
  */
 export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "failed",
@@ -72,6 +76,7 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "test-audit",
   "github-actions-audit",
   "degraded-model",
+  "merge-conflict",
 ]);
 
 /**
