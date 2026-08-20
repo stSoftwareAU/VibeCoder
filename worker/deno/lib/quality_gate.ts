@@ -27,6 +27,12 @@ import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
+import {
+  cachedPassAt,
+  computeQualityInputDigest,
+  invalidate,
+  recordPass,
+} from "./quality_gate_cache.ts";
 import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
 import { runPagesLiquidCheck } from "./pages_liquid_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
@@ -39,6 +45,21 @@ export interface CheckExecutionResult {
   name: string;
   status: CheckStatus;
   output: string;
+  /** Wall time this check took, in milliseconds (Issue #86). */
+  durationMs?: number;
+}
+
+/**
+ * Run a check thunk and stamp its wall duration onto the result, so the gate
+ * summary can show where the ~6-minute in-container cost actually goes
+ * (Issue #86). A thrown check is left for the caller's own handling.
+ */
+async function timed(
+  check: () => Promise<CheckExecutionResult>,
+): Promise<CheckExecutionResult> {
+  const start = Date.now();
+  const result = await check();
+  return { ...result, durationMs: Date.now() - start };
 }
 
 /** Result of the full quality gate run. */
@@ -58,6 +79,11 @@ export interface QualityGateConfig {
   denoDir?: string;
   /** Quality options (strict, sequential, validatePrompts). */
   options: QualityOptions;
+  /**
+   * Directory for the content-addressed check cache (Issue #86). Omitted, the
+   * two expensive dimensions (deno test, deno check) run every time.
+   */
+  cacheDir?: string;
 }
 
 /**
@@ -809,6 +835,22 @@ async function runDenoTests(
   denoCmd: string,
 ): Promise<CheckExecutionResult> {
   const name = "deno tests";
+  // Content-addressed skip (Issue #86): reuse a cached PASS only when the
+  // whole .ts input set is byte-identical to the last passing run. The digest
+  // walk is skipped entirely when caching is off, so a host dev run pays
+  // nothing for it.
+  const digest = config.cacheDir
+    ? await computeQualityInputDigest(config.denoDir ?? ".")
+    : null;
+  const cachedAt = await cachedPassAt(config.cacheDir, name, digest);
+  if (cachedAt) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `Deno tests: PASSED (cached — inputs unchanged since ${cachedAt})`,
+    };
+  }
   const result = await runCommand(
     [
       denoCmd,
@@ -829,12 +871,14 @@ async function runDenoTests(
   );
 
   if (result.exitCode === 0) {
+    await recordPass(config.cacheDir, name, digest, isoNow());
     return {
       name,
       status: "PASSED",
       output: `${result.output}\nDeno tests: PASSED`,
     };
   }
+  await invalidate(config.cacheDir, name);
   return {
     name,
     status: "FAILED",
@@ -911,23 +955,42 @@ export async function runDenoCheck(
   denoCmd: string,
 ): Promise<CheckExecutionResult> {
   const name = "deno type check";
+  const digest = config.cacheDir
+    ? await computeQualityInputDigest(config.denoDir ?? ".")
+    : null;
+  const cachedAt = await cachedPassAt(config.cacheDir, name, digest);
+  if (cachedAt) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `Deno type check: PASSED (cached — inputs unchanged since ${cachedAt})`,
+    };
+  }
   const result = await runCommand(
     [denoCmd, "check", "**/*.ts"],
     { cwd: config.denoDir },
   );
 
   if (result.exitCode === 0) {
+    await recordPass(config.cacheDir, name, digest, isoNow());
     return {
       name,
       status: "PASSED",
       output: `${result.output}\nDeno type check: PASSED`,
     };
   }
+  await invalidate(config.cacheDir, name);
   return {
     name,
     status: "FAILED",
     output: `${result.output}\nDeno type check: FAILED`,
   };
+}
+
+/** ISO-8601 now, isolated so the cache stamp is easy to stub in tests. */
+function isoNow(): string {
+  return new Date().toISOString();
 }
 
 /**
@@ -940,7 +1003,7 @@ export async function runDenoCheck(
 export async function runChecksParallel(
   checks: Array<() => Promise<CheckExecutionResult>>,
 ): Promise<CheckExecutionResult[]> {
-  const settled = await Promise.allSettled(checks.map((check) => check()));
+  const settled = await Promise.allSettled(checks.map((check) => timed(check)));
   return settled.map((outcome, index) => {
     if (outcome.status === "fulfilled") {
       return outcome.value;
@@ -968,7 +1031,7 @@ async function runChecksSequential(
 ): Promise<CheckExecutionResult[]> {
   const results: CheckExecutionResult[] = [];
   for (const check of checks) {
-    results.push(await check());
+    results.push(await timed(check));
   }
   return results;
 }
@@ -1164,9 +1227,16 @@ export async function runQualityGate(
     mainResults = await runChecksParallel(mainChecks);
   }
 
-  // Record results
+  // Record results, with a per-check duration line so the gate's cost is
+  // visible (Issue #86) — the two heavy dimensions dominate, and a cached
+  // skip shows as a few milliseconds.
   for (const result of mainResults) {
     allOutput.push(result.output);
+    if (result.durationMs !== undefined) {
+      allOutput.push(
+        `  ⏱  ${result.name}: ${(result.durationMs / 1000).toFixed(1)}s`,
+      );
+    }
     recordCheck(checks, result.name, result.status);
   }
 
