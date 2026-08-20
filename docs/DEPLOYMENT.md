@@ -21,6 +21,7 @@ runs itself and is steered entirely through GitHub. See
   - [Using systemd (Linux)](#using-systemd-linux)
   - [Using launchd (macOS)](#using-launchd-macos)
   - [Using Task Scheduler (Windows)](#using-task-scheduler-windows)
+- [Changing `container_tools` forces an image rebuild](#-changing-container_tools-forces-an-image-rebuild)
 - [Logs](#logs)
 - [GitHub Pages](#github-pages)
 - [Screenshot Support Setup](#screenshot-support-setup)
@@ -721,6 +722,51 @@ For environments without Task Scheduler (e.g., containers), use the convenience 
 ```
 
 > **📝 Note:** `run.ps1` is a thin launcher that locates Deno, asks the `container-launch-plan` Deno command what to run, and launches the worker container — the same contract `run.sh` follows, with the same mounts and privilege flags. Container is the only run mode on every platform (Issue #4; Windows always was,): with neither Docker nor Podman available `run.ps1` exits non-zero with an actionable message rather than running the worker on the host, and a configuration naming a removed mode (`native`, `seatbelt`) exits non-zero with the removal explained. It exits with the container's exit status, so Task Scheduler and `loop.ps1` observe real failures.
+
+## 🧰 Changing `container_tools` forces an image rebuild
+
+`container_tools` in `.config.json` lists the extra build-time tools this
+deployment's image bakes in — Java and Maven, say. The full spec, a worked
+example and the checksum rules are in
+[Container Image](CONTAINER.md#deployer-supplied-build-time-tools); what matters
+on a deployed host is that **the selection is baked into the image, not read at
+run time**. Editing it changes nothing until the image is rebuilt.
+
+- **Rebuild after every change** — adding a tool, dropping one, bumping a
+  version or correcting a digest. The launcher builds
+  `vibe-coder:<hash>` from the container definition; the selection reaches the
+  build as the `VIBE_CONTAINER_TOOLS` argument, and until Issue #73 folds it
+  into the hash a selection-only edit leaves the tag unchanged, so the launcher
+  reuses the image it already has. Force it:
+
+  ```bash
+  # The tag the next launch will use
+  deno run --allow-read worker/deno/mod.ts container-image-hash
+
+  # Drop it so the next launch rebuilds (docker or podman)
+  docker image rm "vibe-coder:<hash>"
+  ```
+
+  The next `./run.sh` rebuilds and the new tools are present. Superseded tags
+  are pruned automatically on later launches.
+
+- **The rebuild downloads and verifies every selected archive.** A wrong or
+  drifted SHA-256 fails the build loudly, naming the tool, and no image is
+  produced — the fix is to update `.config.json`, never to relax verification.
+  See
+  [When a checksum stops matching](CONTAINER.md#when-a-checksum-stops-matching).
+
+- **Ask the image what it actually carries** rather than guessing whether it
+  predates the change — the installed ids are the directories under the fixed
+  prefix:
+
+  ```bash
+  docker run --rm --entrypoint ls "vibe-coder:<hash>" /opt/vibe-tools
+  ```
+
+  Inside a started container the entrypoint exports the same set as
+  `VIBE_IMAGE_CONTAINER_TOOLS`, alongside the PATH and `JAVA_HOME` the
+  selection asked for.
 
 ## ♻️ Container restart self-healing
 

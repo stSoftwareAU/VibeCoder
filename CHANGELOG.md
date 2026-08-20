@@ -11,6 +11,25 @@ This changelog is a human-readable digest grouped by version.
 
 ## [Unreleased]
 
+### Added
+
+- **A deployment can bake extra build-time tools into its image (Issue #5).**
+  A top-level `container_tools` array in `.config.json` declares the tools this
+  deployment's monitored repositories need — Java and Maven are the first
+  expected use. Each entry is a declarative archive install (download → verify
+  SHA-256 → extract → PATH → `env`): no install commands, no packages, no
+  installer scripts. The install prefix is fixed at `/opt/vibe-tools/<id>` and
+  every `bin`/`env` value is relative to it, so no selection can aim PATH or
+  `JAVA_HOME` at an arbitrary host path; a `url` without a matching `sha256` is
+  refused as an unverified download. The default is an empty selection, so the
+  fleet image is byte-for-byte what it was. Issue #75 adds the worked Java +
+  Maven example, the checksum-drift answer (the build fails loud and the fix is
+  to update `.config.json`, never to relax verification) and the deployer
+  documentation across
+  [Container Image](docs/CONTAINER.md#deployer-supplied-build-time-tools),
+  [Configuration](docs/CONFIGURATION.md) and
+  [Deployment](docs/DEPLOYMENT.md#-changing-container_tools-forces-an-image-rebuild).
+
 ### Changed
 
 - **A deadline-killed execute no longer discards its work, and late-cycle
