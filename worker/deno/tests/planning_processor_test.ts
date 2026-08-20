@@ -13,6 +13,7 @@ import {
   buildFallbackDraftPlanningPrompt,
   buildPlanningSummaryComment,
   buildRetryPlanningPrompt,
+  buildSingleInvocationPlanningPrompt,
   checkSubIssuesOnGitHub,
   countSubIssues,
   detectCreatedSubIssues,
@@ -20,6 +21,7 @@ import {
   extractSubIssueRefs,
   extractSubIssueUrls,
   extractSubIssueUrlsFromComments,
+  FAILURE_DETECTION_REQUIREMENT,
   filterOutSelfIssueUrl,
   listNativeSubIssues,
   listSubIssuesViaIssueList,
@@ -4130,4 +4132,86 @@ Deno.test("buildCritiqueFallbackPublishPrompt - omits milestone instruction when
 
   assertEquals(prompt.includes("--milestone"), false);
   assertEquals(prompt.includes("adversarially critique"), true);
+});
+
+// ============================================================================
+// Failure-Detection requirement in the fallback publish prompts (Issue #61)
+// ============================================================================
+
+Deno.test("fallback publish prompts carry the shared Failure-Detection requirement (Issue #61)", () => {
+  const singleInvocation = buildSingleInvocationPlanningPrompt({
+    repo: "org/repo",
+    issueNumber: 61,
+    issueTitle: "Break down the planner",
+    issueBody: "Needs sub-issues.",
+  });
+  const critiqueFallback = buildCritiqueFallbackPublishPrompt({
+    repo: "org/repo",
+    issueNumber: 61,
+  });
+
+  // Both in-code fallbacks publish sub-issues, so both must state the rule —
+  // and from the one shared constant, so they cannot drift apart.
+  assertStringIncludes(singleInvocation, FAILURE_DETECTION_REQUIREMENT);
+  assertStringIncludes(critiqueFallback, FAILURE_DETECTION_REQUIREMENT);
+});
+
+Deno.test("FAILURE_DETECTION_REQUIREMENT - names the section, the N/A escape hatch and the placeholder rule (Issue #61)", () => {
+  assertStringIncludes(FAILURE_DETECTION_REQUIREMENT, "## Failure Detection");
+  assertStringIncludes(FAILURE_DETECTION_REQUIREMENT, "N/A — <reason>");
+  assertStringIncludes(
+    FAILURE_DETECTION_REQUIREMENT,
+    "**Failure detection:**",
+  );
+  assertStringIncludes(
+    FAILURE_DETECTION_REQUIREMENT,
+    "does NOT count as filled",
+  );
+});
+
+Deno.test("FAILURE_DETECTION_REQUIREMENT - the shapes it promises are the shapes the gate implements (Issue #61)", () => {
+  // The bracketed example the prompt calls out is taken from the constant
+  // itself, so wording drift that the gate would still reject fails here.
+  const placeholderExample = FAILURE_DETECTION_REQUIREMENT.match(
+    /`(\[[^`]*\])`/,
+  )?.[1];
+  assertEquals(typeof placeholderExample, "string");
+
+  const accepted = validateFailureDetectionCriteria([
+    {
+      number: 1,
+      title: "concrete criterion",
+      body:
+        "## Acceptance Criteria\n- [ ] Tests pass\n\n## Failure Detection\n`deno test worker/deno/tests/planning_processor_test.ts` fails in CI if a fallback prompt loses the requirement.\n",
+    },
+    {
+      number: 2,
+      title: "N/A escape hatch",
+      body:
+        "## Failure Detection\nN/A — prompt-only change with no runtime failure surface.\n",
+    },
+    {
+      number: 3,
+      title: "bolded label shape",
+      body:
+        "**Failure detection:** `./quality.sh` fails when the shared constant is dropped.\n",
+    },
+  ]);
+  assertEquals(accepted, []);
+
+  const offenders = validateFailureDetectionCriteria([
+    {
+      number: 4,
+      title: "bracketed placeholder",
+      body: `## Failure Detection\n${placeholderExample}\n`,
+    },
+    {
+      number: 5,
+      title: "no section at all",
+      body: "## Acceptance Criteria\n- [ ] Tests pass\n",
+    },
+  ]);
+  assertEquals(offenders.map((o) => o.number), [4, 5]);
+  assertStringIncludes(offenders[0]!.reason, "bracketed template placeholder");
+  assertStringIncludes(offenders[1]!.reason, "missing");
 });

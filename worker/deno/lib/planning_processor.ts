@@ -570,6 +570,35 @@ export const RESERVED_LABEL_PROHIBITION =
   "Vibe Coder.";
 
 /**
+ * Canonical `## Failure Detection` requirement for the in-code fallback publish
+ * prompts (Issue #61).
+ *
+ * The instruction previously existed only on the main publish path
+ * (`prompts/planning/` and `prompts/planning_critique/`), so a run that took an
+ * in-code fallback published sub-issues with no instruction to include the
+ * section at all — every one of them then a presence-gate offender needing a
+ * model-driven repair. Holding the wording in one exported constant keeps the
+ * fallbacks (and any future prompt) from drifting apart, and pins them to the
+ * acceptance rule `validateFailureDetectionCriteria()` actually implements in
+ * `failure_detection_gate.ts`: either heading shape is accepted, and a wholly
+ * bracketed body is rejected.
+ */
+export const FAILURE_DETECTION_REQUIREMENT =
+  "Every sub-issue body must include a `## Failure Detection` section stating " +
+  "how a failure or regression in that work is detected, and where. Fill it " +
+  "with a concrete criterion — a named automated test, a CI quality gate, or " +
+  "a post-release alert (a console log alone never qualifies, because workers " +
+  "run unattended) — or, when the work has no runtime failure surface " +
+  "(docs-only or prompt-only), an explicit `N/A — <reason>` line. A bracketed " +
+  "placeholder such as `[how a regression is detected]` does NOT count as " +
+  "filled. Either a `## Failure Detection` heading or a bolded " +
+  "`**Failure detection:**` line is accepted. A deterministic post-publish " +
+  "gate rejects any sub-issue whose section is missing, empty, or still a " +
+  "bracketed placeholder, so fill it in before you run `gh issue create` — " +
+  "if you cannot state a real criterion for a sub-issue, re-scope, merge, or " +
+  "drop it rather than publishing a non-conforming one.";
+
+/**
  * Build a single-invocation planning prompt that plans AND creates sub-issues
  * in one agentic Claude call — the fallback for when the draft stage fails,
  * times out, or returns an empty draft (Issue #2648). The run is then never
@@ -635,7 +664,7 @@ ${delimiters.bodyEnd}
 ${commentsSection}${delimiters.untrustedEnd}
 ${buildBoundaryIntegrityInstruction(delimiters.boundaryId)}
 
-Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed.${milestoneNote}`;
+Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed.${milestoneNote}`;
 }
 
 /**
@@ -792,7 +821,7 @@ export function buildCritiqueFallbackPublishPrompt(opts: {
     }"\` in every \`gh issue create\` command.`
     : "";
 
-  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
+  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
 }
 
 // ---------------------------------------------------------------------------
