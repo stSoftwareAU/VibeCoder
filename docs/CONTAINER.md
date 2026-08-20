@@ -227,6 +227,7 @@ it would invalidate the image on every commit:
 | `container/entrypoint.sh` | Baked into the image at `/usr/local/bin`     |
 | `container/tools.json`    | The pinned versions the build must agree with |
 | `container/providers/*.sh` | The coding-agent provider layer the build installs |
+| `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
 
 ```mermaid

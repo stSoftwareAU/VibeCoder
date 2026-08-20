@@ -733,22 +733,16 @@ on a deployed host is that **the selection is baked into the image, not read at
 run time**. Editing it changes nothing until the image is rebuilt.
 
 - **Rebuild after every change** — adding a tool, dropping one, bumping a
-  version or correcting a digest. The launcher builds
-  `vibe-coder:<hash>` from the container definition; the selection reaches the
-  build as the `VIBE_CONTAINER_TOOLS` argument, and until Issue #73 folds it
-  into the hash a selection-only edit leaves the tag unchanged, so the launcher
-  reuses the image it already has. Force it:
-
-  ```bash
-  # The tag the next launch will use
-  deno run --allow-read worker/deno/mod.ts container-image-hash
-
-  # Drop it so the next launch rebuilds (docker or podman)
-  docker image rm "vibe-coder:<hash>"
-  ```
-
-  The next `./run.sh` rebuilds and the new tools are present. Superseded tags
-  are pruned automatically on later launches.
+  version or correcting a digest. The launcher rebuilds only when the image
+  reference is absent locally, and the reference is the hash of the *committed*
+  container definition: the selection reaches the build as the
+  `VIBE_CONTAINER_TOOLS` argument out of `.config.json`, so until Issue #73
+  folds it into the hash a selection-only edit leaves the tag unchanged and the
+  launcher reuses the image it already has. Delete the image and run the
+  launcher again —
+  [Forcing a rebuild](TROUBLESHOOTING.md#forcing-a-rebuild) has the commands.
+  A rebuild takes several minutes; superseded tags are pruned automatically on
+  later launches.
 
 - **The rebuild downloads and verifies every selected archive.** A wrong or
   drifted SHA-256 fails the build loudly, naming the tool, and no image is
@@ -764,7 +758,9 @@ run time**. Editing it changes nothing until the image is rebuilt.
   docker run --rm --entrypoint ls "vibe-coder:<hash>" /opt/vibe-tools
   ```
 
-  Inside a started container the entrypoint exports the same set as
+  A default image installs nothing extra, so the prefix does not exist at all
+  there and the command reports it missing. Inside a started container the
+  entrypoint exports the applied ids as
   `VIBE_IMAGE_CONTAINER_TOOLS`, alongside the PATH and `JAVA_HOME` the
   selection asked for.
 
