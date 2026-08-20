@@ -38,6 +38,7 @@ import {
   type MemoryPressureReading,
   probeMemoryPressure,
 } from "./memory_pressure.ts";
+import { WIP_CHECKPOINT_COMMIT_PREFIX } from "./wip_markers.ts";
 
 /** Default milliseconds between checkpoint attempts. */
 export const DEFAULT_WIP_CHECKPOINT_INTERVAL_MS = 10 * 60_000;
@@ -47,7 +48,7 @@ export const DEFAULT_PRESSURE_PROBE_INTERVAL_MS = 60_000;
 
 /** Commit message for automatic checkpoints (squashed on PR merge). */
 export const WIP_CHECKPOINT_COMMIT_MESSAGE =
-  "WIP checkpoint: periodic agent progress snapshot (Issue #4170)";
+  `${WIP_CHECKPOINT_COMMIT_PREFIX} periodic agent progress snapshot (Issue #4170)`;
 
 /**
  * Commit message for the one-shot preservation of a timed-out execute

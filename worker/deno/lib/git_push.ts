@@ -13,6 +13,7 @@ import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
+import { buildPushArgs } from "./git_ref_args.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
@@ -341,11 +342,22 @@ export async function pushUnpushedCommits(
 
   // Use -u so the first push sets the upstream tracking ref. This is a
   // no-op when the ref is already configured, so it is safe for both the
-  // first-time push and subsequent pushes.
-  const pushResult = await runGitCommand(
-    ["push", "-u", "origin", branchName],
-    options,
-  );
+  // first-time push and subsequent pushes. The branch is routed through
+  // `buildPushArgs` (Issue #148), which rejects a dash-leading name and
+  // inserts `--end-of-options` so git can only read it as a refspec — this
+  // is the push every automated commit uses, WIP preservation included.
+  let pushArgs: string[];
+  try {
+    pushArgs = buildPushArgs("origin", branchName, { setUpstream: true });
+  } catch (err) {
+    // A refused ref is a loud failure Result, never a silent skip: the
+    // caller reports it exactly as it reports any other push failure.
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+  const pushResult = await runGitCommand(pushArgs, options);
 
   if (!pushResult.ok) {
     return { ok: false, error: pushResult.error };
