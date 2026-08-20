@@ -36,14 +36,25 @@ Deno.test("isPrimaryRateLimitMessage - ignores secondary limits and 5xx", () => 
   assert(!isPrimaryRateLimitMessage(""));
 });
 
-Deno.test("isQuotaExemptGhCall - only `gh api rate_limit` is exempt", () => {
+Deno.test("isQuotaExemptGhCall - REST `gh api` calls are exempt, GraphQL is not", () => {
+  // REST (core) quota is a separate budget from the exhausted GraphQL one,
+  // so plain `gh api <rest-path>` calls stay callable while latched.
   assert(isQuotaExemptGhCall(["api", "rate_limit"]));
   assert(isQuotaExemptGhCall(["api", "rate_limit", "--jq", ".resources"]));
+  assert(isQuotaExemptGhCall(["api", "repos/o/r/labels"]));
+  // Issue #42 Defect 3: the REST assignees-release call must stay callable.
+  assert(isQuotaExemptGhCall([
+    "api",
+    "-X",
+    "DELETE",
+    "repos/o/r/issues/5/assignees",
+    "-f",
+    "assignees[]=bot",
+  ]));
   // GraphQL-backed calls are not exempt — they are what the latch stops.
   assert(!isQuotaExemptGhCall(["api", "graphql", "-f", "query=..."]));
   assert(!isQuotaExemptGhCall(["issue", "list", "--repo", "o/r"]));
   assert(!isQuotaExemptGhCall(["pr", "list", "--repo", "o/r"]));
-  assert(!isQuotaExemptGhCall(["api", "repos/o/r/labels"]));
 });
 
 Deno.test("isPrimaryQuotaLatched - unlatched by default", () => {
