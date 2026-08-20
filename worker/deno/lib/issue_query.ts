@@ -1830,6 +1830,113 @@ function labelMatchesAllowedAuthor(
   return allowedAuthors.some((a) => a.toLowerCase() === adder);
 }
 
+/**
+ * Timestamp (ISO-8601) of the most recent `labeled` event for `labelName`
+ * whose actor is a trusted adder — an `allowedAuthors` login that is not a
+ * fleet worker (same trust rule as {@link wasLabelAddedByAllowedAuthor}).
+ * Returns null when the last add is untrusted or carries no timestamp.
+ */
+export function trustedLabelAddedAt(
+  timeline: TimelineLabelEventJson[],
+  labelName: string,
+  allowedAuthors: string[],
+  fleetWorkerLogins: string[] = [],
+): string | null {
+  if (
+    !labelMatchesAllowedAuthor(
+      timeline,
+      labelName,
+      allowedAuthors,
+      fleetWorkerLogins,
+    )
+  ) {
+    return null;
+  }
+  const labelEvents = timeline.filter(
+    (e) => e.event === "labeled" && e.label?.name === labelName,
+  );
+  const last = labelEvents[labelEvents.length - 1];
+  return typeof last?.created_at === "string" && last.created_at !== ""
+    ? last.created_at
+    : null;
+}
+
+/**
+ * True when `labelAddedAt` is a valid timestamp strictly after the PR's
+ * close/merge time — i.e. a human re-applied the discovery label after the
+ * fleet's PR landed, which reopens the issue for the fleet (VibeCoder#42).
+ * A PR with no usable `closedAt` cannot be compared and keeps blocking.
+ */
+export function isRelabelledAfterClosedPR(
+  closedPR: Pick<ClosedPR, "closedAt">,
+  labelAddedAt: string | null,
+): boolean {
+  if (labelAddedAt === null) return false;
+  const closed = Date.parse(closedPR.closedAt);
+  const added = Date.parse(labelAddedAt);
+  if (!Number.isFinite(closed) || !Number.isFinite(added)) return false;
+  return added > closed;
+}
+
+/**
+ * Did a trusted author re-apply `labelName` to the issue AFTER `closedPR`
+ * closed or merged? (VibeCoder#42)
+ *
+ * The closed-PR gate marks an issue whose fleet PR merged as done for the
+ * fleet, permanently. Its documented escape hatch is "a human re-opens the
+ * issue or re-applies the discovery label" — but the gate matched on the PR
+ * title alone and never looked at the timeline, so a re-label (e.g.
+ * `work-on` → `top-priority` after two partial PRs landed) was silently
+ * ignored and the issue could never be picked up again. This helper supplies
+ * the missing comparison.
+ *
+ * Cache trust follows {@link wasLabelAddedByAllowedAuthor} (Issue #3709): a
+ * complete cached timeline may only *deny* a reopen (no trusted add after
+ * the PR). A cached entry that would grant it is re-confirmed live, because
+ * granting a pickup from a file under TMPDIR is exactly the escalation path
+ * that finding closed. Denial dominates during a scan, so the N+1 collapse
+ * is kept where it matters.
+ */
+export async function wasLabelReappliedAfterClosedPR(
+  repo: string,
+  issueNumber: number,
+  labelName: string,
+  allowedAuthors: string[],
+  closedPR: Pick<ClosedPR, "closedAt">,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  cache?: TimelineCache,
+  fleetWorkerLogins: string[] = [],
+): Promise<boolean> {
+  if (cache) {
+    const cached = await cache.readComplete(repo, issueNumber);
+    if (
+      cached !== null &&
+      !isRelabelledAfterClosedPR(
+        closedPR,
+        trustedLabelAddedAt(
+          cached,
+          labelName,
+          allowedAuthors,
+          fleetWorkerLogins,
+        ),
+      )
+    ) {
+      return false;
+    }
+  }
+  const timeline = await paginateTimeline(
+    repo,
+    issueNumber,
+    ghCommandFn,
+    cache,
+  );
+  if (timeline === null) return false;
+  return isRelabelledAfterClosedPR(
+    closedPR,
+    trustedLabelAddedAt(timeline, labelName, allowedAuthors, fleetWorkerLogins),
+  );
+}
+
 // =============================================================================
 // Recently-closed PR blocking (Issue #1427)
 // =============================================================================
@@ -2010,8 +2117,11 @@ export async function fetchRecentlyClosedPRsByUser(
  *
  *   - **Merged** PRs — included regardless of age. Once any fleet PR for an
  *     issue merges, that issue is done for the fleet: re-pickup requires a
- *     human to re-open the issue or re-apply the discovery label. Marked
- *     `merged: true` so the skip is *permanent*, not cooldown-windowed.
+ *     human to re-open the issue or re-apply the discovery label (the
+ *     collectors honour a re-label dated after the merge via
+ *     {@link wasLabelReappliedAfterClosedPR}, VibeCoder#42). Marked
+ *     `merged: true` so the skip is otherwise *permanent*, not
+ *     cooldown-windowed.
  *   - **Closed-unmerged** PRs — included only when closed within
  *     `cooldownSeconds`, so the retry path stays available once the window
  *     elapses. Marked `merged: false`.
