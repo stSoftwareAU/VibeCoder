@@ -2,7 +2,7 @@
  * Security command for the Vibe Coder worker.
  *
  * Provides input validation and security checks callable from shell
- * via deno_bridge.sh. Supports sub-operations:
+ * via the Deno CLI (`deno run mod.ts <command>`). Supports sub-operations:
  *   - validate-input: Validate issue title and body
  *   - check-commenter: Check if a user is authorised
  *   - detect-bots: Audit bot accounts in authorised commenters

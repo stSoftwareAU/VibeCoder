@@ -2,7 +2,7 @@
  * Failure diagnosis command for the Vibe Coder worker.
  *
  * Context-aware failure categorisation and diagnosis messaging.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - detect-category: Analyse failure message and return category

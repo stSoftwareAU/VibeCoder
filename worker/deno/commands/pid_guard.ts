@@ -2,7 +2,7 @@
  * PID guard command for the Vibe Coder worker.
  *
  * Provides PID file management and process guard functionality callable
- * from shell via deno_bridge.sh. Supports sub-operations:
+ * from shell via the Deno CLI (`deno run mod.ts <command>`). Supports sub-operations:
  *   - check-pid: Check if a PID is running
  *   - check-pid-file: Check PID file and determine if safe to proceed
  *   - terminate-descendants: Terminate descendant processes

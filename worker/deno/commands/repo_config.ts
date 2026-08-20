@@ -1,8 +1,8 @@
 /**
  * Repo config command for the Vibe Coder worker (Issue #964).
  *
- * Exposes per-repo configuration utilities to shell scripts via
- * deno_bridge.sh. Operations include config queries, quality
+ * Exposes per-repo configuration utilities to shell scripts via the Deno CLI
+ * (`deno run mod.ts <command>`). Operations include config queries, quality
  * instructions, reviewer flags, default branch lookup, and
  * pre-setup command execution.
  */

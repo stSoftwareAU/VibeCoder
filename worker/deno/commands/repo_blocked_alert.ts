@@ -2,7 +2,7 @@
  * Repo blocked alert command for the Vibe Coder worker.
  *
  * Tracks and alerts when open PRs block all issues in a repository.
- * Callable from shell via deno_bridge.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Sub-operations (--operation):
  *   - record-blocked: Record that a repo's issues are all blocked

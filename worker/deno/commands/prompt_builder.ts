@@ -1,7 +1,7 @@
 /**
  * Prompt builder command for the Vibe Coder worker (Issue #914).
  *
- * Provides Claude prompt template generation via deno_bridge.sh.
+ * Provides Claude prompt template generation via the Deno CLI (`deno run mod.ts <command>`).
  * Replaces worker/shared/prompt_builder.sh.
  *
  * Sub-operations (--operation):

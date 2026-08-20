@@ -501,16 +501,8 @@ Deno.test("run mode - run_mode is a recognised configuration key", () => {
   );
 });
 
-Deno.test("run mode - the shell defaults carry the same container default", async () => {
-  const shellPath = new URL(
-    "../../shared/config_defaults.sh",
-    import.meta.url,
-  );
-  const content = await Deno.readTextFile(shellPath);
-  const match = /: "\$\{RUN_MODE:=([^"}]+)\}"/.exec(content);
-  assert(
-    match,
-    'config_defaults.sh must define : "${RUN_MODE:=container}" for the shell launchers',
-  );
-  assertEquals(match[1], DEFAULT_RUN_MODE);
-});
+// Issue #97: the "shell defaults carry the same container default" test was
+// removed with worker/shared/config_defaults.sh. It was already stale since
+// Issue #4 — the launchers read `mod.ts run-mode`, not the shell shim — so
+// the shim's RUN_MODE default no longer feeds any launcher. `DEFAULT_RUN_MODE`
+// remains the single source of truth, exercised by the tests above.

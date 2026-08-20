@@ -586,17 +586,16 @@ async function runConfigSmokeTest(
     };
   }
 
-  // Issue #3661 (SEC-bea501c3a7d7): quote through posixSingleQuote rather than
-  // bare `'…'`. Neither value is remotely reachable today, but an install path
-  // (or $HOME) containing a single quote would otherwise break out of the
-  // literal and execute — this keeps "no unescaped interpolation into any
-  // shell context" a checkable invariant.
-  const defaultsPath = posixSingleQuote(
-    `${config.scriptDir}/worker/shared/config_defaults.sh`,
-  );
+  // Issue #97: the retired `config_defaults.sh` shim used to seed these empty
+  // arrays before the load-config output was eval'd. Initialise them inline
+  // instead — the check's invariant is that load-config *populates* REPOS and
+  // ALLOWED_AUTHORS, and starting them empty is exactly what proves the
+  // override (mirroring load_config_test.ts's own harness).
   const script = `
     set -euo pipefail
-    source ${defaultsPath}
+    REPOS=()
+    ALLOWED_AUTHORS=()
+    ISSUE_LABELS=()
     _output=$(cd ${posixSingleQuote(config.scriptDir)} && ${
     posixSingleQuote(denoCmd)
   } run --allow-read --allow-env worker/deno/mod.ts load-config 2>/dev/null) || true
@@ -604,7 +603,7 @@ async function runConfigSmokeTest(
         eval "$_output"
     fi
     if [[ \${#REPOS[@]} -eq 0 ]]; then
-        echo 'FAIL: REPOS is empty after loading config — load-config output does not override config_defaults.sh'
+        echo 'FAIL: REPOS is empty after loading config — load-config output did not populate REPOS'
         exit 1
     fi
     if [[ \${#ALLOWED_AUTHORS[@]} -eq 0 ]]; then

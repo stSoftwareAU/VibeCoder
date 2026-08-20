@@ -1,7 +1,7 @@
 /**
  * Branch cleanup command for the Vibe Coder worker (Issue #912).
  *
- * Callable from shell via deno_bridge.sh. Replaces worker/shared/branch_cleanup.sh.
+ * Callable from shell via the Deno CLI (`deno run mod.ts <command>`). Replaces worker/shared/branch_cleanup.sh.
  *
  * Sub-operations (--operation):
  *   - cleanup-merged: Delete branches for merged PRs

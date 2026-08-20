@@ -2,7 +2,7 @@
  * Cleanup stale temp files command for the Vibe Coder worker.
  *
  * Removes stale temporary files and directories older than a configurable
- * age, callable from shell via deno_bridge.sh.
+ * age, callable from shell via the Deno CLI (`deno run mod.ts <command>`).
  *
  * Migrated from worker/shared/temp_utils.sh (Issue #901).
  * Issue #337: Periodic stale temp file cleanup.

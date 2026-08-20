@@ -2,7 +2,7 @@
  * Claude runner command for the Vibe Coder worker (Issue #913).
  *
  * Unified command for Claude CLI execution operations, callable from shell
- * via deno_bridge.sh. Replaces worker/shared/claude_runner.sh.
+ * via the Deno CLI (`deno run mod.ts <command>`). Replaces worker/shared/claude_runner.sh.
  *
  * Sub-operations (--operation):
  *   - strip-escape-codes: Remove terminal escape sequences from text

@@ -1,7 +1,7 @@
 /**
  * Claude authentication command for the Vibe Coder worker (Issue #913).
  *
- * Provides Claude CLI authentication verification via deno_bridge.sh.
+ * Provides Claude CLI authentication verification via the Deno CLI (`deno run mod.ts <command>`).
  * Replaces worker/shared/claude_auth.sh.
  *
  * Sub-operations (--operation):
