@@ -388,6 +388,15 @@ Deno.test("evaluateGhCommand - refuses an unreadable graphql document", () => {
   assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE");
 });
 
+// Coverage boundary (Issue #94): this case proves only that an argv-VISIBLE
+// reserved label is refused on a command that also carries `--input`. The label
+// is duplicated in the argv (`-f labels[]=work-on`), so `extractLabelValues`
+// alone refuses it and the body is never consulted — it passed even before the
+// `--input` file was ever read. The actual #11 bypass, the label present *only*
+// in the `--input` file, is covered end-to-end by
+// `gh_guard_shim_test.ts::gh-guard-shim #11 - refuses the exploit when the
+// reserved label is present ONLY in the --input file`. Do not delete that
+// sibling on the strength of this test.
 Deno.test("evaluateGhCommand - refuses a reserved label added via --input POST argv", () => {
   const ctx = { active: true, allowedRepos: ["me/target"] };
   const decision = evaluateGhCommand(
