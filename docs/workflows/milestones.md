@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how mi
 
 ## Why milestones? (Productivity + safety)
 
-**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. Each milestone-issue PR targets the **milestone branch**. At **PR creation** the worker **skips** enabling auto-merge for those PRs (`skipAutoMerge` — Issue #1125); a later Priority 1.65 catch-up scan may still arm auto-merge on open worker PRs when mergeable. You still get **one final PR** to default with many issues completed and quality checks already exercised on the milestone line.
+**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. Each milestone-issue PR targets the **milestone branch**. At **PR creation** the worker **skips** enabling auto-merge for those PRs (`skipAutoMerge` —); a later Priority 1.65 catch-up scan may still arm auto-merge on open worker PRs when mergeable. You still get **one final PR** to default with many issues completed and quality checks already exercised on the milestone line.
 
 **Safety is unchanged.** Every PR (including every milestone-issue PR) runs the full quality gate (e.g. `./quality.sh`). **No code reaches the default branch without your review:** the only path to default is the **final PR** from the milestone branch, which you approve when ready. Productivity gain without sacrificing oversight.
 
@@ -78,7 +78,7 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 
 ## 📏 Preconditions / invariants
 
-- **One issue per milestone at a time (Issue #678):** The worker enforces that **only one issue per repo/milestone combination** can be in progress simultaneously. The `is_milestone_occupied()` check in the issue finder ensures that if any issue in the same repo and milestone is already assigned, no additional issues from that milestone are eligible. This prevents concurrent work on different milestone issues — ensuring each issue builds on the completed work from the previous one. This applies to both milestone and non-milestone issues (one non-milestone issue per repo at a time).
+- **One issue per milestone at a time:** The worker enforces that **only one issue per repo/milestone combination** can be in progress simultaneously. The `is_milestone_occupied` check in the issue finder ensures that if any issue in the same repo and milestone is already assigned, no additional issues from that milestone are eligible. This prevents concurrent work on different milestone issues — ensuring each issue builds on the completed work from the previous one. This applies to both milestone and non-milestone issues (one non-milestone issue per repo at a time).
 - **One PR (Pull Request) per target branch:** The worker does not start a second implementation issue for the same target branch (default or a given milestone) while there is already an open PR by the configured GitHub user targeting that branch. Enforced by **issue selection**: the issue finder does not return an issue whose target branch already has an open PR by that user.
 - **Milestone issues branch off the milestone branch:** When implementing an issue that has a milestone, the feature branch is created from the **milestone branch** (created/synced if needed), not from the default branch. PR targets the milestone branch.
 - **Parallel target branches:** Different target branches (default vs milestone A vs milestone B) can each have one PR in progress. No separate lock object — implemented via selection filtering.
@@ -90,16 +90,16 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 1. **Select** — Issue is in a milestone; no other open PR by the configured GitHub user for **this milestone branch**; issue is otherwise eligible (labels, author, not blocked by dependencies or open children).
 2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with default (merge); **create feature branch from the milestone branch** (not from default).
 3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push.
-4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). **Do not** enable auto-merge at create (`skipAutoMerge` — Issue #1125); catch-up may arm it later.
+4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). **Do not** enable auto-merge at create (`skipAutoMerge` —); catch-up may arm it later.
 
 ### ✅ Milestone completion
 
 Once **all** issues for a milestone are completed (merged to the milestone branch or closed), the worker creates a tracking issue and raises a PR targeting the default branch:
 
 1. **Detect** — All issues in the milestone are closed.
-2. **Tracking issue** — A GitHub issue titled "Merge milestone '&lt;name&gt;' to &lt;default&gt;" is created (Issue #561). This provides a visible record of the milestone completion and is automatically closed when the final PR merges. The tracking issue lists all closed milestone issues and is labelled with the first configured issue label for automatic discovery.
+2. **Tracking issue** — A GitHub issue titled "Merge milestone '&lt;name&gt;' to &lt;default&gt;" is created. This provides a visible record of the milestone completion and is automatically closed when the final PR merges. The tracking issue lists all closed milestone issues and is labelled with the first configured issue label for automatic discovery.
 3. **Final PR** — Create a single pull request from `milestone/<name>` to the **default** branch; body lists addressed issues and includes a `Closes #N` reference to the tracking issue. Resolve any merge issues, then enable auto-merge (see [pr-feedback.md](pr-feedback.md): auto-merge only when the PR is mergeable).
-4. **CI (Continuous Integration) monitoring** — The final PR is monitored for CI/integration test failures (Issue #562). This is particularly important because **repositories that only run integration tests on the default branch** will have those tests exercised for the first time against the milestone's combined changes. The worker automatically detects and fixes CI failures (Issue #563) at priority 1.55 in the main loop — see [CI/integration test failure detection](#ciintegration-test-failure-monitoring).
+4. **CI (Continuous Integration) monitoring** — The final PR is monitored for CI/integration test failures. This is particularly important because **repositories that only run integration tests on the default branch** will have those tests exercised for the first time against the milestone's combined changes. The worker automatically detects and fixes CI failures at priority 1.55 in the main loop — see [CI/integration test failure detection](#ciintegration-test-failure-monitoring).
 5. **After merge** — Close the GitHub milestone (when the final PR is merged).
 
 This final PR is monitored like all other PRs **authored by the configured GitHub user** (see [pr-feedback.md](pr-feedback.md)): spelling, quality (shellcheck, Deno quality checks), CI/integration test failures, and merge issues are fixed automatically; auto-merge is enabled once the PR is mergeable.
@@ -108,11 +108,11 @@ This final PR is monitored like all other PRs **authored by the configured GitHu
 
 GitHub auto-closes issues only when a PR containing a closing keyword ("Closes #N", "Fixes #N", "Resolves #N") is merged into the **default branch**. Merging into any other branch — including a milestone branch — does **not** auto-close the referenced issue, regardless of keywords used.
 
-### 💡 Why "Closes" and not "Addresses" (Issue #520)
+### 💡 Why "Closes" and not "Addresses"
 
 Milestone PRs use **"Closes #N"** (not "Addresses #N") even though GitHub will not auto-close the issue when the PR merges into the milestone branch. This is intentional:
 
-- **"Addresses"** is not a GitHub closing keyword. When milestone PRs used "Addresses", the `ensure_pr_references_issue()` safety net would not detect a valid closing reference, causing the worker to repeatedly pick up the same issue in an infinite loop (Issue #520).
+- **"Addresses"** is not a GitHub closing keyword. When milestone PRs used "Addresses", the `ensure_pr_references_issue` safety net would not detect a valid closing reference, causing the worker to repeatedly pick up the same issue in an infinite loop.
 - **"Closes"** satisfies the closing-keyword validation and links the PR to the issue on GitHub, but does **not** trigger auto-close because the target branch is not the default branch.
 
 ### 🕐 When milestone issues actually close
@@ -192,13 +192,13 @@ gitGraph
 The milestone summary PR (final PR from `milestone/<name>` to default) is monitored for CI and integration test failures, just like any other PR authored by the worker. This is particularly important for milestones because:
 
 - **Integration tests on the default branch:** Some repositories only run integration tests when targeting the default branch. The milestone summary PR is the first time the combined milestone changes are tested against the default branch's CI pipeline.
-- **Automatic detection:** `find_failed_ci_checks()` scans all open PRs for failed check runs (excluding spelling checks, which are handled separately at priority 1.5). PRs targeting the default branch are prioritised (Issue #562).
-- **Automatic remediation:** `work_on_ci_failure()` diagnoses and fixes CI failures using Claude, then commits and pushes the fix to the PR branch. Retries are capped at `CI_CHECK_MAX_RETRIES` (default 3) per check run (Issue #563).
+- **Automatic detection:** `find_failed_ci_checks` scans all open PRs for failed check runs (excluding spelling checks, which are handled separately at priority 1.5). PRs targeting the default branch are prioritised.
+- **Automatic remediation:** `work_on_ci_failure` diagnoses and fixes CI failures using Claude, then commits and pushes the fix to the PR branch. Retries are capped at `CI_CHECK_MAX_RETRIES` (default 3) per check run.
 - **Priority 1.55:** CI failure remediation runs after spelling fixes (1.5) but before branch updates (1.6), ensuring CI issues on the milestone summary PR are addressed promptly.
 
 If a CI failure cannot be fixed after the maximum number of retries, a comment is posted on the PR and the failure is left for manual investigation.
 
-## 🔄 Periodic milestone branch sync (Issue #1238)
+## 🔄 Periodic milestone branch sync
 
 Long-running milestones can drift significantly from the default branch, causing merge conflicts when the final summary PR is created. To prevent this, the worker periodically merges the default branch into active milestone branches at **priority 1.72** in the main event loop — after milestone completion checks (1.7) but before issue refinement (1.75).
 
@@ -223,9 +223,9 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
 - The cooldown state is held in memory and resets when the worker process restarts.
-- This complements Issue #605 (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
+- This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
-## 🏷️ Issue ordering within milestones (Issue #1237)
+## 🏷️ Issue ordering within milestones
 
 By default, issues within a milestone are processed oldest-first (by creation date). You can override this order using **priority labels** to control which milestone issue the worker picks next.
 
@@ -271,5 +271,5 @@ Priority extraction is implemented in `worker/deno/lib/milestone_priority.ts`. T
 ## 📚 Further reading
 
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue selection, PR monitoring, milestone/dependency handling.
-- **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts), [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts), [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts), [worker/deno/lib/issue_filter.ts](../../worker/deno/lib/issue_filter.ts) (milestone occupation check — Issue #678), [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts).
+- **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts), [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts), [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts), [worker/deno/lib/issue_filter.ts](../../worker/deno/lib/issue_filter.ts) (milestone occupation check —), [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts).
 - **User docs:** [README.md](../../README.md), [USAGE.md](../USAGE.md), [projects-and-dependencies.md](projects-and-dependencies.md), [resilience-and-concurrency.md](resilience-and-concurrency.md), [issue-processing.md](issue-processing.md).

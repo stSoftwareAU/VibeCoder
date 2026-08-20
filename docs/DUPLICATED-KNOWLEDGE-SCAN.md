@@ -1,7 +1,7 @@
 # 👯 Duplicated-Knowledge Scan — Operator Manual
 
 The duplicated-knowledge scan is the seventeenth registered
-[idle-task](IDLE-TASK-FRAMEWORK.md) template (Issue #3609). When the worker has
+[idle-task](IDLE-TASK-FRAMEWORK.md) template. When the worker has
 no claimable work it may pick this template, clone one monitored repository, and
 run a static, evidence-backed scan for **copy-pasted blocks that encode the same
 knowledge** — blocks of five or more lines appearing in two or more places where
@@ -98,7 +98,7 @@ before it lands.
    overlapping ones — largest first, capped at 25 candidates. Each is rendered
    as an indexed `<candidate index="N" lines="…" site_count="…">` element with a
    `<sites>` child, so the scan can carry a verdict for candidate 3 across
-   phases and across a context compaction (Issue #3781).
+   phases and across a context compaction.
 
 The pre-pass is a **hint, never a finding**: it reports duplicated text, and
 Claude makes the knowledge-vs-text judgement. It is best-effort — if the walk

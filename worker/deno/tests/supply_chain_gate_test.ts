@@ -1,5 +1,5 @@
 /**
- * Tests for the supply-chain posture gate (Issue #4192).
+ * Tests for the supply-chain posture gate.
  *
  * The pure checks are driven over in-memory text and over fixture trees
  * built in temp directories: a clean tree, an unpinned `uses:`, an unfrozen

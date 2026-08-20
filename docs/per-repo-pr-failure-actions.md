@@ -13,7 +13,7 @@ is injected directly into the prompt context. The first concrete action
 type, `fetch-jenkins-log`, fetches the console tail from Jenkins via its
 REST API.
 
-> **⚠️ `prFailureActions` is deprecated (Issue #3579).** It is still parsed
+> **⚠️ `prFailureActions` is deprecated.** It is still parsed
 > and converted into an equivalent `ciProviders` entry, so existing
 > configuration keeps working byte-identically — but new configuration
 > should use `ciProviders`, which selects any registered CI log provider:
@@ -60,7 +60,7 @@ sequenceDiagram
     Cl-->>W: proposed code change
 ```
 
-The diagram is consistent with the integration sequence introduced in #1893;
+The diagram is consistent with the integration sequence introduced in;
 this page adds the configuration and operator-facing detail.
 
 ## Schema
@@ -161,7 +161,7 @@ dispatcher is fully data-driven from `.config.json`.
 
 When a repo has no `prFailureActions` — or every configured action returns an
 error — the worker falls back to its **built-in GitHub Actions log provider**
-(`github-actions`, Issue #3580). It resolves the failing check run to an
+(`github-actions`,). It resolves the failing check run to an
 Actions job id, fetches that job's log through the worker's existing
 authenticated `gh` CLI (no new secret), trims it, and feeds the excerpt into
 the same `{{PR_FAILURE_ACTIONS}}` prompt slot. Every repo therefore gets real
@@ -195,7 +195,7 @@ Behaviour worth knowing:
   (`CI log provider selected`, with `provider`), so a fall-through to
   annotation-only diagnosis is visible in the worker log rather than silent.
 
-## Jenkins credentials preflight (Issue #3583)
+## Jenkins credentials preflight
 
 A bare `HTTP 403` tells an unattended worker nothing it can act on, so a
 Jenkins log fetch that fails on credentials or job path is classified into a
@@ -247,5 +247,5 @@ rotate it.
 
 - [Configuration Reference](CONFIGURATION.md#per-repository-configuration) — wider `repo_config` schema.
 - [Extending the Worker](EXTENDING.md#prompt-versioning-and-templates) — `ci_fix` prompt versioning (the `{{PR_FAILURE_ACTIONS}}` placeholder lives in `prompts/ci_fix/`).
-- Implementation: `worker/deno/lib/repo_config.ts` (parser), `worker/deno/lib/pr_failure_actions.ts` (dispatcher + Markdown formatter), `worker/deno/lib/jenkins_log_fetcher.ts` (HTTP client), `worker/deno/lib/jenkins_access_check.ts` (credentials preflight, #3583), `worker/deno/lib/github_actions_log_fetcher.ts` (built-in default provider, #3580).
-- Schema issue #1890, fetcher #1891, dispatcher #1892, prompt wiring #1893, this rollout #1894 — all under parent #1889.
+- Implementation: `worker/deno/lib/repo_config.ts` (parser), `worker/deno/lib/pr_failure_actions.ts` (dispatcher + Markdown formatter), `worker/deno/lib/jenkins_log_fetcher.ts` (HTTP client), `worker/deno/lib/jenkins_access_check.ts` (credentials preflight,), `worker/deno/lib/github_actions_log_fetcher.ts` (built-in default provider,).
+- Schema issue, fetcher, dispatcher, prompt wiring, this rollout — all under parent.

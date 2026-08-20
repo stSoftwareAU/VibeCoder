@@ -1,8 +1,8 @@
 /**
- * Tests for Issue #3602 — the Opus 5 prompt re-tune learning must live in a
+ * Tests for — the Opus 5 prompt re-tune learning must live in a
  * durable prose doc, and `CODING-STANDARDS.md` must not contradict it.
  *
- * The #3562 re-tune recorded a negative result: the Opus 4.8-era tuning
+ * The re-tune recorded a negative result: the Opus 4.8-era tuning
  * *encouraged* subagent delegation and added an explicit self-verification
  * checkpoint, and both were reversed for Opus 5. That learning survived only
  * inside `docs/archive/pr-summaries/pr-summary-3562.md` (prunable) and
@@ -30,14 +30,14 @@ async function repoFileExists(relativePath: string): Promise<boolean> {
   }
 }
 
-const TUNING_ANCHOR = "#model-generation-prompt-tuning-issue-3562";
+const TUNING_ANCHOR = "#model-generation-prompt-tuning";
 
 Deno.test("MODEL-AND-CACHING.md captures the Opus 5 prompt-tuning learning", async () => {
   const text = await readRepoFile("docs/MODEL-AND-CACHING.md");
   assert(
-    /####\s+Model-generation prompt tuning \(Issue #3562\)/.test(text),
+    /####\s+Model-generation prompt tuning\s*$/m.test(text),
     "docs/MODEL-AND-CACHING.md is missing the " +
-      "'Model-generation prompt tuning (Issue #3562)' section",
+      "'Model-generation prompt tuning' section",
   );
   const section = text.slice(
     text.indexOf("#### Model-generation prompt tuning"),
@@ -82,7 +82,7 @@ Deno.test("CODING-STANDARDS.md gives no blanket self-verification-checkpoint adv
   assert(
     !/\*\*Add explicit self-verification checkpoints\*\*/.test(text),
     "CODING-STANDARDS.md still tells prompt authors to add explicit " +
-      "self-verification checkpoints — the #3562 re-tune deleted that " +
+      "self-verification checkpoints — the re-tune deleted that " +
       "scaffolding as redundant on Opus 5",
   );
   assert(

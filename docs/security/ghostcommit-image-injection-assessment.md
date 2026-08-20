@@ -1,8 +1,8 @@
 # 👻 GhostCommit — image-based prompt-injection threat model & assessment
 
 > **Status:** assessment complete. Foundational deliverable of parent
-> [#3384](https://github.com/stSoftwareAU/VibeCoder/issues/3384) (Issue
-> [#3387](https://github.com/stSoftwareAU/VibeCoder/issues/3387)).
+> (Issue
+>).
 > The sibling mitigation sub-issues this report scopes have since landed —
 > see the [Gap list](#gap-list--sibling-sub-issues).
 
@@ -20,7 +20,7 @@ prior instructions).
 Untrusted **text** is already isolated with per-invocation boundary markers
 (`worker/deno/lib/prompt_delimiter.ts` — `generateBoundaryId`,
 `createPromptDelimiters`, `buildBoundaryIntegrityInstruction`) plus author
-trust filtering (`worker/deno/lib/comment_trust_filter.ts`, Issues #1343, #2513).
+trust filtering (`worker/deno/lib/comment_trust_filter.ts`, ).
 **Images cannot be wrapped in text delimiters** — the bytes reach the
 model as a native image part inside the agent's turn — so the text-boundary
 defence does not, and structurally cannot, fence instructions rendered *inside*
@@ -150,9 +150,9 @@ guarantee. As of the parent milestone the following are in force:
    (`detectSuspiciousImageFlag`, `handOffSuspiciousImage`,
    `SUSPICIOUS_IMAGE_MARKER_NAME = "vibe-suspicious-image-detected"`) parses the
    marker, routes it through the single guarded `escalateToHuman` chokepoint
-   (`worker/deno/lib/needs_human_escalation.ts`, Issue #1471) to apply
+   (`worker/deno/lib/needs_human_escalation.ts`,) to apply
    `needs-human` with a paired explanation comment, releases the claim
-   (Issue #2731), and **stops without raising a PR**. It is wired into
+  , and **stops without raising a PR**. It is wired into
    `worker/deno/lib/issue_worker.ts` *after* the execute phase and takes
    precedence over the execute result, so the worker stops even when changes
    were already made. The reason text is sanitised (`sanitiseFlagReason`) and
@@ -177,31 +177,31 @@ guarantee. As of the parent milestone the following are in force:
   adversary may still craft an image that slips past the self-check. The residual
   risk is bounded by: (a) the flag-and-stop escalation catching flagged images
   before any action, and (b) empirical **canary regression tests** that prove the
-  prompts resist known image-injection payloads — landed under #3390 (see the
+  prompts resist known image-injection payloads — landed under (see the
   [canary-tests note](ghostcommit-canary-tests.md)).
 - **Overall:** the success criterion is **substantially met** at the prompt
   level. The verdict is *"the prompts now instruct the worker to refuse
   image-embedded instructions and to escalate suspicious images, but the claim
-  must be held empirically by the #3390 canary suite; it is a best-effort,
+  must be held empirically by the canary suite; it is a best-effort,
   defence-in-depth mitigation, not a deterministic block."*
 
 ## 5. Gap list → sibling sub-issues
 
 The gaps this assessment identified, each mapped to a sibling mitigation
-sub-issue of #3384. At the time #3387 was raised the text-boundary defence
+sub-issue of. At the time was raised the text-boundary defence
 covered no image ingress; the mitigation siblings below close the gaps, with the
 empirical proof still outstanding.
 
 | Gap | Ingress(es) | Sibling sub-issue | State |
 |-----|-------------|-------------------|-------|
-| No standing prompt rule that image content is untrusted data / never obey embedded instructions | I1–I4 | [#3388](https://github.com/stSoftwareAU/VibeCoder/issues/3388) — add standing untrusted-image handling rules to worker prompts | **Closed** (`prompt_delimiter.ts` clause; `prompts/coding_guidelines/` from v32 onward; `prompts/security_scan/` from v20 onward). |
-| No detect-and-flag / escalation path when a suspicious untrusted image is viewed | I1–I4 | [#3389](https://github.com/stSoftwareAU/VibeCoder/issues/3389) — detect-and-flag suspicious untrusted images and escalate with `needs-human` | **Closed** (`suspicious_image_handoff.ts` + `issue_worker.ts` wiring; `prompts/coding_guidelines/` from v33 onward). |
-| No empirical proof the prompts actually resist image-embedded instructions | I1–I4 | [#3390](https://github.com/stSoftwareAU/VibeCoder/issues/3390) — canary regression tests proving prompts resist image prompt injection | **Closed** — benign canary fixtures + hermetic harness (`worker/deno/tests/ghostcommit_image_injection_test.ts`) assert refusal + escalation; see the [canary-tests note](ghostcommit-canary-tests.md). |
-| Outbound evidence images must not false-trigger the flag | O1 | Addressed by the provenance carve-out inside #3389 | **Closed** (provenance-aware escalation). |
+| No standing prompt rule that image content is untrusted data / never obey embedded instructions | I1–I4 | — add standing untrusted-image handling rules to worker prompts | **Closed** (`prompt_delimiter.ts` clause; `prompts/coding_guidelines/` from v32 onward; `prompts/security_scan/` from v20 onward). |
+| No detect-and-flag / escalation path when a suspicious untrusted image is viewed | I1–I4 | — detect-and-flag suspicious untrusted images and escalate with `needs-human` | **Closed** (`suspicious_image_handoff.ts` + `issue_worker.ts` wiring; `prompts/coding_guidelines/` from v33 onward). |
+| No empirical proof the prompts actually resist image-embedded instructions | I1–I4 | — canary regression tests proving prompts resist image prompt injection | **Closed** — benign canary fixtures + hermetic harness (`worker/deno/tests/ghostcommit_image_injection_test.ts`) assert refusal + escalation; see the [canary-tests note](ghostcommit-canary-tests.md). |
+| Outbound evidence images must not false-trigger the flag | O1 | Addressed by the provenance carve-out inside | **Closed** (provenance-aware escalation). |
 
 ## 6. Out of scope
 
-- **Implementing the mitigations** — owned by #3388 / #3389 / #3390; this report
+- **Implementing the mitigations** — owned by /  /; this report
   is the assessment only.
 - **The outbound evidence-image path** (`pr_evidence.ts`, `imgbb_upload.ts`) —
   worker-authored output, never read back as instructions (§2, O1).

@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes **mile
 
 ## ⚡ TL;DR
 
-**Milestones = projects; dependencies = order.** A **milestone** is a group of issues that share a branch: at most **one PR (Pull Request) per target branch** (default + one per milestone), so more milestones = more concurrent PRs. Issues can **depend** on others (`Depends on #123`) or be **parents** of sub-issues (task list in body); the worker only picks **ready** issues (deps closed, children closed). **Circular deps** (A→B→C→A): detected, never picked, and **reported** on GitHub with a comment + label so you can fix them. All workflow labels are **auto-created** with consistent colours and descriptions.
+**Milestones = projects; dependencies = order.** A **milestone** is a group of issues that share a branch: at most **one PR (Pull Request) per target branch** (default + one per milestone), so more milestones = more concurrent PRs. Issues can **depend** on others (`Depends on `) or be **parents** of sub-issues (task list in body); the worker only picks **ready** issues (deps closed, children closed). **Circular deps** (A→B→C→A): detected, never picked, and **reported** on GitHub with a comment + label so you can fix them. All workflow labels are **auto-created** with consistent colours and descriptions.
 
 ```mermaid
 flowchart TD
@@ -58,11 +58,11 @@ When **all** issues in a milestone are completed (each milestone-issue PR has au
 ### 🔗 Issue relationships the worker honours
 
 1. **Forward dependencies ("Depends on" / "Blocked by")**  
-   In the issue body, text such as `Depends on #123` or `Blocked by #123` (and cross-repo forms) declares that this issue must not be worked on until issue #123 is **closed**. The worker skips any issue that has an open dependency.
+   In the issue body, text such as `Depends on ` or `Blocked by ` (and cross-repo forms) declares that this issue must not be worked on until issue is **closed**. The worker skips any issue that has an open dependency.
 
 2. **Parent/child (sub-issues)**  
    A **parent** issue lists **children** (sub-issues) via:
-   - GitHub task list syntax in the body (e.g. `- [ ] #123`, `- [x] #124`), or
+   - GitHub task list syntax in the body (e.g. `- [] `, `- [x] `), or
    - Sub-issues detected via API.  
    The worker does **not** select a parent for implementation until **all** of its child issues are closed. Children can be worked on independently (and in dependency order if they have "Depends on" among themselves).
 

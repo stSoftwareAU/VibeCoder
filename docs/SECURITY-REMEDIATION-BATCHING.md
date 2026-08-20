@@ -1,6 +1,6 @@
 # 🛡️ Security remediation batching
 
-Part of the worker-throughput epic (#2400, sub-issue #2402).
+Part of the worker-throughput epic (sub-issue).
 
 The worker serialises to **one in-flight PR per work stream** (see
 [DESIGN-PRINCIPLES.md → One PR per work stream](../DESIGN-PRINCIPLES.md)). Under a sustained stream of
@@ -85,6 +85,5 @@ Output (JSON):
 This change delivers the **grouping engine and the collection command** that a
 batched security-remediation dispatch consumes. Wiring the live dispatch mode
 (running the model over a batch and opening the single PR) is gated on the
-backlog/throughput metrics from **#2405**, which is the signal the epic uses to
-decide whether batching alone suffices. See
-[#2400](https://github.com/stSoftwareAU/VibeCoder/issues/2400).
+backlog/throughput metrics from ****, which is the signal the epic uses to
+decide whether batching alone suffices. See.

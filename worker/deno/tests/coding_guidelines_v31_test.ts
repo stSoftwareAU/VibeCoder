@@ -1,12 +1,12 @@
 /**
- * Tests for coding_guidelines v31 (Issue #3239).
+ * Tests for coding_guidelines v31.
  *
  * v31 adds an explicit "repository isolation — no cross-repo coupling"
  * principle: quality gates and their fixes are per-repo, each repository
  * commits and owns its own gate script, and no shared cross-repo reusable
  * GitHub Action (or other cross-repo mechanism) may centralise a gate. The
  * idle-task audit only verifies presence and files a per-repo issue — it
- * never centralises the gate. v30 content (including the #3234 fail-loud
+ * never centralises the gate. v30 content (including the fail-loud
  * principle) is carried forward and stays immutable.
  */
 
@@ -72,10 +72,10 @@ Deno.test("coding_guidelines v31 - carries v30 content forward (incl. fail-loud)
   assertEquals(v31.ok, true);
   if (v30.ok && v31.ok) {
     // Representative earlier sections must survive the carry-forward.
-    assertStringIncludes(v31.value, "## Token Economy (Issue #1409)");
+    assertStringIncludes(v31.value, "## Token Economy");
     assertStringIncludes(v31.value, "## General Coding Principles");
     assertStringIncludes(v31.value, "## Dependency Bumps and Supply Chain");
-    // #3234's fail-loud principle is preserved.
+    // 's fail-loud principle is preserved.
     assertStringIncludes(v31.value, "## Never Fail Silently — Fail Loud");
   }
 });

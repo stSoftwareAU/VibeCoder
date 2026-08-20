@@ -1,7 +1,7 @@
 /**
- * Tests for pr_feedback prompt v11 (Issue #3793).
+ * Tests for pr_feedback prompt v11.
  *
- * v11 closes the five Claude best-practice gaps the #3771 audit recorded
+ * v11 closes the five Claude best-practice gaps the audit recorded
  * against v10: worked examples for the apply/reject call, XML-delimited
  * substitution, a role sentence, parallel-tool-call guidance, and the
  * agentic-systems clauses (context compaction, reversibility, delegation,
@@ -219,7 +219,7 @@ Deno.test("pr_feedback v11 - carries forward the v10 rules", async () => {
   for (
     const marker of [
       "### [UNTRUSTED] Automated Review Comments ###",
-      "#1858",
+      "",
       "false positive",
       "./quality.sh",
       ".pr_response_message",
@@ -230,7 +230,7 @@ Deno.test("pr_feedback v11 - carries forward the v10 rules", async () => {
       "reserved workflow label",
       "trusted-author allowlist",
       "silently stripped",
-      "#1344",
+      "",
       "Australian English",
       "Response Message",
     ]

@@ -4,7 +4,7 @@ This document describes how the worker minimises calls to GitHub via the
 `gh` CLI: which caches it keeps, what TTLs it applies, when it
 invalidates entries, and how to read the per-iteration telemetry. It is
 the reference for the work tracked under the **Reduce GH calls**
-milestone (parent issue [#1662](https://github.com/stSoftwareAU/VibeCoder/issues/1662)).
+milestone (parent issue).
 
 ## Why this matters
 
@@ -24,11 +24,11 @@ different freshness requirements.
 | Layer | Location | TTL (default) | Storage | Purpose |
 | --- | --- | --- | --- | --- |
 | `IssueCache` | `worker/deno/lib/issue_cache.ts` | 600s (10 min) | File-backed JSON under `${TMPDIR}/vibe-issue-cache-deno/` | Issue and PR list responses (`gh issue list`, `gh pr list`). Shared across worker invocations on the same host. |
-| Rate-limit pre-flight cache | `worker/deno/lib/rate_limit_preflight_cache.ts` | 90s | File-backed JSON in `workDir` | Skips `gh api rate_limit` round-trips between back-to-back respawns when remaining quota is comfortably above the threshold (Issue [#1675](https://github.com/stSoftwareAU/VibeCoder/issues/1675)). |
-| `TimelineCache` | `worker/deno/lib/timeline_cache.ts` | 300s (5 min) | File-backed JSON under `${TMPDIR}/vibe-timeline-cache-deno-<user>/`, created `0700` and ownership-checked (Issue [#3709](https://github.com/stSoftwareAU/VibeCoder/issues/3709)) | Caches `gh api repos/{repo}/issues/{N}/timeline` results to remove the per-candidate N+1 calls (Issue [#1673](https://github.com/stSoftwareAU/VibeCoder/issues/1673)). A hit may **deny** the reserved-label trust gate but never **grant** it — a trust-granting entry is re-confirmed against a freshly paginated timeline. |
+| Rate-limit pre-flight cache | `worker/deno/lib/rate_limit_preflight_cache.ts` | 90s | File-backed JSON in `workDir` | Skips `gh api rate_limit` round-trips between back-to-back respawns when remaining quota is comfortably above the threshold. |
+| `TimelineCache` | `worker/deno/lib/timeline_cache.ts` | 300s (5 min) | File-backed JSON under `${TMPDIR}/vibe-timeline-cache-deno-<user>/`, created `0700` and ownership-checked | Caches `gh api repos/{repo}/issues/{N}/timeline` results to remove the per-candidate N+1 calls. A hit may **deny** the reserved-label trust gate but never **grant** it — a trust-granting entry is re-confirmed against a freshly paginated timeline. |
 
 Note: The timeline cache has shipped; the GraphQL batch path
-(Issue [#1674](https://github.com/stSoftwareAU/VibeCoder/issues/1674))
+
 has not. This document covers the latter as a planned layer; the
 sections below mark unimplemented behaviour explicitly.
 
@@ -44,7 +44,7 @@ flowchart TD
     valid{"Valid entry<br/>(within TTL)?"}
     hit["Return cached value<br/>recordCacheHit()"]
     miss["recordCacheMiss() / recordCacheExpired()"]
-    gh["gh CLI (issue list / pr list / api ...)"]
+    gh["gh CLI (issue list / pr list / api...)"]
     api["GitHub REST or GraphQL API"]
     write["IssueCache.write(repo, key, data)"]
     metrics["gh_call_metrics<br/>(total, bySubCommand, hits, misses, expired)"]
@@ -52,9 +52,9 @@ flowchart TD
     caller --> cache --> valid
     valid -- yes --> hit --> caller
     valid -- no --> miss --> gh --> api --> gh --> write --> caller
-    gh -. recordGhCall(args) .-> metrics
-    hit -. counters .-> metrics
-    miss -. counters .-> metrics
+    gh -. recordGhCall(args).-> metrics
+    hit -. counters.-> metrics
+    miss -. counters.-> metrics
 ```
 
 For the rate-limit pre-flight, the flow short-circuits even earlier:
@@ -91,7 +91,7 @@ client-side. This is implemented in
 
 The cost is one `gh issue list` per repo per TTL window (10 min),
 regardless of how many label scans the iteration performs. Issue
-[#1672](https://github.com/stSoftwareAU/VibeCoder/issues/1672) further
+ further
 removed a redundant second-phase `fetchAllIssues` call by passing the
 in-memory list from the availability check straight to
 `collectLabelCandidates` / `collectWorkOnCandidates`.
@@ -101,12 +101,10 @@ in-memory list from the availability check straight to
 GitHub's REST and GraphQL APIs return only the **first 30 records** by
 default and **silently drop the rest** — no error, just truncated data.
 This is a data-loss footgun that has already caused bugs: `getIssueComments`
-ignored every comment past the 30th (Issue
-[#1881](https://github.com/stSoftwareAU/VibeCoder/issues/1881)), and the
+ignored every comment past the 30th, and the
 reserved-label trust gate read a stale timeline event as the "most recent"
 one because the genuine latest event fell outside the default-30 window — a
-security bypass (Issue
-[#3089](https://github.com/stSoftwareAU/VibeCoder/issues/3089)). Any `gh`
+security bypass. Any `gh`
 call that lists a collection (comments, timeline events, issues, PRs,
 reviews, …) must page explicitly.
 
@@ -137,7 +135,7 @@ reviews, …) must page explicitly.
 
 ## Batch path (GraphQL) — planned
 
-Issue [#1674](https://github.com/stSoftwareAU/VibeCoder/issues/1674)
+Issue
 will replace the per-issue REST timeline call inside
 `wasLabelAddedByAllowedAuthor` and `getLabelLastAddInfo` with a single
 GraphQL query that fetches `LabeledEvent` nodes for up to 25 issues at
@@ -148,12 +146,12 @@ once via `gh api graphql`. The expected behaviour:
 - Fall back to the per-issue REST path on GraphQL failure (the existing
   code remains as a safety net).
 
-The batch path is **complementary** to the timeline cache (#1673):
+The batch path is **complementary** to the timeline cache:
 batching reduces calls **within** an iteration; the cache reduces calls
 **across** iterations. When both ship the steady-state cost approaches
 zero on a quiet repo.
 
-Until #1674 lands, the worker uses the per-issue REST path; the
+Until lands, the worker uses the per-issue REST path; the
 metrics line described below shows it as `api=N` for an iteration that
 processes N candidates.
 
@@ -201,7 +199,7 @@ Reading the line:
   consider raising the TTL or the iteration interval.
 - **Per-bucket counts** (`issue-list=5`, …) — sorted by call count
   descending. Spikes in `api=` typically indicate timeline calls and
-  motivate the work in #1673/#1674.
+  motivate the work in /.
 
 The same metrics object is exported through `getGhCallMetrics()` for
 programmatic inspection, and `find_oldest_issue.ts` reuses the
@@ -225,15 +223,15 @@ underlying counters so its `cache: N hits, M misses` log matches.
   simpler to call, but the timeline endpoint returns a large payload
   that must be filtered client-side. GraphQL lets us request only
   `LabeledEvent` fields and batch up to 25 issues per call, at the
-  cost of more complex query construction. The plan in #1674 keeps
+  cost of more complex query construction. The plan in keeps
   REST as a fallback so a GraphQL outage does not block the worker.
 
 ## Related issues
 
-- [#1662](https://github.com/stSoftwareAU/VibeCoder/issues/1662) — Reduce GH calls (umbrella)
-- [#1671](https://github.com/stSoftwareAU/VibeCoder/issues/1671) — Per-iteration call telemetry (shipped)
-- [#1672](https://github.com/stSoftwareAU/VibeCoder/issues/1672) — Pass availability-check list to candidate scan (shipped)
-- [#1673](https://github.com/stSoftwareAU/VibeCoder/issues/1673) — Cache `gh api timeline` results (planned)
-- [#1674](https://github.com/stSoftwareAU/VibeCoder/issues/1674) — Batch label-author verification via GraphQL (planned)
-- [#1675](https://github.com/stSoftwareAU/VibeCoder/issues/1675) — Cache rate-limit pre-flight result (shipped)
-- [#1676](https://github.com/stSoftwareAU/VibeCoder/issues/1676) — This document
+- — Reduce GH calls (umbrella)
+- — Per-iteration call telemetry (shipped)
+- — Pass availability-check list to candidate scan (shipped)
+- — Cache `gh api timeline` results (planned)
+- — Batch label-author verification via GraphQL (planned)
+- — Cache rate-limit pre-flight result (shipped)
+- — This document

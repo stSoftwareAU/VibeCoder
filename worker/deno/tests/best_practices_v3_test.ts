@@ -1,10 +1,10 @@
 /**
- * Tests for the best-practices orchestrator bump to v3 (Issue #2270).
+ * Tests for the best-practices orchestrator bump to v3.
  *
  * v3 adds two cross-bucket framing sections — dead dependencies and
- * deprecated config on framework bump (Issue #2263) — naming each rule
+ * deprecated config on framework bump — naming each rule
  * once at the orchestrator level. The per-bucket detections live in the
- * bucket guides (#2268, #2269).
+ * bucket guides.
  *
  * Australian English spelling used throughout.
  */
@@ -23,7 +23,7 @@ Deno.test(
   async () => {
     // The latest best_practices prompt heading must match whatever version
     // getLatestVersion resolves. Derived rather than hard-pinned so a routine
-    // version bump (e.g. Issue #3509's citation cleanup, which shipped v6) no
+    // version bump (e.g. 's citation cleanup, which shipped v6) no
     // longer breaks this test.
     const latest = await getLatestVersion("best_practices", PROMPTS_DIR);
     assert(latest.ok, "getLatestVersion should succeed for best_practices");
@@ -49,8 +49,8 @@ Deno.test(
     );
     for (
       const heading of [
-        "### Cross-bucket: dead dependencies (Issue #2263)",
-        "### Cross-bucket: deprecated config on framework bump (Issue #2263)",
+        "### Cross-bucket: dead dependencies",
+        "### Cross-bucket: deprecated config on framework bump",
       ]
     ) {
       assert(
@@ -62,7 +62,7 @@ Deno.test(
 );
 
 Deno.test(
-  "best_practices/v2.md - immutable: keeps supply-chain framing, lacks v3-only sections (Issue #235)",
+  "best_practices/v2.md - immutable: keeps supply-chain framing, lacks v3-only sections",
   async () => {
     const body = await readPrompt("best_practices/v2.md");
     assert(
@@ -70,13 +70,13 @@ Deno.test(
       "v2.md must remain the (v2) orchestrator",
     );
     assert(
-      body.includes("### Cross-bucket: supply-chain hardening (Issue #2184)"),
+      body.includes("### Cross-bucket: supply-chain hardening"),
       "v2.md must retain the supply-chain hardening section",
     );
     for (
       const v3Only of [
-        "### Cross-bucket: dead dependencies (Issue #2263)",
-        "### Cross-bucket: deprecated config on framework bump (Issue #2263)",
+        "### Cross-bucket: dead dependencies",
+        "### Cross-bucket: deprecated config on framework bump",
       ]
     ) {
       assert(

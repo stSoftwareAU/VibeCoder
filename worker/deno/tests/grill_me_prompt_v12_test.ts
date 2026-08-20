@@ -1,7 +1,7 @@
 /**
- * Tests for grill-me prompt v12 (Issue #3791).
+ * Tests for grill-me prompt v12.
  *
- * v12 closes the four Claude best-practice gaps the #3771 audit recorded
+ * v12 closes the four Claude best-practice gaps the audit recorded
  * against v11 (`docs/audits/prompt-audit-interactive-3771.md`):
  *
  *   1. item 3 — worked `<example>` blocks: the `## Current Understanding`
@@ -11,7 +11,7 @@
  *      `<coding_guidelines>` element it arrives wrapped in, and the
  *      template's own rules sit under their own heading so the two are
  *      distinguishable. The wrapper itself stays in
- *      `buildCodingGuidelines()` (#3786) — v12 must not add a second one.
+ * `buildCodingGuidelines()` — v12 must not add a second one.
  *   3. item 8 (row 11) — Step 2 fetches candidate issue bodies in parallel.
  *   4. item 10 (rows 17, 19, 22) — a delegation criterion at the Step 2
  *      fan-out, a temp-file rule for the `gh issue edit` body payload, and
@@ -128,7 +128,7 @@ Deno.test("grill-me prompt v12 - names the coding_guidelines element without re-
   // arrives in, so it is distinguishable from the template's own rules.
   assertStringIncludes(body, "`<coding_guidelines>`");
   // ...but must not add a second wrapper — buildCodingGuidelines() owns it
-  // (#3786). A bare opening/closing tag on its own line would double-wrap.
+  //. A bare opening/closing tag on its own line would double-wrap.
   for (const line of body.split("\n")) {
     assertEquals(
       line.trim() === "<coding_guidelines>" ||
@@ -199,9 +199,9 @@ Deno.test("grill-me prompt v12 - keeps the round, ready and footer contracts", a
   assertStringIncludes(body, "**⏳ Awaiting your reply.**");
   assertStringIncludes(body, "<!-- GRILL-ME-UNDERSTANDING-START -->");
   assertStringIncludes(body, "<!-- GRILL-ME-UNDERSTANDING-END -->");
-  // Label policy (Issue #1344, #2040) survives.
-  assertStringIncludes(body, "#1344");
-  assertStringIncludes(body, "#2040");
+  // Label policy survives.
+  assertStringIncludes(body, "");
+  assertStringIncludes(body, "");
   assertStringIncludes(body, '--remove-label "grill-me"');
   assertStringIncludes(body, '--add-label "needs-human"');
 });

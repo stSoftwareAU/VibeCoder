@@ -67,7 +67,7 @@ This trade-off is a real lesson learnt. We don't yet have a proven fix: how to g
 - **PR summary and evidence** — The worker must create a PR summary with Summary, Evidence, and Test Plan. For bugs/enhancements, evidence includes references to the tests that verify the fix. Test changes must be called out.
 - **Benchmark audit** — `./quality.sh` includes a check that no benchmarks are masquerading as unit tests, so tests stay focused on behaviour.
 
-**A negative result is a first-class result (Issues [#177](https://github.com/stSoftwareAU/VibeCoder/issues/177), [#1428](https://github.com/stSoftwareAU/VibeCoder/issues/1428)).** Because unit tests cannot measure performance, performance work is held to a separate, harder bar: benchmark the metric **before** the change, benchmark it again **after** with the same script, and raise a PR **only** when the numbers show a real gain. When they don't, no PR is raised at all — the worker comments the before/after numbers on the issue, labels it `negative-result`, and closes it as not planned. The measurement is the deliverable either way: an unrecorded negative result is silently re-attempted by the next agent (or the next human) who has the same plausible idea, so the cost of measuring it is paid again and again. `negative-result` is one of the few labels the worker is authorised to apply to an issue itself — see the positive allowlist in [Agent Accountability](AGENT-ACCOUNTABILITY.md#implemented-issue-2382--runtime-guard--capability-map).
+**A negative result is a first-class result.** Because unit tests cannot measure performance, performance work is held to a separate, harder bar: benchmark the metric **before** the change, benchmark it again **after** with the same script, and raise a PR **only** when the numbers show a real gain. When they don't, no PR is raised at all — the worker comments the before/after numbers on the issue, labels it `negative-result`, and closes it as not planned. The measurement is the deliverable either way: an unrecorded negative result is silently re-attempted by the next agent (or the next human) who has the same plausible idea, so the cost of measuring it is paid again and again. `negative-result` is one of the few labels the worker is authorised to apply to an issue itself — see the positive allowlist in [Agent Accountability](AGENT-ACCOUNTABILITY.md#implemented--runtime-guard--capability-map).
 
 The coding guidelines (embedded in the issue, PR feedback, and other prompts) and [AGENTS.md](../AGENTS.md) spell this out with good/bad examples: real tests that call functions and assert on results vs. fake tests that grep the source. Keeping that bar high is what lets the Vibe Coder run unattended without silently breaking behaviour.
 
@@ -104,13 +104,13 @@ The coding guidelines (embedded in the issue, PR feedback, and other prompts) an
 
 ---
 
-## 🧨 A set defined by trust is not a set defined by ownership (Issue #4074)
+## 🧨 A set defined by trust is not a set defined by ownership
 
 **What happened:** On 13 August 2026 a worker claimed a **human's** pull request in a monitored repo — assigned itself, pushed a CI-fix commit, and posted claim and heartbeat comments — with nobody having asked it to. The author was a trusted repo maintainer who had simply opened a PR of their own.
 
-**Root cause:** Two configuration lists name GitHub logins. `fleet_pr_authors` is the sibling *fleet* accounts, whose PRs the fleet maintains. `allowed_authors` is the trusted *humans*, who may direct the worker. An earlier fix ([Issue #4023](https://github.com/stSoftwareAU/VibeCoder/issues/4023)) addressed a real problem — a fleet PR that blocked `work-on` issues while no host was maintaining it — by unifying the two lists behind one resolver, on the reasoning that both describe "PRs the fleet owns". They do not. The five PR-maintenance scans inherited `allowed_authors` and started listing, claiming and pushing to human-authored PRs.
+**Root cause:** Two configuration lists name GitHub logins. `fleet_pr_authors` is the sibling *fleet* accounts, whose PRs the fleet maintains. `allowed_authors` is the trusted *humans*, who may direct the worker. An earlier fix () addressed a real problem — a fleet PR that blocked `work-on` issues while no host was maintaining it — by unifying the two lists behind one resolver, on the reasoning that both describe "PRs the fleet owns". They do not. The five PR-maintenance scans inherited `allowed_authors` and started listing, claiming and pushing to human-authored PRs.
 
-**The transferable lesson:** *A set defined by **trust** and a set defined by **ownership** must never be merged just because their members overlap.* The overlap is real and even required — fleet logins must appear in `allowed_authors` for the duplicate-PR guard to see them ([Issue #3138](https://github.com/stSoftwareAU/VibeCoder/issues/3138)) — which is exactly what made the two lists look interchangeable. Ask what membership *grants*, not who is on the list: one grants the right to instruct the worker, the other grants the worker the right to act on your branch. Trusted to command is not the same as available to be commanded.
+**The transferable lesson:** *A set defined by **trust** and a set defined by **ownership** must never be merged just because their members overlap.* The overlap is real and even required — fleet logins must appear in `allowed_authors` for the duplicate-PR guard to see them () — which is exactly what made the two lists look interchangeable. Ask what membership *grants*, not who is on the list: one grants the right to instruct the worker, the other grants the worker the right to act on your branch. Trusted to command is not the same as available to be commanded.
 
 **The second lesson: widening an author set is a permission change.** It reads like configuration plumbing and reviews like a one-line refactor, but the blast radius is "whose repositories may this agent write to". Changes of that shape deserve the scrutiny of a permissions change — state explicitly which principals gain which capability, and test the *negative* case (who must still be refused), not only the case that motivated the change.
 
@@ -120,7 +120,7 @@ The coding guidelines (embedded in the issue, PR feedback, and other prompts) an
 - **Kept an explicit door.** "Never" would have been the wrong fix: a human can still hand over their own PR with a `work-on` label or an `@mention`, checked against the timeline actor so a worker cannot invite itself. See [Human-authored PR policy](HUMAN-PR-POLICY.md).
 - **Fixed the original stall properly.** A `work-on` issue blocked by a human PR now escalates on the **issue** — one comment, `needs-human`, then wait — instead of taking the PR over. The fleet's own surface is the right place to speak.
 - **Made the invariant self-checking.** The divergence check that compares the two sets is now intent-aware: trusted humans are the *expected* delta and never warn, so any remaining warning is a genuine hazard rather than background noise.
-- **Wrote the policy down.** The regression was possible partly because the policy existed only in code; the docs still described `allowed_authors` as a set whose PRs the fleet maintains. It is now stated in [Human-authored PR policy](HUMAN-PR-POLICY.md) and the [Configuration Reference](CONFIGURATION.md#trusted-humans-are-not-fleet-hosts-issue-4074), and pinned by tests that feed the documented labels to the real predicates.
+- **Wrote the policy down.** The regression was possible partly because the policy existed only in code; the docs still described `allowed_authors` as a set whose PRs the fleet maintains. It is now stated in [Human-authored PR policy](HUMAN-PR-POLICY.md) and the [Configuration Reference](CONFIGURATION.md#trusted-humans-are-not-fleet-hosts), and pinned by tests that feed the documented labels to the real predicates.
 
 **Lessons:** Name sets by the capability they confer, not by their members. When a fix unifies two things "that are really the same", make the reviewer say out loud what each one grants. And when an agent acts on other people's work, the default must be *do nothing without an explicit, attributable request* — with the refusal path tested as carefully as the action path.
 
@@ -132,20 +132,20 @@ The coding guidelines (embedded in the issue, PR feedback, and other prompts) an
 
 **What we did:**
 
-- **Module snapshot (formerly shadow-copy):** The launcher `exec`s Deno directly on the `run-entrypoint` driver, which loads all its modules at process start. A mid-run `git reset` (or update) therefore cannot change the code the running worker is executing — the next scheduled run picks up the new code. This superseded the old shadow-copy of `worker/run_core.sh` to `worker/.run_core.sh` when the bash conductor was migrated to Deno (Issue #3504).
+- **Module snapshot (formerly shadow-copy):** The launcher `exec`s Deno directly on the `run-entrypoint` driver, which loads all its modules at process start. A mid-run `git reset` (or update) therefore cannot change the code the running worker is executing — the next scheduled run picks up the new code. This superseded the old shadow-copy of `worker/run_core.sh` to `worker/.run_core.sh` when the bash conductor was migrated to Deno.
 - **Repo reset:** At the start of each run, the repo is reset to its default branch, resolved from `origin/HEAD` (or the one named with `--default-branch`). That clears partial commits, stray branches, or corrupted state from a previous run.
-- **Pre-Claude validation (Issue #621):** Before spending Claude credits, validate that the repository is in a good state — no uncommitted changes, no detached HEAD, no divergence from remote. Catches problems early and cheaply.
+- **Pre-Claude validation:** Before spending Claude credits, validate that the repository is in a good state — no uncommitted changes, no detached HEAD, no divergence from remote. Catches problems early and cheaply.
 - **PID guard:** Only one run_core process per worker directory at a time. If a PID file exists and the process is still running, we exit. If the PID is stale (process gone or hung), we terminate it and remove the PID file before starting a new run.
-- **Timeout wrappers (Issue #619):** Every GitHub CLI and git operation has a configurable timeout. A hung `git push` or `gh api` call can’t block the worker indefinitely — it times out, logs the failure, and moves on.
-- **Rate-limit awareness (Issue #620):** Instead of burning retries against a rate-limited API, the worker reads the `Retry-After` header and sleeps for exactly the right duration. A distinct exit code (223) signals callers to back off rather than retry.
+- **Timeout wrappers:** Every GitHub CLI and git operation has a configurable timeout. A hung `git push` or `gh api` call can’t block the worker indefinitely — it times out, logs the failure, and moves on.
+- **Rate-limit awareness:** Instead of burning retries against a rate-limited API, the worker reads the `Retry-After` header and sleeps for exactly the right duration. A distinct exit code (223) signals callers to back off rather than retry.
 - **Disk and temp cleanup:** We check disk space and clean temp files; if disk is too low, we exit so the operator can fix it. Temp dirs are cleared at start of run.
 - **Repeated failure → exit:** After N consecutive failures on the same work item, we exit. The next cron run starts with fresh code and a clean process; avoids a bad loop burning CPU forever.
-- **Persistent failure state (Issue #633):** Failure counters, circuit breaker state, and cooldown timers are saved to disk and survive crashes. Before this, a crash would reset the failure counter — the worker would blindly retry the same failing work and crash again, ad infinitum. Now it remembers.
-- **Heartbeat tracking (Issue #622):** Background heartbeat updates run during Claude execution, so stuck-issue detection reacts within minutes rather than waiting hours.
-- **Crash cleanup (Issue #631):** A trap handler runs on unexpected exit, unassigning the worker from claimed issues and removing heartbeat files. This closes the window between "claimed" and "heartbeat recorded" that previously left issues orphaned.
-- **Orphan recovery (Issue #632):** The stuck issue detector now also checks for issues assigned to the worker with no heartbeat file at all — a scenario that arises when the worker crashes between claiming and recording its first heartbeat.
-- **Crash notifications (Issue #634):** When the worker exits unexpectedly, it posts a comment on the GitHub issue it was working on and optionally fires a webhook (Slack, PagerDuty, etc.). Rate-limited to prevent notification spam during rapid crash-restart loops.
-- **Claude authentication detection (Issue #617):** If the Claude CLI session has expired, the worker detects it immediately and exits with a clear, actionable message instead of failing cryptically.
+- **Persistent failure state:** Failure counters, circuit breaker state, and cooldown timers are saved to disk and survive crashes. Before this, a crash would reset the failure counter — the worker would blindly retry the same failing work and crash again, ad infinitum. Now it remembers.
+- **Heartbeat tracking:** Background heartbeat updates run during Claude execution, so stuck-issue detection reacts within minutes rather than waiting hours.
+- **Crash cleanup:** A trap handler runs on unexpected exit, unassigning the worker from claimed issues and removing heartbeat files. This closes the window between "claimed" and "heartbeat recorded" that previously left issues orphaned.
+- **Orphan recovery:** The stuck issue detector now also checks for issues assigned to the worker with no heartbeat file at all — a scenario that arises when the worker crashes between claiming and recording its first heartbeat.
+- **Crash notifications:** When the worker exits unexpectedly, it posts a comment on the GitHub issue it was working on and optionally fires a webhook (Slack, PagerDuty, etc.). Rate-limited to prevent notification spam during rapid crash-restart loops.
+- **Claude authentication detection:** If the Claude CLI session has expired, the worker detects it immediately and exits with a clear, actionable message instead of failing cryptically.
 
 **Lessons:** Assume every run might be the first after a crash or a deploy. Reset repo and temp state at start. Don’t let a single run run forever; bounded duration and failure-based exit are part of self-healing. Persist enough state to prevent crash-restart loops, but expire it automatically so stale state doesn’t prevent forward progress. Make crashes visible to operators — a silent crash is worse than a noisy one.
 
@@ -345,6 +345,42 @@ The table above shows that VibeCoder already addresses most industry-recommended
 - **No automated drift detection for guardrail compliance.** The guardrails are enforced by code and process (quality.sh, PR review, config validation), but there is no automated check that verifies all guardrails remain in place after changes. A periodic audit — manual or automated — would catch regressions.
 
 ---
+
+## 🧾 Distilled from the first public-repo PRs
+
+The per-PR summary archive was retired (Issue #2); the durable lessons from
+those PRs live here instead. Each maps a defect class to the guard that now
+holds the line:
+
+- **Every mutation goes through the chokepoint** (PR #40, Issue #13): two
+  label-adding call sites reached the GitHub labels API directly, bypassing
+  `assertWorkerCanApplyLabel`. A guard is only as good as the absence of side
+  doors — new call sites must route through the existing chokepoint, and a
+  test should enumerate the API's callers.
+- **Scrubbers must match what an attacker can type, not what a developer
+  would** (PR #43, Issue #15): the delimiter scrub missed `<<<…>>>` markers
+  split across a newline because its character class excluded `\n`. Sanitise
+  with the input's full alphabet in mind.
+- **Untrusted values are fenced, not merely escaped** (PR #48, Issue #16):
+  milestone branch/title were delimiter-scrubbed but spliced outside the
+  untrusted fence, so imperative milestone names read as worker instructions.
+  Trust level is a property of the *source*, and every sourced value belongs
+  inside the fence with a placeholder outside it.
+- **Detectors must weigh evidence, not presence** (PR #34, Issue #3): the
+  language-validity gate demanded a TypeScript CI gate of a repo with a single
+  vendored `.ts` file. Threshold on substantial presence, not `count > 0`.
+- **Redaction rules need the bare shape, not only the labelled one**
+  (PR #44, Issue #36): OpenAI `sk-…` and Gemini `AIzaSy…` keys were redacted
+  only when a `key=`-style label preceded them. Secrets leak most often
+  unlabelled.
+- **Trust headers must be forgery-resistant** (PR #51, Issue #37): the
+  genuine per-comment trust header interpolated the author's login verbatim,
+  so a crafted login could imitate the header shape. Sanitise every field
+  that appears in a security-relevant header.
+- **Cache keys must include every input that varies** (PR #56, Issue #38):
+  the GitHub App token cache keyed only on expiry, so a multi-app worker
+  could serve one installation's token to another. Key caches by identity,
+  not just freshness.
 
 ## 📖 Where this is documented
 

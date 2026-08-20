@@ -14,7 +14,7 @@ runs itself and is steered entirely through GitHub. See
 - [Upgrading an existing host — the hard cutover](#upgrading-an-existing-host--the-hard-cutover)
 - [Installation](#installation)
 - [Initial Setup](#initial-setup)
-  - [Interactive install offer](#interactive-install-offer-issue-4135)
+  - [Interactive install offer](#interactive-install-offer)
 - [LaunchAgent Setup (macOS)](#launchagent-setup-macos)
 - [Running as a Background Service](#running-as-a-background-service)
   - [Using cron](#recommended-using-cron-5-minute-intervals)
@@ -28,7 +28,7 @@ runs itself and is steered entirely through GitHub. See
 
 ## 📋 Requirements
 
-The worker runs inside the container image (Issue #4060) — container is the
+The worker runs inside the container image — container is the
 only run mode (Issue #4) — so every host needs a **container runtime** and the
 **launcher**, not the worker's own toolchain. See
 [Run mode](#-run-mode-container-only) below.
@@ -45,14 +45,14 @@ Presence is not availability: each candidate is validated with a read-only
 probe, so a binary whose daemon is unreachable is reported unavailable.
 **Container mode never falls back to the host** — with no supported runtime,
 `run.sh` / `run.ps1` exit non-zero naming the platform, every runtime probed
-and how to install one (Issues #4063, #4065). There is no host mode to fall
+and how to install one. There is no host mode to fall
 back to (Issue #4).
 
 **Installing it by hand is one option, not the only one.** Run `./setup.sh`
 (`.\setup.ps1` on Windows) in a terminal and it offers to install and start the
 runtime for you — Homebrew on macOS, apt on Debian/Ubuntu, winget on Windows —
 with the exact commands shown before they run.
-See [Interactive install offer](#interactive-install-offer-issue-4135) below
+See [Interactive install offer](#interactive-install-offer) below
 for what is offered, what never is, and what happens when you decline.
 
 **Launcher:**
@@ -63,12 +63,12 @@ for what is offered, what never is, and what happens when you decline.
   [PowerShell](https://learn.microsoft.com/powershell/) (Windows PowerShell 5.1
   or `pwsh` 7) for `run.ps1` on Windows.
 
-**One-time setup only** — `./setup.sh` (`.\setup.ps1` on Windows, Issue #4185)
+**One-time setup only** — `./setup.sh` (`.\setup.ps1` on Windows,)
 writes `.config.json`, provisions
 credentials and syncs labels and branch protection across the monitored repos,
 so it also needs [Git](https://git-scm.com/) and an authenticated
 [GitHub CLI](https://cli.github.com/) on the host. Its prerequisite probe is
-split to match containment (Issue #4117): in container mode `git`, `gh`, `deno`
+split to match containment: in container mode `git`, `gh`, `deno`
 **and a working container runtime with a built-or-buildable worker image** are
 host-fatal, while the coding-agent CLI, `jq` and `timeout` are reported for
 information only because the image owns them. No skip flag is needed on a
@@ -83,8 +83,8 @@ there. **Do not install them on the host**; see
 ## 🧭 Run mode: container only
 
 Containment is mandatory (Issue #4): the worker has one run mode, `container`,
-and the `run_mode` setting (Issue #4146, documented in
-[Configuration](CONFIGURATION.md#-run-mode-issue-4146)) exists only so a
+and the `run_mode` setting (documented in
+[Configuration](CONFIGURATION.md#-run-mode)) exists only so a
 configuration can be checked, not so a host can choose otherwise.
 
 | Mode        | How it is selected                       | Where the worker runs                                                          |
@@ -97,12 +97,12 @@ Three rules go with it:
   either may name `container` explicitly. An unrecognised value fails loudly
   naming the only mode.
 - **The removed modes fail loud.** Two host-mode opt-ins once existed —
-  `native` (Issues #4145, #4148) and the macOS `seatbelt` profile (Issue #4300)
-  — and both sat outside the #4060 boundary. A configuration that still names
+  `native` and the macOS `seatbelt` profile
+  — and both sat outside the boundary. A configuration that still names
   one is refused with the removal explained (Issue #4); it is never coerced
   into a container run the operator did not know they were getting.
 - **There is no auto-fallback.** A missing container runtime is a loud
-  non-zero exit (Issue #3234) — there is no host path to fall back to. A
+  non-zero exit — there is no host path to fall back to. A
   repository whose build genuinely needs a container runtime of its own cannot
   be served from inside the worker container: `container_launch.ts` refuses
   runtime-socket mounts and `--privileged` by design, and the answer is to
@@ -122,11 +122,11 @@ flowchart TD
 
 ## 🚚 Upgrading an existing host — the hard cutover
 
-Container mode became the default in Issue #4065, and it is a hard cutover: an
+Container mode became the default in, and it is a hard cutover: an
 existing host that updates to this version and stays on the default **will not
 run the worker at all until a supported container runtime is installed and
 healthy** — container mode never falls back to running on the host, by design
-(Issue #3234: a missing runtime fails loudly rather than degrading). A host
+(a missing runtime fails loudly rather than degrading). A host
 that must keep running natively opts in explicitly with `run_mode` instead of
 relying on a fallback that does not exist.
 
@@ -168,7 +168,7 @@ VIBE_REPOS="myorg/repo1,myorg/repo2" \
 
 > **📝 Note:** Scripts are committed with executable permissions, so no `chmod` is required after cloning.
 
-### The worker needs its own dedicated clone (Issue #4204)
+### The worker needs its own dedicated clone
 
 The clone the worker runs from is an **appliance checkout, not a workspace**:
 the bootstrap prelude runs
@@ -205,7 +205,7 @@ VIBE_REPOS="myorg/repo1,myorg/repo2" \
 ./setup.sh
 ```
 
-The Vibe Coder is designed to run on unattended machines (Issue #269). All interactions happen via GitHub issues and PRs — the system never waits on any UI interaction. Configuration is driven by `VIBE_*` environment variables; when you run `./setup.sh` in a terminal, it may optionally prompt for service-account paths (SSH key and gh config directory). In non-interactive environments (e.g. CI), setup runs without prompts.
+The Vibe Coder is designed to run on unattended machines. All interactions happen via GitHub issues and PRs — the system never waits on any UI interaction. Configuration is driven by `VIBE_*` environment variables; when you run `./setup.sh` in a terminal, it may optionally prompt for service-account paths (SSH key and gh config directory). In non-interactive environments (e.g. CI), setup runs without prompts.
 
 **Optional: Service account authentication (SSH + gh auth)**
 
@@ -220,7 +220,7 @@ If you want the Vibe Coder to authenticate as a service account instead of your 
 
 See the [Configuration Reference](CONFIGURATION.md#service-account-authentication-ssh--gh-auth) for details on generating the SSH key and setting up the gh config dir.
 
-The setup script's prerequisite probe matches containment (Issue #4117) —
+The setup script's prerequisite probe matches containment —
 container is the only run mode (Issue #4), and the report names it:
 
 | Set                                                | Classification |
@@ -234,7 +234,7 @@ setup. So a correctly provisioned host runs `./setup.sh` as-is — the
 `VIBE_SKIP_PREREQ_CHECK=true` workaround is no longer needed, and skipping the
 probe now also hides the checks setup genuinely depends on. The `claude` CLI
 stays host-fatal because setup mints and validates the worker's OAuth token
-with it (Issue #4161).
+with it.
 
 Installing a tool never reclassifies it: the classification follows the mode,
 not what happens to be present.
@@ -250,7 +250,7 @@ flowchart TD
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-### Interactive install offer (Issue #4135)
+### Interactive install offer
 
 When `./setup.sh` runs in a terminal, each failed check that has an install
 plan is offered to you one at a time, defaulting to no:
@@ -260,7 +260,7 @@ plan is offered to you one at a time, defaulting to no:
 ```
 
 The offer covers the tools the host needs, the container runtime included
-(Issue #4149). The prompt names the package manager the plan
+. The prompt names the package manager the plan
 uses; the container-runtime prompts go further and name the exact argv, `sudo`
 included, before anything runs. Consent runs the plan's commands with their output streamed (so a slow
 `brew install` or a `sudo` password prompt is visible), then **re-runs the
@@ -305,7 +305,7 @@ is idempotent and the offer only reappears for whatever is still missing. A
 failed step also prints the command and its exit code, so you can run the same
 command by hand and see the package manager's own error.
 
-#### The container runtime on macOS (Issue #4136)
+#### The container runtime on macOS
 
 macOS has one candidate, Apple `container`, and two failure modes with
 different offers — a stopped service is never reinstalled:
@@ -318,7 +318,7 @@ downloads a `.pkg` or an installer script — just the manual hint and a failed
 check. The runtime is re-probed in the same run, so a `brew install` that exits
 zero while the service still cannot answer stays a failed check.
 
-#### The container runtime on Linux (Issue #4137)
+#### The container runtime on Linux
 
 The runtime check has two candidates on Linux, so it is offered in the probe's
 own preference order — Docker first, then Podman only if Docker is declined or
@@ -347,7 +347,7 @@ apt repository and signing key is a supply-chain change that does not belong
 behind a consent prompt. On a non-apt distribution (dnf, pacman, …) nothing is
 offered and today's manual hints stand. macOS runs its own offer (above).
 
-#### The Windows table (Issue #4185)
+#### The Windows table
 
 Windows plans come from **winget**, one package per tool:
 
@@ -377,7 +377,7 @@ Two Windows-specific rules:
   would not start it.
 
 `timeout` has no Windows plan: winget packages no GNU coreutils, and Windows is
-container-only (Issue #4145), so `timeout` is container-owned there and never
+container-only, so `timeout` is container-owned there and never
 host-fatal.
 
 Unattended runs never install without prior consent: with no TTY the offer
@@ -421,7 +421,7 @@ Unattended operation is a hard requirement: **no runtime step may reach an inter
 └── gemini/provider.env           0600  the Gemini CLI credential (when enabled)
 ```
 
-Nothing else belongs in that directory — it holds exactly the worker's GitHub credential and one credential per enabled agent vendor, and nothing more. Each vendor's credential lives in its own sub-directory (Issue #4108), and only the providers enabled for a run are mounted into the container, so no vendor can read another's secret.
+Nothing else belongs in that directory — it holds exactly the worker's GitHub credential and one credential per enabled agent vendor, and nothing more. Each vendor's credential lives in its own sub-directory, and only the providers enabled for a run are mounted into the container, so no vendor can read another's secret.
 
 ```bash
 VIBE_LAUNCHAGENT_GH_TOKEN="ghp_your_token" \
@@ -441,7 +441,7 @@ Set only the variables for the vendors you use: an unset provisioning variable l
 
 When these variables are set, `setup.sh` writes the files with owner-only permissions, points `gh_config_dir` at `<credential dir>/gh`, and never offers the interactive `gh auth login` prompt for that directory. The prompt remains available only for an operator-chosen gh config directory at a terminal — never on the runtime path.
 
-**Startup fails loudly and early** when the material is absent or unusable. Before it resolves the GitHub user or starts any work, the worker runs the credential preflight (`worker/deno/lib/credential_preflight.ts`) and aborts with exit 1 and a named, actionable message — `credential-dir-missing`, `credential-dir-empty`, `credential-dir-unreadable`, `github-credentials-missing`, `provider-credentials-missing`, `credential-permissions-too-open`, or `unexpected-credential-material` — rather than degrading into a mid-run auth error. A `provider-credentials-missing` failure names the enabled provider that lacks a credential and the variable that provisions it (Issue #4108), so a multi-vendor run says which vendor to fix. Provider and GitHub failures are classified with the same predicates the runtime auth surfaces use (`isClaudeAuthError`, `isGhAuthError`), so the preflight and a mid-run failure agree on what an auth error is.
+**Startup fails loudly and early** when the material is absent or unusable. Before it resolves the GitHub user or starts any work, the worker runs the credential preflight (`worker/deno/lib/credential_preflight.ts`) and aborts with exit 1 and a named, actionable message — `credential-dir-missing`, `credential-dir-empty`, `credential-dir-unreadable`, `github-credentials-missing`, `provider-credentials-missing`, `credential-permissions-too-open`, or `unexpected-credential-material` — rather than degrading into a mid-run auth error. A `provider-credentials-missing` failure names the enabled provider that lacks a credential and the variable that provisions it, so a multi-vendor run says which vendor to fix. Provider and GitHub failures are classified with the same predicates the runtime auth surfaces use (`isClaudeAuthError`, `isGhAuthError`), so the preflight and a mid-run failure agree on what an auth error is.
 
 ```mermaid
 flowchart LR
@@ -509,7 +509,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | Variable | Description |
 |----------|-------------|
 | `VIBE_SKIP_PREREQ_CHECK` | Set to `true` to skip the prerequisite **probe** entirely — nothing is checked, so nothing is offered either (CI only; a container-only host does not need it) |
-| `VIBE_NO_AUTO_INSTALL` | Set to `true` to skip only the install **offer** — the probe still runs, still reports every gap, and names the offer it withheld (Issues #4135, #33). For an operator who manages packages themselves. The inverse — consenting to every offer in advance — is deliberately not an environment variable: it is the `--auto-install` flag (`-AutoInstall` for setup.ps1), typed per invocation |
+| `VIBE_NO_AUTO_INSTALL` | Set to `true` to skip only the install **offer** — the probe still runs, still reports every gap, and names the offer it withheld (Issue #33). For an operator who manages packages themselves. The inverse — consenting to every offer in advance — is deliberately not an environment variable: it is the `--auto-install` flag (`-AutoInstall` for setup.ps1), typed per invocation |
 | `VIBE_SKIP_AUTH_CHECK` | Set to `true` to skip authentication checks |
 
 The setup is idempotent — running it multiple times produces identical results.
@@ -539,7 +539,7 @@ crontab -e
 > **📝 Note on cron PATH (macOS/Homebrew):**
 - cron runs with a minimal `PATH`, and the launcher needs exactly two things on it: `deno` and the container runtime.
 - `run.sh` appends `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` to the caller's `PATH` and also probes `~/.deno/bin/deno`, where the official Deno installer puts it. When either tool lives somewhere else, set `PATH` in the crontab entry itself.
-- Inside the container the driver re-resolves `PATH` in-process from the image's own PATH, and passes the resolved Deno directory on to the repo scripts it spawns — notably a repo's `bump-deps.sh`, whose `command -v deno` pre-flight would otherwise fail and silently revert every dependency bump on that host (Issue #3532). Host `PATH` gaps therefore cannot reach the worker's toolchain.
+- Inside the container the driver re-resolves `PATH` in-process from the image's own PATH, and passes the resolved Deno directory on to the repo scripts it spawns — notably a repo's `bump-deps.sh`, whose `command -v deno` pre-flight would otherwise fail and silently revert every dependency bump on that host. Host `PATH` gaps therefore cannot reach the worker's toolchain.
 - **Credentials do not travel through the environment.** The container is started with no token variables passed through, so `GH_TOKEN=... run.sh` in a crontab has no effect — provision the credential directory instead ([Credential Provisioning](#-credential-provisioning-non-interactive)).
 
 ### 🐧 Using systemd (Linux)
@@ -625,18 +625,18 @@ launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.vibe.auto-issue-work
 
 ### 🪟 Using Task Scheduler (Windows)
 
-The worker provides PowerShell equivalents (`setup.ps1`, `run.ps1`, `loop.ps1`) for Windows deployment, so a Windows host is onboarded and supervised without WSL or Git Bash (Issue #4185). Task Scheduler runs the worker every 5 minutes.
+The worker provides PowerShell equivalents (`setup.ps1`, `run.ps1`, `loop.ps1`) for Windows deployment, so a Windows host is onboarded and supervised without WSL or Git Bash. Task Scheduler runs the worker every 5 minutes.
 
 **Prerequisites:**
-- [Docker](https://docs.docker.com/desktop/install/windows-install/) or [Podman](https://podman.io/) — Windows is container-only by design (Issues #4060, #4066, #4147), so the runtime is not optional there; the launcher auto-detects whichever is available
+- [Docker](https://docs.docker.com/desktop/install/windows-install/) or [Podman](https://podman.io/) — Windows is container-only by design, so the runtime is not optional there; the launcher auto-detects whichever is available
 - [Deno](https://deno.com/) installed and on PATH — the launcher's only host tool
 - [PowerShell](https://learn.microsoft.com/powershell/) — Windows PowerShell 5.1 (built in) or PowerShell 7 (`pwsh`)
-- [Git for Windows](https://gitforwindows.org/) — to clone the repository; the runtime path needs neither git nor bash on the host (Issue #3504)
+- [Git for Windows](https://gitforwindows.org/) — to clone the repository; the runtime path needs neither git nor bash on the host
 
 Everything on that list except git and PowerShell is offered by `.\setup.ps1`
 itself: run it in a terminal and each missing tool gets one `[y/N]` prompt
 naming the exact winget command before anything runs (see
-[Interactive install offer](#interactive-install-offer-issue-4135)).
+[Interactive install offer](#interactive-install-offer)).
 
 The coding-agent CLI, `gh`, `jq` and coreutils `timeout` ship inside the
 container image (see [Container Image](CONTAINER.md)), so none is a host
@@ -683,7 +683,7 @@ still-running worker. It runs in your interactive session — the closest
 analogue of the LaunchAgent's `gui/<uid>` domain — so the worker keeps desktop
 access while you are logged in. Unlike the macOS plist, the task definition
 embeds **no secrets**: the worker reads its credentials from the credential
-directory (Issue #4064), so the XML leaks nothing.
+directory, so the XML leaks nothing.
 
 **Registering it by hand instead:**
 
@@ -711,16 +711,16 @@ For environments without Task Scheduler (e.g., containers), use the convenience 
 .\loop.ps1
 ```
 
-> **📝 Note:** `run.ps1` is a thin launcher that locates Deno, asks the `container-launch-plan` Deno command what to run, and launches the worker container — the same contract `run.sh` follows, with the same mounts and privilege flags (Issue #4066). Container is the only run mode on every platform (Issue #4; Windows always was, Issue #4147): with neither Docker nor Podman available `run.ps1` exits non-zero with an actionable message rather than running the worker on the host, and a configuration naming a removed mode (`native`, `seatbelt`) exits non-zero with the removal explained. It exits with the container's exit status, so Task Scheduler and `loop.ps1` observe real failures.
+> **📝 Note:** `run.ps1` is a thin launcher that locates Deno, asks the `container-launch-plan` Deno command what to run, and launches the worker container — the same contract `run.sh` follows, with the same mounts and privilege flags. Container is the only run mode on every platform (Issue #4; Windows always was,): with neither Docker nor Podman available `run.ps1` exits non-zero with an actionable message rather than running the worker on the host, and a configuration naming a removed mode (`native`, `seatbelt`) exits non-zero with the removal explained. It exits with the container's exit status, so Task Scheduler and `loop.ps1` observe real failures.
 
 ## ♻️ Container restart self-healing
 
-Whichever supervisor you use — launchd, cron, systemd, Task Scheduler, `loop.sh` or `loop.ps1` — a container that exits non-zero is recovered by re-invoking the launcher, which reconstructs the environment and starts a fresh container. Two guards apply (Issue #4072):
+Whichever supervisor you use — launchd, cron, systemd, Task Scheduler, `loop.sh` or `loop.ps1` — a container that exits non-zero is recovered by re-invoking the launcher, which reconstructs the environment and starts a fresh container. Two guards apply:
 
 - **Backoff instead of a restart storm.** Consecutive launcher failures are counted in `${WORK_DIR}/.container_restart_state.json`; `loop.sh` / `loop.ps1` wait longer after each one (base sleep doubled per failure, capped at 30 minutes) and reset after a successful run. Under a scheduler the fixed interval is the retry, and the launcher records the same counter itself.
 - **Escalation through GitHub.** The launcher records the phase it reached in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, so a failure is attributed to runtime detection, image build, container start or the worker run. Past the phase's threshold — 2 for a failed image build, 3 otherwise — the failure is reported through the crash-notification channel (GitHub issue comment plus optional webhook, subject to its cooldown), naming the phase.
 
-- **A wedged container VM (Issue #4173).** Backoff only helps once the launcher returns, and a container whose VM stops answering leaves the host-side `container run` client waiting on it for ever — three hours of blocked `run.sh` on host-23. Both launchers now wait under the launch plan's `watchdog` deadline (the worker's maximum run duration plus a 10-minute margin), reap a container that outlives it (`<runtime> kill`, then SIGKILL of the host-side client and runtime helper), and exit **87** so the next cycle runs. Every launch also reaps `vibe-coder-*` containers left behind by an earlier cycle — including one that survived a host reboot. Forced reaps are `container_wedged` self-heal events.
+- **A wedged container VM.** Backoff only helps once the launcher returns, and a container whose VM stops answering leaves the host-side `container run` client waiting on it for ever — three hours of blocked `run.sh` on host-23. Both launchers now wait under the launch plan's `watchdog` deadline (the worker's maximum run duration plus a 10-minute margin), reap a container that outlives it (`<runtime> kill`, then SIGKILL of the host-side client and runtime helper), and exit **87** so the next cycle runs. Every launch also reaps `vibe-coder-*` containers left behind by an earlier cycle — including one that survived a host reboot. Forced reaps are `container_wedged` self-heal events.
 
 Recoveries, backoffs, escalations and forced reaps are structured self-heal events: `deno run worker/deno/mod.ts self-heal-summary` shows them. See [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-container-restart-backoff-and-escalation).
 
@@ -748,7 +748,7 @@ tail -f ~/logs/pull.log          # Git pull output
 ```
 
 Prior runs' worker logs are gzipped at the next worker start, so read them with
-`zcat` (Issue #4027):
+`zcat`:
 
 ```bash
 zcat ~/logs/worker-<PID>.log.gz | less
@@ -763,7 +763,7 @@ per-run logs are also size-rotated while a run is in flight.
 
 ## 🌐 GitHub Pages
 
-The README and documentation (under `docs/`) can be published to GitHub Pages so the site is available at **https://stsoftwareau.github.io/VibeCoder/** (Issue #611).
+The README and documentation (under `docs/`) can be published to GitHub Pages so the site is available at **https://stsoftwareau.github.io/VibeCoder/**.
 
 **To enable:**
 
@@ -788,7 +788,7 @@ When working on UI changes, the worker can capture screenshots as evidence.
 
 **Nothing to install on the host.** The Playwright MCP server and headless
 Chromium — with the system libraries Chromium needs — are baked into the
-container image at build time (Issue #4069), so nothing is downloaded at run
+container image at build time, so nothing is downloaded at run
 time and the host needs no browser, desktop session or window server. See
 [Container Image](CONTAINER.md#headless-chromium--the-browser-is-in-the-image)
 and [Containment](CONTAINMENT.md).
@@ -840,7 +840,7 @@ Without an ImgBB API key, screenshots are saved to `docs/evidence/` and the PR i
 
 ```bash
 # Test the MCP server directly. The npm specifier is pinned to a known
-# version (Issue #2308: do NOT use @latest — a hijacked publish would land
+# version (do NOT use @latest — a hijacked publish would land
 # silently). Bumps go through Renovate's quarantine.
 deno run \
     --allow-read --allow-write --allow-net --allow-env \
@@ -852,7 +852,7 @@ deno run \
 claude "Take a screenshot of http://localhost:3000"
 ```
 
-> **Supply-chain hardening (Issue #2308).** The MCP server in `.mcp.json`
+> **Supply-chain hardening.** The MCP server in `.mcp.json`
 > uses an exact version pin (no `@latest`) and explicit Deno allow-flags
 > (no `--allow-all`). The `--deny-env=...` list blocks the worker's
 > high-value secrets — `VIBE_IMGBB_API_KEY`, `GH_TOKEN`,
@@ -862,11 +862,11 @@ claude "Take a screenshot of http://localhost:3000"
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
 > Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
 
-> **Dependency quarantine is split by ecosystem (Issue #2536).** Deno
+> **Dependency quarantine is split by ecosystem.** Deno
 > dependencies (JSR / `deno.land/x`) are quarantined by Deno's **native**
 > `deno.json` `minimumDependencyAge` and the `deno update` /
 > `deno outdated --minimum-dependency-age` CLI — **not** Renovate or
-> `VIBE_BUMP_QUARANTINE_HOURS`. The canonical config (Issue #2539) is
+> `VIBE_BUMP_QUARANTINE_HOURS`. The canonical config is
 > `{ "age": "P1D", "exclude": ["jsr:@stsoftware/*", "npm:@stsoftware/*"] }`:
 > external Deno deps wait the **24h** (`P1D`) floor, internal `stSoftwareAU`
 > Deno deps update at **0h**. `renovate.json` disables Renovate's `deno`
@@ -878,10 +878,10 @@ claude "Take a screenshot of http://localhost:3000"
 > Anything else — `0`, a negative value, `0.5`, or a non-numeric string —
 > logs a `[bump-deps] Ignoring VIBE_BUMP_QUARANTINE_HOURS=…` line and falls
 > back to `24`. Setting `0` used to switch the external embargo off silently
-> (Issue [#3649](https://github.com/stSoftwareAU/VibeCoder/issues/3649));
+>;
 > there is no supported way to disable the quarantine via this variable.
 
-> **CI-installed CLIs are quarantined by pin, not by manifest (Issue #3642).**
+> **CI-installed CLIs are quarantined by pin, not by manifest.**
 > This repo ships no npm manifest, so Renovate's npm manager had nothing to
 > manage and the CLIs CI installs at build time — `markdownlint-cli2`,
 > `pa11y-ci`, `http-server` — sat outside the quarantine entirely;

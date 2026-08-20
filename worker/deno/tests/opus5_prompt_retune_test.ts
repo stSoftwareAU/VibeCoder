@@ -1,5 +1,5 @@
 /**
- * Tests for the Opus 5 prompt re-tune (Issue #3562).
+ * Tests for the Opus 5 prompt re-tune.
  *
  * Opus 5 self-verifies without being told, expands task scope, delegates to
  * subagents more readily than Opus 4.8, and writes longer responses/files.
@@ -12,7 +12,7 @@
  *
  * These tests pin the new wording, prove the deleted scaffolding is gone from
  * the latest versions, and confirm required placeholders survive the rewrite.
- * Prior versions stay immutable (Issue #235), so older suites still guard them.
+ * Prior versions stay immutable, so older suites still guard them.
  *
  * Australian English throughout (behaviour, colour, organisation).
  */
@@ -51,8 +51,8 @@ Deno.test("opus5 retune - coding_guidelines v34 pins scope/delegation/length gui
   const result = await loadPrompt("coding_guidelines", "v34", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (result.ok) {
-    // Section header (Issue #3562).
-    assertStringIncludes(result.value, "## Opus 5 Working Style (Issue #3562)");
+    // Section header.
+    assertStringIncludes(result.value, "## Opus 5 Working Style");
     // Scope discipline — Opus 5 can expand task scope.
     assertStringIncludes(result.value, "**Stay in scope.**");
     // Delegation cap — Opus 5 delegates more readily than 4.8.

@@ -1,12 +1,12 @@
 # 🔬 Investigation — dedicated security work stream / safe parallelism
 
-Part of the worker-throughput epic (#2400, sub-issue #2404).
+Part of the worker-throughput epic (sub-issue).
 
 **Status: investigation complete. Recommendation — _do not_ implement a parallel
-security work stream now.** Batching (#2402) plus backlog observability (#2405),
+security work stream now.** Batching plus backlog observability,
 both already merged, deliver the throughput the surge needs while preserving the
 one-PR-per-work-stream invariant at zero added merge risk. Revisit only if the
-issue #2405 metrics show the security backlog growing week-on-week _despite_ batching
+issue metrics show the security backlog growing week-on-week _despite_ batching
 being active (the explicit re-open trigger is defined below).
 
 ## The question
@@ -49,7 +49,7 @@ security-specific parallel stream maximises rather than minimises collision risk
 
 ## Why batching wins instead
 
-Issue #2402 (`security_remediation_grouping.ts`, merged) already raises throughput
+ (`security_remediation_grouping.ts`, merged) already raises throughput
 **inside** the serialisation model. It collects related findings — same file,
 same vulnerability class, same dependency — and closes N of them in **one**
 PR, capped at a reviewable size (`DEFAULT_MAX_GROUP_SIZE = 5`). One PR closing
@@ -67,7 +67,7 @@ of the merge risk. See
 
 ## The decision is data-gated, not permanent
 
-Issue #2405 (`backlog_throughput.ts`, merged) surfaces the single number that settles
+ (`backlog_throughput.ts`, merged) surfaces the single number that settles
 this: is the open `security` / `supply-chain-*` count **rising or falling**
 week-on-week, and what is the projected drain time at the current clear-rate.
 Parallelism should only be reconsidered if that signal says batching is not
@@ -75,11 +75,11 @@ keeping pace.
 
 ```mermaid
 flowchart TD
-    A[Sustained security inflow] --> B{#2405 backlog trend<br/>with batching active}
+    A[Sustained security inflow] --> B{ backlog trend<br/>with batching active}
     B -- "falling / flat" --> C[Keep serialisation +<br/>batching. Do nothing.]
     B -- "rising week-on-week" --> D{Is batching<br/>fully utilised?<br/>groups near cap}
-    D -- "no — tune first" --> E[Raise maxGroupSize /<br/>widen grouping #2402.<br/>Still one PR per stream.]
-    D -- "yes — batching saturated" --> F[Re-open #2404:<br/>design a parallel<br/>security stream]
+    D -- "no — tune first" --> E[Raise maxGroupSize /<br/>widen grouping.<br/>Still one PR per stream.]
+    D -- "yes — batching saturated" --> F[Re-open:<br/>design a parallel<br/>security stream]
     style C fill:#74c69d,stroke:#52b788,color:#081c15
     style E fill:#ffd166,stroke:#e0a800,color:#1b1b1b
     style F fill:#f4978e,stroke:#e5675a,color:#1b1b1b
@@ -90,16 +90,16 @@ flowchart TD
 **Do not** build a dedicated parallel security work stream at this time, and do
 **not** open a follow-up design issue. The ordered fallback ladder is:
 
-1. **Now** — rely on batching (#2402) + observability (#2405). No code change.
+1. **Now** — rely on batching + observability. No code change.
 2. **If the backlog still rises** — first tune batching (raise `maxGroupSize`,
    widen grouping criteria). This stays inside one-PR-per-stream.
 3. **Only if batching is demonstrably saturated and the backlog still grows** —
-   re-open #2404 with the #2405 trend data attached and design the parallel
+   re-open with the trend data attached and design the parallel
    stream then, when the merge-risk trade-off is justified by evidence.
 
 ### Re-open trigger (explicit)
 
-Re-open #2404 only when **all** of the following hold, evidenced by the #2405
+Re-open only when **all** of the following hold, evidenced by the
 `backlog-report` output:
 
 - The open `security` / `supply-chain-*` backlog trend is `rising` for **two

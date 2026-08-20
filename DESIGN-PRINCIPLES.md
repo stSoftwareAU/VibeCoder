@@ -13,7 +13,7 @@ canonical operator manual under [`docs/`](docs/) for the full detail.
 
 ## Design Principles
 
-### Generous resources, strict boundary (Issues #4060, #4184, #4186)
+### Generous resources, strict boundary
 
 The containment trade the operator has chosen is asymmetric, and every
 resourcing or isolation decision should follow it:
@@ -23,12 +23,12 @@ resourcing or isolation decision should follow it:
   ones, no host filesystem browsing. The boundary is enforced at the
   OS/container level ([Containment](docs/CONTAINMENT.md)), never by prompts or
   policy alone. Working repositories should not even be visible on the host
-  (named volumes, Issue #4186): less cross-contamination between machine and
+  (named volumes,): less cross-contamination between machine and
   container is strictly better.
 - **Inside the boundary, the worker gets everything it wants.** Speed is the
   priority. Container VMs are sized to the host (all memory minus an 8 GiB
-  host reserve, 8 GiB floor, no upper cap, near-all cores — Issues #4184,
-  #4229), and no
+  host reserve, 8 GiB floor, no upper cap, near-all cores —,
+  ), and no
   quota, size cap or conservative default should be added to memory, CPU or
   disk. Do not trade throughput for a resource ceiling.
 - **Resource exhaustion (DoS) is explicitly out of scope.** Runaway loops are
@@ -38,10 +38,10 @@ resourcing or isolation decision should follow it:
 
 **Rationale:** the fleet runs unattended; the risk that matters is escape
 (reading or mutating host data), not consumption. A worker starved of memory
-or I/O stalls the whole fleet silently (the #4184 overnight stall), which
+or I/O stalls the whole fleet silently (the overnight stall), which
 costs far more than any runaway cycle a timeout will reap anyway.
 
-### Prompt-version references (Issue #2282)
+### Prompt-version references
 
 The worker always loads the latest version of each prompt template at runtime.
 Documentation should refer to prompts by directory (e.g.
@@ -50,7 +50,7 @@ specific historical version is required — in which case use textual "from vN
 onward" wording alongside the directory reference, never a literal
 `prompts/<type>/vN.md` filename.
 
-### Repository isolation — no cross-repo coupling (Issue #3239)
+### Repository isolation — no cross-repo coupling
 
 Each monitored repository is **absolutely isolated**. Quality gates and their
 fixes are **per-repo**: every repository commits and owns its own gate script
@@ -59,7 +59,7 @@ propose a shared, cross-repo reusable GitHub Action — or any other cross-repo
 mechanism — to centralise a gate. Each repo's own CI is the enforcing gate on
 every PR; the Vibe Coder idle-task audit only **verifies presence** and files an
 issue in a repo that lacks a gate — it never centralises the gate itself. This
-does not contradict the internal `stSoftwareAU/*` dependency-fix rule (#2942):
+does not contradict the internal `stSoftwareAU/*` dependency-fix rule:
 fixing a genuine root cause in a shared *dependency's* own repo is still correct;
 isolation forbids centralising a per-repo quality gate, not fixing a bug where it
 lives. Recorded for the worker in the `prompts/coding_guidelines/` template.
@@ -98,51 +98,50 @@ branch):**
 
 1. **Work stream occupancy** (`isMilestoneOccupied` in
    `worker/deno/lib/issue_filter.ts`): blocks if **any fleet account** already
-   has an assigned issue in the same work stream. Fleet-aware (Issue #3099):
+   has an assigned issue in the same work stream. Fleet-aware:
    the match set is the current host's login plus every fleet login in
    `config.allowedAuthors`, so a sibling host's assignment also occupies the
    work stream and a second host will not start the same issue (the duplicate-PR
-   root cause in #3095). Non-fleet human assignees are still ignored — only
+   root cause in). Non-fleet human assignees are still ignored — only
    fleet logins occupy.
 2. **PR blocking** (`getBlockingPRForIssue` in
    `worker/deno/lib/issue_query.ts`): blocks if the **fleet** has an open PR
    targeting the same branch (milestone branch or default branch). Only
-   push-capable fleet accounts count — a human's open PR never defers an issue
-   (Issue #4133).
+   push-capable fleet accounts count — a human's open PR never defers an issue.
 
 Together these ensure at most one in-flight piece of worker work per work
 stream, while humans can assign issues freely without stalling the worker.
 
-### One PR per issue across the fleet (Issue #3136)
+### One PR per issue across the fleet
 
 Beyond the per-work-stream serialisation above, the fleet enforces a stronger
 invariant: **exactly one PR per issue across the whole fleet** (machines
 authenticated as different GitHub accounts). Two failure modes were closed
-under #3136:
+under:
 
 - **Mode A — concurrent cross-account.** Two hosts pass the discovery open-PR
   guard before either PR exists, then both open one. Closed by the
-  **claim-time live re-check** (#3150): `claimIssue`
+  **claim-time live re-check**: `claimIssue`
   (`worker/deno/lib/claim_issue.ts`) re-checks fleet open PRs with a cache
   bypass *after* winning the atomic claim and *before* any token work, aborting
   with `reason: "fleet_pr_exists"` (comment removed, assignment released) if a
   fleet PR already targets the work stream.
 - **Mode B — post-merge re-pickup.** A merged PR (sibling **or** same-account)
   is re-picked after the cooldown and a second PR is opened. Closed by the
-  **permanent merged-lock** (#3151): `fetchRecentlyClosedPRsForFleet`
+  **permanent merged-lock**: `fetchRecentlyClosedPRsForFleet`
   (`worker/deno/lib/issue_query.ts`) blocks a merged fleet PR permanently, while
   a closed-unmerged PR only blocks within the cooldown window (preserving the
   retry path).
 
 All guards resolve their fleet set through the single
-`resolveFleetAuthors` union (#3138 — `worker/deno/lib/fleet_authors.ts`) of
+`resolveFleetAuthors` union (`worker/deno/lib/fleet_authors.ts`) of
 `github_user` + `allowed_authors` + `fleet_pr_authors`, so **every host's
 `allowed_authors` must list every fleet account**;
 `validateFleetConfig` (`worker/deno/lib/fleet_config_validation.ts`) fails loud
 on the blind-spot shape. A closed-unmerged retry reuses the deterministic branch
-(#3152). The **only** way an issue becomes eligible again after a merged PR is a
+. The **only** way an issue becomes eligible again after a merged PR is a
 human re-opening the issue or re-applying a discovery label — prevention only,
-no auto-close (#3095 multi-account operation retained). The fleet-wide regression
+no auto-close (multi-account operation retained). The fleet-wide regression
 suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
 [`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
@@ -167,46 +166,46 @@ each, merging and de-duplicating by PR number. Trusted humans
 (`allowed_authors`) are deliberately **not** in that set — see the two-resolver
 split below.
 
-#### One author set, checked every iteration (Issue #4024)
+#### One author set, checked every iteration
 
 `fleet_authors.ts` is the **single source of truth** for "the PRs the fleet owns
 in this repo". The issue-side blocking guard (`findOldestIssue` →
 `fetchOpenPRsForFleet`) resolves `resolveFleetPrAuthorSet()`; the PR-maintenance
 scans (`pr_maintenance.ts`) and the CI-nudge scan (`pr_ci_nudge_scan.ts`) act on
 the PRs they find and so resolve `resolveFleetMaintenanceAuthorSet()`
-(Issue #4076) — no module builds its own list. Two independently-maintained sets
+ — no module builds its own list. Two independently-maintained sets
 is precisely what let a
 fleet-authored PR block `work-on` issues while no scan ever fixed its CI,
-answered its comments, or merged it (Issue #4023).
+answered its comments, or merged it.
 
 The invariant is self-checking, for the **fleet-authored** PRs both sides see:
 
 > Every open fleet-authored PR `getBlockingPRForIssue()` can return must be
 > present in the PR-maintenance scan set.
 
-A human's `allowed_authors` PR sits deliberately outside that set since #4076,
-and since #4133 the blocking guard does not wait behind it either — see below.
+A human's `allowed_authors` PR sits deliberately outside that set since,
+and since the blocking guard does not wait behind it either — see below.
 
-#### A human-authored PR never blocks issue pickup (Issue #4133)
+#### A human-authored PR never blocks issue pickup
 
 The guard used to defer to every PR the fleet *owned*, a set that includes the
 trusted humans in `allowed_authors`. One unrelated human PR therefore parked the
-whole repo's `work-on` queue, and after #4078 also stamped `needs-human` on the
+whole repo's `work-on` queue, and after also stamped `needs-human` on the
 blocked issue and stood the worker down. The worker is meant to work alongside
 the other developers, not wait on them.
 
 `getBlockingPRForIssue` now filters the PR list by the **push-capable** set
 before matching branches: a human-authored PR is invisible to issue selection,
 so no issue is deferred, no `needs-human` is applied, and no comment is posted.
-The #4078 nudge-and-escalate path became unreachable and was retired with
-`escalate_human_blocking_pr.ts`. The #4074/#4078 rule that the worker never
+The nudge-and-escalate path became unreachable and was retired with
+`escalate_human_blocking_pr.ts`. The / rule that the worker never
 claims, pushes to, comments on, or merges someone else's PR uninvited is
 unchanged.
 
 The fleet's own open PRs keep the repo-wide one-at-a-time rule, so the worker
 never runs several of its own PRs into the same work stream (merge hell). Two
 inputs stay on the blocking side as a fail-safe, because authorship could not be
-established: a PR whose author was never stamped (a pre-#4024 cache entry), and
+established: a PR whose author was never stamped (a pre- cache entry), and
 an unresolved/empty push-capable set.
 
 ```mermaid
@@ -236,20 +235,20 @@ flowchart LR
 `findOldestIssue` compares the two resolved sets once per iteration and emits a
 single `fleet-author-set-divergence` warning naming the missing authors when
 they differ — a warning only; the iteration always continues. The check is
-**intent-aware** (Issue #4079): the invariant it asserts is not "the two sets
+**intent-aware**: the invariant it asserts is not "the two sets
 are equal" but "the maintenance set is the fleet-owned set minus the trusted
 humans, and nothing else". `allowed_authors` is passed in as the expected delta
 and stays silent, so the two genuine hazards still read as alarms — a
-`fleet_pr_authors` sibling absent from the maintenance set (#4023), and a
-maintained login the blocking guard cannot see (#3138). A permanently-firing
+`fleet_pr_authors` sibling absent from the maintenance set, and a
+maintained login the blocking guard cannot see. A permanently-firing
 warning would be worse than none: it trains operators to ignore the line that
-exists to catch #4023. Every blocking
+exists to catch. Every blocking
 decision also emits `pr-blocks-work-on` with the PR number, author, base branch,
-the issues it deferred, and `in-maintenance-set`. A recurrence of the #4023 bug
+the issues it deferred, and `in-maintenance-set`. A recurrence of the bug
 shows up as `in-maintenance-set=false` on a blocking PR, findable with a log
 grep rather than a code read.
 
-#### Defer-to vs push-capable author sets (Issue #4075)
+#### Defer-to vs push-capable author sets
 
 "The fleet owns this PR" and "the fleet may push to this PR" are different
 questions, so `worker/deno/lib/fleet_authors.ts` exports one resolver for each:
@@ -262,8 +261,8 @@ questions, so `worker/deno/lib/fleet_authors.ts` exports one resolver for each:
 The maintenance set is always a **subset** of the fleet-owned set; that asymmetry
 is intended, not drift. `allowed_authors` is excluded from the maintenance set
 because a trusted human is trusted to _instruct_ the worker, not to have their PR
-taken over — the #4074 regression, where the maintenance scans inherited
-`allowed_authors` and adopted a human-authored PR. Since #4076 all five scan
+taken over — the regression, where the maintenance scans inherited
+`allowed_authors` and adopted a human-authored PR. Since all five scan
 sites resolve the push-capable set (the four in `pr_maintenance.ts` plus
 `findPrsNeedingCiNudge`), so a human's login never reaches the `gh pr list`
 query; the blocking guard in `find_oldest_issue.ts` keeps the fleet-owned set,
@@ -275,7 +274,7 @@ push is rejected by git as a non-fast-forward (the loser retries), bounded by
 the existing per-check retry cap. See
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) → Fleet PR Authors.
 
-#### A human may still hand a PR over — explicitly (Issue #4077)
+#### A human may still hand a PR over — explicitly
 
 "Never" is narrower than the policy: the worker may act on a human-authored PR
 **when explicitly invited**, and only then. `worker/deno/lib/pr_invitation.ts`
@@ -316,9 +315,9 @@ flowchart TD
     style A2 fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-#### One cross-scan suite enforces the invariant (Issue #4080)
+#### One cross-scan suite enforces the invariant
 
-Issue #4074 was introduced by a fix whose own tests all passed, because every
+ was introduced by a fix whose own tests all passed, because every
 test checked one scan site in isolation and none asserted the property that
 matters: _the worker never writes to a PR it was not invited to_.
 `worker/deno/tests/pr_uninvited_action_test.ts` asserts it once, for all six
@@ -334,7 +333,7 @@ defer-to set (`resolveFleetPrAuthorSet`), or lists open PRs without resolving
 `resolveFleetMaintenanceAuthorSet`. A sixth scan added later with the wrong
 resolver fails CI instead of shipping.
 
-### Fair within-tier repo rotation + per-repo `nice` (Issue #2771)
+### Fair within-tier repo rotation + per-repo `nice`
 
 New-work selection draws repos in a fair rotation biased by an optional
 operator-side per-repo `nice` integer (`repo_config.nice`, default `0`). The
@@ -359,7 +358,7 @@ values are guarded down to `0` by `getRepoNice()` in
   planning scan (`find_planning_issues.ts`). It does **not** reorder Priority
   1.x in-flight maintenance (PR feedback, CI fixes, revisions) — in-flight work
   is finished regardless of its repo's tier.
-- **Operator-side only (#2626).** `nice` lives in `.config.json` `repo_config`,
+- **Operator-side only.** `nice` lives in `.config.json` `repo_config`,
   never in the target repo. `check-repo-availability` surfaces the resolved tier
   in its structured `data.nice` and a ` [nice N]` message suffix (the
   `AVAILABLE:` / `BUSY:` prefix is unchanged) for debugging.
@@ -369,7 +368,7 @@ Configuration) and
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md)
 (Issue selection priority) for the operator detail.
 
-### Dual-layer pre-merge enforcement (Issue #2561)
+### Dual-layer pre-merge enforcement
 
 Every required CI status check must pass **before** a feature branch is merged
 into a repository's default branch — never after. A post-merge failure is too
@@ -378,7 +377,7 @@ late: the deploy/publish workflows have already fired. Enforcement is
 
 - **Wall (GitHub repository rulesets).** Required status checks + strict
   "branch up to date", configured at setup time per repo. **Classic** branch
-  protection is never written (Issue #4163) — GitHub has moved enforcement to
+  protection is never written — GitHub has moved enforcement to
   rulesets, and a repo already covered by a human- or org-managed ruleset is a
   no-op. Required-check selection is visibility- and language-aware —
   `getRequiredChecksForRepo()` in
@@ -390,25 +389,25 @@ late: the deploy/publish workflows have already fired. Enforcement is
   repo the fleet checks results in to, with no PR) is never locked: the
   recent history is inspected first (`assessBranchPushPolicy()`), and a
   direct-push or opted-out branch gets no ruleset — the worker even removes
-  its own stale one there (Issue #4356).
+  its own stale one there.
 - **Backstop (worker pre-merge gate).** `enforcePreMergeRequirements()` in
   `worker/deno/lib/direct_merge.ts` re-fetches CI status and branch freshness at
   merge time inside `directMergePr()`; it refuses to merge unless CI is `passed`
   and `behindBy === 0`. Behind target → defer-and-retry: the PR is left open,
   branch-update maintenance rebases, CI re-runs, the next cycle re-evaluates.
-- **Only allowlisted verdicts are green (Issue #3945).** `determineCiStatus()`
+- **Only allowlisted verdicts are green.** `determineCiStatus`
   passes a check run only when its conclusion is `success`, `skipped` or
   `neutral`, and folds in GitHub's own `statusCheckRollup.state` (worse verdict
   wins). Every other conclusion — `action_required`, `startup_failure`,
   `stale`, or a value GitHub adds in future — fails closed instead of falling
   through to `passed`.
-- **Zero checks is not green (Issue #3705).** A head commit with no check runs
+- **Zero checks is not green.** A head commit with no check runs
   and no commit statuses reports `no_checks`, not `passed`; the gate blocks and
   the automated path escalates to a human. Only the explicit
   `--allow-no-checks` operator override on `merge-if-checks-passed` relaxes it,
   and that command is itself gated on the monitored-repo allowlist and PR
   authorship.
-- **The merge is pinned to the checked commit (Issue #3946).** The gate reports
+- **The merge is pinned to the checked commit.** The gate reports
   the head SHA it read the checks for, and `directMergePr()` merges with
   `gh pr merge --squash --match-head-commit <sha>`, so a push landing between
   the check read and the merge cannot be merged on unevaluated checks. A moved
@@ -424,7 +423,7 @@ late: the deploy/publish workflows have already fired. Enforcement is
   template detects and files `BP-TRIGGER-*` findings rather than bulk-rewriting
   YAML — the fix rides a normal worker PR.
 - **No post-merge re-run of required checks** on the default branch.
-- **Hands-off landing, loud when blocked (#3584).** Merge-path precedence is
+- **Hands-off landing, loud when blocked.** Merge-path precedence is
   fixed — native auto-merge first, direct merge only when native auto-merge is
   refused on an unprotected branch — so the worker never races a repo's own
   `auto-merge.yml`. `handleMergeAttempt()` in
@@ -469,11 +468,11 @@ to `git clone`.
 feature-branch workflow (shallow clone → create branch → commit → commit-range
 queries → merge default back in) against a local fixture.
 
-### Per-handler dispatch watchdog (Issue #2473)
+### Per-handler dispatch watchdog
 
 Each Priority 1.x handler's `execute()` in the main dispatch loop
 (`worker/deno/lib/run_core.ts`) is bounded by a watchdog so a hung `gh`/network
-call cannot freeze the whole loop and stall the fleet (the #2472 wedged-loop
+call cannot freeze the whole loop and stall the fleet (the wedged-loop
 symptom — a `scan_cursor` frozen at Priority 1.8).
 
 - **Hard timeout** (`handlerTimeoutSeconds`, default 600s): on timeout the loop
@@ -496,7 +495,7 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
 `worker/deno/lib/run_core.ts`. Tests: `tests/handler_watchdog_test.ts` (unit)
 and `tests/run_core_watchdog_test.ts` (loop integration).
 
-### Per-cycle stale-assignment recovery (Issue #2672)
+### Per-cycle stale-assignment recovery
 
 The GitHub-side stale-assignment recovery scans run on **every scan cycle**, not
 just at worker start-up, so a leaked assignment is recovered within a cycle
@@ -504,12 +503,12 @@ rather than waiting for a worker restart.
 
 - **What runs per cycle.** `detectAssignedWithoutHeartbeat()` and
   `recoverStaleGithubAssignments()` (including the cross-account evidence rules
-  from Issue #2671) run via the `recoverStaleAssignments` dep, wired into the
+  from) run via the `recoverStaleAssignments` dep, wired into the
   main loop in `worker/deno/lib/run_core.ts` immediately **before** the priority
   dispatch — so a just-freed issue is available to the same cycle's Priority 2
   scan.
 - **No extra issue-list calls.** The scan reads through the iteration-scoped
-  `IssueCache` / `fetchAllIssues` (Issue #1787): whichever of the recovery scan
+  `IssueCache` / `fetchAllIssues`: whichever of the recovery scan
   and the Priority 2 scan runs first populates the shared `issues_all` cache and
   the other reads through it, so a quiet cycle costs no extra issue-list API
   call. Per-issue lookups (marker comments, PR linkage) run only for candidates
@@ -548,23 +547,23 @@ without cross-contamination.
 [Session Management](docs/MODEL-AND-CACHING.md#session-management) for full
 details.
 
-### Planning auto-milestone for sub-issues (Issue #2863)
+### Planning auto-milestone for sub-issues
 
 When a planning run creates **2+ sub-issues** and the parent issue has **no
 milestone of its own**, the worker auto-creates a GitHub milestone named
 `#<N> <title>` (from the parent) and assigns every sub-issue it created to that
 milestone. Assigning the milestone opts the batch into the existing
-milestone-branch delivery workflow (Issue #1300) — sub-issue PRs auto-merge into
+milestone-branch delivery workflow — sub-issue PRs auto-merge into
 a shared `milestone/<name>` branch and the default branch is only updated via the
 single final milestone PR.
 
 - **Always on, no opt-out.** A milestone can be detached manually if unwanted.
-- **Two gates.** Parent already has a milestone → keep the #1300 inheritance path
+- **Two gates.** Parent already has a milestone → keep the inheritance path
   (no new milestone). Fewer than two sub-issues → no milestone.
 - **Idempotent.** The milestone is matched by title before any POST, so
   re-running planning on the same parent never duplicates it; long titles are
   truncated to `MAX_MILESTONE_TITLE_LENGTH`.
-- **Native sub-issues are authoritative (#2900).** The sub-issue set is the
+- **Native sub-issues are authoritative.** The sub-issue set is the
   union of the parent's **native GitHub sub-issues** (the `sub_issues` API) and
   the issue URLs text-extracted from Claude's output. Earlier the milestone
   relied solely on text extraction, so when Claude printed the URLs in an
@@ -587,22 +586,21 @@ crash-recovery pre-checks — is covered). Tests:
 [`docs/workflows/planning-and-questions.md`](docs/workflows/planning-and-questions.md)
 → Auto-milestone for sub-issues.
 
-### Planning self-critique + degraded-model observability (Issue #2646)
+### Planning self-critique + degraded-model observability
 
 Planning runs produce a stronger plan and surface silent model degradation.
 
-- **Two-stage self-critique (Issue #2648).** A planning run is two sequential
+- **Two-stage self-critique.** A planning run is two sequential
   `phase: "planning"` Claude invocations: a **draft** turn (plan as text, no
   side effects) followed by a **critique → revise → execute** turn that embeds
-  the draft as a *sanitised* artefact (`sanitiseDelimiterPatterns()`, Issue
-  #2608), adversarially attacks it, revises once (single iteration, KISS), then
+  the draft as a *sanitised* artefact (`sanitiseDelimiterPatterns`,), adversarially attacks it, revises once (single iteration, KISS), then
   creates the sub-issues. The critique is never published; a draft failure or
   empty draft falls back to the single-invocation flow, so the run is never
   worse than before.
-- **Per-run stats (Issue #2649).** Every planning run posts a model-usage block
+- **Per-run stats.** Every planning run posts a model-usage block
   on the parent issue — requested model, served model(s) (the per-response
-  `model` the API declares is the only observable source of truth, Issue #2647),
-  effort (verbatim, including `xhigh` from #2620), token counts, turns, and
+  `model` the API declares is the only observable source of truth,),
+  effort (verbatim, including `xhigh` from), token counts, turns, and
   duration. Posting is non-fatal.
 - **Degradation verdict.** A run is degraded when any planning-phase response is
   served by a model failing a prefix/alias-aware match against the resolved
@@ -610,23 +608,23 @@ Planning runs produce a stronger plan and surface silent model degradation.
   base > global > `PHASE_MODEL_DEFAULTS.planning`; pinnable via
   `best_planning_model`), or an explicit rate-limit fallback fired. Passive
   logging only — no canary benchmark.
-- **`degraded-model` label (Issue #2650).** On a degraded run the worker applies
+- **`degraded-model` label.** On a degraded run the worker applies
   the non-reserved `degraded-model` label to the parent issue and every
   sub-issue that run created. It is not in `RESERVED_LABELS`, so it survives
   self-apply; the worker never removes it (a human clears it after triage).
-- **Grill-me extension (Issue #2717).** The `grill_me` phase routes to the same
+- **Grill-me extension.** The `grill_me` phase routes to the same
   Fable 5 top tier as planning, so the stats/verdict helpers are phase-parametric
   and grill-me reuses them — but applies `degraded-model` **on a degraded round**
   only (a healthy interactive round is never labelled).
-- **One stats comment per issue (Issue #3756).** Every issue the worker wraps up
+- **One stats comment per issue.** Every issue the worker wraps up
   gets exactly one cost/model stats comment — at PR-raise time for `work-on`
   (the merged PR closes the issue with no worker attached), and at the end of
   the round for the reactive planning-shaped phases. A hidden marker plus a
   heading match keep it to one per issue, so cost visibility never becomes
   comment flooding, and the block carries an estimate disclaimer stating it
   covers only the posting worker's run(s). See
-  [One cost/model stats comment per issue](docs/MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-issue-issue-3756).
-- **Fable-unavailable auto-fallback + self-heal (Issue #2720).** When Fable 5 is
+  [One cost/model stats comment per issue](docs/MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-issue).
+- **Fable-unavailable auto-fallback + self-heal.** When Fable 5 is
   globally unavailable (export-disabled / suspended / `403` / silently
   substituted), the top-tier phases fall back to **Opus 4.8** for that run —
   either via the in-run model-unavailable path (`detectModelUnavailable` →
@@ -634,16 +632,16 @@ Planning runs produce a stronger plan and surface silent model degradation.
   the `degraded-model` label + stats comment. The substitution is **per-run**:
   config keeps pointing at Fable, routing self-heals once Fable returns, and
   there is no persistent "Fable down" switch. See
-  [Fable-unavailable auto-fallback + self-heal](docs/MODEL-AND-CACHING.md#fable-unavailable-auto-fallback--self-heal-issue-2720).
+  [Fable-unavailable auto-fallback + self-heal](docs/MODEL-AND-CACHING.md#fable-unavailable-auto-fallback--self-heal).
 
 **Implementation:** `worker/deno/lib/planning_run_stats.ts` (stats + verdict),
 `worker/deno/lib/planning_degraded_label.ts` (label application), and
 `worker/deno/lib/planning_processor.ts` (two-stage flow), with the prompt assets
 in `prompts/planning/`. See
-[Planning-run stats + degraded-model detection](docs/MODEL-AND-CACHING.md#planning-run-stats--degraded-model-detection-issue-2649)
+[Planning-run stats + degraded-model detection](docs/MODEL-AND-CACHING.md#planning-run-stats--degraded-model-detection)
 for the operator detail.
 
-### Per-repo configuration is operator-side only (Issue #2626)
+### Per-repo configuration is operator-side only
 
 Vibe Coder configuration must not live in the target repositories themselves. A
 documented config channel from repo content into worker behaviour is an
@@ -651,7 +649,7 @@ attack/steering surface that would otherwise need its own protection. **Per-repo
 configuration lives operator-side only**, in `.config.json` `repo_config`, which
 already supports every field and takes precedence.
 
-The in-repo `.vibecoder.json` mechanism (Issue #1278) was removed: it let a
+The in-repo `.vibecoder.json` mechanism was removed: it let a
 cloned target repo self-declare `quality_command` (an arbitrary command the
 worker executes), `custom_instructions` (a prompt-injection channel into every
 Claude run), and the `skip_*` gate-weakening flags. The worker inherently
@@ -667,9 +665,9 @@ operator-side equivalent already exists is the right default.
   re-allowed by `gitignore_enforcer.ts`, so the pre-commit gate now treats a
   staged `.vibecoder.json` as a forbidden hidden path.
 - **`repo_config` is the single per-repo mechanism** — and the only home for
-  per-repo model/effort overrides (#2625).
+  per-repo model/effort overrides.
 
-### Commit safety — never commit hidden files (Issue #1751)
+### Commit safety — never commit hidden files
 
 Hidden files (paths matching `.*`) routinely carry secrets — `.env`, API keys,
 OAuth tokens, SSH keys. A single leaked secret triggers full credential
@@ -680,7 +678,7 @@ allowlist.
 `.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
 
 **Canonical `.gitattributes` block.** Alongside the `.gitignore` block, the same
-enforcer writes a canonical `.gitattributes` block (Issue #2332) that pins line
+enforcer writes a canonical `.gitattributes` block that pins line
 endings (LF for `*.sh`, `*.bash`, `*.py`, `*.yaml`, `*.yml`, `*.json`; CRLF for
 `*.bat` and `*.cmd`) and marks common binary assets (`*.png`, `*.pdf`, `*.zip`,
 fonts, etc.) so git never attempts line-ending conversion on them. The block is
@@ -694,9 +692,9 @@ preserved (merge, never clobber). The full pattern set lives in
    (`prompts/coding_guidelines/`) instructs Claude to refuse to stage hidden
    files outside the allowlist and forbids `git add -f` to bypass `.gitignore`.
 2. **`.gitignore` + `.gitattributes` enforcer** —
-   `worker/deno/lib/gitignore_enforcer.ts` (Issues #1757, #2332) is the source
+   `worker/deno/lib/gitignore_enforcer.ts` is the source
    of truth for both canonical pattern sets. `setup.sh` runs `gitignore-sync`
-   (Issues #1774, #2340) once at setup time, walking every monitored repo cloned
+   once at setup time, walking every monitored repo cloned
    under `WORK_DIR` and applying both the `.gitignore` block (via
    `ensureGitignorePatterns()`) and the `.gitattributes` block (via
    `ensureGitattributesPatterns()`). The per-iteration `setupRepo()` no longer
@@ -706,7 +704,7 @@ preserved (merge, never clobber). The full pattern set lives in
    uncommitted patterns) and produced a noisy `[setup-repo] gitignore: ...` log
    line each iteration. File changes ride along in the next normal worker PR for
    the repo — no dedicated commit machinery, no findings issue.
-3. **Pre-commit gate** (Issue #1758) — blocks any commit that stages a forbidden
+3. **Pre-commit gate** — blocks any commit that stages a forbidden
    hidden path.
 
 Bypassing any safeguard (`git commit --no-verify`, `git add -f`) is forbidden.
@@ -714,13 +712,13 @@ If a hidden file legitimately needs to be tracked, raise an issue and update the
 allowlist in `gitignore_enforcer.ts` via PR — do not add ad-hoc re-allow rules
 during normal work.
 
-### Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo (Issue #2942)
+### Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo
 
 When a root cause lives in a **dependency** rather than the repo being worked on,
-the default is decided by the existing #1613 internal/external classification (a
+the default is decided by the existing internal/external classification (a
 dependency whose source repo is under `stSoftwareAU/*` is **internal**;
 everything else is **external**), extended from *bumping* deps to *fixing their
-root causes*. This narrows the blanket #1826 escape hatch that previously let the
+root causes*. This narrows the blanket escape hatch that previously let the
 worker defer internal-dependency fixes by filing follow-up issues.
 
 - **Internal `stSoftwareAU/*` dependency the worker can access → fix it
@@ -739,9 +737,9 @@ worker defer internal-dependency fixes by filing follow-up issues.
 The behaviour lives in the `prompts/issue/` and `prompts/coding_guidelines/`
 escape-hatch sections (latest versions; the worker always loads the latest at
 runtime). The actual cross-repo PR plumbing, the one-follow-up dedup cap
-(#2943), and the release-gating boundary are sibling issues under parent #2935.
+, and the release-gating boundary are sibling issues under parent.
 
-### Escape hatch for out-of-scope work (Issue #1826)
+### Escape hatch for out-of-scope work
 
 When a Claude run is genuinely too large or out of scope — a PR comment
 requesting a multi-day refactor, a CI failure caused by missing infrastructure,
@@ -772,19 +770,19 @@ The relief valve only fires when both signals (issue link + follow-up wording)
 are present, so an incidental issue mention in a normal fix reply will not
 trigger it.
 
-**Reserved-label strip on the follow-up (Issue #2824).** Claude builds the
+**Reserved-label strip on the follow-up.** Claude builds the
 follow-up `gh issue create` itself, so the worker never gets to filter labels
 *before* creation. When the hatch is detected with a follow-up `issueRef`,
 `stripReservedLabelsFromFollowUp()`
 (`worker/deno/lib/escape_hatch_label_strip.ts`) parses the ref (same-repo
 `#NNN` or cross-repo `owner/repo#NNN`) and removes any `RESERVED_LABELS` member
 from that follow-up via the shared `stripReservedLabelsFromIssues` helper
-(Issue #2822) — one WARNING per removal, descriptive labels (`bug`,
+ — one WARNING per removal, descriptive labels (`bug`,
 `enhancement`, …) preserved. The deliberate `escalateToHuman` add of
-`needs-human` to an *existing* issue (Issue #1471) is a separate,
+`needs-human` to an *existing* issue is a separate,
 post-creation path on a different issue and is untouched.
 
-**Every hand-off path runs the strip (Issue #3708).** The hatch is offered to
+**Every hand-off path runs the strip.** The hatch is offered to
 PR feedback, CI fix *and* issue work, but only `pr_feedback_processor.ts` called
 the strip, so the two paths that also drive `gh issue create` had no post-hoc
 guard. `stripReservedLabelsFromModelFollowUp()` is the message-level entry point
@@ -794,7 +792,7 @@ performs the same strip. A reference to the issue/PR the run is *working on* is
 a self-reference, not a follow-up, and is never stripped — the guard must not
 remove a human-applied `work-on` from live work.
 
-**A failed strip is loud, not a log line (Issue #3708).** The strip still never
+**A failed strip is loud, not a log line.** The strip still never
 throws — a hand-off is never turned into a failure — but it returns a
 `Result<ReservedLabelStripSummary, ReservedLabelStripError>` instead of `void`.
 A failed removal is retried once (the strip re-reads labels each attempt, so it
@@ -819,7 +817,7 @@ flowchart TD
     G -->|success| I
 ```
 
-### Security scans (Issue #1933, #1944, simplified by #2023)
+### Security scans (simplified by)
 
 The worker runs MythOS-style four-phase security scans against the monitored
 repos via the idle-task framework:
@@ -827,7 +825,7 @@ repos via the idle-task framework:
 1. **Idle trigger** — after a scan cycle ends with no claimable work across
    every monitored repo, `run_core.ts` invokes the `maybe-file-idle-task` Deno
    command. The command first runs a **cross-repo wrapper check**
-   (`findAnyOpenIdleTaskWrapper`, Issue #2092): if **any** monitored repo
+   (`findAnyOpenIdleTaskWrapper`,): if **any** monitored repo
    already has an open `idle-task`-labelled issue, filing is skipped entirely
    and the existing wrapper is picked up on the next iteration of the main loop
    through standard priority dispatch. Only when the entire monitored set is
@@ -839,7 +837,7 @@ repos via the idle-task framework:
    dispatch and routes it to `securityScanTemplate.runTask()`, which runs the
    scanner and files findings. Any failure inside the run is caught, logged as
    `Idle-task filer failed (continuing): <msg>`, and never aborts the main loop.
-   Issue #2023 retired the previous in-process `maybe-run-security-scan` trigger
+    retired the previous in-process `maybe-run-security-scan` trigger
    and the three host state files (`security_scan_idle.json`,
    `security-scan-state.json`, `security_scan.lock`) it required — the atomic
    claim on the filed `idle-task` issue serialises the scan across workers.
@@ -853,7 +851,7 @@ next-phase label manually after triage. See
 list.
 
 **No milestone, no PR.** The `security-scan` template sets `skipMilestone: true`
-(Issue #2067), so the wrapper idle-task issue is filed as a standalone issue —
+, so the wrapper idle-task issue is filed as a standalone issue —
 not under `idle-task: security-scan`. A security scan **never raises a pull
 request**: each finding is filed as its own GitHub issue, the wrapper is closed
 with a summary comment, and nothing else. See
@@ -869,7 +867,7 @@ Renovate, Dependabot, and `bump-deps.sh` config and files
 
 **In-code suppression.** A finding can be suppressed in-source by adding the
 host language's existing ignore comment with the finding ID, an author, an
-expiry, and a reason (Issue #3712), e.g.:
+expiry, and a reason, e.g.:
 
 ```typescript
 // security-scan-ignore: SEC-1234567890ab — author=nigel expires=2026-12-31
@@ -896,41 +894,41 @@ See [`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md) for the operator manual
 (state files, finding-issue layout, overflow rollover, vulnerability taxonomy,
 idle-trigger sequence diagram).
 
-### Best-practices scans (Issue #2143, template #2)
+### Best-practices scans (template #2)
 
 The best-practices scan is the second registered idle-task template. Once it has
 selected an idle target repo, the idle-task filer picks uniformly at random
 between the registered templates, so every template shares the same trigger
 pipeline and the same per-repo dedup and cooldown gates. The authoritative
 enumeration — and the size of the uniform draw — lives in
-[Idle-task framework](#idle-task-framework-issue-1959); it is deliberately not
+[Idle-task framework](#idle-task-framework); it is deliberately not
 repeated here, so registering an eighteenth template updates one passage rather
-than two that can drift apart (Issue #3596).
+than two that can drift apart.
 
 **Bucket-scoped, LLM-only review.** A single run targets one bucket — one of
 `rust`, `typescript`, `react`, `java`, `html`, `aws-cloudformation`,
 `terraform`, or `general`. GitHub Actions is no longer a bucket — workflow
-review moved to the weekly `github-actions-audit` template (#2257). The bucket
+review moved to the weekly `github-actions-audit` template. The bucket
 is picked at file time by a SLOC-weighted random draw across the detected
 supported languages, with `general` competing at a weight equal to the dominant
 language. The wrapper body inlines the latest `prompts/best_practices/` template
 (from v3 onward) and the matching `prompts/best_practices/buckets/<bucket>.md`
-so the prompt is self-contained (Issue #2077 human-style wrappers — no hidden
+so the prompt is self-contained (human-style wrappers — no hidden
 marker).
 
 **Cross-bucket check classes (from v3 onward).** The orchestrating prompt names
 three cross-bucket concerns once; the per-language detections live in the bucket
 guides:
 
-- **Supply-chain hardening (#2184)** — pin-to-immutable, install-time hardening,
+- **Supply-chain hardening** — pin-to-immutable, install-time hardening,
   dep quarantine, anomalous-publish detection, workflow scope minimisation.
   Carried by `typescript`, `rust`, `java`, `react`, `github-actions`,
   `aws-cloudformation`, and `terraform` bucket guides.
-- **Dead dependencies (#2263)** — declared deps with no source-import reference.
+- **Dead dependencies** — declared deps with no source-import reference.
   Static-evidence only (manifest cite + import-grep cite — no `cargo`, `npm`,
   `mvn`, `gradle` invocation), clamped to `severity:low`/`medium`. Carried by
   `typescript`, `rust`, and `java` bucket guides.
-- **Deprecated config on framework bump (#2263)** — config fields that became
+- **Deprecated config on framework bump** — config fields that became
   no-ops after a framework bump (TypeScript, Next.js, React, Spring Boot,
   Gradle, Maven). Static-evidence only (no `tsc`, `next
   build`,
@@ -951,7 +949,7 @@ template files a `severity:high` finding with stable id `BP-LINTER-<bucket>`
 whose title and body name which gate (linter, compile, or both) is missing; that
 pre-filed finding counts against the 6-issue cap. The check is a configuration
 audit — **no linter or compiler is actually invoked**. The compile half was
-added in #2175 (extending #2145) after a Deno syntax error reached `main` in a
+added in (extending) after a Deno syntax error reached `main` in a
 monitored repo because no `deno check` ran in CI.
 
 **Cap and priority order.** A single run files at most six standalone findings,
@@ -979,7 +977,7 @@ language's existing ignore comment with the finding ID and a short reason, e.g.:
 ```
 
 The grammar lives in `worker/deno/lib/suppression_comments.ts` and matches the
-`security-scan-ignore` shape (Issue #1933 family). Suppressed ids are
+`security-scan-ignore` shape (family). Suppressed ids are
 pre-substituted into the `{{SUPPRESSED_IDS}}` placeholder, so the LLM drops the
 finding in Phase 3 triage on the next run.
 
@@ -987,7 +985,7 @@ See [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md) for the
 operator manual (idle-trigger sequence diagram, per-bucket scope, label scheme,
 suppression syntax, CI-gate (linter + compile) rules).
 
-### Test-audit scans (Issue #2214, template #3)
+### Test-audit scans (template #3)
 
 The test-audit scan is the third registered idle-task template. It runs a
 **language-agnostic static test-suite maintainability and coverage-gap audit**
@@ -1013,13 +1011,13 @@ reviewable baseline. **Rewrite or delete** are both valid resolutions — a
 counter-productive test should never have been written, so deleting one is an
 acceptable PR outcome.
 
-**Coverage-gap detection (#2916).** Check (7), *potentially untested public
+**Coverage-gap detection.** Check (7), *potentially untested public
 API*, is a **potential behavioural coverage gap**: public API functions where no
 test directly references the symbol and no reviewed test provides clear indirect
 behavioural coverage — a statically detected candidate, reported alongside the
 maintainability findings in the same audit (not a parallel report). A deterministic Deno-native pre-pass
 (`worker/deno/lib/coverage_gap_scanner.ts`) enumerates exported functions with
-`deno doc --json` (never Node tooling, #2222), cross-checks each against the test
+`deno doc --json` (never Node tooling,), cross-checks each against the test
 sources, and injects the gaps into the prompt's `{{COVERAGE_GAPS}}` input as a
 verified starting point; the pre-pass is best-effort (failure → `(none)`
 sentinel) and Claude self-drives the non-Deno languages by static grep. The fix
@@ -1030,7 +1028,7 @@ is to **add** a behaviour-based (WHAT) test — never auto-written (issue-only).
 **Cap and id.** A single run files at most six standalone findings. Each
 finding's stable id is `BP-<12 hex>` computed with a `"test-audit"`
 discriminator so test-audit ids never collide with best-practices findings for
-the same file. From v5 (#3479) the id derives from the audit-check slug plus the
+the same file. From v5 the id derives from the audit-check slug plus the
 affected symbol / file rather than the display title, so title wording changes
 no longer churn ids (a one-time transition re-files some findings once).
 
@@ -1055,37 +1053,37 @@ See [`docs/TEST-AUDIT-SCAN.md`](docs/TEST-AUDIT-SCAN.md) for the operator manual
 (idle-trigger sequence diagram, the ten audit checks, the coverage-gap
 pre-pass, label scheme, id recipe, suppression syntax, no-PR rule).
 
-### GitHub Actions audit scans (Issue #2243, template #4)
+### GitHub Actions audit scans (template #4)
 
 The github-actions-audit scan is the fourth registered idle-task template. It
 runs a **single-scope, workflow-only review**: it inspects only the repo's
 GitHub Actions material (`.github/workflows/*.yml`/`*.yaml` and composite
 actions under `.github/actions/`) and ignores every other surface. The checks
-cover SHA-pinning, supply-chain hardening (Issue #2184) — including script
+cover SHA-pinning, supply-chain hardening — including script
 injection via an untrusted `${{ github.* }}` expression interpolated into a
-`run:` step (Issue #2350), the PWN-request poisoned-pipeline chain, secret
+`run:` step, the PWN-request poisoned-pipeline chain, secret
 exfiltration, action cache poisoning, and AI coding-action hardening
-(Issue #2413) — stale action majors, EOL / soon-EOL language runtimes,
+ — stale action majors, EOL / soon-EOL language runtimes,
 deprecated/archived actions, and duplicate or obsolete steps. GitHub Actions
-review used to be the `github-actions` best-practices bucket; Issue #2243
-promoted it to its own weekly template and #2257 retired the bucket.
+review used to be the `github-actions` best-practices bucket;
+promoted it to its own weekly template and retired the bucket.
 
 **Nine pre-filers run before Claude.** An actionlint-in-CI configuration check
 (files `BP-LINTER-github-actions` at `severity:high` when no workflow invokes
 `actionlint`), a runner-deprecation scan (files `BP-RUNNER-…` findings from
 GitHub's runner deprecation warnings), a native SHA-pin scan
-(`action_pin_scanner.ts`, Issue #2501) that files one consolidated
+(`action_pin_scanner.ts`,) that files one consolidated
 `BP-SHA-PIN-<owner>-<action-slug>` finding at `severity:high` per distinct
 third-party `uses:` (action or cross-repo reusable workflow) pinned to a tag or
 branch rather than a full 40-char commit SHA — `stSoftwareAU/*` and local `./`
 refs are exempt, and the finding body lists every call-site `file:line` — a
-native permissions scan (`workflow_permissions_scanner.ts`, Issue #2502) that
+native permissions scan (`workflow_permissions_scanner.ts`,) that
 files a `BP-PERMISSIONS-<workflow-basename>[-<job>]` finding at
 `severity:medium` for each workflow/job with no `permissions:` block (inheriting
 the broad default) or a `permissions: write-all` grant at top or job level — the
 decidable core of v7 prompt check #2; the judgement-heavy `id-token: write` (#9)
 and `secrets: inherit` (#24) cases stay with the LLM — and a native
-script-injection scan (`run_injection_scanner.ts`, Issue #2503) that files a
+script-injection scan (`run_injection_scanner.ts`,) that files a
 `BP-INJECTION-<workflow-basename>-<job>-<step-index>` finding at `severity:high`
 for each `run:` step interpolating an attacker-controllable `${{ github.* }}`
 field (the verbatim v7 check #22 allow-list, with the trusted-field exclusion
@@ -1093,36 +1091,36 @@ set) directly into the shell — the decidable core of check #22; the broader
 injection family (privileged-trigger #6, PWN-request #10/#26, cache
 poisoning #28, AI-action trust #29) stays with the LLM — and a native
 workflow-trigger
-scan (`workflow_trigger_scanner.ts`, Issue #2587, part of #2561) that files a
+scan (`workflow_trigger_scanner.ts`, part of) that files a
 `BP-TRIGGER-<workflow-basename>` finding at `severity:low` for each test/lint/scan
-workflow (classified high-confidence via `workflow_classifier.ts`, Issue #2585)
+workflow (classified high-confidence via `workflow_classifier.ts`,)
 that still triggers on push to the default branch — deploy/publish/release and
 ambiguous workflows are left untouched, and the YAML fix (drop `push:` to
 default, keep `pull_request` / `schedule` / `workflow_dispatch`) rides a normal
 worker PR through the pre-merge gate rather than a bulk YAML rewrite — and a
 native checkout-persist-credentials scan
-(`checkout_persist_credentials_scanner.ts`, Issue #2845) that files a
+(`checkout_persist_credentials_scanner.ts`,) that files a
 `BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>` finding at
 `severity:medium` for each `actions/checkout` step lacking `persist-credentials:
 false` in a job giving no static signal of needing the token (no `git
 push`/`fetch`, no known push action, no `submodules:` checkout) — the
-long-documented v3-slot check #23 (Issue #2354) that was never actually
+long-documented v3-slot check #23 that was never actually
 implemented until now; nuanced hedge cases stay with the LLM — and a native
-broad-artefact-upload scan (`artifact_upload_scanner.ts`, Issue #2846, gap
-from #2834) that files a
+broad-artefact-upload scan (`artifact_upload_scanner.ts`, gap
+from) that files a
 `BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>`
 finding for each `actions/upload-artifact` step whose `with.path` is the whole
 workspace (`.`, `./`, `${{ github.workspace }}`, `*`, `**`) at `severity:low`
 baseline (`severity:medium` when the job has secrets in scope or the workflow
 uses a privileged trigger) — the decidable core of v9 prompt check #30; the
 "otherwise unscoped" long tail stays with the LLM — and a native
-milestone-branch-filter scan (`milestone_branch_filter_scanner.ts`, Issue #3360)
+milestone-branch-filter scan (`milestone_branch_filter_scanner.ts`,)
 that files a `BP-MILESTONE-FILTER-<workflow-basename>` finding at
 `severity:medium` for each CI quality (test/lint/scan) workflow whose
 `pull_request` branch filter misses milestone feature branches
-(`milestone/<slug>`, Issue #1300), so milestone sub-issue PRs never merge past
+(`milestone/<slug>`,), so milestone sub-issue PRs never merge past
 the gate unchecked — the decidable core of v12 prompt check #33; the fix (add
-`milestone/*` to the filter) rides a normal per-repo worker PR per Issue #3239
+`milestone/*` to the filter) rides a normal per-repo worker PR per
 isolation. Their ids
 are added to the
 known-open list so Claude does not re-emit them; the v7 prompt SHA-pin
@@ -1168,7 +1166,7 @@ See [`docs/GITHUB-ACTIONS-AUDIT-SCAN.md`](docs/GITHUB-ACTIONS-AUDIT-SCAN.md) for
 the operator manual (idle-trigger sequence diagram, check catalogue, label
 scheme, id recipes, the two pre-filers, suppression syntax, no-PR rule).
 
-### Supply-chain readiness scans (Issue #2398, template #5)
+### Supply-chain readiness scans (template #5)
 
 The supply-chain readiness scan is the fifth registered idle-task template. It
 runs a **static, evidence-backed audit of the repo's posture for surviving and
@@ -1178,7 +1176,7 @@ owned by the sibling templates: current vulnerabilities and the
 dependency-update quarantine window by `security-scan` (#1), Actions SHA-pinning
 and runner deprecation by `github-actions-audit` (#4), EOL runtimes by
 `best-practices` (#2) and `github-actions-audit` (#4), and anomalous-publish
-detection by the proactive-detection epic (#2406). This template **cross-links**
+detection by the proactive-detection epic. This template **cross-links**
 those classes in prose, never re-filing them.
 
 **Single-scope, LLM-only, language-agnostic.** Like `test-audit`, the template
@@ -1187,7 +1185,7 @@ Deno, Rust, Python, Java, Go), then applies the readiness check catalogue
 (`SCR-LOCKFILE`, `SCR-SBOM`, `SCR-VULN-SCAN`, `SCR-AUTO-UPDATE`,
 `SCR-IGNORE-SCRIPTS`, `SCR-PROVENANCE`, `SCR-DEP-REVIEW`,
 `SCR-QUARANTINE-OVERRIDE`, `SCR-RUNBOOK`). The wrapper body inlines the latest
-`prompts/supply_chain_readiness/` template (Issue #2077 human-style wrappers —
+`prompts/supply_chain_readiness/` template (human-style wrappers —
 no hidden marker). Findings are recommendations calibrated to real risk:
 ecosystem-aware (never flag tooling an ecosystem does not offer),
 static-evidence only (no package-manager invocation), and severity-matched
@@ -1229,7 +1227,7 @@ for the operator manual (idle-trigger sequence diagram, readiness check
 catalogue, label scheme, id recipe, suppression syntax, no-PR rule, weekly
 cadence).
 
-### Orphan-dependency scans (Issue #2902, template #6)
+### Orphan-dependency scans (template #6)
 
 The orphan-dependency scan is the sixth registered idle-task template. It runs a
 **metadata-backed audit of the repo's declared and locked dependency set for
@@ -1261,17 +1259,17 @@ npm, cargo, GitHub Actions), then applies the orphan-signal catalogue
 `ORPHAN-EOL`, `ORPHAN-DEAD-TRANSITIVE`). Each finding cites the corroborating
 metadata signal and names a concrete maintained replacement with a one-line
 migration note. The wrapper body inlines the latest `prompts/orphan_deps/`
-template (Issue #2077 human-style wrappers — no hidden marker).
+template (human-style wrappers — no hidden marker).
 
 **Complement, never duplicate.** This template owns the judgement long-tail; the
 deterministic core (raw deprecated/archived/stale facts) is owned by the native
-orphan-deps pre-filer (#2907), whose already-filed ids arrive in the known-open
+orphan-deps pre-filer, whose already-filed ids arrive in the known-open
 skip-list. Adjacent concerns are cross-linked in prose, never re-filed:
 dormant-then-republished compromise → `security-scan` (#1); active malicious
-signals → `supply-chain-detection` (#2406 / #2443); posture / readiness →
-`supply-chain-readiness` (#5, epics #2396 / #2397); idle-tasks-vs-supply-chain
-boundaries → #2184; merely out-of-date → the dependency-bump flow. The
-Boy-Scout brainstorm that motivated the template is #2903.
+signals → `supply-chain-detection`; posture / readiness →
+`supply-chain-readiness` (#5, epics /); idle-tasks-vs-supply-chain
+boundaries →; merely out-of-date → the dependency-bump flow. The
+Boy-Scout brainstorm that motivated the template is.
 
 **Cap and priority order.** A single run files at most six standalone findings,
 ordered `severity:high` > `severity:medium` > `severity:low`. There is no
@@ -1308,28 +1306,27 @@ manual (idle-trigger sequence diagram, orphan-signal catalogue, the
 sanctioned-network note, label scheme, id recipe, suppression syntax, no-PR
 rule, weekly cadence).
 
-### Bash syntax audit scans (Issue #3238, template #12)
+### Bash syntax audit scans (template #12)
 
 The bash syntax audit is the twelfth registered idle-task template, filed
-immediately after the native `bash-script-refs` layer-2 scan of #3228. Bash has **no compile step**, so an invalid bash script can regress
+immediately after the native `bash-script-refs` layer-2 scan of. Bash has **no compile step**, so an invalid bash script can regress
 into
 a repository with no quality gate catching it — the exact FLEET regression that
-motivated parent #3223. This template is **layer 1** of that parent: per
+motivated parent. This template is **layer 1** of that parent: per
 monitored repository, it verifies the repo's **own CI** blocks any pull request
 whose scripts fail a basic-validity gate, and files **one issue-only finding per
 missing gate**. Rollout is audit-driven — build the audit first, no proactive
-per-repo sub-issues (#3223 Round 2 Q2).
+per-repo sub-issues (Round 2 Q2).
 
 **Native, deterministic, no LLM.** Two Deno detectors drive the core checks, so
 no Claude invocation is involved (modelled on `bash_script_refs_template.ts`).
-The prompt at `prompts/bash_syntax_audit/` is the human-style wrapper body only
-(Issue #2077):
+The prompt at `prompts/bash_syntax_audit/` is the human-style wrapper body only:
 
-- **Bash CI gate** (`bash_ci_gate_scanner.ts`, sibling #3236) — discovers the
+- **Bash CI gate** (`bash_ci_gate_scanner.ts`, sibling) — discovers the
   repo's bash scripts and checks `.github/workflows/*` for a `bash -n` / `sh -n`
   **syntax** gate and a `shellcheck` **lint** gate (a committed gate script the
   workflow invokes, e.g. `./quality.sh`, counts).
-- **Language validity** (`language_validity_gate.ts`, sibling #3237) — for each
+- **Language validity** (`language_validity_gate.ts`, sibling) — for each
   other main language (Rust, TypeScript, React, Java, Python) checks a native
   basic-validity step is wired into CI (`cargo check`, `deno check` /
   `tsc --noEmit`, `mvn compile` / `gradle compileJava`, `python -m py_compile`).
@@ -1346,7 +1343,7 @@ normal `work-on` PR later.
 **Severity.** Missing `bash -n` syntax gate → `severity:high` (invalid bash on
 the default branch is the precise FLEET regression). Missing `shellcheck` →
 `severity:medium` (the lint gate; error-level blocks at rollout, warnings
-tightened later, #3223 Round 2 Q1). A main language missing its native check →
+tightened later, Round 2 Q1). A main language missing its native check →
 `severity:high` (mirrors the best-practices compile-gate severity).
 
 **Stable ids, dedup, suppression.** Fixed gate classes carry stable prefix ids
@@ -1373,7 +1370,7 @@ map. Tests:
 operator manual (detector table, fail-safe / fail-loud rules, severity table, id
 recipe, suppression syntax, lifecycle diagram, no-PR rule).
 
-### Documentation-audit scans (Issue #3319, template #13)
+### Documentation-audit scans (template #13)
 
 The documentation-audit scan is the thirteenth registered idle-task template. It
 runs an **LLM-only, language-agnostic audit of the repo's prose documentation** —
@@ -1452,7 +1449,7 @@ map. Tests: `worker/deno/tests/documentation_audit_template_test.ts`. See
 operator manual (twelve-check catalogue, idle-trigger diagram, severity table, id
 recipe, suppression syntax, no-PR rule, weekly cadence).
 
-### Workflow-annotation scans (Issue #3485, template #15)
+### Workflow-annotation scans (template #15)
 
 The workflow-annotation scan is the fifteenth registered idle-task template. It
 is a **native (no-LLM)** weekly scan that fetches recent GitHub Actions
@@ -1463,7 +1460,7 @@ annotations while fixing an *already-failing* run; warnings on green runs (a
 deprecated-runtime notice, say) previously had no idle-task coverage.
 
 **Detect → `work-on` → PR.** Like every audit-family template it only **files an
-issue** in the affected repo (per-repo isolation, Issue #3239) — it never opens
+issue** in the affected repo (per-repo isolation,) — it never opens
 a PR. A human applies `work-on` as a lightweight sanity check, and the fix rides
 a normal per-repo PR. Because that approval is deliberately lightweight, each
 filed issue must be self-contained and obviously correct.
@@ -1481,7 +1478,7 @@ already-open issue.
 **Complement to static `github-actions-audit` check #34, not a duplicate.** The
 two split the deprecated-runtime problem cleanly:
 
-- **Static half — `github-actions-audit` check #34** (from closed #3460):
+- **Static half — `github-actions-audit` check #34** (from closed):
   resolves each SHA-pinned action's `runs.using` at the pinned ref and flags
   actions whose *declared* runner is a deprecated runtime, before any run
   executes.
@@ -1497,12 +1494,12 @@ double-file** the same finding.
 (native annotation fetcher) and
 [`worker/deno/lib/workflow_annotation_classifier.ts`](worker/deno/lib/workflow_annotation_classifier.ts)
 (version-agnostic classification + stable dedup key), driven by the
-`workflow-annotation-scan` template (wrapper wiring tracked in #3488). Findings
+`workflow-annotation-scan` template (wrapper wiring tracked in). Findings
 carry `workflow-annotation-scan` + `severity:<level>` labels; **fail-loud** on a
 fetch/classify error; `cooldownHours: 168` (weekly). See the template row in
 [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md).
 
-### Deno regression prevention (Issue #2204)
+### Deno regression prevention
 
 A Deno repo must not silently regress to Node.js tooling. The worker treats any
 repo with a Deno marker as Deno-first across every surface it touches, and
@@ -1514,24 +1511,24 @@ present. Mixed repos are still Deno.
 
 **Where the guards apply:**
 
-- **Prompts (Issue #2222).** The coding-guidelines prompt
+- **Prompts.** The coding-guidelines prompt
   (`prompts/coding_guidelines/`, from v23 onward) warns Claude during issue and
   PR-feedback runs not to introduce Node-only tooling, dependencies, or
   configuration into a Deno repo. When Claude deliberately picks a Deno-native
   path over a Node one, it records a one-line **Deno regression avoided** entry
   in the PR summary.
-- **Best-practices `typescript` bucket (Issue #2223).** In a Deno repo, Phase 2
+- **Best-practices `typescript` bucket.** In a Deno repo, Phase 2
   flags Node regressions at `severity:high` — runtime `dependencies` in
   `package.json`, a committed `node_modules/`, CI steps that run application
   code via `npm`/`pnpm`/`yarn`/`npx`, a `tsconfig.json` that overrides Deno's
   compiler options, and Node-only bundler configs. Each finding's suggested fix
   points at the Deno-native equivalent.
-- **Best-practices `general` bucket (Issue #2224).** When a repo has both a Deno
+- **Best-practices `general` bucket.** When a repo has both a Deno
   marker and a root `package.json` with a non-empty `dependencies` block, the
   general bucket files **one** idempotent `severity:medium` mixed-runtime
   finding ("choose one runtime or document the split"). The stable `BP-<12 hex>`
   id makes it re-detection-safe, and it counts against the six-issue cap.
-- **Security-scan v10 (Issue #2225).** Phase 1 records the dual-marker state
+- **Security-scan v10.** Phase 1 records the dual-marker state
   (Deno markers present, with or without Node markers) and classifies the repo
   as Deno; Phase 2 prefers Deno-native remediation advice and files a
   `severity:medium` "Node tooling in a Deno repo" regression finding.
@@ -1550,7 +1547,7 @@ flowchart TD
     D -- Yes --> F[Mixed repo — treat as Deno;<br/>file split / regression finding]
 ```
 
-### Supply-chain quarantine — native Deno `minimumDependencyAge` (Issue #2536)
+### Supply-chain quarantine — native Deno `minimumDependencyAge`
 
 Deno dependencies (JSR / `deno.land/x`) are quarantined by Deno's **native**
 `deno.json` `minimumDependencyAge`, not by Renovate or
@@ -1558,7 +1555,7 @@ Deno dependencies (JSR / `deno.land/x`) are quarantined by Deno's **native**
 never overlap:
 
 - **Deno deps → native `minimumDependencyAge`.** The canonical config shape
-  (pinned in `worker/deno/deno.json` by Issue #2539) is the object form:
+  (pinned in `worker/deno/deno.json` by) is the object form:
 
   ```json
   "minimumDependencyAge": {
@@ -1585,7 +1582,7 @@ never overlap:
   window and the `stSoftwareAU/*` 0h exemption for the ecosystems it still
   manages.
 
-  The `bump-deps.sh` window is **verified rather than advised** (Issue #3659).
+  The `bump-deps.sh` window is **verified rather than advised**.
   Exporting `VIBE_BUMP_QUARANTINE_HOURS` into a repo-supplied script left the
   policy on the honour system — the managed repo decided whether the worker's
   own embargo applied. `worker/deno/lib/bump_age_audit.ts` now reads the
@@ -1595,7 +1592,7 @@ never overlap:
   exempt (0h) and an age that cannot be resolved is logged as unverified
   rather than blocking, so an offline host still bumps.
 
-  Two failure modes, two directions (Issue #3951). A release whose publish
+  Two failure modes, two directions. A release whose publish
   time a registry would not serve **fails open** — an offline or rate-limited
   host must not turn every bump into a rejection. A dependency change the
   scanner cannot recognise at all **fails closed**: an open-ended range or tag
@@ -1603,7 +1600,7 @@ never overlap:
   manifest (`Gemfile`, `go.mod`, `Cargo.toml`, `requirements.txt`) has no
   publish time this worker can resolve, and an unreadable diff shows nothing at
   all. The first means the embargo looked and could not see; the second means it
-  never got to look, and silence must not read as compliance (Issue #3234).
+  never got to look, and silence must not read as compliance.
   `worker/deno/lib/bump_diff_scan.ts` draws that line, and covers the shapes the
   first parser missed — range specifiers, `deno.lock` and the npm lockfiles.
 
@@ -1611,10 +1608,10 @@ The split is described for the worker's own bump behaviour in the
 coding-guidelines prompt (`prompts/coding_guidelines/`) and for the cross-repo
 audit in `prompts/security_scan/`.
 
-### Software auto-update — interval-OR-floor (Issue #2622)
+### Software auto-update — interval-OR-floor
 
 The software auto-update framework (`worker/deno/lib/software_updates.ts`,
-Issues #373/#906/#1496) is normally time-based: each tool (Claude CLI, GH CLI,
+//) is normally time-based: each tool (Claude CLI, GH CLI,
 Deno) updates at most once per interval (default 7 days). That cadence is wrong
 when a known minimum version is required — e.g. `--model fable` support needs a
 recent Claude CLI release, but a worker updated six days ago would not re-check
@@ -1645,11 +1642,11 @@ later.
   style) keep the floor logic unit-tested with no real spawn or sleep.
 
 See
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#-minimum-version-floor-issue-2622),
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#-minimum-version-floor),
 [`docs/USAGE.md`](docs/USAGE.md#-claude-cli-auto-update), and
 [`docs/INTERNALS.md`](docs/INTERNALS.md) for the operator-facing detail.
 
-### Toolchain upgrades are quarantined too (Issue #3655)
+### Toolchain upgrades are quarantined too
 
 The interval and the version floor both answer *when to check*. Neither answers
 *how old the thing being installed is* — so the auto-update path adopted a
@@ -1680,8 +1677,7 @@ Three consequences are deliberate:
 
 - **Fail closed.** An unverifiable age blocks the upgrade: skipping an optional
   upgrade costs nothing, while installing an unverifiable binary replaces the
-  `claude` and `deno` executables that run all subsequent worker logic. Issue
-  #3711 aligned `npm_package_age.ts` with the same rule — it used to let an
+  `claude` and `deno` executables that run all subsequent worker logic. aligned `npm_package_age.ts` with the same rule — it used to let an
   unverifiable age pass so an offline operator setup still worked, which meant
   one dropped or 5xx registry lookup converted a block into a pass for a
   specifier that then ran under `--allow-all`. A lookup you could not perform
@@ -1701,7 +1697,7 @@ bootstrap prelude, and all four entry points now build those options through one
 shared `softwareUpdateOptionsFromEnv()` builder so they cannot drift apart
 again.
 
-### Idle-task framework (Issue #1959)
+### Idle-task framework
 
 The idle-task framework is the canonical mechanism for "things the worker does
 when no claimable work exists". Security scans are template #1 — the framework
@@ -1737,17 +1733,17 @@ and claim handler.
   work-trigger / operational label (`planning`, `work-on`, `top-priority`,
   `low-priority`, etc.) remains human-only — only `idle-task` may be
   self-applied by the worker, because the framework requires it.
-- **Human-style wrappers (Issue #2077).** Each template files its wrapper as an
+- **Human-style wrappers.** Each template files its wrapper as an
   issue that reads like one a person would type. The `security-scan` template
   uses the title `Run a security scan` and a body that is the latest
   `prompts/security_scan/` template with placeholders substituted at file time —
   no hidden marker, no parameters block. Dispatch matches the issue title to the
   registered template's `buildIssueTitle(repo)`, so a human can paste the same
   prompt into a fresh issue with the `idle-task` label and the worker runs it
-  identically. Issue #2077 retired the `idle-task-pending` / `requiresApproval`
+  identically. retired the `idle-task-pending` / `requiresApproval`
   approval gate — `idle-task` is already the lowest priority, so a separate
   approval step added no value.
-- **Attribution footer (Issues #2438, #2439).** Every wrapper body and every
+- **Attribution footer.** Every wrapper body and every
   filed finding issue body ends with a single visible line naming the template
   and the worker run id, e.g.
   `🏷️ Filed by idle-task template:`test-audit`· Run id:`vibe-lkz3p9x-1a2b3c``.
@@ -1764,7 +1760,7 @@ and claim handler.
 - [`worker/deno/lib/idle_task_template.ts`](worker/deno/lib/idle_task_template.ts)
   — `IdleTaskTemplate` interface and module-level registry.
 - [`worker/deno/lib/idle_task_issue.ts`](worker/deno/lib/idle_task_issue.ts) —
-  Label-only repo dedup (Issue #2077 retired the hidden marker — wrappers are
+  Label-only repo dedup (retired the hidden marker — wrappers are
   now human-style).
 - [`worker/deno/lib/idle_task_milestone.ts`](worker/deno/lib/idle_task_milestone.ts)
   — Per-template milestone (`idle-task: <template>`) for batch tracking.
@@ -1789,9 +1785,8 @@ and claim handler.
   [`docs/ORPHAN-DEPS-SCAN.md`](docs/ORPHAN-DEPS-SCAN.md)), and the four "Boy
   Scout" issue-only templates `dead_code_template.ts` (#7),
   `doc_coverage_template.ts` (#8), `format_drift_template.ts` (#9), and
-  `deprecated_api_template.ts` (#10), wired into the production filer by Issue
-  #2930; `bash_script_refs_template.ts` (#11, native layer-2 missing-script
-  scan, Issue #3228); and `bash_syntax_audit_template.ts` (#12, native weekly bash `bash -n`
+  `deprecated_api_template.ts` (#10), wired into the production filer by; `bash_script_refs_template.ts` (#11, native layer-2 missing-script
+  scan,); and `bash_syntax_audit_template.ts` (#12, native weekly bash `bash -n`
   + `shellcheck` + language-validity CI-gate audit — see
   [`docs/BASH-SYNTAX-AUDIT-SCAN.md`](docs/BASH-SYNTAX-AUDIT-SCAN.md)); and
   `documentation_audit_template.ts` (#13, LLM-only weekly prose-documentation
@@ -1799,17 +1794,16 @@ and claim handler.
   [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md)); and
   `alert_feed_template.ts` (#14, native weekly Dependabot + code-scanning
   alert feed — one issue per new high/critical alert in the affected repo,
-  Issue #3394); and `workflow_annotation_scan_template.ts` (#15, native weekly
+  ); and `workflow_annotation_scan_template.ts` (#15, native weekly
   scan of recent GitHub Actions workflow-run annotations — errors and warnings —
   filing one self-contained, version-agnostic issue per annotation class;
   complements the static `github-actions-audit` check #34 by catching the
-  runtime deprecation instances the static audit misses, Issue #3485); and
+  runtime deprecation instances the static audit misses,); and
   `private_repo_reference_template.ts` (#16, LLM-only weekly audit that runs
   **only against a public repo** and detects direct references to a private
   `stSoftwareAU` repo — runtime access, committed private-derived data, or
   textual repo-name mentions — with the public-only gate read from the GitHub
-  API at scan time and enforced in both `shouldFile` and `runTask`, Issue
-  #3549 — see
+  API at scan time and enforced in both `shouldFile` and `runTask`, — see
   [`docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md`](docs/PRIVATE-REPO-REFERENCE-AUDIT-SCAN.md));
   and `duplicated_knowledge_template.ts` (#17, LLM-only weekly scan for
   copy-pasted blocks of five or more lines that encode the **same knowledge** —
@@ -1817,7 +1811,7 @@ and claim handler.
   helper would serve every site, seeded by the deterministic
   `duplicate_block_scanner.ts` pre-pass and biased towards silence because
   duplicated text is not duplicated knowledge and the wrong abstraction is worse
-  than duplication, Issue #3609 — see
+  than duplication, — see
   [`docs/DUPLICATED-KNOWLEDGE-SCAN.md`](docs/DUPLICATED-KNOWLEDGE-SCAN.md)).
   The idle-task filer picks uniformly at random (1/17 each) between the
   seventeen on every idle pass.
@@ -1826,7 +1820,7 @@ See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
 step-by-step instructions for adding a new template.
 
-### Remote repository onboarding (`add-repo:`, Issue #2567)
+### Remote repository onboarding (`add-repo:`,)
 
 An authorised human onboards a new repository to the monitored set by filing a
 `work-on` issue in `stSoftwareAU/VibeCoder` whose **title** is
@@ -1835,28 +1829,28 @@ never hardcoded; any reachable `owner/repo` works). The dispatch loop routes the
 claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
-full canonical GitHub label set to the target repo (Issue #2599), configures the
-default-branch protection "wall" (Issue #2589), seeds all seventeen idle-task wrappers
+full canonical GitHub label set to the target repo, configures the
+default-branch protection "wall", seeds all seventeen idle-task wrappers
 in the target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
   worker restart; the seeded wrappers persist as open issues until the repo
   becomes active.
-- **Canonical label sync (Issue #2599).** Onboarding syncs the full canonical
+- **Canonical label sync.** Onboarding syncs the full canonical
   label set (`syncLabelsForRepo` over `LABEL_DEFINITIONS` — no second list) to
   the new repo immediately, so a human can schedule/queue issues (`work-on`,
   `top-priority`, `grill-me`, …) right away rather than waiting for the next
   `setup.sh`/idle sync. It runs before wrapper seeding (so `idle-task` exists
   first), is idempotent, and is **non-fatal** — a failure is reported in the
   success comment but does not abort onboarding.
-- **Default-branch ruleset configuration (Issue #2589).** Onboarding
+- **Default-branch ruleset configuration.** Onboarding
   configures the target repo's default-branch ruleset via the idempotent
   `syncBranchProtectionForRepo` (which wraps `ensureDefaultBranchRuleset`,
-  Issue #4163), forwarding the visibility resolved during validation so the
+  ), forwarding the visibility resolved during validation so the
   required-check selection is visibility-aware (no unsatisfiable check). A
   repo whose default branch takes direct pushes, or that opted out (topic
   `direct-push` / marker `.vibe/no-default-branch-ruleset`), gets **no**
-  ruleset and the success comment says so (Issue #4356). It is
+  ruleset and the success comment says so. It is
   **non-fatal** — a configuration failure is reported in the success comment,
   not swallowed, and the setup-time `branch-protection-sync` reconciles later.
 - **Failure paths.** An unparseable title is commented on and closed; a repo
@@ -1866,7 +1860,7 @@ in the target repo, then comments and closes the add-repo issue.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
   is delegated to the seventeen idle tasks. Visibility gating (which idle checks fire
-  on private repos) is handled at runtime per Issue #2571.
+  on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only
   through `escalateToHuman`). The canonical label sync only **creates label
@@ -1881,7 +1875,7 @@ seeding), `worker/deno/setup/branch_protection_sync.ts`
 routing). See [`docs/ADD-REPO.md`](docs/ADD-REPO.md) for the operator manual,
 end-to-end flow diagram, timing/secrets caveats, and failure-path table.
 
-### Release the claim on terminal failure (Issue #2731)
+### Release the claim on terminal failure
 
 Every self-assigning phase processor must release its claim — unassign the
 worker — on **every** terminal exit, success *and* failure, not just the happy
@@ -1892,7 +1886,7 @@ the ball is back in the developer's court the self-assignment must be dropped.
 
 **Why.** A claim left dangling on a terminal failure is the worst case: the
 issue stays assigned to the worker with no live heartbeat, so the
-assigned-without-heartbeat recovery (Issues #1830, #2672) trips a spurious
+assigned-without-heartbeat recovery trips a spurious
 "Automatic recovery" comment ~30 minutes later, and meanwhile no other worker —
 and not the consecutive-failure escalation — can take the issue over cleanly.
 Releasing the claim on the failure path lets the next worker (or the escalation
@@ -1910,17 +1904,17 @@ backstop) pick the issue up immediately and keeps the recovery scan quiet.
   silently-failed unassign.
 
 **Implementation.** Use the shared helper
-[`releaseClaim()`](worker/deno/lib/claim_release.ts) (Issue #2728) — do not
+[`releaseClaim`](worker/deno/lib/claim_release.ts) — do not
 copy-paste a bespoke unassign block into a new processor. The helper centralises
 the try/log/return-boolean shape; every self-assigning processor
-([`grill_me_processor.ts`](worker/deno/lib/grill_me_processor.ts) — #2727,
+([`grill_me_processor.ts`](worker/deno/lib/grill_me_processor.ts) —,
 [`clarity_phase.ts`](worker/deno/lib/clarity_phase.ts),
 [`planning_processor.ts`](worker/deno/lib/planning_processor.ts),
 [`refinement_processor.ts`](worker/deno/lib/refinement_processor.ts),
 [`question_processor.ts`](worker/deno/lib/question_processor.ts),
 [`revision_processor.ts`](worker/deno/lib/revision_processor.ts) — extended to
-the full "for all" set in #2730) routes its terminal paths through it. The
-consecutive-failure → `needs-human` escalation (Issue #2729), which counts
+the full "for all" set in) routes its terminal paths through it. The
+consecutive-failure → `needs-human` escalation, which counts
 failures across **all** worker identities so it fires in a fleet, is the loop's
 terminating backstop: once a freed-and-retried issue exceeds the threshold it is
 escalated to a human rather than re-claimed indefinitely.
@@ -1929,13 +1923,13 @@ See
 [`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#1-worker-run-loop-and-process-lifecycle)
 for where this sits in the claim/heartbeat lifecycle.
 
-### Analysis-only / no-PR hand-off for `work-on` (Issue #2849)
+### Analysis-only / no-PR hand-off for `work-on`
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
 deliverable is analysis — a gap analysis, coverage matrix, or
 "populate the issue" recommendation posted as a comment — produces no PR, so the
 "no PR" outcome reads as "not done" and the issue is re-picked-up and re-run
-indefinitely (the #2834 loop, which re-posted the same matrix plus an "unable to
+indefinitely (the loop, which re-posted the same matrix plus an "unable to
 make code changes" note about five times). The worker now detects an
 analysis-only / no-PR issue from **two signals** and hands it off cleanly to
 `needs-human`:
@@ -1948,7 +1942,7 @@ analysis-only / no-PR issue from **two signals** and hands it off cleanly to
 
 Both route through the shared
 [`escalateToHuman`](worker/deno/lib/needs_human_escalation.ts) chokepoint, which
-applies `needs-human` + a paired explanation comment (Issue #1471) and (via
+applies `needs-human` + a paired explanation comment and (via
 `stripDiscoveryLabelsOnEscalation`) drops the `work-on` label server-side so the
 issue leaves discovery. A clean hand-off is **not** a `failed` outcome — the task
 did its job. The fallback loop guard for the remaining case (no changes **and**

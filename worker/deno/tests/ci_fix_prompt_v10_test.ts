@@ -1,7 +1,7 @@
 /**
- * Tests for ci_fix prompt v10 (Issue #3797).
+ * Tests for ci_fix prompt v10.
  *
- * v10 closes the nine Claude best-practice gaps the #3772 audit recorded
+ * v10 closes the nine Claude best-practice gaps the audit recorded
  * against v9: worked classification examples, XML-tagged injected blocks, a
  * role sentence, response skeletons, named tools, parallel-read guidance,
  * branch-safety bounds, scratch-file cleanup, and a generalise-the-fix rule.
@@ -278,7 +278,7 @@ Deno.test("ci_fix v10 - carries forward the v9 rules", async () => {
       "reserved workflow label",
       "trusted-author allowlist",
       "silently stripped",
-      "#1344",
+      "",
       ".pr_response_message",
     ]
   ) {

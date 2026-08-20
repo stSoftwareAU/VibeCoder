@@ -2,8 +2,8 @@
 
 This document is the operator-facing reference for the Vibe Coder's
 LLM-driven test-quality audit. The intent is documented in the parent
-issue (#2214) and the sub-issues that built it: the template and prompt
-(#2251) and this manual (#2252).
+issue and the sub-issues that built it: the template and prompt
+ and this manual.
 
 The test-audit scan is **template #3 of the idle-task framework** — the
 generic mechanism for "things the worker does when no claimable work
@@ -16,7 +16,7 @@ sibling template that this manual mirrors structurally.
 
 For the **agent-facing** rules (label policy, suppression syntax,
 trigger summary) see
-[DESIGN-PRINCIPLES.md → Test-audit scans](../DESIGN-PRINCIPLES.md#test-audit-scans-issue-2214-template-3).
+[DESIGN-PRINCIPLES.md → Test-audit scans](../DESIGN-PRINCIPLES.md#test-audit-scans-template-3).
 
 ## Design intent — Static Test-Suite Maintainability and Coverage-Gap Audit
 
@@ -39,7 +39,7 @@ parallel report):
   way of refactoring (the nine **test-maintainability smells**). Checks
   8–10, added from v7 onward, cover mocked state objects,
   near-duplicate test bodies, and tests of framework guarantees.
-- **Potential behavioural coverage gaps** (check 7, Issue #2916) —
+- **Potential behavioural coverage gaps** (check 7,) —
   public API functions where no test directly references the symbol and
   no reviewed test provides clear indirect behavioural coverage. A static
   `deno doc` pre-pass over the Deno / TypeScript public API surface feeds
@@ -86,8 +86,8 @@ review. It must not execute repo code — no `deno test`, `cargo test`,
 `gh issue list` (dedup), `gh label create` (defensive), and
 `gh issue create` (file a finding).
 
-From v8 onward (#3610) the prompt opens with the shared
-[Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project-issue-3610)
+From v8 onward the prompt opens with the shared
+[Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project)
 stanza: the repo's own documented testing conventions are read before any
 check is applied, and a **documented** convention beats a check. An unsafe
 convention is filed as a finding against the convention itself.
@@ -110,7 +110,7 @@ cite a specific file/line-range in the current source tree.
 | 4 | **Benchmarks in the unit-test runner** | A test that iterates `10_000` times or measures throughput and asserts only that the loop finished. Slows the suite, adds no correctness signal. |
 | 5 | **Unexplained or unjustified expected values** | A literal value is *not* a smell merely because it is hard-coded (`addGST(100) === 110` is fine). Flag values copied from the current implementation's output, unexplained/non-obvious, not independently derived from a requirement, or updated whenever the implementation changes. |
 | 6 | **Snapshot / golden tests with no reviewable baseline** | Unreviewable snapshot or golden-master baselines — an opaque blob no human will diff, so `--update-snapshots` silently ships bugs. |
-| 7 | **Potentially untested public API** (Issue #2916) | Public API functions where no test directly references the symbol and no reviewed test provides clear indirect behavioural coverage — a statically detected candidate, not a measured-coverage claim. The other nine checks flag tests that obstruct a refactor; this one flags public behaviour that may have no safety net. Test helpers, trivial accessors, and functions covered indirectly through a tested caller are excluded. The fix is to *add* a behaviour-based (WHAT) test (never auto-written — the scan is issue-only). |
+| 7 | **Potentially untested public API** | Public API functions where no test directly references the symbol and no reviewed test provides clear indirect behavioural coverage — a statically detected candidate, not a measured-coverage claim. The other nine checks flag tests that obstruct a refactor; this one flags public behaviour that may have no safety net. Test helpers, trivial accessors, and functions covered indirectly through a tested caller are excluded. The fix is to *add* a behaviour-based (WHAT) test (never auto-written — the scan is issue-only). |
 | 8 | **State and value objects replaced by mocks** (from v7 onward) | A data model, DTO, entity, or state object mocked instead of constructed for real. Mocking state hides field-name typos, missing required fields, and constructor validation — the bugs most worth catching. Mocks belong at boundaries (network, DB, filesystem, clock, SDK, LLM); a plain data object is not a boundary. Severity **high**. Fix: build the real object, adding a builder/factory helper if construction is painful — that pain is design feedback, not a reason to mock. |
 | 9 | **Near-duplicate test bodies** (from v7 onward) | Two or more tests with identical setup, structure, and assertions differing only in one input literal and its expected output — the canonical shape of generated test bloat. Fix: one data-driven test (`t.step` over a table, `@pytest.mark.parametrize`, `test.each`, PHPUnit `#[DataProvider]`, a Go table-driven subtest). Severity **low–medium** (maintenance drag, not a hidden bug). The scan stays silent when the tests genuinely differ in setup, assertions, or mock configuration. |
 | 10 | **Tests for framework or language guarantees** (from v7 onward) | A test that would still pass if every line of the project's own code were deleted and only framework/stdlib defaults remained: the validation library validates, the ORM commits, the router 404s, a constructor assigns its arguments, a constant equals its literal, a function rejects input the type system already forbids. Severity **low**. Fix: delete it, or replace it with a test of the project logic sitting on top. |
@@ -142,8 +142,7 @@ before invoking Claude:
 
 1. **Enumerate** exported functions with `deno doc --json` over the
    cloned repo (a static documentation extractor — it does **not**
-   execute repo code, and it is never an npm-based extractor, per
-   Issue #2222).
+   execute repo code, and it is never an npm-based extractor, per).
 2. **Cross-check** each symbol against the concatenated test sources with
    a whole-word grep; functions with no referencing test are gaps.
 3. **Inject** the rendered `file:line — symbol` list into the prompt's
@@ -210,7 +209,7 @@ flowchart TD
 
 ## Wrapper issue layout
 
-The wrapper issue is **human-style** (Issue #2077) — no hidden marker,
+The wrapper issue is **human-style** — no hidden marker,
 no parameters block. Anyone can paste the same prompt into a fresh issue
 with the `idle-task` label and the worker will run it identically.
 
@@ -224,7 +223,7 @@ with the `idle-task` label and the worker will run it identically.
   time).
 - **Body fingerprint:** the prompt's H1 begins `# Test-Audit …`, matched
   by `TEST_AUDIT_BODY_FINGERPRINT` so dispatch recognises the wrapper
-  even if the title was edited (Issue #2087 body-fingerprint dispatch).
+  even if the title was edited (body-fingerprint dispatch).
 - **Label:** the canonical `idle-task` label. No workflow labels.
 - **No milestone** — the template sets `skipMilestone: true`, so the
   wrapper never gates a milestone-merge PR.
@@ -295,7 +294,7 @@ identifier renames are normalised to equivalence so the same root cause
 yields the same id across runs, which is what makes dedup and in-source
 suppression stable.
 
-> **v5 one-time transition (Issue #3479).** v5 revised finding-title
+> **v5 one-time transition.** v5 revised finding-title
 > wording and moved the id off the title onto the audit-check slug. A
 > previously suppressed or known-open finding may therefore re-file
 > **once** as repos transition from v4 — a deliberate, one-time change,
@@ -384,5 +383,5 @@ reviewed individually.
 - [`prompts/test_audit/`](../prompts/test_audit/) — Orchestrating prompt
   (Phases 1–4). The cap, label set, ten audit checks, and
   per-finding body shape live in the prompt, not in Deno code.
-- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#test-audit-scans-issue-2214-template-3) —
+- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#test-audit-scans-template-3) —
   Worker-side design principles for the test-audit scan.
