@@ -138,6 +138,7 @@ explicitly overridden.
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights-issue-2401))                                                                                                                                                                      |
 | `idle_task_cadence`          | #4003 policy              | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence-issue-4011))                                                                                                                                                                          |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor-issue-2622))                                                                                                                                                                       |
+| `container_tools`            | `[]`                      | Extra build-time tools this deployment's container image bakes in (see [Container Build-Time Tools](#-container-build-time-tools-issue-69))                                                                                                                                                      |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`). See [Verbosity Configuration](#-verbosity-configuration-issue-1329).                                                                                                                                                       |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
@@ -300,6 +301,66 @@ resolves to `claude-opus-5` once the CLI is at (or above) an Opus-5-resolving
 version; raising the floor to that release is tracked separately in #3558. Until
 the floor is raised, an older CLI resolves `opus` to Opus 4.8 — still priced
 identically ($5 / $25 per MTok), so cost tracking is unaffected.
+
+### 🧰 Container Build-Time Tools (Issue #69)
+
+Some monitored repositories need tools no other fleet member wants — a specific
+Java or Maven, say. `container_tools` lets a deployment declare those tools in
+its own `.config.json` instead of forcing them into every image (parent
+issue #5):
+
+```json
+{
+  "container_tools": [
+    {
+      "id": "java",
+      "version": "21.0.5+11",
+      "url": {
+        "amd64": "https://github.com/adoptium/.../OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz",
+        "arm64": "https://github.com/adoptium/.../OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.5_11.tar.gz"
+      },
+      "sha256": {
+        "amd64": "a1b2…",
+        "arm64": "c3d4…"
+      },
+      "stripComponents": 1,
+      "bin": ["bin"],
+      "env": { "JAVA_HOME": "" }
+    }
+  ]
+}
+```
+
+- `id` — lower-case letters, digits and hyphens (the same rule as a provider id
+  in `container/install-providers.sh`), unique within the array.
+- `url` / `sha256` — keyed per architecture (`amd64`, `arm64`, `noarch`), the
+  same convention `container/tools.json` uses. A single-architecture deployment
+  supplies only the architecture it builds.
+- Install prefix is fixed at `/opt/vibe-tools/<id>`; `bin` and `env` values are
+  **relative to that prefix** (`""` is the prefix root), so no spec can aim PATH
+  or `JAVA_HOME` at an arbitrary host path.
+- Declarative archive install only: download → verify SHA-256 → extract → expose
+  `bin` on PATH → set `env`. No install commands, apt packages or installer
+  scripts.
+
+**Validation fails loud** (`worker/deno/lib/container_tools_config.ts`). The
+config load stops with a message naming the offending tool id and field when a
+spec has a malformed or duplicate `id`, a missing `version`, an architecture key
+outside the three above, a `url` without a matching `sha256` (or the reverse — an
+unverified download must be impossible to express), a non-`https:` URL, a
+`sha256` that is not 64 hex characters, a `bin`/`env` value that is absolute or
+escapes the prefix, a non-integer or negative `stripComponents`, or an unknown
+key. Nothing is repaired and nothing is partially applied.
+
+```mermaid
+flowchart LR
+    C[".config.json<br/>container_tools"] --> P["parseContainerTools()"]
+    P -->|fault| F["❌ config load fails,<br/>naming id + field"]
+    P -->|valid| S["✅ ContainerToolSpec[]<br/>trusted downstream"]
+```
+
+Installing the tools, the Containerfile wiring, the image hash and PATH exposure
+are separate slices of #5 — this key is read and validated today.
 
 ### 🧭 Run Mode (Issue #4146)
 

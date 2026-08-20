@@ -990,6 +990,55 @@ export interface ConfigFile {
   idle_task_cadence?: IdleTaskCadenceFileConfig;
   /** Per-tool minimum version floors for software auto-update (Issue #2622) */
   software_min_versions?: Record<string, string>;
+  /**
+   * Extra build-time tools this deployment's container image bakes in
+   * (Issue #69, parent #5).
+   *
+   * Arrives untrusted from the operator's file: only
+   * `parseContainerTools()` / `assertContainerTools()` in
+   * `lib/container_tools_config.ts` may be trusted to produce this shape, and
+   * they fail loud on any fault rather than repairing it.
+   */
+  container_tools?: ContainerToolSpec[];
+}
+
+/**
+ * Architectures a {@link ContainerToolSpec} may supply a download for — the
+ * same convention `container/tools.json` `toolchains[].sha256` uses. A
+ * single-architecture deployment may supply only the one it builds.
+ */
+export type ContainerToolArchitecture = "amd64" | "arm64" | "noarch";
+
+/** Per-architecture map of URLs or SHA-256 digests. */
+export type ContainerToolArchMap = Partial<
+  Record<ContainerToolArchitecture, string>
+>;
+
+/**
+ * A validated deployer-supplied container build-time tool (Issue #69,
+ * parent #5).
+ *
+ * Declarative archive install only: download → verify SHA-256 → extract →
+ * expose `bin` on PATH → set `env`. The install prefix is fixed at
+ * `/opt/vibe-tools/<id>` and `bin`/`env` values are relative to it (`""` is the
+ * prefix root), so no spec can aim PATH or `JAVA_HOME` at an arbitrary host
+ * path.
+ */
+export interface ContainerToolSpec {
+  /** Lower-case letters, digits and hyphens; unique within the array. */
+  id: string;
+  /** Tool version, e.g. `21.0.5+11`. Free-form but required. */
+  version: string;
+  /** Download URL per architecture. Every entry has a matching `sha256`. */
+  url: ContainerToolArchMap;
+  /** SHA-256 digest per architecture, lower-case hex. */
+  sha256: ContainerToolArchMap;
+  /** Leading archive path components to strip on extract (default 0). */
+  stripComponents: number;
+  /** Prefix-relative directories to add to PATH (default none). */
+  bin: string[];
+  /** Environment variables set to prefix-relative paths (default none). */
+  env: Record<string, string>;
 }
 
 /**
