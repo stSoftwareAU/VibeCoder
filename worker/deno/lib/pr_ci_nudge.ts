@@ -18,6 +18,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { buildCheckoutArgs } from "./git_ref_args.ts";
 import type { Result } from "../types.ts";
 import type { CiStartStatus } from "./pr_ci_started.ts";
 import { assertNever } from "./assert_never.ts";
@@ -166,7 +167,7 @@ async function pushEmptyCommit(
 ): Promise<Result<NudgeOutcome, Error>> {
   // Checkout — defensive; if already on the branch this is a no-op.
   try {
-    await opts.gitCommandFn(["checkout", opts.headBranch]);
+    await opts.gitCommandFn(buildCheckoutArgs(opts.headBranch));
   } catch (err) {
     return {
       ok: false,

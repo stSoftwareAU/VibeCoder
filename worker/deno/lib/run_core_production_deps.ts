@@ -112,6 +112,12 @@ import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo } from "../commands/git_operations.ts";
 import { updatePrBranch } from "./git_pull.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import {
+  buildCheckoutArgs,
+  buildCheckoutNewBranchArgs,
+  buildFetchArgs,
+  buildPullArgs,
+} from "./git_ref_args.ts";
 import { getWorkerUniqueId } from "./worker_identity.ts";
 import {
   buildQualityInstructions,
@@ -888,15 +894,15 @@ export async function createProductionRunCoreDeps(
       const branchName = comment.branchName;
       try {
         await runGitCommand(
-          ["fetch", "origin", branchName],
+          buildFetchArgs("origin", branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["checkout", branchName],
+          buildCheckoutArgs(branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["pull", "origin", branchName],
+          buildPullArgs("origin", branchName),
           { cwd: repoWorkDir },
         );
       } catch (err) {
@@ -992,15 +998,15 @@ export async function createProductionRunCoreDeps(
 
       try {
         await runGitCommand(
-          ["fetch", "origin", check.branchName],
+          buildFetchArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["checkout", check.branchName],
+          buildCheckoutArgs(check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["pull", "origin", check.branchName],
+          buildPullArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
       } catch (err) {
@@ -1072,15 +1078,15 @@ export async function createProductionRunCoreDeps(
 
       try {
         await runGitCommand(
-          ["fetch", "origin", check.branchName],
+          buildFetchArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["checkout", check.branchName],
+          buildCheckoutArgs(check.branchName),
           { cwd: repoWorkDir },
         );
         await runGitCommand(
-          ["pull", "origin", check.branchName],
+          buildPullArgs("origin", check.branchName),
           { cwd: repoWorkDir },
         );
       } catch (err) {
@@ -1264,7 +1270,7 @@ export async function createProductionRunCoreDeps(
 
             // Fetch branches from remote
             const fetchHead = await runGitCommand(
-              ["fetch", "origin", params.branchName],
+              buildFetchArgs("origin", params.branchName),
               gitOptions,
             );
             if (!fetchHead.ok || fetchHead.value.code !== 0) {
@@ -1277,7 +1283,7 @@ export async function createProductionRunCoreDeps(
             }
 
             const fetchBase = await runGitCommand(
-              ["fetch", "origin", params.baseBranch],
+              buildFetchArgs("origin", params.baseBranch),
               gitOptions,
             );
             if (!fetchBase.ok || fetchBase.value.code !== 0) {
@@ -1291,17 +1297,15 @@ export async function createProductionRunCoreDeps(
 
             // Ensure local branch exists (checkout or create tracking branch)
             const checkoutResult = await runGitCommand(
-              ["checkout", params.branchName],
+              buildCheckoutArgs(params.branchName),
               gitOptions,
             );
             if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
               const createResult = await runGitCommand(
-                [
-                  "checkout",
-                  "-b",
+                buildCheckoutNewBranchArgs(
                   params.branchName,
                   `origin/${params.branchName}`,
-                ],
+                ),
                 gitOptions,
               );
               if (!createResult.ok || createResult.value.code !== 0) {
@@ -1326,7 +1330,7 @@ export async function createProductionRunCoreDeps(
 
             // Restore default branch regardless of update outcome
             await runGitCommand(
-              ["checkout", params.defaultBranch],
+              buildCheckoutArgs(params.defaultBranch),
               gitOptions,
             );
 
@@ -1475,11 +1479,11 @@ export async function createProductionRunCoreDeps(
             repoWorkDir = repoSetupResult.message;
             try {
               await runGitCommand(
-                ["fetch", "origin", candidate.headBranch],
+                buildFetchArgs("origin", candidate.headBranch),
                 { cwd: repoWorkDir },
               );
               await runGitCommand(
-                ["checkout", candidate.headBranch],
+                buildCheckoutArgs(candidate.headBranch),
                 { cwd: repoWorkDir },
               );
             } catch (err) {
