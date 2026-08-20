@@ -9,8 +9,9 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | Action | Version | Commit SHA | Used in | Verdict |
 | --- | --- | --- | --- | --- |
 | actions/cache | v6.1.0 | 55cc8345863c7cc4c66a329aec7e433d2d1c52a9 | .github/workflows/validate-scripts.yml | pinned to commit SHA |
-| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/pages.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
+| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/pages.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | actions/configure-pages | v6.0.0 | 45bfe0192ca1faeb007ade9deae92b16b8254a0d | .github/workflows/pages.yml | pinned to commit SHA |
+| actions/dependency-review-action | v5.0.0 | a1d282b36b6f3519aa1f3fc636f609c47dddb294 | .github/workflows/dependency-review.yml | pinned to commit SHA |
 | actions/deploy-pages | v5.0.0 | cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 | .github/workflows/pages.yml | pinned to commit SHA |
 | actions/download-artifact | v8.0.1 | 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c | .github/workflows/pages.yml | pinned to commit SHA |
 | actions/setup-node | v7.0.0 | 820762786026740c76f36085b0efc47a31fe5020 | .github/workflows/markdown-lint.yml | pinned to commit SHA |
