@@ -41,6 +41,8 @@ import {
   unassignAfterPrCreated,
 } from "../issue_lifecycle.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
+import { createPullRequestViaRest } from "../pr_create_rest.ts";
+import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
 import { buildBumpRejectionComment } from "../bump_deps.ts";
 import {
   formatBuildStamp,
@@ -385,6 +387,58 @@ async function detectHalfDoneWipBranch(
     `changes to it — refusing to raise a half-done PR (Issue #148). The ` +
     `next claim resumes from the branch and must add to it before a PR can ` +
     `be raised.`;
+}
+
+/**
+ * Open the PR over REST when `gh pr create` met an exhausted primary
+ * GraphQL quota (Issue #42).
+ *
+ * The REST `pulls` endpoint rides GitHub's separate core quota, so a run
+ * whose work is committed, pushed and quality-gated still lands its PR
+ * instead of leaving an orphaned branch behind. Best-effort by design: a
+ * REST failure returns null and the caller falls through to its existing
+ * self-healing/failure path, with the original error intact.
+ *
+ * @returns the created (or already-existing) PR URL, or null when the
+ *          fallback could not open one.
+ */
+async function createPrViaRestFallback(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  pr: { title: string; body: string; base: string },
+): Promise<string | null> {
+  const logger = deps.logger;
+  logger.warn(
+    "gh pr create hit the primary GraphQL quota — falling back to the REST " +
+      "pulls endpoint (core quota) so the pushed branch still gets its PR",
+    { repo: ctx.repo, branch: state.branchName },
+  );
+
+  const created = await createPullRequestViaRest({
+    repo: ctx.repo,
+    title: pr.title,
+    body: pr.body,
+    head: state.branchName,
+    base: pr.base,
+    reviewers: ctx.config.prReviewers,
+  }, {
+    ghCommandFn: deps.github.runGhCommand,
+    log: (message) => logger.warn(message),
+  });
+
+  if (!created.ok) {
+    logger.warn("REST PR-create fallback failed", {
+      error: created.error.message,
+    });
+    return null;
+  }
+
+  logger.info("PR created via the REST fallback", {
+    prUrl: created.value,
+    build: formatBuildStamp(resolveWorkerBuildInfo()),
+  });
+  return created.value;
 }
 
 /** Single-attempt completion-phase body — see `workOnIssueCompletion`. */
@@ -874,24 +928,42 @@ async function completionBody(
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
 
-    // Self-healing: detect existing PR after creation failure (Issue #386, #1189)
-    const existingPrFromError = await deps.pr.findExistingPrForIssue(
-      repo,
-      issueNumber,
-    );
-    if (existingPrFromError.ok) {
-      logger.info("Found existing PR after creation error, recovering", {
-        prUrl: existingPrFromError.value,
-      });
-      return await recoverAndFinaliseExistingPr(
-        existingPrFromError.value,
+    // Issue #42: `gh pr create` is GraphQL-backed, so an exhausted primary
+    // GraphQL quota used to discard finished, quality-gated, already-pushed
+    // work — branch pushed, no PR, issue left assigned. The REST `pulls`
+    // endpoint rides the separate core quota, which is typically still
+    // healthy, so fall back to it rather than losing the run. This also
+    // catches the latch's own skip message, which carries the same phrase.
+    const restUrl = isPrimaryRateLimitMessage(errorMsg)
+      ? await createPrViaRestFallback(
         ctx,
         state,
-        prBody,
         deps,
-      );
+        { title: prTitle, body: prBody, base: baseBranch },
+      )
+      : null;
+    if (restUrl !== null) {
+      prUrl = restUrl;
     } else {
-      return { status: "failure", reason: `PR creation failed: ${errorMsg}` };
+      // Self-healing: detect existing PR after creation failure (Issue #386, #1189)
+      const existingPrFromError = await deps.pr.findExistingPrForIssue(
+        repo,
+        issueNumber,
+      );
+      if (existingPrFromError.ok) {
+        logger.info("Found existing PR after creation error, recovering", {
+          prUrl: existingPrFromError.value,
+        });
+        return await recoverAndFinaliseExistingPr(
+          existingPrFromError.value,
+          ctx,
+          state,
+          prBody,
+          deps,
+        );
+      } else {
+        return { status: "failure", reason: `PR creation failed: ${errorMsg}` };
+      }
     }
   }
 
