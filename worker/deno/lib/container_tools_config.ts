@@ -385,3 +385,66 @@ export function assertContainerTools(raw: unknown): ContainerToolSpec[] {
   }
   return result.value;
 }
+
+/** A deployment's tool selection, as read from its `.config.json`. */
+export interface ContainerToolsSelection {
+  /** The validated spec; empty when the deployment selects no tools. */
+  tools: ContainerToolSpec[];
+  /**
+   * The deployer's own spec, compact and verbatim — what the build carries as
+   * `VIBE_CONTAINER_TOOLS`, so `install-tools.sh` parses exactly what was
+   * written. Absent when no tools are selected.
+   */
+  specJson?: string;
+}
+
+/**
+ * Read the `container_tools` selection out of a `.config.json`.
+ *
+ * The host-side callers (the launcher's plan, the image hash) run before the
+ * worker loads its configuration, so they read the file directly through here
+ * rather than restating the parse.
+ *
+ * Fail-loud, except for an absent file: the launchers run against checkouts
+ * that have not been set up yet, and "no configuration" is genuinely "no tools
+ * selected". A file that exists but is unreadable, is not a JSON object, or
+ * carries a malformed spec throws — naming the offending field — rather than
+ * quietly hashing or building a different selection.
+ *
+ * @param configFile - Path to the deployment's `.config.json`
+ * @returns The validated spec and the verbatim JSON the build carries
+ */
+export async function readContainerToolsSelection(
+  configFile: string,
+): Promise<ContainerToolsSelection> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(configFile);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return { tools: [] };
+    throw new Error(
+      `Cannot read container_tools: ${configFile} is unreadable ` +
+        `(${(error as Error).message}).`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `Cannot read container_tools: ${configFile} is not readable JSON ` +
+        `(${(error as Error).message}). Fix it, or re-run ./setup.sh.`,
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `Cannot read container_tools: ${configFile} does not hold a JSON object.`,
+    );
+  }
+
+  const raw = (parsed as Record<string, unknown>)["container_tools"];
+  const tools = assertContainerTools(raw);
+  if (tools.length === 0) return { tools: [] };
+  return { tools, specJson: JSON.stringify(raw) };
+}

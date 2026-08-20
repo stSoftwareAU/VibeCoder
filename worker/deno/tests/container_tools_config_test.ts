@@ -23,11 +23,18 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   assertContainerTools,
   containerToolPrefix,
   parseContainerTools,
+  readContainerToolsSelection,
 } from "../lib/container_tools_config.ts";
 import {
   detectUnknownConfigKeys,
@@ -344,4 +351,84 @@ Deno.test("loadConfig - a malformed container_tools block fails loud", async () 
       `expected the tool id in the thrown message, got: ${error.message}`,
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// Reading the selection off disk (Issues #72, #73)
+// ---------------------------------------------------------------------------
+
+Deno.test("readContainerToolsSelection - returns the validated spec and the verbatim JSON", async () => {
+  await withConfig(
+    { repos: ["stSoftwareAU/VibeCoder"], container_tools: [validSpec()] },
+    async (path) => {
+      const selection = await readContainerToolsSelection(path);
+
+      assertEquals(selection.tools.map((tool) => tool.id), ["java"]);
+      assertEquals(selection.tools[0]?.version, "21.0.5+11");
+      // Verbatim: what install-tools.sh parses is what the deployer wrote.
+      assertEquals(selection.specJson, JSON.stringify([validSpec()]));
+    },
+  );
+});
+
+Deno.test("readContainerToolsSelection - no selection reads as empty", async () => {
+  await withConfig({ repos: ["stSoftwareAU/VibeCoder"] }, async (path) => {
+    assertEquals(await readContainerToolsSelection(path), { tools: [] });
+  });
+
+  await withConfig({ container_tools: [] }, async (path) => {
+    assertEquals(await readContainerToolsSelection(path), { tools: [] });
+  });
+});
+
+Deno.test("readContainerToolsSelection - an absent config selects no tools", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "container-tools-" });
+  try {
+    assertEquals(
+      await readContainerToolsSelection(`${dir}/nowhere/.config.json`),
+      { tools: [] },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("readContainerToolsSelection - a malformed spec fails loud, naming the field", async () => {
+  const spec = validSpec();
+  spec.stripComponents = -1;
+
+  await withConfig({ container_tools: [spec] }, async (path) => {
+    const error = await assertRejects(
+      () => readContainerToolsSelection(path),
+      Error,
+      "stripComponents",
+    );
+    assert(
+      error.message.includes("java"),
+      `expected the tool id in the thrown message, got: ${error.message}`,
+    );
+  });
+});
+
+Deno.test("readContainerToolsSelection - unreadable JSON fails loud, naming the file", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "container-tools-" });
+  try {
+    const path = `${dir}/.config.json`;
+    await Deno.writeTextFile(path, "{ not json");
+    const error = await assertRejects(
+      () => readContainerToolsSelection(path),
+      Error,
+      path,
+    );
+    assertStringIncludes(error.message, "not readable JSON");
+
+    await Deno.writeTextFile(path, '["an array, not an object"]');
+    await assertRejects(
+      () => readContainerToolsSelection(path),
+      Error,
+      "does not hold a JSON object",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

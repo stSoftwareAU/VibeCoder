@@ -137,6 +137,13 @@ Containerfile towards Apple `container`'s cap. An absent or empty argument
 writes an empty spec, runs nothing and leaves nothing behind, so a deployment
 that selects no extra tools pays nothing.
 
+The selection is part of the image's **identity**, not just its build: the tag
+`container-image-hash` prints mixes in a canonical serialisation of the
+validated spec (see
+[Image identity](CONTAINER.md#image-identity--the-tag-is-the-definitions-hash)),
+so a host that selects Java and Maven cannot be satisfied by another host's
+cached tools-free image.
+
 These archives are deliberately *not* in `container/tools.json`: they are the
 deployment's, pinned by the digests it declared, not the fleet's. That is the
 single allowance in the parity gate — `findContainerfileViolations` reports
