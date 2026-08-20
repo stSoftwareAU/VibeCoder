@@ -431,17 +431,31 @@ function classifyGhApi(
   const queryDocuments: string[] = [];
 
   /**
-   * Record a `query=…` field value — the GraphQL document.
+   * Record a `key=value` field.
    *
    * `gh` reads a field value beginning with `@` from that file (`@-` from
-   * stdin), so the document itself never reaches the argv and the call must
-   * fail closed rather than read as a mutation-free document.
+   * stdin), so it never reaches the argv — the label/label-scan and GraphQL
+   * checks cannot see what it carries, and the call must fail closed. Verified
+   * against gh 2.97.0: only `-F`/`--field` expand a leading `@` (its help says
+   * `use "@<path>" or "@-" to read value from file or stdin`); `-f`/
+   * `--raw-field` add a *static string* and never expand `@` (Issue #93). The
+   * caller passes `expandsAtFile` so a literal `@name` on `-f` is not mistaken
+   * for a file.
    */
-  const noteField = (value: string | undefined): void => {
-    if (!value?.startsWith("query=")) return;
-    const document = value.slice("query=".length);
-    if (document.startsWith("@")) unreadableBody = true;
-    else queryDocuments.push(document);
+  const noteField = (
+    value: string | undefined,
+    expandsAtFile: boolean,
+  ): void => {
+    if (value === undefined) return;
+    const eq = value.indexOf("=");
+    if (eq < 0) return;
+    if (expandsAtFile && value.slice(eq + 1).startsWith("@")) {
+      unreadableBody = true;
+      return;
+    }
+    if (value.slice(0, eq) === "query") {
+      queryDocuments.push(value.slice(eq + 1));
+    }
   };
 
   for (let i = start; i < args.length; i++) {
@@ -465,18 +479,18 @@ function classifyGhApi(
       token === "--raw-field"
     ) {
       hasBody = true;
-      noteField(args[i + 1]);
+      noteField(args[i + 1], token === "-F" || token === "--field");
       skipNext = true;
       continue;
     }
     if (token.startsWith("--field=")) {
       hasBody = true;
-      noteField(token.slice("--field=".length));
+      noteField(token.slice("--field=".length), true);
       continue;
     }
     if (token.startsWith("--raw-field=")) {
       hasBody = true;
-      noteField(token.slice("--raw-field=".length));
+      noteField(token.slice("--raw-field=".length), false);
       continue;
     }
     if (token === "--input") {

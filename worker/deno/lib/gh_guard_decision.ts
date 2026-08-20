@@ -177,6 +177,14 @@ const FIELD_FLAGS: ReadonlySet<string> = new Set([
   "--raw-field",
 ]);
 
+/**
+ * The subset of field flags whose `@`-prefixed value `gh` reads from a file
+ * (`@-` from stdin) — verified against gh 2.97.0 (Issue #93). `-f`/
+ * `--raw-field` add a static string and never expand `@`, so a literal
+ * `@name` there is a real label name, not a file.
+ */
+const FIELD_FILE_FLAGS: ReadonlySet<string> = new Set(["-F", "--field"]);
+
 /** Reserved workflow labels, lower-cased for case-insensitive matching. */
 const FORBIDDEN_LABELS: ReadonlySet<string> = new Set(
   WORKER_FORBIDDEN_LABEL_LITERALS.map((l) => l.toLowerCase()),
@@ -187,10 +195,22 @@ function splitLabels(value: string): string[] {
   return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-/** Label names carried by a `gh api` field value such as `labels[]=x`. */
-function labelsFromField(field: string): string[] {
+/**
+ * Label names carried by a `gh api` field value such as `labels[]=x`.
+ *
+ * An `@`-prefixed value on a `-F`/`--field` flag is read from a file by `gh`,
+ * so the label names never reach the argv (Issue #93). Emitting the literal
+ * `@path` as a label would be worse than emitting nothing — it would look as
+ * if the guard inspected the value when it did not — so return no names and
+ * let the `unreadableBody` backstop refuse the command. `expandsAtFile` is
+ * false for `-f`/`--raw-field`, where `@literal` really is the label name.
+ */
+function labelsFromField(field: string, expandsAtFile: boolean): string[] {
   const match = field.match(/^labels(?:\[\])?=([\s\S]*)$/);
-  return match ? splitLabels(match[1] ?? "") : [];
+  if (!match) return [];
+  const value = match[1] ?? "";
+  if (expandsAtFile && value.startsWith("@")) return [];
+  return splitLabels(value);
 }
 
 /**
@@ -233,14 +253,19 @@ export function extractLabelValues(rawArgs: readonly string[]): string[] {
     if (FIELD_FLAGS.has(token)) {
       const value = args[i + 1];
       if (value !== undefined) {
-        labels.push(...labelsFromField(value));
+        labels.push(...labelsFromField(value, FIELD_FILE_FLAGS.has(token)));
         i++;
       }
       continue;
     }
     const eq = token.indexOf("=");
     if (eq > 0 && FIELD_FLAGS.has(token.slice(0, eq))) {
-      labels.push(...labelsFromField(token.slice(eq + 1)));
+      labels.push(
+        ...labelsFromField(
+          token.slice(eq + 1),
+          FIELD_FILE_FLAGS.has(token.slice(0, eq)),
+        ),
+      );
     }
   }
   return labels;
