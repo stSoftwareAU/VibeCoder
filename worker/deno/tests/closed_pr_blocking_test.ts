@@ -281,3 +281,143 @@ Deno.test("closed_pr_blocking - findExistingPrForIssue still prefers open PR", a
     assertEquals(result.value, "https://github.com/owner/repo/pull/10");
   }
 });
+
+// =============================================================================
+// VibeCoder#42 — a trusted re-label after the PR merged reopens the issue
+// =============================================================================
+
+import {
+  isRelabelledAfterClosedPR,
+  trustedLabelAddedAt,
+  wasLabelReappliedAfterClosedPR,
+} from "../lib/issue_query.ts";
+
+/** The real shape of VibeCoder#42's timeline on 2026-08-20. */
+const RELABEL_TIMELINE = [
+  {
+    event: "labeled",
+    label: { name: "work-on" },
+    actor: { login: "nleck" },
+    created_at: "2026-08-19T13:35:53Z",
+  },
+  { event: "cross-referenced", created_at: "2026-08-20T08:55:53Z" },
+  {
+    event: "unlabeled",
+    label: { name: "work-on" },
+    actor: { login: "nleck" },
+    created_at: "2026-08-20T16:35:24Z",
+  },
+  {
+    event: "labeled",
+    label: { name: "top-priority" },
+    actor: { login: "nleck" },
+    created_at: "2026-08-20T16:35:24Z",
+  },
+];
+const MERGED_PR_162 = {
+  number: 162,
+  title: "Release the worker claim via REST (Issue #42 Defect 3)",
+  closedAt: "2026-08-20T09:49:19Z",
+  merged: true,
+};
+
+Deno.test("relabel-reopen - trustedLabelAddedAt returns the last trusted add's timestamp", () => {
+  assertEquals(
+    trustedLabelAddedAt(RELABEL_TIMELINE, "top-priority", ["nleck"]),
+    "2026-08-20T16:35:24Z",
+  );
+  // Untrusted adder → null.
+  assertEquals(
+    trustedLabelAddedAt(RELABEL_TIMELINE, "top-priority", ["someone-else"]),
+    null,
+  );
+  // A fleet worker login is never a trusted adder (Issue #3416).
+  assertEquals(
+    trustedLabelAddedAt(RELABEL_TIMELINE, "top-priority", ["nleck"], [
+      "nleck",
+    ]),
+    null,
+  );
+  // No add of that label at all → null.
+  assertEquals(
+    trustedLabelAddedAt(RELABEL_TIMELINE, "low-priority", ["nleck"]),
+    null,
+  );
+  // A trusted add with no timestamp cannot be compared → null.
+  assertEquals(
+    trustedLabelAddedAt(
+      [{ event: "labeled", label: { name: "x" }, actor: { login: "nleck" } }],
+      "x",
+      ["nleck"],
+    ),
+    null,
+  );
+});
+
+Deno.test("relabel-reopen - isRelabelledAfterClosedPR compares label time against close time", () => {
+  assertEquals(
+    isRelabelledAfterClosedPR(MERGED_PR_162, "2026-08-20T16:35:24Z"),
+    true,
+  );
+  // Label applied before the merge: still done for the fleet.
+  assertEquals(
+    isRelabelledAfterClosedPR(MERGED_PR_162, "2026-08-19T13:35:53Z"),
+    false,
+  );
+  assertEquals(isRelabelledAfterClosedPR(MERGED_PR_162, null), false);
+  // Unparseable timestamps never reopen.
+  assertEquals(isRelabelledAfterClosedPR(MERGED_PR_162, "garbage"), false);
+  assertEquals(
+    isRelabelledAfterClosedPR({ closedAt: "" }, "2026-08-20T16:35:24Z"),
+    false,
+  );
+});
+
+Deno.test("relabel-reopen - wasLabelReappliedAfterClosedPR reads the timeline and reopens VibeCoder#42", async () => {
+  const calls: string[][] = [];
+  const gh = (args: string[]) => {
+    calls.push(args);
+    // Page 1 carries the events; page 2 is empty so pagination stops.
+    return Promise.resolve(
+      calls.length === 1 ? JSON.stringify(RELABEL_TIMELINE) : "[]",
+    );
+  };
+  assertEquals(
+    await wasLabelReappliedAfterClosedPR(
+      "stSoftwareAU/VibeCoder",
+      42,
+      "top-priority",
+      ["nleck"],
+      MERGED_PR_162,
+      gh,
+    ),
+    true,
+  );
+  // The original label, added before the merge, does not reopen it.
+  calls.length = 0;
+  assertEquals(
+    await wasLabelReappliedAfterClosedPR(
+      "stSoftwareAU/VibeCoder",
+      42,
+      "work-on",
+      ["nleck"],
+      MERGED_PR_162,
+      gh,
+    ),
+    false,
+  );
+});
+
+Deno.test("relabel-reopen - an API failure keeps the issue blocked (fail closed)", async () => {
+  const gh = (_args: string[]) => Promise.reject(new Error("boom"));
+  await assertRejects(() =>
+    wasLabelReappliedAfterClosedPR(
+      "stSoftwareAU/VibeCoder",
+      42,
+      "top-priority",
+      ["nleck"],
+      MERGED_PR_162,
+      gh,
+    )
+  );
+});
