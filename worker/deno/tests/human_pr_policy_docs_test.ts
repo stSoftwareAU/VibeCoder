@@ -289,8 +289,10 @@ Deno.test("human-PR policy - the real guard ignores a human PR and keeps fleet P
 Deno.test("human-PR policy - LESSONS-LEARNT records the incident", () => {
   const lessons = read(LESSONS_DOC);
   assert(
-    //.test(lessons),
-    `${LESSONS_DOC} must record the incident by number`,
+    lessons.includes(
+      "started listing, claiming and pushing to human-authored PRs",
+    ),
+    `${LESSONS_DOC} must record the uninvited-PR incident`,
   );
   assert(
     markdownLinks(LESSONS_DOC).includes(POLICY_DOC),
