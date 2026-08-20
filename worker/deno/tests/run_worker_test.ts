@@ -481,7 +481,14 @@ Deno.test("runWorker - exit cleanup is told the configured slot count so the des
         return Promise.resolve();
       },
     });
-  await runWorker(baseOptions(), stub(newRecorder()));
+  // The default is two slots (VibeCoder#170); pin 1 and 3 explicitly.
+  await runWorker(
+    {
+      ...baseOptions(),
+      config: { ...buildDefaultWorkerConfig(), maxConcurrentIssues: 1 },
+    },
+    stub(newRecorder()),
+  );
   await runWorker(
     {
       ...baseOptions(),

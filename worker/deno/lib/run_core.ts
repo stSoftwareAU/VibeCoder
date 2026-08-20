@@ -2196,12 +2196,14 @@ export async function runCoreLoop(
   // path can refuse to wait past the run-duration cap.
   const endTime = startTime + config.runDurationSeconds * 1000;
 
-  // Log the effective concurrency slot count once at loop start (Issue #4174).
-  // `runIssueScanLoop` does not yet consume it — this makes the configured
-  // value visible ahead of the pool that will (sub-issue of #4168).
+  // Log the configured concurrency once at loop start (Issue #4174). Above
+  // one slot the Priority-2 scan runs as a pool (Issue #4177); the effective
+  // count may be lowered under memory pressure (Issue #4179).
   deps.log(
     `Concurrency: maxConcurrentIssues=${config.maxConcurrentIssues} ` +
-      `(the issue pool is not yet enabled; claims run one at a time)`,
+      (config.maxConcurrentIssues > 1
+        ? `(issue pool; effective slots may be lowered under memory pressure)`
+        : `(serial loop; claims run one at a time)`),
   );
 
   let plannedShutdown = false;

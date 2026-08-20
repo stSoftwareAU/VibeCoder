@@ -2,7 +2,7 @@
  * Claim-runway floor resolution (Issue #47).
  *
  * The #4304 floor refuses a claim with less than a fixed runway (default
- * 1800 s) left in the cycle. Observed live (VibeCoder#5, then three kills in
+ * {@link DEFAULT_MIN_CLAIM_RUNWAY_SECONDS}) left in the cycle. Observed live (VibeCoder#5, then three kills in
  * one day on Mac-Ultra-M2): a claim can clear that floor and still receive a
  * deadline-bound execute budget well under the configured `claudeTimeout`,
  * because the floor does not know what a full execute costs. The run is then
@@ -29,6 +29,15 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+/**
+ * Default `MIN_CLAIM_RUNWAY_SECONDS` (VibeCoder#170): five minutes — enough
+ * to rule out a claim that cannot even finish setup, small enough that a run
+ * keeps claiming until its last minutes. Lowered from 1800 s, which with a
+ * 3600 s cycle refused every second claim and capped a host at one
+ * implementation per hour.
+ */
+export const DEFAULT_MIN_CLAIM_RUNWAY_SECONDS = 300;
+
 /** Outcome of {@link resolveClaimRunwayFloor}. */
 export interface ClaimRunwayFloor {
   /** Seconds of runway a new claim must have. 0 disables the floor. */
@@ -51,9 +60,11 @@ export interface ClaimRunwayFloor {
  * Resolve the effective claim-runway floor for this cycle.
  *
  * @param options.minClaimRunwaySeconds - The configured #4304 floor
- *   (`MIN_CLAIM_RUNWAY_SECONDS`, default 1800; 0 disables).
+ *   (`MIN_CLAIM_RUNWAY_SECONDS`, default {@link DEFAULT_MIN_CLAIM_RUNWAY_SECONDS};
+ *   0 disables).
  * @param options.fullExecuteBudgetSeconds - `config.claudeTimeout`. Optional:
- *   absent (or non-positive) keeps the plain #4304 floor.
+ *   absent (or non-positive) keeps the plain #4304 floor. Production passes
+ *   it only when `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1` (VibeCoder#170).
  * @param options.cycleSeconds - `config.runDurationSeconds` — the cycle
  *   length the deadline is derived from.
  */

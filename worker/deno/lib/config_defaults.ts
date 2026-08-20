@@ -219,9 +219,11 @@ export const OPERATIONAL_DEFAULTS = {
   claudeKillAfter: 30,
   maxClarificationRounds: 3,
   sleepInterval: 30,
-  // Concurrent-issue slots (Issue #4174): 1 keeps the loop single-claim until
-  // an operator opts in; the pool that consumes it lands in a sub-issue.
-  maxConcurrentIssues: 1,
+  // Concurrent-issue slots (Issues #4174/#4177, VibeCoder#170): two by
+  // default — the intended cadence is "work as many issues as possible in
+  // each hourly run", and the slot governor (#4179) lowers the effective
+  // count under memory pressure. `1` opts back into the serial loop.
+  maxConcurrentIssues: 2,
   creditWaitInterval: 300,
   refinementTimeout: 300,
   refinementKillAfter: 10,
