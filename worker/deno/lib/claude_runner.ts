@@ -126,6 +126,43 @@ export type {
   TimeoutDiagnostics,
 } from "./claude_executor.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+
+/** A run shorter than this with no output reads as a start-up failure (#35). */
+const STARTUP_FAILURE_MS = 2000;
+
+/**
+ * Build the log line for a non-rate-limit Claude failure (Issue #35).
+ *
+ * The generic failure path used to log only `exited with status N` and drop
+ * the captured stderr, so a transient start-up refusal (a lock held by the
+ * just-finished session, a bad flag, an auth refusal, a stdin race on the
+ * streamed prompt) was indistinguishable from a mid-run crash. This surfaces
+ * the CLI's own signal: a bounded, secret-redacted stderr tail (the 5-line
+ * shape the 137 path uses) and the wall time since spawn. An exit within
+ * {@link STARTUP_FAILURE_MS} of spawn with no output is named a start-up
+ * failure — a different instruction to the operator than a run that failed
+ * after working.
+ */
+export function buildClaudeFailureLog(input: {
+  exitCode: number;
+  stderr: string;
+  output: string;
+  wallClockMs: number;
+}): string {
+  const stderrTail = redactSecrets(
+    input.stderr.trim().split("\n").slice(-5).join("\n"),
+  );
+  const elapsedSeconds = Math.round(input.wallClockMs / 100) / 10;
+  const startupFailure = input.wallClockMs < STARTUP_FAILURE_MS &&
+    input.output.trim().length === 0;
+  const heading = startupFailure
+    ? `Claude Code exited ${input.exitCode} ${elapsedSeconds}s after spawn ` +
+      `with no output — a start-up failure (the CLI never reached a model call)`
+    : `Claude Code exited with status ${input.exitCode} after ${elapsedSeconds}s`;
+  return heading +
+    (stderrTail ? `; stderr tail:\n${stderrTail}` : " (stderr empty)");
+}
 export type { RunStats } from "./run_stats.ts";
 
 /** Default error scan tail lines. */
@@ -2172,8 +2209,18 @@ export async function runClaudeWithRetry(
         continue;
       }
 
-      // Non-rate-limit failure
-      currentOptions.logger?.warn(`Claude Code exited with status ${exitCode}`);
+      // Non-rate-limit failure (Issue #35): the old log said only the exit
+      // status and dropped the captured stderr, so a transient start-up
+      // refusal was indistinguishable from a mid-run crash and its cause was
+      // lost. See buildClaudeFailureLog.
+      currentOptions.logger?.warn(
+        buildClaudeFailureLog({
+          exitCode,
+          stderr: stderr ?? "",
+          output,
+          wallClockMs: runStats?.wallClockMs ?? 0,
+        }),
+      );
       return {
         ok: true,
         value: withPreflight(
