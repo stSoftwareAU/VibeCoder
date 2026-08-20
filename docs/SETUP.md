@@ -32,8 +32,77 @@ automated setup run, with a Mermaid flow diagram (#78, parent #66).*
 
 ## Platform differences in the automated setup
 
-*Placeholder — this section will list everywhere macOS, Linux and Windows
-actually diverge during an automated setup run (#79, parent #66).*
+The phase sequence is the same everywhere; this section is the short list of
+everywhere the platforms actually diverge. Read the shared walkthrough plus
+your platform's column and you have the whole picture — nothing below repeats
+what another document owns.
+
+| | macOS | Linux (Debian/Ubuntu) | Windows |
+|---|---|---|---|
+| Entry point | `./setup.sh` (bash) | `./setup.sh` (bash) | `.\setup.ps1` (PowerShell) |
+| Unattended consent | `./setup.sh --auto-install` | `./setup.sh --auto-install` | `.\setup.ps1 -AutoInstall` |
+| Install offers use | Homebrew (`brew install …`) | apt (`sudo apt-get install -y …`) | `winget install --exact --id … --source winget` |
+| Container runtime | Apple `container`, installed **and** started | Docker, then Podman | Docker Desktop, then Podman |
+| Credential/config protection | `chmod` 0700 / 0600 | `chmod` 0700 / 0600 | Inheritance-stripped ACL, current identity only |
+| Background-service offer | LaunchAgent prompt | None at setup time | Scheduled-task prompt |
+| Home directory | `$HOME` | `$HOME` | `%USERPROFILE%` (then `HOME`) |
+
+**Entry point and invocation.** macOS and Linux run `./setup.sh` under bash;
+Windows runs `setup.ps1` under PowerShell. The unattended-consent switch —
+`./setup.sh --auto-install`, `.\setup.ps1 -AutoInstall` — consents in advance
+to every install the run would otherwise offer interactively. It is
+deliberately a flag typed on that one invocation, never an environment
+variable, so consent cannot leak into later runs.
+
+**What an install offer can resolve to.** When the prerequisites probe finds a
+tool missing, the offer resolves to a package-manager command from a fixed
+per-platform table (`worker/deno/setup/prerequisite_install_plan.ts`):
+Homebrew on macOS, apt on Debian/Ubuntu (these steps may prompt for `sudo`),
+and `winget --source winget` on Windows (winget elevates through UAC itself).
+The table has holes you close by hand:
+
+- **No package manager, no plan.** On a macOS host without Homebrew, or a
+  Linux host without apt, every offer is withheld and the report falls back
+  to a manual install hint — the script never runs a remote install script
+  for you.
+- **No `deno` package exists for Debian/Ubuntu**, so Deno is never offered
+  there; you install it yourself.
+- **`git` has no install plan on macOS or Linux** (it arrives with the Xcode
+  command line tools, or is already present as a bootstrap dependency); only
+  Windows can have it installed for you (winget `Git.Git`).
+
+**Container runtime.** macOS accepts only Apple `container` — Docker Desktop
+is not the containment boundary there — and its install offer both installs
+the Homebrew formula and starts the service, because the probe checks the
+running service rather than the binary's presence. Linux and Windows probe
+Docker first, then Podman. What the runtime runs and how the image is built is
+[CONTAINER.md](CONTAINER.md); why containment is mandatory is
+[CONTAINMENT.md](CONTAINMENT.md).
+
+**File permissions on credential and config files.** On macOS and Linux the
+credential directories are `chmod` 0700 and the files within 0600. On Windows
+the same protection is an ACL: `Protect-VibePath` (`setup.ps1`) strips the
+path's inherited access outright and grants full control to the current
+identity alone, so a profile that gives *Users* read access cannot leak a
+credential. Windows also writes every credential and config file LF-terminated
+and without a byte-order mark (`Write-VibeTextFile`), because the container
+reads them on Linux — hand-edit these files on Windows with the same
+discipline.
+
+**Background-service offer.** A terminal-attached run ends with a
+platform-specific offer: macOS offers to install the LaunchAgent (launchd
+starts the worker every five minutes), Windows offers to register the
+scheduled task (Task Scheduler, every five minutes and at logon). Linux gets
+no offer at setup time — the operator wires cron or systemd from
+[DEPLOYMENT.md](DEPLOYMENT.md), which owns background-service configuration on
+every platform.
+
+**Where paths differ.** The credential directory defaults to
+`~/.vibe-coder/credentials` on every platform. On Windows, `~` means the
+profile directory: `setup.ps1` resolves the home directory as `USERPROFILE`,
+falling back to `HOME` (`Get-VibeHomeDirectory`), so the default lands at
+`%USERPROFILE%\.vibe-coder\credentials`, and the same resolution expands a
+leading `~` in the paths setup handles.
 
 ## Manual setup: prerequisites
 
