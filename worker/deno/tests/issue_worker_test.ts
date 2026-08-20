@@ -2656,6 +2656,34 @@ Deno.test(
   },
 );
 
+Deno.test("workOnIssue #53 - a repository-admin finding hands off to needs-human before setup/execute", async () => {
+  const ctx = makeContext({
+    issueBody:
+      "<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->\n\n## Suggested fix\n\n" +
+      "Repository admin action — the worker cannot change repository settings. " +
+      "Settings → Rules → require a review.",
+  });
+  let claudeRan = false;
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () => {
+        claudeRan = true;
+        return Promise.resolve({
+          ok: true,
+          value: { exitCode: 0, output: "", timedOut: false },
+        }) as never;
+      },
+    },
+  });
+
+  const result = await workOnIssue(ctx, deps);
+
+  assertEquals(result.success, true, "a clean hand-off is not a failure");
+  assertEquals(result.phase, "admin_only_handoff");
+  assertEquals(result.reason, "admin_only_finding");
+  assertEquals(claudeRan, false, "the agent must not run for an admin finding");
+});
+
 Deno.test("workOnIssue - stops at setup failure", async () => {
   const ctx = makeContext();
   const deps = createMockDeps({
