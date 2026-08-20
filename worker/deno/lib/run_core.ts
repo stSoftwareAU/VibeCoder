@@ -18,6 +18,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import type { FableAvailability } from "./health_check_cache.ts";
 import {
   formatCounterSummary,
@@ -52,7 +53,9 @@ import {
   getInaccessibleRepos,
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
+import { resolveClaimRunwayFloor } from "./claim_runway.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
+import { isPrimaryRateLimitMessage } from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import { runWithWatchdog } from "./handler_watchdog.ts";
 import { resolveStartPriority, type ScanCursor } from "./scan_cursor.ts";
@@ -99,6 +102,15 @@ export interface RunCoreConfig {
    * disables soft warnings.
    */
   handlerSoftTimeoutSeconds: number;
+  /**
+   * The planning agent's own wall-clock timeout (seconds, default 1800 —
+   * mirrors `WorkerConfig.planningTimeout`).
+   *
+   * Read only to size Planning Mode's watchdog floor (Issue #62): the handler
+   * budget must never be smaller than the agent timeout it wraps plus
+   * `PLANNING_TAIL_SECONDS` for the post-publish gate and self-repair.
+   */
+  planningTimeoutSeconds: number;
 }
 
 /** Result of a single priority handler execution. */
@@ -109,6 +121,17 @@ export interface PriorityHandlerResult {
   rateLimited?: boolean;
 }
 
+/** What the dispatcher tells a handler about its own watchdog bound (#58). */
+export interface HandlerExecuteOptions {
+  /**
+   * Epoch-millisecond instant at which the watchdog will abandon this handler.
+   * A handler doing bounded post-work (e.g. the Failure-Detection self-repair)
+   * uses it to stop cleanly rather than be killed mid-way. Optional: a handler
+   * that ignores it behaves exactly as before.
+   */
+  deadlineEpochMs: number;
+}
+
 /** A single entry in the priority dispatch table. */
 export interface PriorityHandler {
   /** Numeric priority (lower = higher priority). */
@@ -116,7 +139,9 @@ export interface PriorityHandler {
   /** Human-readable name for logging. */
   name: string;
   /** Execute this priority level's work. */
-  execute: () => Promise<Result<PriorityHandlerResult | void>>;
+  execute: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult | void>>;
   /**
    * The handler may spawn a coding agent (Issue #4369). Its watchdog is
    * bounded by the cycle deadline rather than the flat handler timeout — an
@@ -124,6 +149,16 @@ export interface PriorityHandler {
    * the agent instead of leaving it running detached.
    */
   agentBacked?: boolean;
+  /**
+   * Lower bound in milliseconds for this handler's watchdog budget (Issue
+   * #62), for an agent-backed handler that keeps working after its agent
+   * returns. Built with `agentHandlerFloorMs()` from the wrapped agent's own
+   * timeout plus the handler's post-agent tail allowance, so the budget can
+   * never be smaller than the agent timeout it contains — even when the cycle
+   * has no time left. Undefined for a handler with no post-agent tail, which
+   * keeps the Issue #4369 cycle-deadline bound unchanged.
+   */
+  agentFloorMs?: number;
 }
 
 /** Discovered issue for processing. */
@@ -327,7 +362,29 @@ export interface RunCoreDeps {
   findAndProcessQuorum?: () => Promise<Result<PriorityHandlerResult>>;
 
   // Priority 1.80: Planning mode
-  findAndProcessPlanning: () => Promise<Result<PriorityHandlerResult>>;
+  /**
+   * Issue #58: receives the dispatcher's watchdog deadline so the planning
+   * run's post-publication self-repair can defer work it cannot finish.
+   */
+  findAndProcessPlanning: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
+
+  /**
+   * Priority 1.81: Failure-Detection repair resume (Issue #60, part of #54).
+   *
+   * Finishes the outstanding repairs a partially-repaired planning run left
+   * behind: re-gates each `needs-failure-detection-repair` parent's native
+   * sub-issues, repairs what still offends, and clears the label when the set
+   * is empty. Sits immediately after Planning because it consumes the state
+   * Planning produces.
+   *
+   * Optional — when absent the priority is a no-op, so a host wired without
+   * the resume pass runs every other priority unchanged.
+   */
+  resumeFailureDetectionRepairs?: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
 
   // Priority 1.85: Question answering
   findAndProcessQuestion: () => Promise<Result<PriorityHandlerResult>>;
@@ -436,6 +493,15 @@ export interface RunCoreDeps {
    * deadline gate.
    */
   minClaimRunwaySeconds?: number;
+
+  /**
+   * The configured execute budget (`config.claudeTimeout`, Issue #47).
+   * When the cycle is long enough to ever offer this budget, the claim
+   * floor above is raised to it, so a deadline-bound execute is a
+   * documented exception rather than the default tail of every cycle.
+   * Optional: absent keeps the plain #4304 floor.
+   */
+  fullExecuteBudgetSeconds?: number;
 
   /**
    * How long a shutdown (SIGTERM / SIGINT) waits for in-flight slots to
@@ -780,6 +846,9 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     // handlers in the logs first.
     handlerTimeoutSeconds: 600,
     handlerSoftTimeoutSeconds: 120,
+    // Issue #62: mirrors `OPERATIONAL_DEFAULTS.planningTimeout` so Planning
+    // Mode's watchdog floor tracks the agent timeout it wraps.
+    planningTimeoutSeconds: OPERATIONAL_DEFAULTS.planningTimeout,
   };
 }
 
@@ -851,6 +920,7 @@ export function sleepWithJitter(baseSeconds: number): number {
 export function buildPriorityDispatchTable(
   deps: RunCoreDeps,
   shouldShutdown: () => boolean = () => false,
+  config: RunCoreConfig = createDefaultRunCoreConfig(),
 ): PriorityHandler[] {
   const table: PriorityHandler[] = [
     {
@@ -1009,7 +1079,31 @@ export function buildPriorityDispatchTable(
       priority: 1.80,
       name: "Planning Mode",
       agentBacked: true,
+      // Issue #62: planning keeps working after its agent returns — the
+      // Failure-Detection gate re-reads every published sub-issue and the
+      // self-repair makes a Claude call per offender. The budget must cover
+      // the planning agent's own timeout plus that tail, so it cannot
+      // collapse onto the flat 600 s late in a cycle and kill the repair.
+      agentFloorMs: agentHandlerFloorMs(
+        config.planningTimeoutSeconds,
+        PLANNING_TAIL_SECONDS,
+      ),
       execute: deps.findAndProcessPlanning,
+    },
+    {
+      // Issue #60: finishes the Failure-Detection repairs a partially-repaired
+      // planning run left outstanding. Runs straight after Planning — it
+      // consumes the `needs-failure-detection-repair` state Planning produces —
+      // and is Claude-backed, so its watchdog follows the agent-backed bound.
+      priority: 1.81,
+      name: "Failure-Detection Repair Resume",
+      agentBacked: true,
+      execute: (opts) =>
+        deps.resumeFailureDetectionRepairs?.(opts) ??
+          Promise.resolve({
+            ok: true as const,
+            value: { processed: false },
+          }),
     },
     {
       priority: 1.85,
@@ -1196,14 +1290,29 @@ async function runIssueScanLoop(
   let consecutiveFailures = 0;
   let iteration = 0;
 
+  // Claim-runway floor for this cycle (Issue #4304, raised to the full
+  // execute budget by Issue #47 when the cycle can fit one). Resolved once;
+  // applied before every claim below.
+  const runwayFloor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
+    fullExecuteBudgetSeconds: deps.fullExecuteBudgetSeconds,
+    cycleSeconds: config.runDurationSeconds,
+  });
+  if (runwayFloor.exceptionReason) {
+    deps.log(`Claim-runway floor: ${runwayFloor.exceptionReason}`);
+  }
+
   while (true) {
     // Deadline gate (Issue #3648): never claim another billed issue run once
     // the cycle's planned shutdown time has passed. Skipped on the first pass,
     // which the outer loop has already gated on the same deadline.
     // Minimum-runway floor (Issue #4304): a claim with less runway than any
     // plausible completion time is doomed on arrival, so it is not taken —
-    // the tail of the cycle goes to cheap maintenance instead.
-    const minRunwayMs = (deps.minClaimRunwaySeconds ?? 0) * 1000;
+    // the tail of the cycle goes to cheap maintenance instead. Issue #47
+    // raises the floor to the full execute budget when the cycle can fit one,
+    // so a deadline-bound execute is a documented exception, not the default
+    // tail of every cycle.
+    const minRunwayMs = runwayFloor.floorSeconds * 1000;
     const pastDeadline = iteration > 0 && deps.now() >= endTime;
     // The floor applies on EVERY pass, including the outer loop's re-entry
     // after a success — that re-entry is exactly where a doomed late claim
@@ -1217,8 +1326,11 @@ async function runIssueScanLoop(
       deps.log(
         !pastDeadline
           ? `Issue scan loop stopping before the next claim: ${remainingSeconds}s ` +
-            `of cycle runway left, below the ${deps.minClaimRunwaySeconds}s ` +
-            `claim floor (Issue #4304).`
+            `of cycle runway left, below the ${runwayFloor.floorSeconds}s ` +
+            (runwayFloor.fullBudgetGate
+              ? `claim floor — the full ${runwayFloor.floorSeconds}s execute ` +
+                `budget no longer fits this cycle (Issue #47).`
+              : `claim floor (Issue #4304).`)
           : "Issue scan loop reached the cycle deadline — stopping before the next claim.",
       );
       break;
@@ -1391,20 +1503,44 @@ async function runIssueScanLoop(
  * the failure budget, and a stop signal from any slot stops them all.
  */
 /** Detect the primary GitHub rate-limit message variants we treat as
- *  self-healing (Issue #1523, #1780). Secondary rate limits and 5xx
- *  errors continue down the fatal path. Module-level so the slot pool
- *  (Issue #4180) recognises the same signal the cycle loop pauses on. */
-export function isPrimaryRateLimitMessage(message: string): boolean {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("api rate limit already exceeded") ||
-    lower.includes("api rate limit exceeded") ||
-    lower.includes("rate limit has been exceeded")
-  );
-}
+ *  self-healing (Issue #1523, #1780, #42). Single-sourced in
+ *  `primary_quota_latch.ts` so the chokepoint latch and the cycle loop pause
+ *  on exactly the same signal; re-exported here for existing importers. */
+export { isPrimaryRateLimitMessage };
 
 /** Grace past the cycle deadline for an agent-backed handler's watchdog (Issue #4369). */
 export const AGENT_HANDLER_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * Allowance in seconds for Planning Mode's **post-agent tail** (Issue #62).
+ *
+ * Planning does not finish when its agent returns: the Failure-Detection gate
+ * re-reads every published sub-issue over the network, and the model-driven
+ * self-repair then costs roughly one ~20 s Claude call per offending
+ * sub-issue. Ten minutes covers a gate sweep plus a repair across a large
+ * plan's fan-out (~25 sub-issues) — beyond that the watchdog should still
+ * fire. Observed on GRQ-validation#835: planning ~5 min, repair ~18 s × 8
+ * ≈ 2.5 min, abandoned by the 600 s floor with the repair 6/8 done.
+ */
+export const PLANNING_TAIL_SECONDS = 600;
+
+/**
+ * The floor a handler's watchdog budget may never drop below (Issue #62): the
+ * timeout of the agent the handler wraps plus the allowance for the work it
+ * does after that agent returns.
+ *
+ * The invariant this establishes is that a handler budget can never be smaller
+ * than the agent timeout it is meant to contain. Before this, Planning Mode's
+ * budget fell back to the flat `handlerTimeoutSeconds` (600 s) late in a cycle
+ * — one third of planning's own 1800 s agent timeout — and the watchdog
+ * abandoned the handler mid-repair.
+ */
+export function agentHandlerFloorMs(
+  agentTimeoutSeconds: number,
+  postAgentTailSeconds: number,
+): number {
+  return Math.max(0, agentTimeoutSeconds + postAgentTailSeconds) * 1000;
+}
 
 /**
  * The watchdog's hard timeout for one handler (Issue #4369): the flat
@@ -1412,16 +1548,24 @@ export const AGENT_HANDLER_GRACE_MS = 5 * 60 * 1000;
  * at least that but otherwise the time left in the cycle plus a grace, so a
  * legitimately long agent run is never abandoned mid-flight while the cycle
  * still has room.
+ *
+ * `agentFloorMs` (Issue #62) raises that lower bound for an agent-backed
+ * handler that declares one — `agentHandlerFloorMs()` of the agent timeout it
+ * wraps plus its post-agent tail. Late in a cycle `endTime - now` is small and
+ * the budget used to collapse onto the flat 600 s, which is smaller than the
+ * agent timeout being wrapped. Non-agent handlers are unaffected: they keep
+ * exactly the flat budget.
  */
 export function handlerHardTimeoutMs(
   handlerTimeoutSeconds: number,
   agentBacked: boolean,
   endTime: number,
   now: number,
+  agentFloorMs = 0,
 ): number {
   const flat = handlerTimeoutSeconds * 1000;
   if (!agentBacked) return flat;
-  return Math.max(flat, endTime - now + AGENT_HANDLER_GRACE_MS);
+  return Math.max(flat, agentFloorMs, endTime - now + AGENT_HANDLER_GRACE_MS);
 }
 
 interface SlotPoolState {
@@ -1437,6 +1581,8 @@ interface SlotPoolState {
   spendCeilingReached: boolean;
   /** SIGTERM/SIGINT seen (Issue #4182): no new claims; bounded drain. */
   shouldShutdown: () => boolean;
+  /** Effective claim-runway floor for this cycle (Issues #4304, #47). */
+  claimFloorSeconds: number;
   /**
    * The primary rate-limit error a slot hit mid-run (Issue #4180). The pool
    * drains, then re-throws it so the cycle's existing pause-until-reset
@@ -1485,6 +1631,16 @@ async function runIssueScanPool(
   shouldShutdown: () => boolean = () => false,
 ): Promise<{ exitOuterLoop: boolean; spendCeilingReached: boolean }> {
   await deps.resetRepoFailures();
+  // Claim-runway floor for this cycle (Issues #4304, #47) — resolved once,
+  // applied by slotShouldStop before every claim in every slot.
+  const poolRunwayFloor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
+    fullExecuteBudgetSeconds: deps.fullExecuteBudgetSeconds,
+    cycleSeconds: config.runDurationSeconds,
+  });
+  if (poolRunwayFloor.exceptionReason) {
+    deps.log(`Claim-runway floor: ${poolRunwayFloor.exceptionReason}`);
+  }
   const pool: SlotPoolState = {
     consecutiveFailures: 0,
     exitOuterLoop: false,
@@ -1492,6 +1648,7 @@ async function runIssueScanPool(
     registry: deps.inFlightRepos ?? new InFlightRepoRegistry(),
     spendCeilingReached: false,
     shouldShutdown,
+    claimFloorSeconds: poolRunwayFloor.floorSeconds,
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
   // #4179): under pressure the pool STARTS fewer slots; it never cancels
@@ -1844,7 +2001,7 @@ async function slotShouldStop(
   if (pool.exitOuterLoop) return "exit";
   if (pool.shouldShutdown()) return "shutdown";
   if (pool.draining) return "draining";
-  const minRunwayMs = (deps.minClaimRunwaySeconds ?? 0) * 1000;
+  const minRunwayMs = pool.claimFloorSeconds * 1000;
   const now = deps.now();
   if (now >= endTime || (minRunwayMs > 0 && now + minRunwayMs >= endTime)) {
     return "deadline";
@@ -2205,6 +2362,7 @@ export async function runCoreLoop(
     const priorityTable = buildPriorityDispatchTable(
       deps,
       () => shutdownRequested,
+      config,
     );
 
     // Issue #1780: the inner while is wrapped in a rate-limit retry so
@@ -2480,14 +2638,27 @@ export async function runCoreLoop(
               // it at 600 s left it running detached (observed live: it was
               // then SIGTERMed at run end, misread as a rate limit, and
               // relaunched after "Run complete").
+              // Issue #62: a handler that keeps working after its agent
+              // returns (planning's Failure-Detection gate and self-repair)
+              // also carries a floor, so its budget is never smaller than the
+              // agent timeout it wraps plus that tail's allowance.
+              const dispatchNowMs = deps.now();
               const hardTimeoutMs = handlerHardTimeoutMs(
                 config.handlerTimeoutSeconds,
                 handler.agentBacked === true,
                 endTime,
-                deps.now(),
+                dispatchNowMs,
+                handler.agentFloorMs,
               );
+              // Issue #58: hand the handler the instant the watchdog will
+              // abandon it, derived from the very budget armed below so the
+              // two cannot drift. A handler doing bounded post-work (the
+              // Failure-Detection self-repair) stops cleanly and defers what it
+              // cannot finish instead of being killed mid-way.
+              const handlerDeadlineEpochMs = dispatchNowMs + hardTimeoutMs;
               const watch = await runWithWatchdog(
-                () => handler.execute(),
+                () =>
+                  handler.execute({ deadlineEpochMs: handlerDeadlineEpochMs }),
                 {
                   hardTimeoutMs,
                   softTimeoutMs: config.handlerSoftTimeoutSeconds * 1000,

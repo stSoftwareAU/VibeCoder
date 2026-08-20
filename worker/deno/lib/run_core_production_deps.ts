@@ -225,6 +225,7 @@ import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import { runFailureDetectionResumePass } from "./failure_detection_resume.ts";
 import { ensureLabelExists as ensureLabelExistsFn } from "./label_operations.ts";
 import {
   createFeatureRegistry,
@@ -536,6 +537,11 @@ export async function createProductionRunCoreDeps(
     // Issue #2473: per-handler watchdog bounds (conservative defaults).
     handlerTimeoutSeconds: runCoreConfig.handlerTimeoutSeconds,
     handlerSoftTimeoutSeconds: runCoreConfig.handlerSoftTimeoutSeconds,
+    // Issue #62: the operator's planning agent timeout sizes Planning Mode's
+    // watchdog floor, so a longer `planning_timeout` widens the handler
+    // budget with it rather than being clipped by the flat 600 s.
+    planningTimeoutSeconds: config.planningTimeout ??
+      runCoreConfig.planningTimeoutSeconds,
   };
 
   const repos = config.repos ?? [];
@@ -573,6 +579,8 @@ export async function createProductionRunCoreDeps(
       ctx: IssueContext,
       deps: { ghClient: GitHubClient; logger: Logger; deps: WorkerDeps },
     ) => Promise<R>,
+    /** Watchdog deadline for the calling handler, epoch-ms (Issue #58). */
+    handlerDeadlineEpochMs?: number,
   ): Promise<PriorityHandlerResult> {
     const result = await findIssuesByLabel(config, label, false, {
       githubUser,
@@ -615,6 +623,9 @@ export async function createProductionRunCoreDeps(
       // Issue #1300: Pass milestone so label-based processors can use it
       milestoneTitle: milestoneTitle || issueData.milestoneTitle || undefined,
       config,
+      ...(handlerDeadlineEpochMs !== undefined
+        ? { handlerDeadlineEpochMs }
+        : {}),
     };
 
     const processResult = await processFn(ctx, processorDeps);
@@ -1807,12 +1818,59 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 1.80: Planning --
-    async findAndProcessPlanning() {
+    async findAndProcessPlanning(opts) {
+      // Issue #58: the dispatcher's watchdog deadline rides into the planning
+      // context so the post-publication Failure-Detection self-repair defers
+      // offenders it cannot finish rather than being killed mid-repair.
       const result = await findAndProcessByLabel(
         config.planningLabel,
         processIssuePlanning,
+        opts?.deadlineEpochMs,
       );
       return { ok: true, value: result };
+    },
+
+    // -- Priority 1.81: Failure-Detection repair resume (Issue #60) --
+    // Finishes what a partially-repaired planning run left outstanding: it
+    // re-gates each labelled parent's native sub-issues and repairs only what
+    // still offends, so a sub-issue fixed by hand costs no Claude call at all.
+    async resumeFailureDetectionRepairs(opts) {
+      try {
+        const result = await runFailureDetectionResumePass({
+          repos,
+          ghClient: createGitHubClient(logger),
+          ghCommandFn: runGhCommand,
+          runClaude: (repairPrompt: string) =>
+            workerDeps.claude.runClaudeWithRetry(
+              {
+                prompt: repairPrompt,
+                timeoutSeconds: config.planningTimeout,
+                killAfterSeconds: config.planningKillAfter,
+                phase: "planning",
+                cwd: config.workDir,
+                logger,
+              },
+              { maxRetries: config.maxRateLimitRetries },
+            ),
+          logger,
+          needsHumanLabel: config.needsHumanLabel,
+          githubUser,
+          // Issue #58: the dispatcher's watchdog deadline bounds the repair so
+          // offenders it cannot finish are deferred, not killed mid-flight.
+          ...(opts?.deadlineEpochMs !== undefined
+            ? { deadlineMs: opts.deadlineEpochMs }
+            : {}),
+        });
+        return {
+          ok: true,
+          value: { processed: result.outcomes.length > 0 },
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
     },
 
     // -- Priority 1.85: Question answering --
@@ -1920,6 +1978,11 @@ export async function createProductionRunCoreDeps(
       const parsed = raw === undefined ? NaN : Number(raw);
       return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1800;
     })(),
+
+    // Full-budget claim gate (Issue #47): when the cycle can fit a full
+    // execute, refuse a claim whose runway cannot — the deadline-bound
+    // regime becomes a documented exception, not the default cycle tail.
+    fullExecuteBudgetSeconds: config.claudeTimeout,
 
     // Slot-aware sweep (Issue #4178): only heartbeats no live slot owns are
     // stopped, so a sibling slot's healthy heartbeat is never mistaken for

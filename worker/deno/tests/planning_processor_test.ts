@@ -7,12 +7,13 @@
  */
 
 import { captureReleaseOutcomes } from "./fixtures/release_outcome_capture.ts";
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildCritiqueFallbackPublishPrompt,
   buildFallbackDraftPlanningPrompt,
   buildPlanningSummaryComment,
   buildRetryPlanningPrompt,
+  buildSingleInvocationPlanningPrompt,
   checkSubIssuesOnGitHub,
   countSubIssues,
   detectCreatedSubIssues,
@@ -20,6 +21,7 @@ import {
   extractSubIssueRefs,
   extractSubIssueUrls,
   extractSubIssueUrlsFromComments,
+  FAILURE_DETECTION_REQUIREMENT,
   filterOutSelfIssueUrl,
   listNativeSubIssues,
   listSubIssuesViaIssueList,
@@ -1388,6 +1390,15 @@ Deno.test("processIssuePlanning - closes parent when no sub-issues created (Issu
   assertEquals(closeCalls[0]!.includes("completed"), true);
 });
 
+// Test modification note (Issue #63): this case previously asserted that the
+// inline-close path posts **zero** comments. That was incidental to the mock
+// Claude result carrying no `runStats` — with no model stats the stats section
+// rendered empty and `postStatsComment()` had nothing to post. The
+// Failure-Detection gate counts are now recorded on every gate path, so this
+// path posts the stats comment (carrying explicit zeros) even without model
+// stats. The assertion therefore pins the behaviour the test is actually about
+// — no duplicate **summary** comment and no extra close — and additionally
+// pins the new counts reaching the parent.
 Deno.test("processIssuePlanning - safety-net skips comment + close when Claude already closed inline (Issue #2465)", async () => {
   const ctx = makeContext();
 
@@ -1467,33 +1478,74 @@ Deno.test("processIssuePlanning - safety-net skips comment + close when Claude a
   if (result.ok) {
     assertEquals(result.value.subIssueCount, 2);
   }
-  // Safety-net detected inline close — no duplicate comment, no extra close.
-  assertEquals(postedComments.length, 0);
+  // Safety-net detected inline close — no duplicate summary comment, no extra
+  // close.
+  assertEquals(
+    postedComments.filter((b) => b.includes("## Planning Complete")).length,
+    0,
+  );
   assertEquals(closeCalls.length, 0);
+  // Issue #63: the gate still ran over the two published sub-issues and found
+  // no offenders, and that zero reaches the parent.
+  const statsComments = postedComments.filter((b) =>
+    b.includes("Failure-Detection gate:")
+  );
+  assertEquals(statsComments.length, 1);
+  assertStringIncludes(
+    statsComments[0]!,
+    "published 2 · offenders 0 · repaired 0 · still offending 0 · deferred 0",
+  );
 });
 
-// Issue #3246/#3272: when a published sub-issue lacks a filled
+/**
+ * Issue numbers that received the `needs-failure-detection-repair` label
+ * (Issue #59), read from the recorded `gh` argument vectors.
+ */
+function repairLabelTargets(calls: string[][]): number[] {
+  const hits: number[] = [];
+  for (const args of calls) {
+    if (!args.some((a) => a === "labels[]=needs-failure-detection-repair")) {
+      continue;
+    }
+    const path = args.find((a) => /\/issues\/\d+\/labels$/.test(a));
+    if (path) {
+      hits.push(parseInt(path.match(/\/issues\/(\d+)\/labels$/)![1]!, 10));
+    }
+  }
+  return hits;
+}
+
+// Issue #3246/#3272/#59: when a published sub-issue lacks a filled
 // `## Failure Detection` section and the model-driven self-repair (#3272)
-// cannot fix it, the presence gate still fails the planning run loudly —
-// driving the failed-once/failed progression and posting an actionable comment
-// on the un-repairable sub-issue. The run is NOT recorded as a success.
+// cannot fix it, the run is a **partial repair**, not a planning failure: the
+// parent takes `needs-failure-detection-repair` (never `failed-once`), carries
+// one comment naming every sub-issue still needing repair, stays open, and the
+// run returns a success-shaped result. The offending sub-issue still gets its
+// own actionable comment.
 //
 // Test modification note (Issue #3272): before #3272 the gate dead-failed on
 // the first missing section. Now it first attempts a model-driven repair, so
 // this test supplies an *un-repairable* repair draft (empty output) for the
-// repair call to keep the hard-block fallback under test.
-Deno.test("processIssuePlanning - fails the run when a published sub-issue's Failure Detection criterion cannot be repaired (Issue #3246/#3272)", async () => {
+// repair call to keep the un-repaired path under test.
+//
+// Test modification note (Issue #59): this case previously asserted
+// `result.ok === false` and `failureHandled === true`. That business logic
+// changed — a published-but-partially-compliant plan is no longer a failed
+// planning run — so the assertions now pin the partial-repair outcome. The
+// genuine-failure progression is asserted by the paired regression test below.
+Deno.test("processIssuePlanning - records a partial repair (label, no failed-once) when a published sub-issue's Failure Detection criterion cannot be repaired (Issue #3246/#3272/#59)", async () => {
   const ctx = makeContext();
 
   let failureHandled = false;
   const closeCalls: string[][] = [];
+  const ghCalls: string[][] = [];
   const subIssueComments: Array<{ number: number; body: string }> = [];
 
   const deps = createMockDeps({
     claude: {
       runClaudeWithRetry: (opts: { prompt: string }) => {
         // The repair call (Issue #3272) gets an un-repairable (empty) draft so
-        // the hard-block fallback still fires for this test.
+        // the un-repaired path still fires for this test.
         if (opts.prompt.includes("repairing a GitHub sub-issue")) {
           return Promise.resolve({
             ok: true,
@@ -1525,6 +1577,7 @@ Deno.test("processIssuePlanning - fails the run when a published sub-issue's Fai
         });
       },
       runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
         if (args[0] === "issue" && args[1] === "view") {
           const jsonArg = args[args.indexOf("--json") + 1] ?? "";
           if (jsonArg.includes("body")) {
@@ -1580,18 +1633,462 @@ Deno.test("processIssuePlanning - fails the run when a published sub-issue's Fai
     deps,
   });
 
-  // The run is recorded as failed — not success.
-  assertEquals(result.ok, false);
-  // The loud-failure path ran (failed-once/failed progression).
-  assertEquals(failureHandled, true);
-  // The parent was NOT closed as completed.
+  // Issue #59: the plan was published, so the run is success-shaped and names
+  // the sub-issues still awaiting repair.
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.pendingFailureDetectionRepair, [202]);
+  }
+  // The loud-failure path did NOT run — no failed-once on the parent.
+  assertEquals(failureHandled, false);
+  // The parent carries `needs-failure-detection-repair` and stays open so the
+  // resume pass can finish the job.
+  assertEquals(repairLabelTargets(ghCalls), [100]);
   assertEquals(closeCalls.length, 0);
+  // Exactly one parent comment names every sub-issue still needing repair,
+  // with the reason for each.
+  const parentRepairComments = subIssueComments.filter(
+    (c) => c.number === 100 && c.body.includes("Partial Failure-Detection"),
+  );
+  assertEquals(parentRepairComments.length, 1);
+  assertStringIncludes(parentRepairComments[0]!.body, "#202");
+  assertStringIncludes(
+    parentRepairComments[0]!.body,
+    "missing `## Failure Detection` section",
+  );
+  assertEquals(parentRepairComments[0]!.body.includes("#201"), false);
   // The offending sub-issue (#202) got an actionable comment naming the
   // missing criterion; the compliant one (#201) did not.
   const offenderComment = subIssueComments.find((c) => c.number === 202);
   assertEquals(offenderComment !== undefined, true);
   assertStringIncludes(offenderComment!.body, "Failure Detection");
   assertEquals(subIssueComments.some((c) => c.number === 201), false);
+});
+
+// Issue #63: the gate + self-repair counts must reach the run-stats comment
+// posted on the parent, for a *partially repaired* run — the field can be
+// populated and still be silently dropped before it is rendered. Three
+// sub-issues are published: #201 compliant, #202 and #203 offending, and the
+// batched repair drafts a section for #202 only, so the run records
+// published 3 · offenders 2 · repaired 1 · still offending 1 · deferred 0.
+Deno.test("processIssuePlanning - the Failure-Detection gate counts reach the parent run-stats comment for a partially repaired run (Issue #63)", async () => {
+  const ctx = makeContext();
+
+  const parentComments: string[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (opts: { prompt: string }) => {
+        // Batched repair draft (Issue #57): a block for #202 only, so #203 is
+        // never repaired and stays offending.
+        if (opts.prompt.includes("missing a filled")) {
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: "<<<SUB_ISSUE_202>>>\n## Failure Detection\n\n" +
+                "`tests/foo_test.ts::rejects empty input` fails in CI.\n" +
+                "<<<END_SUB_ISSUE_202>>>",
+              exitCode: 0,
+              timedOut: false,
+              runStats: {
+                servedModels: ["claude-fable-5-20250101"],
+                requestedModel: "fable",
+                wallClockMs: 1_000,
+              },
+            },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output: [201, 202, 203]
+              .map((n) => `Created https://github.com/org/repo/issues/${n}`)
+              .join("\n"),
+            exitCode: 0,
+            timedOut: false,
+            runStats: {
+              servedModels: ["claude-fable-5-20250101"],
+              requestedModel: "fable",
+              wallClockMs: 1_000,
+            },
+          },
+        });
+      },
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          const jsonArg = args[args.indexOf("--json") + 1] ?? "";
+          if (jsonArg.includes("body")) {
+            const n = Number(args[2]);
+            const body = n === 201
+              ? "## Failure Detection\nA CI gate covers this.\n"
+              : "## Summary\nDo a thing.\n";
+            return Promise.resolve(
+              JSON.stringify({ number: n, title: "Sub-issue", body }),
+            );
+          }
+          return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+        }
+        if (args.includes("search")) return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: (_r: string, n: number) =>
+      Promise.resolve({
+        number: n,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: (_repo: string, n: number, body: string) => {
+      if (n === 100) parentComments.push(body);
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.pendingFailureDetectionRepair, [203]);
+  }
+
+  const statsComment = parentComments.find((b) =>
+    b.includes("## Planning run model stats")
+  );
+  assert(statsComment !== undefined, "a run-stats comment must be posted");
+  assertStringIncludes(
+    statsComment!,
+    "- **Failure-Detection gate:** published 3 · offenders 2 · repaired 1 · " +
+      "still offending 1 · deferred 0",
+  );
+  assertStringIncludes(statsComment!, "- **Failure-Detection repair:**");
+});
+
+// Issue #58: the processor threads its handler watchdog deadline into the
+// Failure-Detection self-repair. With that deadline already spent the repair
+// must make **zero** repair Claude calls and report the offenders as deferred
+// (never attempted) — the criterion is missing either way, so a deferral never
+// becomes a silent pass.
+//
+// Test modification note (Issue #59): the deferred set no longer *fails* the
+// run — a published plan is not a planning failure — so the assertions moved
+// from `ok: false` + `failed-once` to the partial-repair outcome. The signal is
+// unchanged in substance: both deferred sub-issues are still named, loudly.
+Deno.test("processIssuePlanning - a spent handler deadline defers the Failure-Detection repair instead of starting it (Issue #58/#59)", async () => {
+  const ctx = makeContext({ handlerDeadlineEpochMs: Date.now() - 1_000 });
+
+  let failureHandled = false;
+  let repairPrompts = 0;
+  const ghCalls: string[][] = [];
+  const subIssueComments: Array<{ number: number; body: string }> = [];
+  const editedSubIssues: number[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (opts: { prompt: string }) => {
+        if (opts.prompt.includes("repairing")) repairPrompts++;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output:
+              "Created https://github.com/org/repo/issues/401\nCreated https://github.com/org/repo/issues/402",
+            exitCode: 0,
+            timedOut: false,
+          },
+        });
+      },
+    },
+    github: {
+      handleIssueFailure: () => {
+        failureHandled = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            markedAsFailed: false,
+            markedAsFailedOnce: true,
+            failureCategory: "unknown",
+            isInfrastructure: false,
+          },
+        });
+      },
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[0] === "issue" && args[1] === "view") {
+          const jsonArg = args[args.indexOf("--json") + 1] ?? "";
+          if (jsonArg.includes("body")) {
+            return Promise.resolve(
+              JSON.stringify({
+                number: Number(args[2]),
+                title: "Sub-issue",
+                body: "## Summary\nDo a thing.\n",
+              }),
+            );
+          }
+          return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+        }
+        if (args[0] === "issue" && args[1] === "edit") {
+          editedSubIssues.push(Number(args[2]));
+          return Promise.resolve("");
+        }
+        if (args.includes("search")) return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: (_r: string, n: number) =>
+      Promise.resolve({
+        number: n,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: (_repo: string, n: number, body: string) => {
+      subIssueComments.push({ number: n, body });
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  // The deadline was threaded through: no repair draft was ever requested.
+  assertEquals(repairPrompts, 0);
+  assertEquals(editedSubIssues.length, 0);
+  // Deferred offenders are never a silent pass — but they are a partial
+  // repair, not a planning failure (Issue #59).
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.pendingFailureDetectionRepair, [401, 402]);
+  }
+  assertEquals(failureHandled, false);
+  assertEquals(repairLabelTargets(ghCalls), [100]);
+  // Both offending sub-issues carry their own comment, and both are named in
+  // the single parent comment.
+  assertEquals(
+    subIssueComments.filter((c) => c.number === 401 || c.number === 402).length,
+    2,
+  );
+  const parentRepairComment = subIssueComments.find(
+    (c) => c.number === 100 && c.body.includes("Partial Failure-Detection"),
+  );
+  assertEquals(parentRepairComment !== undefined, true);
+  assertStringIncludes(parentRepairComment!.body, "#401");
+  assertStringIncludes(parentRepairComment!.body, "#402");
+});
+
+// Issue #59 (paired regression): the partial-repair split narrows *when* the
+// gate fails a run — it does not soften the failure machinery. A genuine
+// planning failure (the publish call fails, so no sub-issues are published)
+// must still drive `handlePlanningFailure()` with the failed-once/failed
+// progression, return `ok: false`, and never apply the partial-repair label.
+Deno.test("processIssuePlanning - a genuine planning failure still drives the failed-once progression (Issue #59)", async () => {
+  const ctx = makeContext();
+
+  let failureHandled = false;
+  let markedFailedOnce = false;
+  const ghCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("Claude publish call failed"),
+        }),
+    },
+    github: {
+      handleIssueFailure: () => {
+        failureHandled = true;
+        markedFailedOnce = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            markedAsFailed: false,
+            markedAsFailedOnce: true,
+            failureCategory: "unknown",
+            isInfrastructure: false,
+          },
+        });
+      },
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args.includes("search")) return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: (_r: string, n: number) =>
+      Promise.resolve({
+        number: n,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: () => Promise.resolve(undefined),
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, false);
+  assertEquals(failureHandled, true);
+  assertEquals(markedFailedOnce, true);
+  // The partial-repair label belongs to published-but-incomplete plans only.
+  assertEquals(repairLabelTargets(ghCalls), []);
+});
+
+// Issue #59: when Claude closed the parent inline and the run ends with
+// outstanding repairs, the parent is reopened — a closed parent would bury the
+// work where the resume pass (#60), which lists *open* parents carrying the
+// label, cannot pick it up.
+Deno.test("processIssuePlanning - reopens an inline-closed parent that still has outstanding Failure-Detection repairs (Issue #59)", async () => {
+  const ctx = makeContext();
+
+  const ghCalls: string[][] = [];
+  let failureHandled = false;
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (opts: { prompt: string }) => {
+        if (opts.prompt.includes("repairing a GitHub sub-issue")) {
+          // Un-repairable draft — the offender survives the self-repair.
+          return Promise.resolve({
+            ok: true,
+            value: { output: "", exitCode: 0, timedOut: false },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output: "Created https://github.com/org/repo/issues/501",
+            exitCode: 0,
+            timedOut: false,
+          },
+        });
+      },
+    },
+    github: {
+      handleIssueFailure: () => {
+        failureHandled = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            markedAsFailed: false,
+            markedAsFailedOnce: true,
+            failureCategory: "unknown",
+            isInfrastructure: false,
+          },
+        });
+      },
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[0] === "issue" && args[1] === "view") {
+          const jsonArg = args[args.indexOf("--json") + 1] ?? "";
+          if (jsonArg.includes("body")) {
+            return Promise.resolve(
+              JSON.stringify({
+                number: Number(args[2]),
+                title: "Sub-issue",
+                body: "## Summary\nDo a thing.\n",
+              }),
+            );
+          }
+          // Claude closed the parent inline.
+          return Promise.resolve(JSON.stringify({ state: "CLOSED" }));
+        }
+        if (args.includes("search")) return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: (_r: string, n: number) =>
+      Promise.resolve({
+        number: n,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: () => Promise.resolve(undefined),
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(failureHandled, false);
+  assertEquals(repairLabelTargets(ghCalls), [100]);
+  const reopened = ghCalls.some(
+    (args) => args[0] === "issue" && args[1] === "reopen" && args[2] === "100",
+  );
+  assertEquals(reopened, true);
 });
 
 // Issue #3272: the pre-check recovery path (existing sub-issues found in
@@ -3777,4 +4274,86 @@ Deno.test("buildCritiqueFallbackPublishPrompt - omits milestone instruction when
 
   assertEquals(prompt.includes("--milestone"), false);
   assertEquals(prompt.includes("adversarially critique"), true);
+});
+
+// ============================================================================
+// Failure-Detection requirement in the fallback publish prompts (Issue #61)
+// ============================================================================
+
+Deno.test("fallback publish prompts carry the shared Failure-Detection requirement (Issue #61)", () => {
+  const singleInvocation = buildSingleInvocationPlanningPrompt({
+    repo: "org/repo",
+    issueNumber: 61,
+    issueTitle: "Break down the planner",
+    issueBody: "Needs sub-issues.",
+  });
+  const critiqueFallback = buildCritiqueFallbackPublishPrompt({
+    repo: "org/repo",
+    issueNumber: 61,
+  });
+
+  // Both in-code fallbacks publish sub-issues, so both must state the rule —
+  // and from the one shared constant, so they cannot drift apart.
+  assertStringIncludes(singleInvocation, FAILURE_DETECTION_REQUIREMENT);
+  assertStringIncludes(critiqueFallback, FAILURE_DETECTION_REQUIREMENT);
+});
+
+Deno.test("FAILURE_DETECTION_REQUIREMENT - names the section, the N/A escape hatch and the placeholder rule (Issue #61)", () => {
+  assertStringIncludes(FAILURE_DETECTION_REQUIREMENT, "## Failure Detection");
+  assertStringIncludes(FAILURE_DETECTION_REQUIREMENT, "N/A — <reason>");
+  assertStringIncludes(
+    FAILURE_DETECTION_REQUIREMENT,
+    "**Failure detection:**",
+  );
+  assertStringIncludes(
+    FAILURE_DETECTION_REQUIREMENT,
+    "does NOT count as filled",
+  );
+});
+
+Deno.test("FAILURE_DETECTION_REQUIREMENT - the shapes it promises are the shapes the gate implements (Issue #61)", () => {
+  // The bracketed example the prompt calls out is taken from the constant
+  // itself, so wording drift that the gate would still reject fails here.
+  const placeholderExample = FAILURE_DETECTION_REQUIREMENT.match(
+    /`(\[[^`]*\])`/,
+  )?.[1];
+  assertEquals(typeof placeholderExample, "string");
+
+  const accepted = validateFailureDetectionCriteria([
+    {
+      number: 1,
+      title: "concrete criterion",
+      body:
+        "## Acceptance Criteria\n- [ ] Tests pass\n\n## Failure Detection\n`deno test worker/deno/tests/planning_processor_test.ts` fails in CI if a fallback prompt loses the requirement.\n",
+    },
+    {
+      number: 2,
+      title: "N/A escape hatch",
+      body:
+        "## Failure Detection\nN/A — prompt-only change with no runtime failure surface.\n",
+    },
+    {
+      number: 3,
+      title: "bolded label shape",
+      body:
+        "**Failure detection:** `./quality.sh` fails when the shared constant is dropped.\n",
+    },
+  ]);
+  assertEquals(accepted, []);
+
+  const offenders = validateFailureDetectionCriteria([
+    {
+      number: 4,
+      title: "bracketed placeholder",
+      body: `## Failure Detection\n${placeholderExample}\n`,
+    },
+    {
+      number: 5,
+      title: "no section at all",
+      body: "## Acceptance Criteria\n- [ ] Tests pass\n",
+    },
+  ]);
+  assertEquals(offenders.map((o) => o.number), [4, 5]);
+  assertStringIncludes(offenders[0]!.reason, "bracketed template placeholder");
+  assertStringIncludes(offenders[1]!.reason, "missing");
 });

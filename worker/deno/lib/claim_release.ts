@@ -269,9 +269,9 @@ export async function releaseAllWorkerClaims(
  *
  * Some processors (e.g. the clarity phase) hold an injectable
  * `ghCommandFn` rather than a full {@link GitHubClient}. The produced
- * `unassignIssue` emits the same `gh issue edit … --remove-assignee`
- * invocation a real {@link GitHubClient} would, so behaviour is
- * unchanged.
+ * `unassignIssue` emits the same REST `gh api … DELETE …/assignees`
+ * invocation a real {@link GitHubClient} would (Issue #42 Defect 3), so
+ * behaviour is unchanged.
  */
 export function unassignerFromGhCommand(
   ghCommandFn: (args: string[]) => Promise<string>,
@@ -282,15 +282,20 @@ export function unassignerFromGhCommand(
       issueNumber: number,
       assignees: string[],
     ): Promise<void> {
-      await ghCommandFn([
-        "issue",
-        "edit",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--remove-assignee",
-        assignees.join(","),
-      ]);
+      // Issue #42 Defect 3: release via the REST assignees endpoint (core
+      // quota) so a finished run can drop its claim even while the primary
+      // GraphQL quota is exhausted.
+      if (assignees.length === 0) return;
+      const args = [
+        "api",
+        "-X",
+        "DELETE",
+        `repos/${repo}/issues/${issueNumber}/assignees`,
+      ];
+      for (const assignee of assignees) {
+        args.push("-f", `assignees[]=${assignee}`);
+      }
+      await ghCommandFn(args);
     },
   };
 }

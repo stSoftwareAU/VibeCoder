@@ -19,7 +19,7 @@ import {
 // ── LABEL_DEFINITIONS structure ─────────────────────────────────────────
 
 Deno.test("LABEL_DEFINITIONS - contains expected number of labels", () => {
-  // 16 workflow + 1 UI = 17 total.
+  // 17 workflow + 1 UI = 18 total.
   // History:
   //   - Issue #1616 added grill-me.
   //   - Issue #1748 added claude, help wanted, low-priority.
@@ -33,7 +33,8 @@ Deno.test("LABEL_DEFINITIONS - contains expected number of labels", () => {
   //   - Issue #2650 added degraded-model.
   //   - Issue #2904 added orphan-deps.
   //   - Issue #4112 added quorum.
-  assertEquals(LABEL_DEFINITIONS.length, 17);
+  //   - Issue #59 added needs-failure-detection-repair.
+  assertEquals(LABEL_DEFINITIONS.length, 18);
 });
 
 Deno.test("LABEL_DEFINITIONS - every label has required fields", () => {
@@ -207,22 +208,22 @@ Deno.test(
 // ── getLabelCount ───────────────────────────────────────────────────────
 
 Deno.test("getLabelCount - returns correct count", () => {
-  // Issue #4112 added quorum — 17 total.
-  assertEquals(getLabelCount(), 17);
+  // Issue #59 added needs-failure-detection-repair — 18 total.
+  assertEquals(getLabelCount(), 18);
 });
 
 // ── getAllLabels ─────────────────────────────────────────────────────────
 
 Deno.test("getAllLabels - returns all labels", () => {
-  // Issue #4112 added quorum — 17 total.
-  assertEquals(getAllLabels().length, 17);
+  // Issue #59 added needs-failure-detection-repair — 18 total.
+  assertEquals(getAllLabels().length, 18);
 });
 
 // ── getLabelsByCategory ─────────────────────────────────────────────────
 
-Deno.test("getLabelsByCategory - workflow returns 16 labels", () => {
-  // Issue #4112 added quorum — 16 workflow labels.
-  assertEquals(getLabelsByCategory("workflow").length, 16);
+Deno.test("getLabelsByCategory - workflow returns 17 labels", () => {
+  // Issue #59 added needs-failure-detection-repair — 17 workflow labels.
+  assertEquals(getLabelsByCategory("workflow").length, 17);
 });
 
 Deno.test("getLabelsByCategory - ui returns 1 label", () => {
@@ -266,13 +267,13 @@ Deno.test("repoHasUi - returns false for empty languages", () => {
 // ── getApplicableLabels ─────────────────────────────────────────────────
 
 Deno.test("getApplicableLabels - returns all labels for UI repos", () => {
-  // Issue #4112 added quorum — 17 total.
-  assertEquals(getApplicableLabels(true).length, 17);
+  // Issue #59 added needs-failure-detection-repair — 18 total.
+  assertEquals(getApplicableLabels(true).length, 18);
 });
 
 Deno.test("getApplicableLabels - excludes UI labels for non-UI repos", () => {
-  // Issue #4112 added quorum — 16 workflow labels.
+  // Issue #59 added needs-failure-detection-repair — 17 workflow labels.
   const labels = getApplicableLabels(false);
-  assertEquals(labels.length, 16);
+  assertEquals(labels.length, 17);
   assertEquals(labels.some((l) => l.category === "ui"), false);
 });

@@ -154,14 +154,16 @@ Deno.test("unassignerFromGhCommand - emits the canonical gh args", async () => {
   await unassigner.unassignIssue("org/repo", 123, ["worker-bot"]);
 
   assertEquals(ghCalls.length, 1);
+  // Issue #42 Defect 3: released via the REST assignees endpoint (core
+  // quota), so a finished run can drop its claim even while the primary
+  // GraphQL quota is exhausted.
   assertEquals(ghCalls[0], [
-    "issue",
-    "edit",
-    "123",
-    "--repo",
-    "org/repo",
-    "--remove-assignee",
-    "worker-bot",
+    "api",
+    "-X",
+    "DELETE",
+    "repos/org/repo/issues/123/assignees",
+    "-f",
+    "assignees[]=worker-bot",
   ]);
 });
 
@@ -182,7 +184,8 @@ Deno.test("unassignerFromGhCommand - works through releaseClaim", async () => {
   );
 
   assert(result);
-  assertEquals(ghCalls[0]?.[6], "worker-bot");
+  // The REST release carries the worker as an `assignees[]=` field.
+  assertEquals(ghCalls[0]?.[5], "assignees[]=worker-bot");
   assertEquals(logger.calls.length, 0);
 });
 

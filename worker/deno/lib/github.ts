@@ -24,6 +24,17 @@ import { retryWithBackoff } from "./retry.ts";
 import { isReservedLabel } from "./config_defaults.ts";
 import { recordGhCall } from "./gh_call_metrics.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import {
+  isPrimaryQuotaLatched,
+  isPrimaryRateLimitMessage,
+  isQuotaExemptGhCall,
+  latchPrimaryQuota,
+  primaryQuotaLatchedUntil,
+} from "./primary_quota_latch.ts";
+import {
+  formatRateLimitReset,
+  writeRateLimitSignal,
+} from "./rate_limit_signal.ts";
 import { getCachedComments, invalidateComments } from "./comment_cache.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import type { Improvement } from "../commands/suggest_improvements.ts";
@@ -198,6 +209,17 @@ export function parseGhCommentsJson(json: GhCommentJson[]): GitHubComment[] {
  * @throws Error if command fails
  */
 export async function runGhCommandRaw(args: string[]): Promise<string> {
+  // Issue #42: once the primary GraphQL quota is exhausted, every further
+  // GraphQL-backed call in the window is guaranteed to fail. Short-circuit
+  // it here — before the spawn, the telemetry and the retry decision — so a
+  // scan that catches-and-continues no longer drives hundreds of doomed `gh`
+  // processes (each costing a spawn and counting toward the secondary/abuse
+  // limit) until something finally lets the error escape. The `rate_limit`
+  // read that learns the reset is exempt, so the latch can still lift itself.
+  if (!isQuotaExemptGhCall(args) && isPrimaryQuotaLatched()) {
+    throw new Error(primaryQuotaSkipMessage());
+  }
+
   // Issue #1671: record per-iteration `gh` call telemetry. This is
   // the lowest-level `gh` entry-point in this module, so every `gh`
   // invocation (whether retried or not) is counted exactly once per attempt.
@@ -206,7 +228,98 @@ export async function runGhCommandRaw(args: string[]): Promise<string> {
   // Issue #3311/#3703: egress containment lives in the shared chokepoint —
   // `spawnGh` refuses an off-allowlist (or undeterminable) write BEFORE the
   // command reaches GitHub, then journals the mutation (Issue #2380).
-  return await runGhOrThrow(args);
+  try {
+    return await runGhOrThrow(args);
+  } catch (err) {
+    // Issue #42: the first live call to report the primary-quota message
+    // latches the whole process until the reset, so the calls behind it
+    // never spawn. Setting the shared rate-limit signal here also drives the
+    // existing Issue #1780 mid-cycle pause at the next priority-pass check.
+    const message = err instanceof Error ? err.message : String(err);
+    if (isPrimaryRateLimitMessage(message)) {
+      await notePrimaryQuotaExhaustion();
+    }
+    throw err;
+  }
+}
+
+/** True while a single primary-quota exhaustion is being recorded. */
+let quotaExhaustionNoteInFlight = false;
+
+/** The one-line reason a latched `gh` call is skipped, naming the reset. */
+function primaryQuotaSkipMessage(): string {
+  const until = primaryQuotaLatchedUntil();
+  const eta = until === null
+    ? "reset time unknown"
+    : formatRateLimitReset(until, Math.floor(Date.now() / 1000));
+  // Carries the primary-quota phrase so callers that classify by message
+  // (the scans' log lines, the Issue #1780 pause) still recognise it.
+  return `gh command skipped: GraphQL primary quota exhausted (API rate ` +
+    `limit already exceeded) — ${eta}`;
+}
+
+/**
+ * Record the first primary-GraphQL-quota exhaustion of the window (Issue #42).
+ *
+ * Reads the reset from the free `gh api rate_limit` call (bypassing the
+ * chokepoint so it neither records telemetry nor recurses), latches the
+ * process until then, and writes the shared rate-limit signal so sibling
+ * workers and the Issue #1780 pause observe the same window. Idempotent and
+ * cheap: once the latch is set, every later call short-circuits before
+ * reaching this path, and a concurrent first detection is coalesced.
+ */
+async function notePrimaryQuotaExhaustion(): Promise<void> {
+  if (quotaExhaustionNoteInFlight || isPrimaryQuotaLatched()) return;
+  quotaExhaustionNoteInFlight = true;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const resetEpoch = await readGraphqlResetEpoch(now);
+    latchPrimaryQuota(resetEpoch, now);
+    const waitSeconds = Math.max(0, resetEpoch - now);
+    const workDir = Deno.env.get("WORK_DIR");
+    if (workDir) {
+      await writeRateLimitSignal(workDir, waitSeconds);
+    }
+    defaultLogger.warn(
+      `Primary GraphQL quota exhausted — latching all GraphQL-backed gh ` +
+        `calls until reset ${formatRateLimitReset(resetEpoch, now)}`,
+    );
+  } catch (err) {
+    // Never let bookkeeping mask the original failure — the latch is a
+    // best-effort optimisation; the caller still sees its own error.
+    defaultLogger.warn(
+      `Failed to record primary-quota exhaustion: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  } finally {
+    quotaExhaustionNoteInFlight = false;
+  }
+}
+
+/**
+ * Read the GraphQL reset epoch from `gh api rate_limit`, falling back to one
+ * hour from now when the call or parse fails (a conservative window the latch
+ * auto-lifts from the moment the real quota returns).
+ */
+async function readGraphqlResetEpoch(now: number): Promise<number> {
+  try {
+    const raw = await runGhOrThrow(["api", "rate_limit"]);
+    const parsed = JSON.parse(raw) as {
+      resources?: {
+        graphql?: { reset?: number };
+        core?: { reset?: number };
+      };
+    };
+    const reset = parsed.resources?.graphql?.reset ??
+      parsed.resources?.core?.reset;
+    if (typeof reset === "number" && Number.isFinite(reset) && reset > now) {
+      return reset;
+    }
+  } catch {
+    // Fall through to the conservative default.
+  }
+  return now + 3600;
 }
 
 /**
@@ -608,15 +721,23 @@ export function createGitHubClient(logger: Logger): GitHubClient {
           assignees.join(", ")
         } from issue #${issueNumber} in ${repo}`,
       );
-      await runGhCommand([
-        "issue",
-        "edit",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--remove-assignee",
-        assignees.join(","),
-      ]);
+      // Issue #42 Defect 3: release the claim via the REST assignees
+      // endpoint (core quota) rather than `gh issue edit` (GraphQL). A
+      // finished run must be able to drop its claim even while the primary
+      // GraphQL quota is exhausted — the core quota is a separate budget,
+      // and the primary-quota latch exempts REST `gh api` calls for exactly
+      // this reason. An empty list is a no-op, matching the old behaviour.
+      if (assignees.length === 0) return;
+      const args = [
+        "api",
+        "-X",
+        "DELETE",
+        `repos/${repo}/issues/${issueNumber}/assignees`,
+      ];
+      for (const assignee of assignees) {
+        args.push("-f", `assignees[]=${assignee}`);
+      }
+      await runGhCommand(args);
     },
 
     async closeIssue(

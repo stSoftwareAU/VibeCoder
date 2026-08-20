@@ -35,7 +35,7 @@ import {
   PRIOR_PROGRESS_PROMPT_NOTE,
   saveResumeState,
 } from "../resume_state_store.ts";
-import { startWipCheckpoints } from "../wip_checkpoint.ts";
+import { preserveTimedOutWip, startWipCheckpoints } from "../wip_checkpoint.ts";
 import { buildProgressExtension } from "../progress_extension_runtime.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
 import { describeMemoryPressure } from "../memory_pressure.ts";
@@ -417,17 +417,66 @@ async function executeClaudeBody(
         ).length;
       }
     }
+    // WIP preservation (Issue #47): a hard timeout with a dirty tree must
+    // not discard the work — on #5, 134 tool calls and ~20 M cached-token
+    // reads were lost because nothing was committed. One commit on the
+    // claim-locked issue branch, pushed through the guarded chokepoint,
+    // UNCONDITIONALLY — unlike the periodic #4170 checkpoints this does not
+    // wait for `enable_session_resume`; that flag remains the opt-in half
+    // that auto-resumes from the branch on re-claim.
+    let wipNote: string | undefined;
+    if (dirtyFiles > 0) {
+      const preserved = await preserveTimedOutWip({
+        repoPath: state.repoPath,
+        branchName: state.branchName,
+        message: `wip: execute timed out after ${elapsedSeconds}s` +
+          (executeTimeout.deadlineBound ? " at the cycle deadline" : "") +
+          ` — preserving ${dirtyFiles} uncommitted file(s) (Issue #47)`,
+        logger: {
+          info: (m: string) => logger.info(m),
+          warn: (m: string) => logger.warn(m),
+        },
+        deps: {
+          currentBranch: async (repoPath: string) => {
+            const head = await deps.git.runGitCommand(
+              ["rev-parse", "--abbrev-ref", "HEAD"],
+              { cwd: repoPath },
+            );
+            if (!head.ok || head.value.code !== 0) return null;
+            const branch = head.value.stdout.trim();
+            return branch.length > 0 ? branch : null;
+          },
+          commitAndPush: (branch, message, repoPath) =>
+            deps.git.commitAndPushPending(branch, message, { cwd: repoPath }),
+        },
+      });
+      if (preserved.kind === "pushed") {
+        wipNote = `WIP preserved: committed and pushed to ` +
+          `'${state.branchName}' — the next claim resumes from that branch ` +
+          `(Issue #47)`;
+        // Refresh the durable resume state so resume-on-reclaim (#4170)
+        // finds the checkpoint when session resume is enabled.
+        await saveCheckpointState().catch(() => undefined);
+      } else if (preserved.kind === "clean") {
+        wipNote = `WIP already checkpointed on '${state.branchName}' ` +
+          `(Issue #4170)`;
+      } else {
+        wipNote = `WIP preservation failed (${preserved.reason}) — ` +
+          `uncommitted work remains only in the local clone (Issue #47)`;
+      }
+    }
     // Issue #1550: When Claude times out with an empty output, classify the
     // failure as zero_output (infrastructure) so the infra-retry wrapper
     // fires. Pure timeouts with partial output remain in the generic
     // `timeout` category and are not retried.
-    const baseReason = state.claudeOutput.length === 0
+    const baseReason = (state.claudeOutput.length === 0
       ? "Claude timed out with zero output and made no changes"
       : dirtyFiles > 0
       ? `Claude timed out with uncommitted changes (${dirtyFiles} file${
         dirtyFiles === 1 ? "" : "s"
       })`
-      : "Claude timed out without creating changes";
+      : "Claude timed out without creating changes") +
+      (wipNote ? ` — ${wipNote}` : "");
     const reason = formatDetailedFailureMessage(baseReason, {
       elapsedSeconds,
       timedOut: true,

@@ -17,6 +17,19 @@ import { getLabelByName } from "../setup/label_definitions.ts";
 import { assertWorkerCanApplyLabel } from "./worker_label_guard.ts";
 
 /**
+ * Whether a label create/add error means the label already exists.
+ *
+ * The REST POST returns HTTP 422 with a body naming the `already_exists`
+ * code; `gh label create` prints "already exists". Either way the desired
+ * state — the label is present — already holds, so the caller should treat
+ * it as success rather than a failed mutation (Issue #42).
+ */
+export function isLabelAlreadyExistsError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("already_exists") || lower.includes("already exists");
+}
+
+/**
  * Add a label to an issue using the GitHub REST API with CLI fallback.
  *
  * Primary: `gh api -X POST /repos/{owner}/{repo}/issues/{issue_number}/labels`
@@ -119,6 +132,7 @@ export async function ensureLabelExists(
   }
 
   // Label not in cache — try to create it via REST API first (Issue #976)
+  let restError: string | null = null;
   try {
     await ghCommandFn([
       "api",
@@ -133,8 +147,17 @@ export async function ensureLabelExists(
     ]);
     await labelCacheInvalidate(cacheDir, repo);
     return { ok: true, value: undefined };
-  } catch {
-    // REST API creation failed — fall back to CLI
+  } catch (err) {
+    restError = err instanceof Error ? err.message : String(err);
+    // Issue #42: a 422 `already_exists` means the label is already there —
+    // that is success, not a reason to fall through to a second create that
+    // will fail the same way (and, when the quota is exhausted, re-list
+    // against a dead GraphQL budget and mis-report a rate-limit outage as a
+    // label bug).
+    if (isLabelAlreadyExistsError(restError)) {
+      await labelCacheInvalidate(cacheDir, repo);
+      return { ok: true, value: undefined };
+    }
   }
 
   // Fallback: gh label create (CLI)
@@ -156,7 +179,12 @@ export async function ensureLabelExists(
     // Invalidate cache so next lookup sees the new label
     await labelCacheInvalidate(cacheDir, repo);
     return { ok: true, value: undefined };
-  } catch {
+  } catch (err) {
+    const cliError = err instanceof Error ? err.message : String(err);
+    if (isLabelAlreadyExistsError(cliError)) {
+      await labelCacheInvalidate(cacheDir, repo);
+      return { ok: true, value: undefined };
+    }
     // Self-healing: creation failed — perhaps a race condition or stale cache.
     await labelCacheInvalidate(cacheDir, repo);
     const refreshed = await getCachedLabels(
@@ -168,9 +196,18 @@ export async function ensureLabelExists(
     if (refreshed.ok && refreshed.value.includes(labelName)) {
       return { ok: true, value: undefined };
     }
+    // Issue #42: carry the underlying cause so a quota outage
+    // ("API rate limit already exceeded") does not masquerade as a
+    // permissions/label defect. The CLI error is the most recent; the REST
+    // error is the fallback when the CLI produced none.
+    const underlying = cliError || restError;
     return {
       ok: false,
-      error: new Error(`Failed to create label '${labelName}' in ${repo}`),
+      error: new Error(
+        `Failed to create label '${labelName}' in ${repo}${
+          underlying ? `: ${underlying}` : ""
+        }`,
+      ),
     };
   }
 }

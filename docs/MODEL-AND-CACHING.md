@@ -469,7 +469,22 @@ block like this to the planning summary comment:
 - **Estimated cost (USD, estimate only):** ~$0.85
   - `claude-fable-5-20250115`: $0.85 — input $0.48 · output $0.33 · cache write $0.16 · cache read $0.03
 - **Degraded:** no
+- **Failure-Detection gate:** published 3 · offenders 0 · repaired 0 · still offending 0 · deferred 0
+- **Failure-Detection repair:** 0ms
 ```
+
+The two **Failure-Detection** lines (Issue #63) record what the
+presence gate and its
+model-driven self-repair did on this run: how many sub-issues were published and
+gated, how many offended, how many the repair fixed, how many it could not, how
+many it deferred out of budget, and the wall-clock it
+spent. They are emitted on **every** gate path — clean, fully repaired, and
+partially repaired — with explicit zeros on a clean run, because a metric only
+emitted on the unhappy path cannot distinguish "healthy" from "not reporting".
+That is why the systemic scale of the missing-criterion defect was previously
+findable only by grepping worker logs. A run that gated sub-issues but produced
+no model stats (a recovery close that skipped Claude) still posts the block
+carrying these counts.
 
 The **estimate-only** cost block prices the recorded tokens
 against the shared `MODEL_PRICING` table (`worker/deno/lib/token_usage.ts`) — the
