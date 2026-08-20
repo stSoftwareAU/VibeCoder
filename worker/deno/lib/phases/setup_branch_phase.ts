@@ -313,18 +313,10 @@ export async function workOnIssueSetupBranch(
       );
       state.resumedFromCheckpoint = resumeResult.ok &&
         resumeResult.value === true;
-      if (state.resumedFromCheckpoint) {
-        // Record where the resumed branch started (Issue #148) so the
-        // completion phase can tell "this run advanced the checkpoint"
-        // from "this run added nothing to it".
-        const head = await deps.git.runGitCommand(["rev-parse", "HEAD"], {
-          cwd: repoPath,
-        });
-        const sha = head.ok && head.value.code === 0
-          ? head.value.stdout.trim()
-          : "";
-        if (sha.length > 0) state.resumedCheckpointHead = sha;
-      }
+      // Where the resumed branch started is recorded by the execute phase as
+      // `executeStartHeadSha` (Issue #148) — the completion phase reads that
+      // to tell "this run advanced the checkpoint" from "this run added
+      // nothing to it", so setup does not capture its own copy.
       if (persisted.sessionId) {
         // Prime CLI session continuity (Issue #1324) from the persisted
         // state. phaseCount is forced to at least 1 so the execute phase

@@ -18,6 +18,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubClient } from "../types.ts";
 import { WIP_CHECKPOINT_COMMIT_MESSAGE } from "../lib/wip_checkpoint.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 
 const BRANCH = "issue-148-preserve-wip";
 const WIP_TIP = "1111111111111111111111111111111111111111";
@@ -148,6 +149,20 @@ Deno.test(
       false,
       "gh pr create MUST NOT run for a branch holding only an earlier run's WIP commits",
     );
+  },
+);
+
+Deno.test(
+  "completion - the WIP-only refusal is diagnosed as no_changes, not a worker fault (Issue #148)",
+  async () => {
+    // The refusal is a "nothing to ship" outcome; diagnosing it as a worker
+    // fault would send the claim down the failure-retry path instead.
+    const outcome = await runCompletion({
+      commits: [[WIP_TIP, TIMED_OUT_WIP]],
+      startSha: WIP_TIP,
+    });
+
+    assertEquals(detectFailureCategory(outcome.reason), "no_changes");
   },
 );
 

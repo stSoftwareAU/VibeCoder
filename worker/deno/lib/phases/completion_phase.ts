@@ -377,10 +377,14 @@ async function detectHalfDoneWipBranch(
   if (entries[0]!.sha !== startSha) return null;
   if (!isWipOnlyCommitLog(entries.map((entry) => entry.subject))) return null;
 
+  // The wording carries `failure_diagnosis`'s stable "without making any
+  // changes" marker on purpose: this run finished without adding to the
+  // branch, which is a no_changes outcome, not a worker fault to retry.
   return `Branch \`${state.branchName}\` carries only WIP commits preserved ` +
-    `from an earlier timed-out run, and this run did not advance it — ` +
-    `refusing to raise a half-done PR (Issue #148). The next claim resumes ` +
-    `from the branch and must add to it before a PR can be raised.`;
+    `from an earlier timed-out run, and this run ended without making any ` +
+    `changes to it — refusing to raise a half-done PR (Issue #148). The ` +
+    `next claim resumes from the branch and must add to it before a PR can ` +
+    `be raised.`;
 }
 
 /** Single-attempt completion-phase body — see `workOnIssueCompletion`. */

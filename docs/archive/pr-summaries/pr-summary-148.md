@@ -90,16 +90,17 @@ Added:
 - `worker/deno/tests/wip_markers_test.ts` (8) — WIP subject classification
   (both prefixes, casing, whitespace, `wip` as a substring), WIP-only vs mixed
   vs empty ranges, and preserved-WIP vs failed-preservation reasons.
-- `worker/deno/tests/completion_phase_wip_gate_test.ts` (5) — a resumed run
+- `worker/deno/tests/completion_wip_only_gate_test.ts` (5) — a resumed run
   that added nothing to a WIP-only branch fails and never reaches
   `gh pr create`; the refusal diagnoses as `no_changes`; a run that advanced
   the branch (even by checkpoint commits) still raises its PR; a branch with
-  one real commit is never refused; a run that never resumed skips the guard.
+  one real commit is never refused; the guard fails open when the pre-execute
+  HEAD is unknown.
 - `worker/deno/tests/wip_resume_handoff_test.ts` (4) — the release keeps the
   pointer only for a preserved-WIP `no_pr` outcome (failed preservation, a
   quality failure, a PR outcome and `no_pr_expected` all still clear it); the
-  setup phase records the resumed branch head, and records none when the run
-  starts clean.
+  setup phase flags a matching resume pointer as a resumed claim, and leaves
+  the flag false when the run starts clean.
 - `worker/deno/tests/git_ref_args_test.ts` (+4) — `buildPushArgs` separator
   placement with and without `-u`, and refusal of dash-leading/empty refs.
 - `worker/deno/tests/git_push_test.ts` (+1) — `pushUnpushedCommits` refuses a

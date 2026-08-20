@@ -4,8 +4,8 @@
  * Preservation writes the work to the issue branch; the resume pointer is
  * how the NEXT claim finds it. Two links in that chain are pinned here:
  * the release keeps the pointer when (and only when) the run preserved WIP,
- * and the setup phase records where the resumed branch started so the
- * completion phase can tell an advanced branch from an untouched one.
+ * and the setup phase flags the claim as resumed so the execute phase
+ * continues the prior attempt rather than restarting from zero.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -58,7 +58,7 @@ Deno.test("release #148 - every other release still clears the pointer", () => {
   }
 });
 
-Deno.test("setup #148 - resuming a checkpoint records the branch head it resumed", async () => {
+Deno.test("setup #148 - a matching resume pointer resumes the checkpointed branch", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "issue148-setup-" });
   try {
     const config = {
@@ -117,7 +117,6 @@ Deno.test("setup #148 - resuming a checkpoint records the branch head it resumed
 
     assertEquals(result.status, "continue");
     assertEquals(state.resumedFromCheckpoint, true);
-    assertEquals(state.resumedCheckpointHead, "ff00ba9deadbeef");
     // The pointer that got us here is still on disk for the next claim.
     assert(await loadResumeState(workDir, ctx.repo, 148));
 
@@ -127,7 +126,7 @@ Deno.test("setup #148 - resuming a checkpoint records the branch head it resumed
   }
 });
 
-Deno.test("setup #148 - a run that starts clean records no resumed head", async () => {
+Deno.test("setup #148 - a run that starts clean is never flagged as resumed", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "issue148-setup-" });
   try {
     const config = {
@@ -163,7 +162,6 @@ Deno.test("setup #148 - a run that starts clean records no resumed head", async 
 
     assertEquals(result.status, "continue");
     assertEquals(state.resumedFromCheckpoint, false);
-    assertEquals(state.resumedCheckpointHead, undefined);
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {
