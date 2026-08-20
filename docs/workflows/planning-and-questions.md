@@ -396,6 +396,32 @@ may still fix it. Both sets are recorded as outstanding repairs on the parent
 silent pass. With no deadline supplied (tests, CLI paths) behaviour is unchanged
 and `deferred` is empty.
 
+#### 📊 The gate's hit rate is recorded in the run stats (Issue #63)
+
+The gate and repair outcome used to be visible **only** by reading worker logs —
+which is how its systemic scale was found (8/8 offenders on one run, 3/3 on
+another, by grepping a single day's log) and why the omission went unnoticed long
+enough for the self-repair to become a routine, load-bearing part of every
+planning run rather than a rare fallback.
+
+The planning run-stats comment now carries the counts, so the rate is measurable
+without log archaeology:
+
+```markdown
+- **Failure-Detection gate:** published 8 · offenders 8 · repaired 6 · still offending 1 · deferred 1
+- **Failure-Detection repair:** 1m 4s
+```
+
+`FailureDetectionGateStats` (`worker/deno/lib/planning_run_stats.ts`) is seeded
+with **explicit zeros** at the gate call site in `closePlanningIssue()` and
+populated on every path — clean, fully repaired, and partially repaired. A
+metric emitted only on the unhappy path cannot distinguish "healthy" from "not
+reporting", which is the failure mode this exists to fix, so a clean run records
+`offenders 0` rather than omitting the fields. The counts are additive: the
+established stats lines keep their exact shape and order, and the phases that
+never gate sub-issues (grill-me and the other phase-parametric callers) supply
+no gate stats and emit no gate lines.
+
 #### ♻️ Resume pass finishes outstanding repairs (Issue #60)
 
 A `needs-failure-detection-repair` parent is only a better state than

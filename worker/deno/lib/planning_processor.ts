@@ -47,6 +47,7 @@ import { analyseIssueClarity } from "../commands/assess_clarity.ts";
 import {
   buildDegradationReport,
   type DegradationVerdict,
+  type FailureDetectionGateStats,
   type PlanningInvocationStats,
 } from "./planning_run_stats.ts";
 import { applyDegradedModelLabel } from "./planning_degraded_label.ts";
@@ -1530,22 +1531,29 @@ function resolveConfiguredBestPlanningModel(
 /**
  * Compute the degradation verdict and build the stats markdown section
  * (Issue #2649). Returns the verdict and the section (empty string when no
- * planning invocation produced stats — e.g. a recovery path that skipped
- * Claude). The configured best planning model (Issue #2654) determines the
- * expected model the run is judged against.
+ * planning invocation produced stats and no gate stats were recorded — e.g. a
+ * recovery path that skipped Claude and published nothing). The configured best
+ * planning model (Issue #2654) determines the expected model the run is judged
+ * against.
  *
  * Delegates to the shared {@link buildDegradationReport} helper (Issue #2734)
  * so the planning and grill-me paths run the identical resolve → assess →
  * build triple and cannot drift.
+ *
+ * `gate` (Issue #63) carries the Failure-Detection gate/repair counters for the
+ * run. Only the closure path supplies it — it is the sole path that gates
+ * published sub-issues.
  */
 function buildRunStats(
   invocations: PlanningInvocationStats[],
   configuredBestModel?: string,
+  gate?: FailureDetectionGateStats,
 ): { verdict: DegradationVerdict; section: string } {
   const report = buildDegradationReport({
     invocations,
     configuredBestModel,
     phase: "planning",
+    ...(gate ? { gate } : {}),
   });
   return { verdict: report.verdict, section: report.section };
 }
@@ -1610,14 +1618,6 @@ async function closePlanningIssue(
    */
   handlerDeadlineEpochMs: number | undefined = undefined,
 ): Promise<Result<PlanningResult>> {
-  // Per-run model stats + degraded-model verdict (Issue #2649). The configured
-  // best planning model (Issue #2654, per-repo override aware) is the model the
-  // run is expected to be served by.
-  let { verdict, section } = buildRunStats(
-    invocations,
-    resolveConfiguredBestPlanningModel(config, repo),
-  );
-
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
   // GitHub sub-issues. Text extraction is fragile — when Claude printed the
@@ -1646,6 +1646,20 @@ async function closePlanningIssue(
   // labelled and commented on below, and the run still completes.
   let pendingRepair: FailureDetectionOffender[] = [];
 
+  // Issue #63: the gate + self-repair outcome, recorded on **every** path so
+  // the hit rate is measurable from the run-stats comment instead of by
+  // grepping worker logs. Seeded with explicit zeros — a clean run must report
+  // "gate ran, nothing offended", not omit the fields, because a metric only
+  // emitted on the unhappy path cannot distinguish healthy from not reporting.
+  const gateStats: FailureDetectionGateStats = {
+    published: textSubIssueNumbers.length,
+    offenders: 0,
+    repaired: 0,
+    stillOffending: 0,
+    deferred: 0,
+    repairDurationMs: 0,
+  };
+
   // Issue #3246: deterministic Failure-Detection presence gate. Every sub-issue
   // this run published must carry a filled `## Failure Detection` section
   // (Issue #3245 makes the planner emit it). Gate the run's published set
@@ -1660,6 +1674,7 @@ async function closePlanningIssue(
       ghCommandFn: deps.github.runGhCommand,
       logger,
     });
+    gateStats.offenders = offenders.length;
     if (offenders.length > 0) {
       logger.warn(
         "Failure-Detection gate: published sub-issue(s) missing the `## Failure Detection` criterion — attempting model-driven self-repair (Issue #3272)",
@@ -1683,6 +1698,7 @@ async function closePlanningIssue(
       // two cannot drift. Offenders the budget cannot fit are reported as
       // `deferred` (never attempted) instead of the repair being killed
       // mid-flight and its in-flight calls mislabelled as model timeouts.
+      const repairStartedAt = Date.now();
       const repair = await repairFailureDetectionSections({
         repo,
         offenders,
@@ -1704,15 +1720,15 @@ async function closePlanningIssue(
           ),
         logger,
       });
+      gateStats.repairDurationMs = Date.now() - repairStartedAt;
+      gateStats.repaired = repair.repaired.length;
+      gateStats.stillOffending = repair.stillOffending.length;
+      gateStats.deferred = repair.deferred.length;
 
-      // Fold the repair's Claude call(s) into the run's invocations and
-      // recompute the stats so they reflect the repair invocation — the run no
+      // Fold the repair's Claude call(s) into the run's invocations so the
+      // stats (built once below) reflect the repair invocation — the run no
       // longer reports "no served model observed" on this path (Issue #3272).
       invocations.push(...repair.invocations);
-      ({ verdict, section } = buildRunStats(
-        invocations,
-        resolveConfiguredBestPlanningModel(config, repo),
-      ));
 
       if (repair.repaired.length > 0) {
         logger.info(
@@ -1789,6 +1805,18 @@ async function closePlanningIssue(
       }
     }
   }
+
+  // Per-run model stats + degraded-model verdict (Issue #2649). The configured
+  // best planning model (Issue #2654, per-repo override aware) is the model the
+  // run is expected to be served by. Built once, here — after the gate, so the
+  // block carries both the repair's invocations (Issue #3272) and the gate's
+  // own counters (Issue #63) on every path: clean, fully repaired, and
+  // partially repaired.
+  const { verdict, section } = buildRunStats(
+    invocations,
+    resolveConfiguredBestPlanningModel(config, repo),
+    gateStats,
+  );
 
   // Issue #2995 (part of #2993): carrier safety net. When the run ends with
   // *zero* sub-issues and the close is not an explicit nothing-to-do close,
