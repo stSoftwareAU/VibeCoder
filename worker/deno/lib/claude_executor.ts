@@ -425,6 +425,37 @@ export function detectUsageLimit(
 }
 
 /**
+ * In-progress / not-finished phrasing an agent emits when its turn ends before
+ * it could deliver — blocked on a slow quality gate, out of turn budget, or
+ * otherwise cut off mid-task (Issue #108). This is the tell that separates a
+ * *truncated* no-changes run from a genuinely analysis-only one: the agent
+ * announced it intended to keep going, it did not conclude.
+ *
+ * Deliberately narrow — each alternative is a forward-looking "I will continue"
+ * statement or an explicit "still running / not finished", not something a
+ * finished analysis would say. A genuine recommendation ("the fix is …", "no
+ * change is needed because …") matches none of these, so the analysis-only
+ * hand-off those runs belong in is preserved.
+ */
+const RUN_INTERRUPTED_RE =
+  /\b(?:i'?ll|i will|let me|going to|about to)\s+(?:pick(?:ing)?\s+(?:this\s+)?up|continue|resume|carry on|finish|proceed|retry|re-?run|come back)\b|\b(?:still|currently)\s+(?:running|in progress|building|cloning|compiling|installing|waiting)\b|\bas soon as (?:it|the|this)\b[^\n]*\b(?:finish|finishes|complete|completes|done)\b|\bran out of time\b|\bnot (?:yet )?(?:finished|complete|done)\b|\bhaven'?t (?:finished|completed|started)\b|\bquality (?:gate|check)s? (?:is|are) still\b/i;
+
+/**
+ * Check whether the tail of `output` shows the run was cut off before it could
+ * finish (Issue #108). Tail-only, mirroring {@link detectUsageLimit}: an agent
+ * may *describe* being interrupted earlier in a transcript it then recovered
+ * from — only the final lines report how the run actually ended.
+ */
+export function detectRunInterrupted(
+  output: string,
+  tailLines: number = 15,
+): boolean {
+  if (!output.trim()) return false;
+  const tail = output.split("\n").slice(-tailLines).join("\n");
+  return RUN_INTERRUPTED_RE.test(tail);
+}
+
+/**
  * Parse the reset time from a usage-limit message into epoch milliseconds,
  * or null when nothing parseable is present.
  *

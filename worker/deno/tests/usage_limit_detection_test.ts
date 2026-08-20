@@ -13,6 +13,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   detectRateLimit,
+  detectRunInterrupted,
   detectUsageLimit,
   parseUsageLimitReset,
 } from "../lib/claude_executor.ts";
@@ -82,4 +83,50 @@ Deno.test("usage limit - parses an epoch suffix, an am/pm clock, and a 24h clock
 Deno.test("rate limit - overloaded/529 are now primary rate-limit (short-backoff) matches", () => {
   assert(detectRateLimit("API error: overloaded_error").isPrimary);
   assert(detectRateLimit("HTTP 529 Overloaded").isPrimary);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #108 — detectRunInterrupted: a run cut off before finishing
+// ---------------------------------------------------------------------------
+
+Deno.test("detectRunInterrupted - matches the GRQ#4138 quality-gate status line", () => {
+  assert(detectRunInterrupted(
+    "Quality gate is still running (it re-clones sibling repos on a >24h " +
+      "cache miss). I'll pick up as soon as it finishes.",
+  ));
+});
+
+Deno.test("detectRunInterrupted - matches assorted in-progress phrasings", () => {
+  for (
+    const s of [
+      "I will continue once the build completes.",
+      "Still building the container, one moment.",
+      "Let me pick this up after the tests pass.",
+      "The run ran out of time before I could finish.",
+      "I haven't finished yet — will resume shortly.",
+      "quality checks are still running",
+    ]
+  ) {
+    assert(detectRunInterrupted(s), `expected interrupted: ${s}`);
+  }
+});
+
+Deno.test("detectRunInterrupted - does NOT match a genuine analysis conclusion", () => {
+  for (
+    const s of [
+      "Here is my analysis of the issue. The fix is to add a null check.",
+      "No change is needed because the behaviour is already correct.",
+      "I reviewed the code and recommend splitting the function.",
+      "The root cause is a race condition in the cache layer.",
+      "",
+    ]
+  ) {
+    assertEquals(detectRunInterrupted(s), false, `must not match: ${s}`);
+  }
+});
+
+Deno.test("detectRunInterrupted - is tail-only (an early mention that recovered does not count)", () => {
+  const output = "Still cloning the repo...\n" + "done.\n".repeat(20) +
+    "Applied the fix and committed.";
+  assertEquals(detectRunInterrupted(output), false);
 });
