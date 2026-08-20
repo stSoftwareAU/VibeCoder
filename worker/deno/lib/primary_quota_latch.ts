@@ -53,12 +53,22 @@ export function isPrimaryRateLimitMessage(message: string): boolean {
 /**
  * Whether a `gh` invocation is exempt from the primary-GraphQL-quota latch.
  *
- * `gh api rate_limit` reports the quota itself and costs nothing — it must
- * stay callable while latched so the reset time can be read (otherwise the
- * latch could never learn when to lift).
+ * The exhausted budget is the *GraphQL* primary quota; the REST (core) quota
+ * is a separate bucket that is typically still healthy. So the only calls
+ * the latch must short-circuit are GraphQL-backed ones — every `gh`
+ * subcommand (`gh pr list`, `gh issue list`, …, which is what drove the
+ * doomed-call storm) and the explicit `gh api graphql` endpoint. A plain
+ * `gh api <rest-path>` call rides the core quota and stays callable, so:
+ *   - `gh api rate_limit` can still read the reset (the latch learns when to
+ *     lift), and
+ *   - a finished run can still release its claim via the REST assignees
+ *     endpoint even while GraphQL is exhausted (Issue #42 Defect 3).
  */
 export function isQuotaExemptGhCall(args: readonly string[]): boolean {
-  return args[0] === "api" && args.includes("rate_limit");
+  if (args[0] !== "api") return false;
+  // `gh api graphql …` is a GraphQL call — never exempt. Any other
+  // `gh api <rest-path>` hits the separate core REST quota.
+  return !args.includes("graphql");
 }
 
 /**

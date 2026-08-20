@@ -147,3 +147,29 @@ Deno.test("chokepoint - a live primary-quota failure latches the process and sig
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+Deno.test("chokepoint - a REST claim release stays callable while latched (Issue #42 Defect 3)", async () => {
+  clearPrimaryQuotaLatch();
+  let spawned = 0;
+  _setGhSpawnRunner((_args) => {
+    spawned++;
+    return Promise.resolve(ok(""));
+  });
+  try {
+    latchPrimaryQuota(Math.floor(Date.now() / 1000) + 3600);
+    // The REST assignees-DELETE release rides the core quota, so it must
+    // pass through the latch and actually spawn.
+    await runGhCommandRaw([
+      "api",
+      "-X",
+      "DELETE",
+      "repos/o/r/issues/5/assignees",
+      "-f",
+      "assignees[]=bot",
+    ]);
+    assertEquals(spawned, 1, "a REST release must spawn even while latched");
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+  }
+});

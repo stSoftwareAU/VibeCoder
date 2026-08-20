@@ -721,15 +721,23 @@ export function createGitHubClient(logger: Logger): GitHubClient {
           assignees.join(", ")
         } from issue #${issueNumber} in ${repo}`,
       );
-      await runGhCommand([
-        "issue",
-        "edit",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--remove-assignee",
-        assignees.join(","),
-      ]);
+      // Issue #42 Defect 3: release the claim via the REST assignees
+      // endpoint (core quota) rather than `gh issue edit` (GraphQL). A
+      // finished run must be able to drop its claim even while the primary
+      // GraphQL quota is exhausted — the core quota is a separate budget,
+      // and the primary-quota latch exempts REST `gh api` calls for exactly
+      // this reason. An empty list is a no-op, matching the old behaviour.
+      if (assignees.length === 0) return;
+      const args = [
+        "api",
+        "-X",
+        "DELETE",
+        `repos/${repo}/issues/${issueNumber}/assignees`,
+      ];
+      for (const assignee of assignees) {
+        args.push("-f", `assignees[]=${assignee}`);
+      }
+      await runGhCommand(args);
     },
 
     async closeIssue(
