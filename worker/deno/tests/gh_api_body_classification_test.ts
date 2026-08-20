@@ -87,6 +87,92 @@ Deno.test("classifyGhMutation - --input does not turn its value into the endpoin
 });
 
 // ---------------------------------------------------------------------------
+// `unreadableBody` on the REST return path (Issue #89)
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyGhMutation - REST --input surfaces unreadableBody", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input",
+    "/tmp/b.json",
+  ]);
+  assertEquals(info, {
+    verb: "api-post",
+    repo: "o/r",
+    target: "repos/o/r/issues/1/labels",
+    scope: "explicit",
+    unreadableBody: true,
+  });
+});
+
+Deno.test("classifyGhMutation - REST --input=<file> surfaces unreadableBody", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "--input=/tmp/b.json",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+});
+
+Deno.test("classifyGhMutation - a REST @file query= field surfaces unreadableBody", () => {
+  // `gh` reads a `@`-prefixed `query=` value from that file, so the body it
+  // sends is not the one the argv shows — true on a REST endpoint too, not
+  // just on `graphql`.
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-f",
+    "query=@/tmp/b.json",
+  ]);
+  assertEquals(info?.unreadableBody, true);
+});
+
+Deno.test("classifyGhMutation - an argv-visible REST body leaves unreadableBody absent", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1/labels",
+    "-f",
+    "labels[]=bug",
+  ]);
+  assertEquals(info?.unreadableBody, undefined);
+  // Deep equality: the field must be absent, not `false`, so existing
+  // assertions on argv-visible mutations keep passing.
+  assertEquals(info, {
+    verb: "api-post",
+    repo: "o/r",
+    target: "repos/o/r/issues/1/labels",
+    scope: "explicit",
+  });
+});
+
+Deno.test("classifyGhMutation - a GET with --input stays a read, flag or not", () => {
+  assertEquals(
+    classifyGhMutation([
+      "api",
+      "repos/o/r/issues",
+      "-X",
+      "GET",
+      "--input",
+      "/tmp/b.json",
+    ]),
+    null,
+  );
+});
+
+Deno.test("classifyGhMutation - an explicit PATCH with --input surfaces unreadableBody", () => {
+  const info = classifyGhMutation([
+    "api",
+    "repos/o/r/issues/1",
+    "--method=PATCH",
+    "--input",
+    "-",
+  ]);
+  assertEquals(info?.verb, "api-patch");
+  assertEquals(info?.unreadableBody, true);
+});
+
+// ---------------------------------------------------------------------------
 // Shape B — a GraphQL document `gh` reads from a file
 // ---------------------------------------------------------------------------
 
