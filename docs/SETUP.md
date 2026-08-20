@@ -561,9 +561,127 @@ whole list before re-running rather than one failure at a time.
 
 ## Manual setup: writing `.config.json`
 
-*Placeholder — this section will explain how to hand-write `.config.json`
-instead of letting `setup config` and the interactive prompts produce it
-(#82, parent #66).*
+`.config.json` lives in the root of the VibeCoder checkout — every script
+defaults to `<checkout>/.config.json`, and the `CONFIG_FILE` environment
+variable can point elsewhere. On the automated route the file is composed in
+two passes: the Deno setup CLI's `config` subcommand merges any `VIBE_*`
+environment variables over whatever the file already holds and writes only
+values that differ from the built-in defaults, then `setup.sh` merges the
+interactive terminal answers into the same file. The manual route is the
+operator writing that same JSON in an editor. Either way the file must stay
+private: setup creates it owner-only (permissions `600`), it is git-ignored,
+and the pre-commit hook refuses to commit it. Its overrides-only semantics —
+defaults are never written, so changed defaults flow through on upgrade — are
+covered in the
+[Configuration File section](CONFIGURATION.md#configuration-file) of the
+Configuration Reference.
+
+### The minimum viable config
+
+A first run genuinely needs only who may instruct the worker, who reviews its
+PRs, what it monitors, and how it authenticates:
+
+```json
+{
+  "allowed_authors": ["myusername"],
+  "pr_reviewers": ["myusername"],
+  "repos": ["myorg/repo1"],
+  "ssh_key_path": "~/.ssh/vibe-worker_ed25519",
+  "gh_config_dir": "~/.vibe-coder/credentials/gh"
+}
+```
+
+- `allowed_authors` — GitHub logins whose issues and labels the worker acts
+  on; see [Multiple Allowed Authors](CONFIGURATION.md#multiple-allowed-authors).
+- `pr_reviewers` — logins requested as reviewers on every PR the worker
+  raises; see [Multiple PR Reviewers](CONFIGURATION.md#multiple-pr-reviewers).
+- `repos` — the monitored repository list, `owner/name` per entry; see
+  [Monitored Repositories](CONFIGURATION.md#monitored-repositories).
+- `ssh_key_path` — the service account's SSH private key, used for all git
+  transport; see
+  [Service Account Authentication](CONFIGURATION.md#service-account-authentication-ssh--gh-auth).
+- `gh_config_dir` — the `gh` CLI identity directory built in
+  [Manual setup: credentials](#manual-setup-credentials), used for all `gh`
+  operations; same reference section as `ssh_key_path`.
+
+### A fuller worked example
+
+`.config.json` is strict JSON: a comment is a parse error, so a hand-written
+file can never carry inline annotations. The keys below are therefore
+explained beneath the block, never inside it.
+
+```json
+{
+  "allowed_authors": ["myusername"],
+  "pr_reviewers": ["myusername"],
+  "repos": ["myorg/repo1", "myorg/repo2"],
+  "ssh_key_path": "~/.ssh/vibe-worker_ed25519",
+  "gh_config_dir": "~/.vibe-coder/credentials/gh",
+  "service_accounts": ["mysvcbot"],
+  "authorized_commenters": ["myusername"],
+  "claude_model": "opus",
+  "claude_timeout": 10800,
+  "sleep_interval": 120,
+  "worker_name": "Worker Alpha",
+  "fleet_health_repo": "git@github.com:myorg/fleet-health.git"
+}
+```
+
+- `service_accounts` — the worker identity guard's allowlist. The automated
+  route defaults it to the login setup authenticated as; a hand-written config
+  without it leaves the guard inactive, which the worker warns about loudly at
+  startup. See the identity guard notes under
+  [Service Account Authentication](CONFIGURATION.md#service-account-authentication-ssh--gh-auth).
+- `authorized_commenters` — logins whose issue comments the worker trusts.
+  Note the key itself is spelt `authorized_commenters`; see
+  [Authorised Commenters](CONFIGURATION.md#authorised-commenters).
+- `claude_model`, `claude_timeout`, `sleep_interval` — operational overrides.
+  Write them only when they must differ from the defaults; the file holds
+  overrides, not a snapshot. Values and defaults are in
+  [Configuration Defaults](CONFIGURATION.md#configuration-defaults).
+- `worker_name`, `fleet_health_repo` — multi-worker visibility and fleet
+  health tracking, both optional and both in the same
+  [defaults table](CONFIGURATION.md#configuration-defaults).
+
+### Where the full reference lives
+
+This section deliberately stops at the two examples above. The
+[Configuration Reference](CONFIGURATION.md) owns the complete key catalogue,
+the defaults table and the operational constants;
+[Per-Repository Configuration](CONFIGURATION.md#per-repository-configuration)
+owns the `repo_config` block. The `container_tools` key is documented in the
+[Configuration Reference](CONFIGURATION.md) and the
+[Container Guide](CONTAINER.md), not here.
+
+### Checking the file before a first run
+
+The worker parses the file with `JSON.parse` and stops with
+`Config file ... contains invalid JSON` on anything non-strict, so check the
+file before the first run rather than during it:
+
+- **Validate the JSON.** `jq . .config.json` from the checkout root. A
+  trailing comma, a `//` or `#` comment, and a UTF-8 byte-order mark are all
+  parse errors. A misspelt key parses fine but is caught at startup by the
+  unknown-key check, which warns and suggests the likely intended key.
+- **Make the paths real.** `ssh_key_path` and `gh_config_dir` are applied as
+  given, with no existence probe on the host — a missing key file or `gh`
+  directory does not fail startup, it fails every subsequent git and `gh`
+  call. Check them with `test -f` and `test -d` before running.
+- **Know what `~` does.** Only a *leading* `~` is expanded, by replacing it
+  with the `HOME` environment variable when the worker applies the value.
+  `~user` and a `~` anywhere else in the path are passed through literally.
+- **On Windows, mind encoding and path syntax.** Save the file as UTF-8
+  *without* a BOM and with LF line endings — the same discipline as the
+  credential files (Windows PowerShell 5.1's `Out-File` defaults to an
+  encoding that breaks both; use an editor or PowerShell 7's
+  `utf8NoBOM`). Write paths either with escaped backslashes
+  (`"C:\\Users\\me\\key"`) or with forward slashes (`"C:/Users/me/key"`),
+  which Windows accepts. A single backslash is either a parse error or a
+  silently mangled path — `"C:\temp"` parses, but the `\t` in it becomes a
+  tab character. `HOME` is usually unset on Windows, so prefer full absolute
+  paths over `~` there.
+- **Keep it private.** Match what setup does: `chmod 600 .config.json` (or
+  the Windows ACL equivalent) — the file can hold API keys.
 
 ## Manual setup: repo sync steps and verification
 
