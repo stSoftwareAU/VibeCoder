@@ -93,7 +93,7 @@ flowchart TD
 ### 🔐 Process Isolation
 
 - **PID Locking**: Only one worker instance can run at a time
-- **Module-Snapshot Execution**: the launcher `exec`s Deno directly on the `run-entrypoint` driver; Deno loads its modules at process start, so the running worker is immune to the mid-run `git reset` its bootstrap performs (the former `run_core.sh` shadow-copy is gone, Issue #3504)
+- **Module-Snapshot Execution**: the launcher `exec`s Deno directly on the `run-entrypoint` driver; Deno loads its modules at process start, so the running worker is immune to the mid-run `git reset` its bootstrap performs (the former `run_core.sh` shadow-copy is gone,)
 - **Repository Reset**: Each run resets to `origin/Develop`, recovering from partial edits
 - **Timeout Enforcement**: Two-stage termination (SIGTERM then SIGKILL) ensures processes are killed
 
@@ -101,7 +101,7 @@ flowchart TD
 
 Every `deno run` launcher passes `--frozen --lock=worker/deno/deno.lock`, so a
 stale or missing lockfile is a hard error instead of a silent re-resolve that
-could pull unreviewed transitive code into the process (Issues #2896, #3653).
+could pull unreviewed transitive code into the process.
 This covers `run.sh`, `worker/shared/deno_bridge.sh`, `quality.sh`, `setup.sh`
 (the widest permission set — it handles `.config.json` credentials), and the
 `deno run` tasks in `worker/deno/deno.json`. Lockfile enforcement is separate
@@ -115,7 +115,7 @@ hostile one streams until the heap is exhausted. Buffering the whole body and
 *then* truncating is no better — the peak memory is already spent (and roughly
 doubled, because the body is encoded again to measure it).
 
-`worker/deno/lib/bounded_fetch.ts` (Issue #3710) is the single place that
+`worker/deno/lib/bounded_fetch.ts` is the single place that
 supplies the two primitives every outbound call site uses:
 
 | Helper | Bound it enforces |
@@ -159,35 +159,35 @@ dependency manifests. It applies in **two** places, and both must hold:
    `worker/deno/deno.json` `minimumDependencyAge`, `VIBE_BUMP_QUARANTINE_HOURS`
    for the `bump-deps.sh` path, and `worker/deno/lib/npm_package_age.ts` for npm
    specifiers pinned in TypeScript literals. The `bump-deps.sh` window is
-   **verified, not advised** (Issue #3659): `worker/deno/lib/bump_age_audit.ts`
+   **verified, not advised**: `worker/deno/lib/bump_age_audit.ts`
    reads the versions the script actually wrote, resolves each publish time
    from its registry, and reverts the bump as `rejected_by_quarantine` when one
    is inside the window — a managed repo's own script no longer decides whether
    the worker's supply-chain policy applies. That audit is **fail-closed on
-   what it cannot read** (Issue #3951): it recognises range specifiers
+   what it cannot read**: it recognises range specifiers
    (`jsr:@std/yaml@^1.9.9`), `deno.lock` / `package-lock.json` / `yarn.lock` /
    `pnpm-lock.yaml` entries and `package.json` ranges, and it **refuses** every
    other dependency-shaped added line rather than passing it — an open-ended
    range or tag (`>=1.0.0`, `*`, `latest`) that names no single release, a
    non-JS ecosystem manifest (`Gemfile`, `go.mod`, `Cargo.toml`,
    `requirements.txt`, …) whose publish times it cannot resolve, or a bump diff
-   it could not read at all. Before #3951 each of those parsed to nothing and
+   it could not read at all. Before each of those parsed to nothing and
    an empty parse was reported as `ok: true`, so a repo-supplied script could
    adopt a five-minute-old release with zero embargo on a host holding
    `GH_TOKEN`, the App private key and `ANTHROPIC_API_KEY`. Internal
    `@stsoftware/*` packages
-   bypass the window (0h, per Issue #1613), and the window itself must be a
+   bypass the window (0h, per), and the window itself must be a
    positive whole number of hours: `VIBE_BUMP_QUARANTINE_HOURS=0` (or any other
    non-positive or malformed value) is rejected with a logged warning and falls
    back to 24h, so the embargo cannot be switched off silently. The
-   `npm_package_age.ts` gate is **fail-closed** (Issue #3711): a version whose
+   `npm_package_age.ts` gate is **fail-closed**: a version whose
    publish time cannot be resolved — registry unreachable, 5xx, unknown
    version, unparseable timestamp — is refused with the failure quoted, exactly
    like one published inside the window. It previously passed, so a single
    dropped lookup converted a block into a pass for a specifier that then ran
    under `--allow-all`. There is no opt-out: re-run once the registry is
    reachable.
-2. **Host toolchain upgrades (Issue #3655)** — the bootstrap prelude upgrades
+2. **Host toolchain upgrades** — the bootstrap prelude upgrades
    the Claude CLI, the `gh` binary, every installed `gh` extension, and Deno on
    the worker host itself. Each upgrade is gated on the candidate release having
    been published at least `VIBE_BUMP_QUARANTINE_HOURS` (default 24h) ago by
@@ -196,7 +196,7 @@ dependency manifests. It applies in **two** places, and both must hold:
    **pinned** to the version the gate approved (`deno upgrade <version>`), and
    `gh` extensions are enumerated and upgraded one at a time rather than through
    a wholesale `gh extension upgrade --all`. Each extension upgrade is also
-   **pinned to the ref the gate dated** (Issue #3952) —
+   **pinned to the ref the gate dated** —
    `gh extension install <repo> --pin <ref> --force`, where `<ref>` is the
    latest release tag for a binary extension and the default branch's HEAD
    commit sha for a script one, because that is what `gh` would otherwise
@@ -230,10 +230,10 @@ strictly better than dating a stale release tag that is never installed.
 trees weekly (Mondays 04:17 UTC), because a package can turn known-vulnerable
 long after it lands in a lockfile. That scheduled run is the *only* thing that
 re-examines an unchanged `worker/deno/deno.lock` — Renovate's `deno` manager is
-deliberately disabled (Issue #2536) so it never overlaps the
+deliberately disabled so it never overlaps the
 `minimumDependencyAge` window.
 
-The Deno audit therefore **fails closed** ([#3955](https://github.com/stSoftwareAU/VibeCoder/issues/3955)):
+The Deno audit therefore **fails closed**:
 the canonical `audit` task in `worker/deno/deno.json` is a bare `deno audit`,
 with no `--ignore-registry-errors`. That flag is documented as *"Return exit
 code 0 if remote service(s) responds with an error"*, so an advisory-service
@@ -260,12 +260,12 @@ flowchart TD
 ```
 
 The triage runbook for both issues is
-[`docs/security-advisory-triage.md`](docs/security-advisory-triage.md#automatic-intake-for-deno-dependencies-issue-2691).
+[`docs/security-advisory-triage.md`](docs/security-advisory-triage.md#automatic-intake-for-deno-dependencies).
 
 ### 🔗 Supply-Chain Gate — Verified Posture, Not Assumed
 
 The `supply-chain-gate` job in `.github/workflows/validate-scripts.yml`
-(Issue #4192) fails the build on any decay of the pinning posture the rest of
+ fails the build on any decay of the pinning posture the rest of
 this section relies on: a `uses:` that is not a full commit SHA, a shipped
 `deno` invocation that resolves dependencies without `--frozen`, a container
 base image referenced by tag rather than `@sha256:` digest, a Renovate policy
@@ -298,13 +298,12 @@ could reach and that a third party or a durable record could later read:
 - **Failure and crash notifications** — the automated-failure comment path and
   crash-notification posts, which embed tails of subprocess output.
 - **Issue title and body edits** — the `editIssue` writes the revision and
-  refinement processors make from model-authored `new_title` / `new_body`
-  (Issue #3650).
+  refinement processors make from model-authored `new_title` / `new_body`.
 
 Every branch of a sink counts, not just the obvious one. Revision and refinement
 each post model output twice — once when the JSON parse fails and once on the
-success path — and both branches must redact (Issue #3202 fixed the first,
-Issue #3650 the second).
+success path — and both branches must redact (fixed the first,
+ the second).
 
 A **new** sink is a fresh leak until it is explicitly wired to
 `redactSecrets()`. When you add an outbound sink, wiring the redaction call is
@@ -318,17 +317,17 @@ writers are too numerous to wire one at a time:
   call site would have left the next `console.error` uncovered, so
   `installConsoleRedaction()`
   ([`worker/deno/lib/console_redaction.ts`](worker/deno/lib/console_redaction.ts),
-  Issue #3661) patches the console once in `mod.ts`'s `main()`.
+  ) patches the console once in `mod.ts`'s `main`.
 - **`gh` comment and PR bodies** are published by many call sites, and two of
   them (the PR-comment failure replies and the question-failure comment) were
   publishing unredacted text. `redactGhBodyArgs()`
   ([`worker/deno/lib/gh_body_redaction.ts`](worker/deno/lib/gh_body_redaction.ts),
-  Issue #3707) masks the body-carrying arguments inside `spawnGh`, the
+  ) masks the body-carrying arguments inside `spawnGh`, the
   worker's `gh` chokepoint, so every present and future worker body inherits
   redaction. Routing arguments — repo slug, API path, labels, reaction fields
   — are left byte-for-byte alone. The **agent** subprocess has a second
   chokepoint, the PATH shim, and it never reaches `spawnGh`: it calls the same
-  `redactGhBodyArgs()` inside the guard child (Issue #3938, §6a), extended
+  `redactGhBodyArgs` inside the guard child (§6a), extended
   there to the contents of `--body-file`. Both chokepoints are wired; a third
   `gh` caller would owe its own wiring.
 
@@ -340,11 +339,11 @@ where the text is assembled.
 **Redact before you truncate.** A sink that trims output to a size limit must
 run `redactSecrets()` *first*: cutting first can split a secret — most
 damagingly a PEM block, whose END marker falls past the cut — leaving a
-fragment that no rule matches on the later pass (Issue #3707).
+fragment that no rule matches on the later pass.
 
 **Redaction bounds its own work, never its input.** Because that ordering hands
 `redactSecrets()` untruncated, attacker-influenceable text, every rule must run
-in time **linear** in the input length (Issue #3942): bound each quantifier over
+in time **linear** in the input length: bound each quantifier over
 a broad character class (`{0,63}`) or anchor it on a literal, or a backtracking
 pattern stalls the worker's only thread. The input itself is deliberately never
 truncated — capping it would leave the dropped tail unmasked, which is exactly
@@ -360,7 +359,7 @@ shape it does not yet recognise passes through **verbatim**. When you introduce
 or discover a new credential shape, add a redaction rule to the `RULES` array in
 `secret_redaction.ts` (with tests) so every sink inherits the coverage at once.
 
-**Every rule must be linear in the input length (Issue #3942).**
+**Every rule must be linear in the input length.**
 `redactSecrets()` runs synchronously on the main thread over
 attacker-influenced text — model stdout, subprocess output — so a pattern that
 backtracks super-linearly stalls the whole event loop, and with it the
@@ -374,19 +373,19 @@ direct conflict with "redact before you truncate" above.
 
 | Sink | Location | Issue |
 |------|----------|-------|
-| Structured logger | `worker/deno/lib/logger.ts` | [#2417](https://github.com/stSoftwareAU/VibeCoder/issues/2417) (audit: docs/audits/verbosity-secret-leak-audit-2417.md) |
-| Direct `console.*` writes (patched once in `mod.ts`) | `worker/deno/lib/console_redaction.ts` | [#3661](https://github.com/stSoftwareAU/VibeCoder/issues/3661) |
-| Answer sanitiser (question answers) | `worker/deno/lib/answer_sanitiser.ts` | [#3195](https://github.com/stSoftwareAU/VibeCoder/issues/3195) |
-| Automated-failure comment path | `worker/deno/lib/label_failure.ts` | [#3425](https://github.com/stSoftwareAU/VibeCoder/issues/3425) |
+| Structured logger | `worker/deno/lib/logger.ts` | (audit: docs/audits/verbosity-secret-leak-audit-2417.md) |
+| Direct `console.*` writes (patched once in `mod.ts`) | `worker/deno/lib/console_redaction.ts` | |
+| Answer sanitiser (question answers) | `worker/deno/lib/answer_sanitiser.ts` | |
+| Automated-failure comment path | `worker/deno/lib/label_failure.ts` | |
 | Crash notifications | `worker/deno/lib/crash_notification.ts` | — |
-| No-changes phase (already-complete close + Partial Answer) | `worker/deno/lib/phases/handle_no_changes_phase.ts` | [#3636](https://github.com/stSoftwareAU/VibeCoder/issues/3636) |
-| PEM private-key masking rule | `worker/deno/lib/secret_redaction.ts` | [#3203](https://github.com/stSoftwareAU/VibeCoder/issues/3203) |
-| HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | [#3427](https://github.com/stSoftwareAU/VibeCoder/issues/3427) |
+| No-changes phase (already-complete close + Partial Answer) | `worker/deno/lib/phases/handle_no_changes_phase.ts` | |
+| PEM private-key masking rule | `worker/deno/lib/secret_redaction.ts` | |
+| HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | |
 | Bare OpenAI (`sk-`) and Google/Gemini (`AIzaSy`) key rules | `worker/deno/lib/secret_redaction.ts` | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) |
-| `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | [#3707](https://github.com/stSoftwareAU/VibeCoder/issues/3707) |
-| Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | [#3938](https://github.com/stSoftwareAU/VibeCoder/issues/3938) |
-| PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | [#3707](https://github.com/stSoftwareAU/VibeCoder/issues/3707) |
-| Question-failure comment | `worker/deno/lib/label_question_failure.ts` | [#3707](https://github.com/stSoftwareAU/VibeCoder/issues/3707) |
+| `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | |
+| Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
+| PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
+| Question-failure comment | `worker/deno/lib/label_question_failure.ts` | |
 
 ```mermaid
 flowchart LR
@@ -426,8 +425,8 @@ VibeCoder implements defence-in-depth to prevent accidental commits of configura
 - `.config*.json` - Any config variant (e.g., `.config-backup.json`, `.config.local.json`)
 - `*.secret.json` - Files explicitly marked as containing secrets
 - `.secrets/` - Directory for sensitive files
-- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*` - Private key material (Issue #3660)
-- `credentials.json`, `service-account*.json` - Credential files (Issue #3660)
+- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*` - Private key material
+- `credentials.json`, `service-account*.json` - Credential files
 
 The key and credential patterns are not hidden files, so the blanket `.*`
 rule never covered them. They matter here because the worker reads a GitHub
@@ -451,7 +450,7 @@ The protection is automatically installed when you run `./setup.sh`. The setup s
 - Updates `.git/info/exclude` with config file patterns
 - Preserves any existing pre-commit hooks by integrating with them
 
-**Fail-closed shim (Issue #3956):** the installed `.git/hooks/pre-commit` is a
+**Fail-closed shim:** the installed `.git/hooks/pre-commit` is a
 shim that invokes the tracked `hooks/pre-commit` script. If that script is
 missing — moved, renamed, or absent from a checked-out ref that predates it —
 the shim rejects the commit with a diagnostic naming the missing path rather
@@ -471,7 +470,7 @@ exit code (126). The only escape hatch is deliberate: set
 - `GH_TOKEN` / `GITHUB_TOKEN`: GitHub personal access token
 - `ANTHROPIC_API_KEY`: Claude API key (when not using Claude Code's built-in auth)
 
-> **📝 Note:** Since Issue #266, worker configuration (e.g., `allowed_authors`, `repos`, `work_on_label`) is loaded exclusively from `.config.json`. Environment variables no longer override these values at runtime. See the [Configuration Reference](docs/CONFIGURATION.md) for details on which settings can be configured via `.config.json` and which operational defaults can be set via environment variables.
+> **📝 Note:** Since, worker configuration (e.g., `allowed_authors`, `repos`, `work_on_label`) is loaded exclusively from `.config.json`. Environment variables no longer override these values at runtime. See the [Configuration Reference](docs/CONFIGURATION.md) for details on which settings can be configured via `.config.json` and which operational defaults can be set via environment variables.
 
 ### 📊 Configuration Precedence
 
@@ -680,7 +679,7 @@ Bot accounts are **opt-in** (not included by default) because:
 | LaunchAgent plist | **Acceptable** | macOS daemon mode |
 | Plain text file | **Not Recommended** | Avoid if possible |
 
-The worker itself uses **no interactive host credential mechanism at runtime** (Issue #4064): no Keychain lookup, no `gh auth login`, and no interactive provider login. Credentials are provisioned once by `setup.sh` into the owner-only directory above and validated by a startup preflight that fails loudly when they are missing, unreadable, or group/world readable. See [Credential Provisioning](docs/DEPLOYMENT.md#-credential-provisioning-non-interactive).
+The worker itself uses **no interactive host credential mechanism at runtime**: no Keychain lookup, no `gh auth login`, and no interactive provider login. Credentials are provisioned once by `setup.sh` into the owner-only directory above and validated by a startup preflight that fails loudly when they are missing, unreadable, or group/world readable. See [Credential Provisioning](docs/DEPLOYMENT.md#-credential-provisioning-non-interactive).
 
 ### 🔄 Credential Rotation
 
@@ -690,9 +689,9 @@ The worker itself uses **no interactive host credential mechanism at runtime** (
 - Rotate anything the full-history secrets sweep confirms as leaked. The sweep
   runs both gitleaks and trufflehog over every branch and tag and blocks while
   a confirmed finding is unrotated — see
-  [Full-history Secret Scan](docs/FULL-HISTORY-SECRET-SCAN.md) (Issue #4190)
+  [Full-history Secret Scan](docs/FULL-HISTORY-SECRET-SCAN.md)
 
-### 🪪 GitHub App Auth Fallback (Issue #3644)
+### 🪪 GitHub App Auth Fallback
 
 When `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
 `GITHUB_APP_PRIVATE_KEY_PATH` are all set, the worker mints a short-lived
@@ -880,7 +879,7 @@ This section is the **implementation reference** for the controls that answer
 those paths: what each one does today, which module owns it, and the failure
 modes it fails closed on.
 
-### 1. Trust-Level Comment Filtering ([#1340](https://github.com/stSoftwareAU/VibeCoder/issues/1340))
+### 1. Trust-Level Comment Filtering
 
 Every comment included in the Claude prompt is annotated with the author's trust level:
 - `[TRUSTED - author]` for comments from users in `allowed_authors` or `authorized_commenters`
@@ -888,39 +887,39 @@ Every comment included in the Claude prompt is annotated with the author's trust
 
 A configuration option (`include_untrusted_comments`) controls whether untrusted comments are included with annotations (default) or excluded entirely (strict mode). Suspicious pattern detection runs on untrusted comments and emits `[SECURITY]` audit events.
 
-### 2. TOCTOU Protection for Issue Content ([#1341](https://github.com/stSoftwareAU/VibeCoder/issues/1341))
+### 2. TOCTOU Protection for Issue Content
 
-When the `work-on` label is verified as added by an allowed author, a SHA-256 hash of the issue title and body is captured. The current content is compared against the stored hash. If the content has changed, the decision turns on **whoever made the edit**, not the author recorded when the snapshot was captured ([#3715](https://github.com/stSoftwareAU/VibeCoder/issues/3715)). The editor is resolved in one GraphQL round-trip (`worker/deno/lib/issue_edit_actor.ts`) from the two places GitHub records a change — `userContentEdits` for a body edit and a `RenamedTitleEvent` timeline item for a title edit — and the **whole edit history** is returned, newest first ([#3879](https://github.com/stSoftwareAU/VibeCoder/issues/3879)). Previously the gate checked the snapshot's `issueAuthor`, so any collaborator editing a trusted author's issue inherited that author's trust and took the "proceed and re-baseline" branch (CWE-863):
+When the `work-on` label is verified as added by an allowed author, a SHA-256 hash of the issue title and body is captured. The current content is compared against the stored hash. If the content has changed, the decision turns on **whoever made the edit**, not the author recorded when the snapshot was captured. The editor is resolved in one GraphQL round-trip (`worker/deno/lib/issue_edit_actor.ts`) from the two places GitHub records a change — `userContentEdits` for a body edit and a `RenamedTitleEvent` timeline item for a title edit — and the **whole edit history** is returned, newest first. Previously the gate checked the snapshot's `issueAuthor`, so any collaborator editing a trusted author's issue inherited that author's trust and took the "proceed and re-baseline" branch (CWE-863):
 - **Untrusted editors**: Processing is blocked, the approval label is removed, `needs-human` is applied, and a comment names the editors and requests re-approval
 - **Trusted editors**: A warning is logged, the snapshot is refreshed against the newest editor's identity, and processing proceeds
-- **Every editor counts, not just the newest** ([#3879](https://github.com/stSoftwareAU/VibeCoder/issues/3879)): the resolver used to pool body edits and title renames and reduce them to one newest actor, so an untrusted body edit followed by **any** later trusted edit reported only the trusted login — a maintainer fixing a typo in the title, a completely ordinary thing to do, blessed a body they never reviewed. The question the gate asks is "has anyone untrusted touched this since the approval?", which is a property of the **set** of editors, not of its maximum. The decision therefore judges every actor whose edit is at or after the snapshot's `capturedAt`, and blocks if **any** of them is untrusted or unattributable. Both markers log the full judged set (`login@editedAt(source)`) so a post-incident audit can tell a genuinely trusted history from one that merely *ended* with a trusted actor
+- **Every editor counts, not just the newest**: the resolver used to pool body edits and title renames and reduce them to one newest actor, so an untrusted body edit followed by **any** later trusted edit reported only the trusted login — a maintainer fixing a typo in the title, a completely ordinary thing to do, blessed a body they never reviewed. The question the gate asks is "has anyone untrusted touched this since the approval?", which is a property of the **set** of editors, not of its maximum. The decision therefore judges every actor whose edit is at or after the snapshot's `capturedAt`, and blocks if **any** of them is untrusted or unattributable. Both markers log the full judged set (`login@editedAt(source)`) so a post-incident audit can tell a genuinely trusted history from one that merely *ended* with a trusted actor
   - **A later trusted edit is not a re-approval** — whichever field it touches, including a trusted re-edit of the body. The trusted editor need never have read the untrusted text they left in place. The only thing that clears an untrusted edit is the explicit re-approval path below: a trusted author re-adding the approval label after the last edit
   - **Edits that pre-date the snapshot are ignored** — they are already inside the content the approver blessed, so an untrusted reporter's own pre-approval edits cannot poison their issue forever. When nothing post-dates the snapshot yet the content still differs (clock skew, a re-encoded digest, a lost record), the whole recorded history is judged instead of falling back to "newest actor wins"
   - **Ties are explicit** — equal timestamps used to resolve to GraphQL node order. The ordering is now total: later `editedAt` first, then `content-edit` before `rename` (the body is what reaches the model), then login
 - **Unattributable edits**: An edit GitHub records without an actor (deleted or anonymised account) is treated as untrusted and blocked — an unattributable edit can never be confirmed as trusted
 - **Editor lookup failure**: If the editor cannot be resolved at all (API error, malformed response), processing is **blocked** and `[SECURITY] [CONTENT_EDITOR_UNRESOLVED] … — BLOCKED` is logged against a `content-editor-unresolved` skip reason. No label is stripped and no escalation is raised, so a transient API failure cannot mutate the issue; the next scan re-evaluates
-- **Re-approval**: A trusted author re-applying the approval label *after* the snapshot was captured counts as approving the current content ([#1561](https://github.com/stSoftwareAU/VibeCoder/issues/1561)). The approval must also post-date the **edit** ([#3868](https://github.com/stSoftwareAU/VibeCoder/issues/3868)) — an approval can only bless content its approver could have seen. Comparing the label-add against `capturedAt` alone was durable rather than racy: `capturedAt` is refreshed only by a capture, so a single trusted label-add that post-dated the stored snapshot (a `low-priority` → `work-on` promotion, a requeue, or the re-approval this gate's own escalation asks for) auto-blessed **every** later untrusted edit, and re-baselined the poisoned content so the pickup-time check then hashed it as `unchanged`. The editor is therefore resolved *before* the branch is evaluated, the branch additionally requires `addedAt >= editedAt`, and a stale approval falls through to the editor-trust check with `[SECURITY] [REAPPROVAL_PREDATES_EDIT] …` logged
-- **Baseline persist failure**: A capture whose write fails no longer returns "proceed" silently ([#3868](https://github.com/stSoftwareAU/VibeCoder/issues/3868)). All three capture sites consume the `Result`; a failure logs `[SECURITY] [CONTENT_SNAPSHOT_PERSIST_FAILED] … — BLOCKED` against a `content-snapshot-persist-failed` skip reason and blocks, because a baseline that was never written cannot secure the next verification. No label is stripped, so a storage fault cannot mutate the issue
-- **Verification error**: If the check itself cannot run — a `.content_approval_state.json` that reads back but is not valid state, so the approval baseline for every tracked issue is unusable — processing is **blocked** ([#3649](https://github.com/stSoftwareAU/VibeCoder/issues/3649)). The branch previously returned "proceed" under a "fail safe" comment, blessing content it had just failed to verify. It now logs `[SECURITY] [CONTENT_CHECK_ERROR] … — BLOCKED`, records a `content-check-error` skip reason, and captures **no** snapshot, since minting one would launder the unusable baseline into a fresh approval
-- **State load error**: Reading the state file is held to the same standard ([#3651](https://github.com/stSoftwareAU/VibeCoder/issues/3651)). Only a genuinely absent file (`Deno.errors.NotFound`) counts as a first run; a read that fails for any other reason — permission denied, an I/O fault, a directory in its place — is an integrity signal, yields the `error` verdict, and blocks. Previously every read failure was laundered into "no snapshots exist", which made the gate report `no_snapshot` and re-baseline against possibly already-edited content. The degradation is logged as `[SECURITY] [CONTENT_STATE_UNUSABLE] …` rather than passing unnoticed, and since [#3875](https://github.com/stSoftwareAU/VibeCoder/issues/3875) the write paths no longer rewrite the file from that empty state (see **Degraded writes** below)
-- **State deletion**: A *deleted* baseline is held to the same standard as a corrupt one ([#3717](https://github.com/stSoftwareAU/VibeCoder/issues/3717)). Two changes make "the file is gone" distinguishable from "this issue was never approved":
+- **Re-approval**: A trusted author re-applying the approval label *after* the snapshot was captured counts as approving the current content. The approval must also post-date the **edit** — an approval can only bless content its approver could have seen. Comparing the label-add against `capturedAt` alone was durable rather than racy: `capturedAt` is refreshed only by a capture, so a single trusted label-add that post-dated the stored snapshot (a `low-priority` → `work-on` promotion, a requeue, or the re-approval this gate's own escalation asks for) auto-blessed **every** later untrusted edit, and re-baselined the poisoned content so the pickup-time check then hashed it as `unchanged`. The editor is therefore resolved *before* the branch is evaluated, the branch additionally requires `addedAt >= editedAt`, and a stale approval falls through to the editor-trust check with `[SECURITY] [REAPPROVAL_PREDATES_EDIT] …` logged
+- **Baseline persist failure**: A capture whose write fails no longer returns "proceed" silently. All three capture sites consume the `Result`; a failure logs `[SECURITY] [CONTENT_SNAPSHOT_PERSIST_FAILED] … — BLOCKED` against a `content-snapshot-persist-failed` skip reason and blocks, because a baseline that was never written cannot secure the next verification. No label is stripped, so a storage fault cannot mutate the issue
+- **Verification error**: If the check itself cannot run — a `.content_approval_state.json` that reads back but is not valid state, so the approval baseline for every tracked issue is unusable — processing is **blocked**. The branch previously returned "proceed" under a "fail safe" comment, blessing content it had just failed to verify. It now logs `[SECURITY] [CONTENT_CHECK_ERROR] … — BLOCKED`, records a `content-check-error` skip reason, and captures **no** snapshot, since minting one would launder the unusable baseline into a fresh approval
+- **State load error**: Reading the state file is held to the same standard. Only a genuinely absent file (`Deno.errors.NotFound`) counts as a first run; a read that fails for any other reason — permission denied, an I/O fault, a directory in its place — is an integrity signal, yields the `error` verdict, and blocks. Previously every read failure was laundered into "no snapshots exist", which made the gate report `no_snapshot` and re-baseline against possibly already-edited content. The degradation is logged as `[SECURITY] [CONTENT_STATE_UNUSABLE] …` rather than passing unnoticed, and since the write paths no longer rewrite the file from that empty state (see **Degraded writes** below)
+- **State deletion**: A *deleted* baseline is held to the same standard as a corrupt one. Two changes make "the file is gone" distinguishable from "this issue was never approved":
   - The state lives in a store directory **outside** the agent-writable `workDir` — a sibling, `${workDir}-approval-state`, resolved by `worker/deno/lib/content_approval_state_dir.ts` and created mode `0o700`. Previously it sat at `${workDir}/.content_approval_state.json`, where `nukeWorkDir()` (the disk-pressure reclaim tier) or an agent-driven `rm` in the work tree destroyed it
   - The store directory is created **only** as part of a successful write, so its presence is the durable record that a baseline once existed. An absent state file in an *initialised* store is a deletion: it yields the `error` verdict and blocks, exactly as a corrupt file does. An absent store directory is still a genuine first run and proceeds. A failed write removes the empty store it just created, so a disk fault cannot wedge the gate. To reset the baseline deliberately, an operator removes the store directory
-- **Unconfigured store**: A `workDir` that names no directory — unset, whitespace-only, or `/` — resolves to no store at all ([#3874](https://github.com/stSoftwareAU/VibeCoder/issues/3874)). Both halves of the store used to degenerate quietly on that sentinel: the read reported an empty state and the write did nothing, so every issue verified as `no_snapshot` and proceeded, indistinguishable from a legitimate first encounter. "No store configured" is a configuration fault, not a successful read of an empty store, so it now travels its own channel: `readContentApprovalState` and `saveContentApprovalState` both return a failure, and the gate blocks with `[SECURITY] [CONTENT_STORE_UNCONFIGURED] … — BLOCKED` against a `content-store-unconfigured` skip reason. `loadConfig` always derives `workDir` from `HOME`, so this marker means the worker was handed a hand-built config — fix `workDir` rather than the gate
-- **Degraded writes**: An unusable read is no longer allowed to *destroy* the baselines it could not read ([#3875](https://github.com/stSoftwareAU/VibeCoder/issues/3875)). The lenient load returns an empty state, and `captureContentSnapshot` used to add its one snapshot to that empty map and persist it — so a single transient fault (EMFILE, a partial write from a crash, a truncated file) permanently erased **every other issue's** baseline, amplified across the whole fleet. All three write paths (`captureContentSnapshot`, `removeContentSnapshot`, `cleanupStaleSnapshots`) now refuse to derive a write from an unusable read:
+- **Unconfigured store**: A `workDir` that names no directory — unset, whitespace-only, or `/` — resolves to no store at all. Both halves of the store used to degenerate quietly on that sentinel: the read reported an empty state and the write did nothing, so every issue verified as `no_snapshot` and proceeded, indistinguishable from a legitimate first encounter. "No store configured" is a configuration fault, not a successful read of an empty store, so it now travels its own channel: `readContentApprovalState` and `saveContentApprovalState` both return a failure, and the gate blocks with `[SECURITY] [CONTENT_STORE_UNCONFIGURED] … — BLOCKED` against a `content-store-unconfigured` skip reason. `loadConfig` always derives `workDir` from `HOME`, so this marker means the worker was handed a hand-built config — fix `workDir` rather than the gate
+- **Degraded writes**: An unusable read is no longer allowed to *destroy* the baselines it could not read. The lenient load returns an empty state, and `captureContentSnapshot` used to add its one snapshot to that empty map and persist it — so a single transient fault (EMFILE, a partial write from a crash, a truncated file) permanently erased **every other issue's** baseline, amplified across the whole fleet. All three write paths (`captureContentSnapshot`, `removeContentSnapshot`, `cleanupStaleSnapshots`) now refuse to derive a write from an unusable read:
   - The unreadable file is **left exactly where it is**, not overwritten and not renamed — a read fault is often transient, and those bytes may be the only surviving copy of the other baselines
   - The fresh snapshot is diverted to a recovery sidecar, `${stateDir}/.content_approval_state.recovered.json`, and the capture returns a failure, so the gate blocks on `content-snapshot-persist-failed` instead of proceeding on a baseline that was never written. The sidecar's presence on disk is the post-hoc audit trail
   - "This store was unusable" is **sticky for the run** (one worker process, cleared on the next cycle): a later `no_snapshot` from the same store yields the `error` verdict instead, so a destroyed baseline cannot be silently blessed as a first encounter for the rest of the cycle
 
-The check runs **twice** ([#3647](https://github.com/stSoftwareAU/VibeCoder/issues/3647)). The scan-time check in the candidate collectors verifies a copy of the body it fetches itself and then discards it; the body that actually reaches the Claude prompt is an independent, later fetch, separated from the scan by the rest of the fleet-wide collection pass — tens of seconds to minutes of network-bound work. An author who edited the body inside that window had the agent implement a specification no trusted author ever approved. The pickup-time check (`worker/deno/lib/pickup_content_integrity.ts`) therefore re-verifies the **exact title and body about to be interpolated into the prompt**, immediately before the prompt is built, and blocks plus escalates on a mismatch. Both checks share one decision function (`resolveContentIntegrity`) so their semantics cannot drift; the pickup check never captures a snapshot, since a snapshot records what a trusted author approved.
+The check runs **twice**. The scan-time check in the candidate collectors verifies a copy of the body it fetches itself and then discards it; the body that actually reaches the Claude prompt is an independent, later fetch, separated from the scan by the rest of the fleet-wide collection pass — tens of seconds to minutes of network-bound work. An author who edited the body inside that window had the agent implement a specification no trusted author ever approved. The pickup-time check (`worker/deno/lib/pickup_content_integrity.ts`) therefore re-verifies the **exact title and body about to be interpolated into the prompt**, immediately before the prompt is built, and blocks plus escalates on a mismatch. Both checks share one decision function (`resolveContentIntegrity`) so their semantics cannot drift; the pickup check never captures a snapshot, since a snapshot records what a trusted author approved.
 
-- **What the digest covers**: the snapshot hashes the issue **title and body only**, encoded with an explicit byte-length prefix under a `content-approval/v2` tag ([#3878](https://github.com/stSoftwareAU/VibeCoder/issues/3878)). The previous `${title}\n${body}` concatenation was not injective — any pair concatenating to the same string collided, so `("A", "B\nC")` and `("A\nB", "C")` hashed identically and an approved body's first line could be promoted into the title without disturbing the digest. Labels and comments stay **outside** the snapshot by design: both change constantly through normal operation (the worker posts its own comments and moves its own labels), so folding them in would block practically every approved issue on the workflow's own activity. Their compensating controls are the per-author trust annotation, nonce boundaries and size caps applied to comments ([#1340](https://github.com/stSoftwareAU/VibeCoder/issues/1340), [#1342](https://github.com/stSoftwareAU/VibeCoder/issues/1342), [#3638](https://github.com/stSoftwareAU/VibeCoder/issues/3638), [#3648](https://github.com/stSoftwareAU/VibeCoder/issues/3648)) and, for labels, the timeline check that only counts an approval label a **trusted** author added, plus `label_security` stripping reserved workflow labels from anyone else ([#1344](https://github.com/stSoftwareAU/VibeCoder/issues/1344))
-- **Title freshness at pickup**: the pickup check used to receive the title captured at *scan* time alongside a freshly re-fetched body, and `fetchIssueData` did not request `title` at all — so a title-only edit made after approval always hashed as unchanged, and the unapproved title text still reached the prompt ([#3878](https://github.com/stSoftwareAU/VibeCoder/issues/3878)). `title` is now in the consolidated `--json` field list, and both pickup call sites verify **and then use** the title that fetch observed. A fetch that failed yields an empty title, which matches no snapshot, so the gate blocks. Changing the digest encoding used to invalidate every stored digest at once — see **Hash-encoding migration** below
-- **Missing baseline at pickup**: A `no_snapshot` verdict at pickup used to capture nothing *and* verify nothing — a bare "proceed" ([#3876](https://github.com/stSoftwareAU/VibeCoder/issues/3876)). Any condition that removed or prevented a baseline (a nuked store, a failed persist, a fresh worker identity) therefore turned the re-verification into a no-op on the exact path that exists to catch content edited between approval and prompt build. Capturing at pickup is still wrong, but so is proceeding: the state is unverifiable, so the branch now fails closed like the verification-error branch, logging `[SECURITY] [NO_CONTENT_SNAPSHOT] … — BLOCKED` against a `no-approval-snapshot` skip reason, with no label stripped and no escalation raised. Every collector captures a baseline at scan time, so a store that lost one self-heals on the next scan rather than wedging the issue. The pickup outcome now carries the gate's own reason, so a missing baseline logs `[SECURITY] [PICKUP_CONTENT_UNVERIFIED] …` while a genuine modification keeps `[SECURITY] [PICKUP_CONTENT_MODIFIED] …`
-- **Hash-encoding migration**: A digest is only meaningful next to the encoding it was computed under, so every snapshot now records that encoding and verification re-checks under the **stored** one ([#3963](https://github.com/stSoftwareAU/VibeCoder/issues/3963)). The #3878 encoding change shipped without the stamp: on the first scan after deploy, every pre-existing snapshot re-hashed under the new encoding, mismatched, and — with no recorded editor for content that had never been edited — was judged an unattributable modification, which de-scheduled issues across the whole fleet. The behaviour now:
+- **What the digest covers**: the snapshot hashes the issue **title and body only**, encoded with an explicit byte-length prefix under a `content-approval/v2` tag. The previous `${title}\n${body}` concatenation was not injective — any pair concatenating to the same string collided, so `("A", "B\nC")` and `("A\nB", "C")` hashed identically and an approved body's first line could be promoted into the title without disturbing the digest. Labels and comments stay **outside** the snapshot by design: both change constantly through normal operation (the worker posts its own comments and moves its own labels), so folding them in would block practically every approved issue on the workflow's own activity. Their compensating controls are the per-author trust annotation, nonce boundaries and size caps applied to comments and, for labels, the timeline check that only counts an approval label a **trusted** author added, plus `label_security` stripping reserved workflow labels from anyone else
+- **Title freshness at pickup**: the pickup check used to receive the title captured at *scan* time alongside a freshly re-fetched body, and `fetchIssueData` did not request `title` at all — so a title-only edit made after approval always hashed as unchanged, and the unapproved title text still reached the prompt. `title` is now in the consolidated `--json` field list, and both pickup call sites verify **and then use** the title that fetch observed. A fetch that failed yields an empty title, which matches no snapshot, so the gate blocks. Changing the digest encoding used to invalidate every stored digest at once — see **Hash-encoding migration** below
+- **Missing baseline at pickup**: A `no_snapshot` verdict at pickup used to capture nothing *and* verify nothing — a bare "proceed". Any condition that removed or prevented a baseline (a nuked store, a failed persist, a fresh worker identity) therefore turned the re-verification into a no-op on the exact path that exists to catch content edited between approval and prompt build. Capturing at pickup is still wrong, but so is proceeding: the state is unverifiable, so the branch now fails closed like the verification-error branch, logging `[SECURITY] [NO_CONTENT_SNAPSHOT] … — BLOCKED` against a `no-approval-snapshot` skip reason, with no label stripped and no escalation raised. Every collector captures a baseline at scan time, so a store that lost one self-heals on the next scan rather than wedging the issue. The pickup outcome now carries the gate's own reason, so a missing baseline logs `[SECURITY] [PICKUP_CONTENT_UNVERIFIED] …` while a genuine modification keeps `[SECURITY] [PICKUP_CONTENT_MODIFIED] …`
+- **Hash-encoding migration**: A digest is only meaningful next to the encoding it was computed under, so every snapshot now records that encoding and verification re-checks under the **stored** one. The encoding change shipped without the stamp: on the first scan after deploy, every pre-existing snapshot re-hashed under the new encoding, mismatched, and — with no recorded editor for content that had never been edited — was judged an unattributable modification, which de-scheduled issues across the whole fleet. The behaviour now:
   - `captureContentSnapshot` writes `encoding: "content-approval/v2"` alongside the digest, and `computeContentHash(title, body, encoding)` can still compute the superseded `sha256(title + "\n" + body)` v1 encoding for verification only — nothing is ever captured under it
   - A digest that matches under its stored encoding means the content is provably the approved content. The gate logs `[SECURITY] [CONTENT_HASH_ENCODING_MIGRATED] …`, rewrites the baseline under the current encoding, and proceeds — no label change, no comment, no block. A failed rewrite is logged as `[SECURITY] [CONTENT_ENCODING_REBASELINE_FAILED] …` and still proceeds: the content was verified unchanged, and the next scan retries the migration
-  - A snapshot with **no** encoding stamp pre-dates the stamp, so it is checked under both known encodings and re-baselined on a match. Both cover the same title and body, so a match under either still proves the content equals what was hashed at approval. The residual exposure is the v1 encoding's known non-injectivity (#3878): a boundary-shifting edit made *before* the migrating scan would verify. The window is one scan per issue — the first verification re-baselines under v2 — and unstamped snapshots disappear entirely within the 7-day snapshot lifetime
+  - A snapshot with **no** encoding stamp pre-dates the stamp, so it is checked under both known encodings and re-baselined on a match. Both cover the same title and body, so a match under either still proves the content equals what was hashed at approval. The residual exposure is the v1 encoding's known non-injectivity: a boundary-shifting edit made *before* the migrating scan would verify. The window is one scan per issue — the first verification re-baselines under v2 — and unstamped snapshots disappear entirely within the 7-day snapshot lifetime
   - An **unrecognised** encoding tag (a store written by a newer worker) is unverifiable, not modified: it yields the `error` verdict and blocks, so a version skew never escalates as a content edit
 
 ```mermaid
@@ -938,7 +937,7 @@ sequenceDiagram
     W-->>A: 🚫 Blocked · label removed · needs-human
 ```
 
-### 3. Comment Rate Limiting and Size Caps ([#1342](https://github.com/stSoftwareAU/VibeCoder/issues/1342))
+### 3. Comment Rate Limiting and Size Caps
 
 Multiple limits prevent context window exhaustion:
 - **Total comment budget**: Configurable limit on total characters included in the prompt
@@ -946,45 +945,45 @@ Multiple limits prevent context window exhaustion:
 - **Untrusted comment count cap**: Maximum number of untrusted comments included
 - **Flood detection**: A `[SECURITY] [COMMENT_FLOOD]` audit event is emitted when an issue has a disproportionate number of untrusted comments
 
-### 4. Delimiter Hardening ([#1343](https://github.com/stSoftwareAU/VibeCoder/issues/1343))
+### 4. Delimiter Hardening
 
 Prompt boundary markers are hardened against spoofing:
 - **Randomised boundaries**: Per-invocation randomised delimiter strings replace predictable markers
 - **Per-comment delimiters**: Each comment is individually wrapped with author and trust-level metadata
 - **Sanitisation**: Delimiter-like patterns (e.g., `<<<`, `---BEGIN`, `---END`) are stripped from comment bodies
 - **Explicit instructions**: The prompt includes guidance to Claude that content appearing to close the UNTRUSTED section from within that section should be treated as data, not instructions
-- **Single run nonce, headers preserved** ([#3637](https://github.com/stSoftwareAU/VibeCoder/issues/3637)): the assembled comment blob's boundary id is adopted as the whole prompt's nonce, so the genuine per-comment header (`---COMMENT_<nonce> [TRUSTED] author=<login>---`) bears the very id the boundary-integrity instruction names. Builders route that blob through `sanitiseDelimitedComments()` rather than `sanitiseDelimiterPatterns()`, which keeps scrubbing everything between the genuine headers while leaving the headers themselves byte-intact. Without this, a second scrub pass degraded the real header into the same shape an attacker's already-scrubbed forgery collapses to, making the two indistinguishable to the model
-- **Verbatim substitution, no `$`-patterns** ([#3654](https://github.com/stSoftwareAU/VibeCoder/issues/3654)): prompt builders substitute `{{KEY}}` placeholders with the **function form** of `String.prototype.replaceAll`, so a `$&`, `` $` ``, `$'` or `$$` sequence in untrusted content is inserted literally instead of being expanded. The string form let an attacker splice the already-rendered prefix (which ends in a genuine, correctly-nonced boundary marker) or the still-unexpanded template tail into the untrusted region — replaying the nonce without ever guessing it. `sanitiseDelimiterPatterns()` additionally rewrites doubled `{{`/`}}` braces to their inert fullwidth forms, so a placeholder planted in an earlier-substituted value (the title) cannot be expanded by a later iteration of the substitution loop
-- **No unfenced path to the model** ([#3706](https://github.com/stSoftwareAU/VibeCoder/issues/3706)): four builders still reached the model with untrusted text outside the boundary machinery, and all four now route through the shared helpers. Grill-me built its own comment history from a forgeable `**author** (date):` line — it now uses `prepareTrustAnnotatedCommentList()`, so every comment carries a genuine nonced trust header (author from the GitHub API, worker's own login trusted) and the #1342 volume caps apply. Repository `CLAUDE.md`/`AGENTS.md` moved out of the **system** prompt into a fenced block in the user turn (`formatRepoContextSection()`), so branch-supplied guidance can no longer outrank the task. The quality-gate remediation fix prompt shares one fencing chokepoint (`fenceQualityOutput()`, which also applies `redactSecrets()`) with the shell-driven retry prompt. The failure-detection repair prompt fences the GitHub-fetched sub-issue body instead of framing it with bare `---` markers
-- **Nonce threaded to every comment consumer** ([#3638](https://github.com/stSoftwareAU/VibeCoder/issues/3638)): the work-on command carries `TrustAnnotatedResult.boundaryId` into `IssueContext.commentBoundaryId`, and the clarity-assessment prompt adopts it as its run nonce, so the remaining consumer of the trust-annotated blob preserves genuine headers too. Paths with no trust formatting pass no id and are scrubbed in full
-- **The rule names what it governs, and covers the whole prompt** ([#3814](https://github.com/stSoftwareAU/VibeCoder/issues/3814)): `buildBoundaryIntegrityInstruction(boundaryId, untrustedBlocks)` takes the names of the blocks the caller actually fenced, so a CI-fix prompt says "the CI console-log excerpt" where an issue prompt says "the issue title, labels, and description" — the fixed issue wording named content that was absent and omitted content that was present. The scope reads "anywhere in this prompt" rather than "above", because a template placeholder renders a fenced block *below* the instruction (the `ci_fix` log excerpt does exactly that). The workflow-setup builder, the one surface that fenced content and emitted no rule at all, now emits one. Values that arrive from the repository but carry no fence — custom instructions, the activity summary, the milestone branch, the language and default-branch scalars — are wrapped by a single tagging helper and scrubbed, so none of them can read as prompt-authored instruction text
+- **Single run nonce, headers preserved**: the assembled comment blob's boundary id is adopted as the whole prompt's nonce, so the genuine per-comment header (`---COMMENT_<nonce> [TRUSTED] author=<login>---`) bears the very id the boundary-integrity instruction names. Builders route that blob through `sanitiseDelimitedComments()` rather than `sanitiseDelimiterPatterns()`, which keeps scrubbing everything between the genuine headers while leaving the headers themselves byte-intact. Without this, a second scrub pass degraded the real header into the same shape an attacker's already-scrubbed forgery collapses to, making the two indistinguishable to the model
+- **Verbatim substitution, no `$`-patterns**: prompt builders substitute `{{KEY}}` placeholders with the **function form** of `String.prototype.replaceAll`, so a `$&`, `` $` ``, `$'` or `$$` sequence in untrusted content is inserted literally instead of being expanded. The string form let an attacker splice the already-rendered prefix (which ends in a genuine, correctly-nonced boundary marker) or the still-unexpanded template tail into the untrusted region — replaying the nonce without ever guessing it. `sanitiseDelimiterPatterns()` additionally rewrites doubled `{{`/`}}` braces to their inert fullwidth forms, so a placeholder planted in an earlier-substituted value (the title) cannot be expanded by a later iteration of the substitution loop
+- **No unfenced path to the model**: four builders still reached the model with untrusted text outside the boundary machinery, and all four now route through the shared helpers. Grill-me built its own comment history from a forgeable `**author** (date):` line — it now uses `prepareTrustAnnotatedCommentList`, so every comment carries a genuine nonced trust header (author from the GitHub API, worker's own login trusted) and the volume caps apply. Repository `CLAUDE.md`/`AGENTS.md` moved out of the **system** prompt into a fenced block in the user turn (`formatRepoContextSection`), so branch-supplied guidance can no longer outrank the task. The quality-gate remediation fix prompt shares one fencing chokepoint (`fenceQualityOutput`, which also applies `redactSecrets`) with the shell-driven retry prompt. The failure-detection repair prompt fences the GitHub-fetched sub-issue body instead of framing it with bare `---` markers
+- **Nonce threaded to every comment consumer**: the work-on command carries `TrustAnnotatedResult.boundaryId` into `IssueContext.commentBoundaryId`, and the clarity-assessment prompt adopts it as its run nonce, so the remaining consumer of the trust-annotated blob preserves genuine headers too. Paths with no trust formatting pass no id and are scrubbed in full
+- **The rule names what it governs, and covers the whole prompt**: `buildBoundaryIntegrityInstruction(boundaryId, untrustedBlocks)` takes the names of the blocks the caller actually fenced, so a CI-fix prompt says "the CI console-log excerpt" where an issue prompt says "the issue title, labels, and description" — the fixed issue wording named content that was absent and omitted content that was present. The scope reads "anywhere in this prompt" rather than "above", because a template placeholder renders a fenced block *below* the instruction (the `ci_fix` log excerpt does exactly that). The workflow-setup builder, the one surface that fenced content and emitted no rule at all, now emits one. Values that arrive from the repository but carry no fence — custom instructions, the activity summary, the milestone branch, the language and default-branch scalars — are wrapped by a single tagging helper and scrubbed, so none of them can read as prompt-authored instruction text
 - **Milestone values are fenced, not merely tagged** ([#16](https://github.com/stSoftwareAU/VibeCoder/issues/16)): a milestone is created and renamed by any collaborator with triage access, yet its title — and the branch name derived from it — was only delimiter-scrubbed before being spliced into the imperative "Milestone Branch Targeting" / "Milestone Assignment" blocks, outside every fence and unnamed in `untrustedBlocks`. The scrub neutralises fence forgery but says nothing about trust level, so imperative phrasing in a milestone name read as worker-authored directive text. Both values now render inside the run's untrusted fence (`fenceMilestoneValue()`), the surrounding instructions carry `<branch>` / `<milestone>` placeholders the run substitutes from the fenced value, and the issue prompt declares "the milestone branch" (the planning and critique prompts "the milestone title") in `untrustedBlocks` so the boundary-integrity rule covers the fence
-- **Angle markers split across a newline** ([#15](https://github.com/stSoftwareAU/VibeCoder/issues/15)): the `<<<…>>>` scrub excluded newlines from its inner class, so only a same-line marker was neutralised — the sibling triple-dash rule had already been widened for exactly that gap (#3201). `sanitiseDelimiterPatterns()` now makes a second, newline-spanning pass after the unbounded same-line pass, so `<<<ISSUE_BODY_END\n_id>>>` is defanged too. The second pass is non-greedy and capped at 512 characters of inner content (a genuine marker is ~45), which keeps a stray `<<` from pairing with a `>>` far down the body; the inner class excludes both brackets, so there is no ambiguity to backtrack over
+- **Angle markers split across a newline** ([#15](https://github.com/stSoftwareAU/VibeCoder/issues/15)): the `<<<…>>>` scrub excluded newlines from its inner class, so only a same-line marker was neutralised — the sibling triple-dash rule had already been widened for exactly that gap. `sanitiseDelimiterPatterns` now makes a second, newline-spanning pass after the unbounded same-line pass, so `<<<ISSUE_BODY_END\n_id>>>` is defanged too. The second pass is non-greedy and capped at 512 characters of inner content (a genuine marker is ~45), which keeps a stray `<<` from pairing with a `>>` far down the body; the inner class excludes both brackets, so there is no ambiguity to backtrack over
 
-### 5. Label Manipulation Detection ([#1344](https://github.com/stSoftwareAU/VibeCoder/issues/1344))
+### 5. Label Manipulation Detection
 
 Operational labels that affect worker behaviour (`planning`, `question`, `needs-revision`, `needs-revision`, `best-model`) are verified via the GitHub timeline API. Labels added by untrusted users are:
 - Ignored in processing decisions
 - Logged with a `[SECURITY] [UNTRUSTED_LABEL_CHANGE]` audit event
 
-[#3648](https://github.com/stSoftwareAU/VibeCoder/issues/3648) extended the verified set to the three **blocking-only** labels — `refine-issue`, `failed`, `failed-once`. These block pickup in every discovery tier but were never trust-verified, so an untrusted triage actor could park an issue indefinitely: exactly the starvation this check exists to prevent. Two carve-outs keep the extension safe:
+ extended the verified set to the three **blocking-only** labels — `refine-issue`, `failed`, `failed-once`. These block pickup in every discovery tier but were never trust-verified, so an untrusted triage actor could park an issue indefinitely: exactly the starvation this check exists to prevent. Two carve-outs keep the extension safe:
 
 - **Worker-owned failure marks.** `failed` / `failed-once` applied by a fleet worker stay trusted — they drive the consecutive-failure circuit breaker, and stripping them would re-pick a persistently failing issue forever.
 - **Unverifiable authorship keeps the label.** For blocking-only labels, *stripping* is the fail-open direction (it hands a known-failing issue back for another billed run). A missing `labeled` event, a null actor, or an unreadable timeline therefore leaves the label in place; only a named untrusted adder strips it. The permissive labels keep their original fail-closed behaviour.
 
-### 6. Egress Containment — Per-Run Write-Repo Allowlist ([#3311](https://github.com/stSoftwareAU/VibeCoder/issues/3311))
+### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).
 
 The worker maintains a **per-run allowlist of repos it may write to** and validates every GitHub write against it **before the write reaches GitHub**:
 
 - **Chokepoint (worker process).** Enforcement runs at the single lowest-level `gh` **spawn** (`spawnGh` in `worker/deno/lib/gh_spawn.ts`) — the shared path every comment / label / PR / `gh api` write **the worker itself** performs flows through, including `runGhCommandRaw` in `worker/deno/lib/github.ts`. The target `owner/repo` is derived by the existing mutation classifier (`audit_mutation_classifier.ts`). This chokepoint does *not* see the agent subprocess's own `gh` calls; those are covered by the shim in §6a.
-- **The chokepoint is enforced by the quality gate ([#3703](https://github.com/stSoftwareAU/VibeCoder/issues/3703)).** Until #3703 the contract was aspirational: ~20 modules spawned `gh` with their own `new Deno.Command("gh", …)`, so remote branch deletion, PR merge, issue close and branch-protection rewrites skipped both this allowlist and the audit journal. All of them now route through `spawnGh`/`runGhOrThrow`, and the `gh spawn chokepoint` quality check (`gh_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `gh_spawn.ts`.
-- **Undeterminable targets fail closed ([#3703](https://github.com/stSoftwareAU/VibeCoder/issues/3703)).** The allowlist used to return early whenever no repo could be derived from the argv, so `gh api graphql` mutations, absolute `https://api.github.com/…` endpoints, and unlisted root verbs (`gist`, `ruleset`, `workflow`) passed unchecked and unjournalled. A mutation whose target repo cannot be determined is now refused with a `WriteTargetUndeterminableError`, a `[SECURITY] [WRITE_TARGET_UNDETERMINABLE]` line and a `blocked-*` journal entry. Absolute endpoints resolve their repo, GraphQL *reads* remain reads, and the worker's own non-repo mutation (`changeUserStatus`, the profile status) is a named exception.
-- **A request body implies POST, and an unreadable body fails closed ([#3937](https://github.com/stSoftwareAU/VibeCoder/issues/3937)).** The classifier inferred POST only from a field flag, so `gh api <endpoint> --input -` — which `gh` really sends as a **POST** — computed as a GET and returned `null`. Every control above short-circuits on `null`, so that one shape bypassed the journal, the allowlist and the reserved-label denylist at once. `--input`/`--input=` now imply POST exactly as `-f`/`-F` do. The same shape hid GraphQL documents: `gh` reads a field value beginning with `@` from that file (`@-` from stdin), so `-F query=@q.graphql` showed the classifier a filename with no `mutation` keyword in it. A GraphQL call whose document is not in the argv — an `@file`/`@-` value or an `--input` body — is now `api-graphql-unknown` with `scope: "unknown"`, which the fail-closed branch refuses, and an unreadable body also sinks the `changeUserStatus` exception rather than sanctioning the half of the request the argv happens to show.
+- **The chokepoint is enforced by the quality gate.** Until the contract was aspirational: ~20 modules spawned `gh` with their own `new Deno.Command("gh", …)`, so remote branch deletion, PR merge, issue close and branch-protection rewrites skipped both this allowlist and the audit journal. All of them now route through `spawnGh`/`runGhOrThrow`, and the `gh spawn chokepoint` quality check (`gh_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `gh_spawn.ts`.
+- **Undeterminable targets fail closed.** The allowlist used to return early whenever no repo could be derived from the argv, so `gh api graphql` mutations, absolute `https://api.github.com/…` endpoints, and unlisted root verbs (`gist`, `ruleset`, `workflow`) passed unchecked and unjournalled. A mutation whose target repo cannot be determined is now refused with a `WriteTargetUndeterminableError`, a `[SECURITY] [WRITE_TARGET_UNDETERMINABLE]` line and a `blocked-*` journal entry. Absolute endpoints resolve their repo, GraphQL *reads* remain reads, and the worker's own non-repo mutation (`changeUserStatus`, the profile status) is a named exception.
+- **A request body implies POST, and an unreadable body fails closed.** The classifier inferred POST only from a field flag, so `gh api <endpoint> --input -` — which `gh` really sends as a **POST** — computed as a GET and returned `null`. Every control above short-circuits on `null`, so that one shape bypassed the journal, the allowlist and the reserved-label denylist at once. `--input`/`--input=` now imply POST exactly as `-f`/`-F` do. The same shape hid GraphQL documents: `gh` reads a field value beginning with `@` from that file (`@-` from stdin), so `-F query=@q.graphql` showed the classifier a filename with no `mutation` keyword in it. A GraphQL call whose document is not in the argv — an `@file`/`@-` value or an `--input` body — is now `api-graphql-unknown` with `scope: "unknown"`, which the fail-closed branch refuses, and an unreadable body also sinks the `changeUserStatus` exception rather than sanctioning the half of the request the argv happens to show.
 - **Seeded per run.** A standard issue run seeds the allowlist with the issue's own target repo (`issue_worker.ts`); an idle-scan run seeds the scanned repo (`idle_task_claim_handler.ts`, cwd = target clone).
-- **Three extension points, and no fourth ([#3861](https://github.com/stSoftwareAU/VibeCoder/issues/3861)).** A seeded allowlist widens only by (1) a full reseed for the next claim, (2) `registerWriteRepo(repo)` — a **worker-process** grant whose one production caller is the [#3860](https://github.com/stSoftwareAU/VibeCoder/issues/3860) seed-idle-tasks flow (`commands/process_seed_idle_tasks.ts`), which never spawns the agent and releases the grant in a `finally` — or (3) a refcounted heartbeat pin ([#3760](https://github.com/stSoftwareAU/VibeCoder/issues/3760)). The module doc previously claimed a #2942 internal-dependency flow called `registerWriteRepo`; no such call site existed, and the claim is gone.
-- **The agent's boundary cannot be extended mid-run — by design ([#3861](https://github.com/stSoftwareAU/VibeCoder/issues/3861)).** The shim in §6a bakes a snapshot of this allowlist into the child's `gh` wrapper at spawn time, so none of the three extension points reaches an agent that is already running. The alternative considered and **rejected** was a live, worker-owned allowlist file re-read by the wrapper on each invocation: it buys mid-run extension nobody needs (the one sanctioned cross-repo flow, #3860, runs entirely in the worker) and pays for it with a mutable allowlist file sitting next to a subprocess that has unrestricted Bash — a file whose permissions, path and read-time parsing all become part of the containment boundary. A grant made after the snapshot is therefore applied for the worker and reported with a `[SECURITY] [WRITE_REPO_GRANT_AFTER_SPAWN]` line, so a mis-sequenced grant is visible rather than looking like a widened agent boundary that never was.
+- **Three extension points, and no fourth.** A seeded allowlist widens only by (1) a full reseed for the next claim, (2) `registerWriteRepo(repo)` — a **worker-process** grant whose one production caller is the seed-idle-tasks flow (`commands/process_seed_idle_tasks.ts`), which never spawns the agent and releases the grant in a `finally` — or (3) a refcounted heartbeat pin. The module doc previously claimed a internal-dependency flow called `registerWriteRepo`; no such call site existed, and the claim is gone.
+- **The agent's boundary cannot be extended mid-run — by design.** The shim in §6a bakes a snapshot of this allowlist into the child's `gh` wrapper at spawn time, so none of the three extension points reaches an agent that is already running. The alternative considered and **rejected** was a live, worker-owned allowlist file re-read by the wrapper on each invocation: it buys mid-run extension nobody needs (the one sanctioned cross-repo flow, runs entirely in the worker) and pays for it with a mutable allowlist file sitting next to a subprocess that has unrestricted Bash — a file whose permissions, path and read-time parsing all become part of the containment boundary. A grant made after the snapshot is therefore applied for the worker and reported with a `[SECURITY] [WRITE_REPO_GRANT_AFTER_SPAWN]` line, so a mis-sequenced grant is visible rather than looking like a widened agent boundary that never was.
 - **Refuse + audit on a miss.** A write to a repo not on the allowlist is refused (a hard, non-retryable `WriteRepoBlockedError`), a `[SECURITY] [WRITE_REPO_BLOCKED]` line is logged, and a `blocked-*` event is recorded to the tamper-evident audit journal (`audit_journal.ts`).
 - **Reads are never blocked**, and a write with no explicit `-R`/endpoint (targeting the cwd repo — the run's own clone) is allowed; the exfiltration vector requires explicitly naming another repo. Enforcement is inert until a run seeds the allowlist and is deactivated when the run ends, so the main loop's legitimate cross-repo maintenance is unaffected.
 - **Code-level only.** No credential/token-minting changes; per-run scoped GitHub App tokens are a deferred follow-up.
@@ -1003,21 +1002,21 @@ flowchart LR
     B2 --> J
 ```
 
-### 6a. Agent-Subprocess `gh` Guard ([#3643](https://github.com/stSoftwareAU/VibeCoder/issues/3643))
+### 6a. Agent-Subprocess `gh` Guard
 
 The controls in §6 and the worker label guard (`worker_label_guard.ts`) both enforce **inside the worker's own Deno process**. The party they name as the injected one is the *agent subprocess*, which is spawned with `--dangerously-skip-permissions` (unrestricted Bash) and an inherited `GH_TOKEN` — so a single injected `gh issue comment -R other/repo …` or `gh issue edit N --add-label top-priority` from the agent's own shell reached GitHub without passing either control, and appeared in neither the `[SECURITY]` log nor the audit journal.
 
 A `gh` wrapper is now interposed on the child:
 
 - **PATH shim.** Before each agent spawn, `worker/deno/lib/gh_guard_shim.ts` writes a wrapper named `gh` into a per-spawn temporary directory and prepends that directory to the child's `PATH`. Every `gh` the agent runs therefore re-enters the same decision the worker uses (`gh_guard_decision.ts`: `classifyGhMutation` + the run's write-repo allowlist + the reserved-label denylist) before the real binary is `exec`d. The directory is removed when the child exits.
-- **State baked in, not inherited.** The run's allowlist is written into the wrapper as arguments, not passed via the environment, so it cannot be switched off with an `unset`. The snapshot is taken once per spawn and stays fixed for the life of that child — deliberately not a live file; see the mid-run bullet in §6 ([#3861](https://github.com/stSoftwareAU/VibeCoder/issues/3861)). The guard child's only Deno permission is `--allow-read`, and only so it can scan the body files named in the argv it was handed ([#3938](https://github.com/stSoftwareAU/VibeCoder/issues/3938)).
-- **The target environment is re-asserted, not inherited ([#3866](https://github.com/stSoftwareAU/VibeCoder/issues/3866)).** The verdict is reached from argv, but the real binary also resolves its target from `GH_REPO`/`GH_HOST` and its aliases from `GH_CONFIG_DIR` — so `GH_REPO=other/repo gh issue comment 1 --body …` classified as a cwd-scoped write to the run's own repo and landed on `other/repo`. Immediately before delegating, the wrapper now clears `GH_REPO` and the enterprise tokens unconditionally (the guard's cwd-scope reasoning *is* "no `GH_REPO`", and the worker never sets one) and pins the run's own `GH_HOST`/`GH_CONFIG_DIR`, clearing them when the run has none. The binary is therefore held to the environment the guard reasoned about.
-- **Unrecognised root commands fail closed ([#3866](https://github.com/stSoftwareAU/VibeCoder/issues/3866)).** `gh` expands a config alias (or dispatches to an extension) only for a name that is *not* a core command, and the guard classifies the pre-expansion argv — so `gh <alias>` previously classified as a read and the alias's write ran unseen. A root outside the known `gh` command set is now refused with `[SECURITY] [GH_UNKNOWN_COMMAND]`, whether or not the allowlist is active. Aliases and extensions are therefore unavailable to the agent; the refusal says to run the underlying `gh` command directly.
-- **Fails closed, loudly.** The wrapper proceeds only on a positive `VIBE_GH_GUARD_ALLOW` verdict marker; a refusal, a crash, or an unevaluable guard refuses the `gh` call and prints `[SECURITY] [WRITE_REPO_BLOCKED]`, `[SECURITY] [WRITE_TARGET_UNDETERMINABLE]` (an agent mutation with no derivable target repo — #3703), `[SECURITY] [WORKER_LABEL_REFUSED]`, `[SECURITY] [GH_UNKNOWN_COMMAND]` (a root the guard cannot classify because `gh` would expand it from an alias or an extension — #3866) or `[SECURITY] [GH_GUARD_ERROR]` to stderr.
-- **An uninstallable shim aborts the phase ([#3869](https://github.com/stSoftwareAU/VibeCoder/issues/3869)).** A full or read-only `TMPDIR`, a restrictive umask, or a `PATH` without `gh` used to leave the agent running with the raw environment behind nothing but a console warning — a mundane I/O fault silently costing the whole egress boundary. While the write-repo allowlist is active, `installGhGuardShim` now returns a `blocked` verdict and `claude_runner.ts` refuses to spawn the agent at all. Every such event emits a `[SECURITY] [GH_GUARD_SHIM_UNAVAILABLE]` warning **and** a `gh-guard-shim-unavailable` audit-journal entry, so the loss of control is visible to `deno task audit-log-tail` rather than only in worker logs. A degraded, unguarded run stays possible only behind an explicit operator opt-in — `VIBE_ALLOW_UNGUARDED_AGENT_GH=1` — or when the allowlist is inactive and there is no boundary to lose.
-- **Agent-authored bodies are redacted here, not in `spawnGh` ([#3938](https://github.com/stSoftwareAU/VibeCoder/issues/3938)).** Secret masking for published bodies was wired inside `spawnGh` alone — the *worker's* chokepoint, which this subprocess never touches — so the body class most likely to carry a live credential, model output, was the one class published verbatim: an injected "put `$GH_TOKEN` in the comment" passed the guard (known verb, allowlisted repo, no reserved label) and `exec gh "$@"` posted it to a public, permanent comment. The guard child now returns the **argv to run**, not a bare verdict: `redactGhBodyArgs()` masks `--body`, `-b`, `--body=`, `-f/-F body=` **and the contents of `--body-file` / `-F <path>` / `-F body=@path`**, and the wrapper `exec`s that argv. A file body is only inlined as `--body` when it actually contained a secret, so the agent's own file is never rewritten. A body that cannot be scanned at all — `--body-file -`, an unreadable path — is refused with `[SECURITY] [GH_BODY_UNREDACTABLE]` rather than published unscanned; a body that was masked says so with `[SECURITY] [GH_BODY_REDACTED]`. The verdict crosses back as NUL-terminated fields buffered in the wrapper's own 0700 directory, because a redacted body may contain newlines and a command substitution cannot carry NULs.
+- **State baked in, not inherited.** The run's allowlist is written into the wrapper as arguments, not passed via the environment, so it cannot be switched off with an `unset`. The snapshot is taken once per spawn and stays fixed for the life of that child — deliberately not a live file; see the mid-run bullet in §6. The guard child's only Deno permission is `--allow-read`, and only so it can scan the body files named in the argv it was handed.
+- **The target environment is re-asserted, not inherited.** The verdict is reached from argv, but the real binary also resolves its target from `GH_REPO`/`GH_HOST` and its aliases from `GH_CONFIG_DIR` — so `GH_REPO=other/repo gh issue comment 1 --body …` classified as a cwd-scoped write to the run's own repo and landed on `other/repo`. Immediately before delegating, the wrapper now clears `GH_REPO` and the enterprise tokens unconditionally (the guard's cwd-scope reasoning *is* "no `GH_REPO`", and the worker never sets one) and pins the run's own `GH_HOST`/`GH_CONFIG_DIR`, clearing them when the run has none. The binary is therefore held to the environment the guard reasoned about.
+- **Unrecognised root commands fail closed.** `gh` expands a config alias (or dispatches to an extension) only for a name that is *not* a core command, and the guard classifies the pre-expansion argv — so `gh <alias>` previously classified as a read and the alias's write ran unseen. A root outside the known `gh` command set is now refused with `[SECURITY] [GH_UNKNOWN_COMMAND]`, whether or not the allowlist is active. Aliases and extensions are therefore unavailable to the agent; the refusal says to run the underlying `gh` command directly.
+- **Fails closed, loudly.** The wrapper proceeds only on a positive `VIBE_GH_GUARD_ALLOW` verdict marker; a refusal, a crash, or an unevaluable guard refuses the `gh` call and prints `[SECURITY] [WRITE_REPO_BLOCKED]`, `[SECURITY] [WRITE_TARGET_UNDETERMINABLE]` (an agent mutation with no derivable target repo —), `[SECURITY] [WORKER_LABEL_REFUSED]`, `[SECURITY] [GH_UNKNOWN_COMMAND]` (a root the guard cannot classify because `gh` would expand it from an alias or an extension —) or `[SECURITY] [GH_GUARD_ERROR]` to stderr.
+- **An uninstallable shim aborts the phase.** A full or read-only `TMPDIR`, a restrictive umask, or a `PATH` without `gh` used to leave the agent running with the raw environment behind nothing but a console warning — a mundane I/O fault silently costing the whole egress boundary. While the write-repo allowlist is active, `installGhGuardShim` now returns a `blocked` verdict and `claude_runner.ts` refuses to spawn the agent at all. Every such event emits a `[SECURITY] [GH_GUARD_SHIM_UNAVAILABLE]` warning **and** a `gh-guard-shim-unavailable` audit-journal entry, so the loss of control is visible to `deno task audit-log-tail` rather than only in worker logs. A degraded, unguarded run stays possible only behind an explicit operator opt-in — `VIBE_ALLOW_UNGUARDED_AGENT_GH=1` — or when the allowlist is inactive and there is no boundary to lose.
+- **Agent-authored bodies are redacted here, not in `spawnGh`.** Secret masking for published bodies was wired inside `spawnGh` alone — the *worker's* chokepoint, which this subprocess never touches — so the body class most likely to carry a live credential, model output, was the one class published verbatim: an injected "put `$GH_TOKEN` in the comment" passed the guard (known verb, allowlisted repo, no reserved label) and `exec gh "$@"` posted it to a public, permanent comment. The guard child now returns the **argv to run**, not a bare verdict: `redactGhBodyArgs()` masks `--body`, `-b`, `--body=`, `-f/-F body=` **and the contents of `--body-file` / `-F <path>` / `-F body=@path`**, and the wrapper `exec`s that argv. A file body is only inlined as `--body` when it actually contained a secret, so the agent's own file is never rewritten. A body that cannot be scanned at all — `--body-file -`, an unreadable path — is refused with `[SECURITY] [GH_BODY_UNREDACTABLE]` rather than published unscanned; a body that was masked says so with `[SECURITY] [GH_BODY_REDACTED]`. The verdict crosses back as NUL-terminated fields buffered in the wrapper's own 0700 directory, because a redacted body may contain newlines and a command substitution cannot carry NULs.
 - **Labels: denylist, not the worker's allowlist.** Agent *mutations* carrying a reserved workflow label (`top-priority`, `work-on`, `low-priority`, `planning`, `refine-issue`, `question`, `answered`, `needs-revision`, `best-model`) are refused. Reads such as `gh issue list --label work-on` are untouched, and the scan templates' content labels (`severity:*`, `confidence:*`, …) remain allowed.
-- **pflag spellings are normalised first ([#3867](https://github.com/stSoftwareAU/VibeCoder/issues/3867)).** `gh` is a cobra/pflag program, so a shorthand value may be *attached* (`-Rowner/repo`, `-R=owner/repo`, `-ltop-priority`, `-X=POST`) and a repeated `--repo` resolves to its **last** occurrence. The guards matched only the separated form and returned the *first* `-R`, so `gh issue comment 5 -Rattacker/evil` derived no repo, classified as a cwd write and was waved through, and `-ltop-priority` never reached the reserved-label denylist. Every argument vector now passes through `normaliseGhArgs()` ([`worker/deno/lib/gh_flag_parser.ts`](worker/deno/lib/gh_flag_parser.ts)) before classification, and `--repo` resolves last-wins as pflag does.
+- **pflag spellings are normalised first.** `gh` is a cobra/pflag program, so a shorthand value may be *attached* (`-Rowner/repo`, `-R=owner/repo`, `-ltop-priority`, `-X=POST`) and a repeated `--repo` resolves to its **last** occurrence. The guards matched only the separated form and returned the *first* `-R`, so `gh issue comment 5 -Rattacker/evil` derived no repo, classified as a cwd write and was waved through, and `-ltop-priority` never reached the reserved-label denylist. Every argument vector now passes through `normaliseGhArgs()` ([`worker/deno/lib/gh_flag_parser.ts`](worker/deno/lib/gh_flag_parser.ts)) before classification, and `--repo` resolves last-wins as pflag does.
 - **Residual risk — stated, not closed.** This is a containment boundary against an injected `gh` command, not a sandbox. An agent that deliberately invokes the real binary by absolute path, edits `PATH`, or reaches the API without `gh` still bypasses it, and the guard child does not write to the audit journal (the refusal is logged, not journalled). The durable fix remains a per-run GitHub App installation token scoped to the single target repo, still deferred.
 
 The implementation lives in [`worker/deno/lib/gh_guard_shim.ts`](worker/deno/lib/gh_guard_shim.ts), [`worker/deno/lib/gh_guard_decision.ts`](worker/deno/lib/gh_guard_decision.ts) and [`worker/deno/lib/gh_guard_cli.ts`](worker/deno/lib/gh_guard_cli.ts), wired in `claude_runner.ts`, with tests in `worker/deno/tests/gh_guard_{decision,cli,shim}_test.ts` and `worker/deno/tests/gh_body_redaction_test.ts`.
@@ -1030,7 +1029,7 @@ flowchart LR
     G -- refused or unevaluable --> X["exit non-zero<br/>+ SECURITY log line"]
 ```
 
-Install-time verdict (#3869):
+Install-time verdict:
 
 ```mermaid
 flowchart TD
@@ -1044,7 +1043,7 @@ flowchart TD
     B --> J
 ```
 
-### 7. Issue Body + Title Trust Filtering ([#3312](https://github.com/stSoftwareAU/VibeCoder/issues/3312))
+### 7. Issue Body + Title Trust Filtering
 
 Author-trust filtering historically classified *comments* only. The issue **body and title** — the primary prompt-injection surface, since a GitLost-style attack lives in the public issue body — received the weakest handling: a bare `console.warn` and nothing else. The raw body/title still flowed into the model context with no structured audit trail.
 
@@ -1067,7 +1066,7 @@ flowchart TD
     D -- No --> R[Refuse: WriteRepoBlockedError<br/>+ SECURITY WRITE_REPO_BLOCKED<br/>+ audit journal event]
 ```
 
-### 8. Multi-Line Injection Detection ([#3665](https://github.com/stSoftwareAU/VibeCoder/issues/3665))
+### 8. Multi-Line Injection Detection
 
 `SUSPICIOUS_PATTERN` (`worker/deno/lib/security.ts`) was compiled with the `i` flag alone. In JavaScript `.` does not match a line terminator without the `s` (dotAll) flag, so the fourteen rules that join tokens with `.` or `.*` stopped matching as soon as the payload contained a newline — `ignore all previous\ninstructions` scored clean while the single-line form was flagged. Issue bodies and comments are multi-line Markdown, so ordinary formatting defeated the detector; the three HTML-comment rules could essentially never fire.
 
@@ -1132,7 +1131,7 @@ The worker runs Claude Code with `--dangerously-skip-permissions`, granting Clau
 
 > **⚠️ Mitigation:** Only process issues from allowed authors who are trusted to provide safe instructions.
 
-#### 🧹 Child-environment sanitisation (Issues #3203, #3707)
+#### 🧹 Child-environment sanitisation
 
 Because the agent's shell is unrestricted, every variable in its inherited
 environment is readable by a prompt-injected model. `buildClaudeChildEnv()`
@@ -1292,9 +1291,9 @@ the lightweight checklist in
 The checklist covers intake, exposure assessment, decision tree, and
 the documentation entry that lands back in this file.
 
-Precedent: [#1770](https://github.com/stSoftwareAU/VibeCoder/issues/1770)
-(intake) → [#1771](https://github.com/stSoftwareAU/VibeCoder/issues/1771)
-(audit) → [#1772](https://github.com/stSoftwareAU/VibeCoder/issues/1772)
+Precedent:
+(intake) →
+(audit) →
 (documentation entry).
 
 ### Emergency dependency override
@@ -1326,9 +1325,9 @@ assessment.
 | **CVSS** | 8.7 (High). |
 | **Affected products** | github.com and GitHub Enterprise Cloud — patched by GitHub on 2026-03-04 (no customer action required). GitHub Enterprise Server — customer must upgrade to one of: 3.14.25, 3.15.20, 3.16.16, 3.17.13, 3.18.7, 3.19.4, or 3.20.0. |
 | **Vibe Coder exposure** | **Not exposed.** The worker only targets `github.com`; we operate no GHES instance, so there is no Enterprise Server to patch. The cloud-side hole was closed by GitHub's 2026-03-04 patch before the audit began. |
-| **Audit outcome** | Internal audit under [#1771](https://github.com/stSoftwareAU/VibeCoder/issues/1771) (closed by PR [#1790](https://github.com/stSoftwareAU/VibeCoder/pull/1790)) confirmed that no user-controlled input reaches `git push` options. The worker never passes `-o`, `--push-option`, `--receive-pack`, `--exec`, or `-c receive.*` to `git push`, and every push operand is either a string literal or a branch name produced by the strict allowlist sanitiser in `worker/deno/lib/git_branch.ts`. Adversarial regression tests pinning that property live in `worker/deno/tests/git_branch_test.ts`. The full per-call-site audit is recorded in docs/audits/git-push-injection-audit-1771.md. |
+| **Audit outcome** | Internal audit under (closed by PR) confirmed that no user-controlled input reaches `git push` options. The worker never passes `-o`, `--push-option`, `--receive-pack`, `--exec`, or `-c receive.*` to `git push`, and every push operand is either a string literal or a branch name produced by the strict allowlist sanitiser in `worker/deno/lib/git_branch.ts`. Adversarial regression tests pinning that property live in `worker/deno/tests/git_branch_test.ts`. The full per-call-site audit is recorded in docs/audits/git-push-injection-audit-1771.md. |
 | **Assessment date** | 2026-04-29. |
-| **Assessor** | Worker run on issue [#1771](https://github.com/stSoftwareAU/VibeCoder/issues/1771), reviewed by `maintainer`. |
+| **Assessor** | Worker run on issue, reviewed by `maintainer`. |
 
 **Operational mitigation required from the Vibe Coder:** none. The
 upstream patch and our negative audit finding together close the
@@ -1351,16 +1350,16 @@ The following security issues have been addressed. See the linked issues and SEC
 | [#34](https://github.com/stSoftwareAU/VibeCoder/issues/34) | Prevent accidental commit of .config.json | Multi-layered protection (gitignore, exclude, pre-commit hook). See [Configuration Security](#configuration-security) |
 | [#35](https://github.com/stSoftwareAU/VibeCoder/issues/35) | Add repository allowlist validation | `is_repo_allowed()` and `validate_git_url()` functions. See [Repository Allowlist Validation](#repository-allowlist-validation-issue-35) |
 | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) | Review and harden authorised commenters default list | Bot accounts are opt-in; documented security considerations. See [Bot Account Security](#bot-account-security-issue-36) |
-| [#478](https://github.com/stSoftwareAU/VibeCoder/issues/478) | Include secure coding principles in default prompts | Secure coding guidelines embedded in coding prompts |
-| [#686](https://github.com/stSoftwareAU/VibeCoder/issues/686) | Replace `eval` with safe variable assignment in config_loader.sh | Eliminated `eval` usage to prevent code injection |
-| [#687](https://github.com/stSoftwareAU/VibeCoder/issues/687) | Replace raw `mktemp` with `safe_mktemp` in scripts | Consistent use of secure temporary file creation |
-| [#688](https://github.com/stSoftwareAU/VibeCoder/issues/688) | Add unit tests for security.sh prompt injection defence | Dedicated tests for suspicious pattern detection |
-| [#1338](https://github.com/stSoftwareAU/VibeCoder/issues/1338) | Defence in depth for public repository comments | Parent issue for public comment threat mitigations. See [Public Repository Controls](#-public-repository-controls) |
-| [#1340](https://github.com/stSoftwareAU/VibeCoder/issues/1340) | Filter issue comments by author trust level | Trust-level annotation of comments in Claude prompts. See [Trust-Level Comment Filtering](#1-trust-level-comment-filtering-1340) |
-| [#1341](https://github.com/stSoftwareAU/VibeCoder/issues/1341) | Detect issue body/title modification after approval | Content-hash TOCTOU protection for `work-on` labelled issues. See [TOCTOU Protection](#2-toctou-protection-for-issue-content-1341) |
-| [#1342](https://github.com/stSoftwareAU/VibeCoder/issues/1342) | Rate limiting and size caps for untrusted comments | Comment budgets, per-comment limits, and flood detection. See [Comment Rate Limiting](#3-comment-rate-limiting-and-size-caps-1342) |
-| [#1343](https://github.com/stSoftwareAU/VibeCoder/issues/1343) | Strengthen prompt delimiters against injection | Randomised boundaries, per-comment delimiters, sanitisation. See [Delimiter Hardening](#4-delimiter-hardening-1343) |
-| [#1344](https://github.com/stSoftwareAU/VibeCoder/issues/1344) | Label manipulation detection for approved issues | Timeline API verification for operational labels. See [Label Manipulation Detection](#5-label-manipulation-detection-1344) |
+| | Include secure coding principles in default prompts | Secure coding guidelines embedded in coding prompts |
+| | Replace `eval` with safe variable assignment in config_loader.sh | Eliminated `eval` usage to prevent code injection |
+| | Replace raw `mktemp` with `safe_mktemp` in scripts | Consistent use of secure temporary file creation |
+| | Add unit tests for security.sh prompt injection defence | Dedicated tests for suspicious pattern detection |
+| | Defence in depth for public repository comments | Parent issue for public comment threat mitigations. See [Public Repository Controls](#-public-repository-controls) |
+| | Filter issue comments by author trust level | Trust-level annotation of comments in Claude prompts. See [Trust-Level Comment Filtering](#1-trust-level-comment-filtering-1340) |
+| | Detect issue body/title modification after approval | Content-hash TOCTOU protection for `work-on` labelled issues. See [TOCTOU Protection](#2-toctou-protection-for-issue-content-1341) |
+| | Rate limiting and size caps for untrusted comments | Comment budgets, per-comment limits, and flood detection. See [Comment Rate Limiting](#3-comment-rate-limiting-and-size-caps-1342) |
+| | Strengthen prompt delimiters against injection | Randomised boundaries, per-comment delimiters, sanitisation. See [Delimiter Hardening](#4-delimiter-hardening-1343) |
+| | Label manipulation detection for approved issues | Timeline API verification for operational labels. See [Label Manipulation Detection](#5-label-manipulation-detection-1344) |
 
 ## 🔗 Related Security Issues
 

@@ -91,7 +91,7 @@ Deno.test("DESIGN-PRINCIPLES - Best-practices section defers to the registry sec
   const section = bestPracticesSection(await readDesignPrinciples());
 
   assert(
-    section.includes("#idle-task-framework-issue-1959"),
+    section.includes("#idle-task-framework"),
     "Best-practices section must link to the authoritative registry section",
   );
   assertEquals(

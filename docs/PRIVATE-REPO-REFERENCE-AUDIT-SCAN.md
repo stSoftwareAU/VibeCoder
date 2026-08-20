@@ -1,7 +1,7 @@
 # 🔒 Private-Repo Reference Audit — Operator Manual
 
 The private-repo-reference audit is the sixteenth registered
-[idle-task](IDLE-TASK-FRAMEWORK.md) template (Issue #3549). When the worker has
+[idle-task](IDLE-TASK-FRAMEWORK.md) template. When the worker has
 no claimable work it may pick this template, clone one monitored repository, and
 — **only if that repository is public** — run a static, evidence-backed audit
 for **direct references to a private `stSoftwareAU` repository**. It files a
@@ -47,7 +47,7 @@ flowchart TD
 
 The scan **files issues only** — it never edits a file or raises a PR. The
 remediation rides the normal `work-on` flow on the filed issues, so a human
-approves each change before it lands. This issue (#3549) delivered the audit
+approves each change before it lands. This issue delivered the audit
 check only; any real-world cleanup (e.g. in private-repo-14) rides the issues the scan
 files.
 

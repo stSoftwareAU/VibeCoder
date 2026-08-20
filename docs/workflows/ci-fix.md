@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how th
 
 ## ⚡ TL;DR
 
-**When a CI check fails on a PR authored by the configured GitHub user, the worker automatically attempts to fix it.** It extracts failure annotations (file, line, message), classifies the failure (test, build, lint, infrastructure, transient — Issue #1690), sends them to Claude with the `ci_fix` prompt (currently `v4`), and pushes a fix commit. The worker retries up to 3 times per check before giving up and posting a classifier-aware comment (Issue #1691, #1743). CI fix runs at **priority 1.55** — after PR feedback (1) and spelling/quality fixes (1.5), but before branch updates (1.6).
+**When a CI check fails on a PR authored by the configured GitHub user, the worker automatically attempts to fix it.** It extracts failure annotations (file, line, message), classifies the failure (test, build, lint, infrastructure, transient —), sends them to Claude with the `ci_fix` prompt (currently `v4`), and pushes a fix commit. The worker retries up to 3 times per check before giving up and posting a classifier-aware comment. CI fix runs at **priority 1.55** — after PR feedback (1) and spelling/quality fixes (1.5), but before branch updates (1.6).
 
 ```mermaid
 flowchart TD
@@ -30,9 +30,9 @@ flowchart TD
     style Changes fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Quality fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style Push fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style Comment fill:#707070,stroke:#333,color:#fff
+    style Comment fill:#707070,stroke:,color:#fff
     style Done fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style Sleep fill:#707070,stroke:#333,color:#fff
+    style Sleep fill:#707070,stroke:,color:#fff
 ```
 
 ---
@@ -53,7 +53,7 @@ flowchart TD
 
 - The PR is authored by the configured GitHub user.
 - The failed check is not a spelling check (those are handled at priority 1.5).
-- Exactly one host works a given PR's CI failure at a time — the cross-host PR lock is acquired before the heartbeat, before Claude and before any push (Issue #3754).
+- Exactly one host works a given PR's CI failure at a time — the cross-host PR lock is acquired before the heartbeat, before Claude and before any push.
 - The retry count for this specific check run has not exceeded `CI_CHECK_MAX_RETRIES` (default: 3).
 - The worker has the PR branch checked out and synced with the base branch before invoking Claude.
 
@@ -77,15 +77,15 @@ flowchart TD
 8. **Commit and push** — Changes are committed with the message `Fix CI failure ($check_name) for PR #$pr_number` and pushed.
 9. **Reply** — The worker posts a comment on the PR with the fix summary from `.pr_response_message`, or a generic message if none was provided.
 
-## 🔒 Cross-host locking (Issue #3754)
+## 🔒 Cross-host locking
 
-Every fleet host scans the same PRs, so the CI-fix path takes a **cross-host lock before it does anything else** — before the heartbeat, before Claude, before any push. Without it two hosts fixed one PR's CI failure concurrently (PR #3644, 2026-08-03), burning tokens twice and racing each other's pushes.
+Every fleet host scans the same PRs, so the CI-fix path takes a **cross-host lock before it does anything else** — before the heartbeat, before Claude, before any push. Without it two hosts fixed one PR's CI failure concurrently (2026-08-03), burning tokens twice and racing each other's pushes.
 
 - **Granularity: the whole PR, not a single check.** Two hosts picking *different* failing checks on one branch would still push to that branch at the same time, so the lock claims the PR. It is the same `BRANCH_UPDATE_LOCK` comment used by the [branch-update workflow](pr-feedback.md), so a CI fix and a branch rebase can never run against one branch at once.
 - **Earliest claim wins.** Each host posts a lock comment, pauses for GitHub's eventual consistency, re-reads the comments, and the earliest `created_at` wins. The loser deletes its own comment, logs `pr_ci_lock=lost winner=<id>`, and returns immediately so the next scan can retry.
 - **Held for the whole run.** The lock TTL is 5 minutes but a CI fix may run for `ci_fix_timeout` (30 minutes), so the holder **renews** its lock every ~100 seconds rather than the TTL being raised. Renewal keeps the crash-recovery window at one TTL: a host that dies mid-fix frees the PR within five minutes instead of hours.
 - **Released on every exit path.** Success, failure and throw all release the lock in a `finally`. A lock left behind by a crashed host is deleted by `cleanStaleBranchUpdateLocks` once it passes the TTL, so a PR is never permanently deadlocked.
-- **Visible on the PR.** The lock comment carries a readable line ("Locked PR #N for a CI fix …") under the hidden marker, so it never renders as a blank comment (Issue #1659).
+- **Visible on the PR.** The lock comment carries a readable line ("Locked PR #N for a CI fix …") under the hidden marker, so it never renders as a blank comment.
 
 ```mermaid
 sequenceDiagram
@@ -124,7 +124,7 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last 1
 - **Spelling failure detected:** Excluded — handled at priority 1.5 by the spelling fix workflow.
 - **Max retries exceeded:** Post a comment on the PR and skip the check on future runs. The operator should investigate manually.
 - **Rate limit exhaustion:** After `MAX_RATE_LIMIT_RETRIES` (default: 2) with exponential backoff, the worker exits with code 2 and posts a comment.
-- **Claude makes no changes:** The worker posts a classifier-aware comment explaining the most likely failure category (test, build, lint, infrastructure, transient) and recommended next step rather than a generic "transient or infrastructure" message (Issue #1691, #1743).
+- **Claude makes no changes:** The worker posts a classifier-aware comment explaining the most likely failure category (test, build, lint, infrastructure, transient) and recommended next step rather than a generic "transient or infrastructure" message.
 - **Quality check fails after fix:** Claude is retried once. If it fails again, the fix is not pushed.
 
 ## 🛠️ Common CI failure patterns
@@ -148,10 +148,10 @@ If the worker cannot fix a CI failure after the maximum retries:
 
 ## 📚 Further reading
 
-- **CI fix prompt:** the latest template in [`prompts/ci_fix/`](../../prompts/ci_fix/) — used to instruct Claude (failure classification introduced in Issue #1692).
-- **CI failure classifier:** [`worker/deno/lib/ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts) — categorises failures as test, build, lint, infrastructure, or transient (Issue #1690).
+- **CI fix prompt:** the latest template in [`prompts/ci_fix/`](../../prompts/ci_fix/) — used to instruct Claude (failure classification introduced in).
+- **CI failure classifier:** [`worker/deno/lib/ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts) — categorises failures as test, build, lint, infrastructure, or transient.
 - **CI failure detection:** [`worker/deno/lib/pr_ci_checks.ts`](../../worker/deno/lib/pr_ci_checks.ts) — CI check detection and retry tracking.
-- **Cross-host PR lock:** [`worker/deno/lib/pr_branch_lock.ts`](../../worker/deno/lib/pr_branch_lock.ts) — acquire, renew and release the `BRANCH_UPDATE_LOCK` (Issues #1281, #3754).
+- **Cross-host PR lock:** [`worker/deno/lib/pr_branch_lock.ts`](../../worker/deno/lib/pr_branch_lock.ts) — acquire, renew and release the `BRANCH_UPDATE_LOCK`.
 - **CI fix handler:** [`worker/deno/lib/ci_failure_issue.ts`](../../worker/deno/lib/ci_failure_issue.ts) and the CI-fix processor wired in [`run_core.ts`](../../worker/deno/lib/run_core.ts).
 - **Prompt building:** [`worker/deno/lib/prompt_builder.ts`](../../worker/deno/lib/prompt_builder.ts) — CI fix prompt construction.
 - **Timeout and retry:** [`worker/deno/lib/claude_runner.ts`](../../worker/deno/lib/claude_runner.ts) — `runClaudeWithRetry()`, `timeoutWithCleanup()`.

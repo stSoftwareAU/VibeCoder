@@ -14,7 +14,7 @@ happened to capture — and when the root cause sat outside that window,
 there was no way to go back for more. Detection worked; diagnosis was
 blind.
 
-Issue #3581 closes that gap. When an issue carries one of the repo's
+ closes that gap. When an issue carries one of the repo's
 configured CI-failure labels, the worker parses the build reference out of
 the issue body, fetches the **full** console log for that build, and routes
 to a diagnosis-and-fix framing before the prompt is built.
@@ -97,7 +97,7 @@ reference is refused.
 
 The console log is the one component sourced from outside the repository
 entirely — anyone who can print to stdout during a build (a fork PR, a test
-fixture, a dependency) can put text in it. Issue #3639 gives it the same
+fixture, a dependency) can put text in it. gives it the same
 control every other untrusted string receives:
 
 - the log tail, the matched failure signals, and any fetch-failure reason are
@@ -110,7 +110,7 @@ control every other untrusted string receives:
   the log; and
 - the CI-failure section is emitted **above** that integrity instruction.
 
-Issue #3646 closes the remaining structural gap inside that boundary. The
+ closes the remaining structural gap inside that boundary. The
 markdown code fence around each excerpt is sized by `codeFenceFor()` — always
 one backtick longer than the longest backtick run in the content — so a build
 step printing a bare ` ``` ` line can no longer close the fence early and have

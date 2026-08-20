@@ -59,7 +59,7 @@ the issue carries `grill-me` **plus** `needs-human` it is **your turn**
 `needs-human` from the **Labels** menu so the worker knows it is its
 turn again. An issue showing `grill-me` **alone** is one the worker
 will grill on the next scan. On Ready, the worker **removes `grill-me`
-and keeps / adds `needs-human`** (Issue #2064) so the issue still reads
+and keeps / adds `needs-human`** so the issue still reads
 as your turn — apply the next-phase label (`planning`, `work-on`, or
 `top-priority`) and clear `needs-human` when the worker should pick up.
 The discovery filter already skips any issue carrying `needs-human`, so
@@ -152,7 +152,7 @@ sequenceDiagram
 Claude removes `grill-me` after posting the Ready comment and must
 never add `planning`, `work-on`, `top-priority`, or other next-phase
 labels — the developer applies those themselves. The processor
-ensures `needs-human` remains on the issue after Ready (Issue #2064)
+ensures `needs-human` remains on the issue after Ready
 so the pause signal stays visible.
 
 The `needs-human` label additions and removals shown above are made by
@@ -313,7 +313,7 @@ is no rush.
 ```
 
 The worker then removes `grill-me`, **keeps / adds `needs-human`**
-(Issue #2064), and stops. Nothing else happens until **you** apply
+, and stops. Nothing else happens until **you** apply
 `planning`, `work-on`, or `top-priority` and clear `needs-human`. The
 next worker scan after you do so picks the issue up via the matching
 workflow: `planning` creates sub-issues; `work-on` (or `top-priority`)
@@ -400,7 +400,7 @@ label.
 | Setting | Default | Source | Behaviour |
 |---------|---------|--------|-----------|
 | `maxGrillMeRounds` | `5` | `worker/deno/lib/config_defaults.ts` | **Safety cap.** If grilling has not converged on a Ready comment after this many rounds, the worker posts a one-time recommendation comment, applies the `needs-human` label, and stops. It does **not** finalise automatically. |
-| `grillMeTimeout` | `3600` (1 hour) | `worker/deno/lib/config_defaults.ts` | Per-round Claude timeout. Raised from 600s by Issue #3154 — a round reasons at top-tier model and `max` effort, and the old ceiling killed heavy rounds. |
+| `grillMeTimeout` | `3600` (1 hour) | `worker/deno/lib/config_defaults.ts` | Per-round Claude timeout. Raised from 600s by — a round reasons at top-tier model and `max` effort, and the old ceiling killed heavy rounds. |
 | `grillMeKillAfter` | `10` | `worker/deno/lib/config_defaults.ts` | Grace period before forced termination after `grillMeTimeout`. |
 
 **The safety cap escalates rather than finalising.** When
@@ -423,7 +423,7 @@ recovers from each common failure as follows:
 | **Claude does not post a round comment** | Posts a `## Grill-Me Failed` comment ("Claude did not post a Grill-Me round comment"); next scan retries. |
 | **Two consecutive rounds fail** | The worker adds the `needs-human` label, posts a `## Grill-Me Escalation` comment, and stops. A human takes over. |
 | **User has not replied yet** | The processor adds `needs-human` after each round, and the discovery filter skips any issue carrying `needs-human`. The worker therefore does not even consider the issue until the developer removes `needs-human` after replying. The `**⏳ Awaiting your reply.**` footer plus the `needs-human` label remain the visible cues; the labels stay on the issue indefinitely until either you reply and clear `needs-human`, you remove `grill-me`, or someone else intervenes. |
-| **Ready comment posted (this run or earlier)** | The processor removes `grill-me` and **ensures `needs-human` is present** whenever it sees a `## Grill-Me — Ready for Next Phase` marker (Issue #2064) — on the run that posts it and on subsequent scans if `grill-me` is still lingering. The developer applies the next-phase label (`planning`, `work-on`, or `top-priority`) and clears `needs-human` when the worker should pick up. |
+| **Ready comment posted (this run or earlier)** | The processor removes `grill-me` and **ensures `needs-human` is present** whenever it sees a `## Grill-Me — Ready for Next Phase` marker — on the run that posts it and on subsequent scans if `grill-me` is still lingering. The developer applies the next-phase label (`planning`, `work-on`, or `top-priority`) and clears `needs-human` when the worker should pick up. |
 | **Safety cap reached** (`maxGrillMeRounds` rounds with no Ready) | Posts a recommendation comment, adds `needs-human`, and stops. The developer takes over. |
 | **Two workers race for the same issue** | The processor claims the issue atomically before doing any work. The loser exits cleanly with a "claimed by another worker" message. |
 
@@ -441,7 +441,7 @@ separated permissions:
 
 - **Claude** (the language model invoked per round) may **remove
   `grill-me` and add `needs-human`** after posting the Ready comment
-  (Issue #2064). Claude is forbidden from adding `planning`,
+ . Claude is forbidden from adding `planning`,
   `work-on`, `top-priority`, or other next-phase / reserved workflow
   labels that would queue work. This restriction is enforced by the
   prompt — see the latest [`prompts/grill-me/`](../../prompts/grill-me/)
@@ -450,7 +450,7 @@ separated permissions:
   manages `needs-human` and `grill-me` directly: it adds
   `needs-human` after every successful round comment to mark the
   developer's turn, and on the Ready path removes `grill-me` while
-  **ensuring `needs-human` stays applied** (Issue #2064). It also
+  **ensuring `needs-human` stays applied**. It also
   adds `needs-human` on the escalation paths described above (two
   consecutive failures, or the safety cap being reached without
   convergence). The processor never applies `planning`, `work-on`,

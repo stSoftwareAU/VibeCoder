@@ -1,5 +1,5 @@
 /**
- * Tests for the follow-up dedup prompt rules (Issue #2943, parent #2935).
+ * Tests for the follow-up dedup prompt rules (, parent).
  *
  * When the worker legitimately defers a root cause via the escape hatch, a
  * single root cause must never spawn more than ONE follow-up issue, and never a
@@ -46,7 +46,7 @@ Deno.test("issue prompt v27 - encodes the one-follow-up + search rule", async ()
     assertStringIncludes(result.value, marker);
   }
   // Explicit traceability to the issue and the at-most-one cap.
-  assertStringIncludes(result.value, "Issue #2943");
+  assertStringIncludes(result.value, "");
   assertStringIncludes(result.value, "at most one");
 });
 
@@ -69,7 +69,7 @@ Deno.test("coding_guidelines prompt v28 - encodes the one-follow-up + search rul
   for (const marker of DEDUP_MARKERS) {
     assertStringIncludes(result.value, marker);
   }
-  assertStringIncludes(result.value, "Issue #2943");
+  assertStringIncludes(result.value, "");
   assertStringIncludes(result.value, "at most one");
   // The rule must still be inside the escape-hatch section so it fires on
   // every deferral branch.

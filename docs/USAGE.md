@@ -89,7 +89,7 @@ committed to the repository as permanent documentation and contains:
 The worker reads this file and includes its contents in the PR body. If no PR
 summary file is created, a warning note is included in the PR body.
 
-Issue #2173 moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
+ moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
 so `docs/` root remains a curated table of contents. The worker still checks the
 legacy `docs/pr-summary-{n}.md` location for older PRs (precedence order is
 documented in `worker/deno/lib/pr_summary_loader.ts`).
@@ -171,7 +171,7 @@ The **clarification phase** runs before implementation and is important for
 getting good results. It does three things:
 
 1. **Is the issue clear?** If not, the worker posts questions on the issue and
-   adds the `needs-human` label (Issue #2031 — the standalone
+   adds the `needs-human` label (the standalone
    `needs-clarification` label was retired in favour of the consolidated
    worker-to-human handoff signal). You reply on the issue and remove the label;
    the worker will re-assess on the next run.
@@ -216,7 +216,7 @@ The refinement phase lets you collaborate with Claude to improve an issue
 
 **To refine again:** Post new feedback comments and re-add the `refine-issue`
 label. `needs-human` alone is not a discovery trigger, so the worker will not
-pick the issue up until `refine-issue` is reapplied. (Issue #2029 retired the
+pick the issue up until `refine-issue` is reapplied. (retired the
 legacy `refined` completion label.)
 
 **Protection mechanisms:** Atomic claiming prevents race conditions and eyes
@@ -294,12 +294,12 @@ failure.
 The current defaults, the per-phase timeouts, and the full explanation live in
 one place — see
 [How timeouts interact](CONFIGURATION.md#%EF%B8%8F-how-timeouts-interact) in the
-configuration reference (Issue #3600 de-duplicated the numbers so they cannot
+configuration reference (de-duplicated the numbers so they cannot
 drift apart).
 
 ### 💳 Rate Limit and Credit Exhaustion
 
-The worker handles rate limits intelligently (Issue #620): when it receives an
+The worker handles rate limits intelligently: when it receives an
 HTTP (Hypertext Transfer Protocol) 429, it reads the `Retry-After` header and
 sleeps for exactly the right duration rather than burning retries. It retries up
 to `MAX_RATE_LIMIT_RETRIES` times with exponential backoff. If retries are
@@ -331,7 +331,7 @@ branch is created.
 
 ### 🔄 Retry with Exponential Backoff
 
-The `retry_with_backoff` utility (Issue #194) wraps any command with automatic
+The `retry_with_backoff` utility wraps any command with automatic
 retry for transient errors.
 
 **Transient errors (retried):** HTTP 5xx, 429, network timeouts, connection
@@ -347,7 +347,7 @@ denied, authentication failures.
 ### ⏱️ Operation Timeouts
 
 All GitHub CLI (Command-Line Interface) and git operations are wrapped with
-configurable timeouts (Issue #619) to prevent indefinite hangs. The default is
+configurable timeouts to prevent indefinite hangs. The default is
 60 seconds for most operations (120 seconds for merge/rebase). If an operation
 times out, the worker logs the failure distinctly and moves on rather than
 blocking the entire run.
@@ -406,7 +406,7 @@ a useful answer, the worker detects a "Clarification Needed" marker in Claude's
 output and automatically:
 
 1. Posts a clarification request as a comment on the issue
-2. Removes the `question` label and adds the `needs-human` label (Issue #2031 —
+2. Removes the `question` label and adds the `needs-human` label (
    the clarification handoff was consolidated onto `needs-human`)
 3. Unassigns itself from the issue
 
@@ -430,7 +430,7 @@ appearing to silently fail.
 
 ## 🚦 Rate-Limit Circuit Breaker
 
-The worker includes a rate-limit circuit breaker (Issue #650) that protects
+The worker includes a rate-limit circuit breaker that protects
 against excessive API calls when GitHub returns HTTP 429 (Too Many Requests)
 responses:
 
@@ -448,7 +448,7 @@ operational constant (see [Configuration Reference](CONFIGURATION.md)).
 ## 🔒 One Issue per Repository/Milestone
 
 To prevent conflicts and ensure clean branches, the worker enforces a
-one-issue-at-a-time policy (Issue #678):
+one-issue-at-a-time policy:
 
 - **Per repository**: Only one issue is worked on per repository at a time. If a
   repository already has an in-progress issue, other eligible issues in that
@@ -464,7 +464,7 @@ repository or milestone.
 ## 💾 Self-Healing Disk Space
 
 At startup, the worker checks disk usage of the `WORK_DIR` filesystem and
-applies a two-tier cleanup policy (Issue #1499) based on the cost of cleanup to
+applies a two-tier cleanup policy based on the cost of cleanup to
 subsequent issue processing:
 
 - **Gentle cleanup at 80%** — When usage reaches `DISK_CLEANUP_GENTLE_THRESHOLD`
@@ -494,7 +494,7 @@ Claude CLI updates. Failures are logged but do not block the worker.
 | `CLAUDE_UPDATE_TIMEOUT`    | `120`   | Timeout in seconds for the update command       |
 | `CLAUDE_UPDATE_KILL_AFTER` | `10`    | Grace period before SIGKILL after SIGTERM       |
 
-### Minimum-version floor (Issue #2622)
+### Minimum-version floor
 
 The update normally runs at most once per interval (7 days). That cadence is
 wrong when a specific minimum version is required — e.g. `--model fable` support
@@ -504,7 +504,7 @@ runs when _either_ the interval has elapsed _or_ the installed version is below
 a configured floor.
 
 Floors are configured per tool in `.config.json` via `software_min_versions`
-(see [Configuration](CONFIGURATION.md#-minimum-version-floor-issue-2622)). The
+(see [Configuration](CONFIGURATION.md#-minimum-version-floor)). The
 default floor pins `claude` to `2.1.170` — the oldest release verified to
 support `--model fable`.
 
@@ -519,7 +519,7 @@ support `--model fable`.
 - `SKIP_CLAUDE_UPDATE=true` still wins, but logs that a version floor is unmet
   when it suppresses a floor-triggered update.
 
-### Release-age quarantine (Issue #3655)
+### Release-age quarantine
 
 Every toolchain upgrade — Claude CLI, the `gh` binary, each installed `gh`
 extension, and Deno — is additionally gated on the candidate release being at
@@ -548,7 +548,7 @@ Operational notes:
   (`deno upgrade <version>`), so nothing published between the check and the
   upgrade can slip in.
 - **`gh` extensions are upgraded one at a time**, each gated on the ref its
-  upgrade would actually install (Issue #3952) — the latest release tag for a
+  upgrade would actually install — the latest release tag for a
   binary/release extension, the default-branch HEAD commit for a git (script)
   extension, which `gh` upgrades by pulling that branch. The upgrade is then a
   pinned `gh extension install <repo> --pin <ref> --force`, so the ref that was
@@ -578,10 +578,10 @@ repository to signal it is functioning correctly.
 | ----------------- | -------------------------------------------- | --------------------------------------------------------- |
 | `FLEET_HEALTH_DIR`  | (empty)                                      | Directory of the private-repo-6 checkout. Disabled when empty. |
 | `FLEET_HEALTH_REPO` | (empty)                                      | Git URL to clone into `FLEET_HEALTH_DIR` when that directory does not exist (from `fleet_health_repo` in `.config.json`). Unset, the worker never clones (it logs that tracking is off) — no URL is assumed. |
-| `FLEET_HEALTH_TIMEOUT_MS` | `600000` (10 minutes)                  | Timeout for the `helpers/repos.sh` health-report subprocess. Raised from 60s so a slow-but-healthy report run is not killed and the host wrongly marked dead (Issue #3127). |
+| `FLEET_HEALTH_TIMEOUT_MS` | `600000` (10 minutes) | Timeout for the `helpers/repos.sh` health-report subprocess. Raised from 60s so a slow-but-healthy report run is not killed and the host wrongly marked dead. |
 
 Both come from `.config.json` (`fleet_health_repo`, and optionally
-`fleet_health_dir`, Issue #535); the worker applies them to its own
+`fleet_health_dir`,); the worker applies them to its own
 environment at start (natively and in the container — a host
 `fleet_health_dir` is ignored inside the container, where the worker clones
 into its own work volume). Health tracking is optional — a single host does
@@ -604,7 +604,7 @@ summary.
 | `health-tracking` | `fleet_health_dir` in config or `FLEET_HEALTH_DIR` set     | Health tracking silently skipped              |
 | `github-status`   | `update_gh_user_status` true and `user` scope on token | Status updates silently skipped               |
 
-> **📝 Note:** Deno is a **required** dependency (Issue #518) and is no longer
+> **📝 Note:** Deno is a **required** dependency and is no longer
 > listed as an optional feature.
 
 Core functionality (issue processing, PR feedback) is never blocked by missing
@@ -692,23 +692,23 @@ flowchart TD
     P15["🟠 Priority 1.5 — Failed Spelling/Quality Checks"]
     P155["🟠 Priority 1.55 — Failed CI/Integration Checks"]
     P16["🟡 Priority 1.6 — PR Branch Updates (rebase/merge)"]
-    P162["🟡 Priority 1.62 — Nudge Stalled CI (Issue #2100)"]
-    P163["🟡 Priority 1.63 — Blocking-PR Stall Watchdog (Issue #4025)"]
+    P162["🟡 Priority 1.62 — Nudge Stalled CI"]
+    P163["🟡 Priority 1.63 — Blocking-PR Stall Watchdog"]
     P165["🟡 Priority 1.65 — Auto-merge Catch-up"]
     P166["🟡 Priority 1.66 — Branch Cleanup (merged PRs, once at start-up)"]
     P167["🟡 Priority 1.67 — Issue Closure (merged PRs)"]
-    P168["🟡 Priority 1.68 — Closed-PR Recovery (Issue #787)"]
+    P168["🟡 Priority 1.68 — Closed-PR Recovery"]
     P17["🟢 Priority 1.7 — Milestone Completion (tracking issue + PR)"]
     P172["🟢 Priority 1.72 — Milestone Branch Sync"]
     P175["🟢 Priority 1.75 — Issue Refinement Requests"]
-    P178["🟢 Priority 1.78 — Grill-Me Clarification (Issue #1619)"]
-    P179["🟢 Priority 1.79 — Quorum Plan-Off (Issue #4112)"]
+    P178["🟢 Priority 1.78 — Grill-Me Clarification"]
+    P179["🟢 Priority 1.79 — Quorum Plan-Off"]
     P18["🔵 Priority 1.80 — Planning Mode Requests"]
     P185["🔵 Priority 1.85 — Question Answering Requests"]
     P19["🔵 Priority 1.9 — Stale Workflow Detection"]
     P2["🟣 Priority 2 — New Issues (globally oldest, label tiers `top-priority` > `work-on`)"]
-    P25["🟤 Priority 2.5 — `low-priority` label (Issue #1721, fallback when no eligible higher-tier candidate exists in any repo)"]
-    P29["⚪ Priority 2.9 — `idle-task` label (Issue #1959, worker-filed busywork; only self-appliable label)"]
+    P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
+    P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
     P1 --> P15 --> P155 --> P16 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P185 --> P19 --> P2 --> P25 --> P29
 
@@ -732,7 +732,7 @@ flowchart TD
     style P185 fill:#3a86ff,stroke:#023e8a,color:#fff
     style P2 fill:#8338ec,stroke:#5a189a,color:#fff
     style P25 fill:#6c4a3c,stroke:#3d2a22,color:#fff
-    style P29 fill:#909090,stroke:#555,color:#fff
+    style P29 fill:#909090,stroke:,color:#fff
 ```
 
 The worker selects the **globally oldest** eligible issue across all configured
@@ -744,7 +744,7 @@ higher-tier candidate exists in any scanned repo. The `idle-task` tier (priority
 self-apply. The dispatch table in `worker/deno/lib/run_core.ts` is the source of
 truth for the fractional priorities; the canonical documented ladder is the
 table in [Workflows](workflows/README.md#-lifecycle-overview) and a test keeps both
-diagrams in step with the code (Issue #3348). The canonical pickup-priority order is `top-priority` > `work-on` >
+diagrams in step with the code. The canonical pickup-priority order is `top-priority` > `work-on` >
 `low-priority` > `idle-task`. Repo order in `repos` affects scan order;
 selection is by issue age, not repo position. See
 [Workflows](workflows/README.md) and

@@ -2,9 +2,9 @@
 
 This document is the operator-facing reference for the Vibe Coder's
 orphan / unmaintained-dependency audit. The intent is documented in the
-parent epic (#2902) and the sub-issues that built it: the registered
-template + framework wiring (#2904), the authoring prompt (#2905), the
-native ecosystem pre-filer (#2907), and this manual (#2909).
+parent epic and the sub-issues that built it: the registered
+template + framework wiring, the authoring prompt, the
+native ecosystem pre-filer, and this manual.
 
 The orphan-dependency scan is **template #6 of the idle-task framework** —
 the generic mechanism for "things the worker does when no claimable work
@@ -18,7 +18,7 @@ prompt, language-agnostic, no bucket, weekly cadence, no PR).
 
 For the **agent-facing** rules (label policy, suppression syntax, the
 sanctioned-network exception) see
-[DESIGN-PRINCIPLES.md → Orphan-dependency scans](../DESIGN-PRINCIPLES.md#orphan-dependency-scans-issue-2902-template-6).
+[DESIGN-PRINCIPLES.md → Orphan-dependency scans](../DESIGN-PRINCIPLES.md#orphan-dependency-scans-template-6).
 
 ## Design intent — "is anyone still home?"
 
@@ -117,7 +117,7 @@ This template owns the **judgement long-tail**: deciding, from
 corroborated metadata, that a dependency is genuinely unmaintained and
 proposing a maintained replacement. The deterministic core (the raw
 deprecated / archived / stale facts) is owned by the **native
-orphan-deps pre-filer** (#2907) — its already-filed ids arrive in the
+orphan-deps pre-filer** — its already-filed ids arrive in the
 known-open skip-list, so the LLM does not re-emit them.
 
 Adjacent concerns are referenced in prose, never re-filed here:
@@ -129,15 +129,14 @@ Adjacent concerns are referenced in prose, never re-filed here:
 - **Active malicious-dependency signals** (install-script exfiltration,
   dependency confusion, typosquats, mutable pins) →
   [`supply-chain-detection`](SUPPLY-CHAIN-DETECTION-SCAN.md), the
-  active-detection design under epic #2406 (catalogue #2443).
+  active-detection design under epic (catalogue).
 - **Posture / readiness** (no SBOM, no CI vuln-scan, no emergency-bump
   runbook) → [`supply-chain-readiness`](SUPPLY-CHAIN-READINESS-SCAN.md)
-  (template #5), the posture work under epics #2396 / #2397.
-- **Idle-tasks-vs-supply-chain boundaries** → #2184.
+  (template #5), the posture work under epics /.
+- **Idle-tasks-vs-supply-chain boundaries** →.
 - **Merely out-of-date but maintained** → the ordinary
   dependency-bump flow.
-- The Boy-Scout brainstorm that motivated this template is recorded in
-  #2903.
+- The Boy-Scout brainstorm that motivated this template is recordedin.
 
 ## Idle trigger
 
@@ -195,7 +194,7 @@ flowchart TD
 
 ## Wrapper issue layout
 
-The wrapper issue is **human-style** (Issue #2077) — no hidden marker,
+The wrapper issue is **human-style** — no hidden marker,
 no parameters block. Anyone can paste the same prompt into a fresh issue
 with the `idle-task` label and the worker will run it identically.
 
@@ -209,8 +208,7 @@ with the `idle-task` label and the worker will run it identically.
   time) plus the `{{ATTRIBUTION_FOOTER}}` line.
 - **Body fingerprint:** the prompt's H1 begins
   `# Orphan-Dependency Scan …`, matched by `ORPHAN_DEPS_BODY_FINGERPRINT`
-  so dispatch recognises the wrapper even if the title was edited (Issue
-  #2087 body-fingerprint dispatch).
+  so dispatch recognises the wrapper even if the title was edited (body-fingerprint dispatch).
 - **Label:** the canonical `idle-task` label. No workflow labels.
 - **No milestone** — the template sets `skipMilestone: true`, so the
   wrapper never gates a milestone-merge PR.
@@ -329,7 +327,7 @@ The grammar also accepts `# noqa: BP-…` (Python) and
 convenience, so an existing ignore comment can carry the BP-id without
 adding a second marker.
 
-### Where a marker counts (Issue #3947)
+### Where a marker counts
 
 A waiver is an operator decision, so it is only recognised where an
 operator can actually write one — in a real comment, in a manifest whose
@@ -358,7 +356,7 @@ active waiver is auditable in the scan output. The report's identity key is
 `file:line:id`, so two markers for the same id at the same line in
 different manifests are both reported rather than one hiding behind the
 other — the declaring manifest is always named, never `<unknown>`
-(Issue #3948). Programmatic callers apply
+. Programmatic callers apply
 the same proximity rule the shared parser uses
 ([`isSuppressed`](../worker/deno/lib/suppression_comments.ts)): the marker
 must sit on the offending line, or the line immediately above it, **in the
@@ -411,13 +409,13 @@ individually.
   structure; orphan-deps cross-links posture gaps rather than re-filing
   them.
 - [`docs/SUPPLY-CHAIN-DETECTION-SCAN.md`](SUPPLY-CHAIN-DETECTION-SCAN.md)
-  — Active malicious-dependency detection (epic #2406). Orphan-deps
+  — Active malicious-dependency detection (epic). Orphan-deps
   cross-links the active-compromise angle rather than duplicating it.
 - [`docs/SECURITY-SCAN.md`](SECURITY-SCAN.md) — Template #1; owns the
   dormant-then-republished compromise angle.
 - [`prompts/orphan_deps/`](../prompts/orphan_deps/) — Orchestrating
   prompt (Phases 1–4). The signal catalogue, cap, label set, id recipe,
   and per-finding body shape live in the prompt, not in Deno code.
-- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#orphan-dependency-scans-issue-2902-template-6)
+- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#orphan-dependency-scans-template-6)
   — Worker-side design principles for the orphan-dependency scan.
 ```

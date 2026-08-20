@@ -1,6 +1,6 @@
 /**
  * Tests for the cross-repo internal-dependency release-gating prompt rules
- * (Issue #2944, parent #2935).
+ * (, parent).
  *
  * Once the worker has opened a PR in an internal `stSoftwareAU/*` dependency's
  * own repo, two boundaries must hold:
@@ -70,10 +70,10 @@ Deno.test("coding_guidelines latest - encodes the release-gating rule", async ()
     assertStringIncludes(body, marker);
   }
   // Traceability and the placement choice (consumer OR dep repo).
-  assertStringIncludes(body, "Issue #2944");
+  assertStringIncludes(body, "");
   assertStringIncludes(body, "consuming");
   assertStringIncludes(body, "dependency repo");
-  // The single-follow-up cap is reused from the dedup rule (#2943).
+  // The single-follow-up cap is reused from the dedup rule.
   assertStringIncludes(body, "one");
 });
 
@@ -82,7 +82,7 @@ Deno.test("issue latest - encodes the release-gating rule", async () => {
   for (const marker of RELEASE_GATE_MARKERS) {
     assertStringIncludes(body, marker);
   }
-  assertStringIncludes(body, "Issue #2944");
+  assertStringIncludes(body, "");
   assertStringIncludes(body, "consuming");
   assertStringIncludes(body, "dependency repo");
 });

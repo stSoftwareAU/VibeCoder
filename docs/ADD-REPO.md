@@ -59,7 +59,7 @@ command runs seven steps:
    array in the per-machine `.config.json`. The whole config object is read,
    merged, and written back so unknown keys (phase overrides, idle-task
    weights, etc.) are preserved. A slug already present is a no-op.
-4. **Sync the canonical label set** (Issue #2599) — create/update the full
+4. **Sync the canonical label set** — create/update the full
    canonical GitHub label set on the target repo so a human can schedule and
    queue issues (apply `work-on`, `top-priority`, `grill-me`, etc.)
    **immediately** after onboarding, instead of waiting for a later
@@ -70,7 +70,7 @@ command runs seven steps:
    failure is reported in the summary, not swallowed, but does not abort
    onboarding (the worker has write access, so labels rarely need human
    action).
-5. **Configure the default-branch ruleset** (Issue #2589) — apply the GitHub
+5. **Configure the default-branch ruleset** — apply the GitHub
    ruleset **"wall"** to the onboarded repo's default branch so it inherits the
    same pre-merge enforcement as existing repos — **immediately**, rather than
    only on the next manual `setup.sh`. The **visibility resolved in step 2 is
@@ -78,7 +78,7 @@ command runs seven steps:
    (`getRequiredChecksForRepo`) never marks an unsatisfiable check (e.g.
    GHAS-only `dependency-review` on a private repo) as required. It reuses the
    idempotent `syncBranchProtectionForRepo` helper (reads + at most one ruleset
-   write; classic branch protection is never written — Issue #4163).
+   write; classic branch protection is never written —).
    **Non-fatal:** a configuration failure is reported in the summary, **not
    swallowed**, but does not abort onboarding; the idempotent setup-time
    `branch-protection-sync` will reconcile.
@@ -147,7 +147,7 @@ gh api -X PUT repos/owner/repo/collaborators/<worker-user> -f permission=triage
 
 After granting access, re-file the add-repo issue.
 
-## Canonical label sync at onboarding (Issue #2599)
+## Canonical label sync at onboarding
 
 The add-repo flow **does** run the canonical label sync as part of onboarding
 (step 4 above), so a freshly added repo carries the complete canonical GitHub
@@ -163,11 +163,11 @@ is **reported in the success comment, not swallowed**, but is **non-fatal**:
 onboarding still completes because the worker has write access and labels
 rarely need human action.
 
-## Branch-protection configuration at onboarding (Issue #2589)
+## Branch-protection configuration at onboarding
 
 The add-repo flow configures the onboarded repo's **default-branch protection**
 as part of onboarding (step 5 above), so a newly added repo inherits the same
-pre-merge enforcement "wall" (Issue #2586, part of the dual-layer model in
+pre-merge enforcement "wall" (part of the dual-layer model in
 [`MERGE.md`](MERGE.md)) as existing repos — **immediately**, rather than only on
 the next manual `setup.sh` run.
 
@@ -181,17 +181,17 @@ the next manual `setup.sh` run.
   writes only when the desired (visibility-aware) required-check set drifts
   from the current one. A repo already covered by a ruleset — including a
   human- or org-managed one — is a genuine no-op, and classic branch protection
-  is never written (Issue #4163). A repo whose default branch takes direct
+  is never written. A repo whose default branch takes direct
   pushes, or that opted out (topic `direct-push` / marker
   `.vibe/no-default-branch-ruleset`), gets **no** ruleset and the success
-  comment says so (Issue #4356).
+  comment says so.
 - **Non-fatal, never swallowed.** A configuration failure (for example, the
   worker lacking admin rights to set branch protection) is **reported in the
   success comment**, not silently dropped, but does **not** abort onboarding —
   labels and wrappers are still seeded, and the idempotent setup-time
   `branch-protection-sync` reconciles the protection on the next deploy.
 
-This mirrors the setup-time `branch-protection-sync` (Issue #2588) that walks
+This mirrors the setup-time `branch-protection-sync` that walks
 every monitored repo; the add-repo path applies the same wall to just the one
 newly onboarded repo so there is no gap between "repo added" and "repo
 protected".
@@ -214,7 +214,7 @@ GitHub Actions, supply-chain gaps, and the rest, which a human then triages.
 The add-repo flow **detects** visibility but does **not** gate on it. Which of
 the seventeen idle tasks fire — and which individual checks within them run — on a
 private repo is governed at **runtime** by the templates themselves (per
-Issue #2571). For example, the supply-chain-readiness scan confirms repo
+). For example, the supply-chain-readiness scan confirms repo
 visibility
 before filing any check that needs a public repo or GitHub Advanced Security,
 staying silent unless the repo is confirmed public and failing safe to
@@ -263,12 +263,12 @@ applied to any issue by the flow.
 - [`worker/deno/setup/label_sync.ts`](../worker/deno/setup/label_sync.ts) —
   `syncLabelsForRepo`, the canonical label sync (over
   [`label_definitions.ts`](../worker/deno/setup/label_definitions.ts))
-  reused at onboarding (Issue #2599).
+  reused at onboarding.
 - [`worker/deno/setup/branch_protection_sync.ts`](../worker/deno/setup/branch_protection_sync.ts)
   — `syncBranchProtectionForRepo`, the single-repo enforcement configurator
-  reused at onboarding (Issue #2589); it wraps the idempotent
+  reused at onboarding; it wraps the idempotent
   [`default_branch_ruleset.ts`](../worker/deno/lib/default_branch_ruleset.ts)
-  `ensureDefaultBranchRuleset` (Issue #4163).
+  `ensureDefaultBranchRuleset`.
 - [`worker/deno/lib/add_repo_process_issue_route.ts`](../worker/deno/lib/add_repo_process_issue_route.ts)
   — routes a claimed `add-repo:` issue to the command, wired into the main
   dispatch loop in `run_core_production_deps.ts`.

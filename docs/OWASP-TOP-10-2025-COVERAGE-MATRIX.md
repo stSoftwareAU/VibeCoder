@@ -4,21 +4,21 @@ This document maps the **OWASP Top 10 2025** web/application security-risk
 categories (https://owasp.org/Top10/2025/) against the idle-task audit
 templates, recording for each cell whether the category is **covered**,
 **partially covered** (the class is named but the detection guidance is weak or
-incidental), or a **gap**. It is the tracked artefact for Issue #3015 (part of
-the #3009 OWASP-2025 alignment milestone).
+incidental), or a **gap**. It is the tracked artefact for (part of
+the OWASP-2025 alignment milestone).
 
 > **Point-in-time snapshot.** The scored matrix below is the artefact of Issue
-> #3015 and covers the **ten** templates registered at that time. The registry
+> and covers the **ten** templates registered at that time. The registry
 > has grown since; templates registered after the snapshot are listed under
 > [Templates registered since the snapshot](#templates-registered-since-the-snapshot)
 > and are **not** scored here. Read the matrix as "coverage as assessed for
-> #3015", not as a live inventory.
+> ", not as a live inventory.
 
 Scope note: this matrix is the **web/application** Top 10 only. The OWASP
 GenAI/LLM Top 10 (2025) is a separate taxonomy carried by `security_scan` for
-LLM-using repos and is out of scope here (sibling issues under #3009).
+LLM-using repos and is out of scope here (sibling issues under).
 
-## The ten scored templates (as at Issue #3015)
+## The ten scored templates (as at)
 
 | Abbrev. | Template | Prompt directory | Security focus |
 | --- | --- | --- | --- |
@@ -35,7 +35,7 @@ LLM-using repos and is out of scope here (sibling issues under #3009).
 
 ## Templates registered since the snapshot
 
-These templates joined the registry after the #3015 assessment and are **not**
+These templates joined the registry after the assessment and are **not**
 scored in the matrix below. Each is listed with its security relevance so the
 inventory is complete even though the scoring is not; scoring them is separate
 work (see [Maintenance](#maintenance)).
@@ -110,7 +110,7 @@ documentation convention in `AGENTS.md`.
 - **SCR ~** — readiness-config checks (lockfile, auto-update, install scripts)
   touch misconfiguration posture rather than runtime config.
 - **Container misconfiguration** (Dockerfile image hardening) is a known gap
-  already filed as **#3019** — recorded here as covered-by-sibling.
+  already filed as **** — recorded here as covered-by-sibling.
 
 ### A03:2025 — Software Supply Chain Failures
 
@@ -184,12 +184,12 @@ Inherently the most judgement-heavy / least-automatable category.
 
 - **SEC ✓** — § "A09:2025 — Security Logging and Alerting Failures": missing /
   context-poor security logging, secrets in logs, integrity-unprotected log
-  sinks. Strengthening of this class is already filed as **#3020**
+  sinks. Strengthening of this class is already filed as ****
   (covered-by-sibling).
 - **GHA ✓** — secret exfiltration via workflow logs/artefacts.
 - **SCR ✓** — `prompts/supply_chain_readiness/` § `SCR-SEC-ALERTING`
   audits the **alerting / monitoring readiness posture** half of A09
-  (#3023): an alerting path for security-relevant signals
+ : an alerting path for security-relevant signals
   (advisory / Dependabot-alert notifications, alerting on
   security-relevant CI failures, a documented escalation /
   incident-response path). It is **posture only** and cross-references
@@ -211,24 +211,24 @@ New in the 2025 edition.
 
 ## Gaps
 
-After the `security_scan` OWASP-2025 re-map (#3012) and the three already-filed
-sibling gaps (#3019 container misconfiguration → A02; #3020 security_scan
-logging/alerting → A09; #3023 supply_chain_readiness alerting readiness → A09),
+After the `security_scan` OWASP-2025 re-map and the three already-filed
+sibling gaps (container misconfiguration → A02; security_scan
+logging/alerting → A09; supply_chain_readiness alerting readiness → A09),
 **every OWASP Top 10 2025 category has concrete coverage by at least one
 template.** One genuine **depth gap** remains and is filed by this issue:
 
 | Gap | Category | Owning template | Filed issue |
 | --- | --- | --- | --- |
-| Terraform bucket lacks least-privilege IAM / no-public-exposure checks (the `aws-cloudformation` bucket has them; the `terraform` bucket does not) | A01:2025 (and A02:2025 for public exposure) | `best_practices` → `terraform` bucket | #3024 |
+| Terraform bucket lacks least-privilege IAM / no-public-exposure checks (the `aws-cloudformation` bucket has them; the `terraform` bucket does not) | A01:2025 (and A02:2025 for public exposure) | `best_practices` → `terraform` bucket | |
 
 Covered-by-sibling (recorded, **not** re-filed to avoid double-filing):
 
-- **A02 container/Dockerfile hardening** → #3019
-- **A09 security_scan logging/alerting strengthening** → #3020
+- **A02 container/Dockerfile hardening** →
+- **A09 security_scan logging/alerting strengthening** →
 
 Landed since the matrix was first written:
 
-- **A09 supply_chain_readiness alerting/monitoring readiness** → #3023
+- **A09 supply_chain_readiness alerting/monitoring readiness** →
   (the `SCR-SEC-ALERTING` check, now in `prompts/supply_chain_readiness/`).
 
 Categories with only judgement-heavy / incidental partial coverage outside
