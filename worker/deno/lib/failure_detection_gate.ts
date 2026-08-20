@@ -10,10 +10,14 @@
  * PR output — that verifies every published sub-issue body carries a filled
  * `## Failure Detection` section and reports the offenders when one does not.
  *
- * The caller (planning_processor.ts) drives the existing loud-failure path when
- * offenders are reported, so a missing criterion becomes a labelled planning
- * failure instead of a silent pass. At runtime this gate IS the failure-
- * detection surface for the planner.
+ * The caller (planning_processor.ts) never lets a reported offender pass
+ * silently. Since Issue #59 the response depends on what the run achieved: a
+ * run that published no sub-issues at all still drives the loud
+ * `handlePlanningFailure` path, while a run that published a usable plan but
+ * could not repair every sub-issue is a *partial repair* — the parent is
+ * labelled `needs-failure-detection-repair` (see
+ * `failure_detection_repair_label.ts`) and commented on, not failed. At runtime
+ * this gate IS the failure-detection surface for the planner.
  *
  * The pure {@link validateFailureDetectionCriteria} takes already-fetched
  * bodies so it is trivially testable; {@link runFailureDetectionGate} injects
@@ -233,14 +237,13 @@ export async function runFailureDetectionGate(opts: {
 }
 
 /**
- * Build the parent-issue failure message naming every offending sub-issue and
- * the missing-criterion reason for each.
+ * The shared body of both parent comments: the rule, then the offender list
+ * naming each sub-issue and why it fails.
  *
- * Returned without a leading heading so it reads correctly when the caller
- * passes it through the shared planning-failure handler (which prepends
- * "Planning failed: ").
+ * Kept in one place (Issue #59) so the failure wording and the partial-repair
+ * wording cannot drift; each caller supplies only its own closing instruction.
  */
-export function buildParentGateFailureComment(
+function buildParentOffenderBody(
   offenders: FailureDetectionOffender[],
 ): string {
   const lines = offenders
@@ -252,8 +255,61 @@ export function buildParentGateFailureComment(
     "`N/A — <reason>`). The following sub-issue(s) do not:",
     "",
     lines,
+  ].join("\n");
+}
+
+/**
+ * Build the parent-issue failure message naming every offending sub-issue and
+ * the missing-criterion reason for each.
+ *
+ * Returned without a leading heading so it reads correctly when the caller
+ * passes it through the shared planning-failure handler (which prepends
+ * "Planning failed: ").
+ *
+ * Since Issue #59 the planning run itself no longer fails on unresolved
+ * offenders — it takes the partial-repair path below. This wording stays as the
+ * gate's canonical *failure* text for the callers that do fail a run outright
+ * (the resume pass's bounded-retry escalation, #60).
+ */
+export function buildParentGateFailureComment(
+  offenders: FailureDetectionOffender[],
+): string {
+  return [
+    buildParentOffenderBody(offenders),
     "",
     "Fix each sub-issue's `## Failure Detection` section, then re-run planning.",
+  ].join("\n");
+}
+
+/**
+ * Build the parent-issue comment for a **partial repair** (Issue #59).
+ *
+ * A run that published its sub-issues and repaired only some of them is not a
+ * planning failure — the plan is published and usable — so this comment
+ * replaces the failure comment on that path. It names exactly which sub-issues
+ * still need repair and why, then states the recovery: finish those repairs,
+ * not re-run planning.
+ *
+ * Extends {@link buildParentGateFailureComment}'s wording via the shared
+ * offender body, so the rule is stated identically on both paths.
+ *
+ * @param offenders - Sub-issues still lacking a filled criterion.
+ * @param repairLabel - The label applied to the parent to mark the outstanding
+ *   repairs, named in the comment so the state is self-describing.
+ */
+export function buildParentPartialRepairComment(
+  offenders: FailureDetectionOffender[],
+  repairLabel: string,
+): string {
+  return [
+    "⚠️ **Partial Failure-Detection repair.** This planning run published its " +
+    "sub-issues successfully, so it is **not** a failed planning run and the " +
+    "parent is not marked `failed-once` — but " +
+    buildParentOffenderBody(offenders),
+    "",
+    `The parent carries the \`${repairLabel}\` label so a later pass can ` +
+    "finish the outstanding repairs. The recovery is to repair the sub-issues " +
+    "named above (by hand, or by the resume pass) — not to re-run planning.",
   ].join("\n");
 }
 

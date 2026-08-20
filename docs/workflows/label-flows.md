@@ -327,6 +327,7 @@ Colours match the seeded definitions in
 | `documentation` | `0075ca` | Human | Documentation-oriented path / clarification bypass |
 | `needs-screenshot` | `d93f0b` | Worker | Missing screenshot evidence; blocks auto-merge until resolved |
 | `degraded-model` | `e99695` | Worker | Planning/grill-class run used a fallback model |
+| `needs-failure-detection-repair` | `d4c5f9` | Worker | Planning published a usable plan, but named sub-issues still lack their `## Failure Detection` criterion (Issue #59). The parent stays open and is **not** marked `failed-once`. The Priority 1.81 resume pass re-gates the sub-issues each cycle, finishes the repairs, and removes the label — escalating to `needs-human` after 3 failed attempts (Issue #60) |
 | `orphan-deps` | `0e8a16` | Worker (idle scan) | Category label on a finding — does **not** queue work alone |
 
 Idle-task finding category labels (security, dead-code, audits, and so
