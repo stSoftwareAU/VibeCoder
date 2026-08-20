@@ -239,6 +239,17 @@ drop it) rather than published-then-fixed. This is prompt-only prevention — th
 deterministic presence gate and the model-driven repair below
 remain the backstops.
 
+The two **in-code fallback publish prompts** — `buildCritiqueFallbackPublishPrompt()`
+(used when the critique prompt fails to build) and
+`buildSingleInvocationPlanningPrompt()` (used when the draft stage produced no
+usable plan) — carry the same requirement, so a run that degrades to a fallback
+does not publish a whole plan of gate offenders. Both interpolate the single
+exported `FAILURE_DETECTION_REQUIREMENT` constant in
+`worker/deno/lib/planning_processor.ts` (alongside `RESERVED_LABEL_PROHIBITION`),
+which states the section, the concrete test / CI gate / alert criterion, the
+`N/A — <reason>` escape hatch, and that a bracketed placeholder does not count.
+One constant means the fallbacks cannot drift from each other or from the gate.
+
 #### 🛡️ Failure-Detection presence gate
 
 After a planning run publishes its sub-issues, a **deterministic presence gate**
