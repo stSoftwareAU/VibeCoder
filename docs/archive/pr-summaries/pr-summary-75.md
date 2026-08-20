@@ -84,10 +84,12 @@ through the `JAVA_HOME` the spec's `env` sets.
 container (`VIBE_IMAGE_AGENT_PROVIDERS=claude`) and that image carries no
 container runtime — `docker`, `podman`, `nerdctl`, `buildah` and `container`
 are all absent and there is no `/var/run/docker.sock` — so the OCI build
-wrapper around the install step could not be executed here. That wrapper
-(`ARG` → spec file → `install-tools.sh`, and the empty-selection no-op) is
-already covered by `container_tools_install_test.ts` from #71; everything the
-image would contain was exercised above at a temporary prefix.
+wrapper around the install step could not be executed here. That wrapper is
+already covered by the #71/#72 suites — `container_manifest_test.ts` asserts
+the Containerfile's `ARG VIBE_CONTAINER_TOOLS` → spec-file → `install-tools.sh`
+block, `container_tools_install_test.ts` the empty-selection no-op, and
+`container_launch_test.ts` the `--build-arg` the launcher passes — and
+everything the image would contain was exercised above at a temporary prefix.
 
 **Checksum provenance.** Temurin's SHA-256 came from the Adoptium API; Maven's
 was derived by verifying the download against Apache's published SHA-512
