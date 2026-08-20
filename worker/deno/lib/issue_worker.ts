@@ -28,6 +28,8 @@ import {
   handOffAnalysisOnly,
   hasAnalysisOnlyMarker,
 } from "./analysis_only_handoff.ts";
+import { isAdminOnlyRepoSettingsIssue } from "./admin_only_finding.ts";
+import { escalateToHuman } from "./needs_human_escalation.ts";
 import {
   detectSuspiciousImageFlag,
   handOffSuspiciousImage,
@@ -310,6 +312,51 @@ async function workOnIssueCore(
         success: true,
         phase: "analysis_only_handoff",
         reason: "analysis_only_marker",
+        timings,
+      };
+    }
+
+    // Issue #53 — up-front hand-off for a repository-admin finding.
+    // `repo_settings_scanner.ts` files `BP-REPO-*` findings whose fix is a
+    // settings change only an admin can make. If a human bulk-triaged one to
+    // `work-on`, running the agent changes nothing and completion fails "no
+    // commits ahead", releasing the claim so the still-`work-on` issue loops
+    // back into the pool forever. Recognise it from its body and hand it to a
+    // human before cloning the repo or running Claude. A clean hand-off is not
+    // a failure.
+    if (isAdminOnlyRepoSettingsIssue(ctx.issueBody)) {
+      logger.info(
+        "Repository-admin finding — handing off to needs-human before running Claude (Issue #53)",
+        { repo: ctx.repo, issueNumber: ctx.issueNumber },
+      );
+      await runPhase("admin_only_handoff", async () => {
+        await escalateToHuman({
+          ghClient: deps.github.createClient(logger),
+          repo: ctx.repo,
+          target: { kind: "issue", number: ctx.issueNumber },
+          needsHumanLabel: ctx.config.needsHumanLabel,
+          heading: "Repository-admin action required",
+          reason:
+            "This finding's fix is a repository settings change that only a " +
+            "repository admin can make — the worker cannot change repository " +
+            "settings, so an agent run would change nothing and fail at " +
+            "completion. Handing off rather than looping on it.",
+          nextStep:
+            "A repository admin should apply the change described in the " +
+            "issue's Suggested fix, then close the issue.",
+          dedupKey: `admin-only-${ctx.issueNumber}`,
+          githubUser: ctx.githubUser,
+          deps: {
+            github: { ensureLabelExists: deps.github.ensureLabelExists },
+          },
+          logger,
+        });
+        return { status: "early_exit", reason: "admin_only_finding" };
+      });
+      return {
+        success: true,
+        phase: "admin_only_handoff",
+        reason: "admin_only_finding",
         timings,
       };
     }
