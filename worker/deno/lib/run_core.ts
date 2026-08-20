@@ -348,6 +348,22 @@ export interface RunCoreDeps {
     opts?: HandlerExecuteOptions,
   ) => Promise<Result<PriorityHandlerResult>>;
 
+  /**
+   * Priority 1.81: Failure-Detection repair resume (Issue #60, part of #54).
+   *
+   * Finishes the outstanding repairs a partially-repaired planning run left
+   * behind: re-gates each `needs-failure-detection-repair` parent's native
+   * sub-issues, repairs what still offends, and clears the label when the set
+   * is empty. Sits immediately after Planning because it consumes the state
+   * Planning produces.
+   *
+   * Optional — when absent the priority is a no-op, so a host wired without
+   * the resume pass runs every other priority unchanged.
+   */
+  resumeFailureDetectionRepairs?: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
+
   // Priority 1.85: Question answering
   findAndProcessQuestion: () => Promise<Result<PriorityHandlerResult>>;
 
@@ -1026,6 +1042,21 @@ export function buildPriorityDispatchTable(
       name: "Planning Mode",
       agentBacked: true,
       execute: deps.findAndProcessPlanning,
+    },
+    {
+      // Issue #60: finishes the Failure-Detection repairs a partially-repaired
+      // planning run left outstanding. Runs straight after Planning — it
+      // consumes the `needs-failure-detection-repair` state Planning produces —
+      // and is Claude-backed, so its watchdog follows the agent-backed bound.
+      priority: 1.81,
+      name: "Failure-Detection Repair Resume",
+      agentBacked: true,
+      execute: (opts) =>
+        deps.resumeFailureDetectionRepairs?.(opts) ??
+          Promise.resolve({
+            ok: true as const,
+            value: { processed: false },
+          }),
     },
     {
       priority: 1.85,

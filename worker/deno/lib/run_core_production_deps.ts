@@ -225,6 +225,7 @@ import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import { runFailureDetectionResumePass } from "./failure_detection_resume.ts";
 import { ensureLabelExists as ensureLabelExistsFn } from "./label_operations.ts";
 import {
   createFeatureRegistry,
@@ -1797,6 +1798,49 @@ export async function createProductionRunCoreDeps(
         opts?.deadlineEpochMs,
       );
       return { ok: true, value: result };
+    },
+
+    // -- Priority 1.81: Failure-Detection repair resume (Issue #60) --
+    // Finishes what a partially-repaired planning run left outstanding: it
+    // re-gates each labelled parent's native sub-issues and repairs only what
+    // still offends, so a sub-issue fixed by hand costs no Claude call at all.
+    async resumeFailureDetectionRepairs(opts) {
+      try {
+        const result = await runFailureDetectionResumePass({
+          repos,
+          ghClient: createGitHubClient(logger),
+          ghCommandFn: runGhCommand,
+          runClaude: (repairPrompt: string) =>
+            workerDeps.claude.runClaudeWithRetry(
+              {
+                prompt: repairPrompt,
+                timeoutSeconds: config.planningTimeout,
+                killAfterSeconds: config.planningKillAfter,
+                phase: "planning",
+                cwd: config.workDir,
+                logger,
+              },
+              { maxRetries: config.maxRateLimitRetries },
+            ),
+          logger,
+          needsHumanLabel: config.needsHumanLabel,
+          githubUser,
+          // Issue #58: the dispatcher's watchdog deadline bounds the repair so
+          // offenders it cannot finish are deferred, not killed mid-flight.
+          ...(opts?.deadlineEpochMs !== undefined
+            ? { deadlineMs: opts.deadlineEpochMs }
+            : {}),
+        });
+        return {
+          ok: true,
+          value: { processed: result.outcomes.length > 0 },
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
     },
 
     // -- Priority 1.85: Question answering --
