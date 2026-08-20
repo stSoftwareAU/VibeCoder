@@ -98,9 +98,12 @@ tail -n 50 ~/logs/cron.log         # launcher output under cron
 cat ~/.vibe-coder/last-launch-phase # runtime_detection | image_build | container_run
 ```
 
-`$WORK_DIR` (default `~/auto-issue-work`) and `.config.json` are likewise the
-host's own paths. Everything else the container writes is disposable and gone
-at the next launch.
+`.config.json` is likewise the host's own file. The workspace is not: the
+repositories live on the `vibe-work` named volume, mounted at
+`/home/vibe/auto-issue-work` inside the container, so there is no
+`auto-issue-work` directory to look for on the host — `WORK_DIR` has no host
+default. Everything else the container writes is disposable and gone at the
+next launch.
 
 ### A container that stopped answering (exit 87)
 

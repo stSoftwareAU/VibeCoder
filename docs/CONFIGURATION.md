@@ -837,9 +837,19 @@ are determined at runtime:
 
 | Setting            | Default                 | Description                                             |
 | ------------------ | ----------------------- | ------------------------------------------------------- |
-| `WORK_DIR`         | `$HOME/auto-issue-work` | Directory where repos are cloned                        |
+| `WORK_DIR`         | in-container work volume | Workspace where repos are cloned (see below)            |
 | `LOG_FILE`         | `$HOME/logs/worker.log` | Log file location                                       |
 | `SET_WINDOW_TITLE` | `true`                  | When `true`, sets terminal window title to current task |
+
+`WORK_DIR` has no host default (Issue #131). The in-container run driver
+resolves and exports it, so the workspace lands on the `vibe-work` named
+volume — `/home/vibe/auto-issue-work` inside the container. Outside the
+container (setup, the launchers, housekeeping) an unset `WORK_DIR` means **no
+work directory and no cache at all**, not a `$HOME` path: nothing host-side
+creates or caches under such a directory (Issue #132) — setup re-queries the
+GitHub API instead of caching lookups. An explicit `WORK_DIR` in the
+environment is still honoured; it is how the in-container worker is pointed
+at the work volume.
 
 ### 🔩 Internal Operational Constants
 
