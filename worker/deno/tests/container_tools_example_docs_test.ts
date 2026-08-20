@@ -258,12 +258,14 @@ for (const arch of ["amd64", "arm64"]) {
 
         // The hand-off the entrypoint (#74) applies at container start.
         const environment = await Deno.readTextFile(`${prefix}/environment`);
-        for (const line of [
-          `PATH=${prefix}/java/bin`,
-          `JAVA_HOME=${prefix}/java`,
-          `PATH=${prefix}/maven/bin`,
-          `MAVEN_HOME=${prefix}/maven`,
-        ]) {
+        for (
+          const line of [
+            `PATH=${prefix}/java/bin`,
+            `JAVA_HOME=${prefix}/java`,
+            `PATH=${prefix}/maven/bin`,
+            `MAVEN_HOME=${prefix}/maven`,
+          ]
+        ) {
           assertStringIncludes(environment, line);
         }
       } finally {
