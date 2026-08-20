@@ -413,7 +413,10 @@ export interface RunCoreDeps {
    * and when the run ends, so no agent runs detached from the loop or is
    * relaunched after "Run complete". Optional for test deps.
    */
-  terminateActiveAgentRuns?: (reason: string) => Promise<void>;
+  terminateActiveAgentRuns?: (
+    reason: string,
+    options?: { keepTerminating?: boolean },
+  ) => Promise<void>;
 
   // Failure tracking
   trackFailure: (key: string) => Promise<void>;
@@ -2503,8 +2506,12 @@ export async function runCoreLoop(
                     // abandoned handler spawned is terminated, and its retry
                     // loop will not relaunch it.
                     if (deps.terminateActiveAgentRuns) {
+                      // Issue #55: a handler abandonment is transient — clear
+                      // the terminating flag once its agents are dead so the
+                      // next priority can still launch its own agent.
                       deps.terminateActiveAgentRuns(
                         `handler ${handler.name} abandoned by the watchdog`,
+                        { keepTerminating: false },
                       ).catch(() => {});
                     }
                   },

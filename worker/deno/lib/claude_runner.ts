@@ -670,31 +670,45 @@ export function resetAgentRunsTerminating(): void {
  * Called when a handler is abandoned by the watchdog and when the run
  * ends, so no agent keeps running detached from the loop that awaited it.
  * Best-effort; returns the pids it signalled.
+ *
+ * Issue #55: the terminating flag is process-global. Leaving it set is correct
+ * only when the whole run is ending; a watchdog HANDLER abandonment is
+ * transient — the loop continues to the next priority, which must be able to
+ * launch its own agent. Pass `keepTerminating: false` for that case: the flag
+ * is cleared once the abandoned agents are confirmed dead (their runners
+ * already returned on the SIGTERM, so they cannot relaunch), so a single
+ * abandonment no longer silently refuses every agent for the rest of the run.
  */
 export async function terminateActiveAgentRuns(
   reason: string,
   logger?: Logger,
+  options: { keepTerminating?: boolean } = {},
 ): Promise<number[]> {
+  const keepTerminating = options.keepTerminating ?? true;
   agentRunsTerminating = true;
-  const runs = [...activeAgentRuns.values()];
-  if (runs.length === 0) return [];
-  (logger ?? runs[0]?.logger)?.warn(
-    `Terminating ${runs.length} active agent run(s) — ${reason}: ${
-      runs.map((r) => `${r.label} (pid ${r.pid})`).join(", ")
-    }`,
-  );
-  await Promise.all(runs.map(async (run) => {
-    try {
-      await killClaudeProcessTree(run.pid, run.killAfterSeconds, run.logger);
-    } catch (err) {
-      run.logger?.warn(
-        `Failed to terminate agent pid ${run.pid}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  }));
-  return runs.map((r) => r.pid);
+  try {
+    const runs = [...activeAgentRuns.values()];
+    if (runs.length === 0) return [];
+    (logger ?? runs[0]?.logger)?.warn(
+      `Terminating ${runs.length} active agent run(s) — ${reason}: ${
+        runs.map((r) => `${r.label} (pid ${r.pid})`).join(", ")
+      }`,
+    );
+    await Promise.all(runs.map(async (run) => {
+      try {
+        await killClaudeProcessTree(run.pid, run.killAfterSeconds, run.logger);
+      } catch (err) {
+        run.logger?.warn(
+          `Failed to terminate agent pid ${run.pid}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }));
+    return runs.map((r) => r.pid);
+  } finally {
+    if (!keepTerminating) agentRunsTerminating = false;
+  }
 }
 
 /** Milliseconds the runner waits for the child to settle after a kill. */

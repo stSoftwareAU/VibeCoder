@@ -419,3 +419,73 @@ Deno.test("run_core watchdog - handlerHardTimeoutMs: flat for non-agent handlers
     "past the deadline: flat",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Issue #55 — a watchdog HANDLER abandonment must not disable agent launches
+// for the rest of the run. The terminating flag is transient for that case.
+// ---------------------------------------------------------------------------
+
+Deno.test("terminateActiveAgentRuns - a handler abandonment (keepTerminating:false) clears the flag (Issue #55)", async () => {
+  resetAgentRunsTerminating();
+  await terminateActiveAgentRuns(
+    "handler Planning Mode abandoned by the watchdog",
+    undefined,
+    { keepTerminating: false },
+  );
+  assertEquals(
+    isAgentRunsTerminating(),
+    false,
+    "the flag is cleared once the abandoned agents are dead",
+  );
+});
+
+Deno.test("terminateActiveAgentRuns - the run-ending case (default) leaves the flag set (Issue #4369)", async () => {
+  resetAgentRunsTerminating();
+  await terminateActiveAgentRuns("run ending");
+  assertEquals(
+    isAgentRunsTerminating(),
+    true,
+    "at run end the flag stays set, refusing every further launch",
+  );
+  resetAgentRunsTerminating();
+});
+
+Deno.test({
+  name:
+    "claude runner - a later priority's agent launch proceeds after a watchdog abandonment (Issue #55)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    resetAgentRunsTerminating();
+    // The watchdog abandons a handler: terminate its agents but clear the flag.
+    await terminateActiveAgentRuns(
+      "handler Planning Mode abandoned by the watchdog",
+      undefined,
+      { keepTerminating: false },
+    );
+    assertEquals(isAgentRunsTerminating(), false);
+    // The next priority must actually spawn its agent, not be refused.
+    await withStubClaude(
+      `printf '%s\\n' '{"type":"result","result":"done"}'`,
+      async (spawnLog) => {
+        const result = await runClaudeWithRetry(
+          {
+            prompt: "P",
+            model: "m",
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            cwd: await Deno.makeTempDir({ prefix: "post-abandon-" }),
+            mcpConfig: false,
+          },
+          { maxRetries: 2, maxWaitSeconds: 600, initialWaitInterval: 300 },
+        );
+        assert(result.ok, "runner resolves");
+        assertEquals(result.value.exitCode, 0, "the later agent ran normally");
+        assertEquals(
+          await spawnCount(spawnLog),
+          1,
+          "the later agent was launched, not refused",
+        );
+      },
+    );
+  },
+});
