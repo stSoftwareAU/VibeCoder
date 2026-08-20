@@ -12,7 +12,7 @@ created. For internal details, see **Further reading** at the end.
 
 **Four ways to use issues without writing code (yet).** Add a label and the
 worker does something different: **question** → answer in a comment, remove
-`question`, add `needs-human` (Issue #2030 — re-add `question` to ask a
+`question`, add `needs-human` (re-add `question` to ask a
 follow-up); **planning** → draft-then-self-critique a breakdown into sub-issues
 (carrying **no** reserved labels — you triage priority), post a model-usage
 stats block, comment, close parent; **refine-issue** → update title/body from
@@ -129,7 +129,7 @@ flowchart TD
 ## 📏 Preconditions / invariants
 
 - **Question:** Worker posts an answer comment, removes `question`, and adds
-  `needs-human` to signal the user's turn (Issue #2030). Re-add `question` to
+  `needs-human` to signal the user's turn. Re-add `question` to
   ask a follow-up.
 - **Planning:** Worker must not create branches, commits, or PRs; only create
   sub-issues and comment. Sub-issues are created with **no reserved
@@ -143,7 +143,7 @@ flowchart TD
 - **Clarification:** All interaction via GitHub; if unclear, post questions and
   add `needs-human`, unassign; user responds and removes label to retry.
 
-### 🔓 Open-PR blocking does not apply (Issue #500)
+### 🔓 Open-PR blocking does not apply
 
 Planning, question, and refinement finders **do not check for open PRs**. The
 worker can process these workflows even when the repo already has an open
@@ -167,21 +167,21 @@ response even while the worker has an unmerged PR in the same repository.
 
 1. **Claim** — Claim the issue.
 2. **Answer** — Run Claude with question prompt (timeout: 600 seconds by default
-   — Issue #662); post answer as issue comment.
-3. **Clarification request (Issue #665)** — If Claude determines the question is
+   —); post answer as issue comment.
+3. **Clarification request** — If Claude determines the question is
    too broad or ambiguous, it outputs a structured clarification request
    (starting with `## Clarification Needed`) instead of a poor answer. The
    worker posts the clarification as a comment, removes the `question` label,
    adds `needs-human`, and unassigns. This does **not** count as a failure — no
    `failed-once` progression. You respond on the issue and re-add the `question`
    label to retry.
-4. **Partial answer on timeout (Issue #661)** — If Claude times out (exit code
+4. **Partial answer on timeout** — If Claude times out (exit code
    124 or 137) but has produced some output, that output is posted as a
    **partial answer** with a "Partial Answer (Timed Out)" disclaimer, rather
    than being discarded. The `question` label is removed (preventing retry
    loops), but `needs-human` and `failed-once` labels are **not** added. If the
    output is empty or only meta-commentary, normal failure handling continues.
-5. **Cleanup** — Remove `question`; add `needs-human` (Issue #2030) so the label
+5. **Cleanup** — Remove `question`; add `needs-human` so the label
    list reads as the user's turn. The user re-adds `question` to ask a
    follow-up.
 
@@ -193,19 +193,19 @@ response even while the worker has an unmerged PR in the same repository.
    writes the plan as plain text with no side effects, followed by a **critique
    → revise → execute** turn that re-feeds the draft, adversarially attacks it,
    revises once, then creates the sub-issues via tool/API (no code changes). See
-   [Two-stage self-critique planning](#-two-stage-self-critique-planning-issues-2646--2648).
+   [Two-stage self-critique planning](#-two-stage-self-critique-planning).
 3. **Summarise** — Post comment on parent listing sub-issues and relationships,
    plus a model-usage stats block (see
-   [Degraded-model observability](#-degraded-model-observability-issues-2649--2650)).
+   [Degraded-model observability](#-degraded-model-observability)).
 4. **Cleanup** — Remove `planning` label; close parent issue.
 
-#### 🏷️ Sub-issues carry **no** reserved labels (Issues #2822 / #2823 / #2826)
+#### 🏷️ Sub-issues carry **no** reserved labels
 
 Sub-issues the worker files during planning are created **without** any reserved
 workflow or priority label — none of `top-priority`, `work-on`, `low-priority`,
 `planning`, `question`, `refine-issue`, `best-model`, `failed`, `needs-human`,
 etc. The worker is not on the trusted-author allowlist, so any reserved label it
-tried to apply would be silently stripped anyway (Issue #1344); planning strips
+tried to apply would be silently stripped anyway; planning strips
 them **at creation** instead, and the planning prompt is hardened to never
 request them.
 
@@ -221,7 +221,7 @@ down further, and so on. Nothing is queued until you say so.
 > planning run leaves on its sub-issues, and it is your signal that the run may
 > have used a fallback model worth reviewing.
 
-#### 🚧 Pre-publish prevention (Issue #3273)
+#### 🚧 Pre-publish prevention
 
 The presence gate and the self-repair below are **post-publication** backstops:
 by the time they fire, the non-conforming sub-issues already exist on GitHub.
@@ -236,15 +236,15 @@ its own draft** (fills in the real criterion) rather than publishing a
 non-conforming sub-issue; a sub-issue for which no real criterion can be stated
 is treated as a **blocker** to publishing that sub-issue (re-scope, merge, or
 drop it) rather than published-then-fixed. This is prompt-only prevention — the
-deterministic presence gate (#3246) and the model-driven repair (#3272) below
+deterministic presence gate and the model-driven repair below
 remain the backstops.
 
-#### 🛡️ Failure-Detection presence gate (Issue #3246)
+#### 🛡️ Failure-Detection presence gate
 
 After a planning run publishes its sub-issues, a **deterministic presence gate**
 verifies that every published sub-issue body carries a filled `## Failure
 Detection` section (the planner emits it from `prompts/planning/` v19 onward,
-Issue #3245). This closes the "quality escape" of an unchecked prose rule: a
+). This closes the "quality escape" of an unchecked prose rule: a
 prompt instruction alone can be silently ignored, so the gate turns a missing
 criterion into a **loud, labelled planning failure** rather than a silent pass.
 
@@ -268,7 +268,7 @@ no behaviour change. The gate is `worker/deno/lib/failure_detection_gate.ts`,
 wired into the single `closePlanningIssue()` chokepoint; an unreadable sub-issue
 body is skipped (best-effort) rather than mis-reported as a false failure.
 
-#### 🔧 Model-driven self-repair (Issue #3272)
+#### 🔧 Model-driven self-repair
 
 Before the gate hard-fails a run, the worker tries to **repair** each offending
 sub-issue rather than dead-fail. This closes a **retry deadlock**: the gate runs
@@ -281,7 +281,7 @@ same fast-fail.
 
 The repair (`worker/deno/lib/failure_detection_repair.ts`) runs once per
 offender: it invokes Claude (planning-phase model/effort, so a degraded run
-stays consistent with #2720/#3217) to draft a concrete `## Failure Detection`
+stays consistent with /) to draft a concrete `## Failure Detection`
 section from the sub-issue's title/body — a real test / CI gate / alert, or an
 explicit `N/A — <reason>` — patches it into the sub-issue body via `gh issue
 edit`, and re-runs the **pure** gate to confirm the drafted section actually
@@ -303,16 +303,16 @@ The repair is **best-effort and idempotent**: an offender whose body cannot be
 read, whose Claude call fails/times out/empties, whose draft still fails the
 gate, or whose `gh issue edit` throws stays in `stillOffending` and drives the
 loud, labelled `handlePlanningFailure` (repair impossible → hard-block remains
-the fallback, per #3270). The re-gate is performed on the constructed body
+the fallback, per). The re-gate is performed on the constructed body
 *before* the patch, so a still-failing draft never overwrites the sub-issue.
 
-#### 🎯 Auto-milestone for sub-issues (Issue #2863)
+#### 🎯 Auto-milestone for sub-issues
 
 When a planning run breaks an issue into **two or more** sub-issues **and the
 parent issue has no milestone of its own**, the worker auto-creates a GitHub
 milestone named `#<N> <title>` (from the parent issue) and assigns every
 sub-issue it created to that milestone. This opts the whole batch into the
-existing milestone-branch delivery workflow (Issue #1300): each sub-issue PR
+existing milestone-branch delivery workflow: each sub-issue PR
 auto-merges into a shared `milestone/<name>` branch, and the default branch is
 only updated via the single final milestone PR once all sub-issues close — the
 "review once, run overnight" model.
@@ -322,7 +322,7 @@ re-running planning on the same parent never creates a duplicate milestone, and
 a long parent title is truncated to fit. Two gates keep it out of the way:
 
 - **Parent already has a milestone** → no new milestone; the existing
-  inheritance behaviour (Issue #1300) assigns sub-issues to the parent's
+  inheritance behaviour assigns sub-issues to the parent's
   milestone instead.
 - **Fewer than two sub-issues** → no milestone; a single sub-issue is delivered
   directly against the default branch.
@@ -331,7 +331,7 @@ If you do not want the milestone in a rare case, detach it manually after the
 run. Milestone creation and assignment are **best-effort** — a GitHub failure is
 logged and never blocks planning closure.
 
-> **Robust sub-issue detection (Issue #2900).** The auto-milestone only fires
+> **Robust sub-issue detection.** The auto-milestone only fires
 > when the worker correctly counts the sub-issues a run created. Two refinements
 > keep that count honest:
 >
@@ -351,7 +351,7 @@ logged and never blocks planning closure.
 > would be created, and the sub-issue PRs would target the default branch instead
 > of the milestone feature branch.
 
-#### 🔁 Two-stage self-critique planning (Issues #2646 / #2648)
+#### 🔁 Two-stage self-critique planning
 
 Planning does not take its first draft at face value. Each run is two sequential
 Claude turns:
@@ -369,7 +369,7 @@ worker arguing with itself. If the draft turn fails or comes back empty,
 planning **falls back to the original single-invocation flow**, so a run is
 never worse than it was before self-critique existed.
 
-#### 🎯 Auto-milestone for multi-issue plans (Issue #2863)
+#### 🎯 Auto-milestone for multi-issue plans
 
 When a planning run breaks an issue into **2 or more** sub-issues and the parent
 planning issue has **no milestone**, the worker automatically creates a GitHub
@@ -385,7 +385,7 @@ run overnight" workflow (see [milestones.md](milestones.md)).
 - **Single sub-issue → no milestone.** A plan that yields just one sub-issue is
   left as an ordinary default-branch issue.
 - **Parent already has a milestone → unchanged.** The existing inheritance
-  behaviour (Issue #1300) is preserved — sub-issues inherit the parent's
+  behaviour is preserved — sub-issues inherit the parent's
   milestone via `--milestone` and no new milestone is created.
 - **Idempotent.** Re-running planning on the same issue matches the existing
   milestone of the same title (it is never duplicated) and re-assigns the same
@@ -396,7 +396,7 @@ run overnight" workflow (see [milestones.md](milestones.md)).
 ```mermaid
 flowchart TD
     A[Planning run created N sub-issues] --> B{Parent has a milestone?}
-    B -- Yes --> C[Issue #1300: sub-issues inherit it]
+    B -- Yes --> C[: sub-issues inherit it]
     B -- No --> D{N ≥ 2?}
     D -- No --> E[Single sub-issue — no milestone]
     D -- Yes --> F[Auto-create '#N title' milestone]
@@ -408,7 +408,7 @@ Implementation: `worker/deno/lib/planning_milestone.ts`
 (`ensurePlanningMilestone`), called from `closePlanningIssue` in
 `worker/deno/lib/planning_processor.ts`.
 
-#### 📈 Degraded-model observability (Issues #2649 / #2650)
+#### 📈 Degraded-model observability
 
 Every planning run posts a **model-usage stats block** as a comment on the
 parent issue: the model that was requested, the model(s) that actually served
@@ -449,7 +449,7 @@ changes happen on the issue itself.
    describing what changed and why.
 8. **Cleanup** — The `refine-issue` label is **removed**, the `needs-human`
    label is **added** (signalling handoff for human review), and all processed
-   feedback comments receive an eyes (👀) reaction. (Issue #2029 retired the
+   feedback comments receive an eyes (👀) reaction. (retired the
    legacy `refined` completion label.)
 
 #### Completion indicators
@@ -506,7 +506,7 @@ If the refinement fails (e.g. Claude times out, API errors), the worker:
 | Setting               | Default           | Description                                                                           |
 | --------------------- | ----------------- | ------------------------------------------------------------------------------------- |
 | `refineIssueLabel`    | `refine-issue`    | Label that triggers the refinement workflow                                           |
-| `needsHumanLabel`     | `needs-human`     | Label added on successful completion to signal handoff for human review (Issue #2029) |
+| `needsHumanLabel` | `needs-human` | Label added on successful completion to signal handoff for human review |
 | `refinementTimeout`   | `300` (5 minutes) | Maximum time for Claude to process the refinement                                     |
 | `refinementKillAfter` | `10` seconds      | Grace period before forceful termination after timeout                                |
 
@@ -565,8 +565,7 @@ implementation attempts on issues that are inherently multi-PR tasks.
      subsequent run via the normal **planning** workflow (create sub-issues,
      comment, close parent). The worker does **not** add the `planning` label
      itself — it is operational and reserved for trusted humans (see
-     [Worker Label Policy](../../README.md#-supported-labels); PRs #1475,
-     #1476).
+     [Worker Label Policy](../../README.md#-supported-labels);,).
 
 #### Criteria for automatic escalation
 
@@ -660,11 +659,11 @@ flowchart TD
 
 | Setting            | Default                        | Behaviour                                                   |
 | ------------------ | ------------------------------ | ----------------------------------------------------------- |
-| `QUESTION_TIMEOUT` | `600` (10 minutes, Issue #662) | Hard ceiling — Claude process is killed after this duration |
+| `QUESTION_TIMEOUT` | `600` (10 minutes,) | Hard ceiling — Claude process is killed after this duration |
 
 When a question times out:
 
-1. **Partial output exists** (Issue #661) → posted as a partial answer with a
+1. **Partial output exists** → posted as a partial answer with a
    disclaimer. The `question` label is removed to prevent retry loops.
 2. **No useful output** → normal failure handling (comment, `failed-once`
    label).
@@ -678,11 +677,11 @@ repositories or read large codebases.
 - **Question failure:** Same failure semantics as other work (e.g. track
   failure, optional label); the workflow avoids leaving an issue stuck with
   `question` and no answer indefinitely.
-- **Question clarification (Issue #665):** If Claude determines a question is
+- **Question clarification:** If Claude determines a question is
   too broad or ambiguous, it outputs a clarification request instead of a poor
   answer. This is not a failure — the user responds and re-adds `question` to
   retry.
-- **Question timeout with partial output (Issue #661):** Partial answers are
+- **Question timeout with partial output:** Partial answers are
   posted rather than discarded. This gives the user useful content even when
   Claude could not complete its analysis within the timeout.
 - **Planning:** If Claude does not create sub-issues (e.g. output not detected),

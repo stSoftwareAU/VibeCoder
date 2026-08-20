@@ -9,10 +9,10 @@ overview, see the [main README](../README.md).
 - [Multiple Allowed Authors](#multiple-allowed-authors)
 - [Multiple PR (Pull Request) Reviewers](#multiple-pr-reviewers)
 - [Configuration Defaults](#configuration-defaults)
-- [Effort Level Configuration](#-effort-level-configuration-issue-1402)
-- [Session Resume](#-session-resume-issue-1324)
-- [Session Compaction](#-session-compaction-issue-1328)
-- [Context Budget Monitoring](#-context-budget-monitoring-issue-1327)
+- [Effort Level Configuration](#-effort-level-configuration)
+- [Session Resume](#-session-resume)
+- [Session Compaction](#-session-compaction)
+- [Context Budget Monitoring](#-context-budget-monitoring)
 - [Authorised Commenters](#authorised-commenters)
 - [Bot Accounts](#bot-accounts)
 - [Per-Repository Configuration](#per-repository-configuration)
@@ -24,7 +24,7 @@ overview, see the [main README](../README.md).
 
 All runtime configuration is managed through a `.config.json` (JSON = JavaScript
 Object Notation) file created by `./setup.sh`. Environment variables do not
-override config file values at runtime (Issue #266). To change configuration,
+override config file values at runtime. To change configuration,
 either re-run `./setup.sh` or edit `.config.json` directly.
 
 The `.config.json` file contains only your overridden values — defaults are not
@@ -44,18 +44,18 @@ to all users unless explicitly overridden.
 ```
 
 > **📝 Note:** The default branch is automatically detected per repository via
-> the GitHub API (API = Application Programming Interface) (Issue #140). You
+> the GitHub API (API = Application Programming Interface). You
 > don't need to configure it manually.
 
 The `./setup.sh` script creates this file. Only values that differ from the
 built-in defaults are written.
 
 Re-running `./setup.sh` rewrites `.config.json`, and every key you set by hand
-survives that rewrite (Issue #4033) — including keys setup itself never asks
+survives that rewrite — including keys setup itself never asks
 for, such as `fleet_pr_authors` and `worker_name`. The only keys removed are:
 
 - The three hardwired discovery labels (`issue_labels`, `work_on_label`,
-  `low_priority_label`), which are not configurable (Issue #1834).
+  `low_priority_label`), which are not configurable.
 - `repo_config` entries whose repo is not in `repos` — dead config nothing
   reads. Each removal is printed as a warning, and a running worker raises the
   same non-blocking warning at startup config validation.
@@ -74,10 +74,10 @@ array can:
 For backward compatibility, the legacy `allowed_author` (singular) string is
 still supported and will be converted to an array internally.
 
-### Trusted humans are not fleet hosts (Issue #4074)
+### Trusted humans are not fleet hosts
 
 Two lists name GitHub logins and they grant opposite things. Merging them is the
-regression recorded in Issue #4074, so read the distinction before editing
+regression recorded in, so read the distinction before editing
 either:
 
 | List               | Members              | What membership grants                                                        |
@@ -125,27 +125,27 @@ explicitly overridden.
 | `failed_once_label`          | `failed-once`             | Label applied after first failure (issue will be retried)                                                                                                                                                                                                                                        |
 | `refine_issue_label`         | `refine-issue`            | Label for collaborative issue refinement                                                                                                                                                                                                                                                         |
 | `planning_label`             | `planning`                | Label for planning mode (task breakdown instead of implementation)                                                                                                                                                                                                                               |
-| `question_label`             | `question`                | Label for question answering mode (Issue #287). After answering, the worker removes `question` and adds `needs-human` (Issue #2030) — the user re-adds `question` to ask a follow-up. The retired `answered_label` config key is no longer accepted.                                             |
-| `quorum_label`               | `quorum`                  | Label for the Quorum plan-off (Issue #4112). Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
-| `needs_human_label`          | `needs-human`             | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel (Issues #1468–#1471). |
-| `run_mode`                   | `container`               | Where the worker runs (Issue #4146). The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
-| `agent_provider`             | `claude`                  | Coding-agent provider id — `claude`, `codex` or `gemini` (Issues #4067, #4106, #4107). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
-| `agent_providers`            | `["claude"]`              | Coding-agent providers enabled for a run (Issue #4108). Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
+| `question_label` | `question` | Label for question answering mode. After answering, the worker removes `question` and adds `needs-human` — the user re-adds `question` to ask a follow-up. The retired `answered_label` config key is no longer accepted. |
+| `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
+| `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
+| `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
+| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex` or `gemini`. The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
+| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
-| `best_planning_model`        | `""` (derive from routing) | Configured best planning model for degraded-model detection (Issue #2654). Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`.            |
+| `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_overrides`      | `{}`                      | Per-phase model tier overrides (see below)                                                                                                                                                                                                                                                       |
-| `phase_effort_overrides`     | `{}`                      | Per-phase effort level overrides (see [Effort Level Configuration](#-effort-level-configuration-issue-1402))                                                                                                                                                                                     |
-| `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights-issue-2401))                                                                                                                                                                      |
-| `idle_task_cadence`          | #4003 policy              | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence-issue-4011))                                                                                                                                                                          |
-| `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor-issue-2622))                                                                                                                                                                       |
-| `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`). See [Verbosity Configuration](#-verbosity-configuration-issue-1329).                                                                                                                                                       |
+| `phase_effort_overrides`     | `{}`                      | Per-phase effort level overrides (see [Effort Level Configuration](#-effort-level-configuration))                                                                                                                                                                                     |
+| `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
+| `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
+| `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`). See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                       |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
 > — they are fixed in the codebase and any `.config.json` key that tries to set
 > them is rejected as an unknown key and ignored:
 >
 > - **Discovery labels** — `top-priority`, `work-on`, `low-priority` (Issue
->   #1834). The retired `issue_labels`, `work_on_label`, and `low_priority_label`
+>). The retired `issue_labels`, `work_on_label`, and `low_priority_label`
 >   keys are no longer accepted. See
 >   [Issue selection priority](workflows/issue-processing.md#-issue-selection-priority).
 > - **`documentation`** — applied to documentation-only issues.
@@ -155,7 +155,7 @@ explicitly overridden.
 > `{ "planning": "sonnet" }`) or `best_planning_model` — there is no separate
 > per-phase planning-model config key.
 
-### ⚖️ Idle-Task Template Weights (Issue #2401)
+### ⚖️ Idle-Task Template Weights
 
 When no claimable work exists, the worker files a background **idle-task**
 issue. It picks which template to run from the seventeen registered templates by
@@ -191,7 +191,7 @@ Semantics:
 - **Default = uniform.** An empty map (the default) or an all-zero map yields no
   behaviour change — the draw stays uniform.
 
-### 🗓️ Idle-Task Cadence (Issue #4011)
+### 🗓️ Idle-Task Cadence
 
 Weights bias a random draw; they guarantee nothing. `idle_task_cadence` puts a
 **floor** under the scans that matter: three **important** templates
@@ -202,7 +202,7 @@ random.
 
 Which templates get a floor, over which windows, and at which tier is a **spend**
 decision, so — like `phase_model_overrides` — it is operator-only configuration
-with no in-repo equivalent (#2625/#2626).
+with no in-repo equivalent.
 
 **The default is the full policy**: change nothing and the floor above is
 already in force. Configure the block only to alter it:
@@ -249,7 +249,7 @@ Full behaviour, including the decision flow and the log lines a biased tick
 emits, is in
 [Idle-task Framework → Configuring the cadence](IDLE-TASK-FRAMEWORK.md#configuring-the-cadence--idle_task_cadence-issue-4011).
 
-### ⬆️ Minimum-Version Floor (Issue #2622)
+### ⬆️ Minimum-Version Floor
 
 The software auto-update framework is normally time-based: each tool updates at
 most once per interval (default 7 days). That cadence is wrong when a specific
@@ -297,11 +297,11 @@ Semantics:
 `software_min_versions.claude` floor is what guarantees a worker is recent enough
 to resolve those aliases to the newest release. For Opus 5 the `opus` alias only
 resolves to `claude-opus-5` once the CLI is at (or above) an Opus-5-resolving
-version; raising the floor to that release is tracked separately in #3558. Until
+version; raising the floor to that release is tracked separately in. Until
 the floor is raised, an older CLI resolves `opus` to Opus 4.8 — still priced
 identically ($5 / $25 per MTok), so cost tracking is unaffected.
 
-### 🧭 Run Mode (Issue #4146)
+### 🧭 Run Mode
 
 `run_mode` names where the worker runs, and there is one answer: `container`
 launches it inside the Vibe Coder image. Containment is mandatory (Issue #4).
@@ -315,22 +315,21 @@ launches it inside the Vibe Coder image. Containment is mandatory (Issue #4).
 - **Precedence.** `VIBE_RUN_MODE` (one run) → `run_mode` in `.config.json` →
   the `container` default. Leaving the key unset is the normal configuration.
 - **Removed modes fail loud.** `native` (the worker run directly on the host,
-  Issues #4145, #4148) and the macOS `seatbelt` profile (Issue #4300) were
-  removed by Issue #4 — both sat outside the #4060 containment boundary. A
+  ,) and the macOS `seatbelt` profile were
+  removed by Issue #4 — both sat outside the containment boundary. A
   configuration that still names one is refused with the removal explained;
   it is never coerced into a container run the operator did not know they
   were getting. Any other value fails loudly naming the only mode, so a typo
   never runs a host in a mode it did not ask for.
 - **No auto-fallback.** A missing container runtime is a loud non-zero exit
-  (Issue #3234); there is no host mode for it to fall back to. A repository
+ ; there is no host mode for it to fall back to. A repository
   whose build needs a container runtime of its own cannot be served from
   inside the worker container — [`container_launch.ts`](../worker/deno/lib/container_launch.ts)
   refuses runtime-socket mounts and `--privileged` by design — and the answer
   is to change the build, not to run the worker on the host.
-- **Prerequisites** (Issue #4149): the host needs a working container runtime
+- **Prerequisites**: the host needs a working container runtime
   and the worker image; the agent CLI, `jq` and `timeout` are
-  container-owned (`claude` stays on the host for setup's token minting,
-  Issue #4161).
+  container-owned (`claude` stays on the host for setup's token minting,).
 
 Both launchers and `setup.sh` read the resolved value from one command rather
 than parsing `.config.json`, so the precedence cannot drift between hosts:
@@ -339,7 +338,7 @@ than parsing `.config.json`, so the precedence cannot drift between hosts:
 deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 ```
 
-### 🧠 Phase Model Overrides (Issue #1265)
+### 🧠 Phase Model Overrides
 
 Each phase of the worker's Claude invocations has a default model tier. You can
 override any phase's model via `phase_model_overrides` in `.config.json`:
@@ -357,12 +356,12 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 
 | Phase            | Default Model | Description                                          |
 | ---------------- | ------------- | ---------------------------------------------------- |
-| `planning`       | `fable`       | Complex task decomposition — Fable 5 top tier, plan quality compounds across sub-issues (Issue #2621) |
-| `grill_me`       | `fable`       | Requirements interrogation — Fable 5 top tier, shapes everything downstream (Issue #2621) |
-| `refinement`     | `fable`       | Rewording issue titles/descriptions — planning-shaped, promoted to Fable 5 (Issue #3229) |
-| `revision`       | `fable`       | Rewriting issues from review feedback — planning-shaped, promoted to Fable 5 (Issue #3229) |
-| `question`       | `fable`       | Answering codebase questions — planning-shaped, promoted to Fable 5 (Issue #3229) |
-| `clarification`  | `fable`       | Assessing whether an issue has sufficient detail — planning-shaped, promoted to Fable 5 (Issue #3229) |
+| `planning` | `fable` | Complex task decomposition — Fable 5 top tier, plan quality compounds across sub-issues |
+| `grill_me` | `fable` | Requirements interrogation — Fable 5 top tier, shapes everything downstream |
+| `refinement` | `fable` | Rewording issue titles/descriptions — planning-shaped, promoted to Fable 5 |
+| `revision` | `fable` | Rewriting issues from review feedback — planning-shaped, promoted to Fable 5 |
+| `question` | `fable` | Answering codebase questions — planning-shaped, promoted to Fable 5 |
+| `clarification` | `fable` | Assessing whether an issue has sufficient detail — planning-shaped, promoted to Fable 5 |
 | `implementation` | `opus` (base) | Core work — uses the base `claude_model` setting (`issue` phase, effort `high`) |
 | `ci_fix`         | `opus`        | Fixing CI failures from structured error messages (effort `medium`) |
 | `quality_fix`    | `opus`        | Fixing quality check failures (lint, test errors) (effort `medium`) |
@@ -382,14 +381,14 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 **Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable 5 (model id
 `claude-fable-5`, alias `fable`) is the top tier above Opus, with a 1M-token
 context window and a rate-limit fallback of `fable → opus → sonnet → haiku`
-(Issue #2619). It is the default for the eight planning-shaped phases
+. It is the default for the eight planning-shaped phases
 (`planning`, `grill_me`, `refinement`, `revision`, `question`, `clarification`,
-`quorum`, `quorum_judge`) under Issues #2621, #3229 and #4112; pin any other phase to it explicitly, e.g.
+`quorum`, `quorum_judge`) under, and; pin any other phase to it explicitly, e.g.
 `"phase_model_overrides": { "issue": "fable" }` or `CLAUDE_MODEL=fable`. The
 `opus` alias resolves to the latest Opus (Opus 5 as of July 2026) once the CLI
-version floor is met — see [Minimum-Version Floor](#-minimum-version-floor-issue-2622).
+version floor is met — see [Minimum-Version Floor](#-minimum-version-floor).
 
-### 🔊 Verbosity Configuration (Issue #1329)
+### 🔊 Verbosity Configuration
 
 The worker supports configurable response verbosity — controlling how detailed
 Claude's output is for each task. Different task types benefit from different
@@ -486,7 +485,7 @@ Approximate savings compared to `standard`:
 
 The worker injects a `## Response Verbosity` block into the prompt template
 before passing it to Claude. Every level gets one, including `standard`
-(Issue #3813) — the highest-volume surface publishes its output as a PR body
+ — the highest-volume surface publishes its output as a PR body
 and an issue comment a human reads, so leaving it silent left the expected
 visible output unstated.
 
@@ -499,7 +498,7 @@ close, so "thorough" does not mean "unbounded". The instruction text lives in
 `worker/deno/lib/verbosity.ts`; the phase defaults live in
 `worker/deno/lib/config_defaults.ts`.
 
-### 💪 Effort Level Configuration (Issue #1402)
+### 💪 Effort Level Configuration
 
 The worker supports per-phase effort levels — controlling how deeply Claude
 reasons about each task. Architectural planning benefits from maximum effort,
@@ -513,7 +512,7 @@ optimisation by matching reasoning depth to task complexity.
 | `low`    | Minimal reasoning — simple, mechanical tasks                 |
 | `medium` | Moderate reasoning — reactive tasks with structured input    |
 | `high`   | Thorough reasoning — general implementation (global default) |
-| `xhigh`  | Extra-high reasoning — between `high` and `max`; Anthropic's recommended setting for most coding/agentic use on Opus 4.7+ / Fable 5 (Issue #2620) |
+| `xhigh` | Extra-high reasoning — between `high` and `max`; Anthropic's recommended setting for most coding/agentic use on Opus 4.7+ / Fable 5 |
 | `max`    | Deepest reasoning — architectural decisions                  |
 
 **Default effort per phase:**
@@ -521,7 +520,7 @@ optimisation by matching reasoning depth to task complexity.
 | Phase           | Default Effort | Rationale                                               |
 | --------------- | -------------- | ------------------------------------------------------- |
 | `planning`      | `max`          | Architectural decisions need deepest reasoning          |
-| `grill_me`      | `max`          | Requirements interrogation shapes everything downstream (Issue #2621) |
+| `grill_me` | `max` | Requirements interrogation shapes everything downstream |
 | `issue`         | `high`         | General implementation benefits from thorough reasoning |
 | `question`      | `high`         | Answering questions needs careful thought               |
 | `ci_fix`        | `medium`       | Reactive, well-scoped task                              |
@@ -563,7 +562,7 @@ Use `phase_effort_overrides` to override the default effort for specific phases:
 5. `DEFAULT_EFFORT` constant (`"high"`)
 
 This priority chain mirrors the
-[Phase Model Overrides](#-phase-model-overrides-issue-1265) pattern —
+[Phase Model Overrides](#-phase-model-overrides) pattern —
 environment variables take precedence over config file overrides, which take
 precedence over built-in defaults.
 
@@ -573,39 +572,39 @@ precedence over built-in defaults.
 ### ⚙️ Operational Defaults
 
 These values have built-in defaults and can be overridden in `.config.json`
-(Issue #277). Only values that differ from the defaults need to be stored — if a
+. Only values that differ from the defaults need to be stored — if a
 default changes in the codebase, the new default flows to all installations
 unless explicitly overridden.
 
 | Setting                        | Config Key                       | Default    | Description                                                                                                                                                                                          |
 | ------------------------------ | -------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude timeout                 | `claude_timeout`                 | `3600`     | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by Issue #1824 so one wedged run cannot starve every other repository.                |
-| Progress extension enabled     | `progress_extension_enabled`     | `false`    | Extend the **issue-work** hard deadline while the run is demonstrably progressing (Issue #4290). Off by default. See [Progress-extended deadline](#-progress-extended-deadline-issue-4290).          |
-| Progress extension grant       | `progress_extension_grant_seconds` | `900`    | Seconds each grant adds to the deadline, measured from the moment of the check (Issue #4296).                                                                                                        |
-| Progress extension stall window | `progress_extension_stall_seconds` | `300`   | A tool call older than this is no longer evidence of activity (Issue #4296). Must be at least `progress_extension_check_seconds`.                                                                    |
-| Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between working-tree samples while a run is inside its budget (Issue #4295), so a stalled checkout is noticed within a check interval rather than a whole grant. Must be positive.            |
+| Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
+| Progress extension enabled | `progress_extension_enabled` | `false` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. Off by default. See [Progress-extended deadline](#-progress-extended-deadline). |
+| Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
+| Progress extension stall window | `progress_extension_stall_seconds` | `300` | A tool call older than this is no longer evidence of activity. Must be at least `progress_extension_check_seconds`. |
+| Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between working-tree samples while a run is inside its budget, so a stalled checkout is noticed within a check interval rather than a whole grant. Must be positive. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
 | Sleep interval                 | `sleep_interval`                 | `30`       | Seconds between scans                                                                                                                                                                                |
-| Max concurrent issues          | `max_concurrent_issues`          | `1`        | Issues worked concurrently per host (integer 1–8). `1` is single-claim; higher values are reserved for the concurrent-issue pool (Issue #4168) and are validated but not yet consumed (Issue #4174). |
+| Max concurrent issues | `max_concurrent_issues` | `1` | Issues worked concurrently per host (integer 1–8). `1` is single-claim; higher values are reserved for the concurrent-issue pool and are validated but not yet consumed. |
 | Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
 | Refinement timeout             | `refinement_timeout`             | `300`      | Timeout for issue refinement (5 minutes)                                                                                                                                                             |
 | Refinement kill-after          | `refinement_kill_after`          | `10`       | Grace period after refinement timeout                                                                                                                                                                |
-| Planning timeout               | `planning_timeout`               | `1800`     | Safety-net ceiling for planning mode (30 minutes) — planning produces sub-issues, so it should be quick (Issue #1824)                                                                                |
-| PR feedback timeout            | `pr_feedback_timeout`            | `1800`     | Timeout for the PR feedback phase (30 minutes). Distinct from `claude_timeout` so reactive phases do not inherit the issue-work budget (Issue #1824).                                                |
-| CI fix timeout                 | `ci_fix_timeout`                 | `1800`     | Timeout for the CI (Continuous Integration) fix phase (30 minutes). Distinct from `claude_timeout` for the same reason as `pr_feedback_timeout` (Issue #1824).                                       |
+| Planning timeout | `planning_timeout` | `1800` | Safety-net ceiling for planning mode (30 minutes) — planning produces sub-issues, so it should be quick |
+| PR feedback timeout | `pr_feedback_timeout` | `1800` | Timeout for the PR feedback phase (30 minutes). Distinct from `claude_timeout` so reactive phases do not inherit the issue-work budget. |
+| CI fix timeout | `ci_fix_timeout` | `1800` | Timeout for the CI (Continuous Integration) fix phase (30 minutes). Distinct from `claude_timeout` for the same reason as `pr_feedback_timeout`. |
 | Planning kill-after            | `planning_kill_after`            | `10`       | Grace period after planning timeout                                                                                                                                                                  |
 | Question timeout               | `question_timeout`               | `600`      | Timeout for question answering (10 minutes)                                                                                                                                                          |
 | Question kill-after            | `question_kill_after`            | `10`       | Grace period after question timeout                                                                                                                                                                  |
 | Clarification timeout          | `clarification_timeout`          | `120`      | Timeout for clarification requests (2 minutes)                                                                                                                                                       |
 | Clarification kill-after       | `clarification_kill_after`       | `10`       | Grace period after clarification timeout                                                                                                                                                             |
 | Max clarification rounds       | `max_clarification_rounds`       | `3`        | Maximum clarification rounds before auto-proceeding                                                                                                                                                  |
-| Grill-me timeout               | `grill_me_timeout`               | `3600`     | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by Issue #3154 — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md).                          |
+| Grill-me timeout | `grill_me_timeout` | `3600` | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md). |
 | Grill-me kill-after            | `grill_me_kill_after`            | `10`       | Grace period after `grill_me_timeout` before force-kill                                                                                                                                              |
-| Max grill-me rounds            | `max_grill_me_rounds`            | `5`        | Maximum grill-me rounds before the worker escalates with `needs-human` (Issue #1616)                                                                                                                 |
-| Quorum timeout                 | `quorum_timeout`                 | `1800`     | Wall-clock budget for **one** Quorum agent (30 minutes). The two drafts run concurrently, so a run costs one draft plus one judgement (Issue #4112).                                                  |
-| Quorum kill-after              | `quorum_kill_after`              | `10`       | Grace period after `quorum_timeout` before the agent is killed (Issue #4112)                                                                                                                          |
-| Quorum planners                | `quorum_planners`                | `["claude", "claude"]` | The **two** drafting providers of a Quorum run. Exactly two ids; a different count is rejected at startup (Issue #4112).                                                              |
-| Quorum judge                   | `quorum_judge`                   | `"claude"` | The adjudicating provider of a Quorum run (Issue #4112)                                                                                                                                              |
+| Max grill-me rounds | `max_grill_me_rounds` | `5` | Maximum grill-me rounds before the worker escalates with `needs-human` |
+| Quorum timeout | `quorum_timeout` | `1800` | Wall-clock budget for **one** Quorum agent (30 minutes). The two drafts run concurrently, so a run costs one draft plus one judgement. |
+| Quorum kill-after | `quorum_kill_after` | `10` | Grace period after `quorum_timeout` before the agent is killed |
+| Quorum planners | `quorum_planners` | `["claude", "claude"]` | The **two** drafting providers of a Quorum run. Exactly two ids; a different count is rejected at startup. |
+| Quorum judge | `quorum_judge` | `"claude"` | The adjudicating provider of a Quorum run |
 | Max rate-limit retries         | `max_rate_limit_retries`         | `2`        | Maximum retries when rate limited                                                                                                                                                                    |
 | Max rate-limit wait            | `max_rate_limit_wait`            | `600`      | Maximum total wait time for rate limit retries                                                                                                                                                       |
 | Retry max delay                | `retry_max_delay`                | `60`       | Maximum delay between retries                                                                                                                                                                        |
@@ -613,40 +612,40 @@ unless explicitly overridden.
 | Summarise timeout              | `summarise_timeout`              | `120`      | Timeout for issue body summarisation (2 minutes)                                                                                                                                                     |
 | Summarise kill-after           | `summarise_kill_after`           | `10`       | Grace period after summarise timeout                                                                                                                                                                 |
 | Feature check timeout          | `feature_check_timeout`          | `5`        | Timeout for feature detection checks                                                                                                                                                                 |
-| Claude no-output timeout       | `claude_no_output_timeout`       | `600`      | Seconds of no output before Claude is considered stuck (10 minutes). Lowered from 15 minutes by Issue #1825 so the silence watchdog fires earlier on unattended workers.                             |
+| Claude no-output timeout | `claude_no_output_timeout` | `600` | Seconds of no output before Claude is considered stuck (10 minutes). Lowered from 15 minutes by so the silence watchdog fires earlier on unattended workers. |
 | Quality check timeout          | `quality_check_timeout`          | `600`      | Timeout for a repository's quality-gate command (10 minutes). Also settable per repository in `repo_config`.                                                                                          |
 | Max infrastructure retries     | `max_infra_retries`              | `5`        | Maximum retries for infrastructure failures (e.g., API errors)                                                                                                                                       |
 | Health check timeout           | `health_check_timeout`           | `30`       | Timeout in seconds for Claude CLI health checks                                                                                                                                                      |
-| Log max size (MB)              | `log_max_size_mb`                | `10`       | Maximum log file size in MB before rotation (Issue #469)                                                                                                                                             |
-| Log max rotations              | `log_max_rotations`              | `3`        | Number of rotated log copies to keep (Issue #469)                                                                                                                                                    |
-| Stuck issue timeout            | `stuck_issue_timeout`            | `7200`     | Seconds before an unresponsive worker's issue is recovered (Issue #471)                                                                                                                              |
+| Log max size (MB) | `log_max_size_mb` | `10` | Maximum log file size in MB before rotation |
+| Log max rotations | `log_max_rotations` | `3` | Number of rotated log copies to keep |
+| Stuck issue timeout | `stuck_issue_timeout` | `7200` | Seconds before an unresponsive worker's issue is recovered |
 | Timeout diagnostic lines       | `timeout_diagnostic_lines`       | `50`       | Number of log lines to capture when a timeout occurs                                                                                                                                                 |
 | Output progress interval       | `output_progress_interval`       | `300`      | Seconds between progress log messages during Claude execution (5 minutes)                                                                                                                            |
 | Label cache TTL (Time-To-Live) | `label_cache_ttl`                | `3600`     | Time-to-live in seconds for cached label data (1 hour)                                                                                                                                               |
-| Shuffle repos                  | `shuffle_repos`                  | `true`     | Randomise repository scan order to prevent starvation (Issue #435). Scan order controls which repos are queried first; issue selection is always by globally oldest eligible issue across all repos. |
-| Update GitHub user status      | `update_gh_user_status`          | `true`     | Update GitHub profile status with current activity (Issue #409)                                                                                                                                      |
-| ImgBB API key                  | `imgbb_api_key`                  | _(empty)_  | API key for automatic screenshot uploads to ImgBB (Issue #535). Get a free key from https://api.imgbb.com/                                                                                           |
-| FLEET health directory           | `fleet_health_dir`                 | _(empty)_  | Directory of the FLEET health tracking checkout, native mode only (Issue #535). Optional: unset, the worker clones `fleet_health_repo` beside its own checkout, named after the repository. Ignored inside the container, where the checkout lives in the work volume |
+| Shuffle repos | `shuffle_repos` | `true` | Randomise repository scan order to prevent starvation. Scan order controls which repos are queried first; issue selection is always by globally oldest eligible issue across all repos. |
+| Update GitHub user status | `update_gh_user_status` | `true` | Update GitHub profile status with current activity |
+| ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/ |
+| FLEET health directory | `fleet_health_dir` | _(empty)_ | Directory of the FLEET health tracking checkout, native mode only. Optional: unset, the worker clones `fleet_health_repo` beside its own checkout, named after the repository. Ignored inside the container, where the checkout lives in the work volume |
 | FLEET health repository          | `fleet_health_repo`                | _(empty)_  | Git URL of the FLEET health repository — the one setting health tracking needs. `setup.sh` / `setup.ps1` ask for it (optional); the worker clones it on its first run, natively and in the container. Never assumed: unset, the worker logs that health tracking is off |
-| Worker name                    | `worker_name`                    | _(empty)_  | Human-readable worker name for multi-worker visibility (Issue #436)                                                                                                                                  |
-| Issue retry cooldown           | `issue_retry_cooldown`           | `600`      | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk (Issue #633). Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third (Issue #4304). `MIN_CLAIM_RUNWAY_SECONDS` (env, default 1800, 0 disables) additionally stops the worker claiming a Priority-2 issue when the cycle has less runway left than the floor. |
-| Circuit breaker threshold      | `circuit_breaker_threshold`      | `3`        | Consecutive zero-progress scan cycles before exponential backoff (Issue #588)                                                                                                                        |
-| CI check max retries           | `ci_check_max_retries`           | `3`        | Maximum retries per CI (Continuous Integration) check failure before skipping (Issue #562)                                                                                                           |
+| Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
+| Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. `MIN_CLAIM_RUNWAY_SECONDS` (env, default 1800, 0 disables) additionally stops the worker claiming a Priority-2 issue when the cycle has less runway left than the floor. |
+| Circuit breaker threshold | `circuit_breaker_threshold` | `3` | Consecutive zero-progress scan cycles before exponential backoff |
+| CI check max retries | `ci_check_max_retries` | `3` | Maximum retries per CI (Continuous Integration) check failure before skipping |
 | Security log file              | `security_log_file`              | _(empty)_  | Path to a dedicated security event log file                                                                                                                                                          |
-| Enable session resume          | `enable_session_resume`          | `false`    | Enable CLI-level session continuity across phases of the same issue. See [Session Resume](#-session-resume-issue-1324).                                                                              |
-| Max session size (bytes)       | `max_session_size_bytes`         | `52428800` | Maximum session store size per repository before compaction (50 MB). See [Session Compaction](#-session-compaction-issue-1328).                                                                      |
-| Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction-issue-1328).                                                                                             |
-| Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring-issue-1327).                                                                            |
-| Context budget error %         | `context_budget_error_percent`   | `80`       | Usage percentage that triggers a budget error. See [Context Budget Monitoring](#-context-budget-monitoring-issue-1327).                                                                              |
-| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — the execution phase stops and escalates at or above this usage (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring-issue-1327).                               |
-| Max total comment chars        | `max_total_comment_chars`        | `20000`    | Maximum total characters across all comments included in the prompt (Issue #1342)                                                                                                                    |
-| Max untrusted comment chars    | `max_untrusted_comment_chars`    | `2000`     | Maximum characters per untrusted comment before truncation (Issue #1342)                                                                                                                             |
-| Max untrusted comment count    | `max_untrusted_comment_count`    | `5`        | Maximum number of untrusted comments to include in the prompt (Issue #1342)                                                                                                                          |
-| Comment flood threshold        | `comment_flood_threshold`        | `10`       | Threshold of untrusted comments that triggers a flood audit event (Issue #1342)                                                                                                                      |
-| Include untrusted comments     | `include_untrusted_comments`     | `true`     | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely (Issue #1340).                                                             |
-| Include codebase map           | `include_codebase_map`           | `true`     | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map-issue-4281) (Issue #4281).                          |
-| Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap-issue-3582).                            |
-| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red — or with an unanswered authorised comment — before the watchdog escalates it with `needs-human`. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog-issue-4025). |
+| Enable session resume          | `enable_session_resume`          | `false`    | Enable CLI-level session continuity across phases of the same issue. See [Session Resume](#-session-resume).                                                                              |
+| Max session size (bytes)       | `max_session_size_bytes`         | `52428800` | Maximum session store size per repository before compaction (50 MB). See [Session Compaction](#-session-compaction).                                                                      |
+| Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction).                                                                                             |
+| Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                            |
+| Context budget error %         | `context_budget_error_percent`   | `80`       | Usage percentage that triggers a budget error. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                              |
+| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — the execution phase stops and escalates at or above this usage (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring).                               |
+| Max total comment chars | `max_total_comment_chars` | `20000` | Maximum total characters across all comments included in the prompt |
+| Max untrusted comment chars | `max_untrusted_comment_chars` | `2000` | Maximum characters per untrusted comment before truncation |
+| Max untrusted comment count | `max_untrusted_comment_count` | `5` | Maximum number of untrusted comments to include in the prompt |
+| Comment flood threshold | `comment_flood_threshold` | `10` | Threshold of untrusted comments that triggers a flood audit event |
+| Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
+| Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
+| Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
+| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red — or with an unanswered authorised comment — before the watchdog escalates it with `needs-human`. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 
 ### ⏱️ How timeouts interact
 
@@ -656,7 +655,7 @@ processes:
 1. **`claude_timeout`** (default: 3600s / 1 hour) — the **hard ceiling**. This is
    a safety-net timeout applied via the `timeout` command. If Claude has not
    completed after this duration, the process receives SIGTERM, then SIGKILL
-   after `claude_kill_after` seconds. Issue #1824 lowered this from 4 hours: a
+   after `claude_kill_after` seconds. lowered this from 4 hours: a
    4-hour wedge consumed an entire iteration's run-duration budget and starved
    other repositories. Work that genuinely needs longer should raise a sub-issue
    via the escape hatch rather than a bigger budget.
@@ -666,7 +665,7 @@ processes:
    output file at regular intervals (`output_progress_interval`, default: 300s).
    If zero bytes of new output are produced for `claude_no_output_timeout`
    seconds, the process is considered stuck and terminated early — without
-   waiting for the full `claude_timeout`. Issue #1825 lowered this from 15
+   waiting for the full `claude_timeout`. lowered this from 15
    minutes so wedged processes are detected sooner on unattended workers.
 
 **In practice**, the no-output timeout fires first for genuinely stuck processes
@@ -691,25 +690,25 @@ Timeline: 0 ──────────────────────�
 ```
 
 With `progress_extension_enabled` on, the hard ceiling becomes a *deadline*
-for **issue work only** (Issue #4290). The no-output watchdog above is
+for **issue work only**. The no-output watchdog above is
 untouched — it still kills a silent run however many extensions were granted:
 
 ```
 Issue work,  0 ──── deadline (1h) ──── deadline+15m ──── deadline+30m ─── …
-extension    │  ·   ·   ·   ·   ·  │  ·   ·   ·   ·   │  ·   ·   ·   ·
+extension    │  ·   ·   ·   ·   ·  │  ·   ·   ·   ·   │  ·   ·   ·  
 enabled:     │  └ tree sampled every 5 min (progress_extension_check_seconds)
              │                     │                  │
              │        both signals hold? ── yes ──> +progress_extension_grant_seconds
              │                     │                  │
              │                     └── no ──────────> SIGTERM (hard timeout)
              │
-             │  No output for 10 min? (unchanged, Issue #1825)
+             │ No output for 10 min? (unchanged,)
              │  ───── claude_no_output_timeout ── SIGTERM (early kill)
              └──────────────────────────────────────────────────────────────
 ```
 
 Only issue work (the execute phase) reads this deadline. Planning, grill-me,
-PR feedback and CI fix (Issue #1824) keep their unconditional caps.
+PR feedback and CI fix keep their unconditional caps.
 
 Example — override just the Claude timeout to 2 hours:
 
@@ -719,7 +718,7 @@ Example — override just the Claude timeout to 2 hours:
 }
 ```
 
-### ⏳ Progress-extended deadline (Issue #4290)
+### ⏳ Progress-extended deadline
 
 `claude_timeout` is unconditional: at the hour the process dies, however much
 useful work it was doing. With `progress_extension_enabled` switched on, the
@@ -739,11 +738,11 @@ Both must hold. Each grant moves the deadline `progress_extension_grant_seconds`
 from *now*, so a run that stalls dies within one grant of stalling, and each
 grant logs one `[progress-extension]` line naming the reason, the elapsed time,
 the extension count and the new deadline. There is deliberately no ceiling on
-the number of grants — the concurrency slot pool (#4177) bounds the blast
+the number of grants — the concurrency slot pool bounds the blast
 radius — so operators who need one should keep the feature off.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
-is inside its budget (Issue #4295), so the verdict read at the deadline
+is inside its budget, so the verdict read at the deadline
 describes the last check interval rather than the whole grant. An interim
 sample only gathers evidence — it can never kill, because the deadline is what
 guards the budget. Because that evidence can be up to one interval old,
@@ -754,7 +753,7 @@ demonstrably progressed inside the sampling window.
 Everything else is unchanged: the no-output watchdog
 (`claude_no_output_timeout`) still kills a silent run no matter how many
 extensions were granted, and only issue work (the execute phase) reads the
-extendable deadline at all — PR feedback, CI fix (Issue #1824), planning,
+extendable deadline at all — PR feedback, CI fix, planning,
 grill-me and the health checks keep their unconditional caps.
 
 ```mermaid
@@ -781,7 +780,7 @@ flowchart TD
 }
 ```
 
-#### Why did this run take three hours? (Issue #4298)
+#### Why did this run take three hours?
 
 With the feature on, a run may legitimately outlive `claude_timeout`, so every
 message says what actually happened rather than quoting the configured budget:
@@ -804,17 +803,17 @@ message says what actually happened rather than quoting the configured budget:
   reports the count and the seconds added, so extension frequency is reviewable
   across issues after rollout.
 
-`watchdogLateSeconds` (the #4254 starved-timer signal, reported as `Ns late` on
+`watchdogLateSeconds` (the starved-timer signal, reported as `Ns late` on
 the kill line) is measured against the **final** deadline, not the original
 budget — an extended run that dies on time reports no lateness.
 
 With the feature off, every one of those messages is byte-identical to what it
-was before #4290.
+was before.
 
 Example — configure a named worker with fixed repository scan order for a
 multi-worker setup. Note: scan order controls which repos are queried first, not
 which issue is selected — the globally oldest eligible issue across all repos is
-always chosen (Issue #281):
+always chosen:
 
 ```json
 {
@@ -856,7 +855,7 @@ can be overridden via environment variables for testing or special deployments.
 | Git merge timeout                                   | `GIT_MERGE_TIMEOUT`                      | `120`           | Timeout for merge/rebase/pull operations in seconds                                               |
 | GitHub CLI (Command-Line Interface) command timeout | `GH_COMMAND_TIMEOUT`                     | `60`            | Timeout for individual `gh` CLI commands in seconds                                               |
 | GitHub clone timeout                                | `GH_CLONE_TIMEOUT`                       | `600`           | Timeout for `gh repo clone` operations in seconds (large repos on shared networks need more time) |
-| GitHub rate-limit cooldown                          | `GH_RATE_LIMIT_COOLDOWN`                 | `300`           | Rate-limit circuit breaker cooldown in seconds (Issue #650)                                       |
+| GitHub rate-limit cooldown | `GH_RATE_LIMIT_COOLDOWN` | `300` | Rate-limit circuit breaker cooldown in seconds |
 | Assigned no-heartbeat timeout                       | `ASSIGNED_NO_HEARTBEAT_TIMEOUT`          | `1800`          | Grace period for assigned issues with no heartbeat before recovery (30 minutes)                   |
 | Stale assignment timeout                            | `STALE_ASSIGNMENT_TIMEOUT`               | `14400`         | Timeout for GitHub-based stale assignment recovery (4 hours)                                      |
 | Health check cache TTL                              | `HEALTH_CHECK_CACHE_TTL`                 | `300`           | Health check cache time-to-live in seconds (5 minutes)                                            |
@@ -886,7 +885,7 @@ can be overridden via environment variables for testing or special deployments.
 
 The `./setup.sh` script accepts `VIBE_*` environment variables for
 configuration. The Vibe Coder is designed to run on unattended machines where
-all interactions happen via GitHub issues and PRs (Issue #269); the system must
+all interactions happen via GitHub issues and PRs; the system must
 never wait on any UI interaction. When run in a terminal, setup may optionally
 prompt for service-account paths; in non-interactive environments (e.g. CI), it
 runs without prompts.
@@ -901,8 +900,7 @@ VIBE_SERVICE_ACCOUNTS="stsvcbot,Vibecoderbot" \
 ./setup.sh
 ```
 
-`VIBE_SERVICE_ACCOUNTS` sets the worker identity guard allowlist (Issues #3528
-and #4030). Omit it and setup defaults the allowlist to the login it
+`VIBE_SERVICE_ACCOUNTS` sets the worker identity guard allowlist. Omit it and setup defaults the allowlist to the login it
 authenticated as — see
 [Service-Account Identity Guard](#️-service-account-identity-guard-issue-3528).
 
@@ -924,10 +922,10 @@ operational purposes:
 | Variable                        | Default        | Description                                                   |
 | ------------------------------- | -------------- | ------------------------------------------------------------- |
 | `CONFIG_FILE`                   | `.config.json` | Path to the configuration file                                |
-| `VIBE_DAILY_SPEND_CEILING_USD`  | `0` (disabled) | Daily estimated model-spend ceiling in USD (Issue #3648)       |
+| `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
 | `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
 
-### 💰 Daily Spend Ceiling (Issues #3648, #3684)
+### 💰 Daily Spend Ceiling
 
 Before this gate existed, wall-clock was the **only** backpressure on model
 spend: the credit log was append-only and never compared against a threshold,
@@ -942,7 +940,7 @@ of `0` (the default) leaves the hook unwired, so existing deployments are
 unaffected until an operator opts in. A malformed value fails loudly at
 start-up rather than silently disabling the guard.
 
-The settled policy (Issue #3684):
+The settled policy:
 
 | Decision      | Behaviour                                                                                     |
 | ------------- | --------------------------------------------------------------------------------------------- |
@@ -959,12 +957,12 @@ silent. Set `VIBE_CREDIT_LOG_DIR` when the credit logs live somewhere other
 than the worker's work directory.
 
 An invocation whose model id has no pricing row is charged at a conservative
-**upper bound** rather than counted as `$0` (Issue #3870) — otherwise a new
+**upper bound** rather than counted as `$0` — otherwise a new
 model id, or a run that resolved no `--model` argument, would spend against a
 ceiling that could not see it. The ceiling message names the unpriced portion,
 and the hook logs a `[SPEND_CEILING]` line listing the ids whenever any is
 present, so the missing
-[pricing row](MODEL-AND-CACHING.md#unpriced-model-ids-issue-3870) gets added.
+[pricing row](MODEL-AND-CACHING.md#unpriced-model-ids) gets added.
 
 ```mermaid
 flowchart TD
@@ -980,7 +978,7 @@ flowchart TD
     G -- no --> I[Claim and process issue]
 ```
 
-## 🔄 Session Resume (Issue #1324)
+## 🔄 Session Resume
 
 Session resume enables CLI-level session continuity across phases of the same
 issue. When enabled, subsequent phases (e.g. clarification → planning →
@@ -1017,7 +1015,7 @@ and improving coherence.
 - Leave disabled (default) if your workflow is predominantly single-phase or if
   you prefer each phase to start with a clean slate.
 
-**Resume-on-reclaim (Issue #4170):** with session resume enabled, a killed
+**Resume-on-reclaim:** with session resume enabled, a killed
 session (reboot, OOM, container death) resumes instead of restarting from
 zero:
 
@@ -1040,14 +1038,14 @@ zero:
   the session sweeper's age/size caps so it cannot grow unbounded.
 
 > **📝 Note:** Session resume is independent of
-> [session compaction](#-session-compaction-issue-1328) — resume controls
+> [session compaction](#-session-compaction) — resume controls
 > within-issue continuity, while compaction manages the on-disk session store
 > size.
 
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
 `worker/deno/lib/config_defaults.ts` (default value).
 
-## 📦 Session Compaction (Issue #1328)
+## 📦 Session Compaction
 
 The worker maintains per-repository session state (the `.claude/` directory)
 that persists between invocations. Over time, this session store grows and needs
@@ -1102,7 +1100,7 @@ within the configured size limit:
 **Reference:** `worker/deno/lib/session_compaction.ts` (implementation),
 `worker/deno/lib/config_defaults.ts` (default values).
 
-## 📊 Context Budget Monitoring (Issue #1327)
+## 📊 Context Budget Monitoring
 
 Context budget monitoring tracks how much of Claude's context window is consumed
 before each invocation. This helps operators identify when prompts are
@@ -1115,7 +1113,7 @@ performance, or failures.
 | ------------------ | -------------------------------- | ------- | ------------------------------------------------------------------------------------------ |
 | Warning threshold  | `context_budget_warning_percent` | `50`    | Usage percentage that triggers a warning in the budget log                                 |
 | Error threshold    | `context_budget_error_percent`   | `80`    | Usage percentage that triggers an error in the budget log                                  |
-| Blocking threshold | `context_budget_block_percent`   | `95`    | Hard ceiling — the execution phase stops and escalates at or above this usage (Issue #3713) |
+| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase stops and escalates at or above this usage |
 
 ```json
 {
@@ -1131,11 +1129,11 @@ performance, or failures.
    prompt component (issue body, comments, custom instructions, recent activity,
    etc.) using a characters-per-token heuristic (~4 characters per token).
 2. The total is compared against the model's context window (1,000,000 tokens
-   for Opus/Sonnet, 200,000 for Haiku — Issue #1399).
+   for Opus/Sonnet, 200,000 for Haiku —).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
 4. If usage reaches `context_budget_block_percent`, the check fails closed
-   (Issue #3713): the execution phase stops **before** the billed Claude
+  : the execution phase stops **before** the billed Claude
    invocation, applies `needs-human`, and posts an explanation comment. Warning
    and error thresholds remain observational — only the blocking threshold
    stops work.
@@ -1207,7 +1205,7 @@ Common bot accounts you may want to add (only add those you actively use):
 > approval. See [SECURITY.md](../SECURITY.md#bot-account-security-issue-36) for
 > detailed security implications.
 
-## 🤖 Trusted Review Bots (Issue #1856)
+## 🤖 Trusted Review Bots
 
 The `trusted_review_bots` field lists GitHub bot accounts whose **PR review
 comments** (line-level comments on `/pulls/{n}/comments`) are treated as
@@ -1270,7 +1268,7 @@ behaviour exactly.
 **Scope:** Applies to every PR-maintenance scan — PR-feedback discovery
 (`findPrCommentsToFix`), CI-fix discovery (`findFailedCiChecks`), spelling
 failures (`findFailedPrChecks`), auto-merge (`ensureAutoMergeOnOpenPrs`) and the
-CI nudge (`findPrsNeedingCiNudge`). Since Issue #4076 all five resolve their
+CI nudge (`findPrsNeedingCiNudge`). Since all five resolve their
 author set through `resolveFleetMaintenanceAuthorSet` — `github_user` +
 `fleet_pr_authors`, the accounts the fleet actually operates — so every
 fleet-authored PR is maintained by some host while a trusted human's PR is left
@@ -1297,12 +1295,12 @@ reaction, and a duplicated CI-fix push is rejected by git as a non-fast-forward
 
 The `stsvcbot` host mirrors this with `"fleet_pr_authors": ["Vibecoderbot"]`.
 
-### Fleet PR authors feed the open-PR duplicate guard too (Issue #3138)
+### Fleet PR authors feed the open-PR duplicate guard too
 
-The open-PR duplicate guard (Issue #3100) that stops two fleet hosts raising
+The open-PR duplicate guard that stops two fleet hosts raising
 duplicate PRs for the same issue enumerates fleet accounts from the **union** of
 the host `github_user`, `allowed_authors`, **and** `fleet_pr_authors`
-(`resolveFleetAuthors` in `worker/deno/lib/fleet_authors.ts`). Before #3138 the
+(`resolveFleetAuthors` in `worker/deno/lib/fleet_authors.ts`). Before the
 guard read `allowed_authors` only, so a sibling listed **solely** in
 `fleet_pr_authors` was never queried and its open PRs were invisible to the
 guard — the root cause of the duplicate documented in
@@ -1320,7 +1318,7 @@ duplicate guard sighted; it does **not** follow that a login in
 `fleet_pr_authors` alone — see
 [`HUMAN-PR-POLICY.md`](HUMAN-PR-POLICY.md).
 
-### Defer to a PR, or act on it? (Issues #4023, #4075, #4076)
+### Defer to a PR, or act on it?
 
 `getBlockingPRForIssue` defers a `work-on` issue behind an open PR the fleet
 **operates** — `github_user` + `fleet_pr_authors` — because the worker must not
@@ -1328,20 +1326,20 @@ run a second PR into a work stream it already has open. The maintenance scans
 answer a different question: *may I claim this PR, push to it, comment on it,
 merge it?*
 
-- **#4023** widened the scans to the blocking set, which fixed a fleet PR
-  stranded with no host maintaining it (`private-repo-21#103`) …
-- **#4074** exposed the cost: the scans then adopted a trusted **human's** PR
-  uninvited (`TitlePage/tp-web-react#2312`) — claimed it, pushed to it, and
+- **** widened the scans to the blocking set, which fixed a fleet PR
+  stranded with no host maintaining it (`private-repo-21`) …
+- **** exposed the cost: the scans then adopted a trusted **human's** PR
+  uninvited (`TitlePage/tp-web-react`) — claimed it, pushed to it, and
   commented on it.
-- **#4075/#4076** split the two. Every scan that acts on a PR now resolves
+- **/** split the two. Every scan that acts on a PR now resolves
   `resolveFleetMaintenanceAuthorSet` (host + `fleet_pr_authors`), so a human's
   login never reaches `gh pr list --author`.
-- **#4133** finished the job on the issue side: the blocking guard resolves the
+- **** finished the job on the issue side: the blocking guard resolves the
   same push-capable set, so a human's open PR no longer defers issue pickup at
   all. One unrelated human PR used to park a repo's entire `work-on` queue —
-  and, after #4078, stamp `needs-human` on the blocked issue. The developer
+  and, after, stamp `needs-human` on the blocked issue. The developer
   manages their own PR; the worker works the issues it was invited to,
-  alongside them. The #4078 nudge-and-escalate path is retired.
+  alongside them. The nudge-and-escalate path is retired.
 
 The fleet's own open PRs still block repo-wide (one at a time per work stream).
 A PR the worker cannot classify — an author never stamped, or an unresolved
@@ -1371,7 +1369,7 @@ comments and reviews still compares against `github_user` alone, so widening the
 scan set never makes a host reply to a fleet sibling's comment unless that
 comment passes the usual authorised-commenter / thumbs-up / trusted-bot check.
 
-### Handing your own PR to the worker (Issue #4077)
+### Handing your own PR to the worker
 
 You can still ask the worker to work on **your** PR — it just has to be asked.
 Every scan additionally lists the open PRs authored by `allowed_authors` and
@@ -1399,7 +1397,7 @@ Details that matter in practice:
 - **Anything unclear is a refusal** — an unreadable listing, an unattributable
   label, or a mention inside a pasted log all leave the PR untouched.
 
-### The author set is checked every iteration (Issue #4024)
+### The author set is checked every iteration
 
 Both sides resolve through `worker/deno/lib/fleet_authors.ts` — the blocking
 guard through `resolveFleetPrAuthorSet()`, the scans through
@@ -1416,24 +1414,23 @@ Both are written unconditionally — no `ISSUE_FINDER_DEBUG` needed. The
 divergence check is **observability, never a gate**: it warns and the iteration
 continues.
 
-Since #4076 the maintenance set deliberately omits `allowed_authors`, so the
-check is **intent-aware** (Issue #4079). The invariant it asserts is *the
+Since the maintenance set deliberately omits `allowed_authors`, so the
+check is **intent-aware**. The invariant it asserts is *the
 maintenance set is the fleet-owned set minus the trusted humans, and nothing
 else* — trusted humans are declared as the expected delta and never warn. Two
 shapes still do:
 
 - `missing-from-maintenance=<login>` — a `fleet_pr_authors` sibling no scan
-  covers: a fleet PR that blocks work and nothing will fix, answer, or merge
-  (#4023).
+  covers: a fleet PR that blocks work and nothing will fix, answer, or merge.
 - `missing-from-blocking=<login>` — a login the worker pushes to that the
-  duplicate guard cannot see (#3138).
+  duplicate guard cannot see.
 
 Any occurrence of this warning is therefore a real hazard, not background noise.
-A recurrence of the #4023 stall also appears as `in-maintenance-set=false`
+A recurrence of the stall also appears as `in-maintenance-set=false`
 on a blocking PR:
 
 ```text
-[issue-finder] repo=owner/repo pr-blocks-work-on pr=#103 author=stsvcbot base=main blocked-issues=#700,#701 in-maintenance-set=false
+[issue-finder] repo=owner/repo pr-blocks-work-on pr= author=stsvcbot base=main blocked-issues=, in-maintenance-set=false
 ```
 
 ## 📦 Per-Repository Configuration
@@ -1483,7 +1480,7 @@ Example configuration:
 }
 ```
 
-### 💰 Per-repository model/effort routing (Issue #2625)
+### 💰 Per-repository model/effort routing
 
 Model and effort routing is normally per-phase and fleet-wide. The
 `repo_config` keys below let you tier spend per repository — a high-value repo
@@ -1493,7 +1490,7 @@ when nothing else is queued) avoids burning premium tokens.
 | Key                     | Type   | Description                                                                                                         |
 | ----------------------- | ------ | ----------------------------------------------------------------------------------------------------------------- |
 | `claude_model`          | string | Per-repo base tier (alias such as `fable`/`sonnet`/`opus`, or a full model id) overriding the global base for every phase in this repo. |
-| `best_planning_model`   | string | Per-repo configured best planning model for degraded-model detection (Issue #2654). Overrides the global `best_planning_model`; empty falls back to it. |
+| `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
 | `phase_model_overrides` | object | Per-repo per-phase model map (e.g. `{ "issue": "fable" }`). Same shape as the global `phase_model_overrides`.       |
 | `phase_effort_overrides`| object | Per-repo per-phase effort map (e.g. `{ "issue": "xhigh" }`). Same shape as the global `phase_effort_overrides`.     |
 
@@ -1508,13 +1505,13 @@ routing, so a premium tier never leaks into a filler repo.
 
 > **⚠️ A per-repo `claude_model` demotes the Fable planning/grill-me tiers
 > unless you re-pin them (audit
-> [#2702](https://github.com/stSoftwareAU/VibeCoder/issues/2702) F2/F3).**
+> F2/F3).**
 > Because the per-repo base `claude_model` beats the built-in phase defaults,
 > setting it to cheapen a filler repo's ordinary phases **also reroutes
 > `planning` and `grill_me` off the Fable 5 top tier** (and setting it to
 > `fable` promotes the trivial Haiku phases — `spelling_fix`/`summarise`/
 > `health` — to Fable at ~5× their cost). The Fable planning escalation is the
-> highest-leverage spend (Issue #2621), so to keep it while demoting the base,
+> highest-leverage spend, so to keep it while demoting the base,
 > re-pin the two planning-shaped phases in the same `repo_config` entry:
 >
 > ```jsonc
@@ -1534,13 +1531,13 @@ routing, so a premium tier never leaks into a filler repo.
 > routing surprise to be aware of, not a bug. See
 > [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain)
 > for the full chain, and
-> [#2710](https://github.com/stSoftwareAU/VibeCoder/issues/2710) /
-> [#2716](https://github.com/stSoftwareAU/VibeCoder/issues/2716) for the
+> /
+> for the
 > base-tier override docs and the per-repo-switch log line that surfaces each
 > rerouted phase.
 
 > **🛟 A per-repo `claude_model: "fable"` base tier is covered by the
-> Fable-unavailable fallback too (Issue #2720).** Whether a repo lands on Fable
+> Fable-unavailable fallback too.** Whether a repo lands on Fable
 > via the built-in top-tier phase defaults *or* by pinning `claude_model: "fable"`
 > (or `phase_model_overrides`) in its `repo_config`, the same resilience applies:
 > while Fable 5 is globally unavailable the run automatically falls back to Opus
@@ -1548,13 +1545,13 @@ routing, so a premium tier never leaks into a filler repo.
 > self-heals once Fable returns — config keeps pointing at Fable, the
 > substitution is per-run, and there is no "Fable down" switch to set or clear.
 > See
-> [MODEL-AND-CACHING.md → Fable-unavailable auto-fallback + self-heal](MODEL-AND-CACHING.md#fable-unavailable-auto-fallback--self-heal-issue-2720).
+> [MODEL-AND-CACHING.md → Fable-unavailable auto-fallback + self-heal](MODEL-AND-CACHING.md#fable-unavailable-auto-fallback--self-heal).
 
 > **Out of scope (possible follow-up):** per-issue overrides (e.g. a
 > human-applied `premium` label bumping a single issue to the top tier).
 > Per-repo granularity covers the current need.
 
-### ⚖️ Per-repo `nice` rotation tier (Issue #2772)
+### ⚖️ Per-repo `nice` rotation tier
 
 The worker draws **new work** from its monitored repos in a fair rotation. The
 optional per-repo `nice` integer biases that rotation, borrowing Unix-`nice`
@@ -1568,7 +1565,7 @@ semantics:
 - **Default `0`.** A repo with no configured `nice` sits at the neutral tier —
   neither promoted nor demoted. A non-integer, non-finite, or wrong-type value
   is guarded down to `0` rather than propagated.
-- **Operator-side only (Issue #2626).** Like every other `repo_config` field,
+- **Operator-side only.** Like every other `repo_config` field,
   `nice` lives in the operator's `.config.json` — never in the target
   repository. There is no in-repo channel for it.
 - **New-work selection only.** `nice` tiers the next-issue / label / planning
@@ -1615,23 +1612,23 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `custom_instructions`   | string  | Additional instructions to include in the Claude prompt for this repository                                                                                                                                                                                                                                                                                               |
 | `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#docker-based-quality-checks).                                                                                                                                                                                                                           |
 | `requires_screenshots`  | boolean | When `true`, always injects screenshot instructions into Claude's prompt. Use for UI/frontend repositories.                                                                                                                                                                                                                                                               |
-| `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion. Use for non-UI repositories to prevent false positives (Issue #1278).                                                                                                                                                                                                                                          |
-| `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff (Issue #3652), and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass (Issue #3540). A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop (Issue #4057): the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
+| `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion. Use for non-UI repositories to prevent false positives. |
+| `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass. A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
-| `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`). Overrides phase defaults. See [Verbosity Configuration](#-verbosity-configuration-issue-1329).                                                                                                                                                                                         |
-| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only. See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier-issue-2772).                                                                                                                                                                         |
+| `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`). Overrides phase defaults. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                         |
+| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only. See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; `provider` is required, `jobPath` is required for `jenkins`. GitHub Actions is the built-in default and needs no entry. Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#adding-a-ci-log-provider) and [Per-repository PR failure actions](per-repo-pr-failure-actions.md). |
 | `prFailureActions`      | array   | **Deprecated — use `ciProviders`.** Still parsed and converted into an equivalent `ciProviders` entry, so existing configuration keeps working unchanged. The only action type is `fetch-jenkins-log`. See [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for the schema, the `JENKINS_URL`/`JENKINS_USER`/`JENKINS_TOKEN` env var contract, a worked private-repo-12 example, and troubleshooting steps. |
-| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate-issue-3577). |
+| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
 | `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** Jenkins console log, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `ci_failure_job_path`   | string  | Fallback Jenkins job path (e.g. `Migration/job/Develop`) used when a CI-failure issue body carries a build number but no `Build URL`. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md).                                                                                                                                                     |
-| `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap-issue-3582).                                                                                                                           |
-| `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog-issue-4025). |
-| `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing-issue-2625).                                                                                                                                                                                                          |
-| `best_planning_model`   | string  | Per-repo configured best planning model for degraded-model detection (Issue #2654). Overrides the global `best_planning_model`; empty falls back to it.                                                                                                                                                                                                                   |
-| `phase_model_overrides` | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing-issue-2625).                                                                                                                                                                                                                                           |
-| `phase_effort_overrides`| object  | Per-repo per-phase effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing-issue-2625).                                                                                                                                                                                                                                          |
+| `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
+| `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                          |
+| `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
+| `phase_model_overrides` | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                           |
+| `phase_effort_overrides`| object  | Per-repo per-phase effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                          |
 
 **Use cases:**
 
@@ -1647,8 +1644,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
   always captures Playwright screenshots on the first attempt (avoids a
   round-trip failure)
 - **Non-UI repositories**: Set `skip_screenshot_check: true` to skip screenshot
-  validation entirely, preventing false positives from keyword detection (Issue
-  #1278)
+  validation entirely, preventing false positives from keyword detection
 - **Disable auto-merge**: Set `skip_auto_merge: true` if you prefer to manually
   merge PRs
 - **CI-only repositories**: Set `skip_reviewer_request: true` for repositories
@@ -1658,7 +1654,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 - **Token savings**: Set `verbosity: "minimal"` or `"concise"` for simple
   repositories to reduce output tokens and save costs
 
-### 🛫 Pre-flight enforcement gate (Issue #3577)
+### 🛫 Pre-flight enforcement gate
 
 Expensive builds (e.g. the full Jenkins Develop pipeline for
 `stSoftwareAU/private-repo-12`) cost hours before a compilation error the worker
@@ -1717,7 +1713,7 @@ flowchart TD
     style G fill:#14532d,stroke:#052e16,color:#fff
 ```
 
-### 🛑 Auto-fix attempt cap (Issue #3582)
+### 🛑 Auto-fix attempt cap
 
 A hands-off fetch → diagnose → fix → merge loop on an **unfixable** failure
 would otherwise burn model spend indefinitely and flood the PR with
@@ -1772,19 +1768,19 @@ flowchart TD
     style K fill:#14532d,stroke:#052e16,color:#fff
 ```
 
-### 🚨 Blocking-PR stall watchdog (Issue #4025)
+### 🚨 Blocking-PR stall watchdog
 
 A `work-on` issue defers to the open PR that
 [blocks it](#-fleet-pr-authors-fleet-aware-pr-maintenance). When that PR stops
 making progress
 the work stream stops with it — and until this watchdog existed, silently:
-private-repo-21 PR #103 sat red with an unanswered authorised comment for ~13
+private-repo-21 sat red with an unanswered authorised comment for ~13
 hours while two `work-on` issues waited behind it and nothing in the worker
 noticed.
 
 Priority 1.63 closes that gap. Each iteration it looks at every open PR that
 `getBlockingPRForIssue()` says is blocking at least one open `work-on` issue —
-never at PRs blocking nothing, and since Issue #4133 never at a human's PR,
+never at PRs blocking nothing, and since never at a human's PR,
 which cannot block — and trips on either signal:
 
 - **red CI** — a failing check whose run has **not** been superseded by a newer
@@ -1797,13 +1793,13 @@ On a trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a
 comment per iteration) and applies `needs-human`. It is a **detector only** —
 the fix routes stay with the CI-fix (1.55) and PR-feedback (1) priorities. When
-the [auto-fix attempt cap](#-auto-fix-attempt-cap-issue-3582) has already
+the [auto-fix attempt cap](#-auto-fix-attempt-cap) has already
 escalated the PR, the watchdog stays silent rather than adding a second
 escalation.
 
 The threshold is `blocking_pr_stall_threshold_seconds` (default `7200` — 2
 hours), overridable per repo via
-[`repo_config`](#-per-repository-configuration). PR #103 would have tripped at
+[`repo_config`](#-per-repository-configuration). would have tripped at
 14:07 UTC, about 13 hours before a human noticed.
 
 ```mermaid
@@ -1822,9 +1818,9 @@ flowchart TD
     style D fill:#14532d,stroke:#052e16,color:#fff
 ```
 
-## 📦 In-Repo Configuration removed (`.vibecoder.json`, Issue #2626)
+## 📦 In-Repo Configuration removed (`.vibecoder.json`,)
 
-The in-repo `.vibecoder.json` mechanism (Issue #1278) has been **removed**.
+The in-repo `.vibecoder.json` mechanism has been **removed**.
 Vibe Coder configuration must not live in the target repositories themselves — a
 config channel from repo content into worker behaviour is an attack/steering
 surface. Every field it once supported is available operator-side in
@@ -2099,7 +2095,7 @@ only filesystem paths.
 > - The `.config.json` is listed in `.gitignore` and the pre-commit hook
 >   prevents accidental commits
 
-### 🛡️ Service-Account Identity Guard (Issue #3528)
+### 🛡️ Service-Account Identity Guard
 
 Configuring `gh_config_dir` points the worker at a service-account token, but
 nothing stopped a host whose ambient `gh` auth had **drifted** back to a human
@@ -2117,7 +2113,7 @@ the GitHub logins the worker is permitted to operate as:
 }
 ```
 
-**Setup writes this field (Issue #4030).** It is no longer a hand-edit-only key:
+**Setup writes this field.** It is no longer a hand-edit-only key:
 
 - Pass the fleet's accounts explicitly:
   `VIBE_SERVICE_ACCOUNTS="stsvcbot,Vibecoderbot" ./setup.sh`.
@@ -2147,7 +2143,7 @@ Behaviour:
   same `service_accounts` value.
 - When `service_accounts` is **empty** the guard cannot enforce. Rather than
   fail silently it logs a loud `[SECURITY] … INACTIVE` warning on every run.
-  Since Issue #4030 that state is only reachable by emptying the key by hand or
+  Since that state is only reachable by emptying the key by hand or
   by a failed login lookup at setup time — and the collaborator precheck files
   an issue for it either way.
 

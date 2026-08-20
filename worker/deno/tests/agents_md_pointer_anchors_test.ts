@@ -1,7 +1,7 @@
 /**
- * Regression tests for Issue #3465 — broken `AGENTS.md#<section>` deep links.
+ * Regression tests for — broken `AGENTS.md#<section>` deep links.
  *
- * When `AGENTS.md` was reduced to a thin pointer (Issue #3419) it kept only two
+ * When `AGENTS.md` was reduced to a thin pointer it kept only two
  * headings, but ~20 internal links still pointed at its old subsection anchors
  * (`#worker-label-policy`, `#commit-safety`, `#idle-task-framework`, …). Every
  * such link now resolves to nothing. These tests:
@@ -127,12 +127,12 @@ const REPOINTED: Array<{
   // #idle-task-framework → DESIGN-PRINCIPLES.md.
   {
     source: "docs/IDLE-TASK-FRAMEWORK.md",
-    link: "../DESIGN-PRINCIPLES.md#idle-task-framework-issue-1959",
+    link: "../DESIGN-PRINCIPLES.md#idle-task-framework",
     target: "DESIGN-PRINCIPLES.md",
-    fragment: "idle-task-framework-issue-1959",
+    fragment: "idle-task-framework",
   },
   // #branch-protection-configured-by-setup → MERGE.md Layer 1 (self-link).
-  // Retitled to "ruleset" when classic branch protection was retired (#4163).
+  // Retitled to "ruleset" when classic branch protection was retired.
   {
     source: "docs/MERGE.md",
     link: "#layer-1--the-github-ruleset-wall",

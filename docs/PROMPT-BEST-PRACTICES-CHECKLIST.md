@@ -2,7 +2,7 @@
 
 The shared rubric for scoring a Vibe Coder prompt surface against
 [Anthropic's Claude prompting best-practices guide][guide]. It exists so the
-audit sub-issues of #3767 all score against the **same** items instead of each
+audit sub-issues of all score against the **same** items instead of each
 re-deriving a checklist, and so two audits of the same surface a year apart are
 comparable.
 
@@ -37,7 +37,7 @@ flowchart LR
 
 ## Applicability — the two surface kinds
 
-Both kinds are in scope for #3767, but some rows are decided in only one of
+Both kinds are in scope for, but some rows are decided in only one of
 them, so state the kind before scoring.
 
 | Surface kind | What it is | Evidence looks like | Rows it owns |
@@ -154,13 +154,13 @@ and comment there instead of duplicating.
 - **Title:** `prompt(<surface>): N Claude best-practice gaps` — for example
   `prompt(dead_code/v4): 6 Claude best-practice gaps`.
 - **Labels:** `enhancement` and `best-practices`. No reserved workflow label.
-- **Milestone:** `#3767 Align Vibe Coder prompts with Claude prompting best
+- **Milestone:** ` Align Vibe Coder prompts with Claude prompting best
   practices`.
 
 ```markdown
 Audit of `prompts/<name>/vN.md` against the [prompt best-practices
 checklist](../docs/PROMPT-BEST-PRACTICES-CHECKLIST.md) found N gaps.
-Parent: #3767. Audit record: docs/audits/<audit-file>.md
+Parent:. Audit record: docs/audits/<audit-file>.md
 
 ### Gap 1 — item <checklist number>: <checklist item name>
 
@@ -170,7 +170,6 @@ Parent: #3767. Audit record: docs/audits/<audit-file>.md
 - **Suggested change:** the concrete edit, in a new version file `vN+1.md`.
 
 ### Gap 2 — item <checklist number>: <checklist item name>
-
 ...
 
 ### Out of scope
@@ -207,7 +206,7 @@ reason. Re-check this table when the guide changes.
 - Prompt audit — code-health scan prompts
   and
   Prompt audit — shared guidance prompts
-  — the first two audits under #3767, scored before this rubric existed against
+  — the first two audits under, scored before this rubric existed against
   a ten-item collapse of the same guide sections.
 - Prompt audit — interactive worker prompts
   — the first audit scored against this rubric, recording both the 22-row

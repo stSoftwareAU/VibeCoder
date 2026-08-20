@@ -1,6 +1,6 @@
-# 🔁 Root-cause note — #3100 fleet open-PR guard missed a duplicate (Issue #3138)
+# 🔁 Root-cause note — fleet open-PR guard missed a duplicate
 
-Part of #3136 (duplicate PRs for one issue still occur).
+Part of (duplicate PRs for one issue still occur).
 
 ## Incident
 
@@ -9,11 +9,11 @@ Two identical PRs were raised for the same work in
 
 | PR   | Author        | Opened (UTC)     | For issue |
 | ---- | ------------- | ---------------- | --------- |
-| #648 | `stsvcbot`   | 2026-07-01 07:29 | #647      |
-| #649 | `Vibecoderbot` | 2026-07-01 11:04 | #647      |
+| | `stsvcbot` | 2026-07-01 07:29 | |
+| | `Vibecoderbot` | 2026-07-01 11:04 | |
 
-PR #648 had been open ≈3.5 h when the host running as `Vibecoderbot` raised the
-duplicate #649. The #3100 fleet-aware open-PR guard (`fetchOpenPRsForFleet` +
+ had been open ≈3.5 h when the host running as `Vibecoderbot` raised the
+duplicate. The fleet-aware open-PR guard (`fetchOpenPRsForFleet` +
 `getBlockingPRForIssue`) was supposed to prevent exactly this.
 
 ## How the guard is meant to work
@@ -21,20 +21,20 @@ duplicate #649. The #3100 fleet-aware open-PR guard (`fetchOpenPRsForFleet` +
 `find_oldest_issue` enumerates the fleet's GitHub logins, fetches each one's
 open PRs, and — for a non-milestone issue — treats **any** fleet-authored,
 non-milestone open PR as a block (the "one PR per work stream" rule). So if the
-`Vibecoderbot` host had seen `stsvcbot`'s PR #648, issue #647 would have been
-`pr-blocked` and #649 would never have been raised.
+`Vibecoderbot` host had seen `stsvcbot`'s, issue would have been
+`pr-blocked` and would never have been raised.
 
-The guard therefore fails **only** if #648 was not in the PR set the guard
+The guard therefore fails **only** if was not in the PR set the guard
 considered on that host.
 
 ## Candidate causes
 
 | # | Candidate                                                             | Verdict                                                                                                                                                                                                   |
 | - | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 | Guard bug — `getBlockingPRForIssue` issue↔PR matching                 | **Eliminated.** For a non-milestone issue the guard blocks on _any_ non-milestone fleet PR; it does not match by branch/issue number, so #648 would have blocked #647 had it been in the set.             |
-| 2 | Stale per-user PR cache (`prs_${user}`) hiding #648                   | **Unlikely as sole cause.** The cache is iteration-scoped (`IssueCache`), so a stale `stsvcbot` entry could only hide #648 within a single scan; the duplicate was raised 3.5 h later across many scans. |
+| 1 | Guard bug — `getBlockingPRForIssue` issue↔PR matching | **Eliminated.** For a non-milestone issue the guard blocks on _any_ non-milestone fleet PR; it does not match by branch/issue number, so would have blocked had it been in the set. |
+| 2 | Stale per-user PR cache (`prs_${user}`) hiding | **Unlikely as sole cause.** The cache is iteration-scoped (`IssueCache`), so a stale `stsvcbot` entry could only hide within a single scan; the duplicate was raised 3.5 h later across many scans. |
 | 3 | **Missing fleet-account config** — the host never queried `stsvcbot` | **Confirmed root cause (structural).** See below.                                                                                                                                                         |
-| 4 | Outdated worker build (pre-#3100)                                     | **Not the primary cause, but undiagnosable.** Nothing in the logs stamped the build, so an outdated host could not be ruled in or out. Addressed by build stamping.                                       |
+| 4 | Outdated worker build (pre-) | **Not the primary cause, but undiagnosable.** Nothing in the logs stamped the build, so an outdated host could not be ruled in or out. Addressed by build stamping. |
 
 ## Determined root cause (cause 3)
 
@@ -53,9 +53,9 @@ is not guaranteed to contain the sibling fleet accounts.
 
 On the `Vibecoderbot` host, `stsvcbot` was configured as a fleet sibling in
 `fleet_pr_authors` (so PR-feedback / CI maintenance covered it) but was **not**
-in `allowed_authors`. The #3100 guard, reading only `allowedAuthors`, therefore
-never issued `gh pr list --author stsvcbot`, so `stsvcbot`'s PR #648 was
-invisible to the guard and the duplicate #649 was raised.
+in `allowed_authors`. The guard, reading only `allowedAuthors`, therefore
+never issued `gh pr list --author stsvcbot`, so `stsvcbot`'s was
+invisible to the guard and the duplicate was raised.
 
 This is a structural blind spot, not a transient one: the two config keys can
 legitimately diverge, and whenever they do the guard is permanently blind to any
@@ -64,12 +64,12 @@ sibling that appears only in `fleet_pr_authors`.
 ```mermaid
 flowchart TD
     A["find_oldest_issue<br/>open-PR guard"] --> B{"Enumerate fleet accounts"}
-    B -->|"before #3138:<br/>allowedAuthors only"| C["queries: bot, alice<br/>(stsvcbot NOT queried)"]
-    C --> D["#648 by stsvcbot invisible"]
-    D --> E["issue #647 looks free →<br/>duplicate #649 raised"]
-    B -->|"after #3138:<br/>resolveFleetAuthors union"| F["queries: bot, alice, stsvcbot"]
-    F --> G["#648 by stsvcbot seen"]
-    G --> H["issue #647 pr-blocked →<br/>no duplicate"]
+    B -->|"before:<br/>allowedAuthors only"| C["queries: bot, alice<br/>(stsvcbot NOT queried)"]
+    C --> D[" by stsvcbot invisible"]
+    D --> E["issue looks free →<br/>duplicate raised"]
+    B -->|"after:<br/>resolveFleetAuthors union"| F["queries: bot, alice, stsvcbot"]
+    F --> G[" by stsvcbot seen"]
+    G --> H["issue pr-blocked →<br/>no duplicate"]
 ```
 
 ## Fixes landed in this issue
@@ -96,17 +96,17 @@ flowchart TD
    missing from `allowed_authors` (the exact blind-spot shape). It runs at
    startup and is surfaced in `diagnose-repo` output.
 
-## Residual window closed by #3150 (failure mode A)
+## Residual window closed by (failure mode A)
 
-The #3138 fix makes the **discovery-time** guard see every fleet sibling, but
+The fix makes the **discovery-time** guard see every fleet sibling, but
 that guard still runs **only once, at discovery**. A PR opened by a sibling
 account in the window _between_ this host's discovery and its atomic claim is
 invisible to it: the atomic claim (`claimIssue` in `lib/claim_issue.ts`)
 re-checked assignees and issue-closed state but not fleet PRs. So two hosts that
 pick up the same open issue at nearly the same time can each still open a PR
-(the `#648`/`#649` timing on `private-repo-18#647`).
+(the ``/`` timing on `private-repo-18`).
 
-**Fix (Issue #3150) — live re-check inside the atomic claim chokepoint.** After
+**Fix — live re-check inside the atomic claim chokepoint.** After
 this host wins the earliest-comment claim race and **before any Claude/token
 work begins**, `claimIssue` performs a live, cache-bypassing fleet open-PR
 re-check:
@@ -133,13 +133,13 @@ sequenceDiagram
     participant A as Host A
     participant B as Host B
     participant GH as GitHub
-    A->>GH: discover issue #647 (no fleet PR)
-    B->>GH: discover issue #647 (no fleet PR)
-    A->>GH: win claim race, open PR #648
+    A->>GH: discover issue (no fleet PR)
+    B->>GH: discover issue (no fleet PR)
+    A->>GH: win claim race, open
     B->>GH: win claim race
-    Note over B,GH: Issue #3150 — live cache-bypassing re-check
+    Note over B,GH: — live cache-bypassing re-check
     B->>GH: gh pr list --author (fleet union), force-refresh
-    GH-->>B: PR #648 targets this work stream
+    GH-->>B: targets this work stream
     B->>GH: abort claim — remove comment, unassign
     Note over B: reason=fleet_pr_exists, no tokens spent
 ```
@@ -147,5 +147,5 @@ sequenceDiagram
 ## Out of scope (per the issue)
 
 No auto-close / duplicate-cleanup machinery — this issue is diagnostics and
-prevention only. Multi-account fleet operation is retained (per #3095).
-Post-merge re-pickup is handled by the Mode-B post-merge sub-issue of #3136.
+prevention only. Multi-account fleet operation is retained (per).
+Post-merge re-pickup is handled by the Mode-B post-merge sub-issue of.

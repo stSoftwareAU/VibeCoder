@@ -1,7 +1,7 @@
 # 🔒 Containment — what the worker can and cannot reach
 
 A Vibe Coder host is an **unattended appliance**. The worker runs inside a
-container by default (Issue #4060), and this document is the operator's
+container by default, and this document is the operator's
 statement of that boundary: which host paths cross it, which deliberately do
 not, and what the network looks like from inside.
 
@@ -9,15 +9,15 @@ not, and what the network looks like from inside.
 
 The philosophy behind the boundary is deliberately asymmetric — **generous
 resources, strict boundary** (see
-[Design Principles](../DESIGN-PRINCIPLES.md#generous-resources-strict-boundary-issues-4060-4184-4186)).
+[Design Principles](../DESIGN-PRINCIPLES.md#generous-resources-strict-boundary)).
 Inside its world the worker gets all the memory, CPU and disk it wants
-(Issue #4184) and runs as fast as the runtime allows; resource-exhaustion
+ and runs as fast as the runtime allows; resource-exhaustion
 attacks are out of scope because run timeouts already bound a runaway cycle.
 All of the enforcement effort goes into the boundary itself: what crosses it,
 and what never can.
 
 The boundary is enforced at the OS/container level, not by prompts or
-application policy — Issue #3643 showed policy alone is not enough. The
+application policy — showed policy alone is not enough. The
 launcher (`run.sh` / `run.ps1`) asks one audited Deno module,
 [`container_launch.ts`](../worker/deno/lib/container_launch.ts), what to run
 and runs exactly that, so code running *inside* the container cannot broaden
@@ -49,13 +49,13 @@ flowchart LR
 `container` is the default and the only run mode (Issue #4). Two host-mode
 opt-ins once existed — `native` (the worker run directly on the host; Issues
 4145, 4146 and 4148) and the macOS-only `seatbelt` (native under a
-`sandbox-exec` profile, Issue #4300) — and both ran outside the #4060
+`sandbox-exec` profile,) — and both ran outside the
 containment boundary this page describes: with host access, no mount set, no
 privilege reduction, and for native no network boundary either. Issue #4
 removed them. A `.config.json` (or `VIBE_RUN_MODE`) that still names one fails
 loud with the removal explained and never silently runs the container instead;
 a missing container runtime stays a loud failure and never falls back to the
-host (Issue #3234). The guarantees on this page are the guarantees, with
+host. The guarantees on this page are the guarantees, with
 nothing to opt out to.
 
 ## The mount set
@@ -63,9 +63,8 @@ nothing to opt out to.
 Seven mounts cross the boundary by default and nothing else. Three host
 resources are exposed — the worker's own checkout, its logs and its
 configuration — plus two runtime-managed named volumes for the worker's
-workspace (Issue #4186), plus one credential sub-directory per credential the
-worker actually uses: `gh`, and one per *enabled* coding-agent provider
-(Issues #4067, #4108):
+workspace, plus one credential sub-directory per credential the
+worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 
 | Source                       | In container                                    | Mode |
 | ---------------------------- | ----------------------------------------------- | ---- |
@@ -80,7 +79,7 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider
 - **The checkout is the worker's own code**, not host data: the image ships
   only the entrypoint, so without it there is no driver to run and no tree for
   the bootstrap to self-update.
-- **The workspace is a named volume, not a host directory** (Issue #4186).
+- **The workspace is a named volume, not a host directory**.
   The work dir — repo clones, build churn, agent transcripts, session
   stores — and its content-approval sibling live on runtime-managed volumes
   (`vibe-work`, `vibe-approval-state`): guest-owned filesystems at native
@@ -105,14 +104,14 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider
   worker's `gh` material and each *enabled* coding-agent provider's are
   mounted; anything else sitting in `~/.vibe-coder/credentials` stays on the
   host — including a registered provider that this run has not enabled, so no
-  vendor's subprocess can read another vendor's secret (Issue #4108). The
+  vendor's subprocess can read another vendor's secret. The
   sub-directory names come from the provider descriptors, so the enabled set
   decides which directories are mounted without touching the mount
   construction.
 - **The in-container paths are the ones the worker resolves for itself** from
   `HOME`, so no environment plumbing points it at them.
 
-Building a plan **fails loud** (Issue #3234) rather than emitting a broadened
+Building a plan **fails loud** rather than emitting a broadened
 one when a mount source is the host home directory or an ancestor of it, a
 container-runtime control socket, a relative path, or a path carrying
 characters the launcher's NUL framing could not pass. The finished argument
@@ -128,14 +127,14 @@ None of the following is mounted, and none of it exists inside the container:
 | the host home directory (wholesale)             | The mount set is explicit; a wholesale home mount is refused by the plan builder |
 | `~/Documents`, `~/Desktop`, `~/Pictures`        | Operator data the worker has no business reading        |
 | `~/.ssh` and normal SSH material                | The worker authenticates from its own credential directory, never the operator's keys |
-| the macOS `~/Library`, Keychain material included | No runtime step may reach a host credential store (Issue #4064) |
+| the macOS `~/Library`, Keychain material included | No runtime step may reach a host credential store |
 | `/var/run/docker.sock`, `/run/docker.sock`      | The Docker control socket is host-level root            |
 | `/run/podman/podman.sock`, `/var/run/podman/podman.sock`, `/run/user/<uid>/podman/podman.sock` | The Podman control sockets, rootless included |
 | `/var/run/container.sock`, `/run/container.sock` | The Apple `container` control socket                   |
 | the host filesystem above the mounts            | Only the mounts above are bound in                      |
-| `~/auto-issue-work` on the host                 | Obsolete since Issue #4186 — the workspace lives on the `vibe-work` volume; a leftover host copy is never mounted |
+| `~/auto-issue-work` on the host | Obsolete since — the workspace lives on the `vibe-work` volume; a leftover host copy is never mounted |
 
-`worker/deno/tests/container_containment_test.ts` (Issue #4071) proves this by
+`worker/deno/tests/container_containment_test.ts` proves this by
 starting a real container from a real launch plan against a synthetic host
 fixture and asking the container itself what it can reach — each path, socket
 and a canary file planted outside every mount is probed under its own
@@ -156,8 +155,7 @@ The container is an execution environment, not the durable worker state:
   the runtime understands them. Apple `container` takes neither, because each
   container is already its own lightweight VM.
 - The image is rebuilt only when its content-derived reference is absent
-  locally, so a changed container definition is simply a different image
-  (Issue #4062).
+  locally, so a changed container definition is simply a different image.
 
 Durable state lives **only** in the mounted workspace, logs, configuration and
 credentials. Anything the worker writes elsewhere is gone at the next launch —
@@ -189,9 +187,9 @@ for diagnosis (see [Troubleshooting](TROUBLESHOOTING.md)), but a recoverable
 operational failure is reported through GitHub rather than left to disappear
 into a host log.
 
-## Green-gate evidence: is the fleet actually running contained? (Issue #4189)
+## Green-gate evidence: is the fleet actually running contained?
 
-Phase 0 of plan #4160 requires the fleet to be *observed* running clean in
+Phase 0 of plan requires the fleet to be *observed* running clean in
 container mode, and Phase 4 wants months of that as evidence. The measurement
 is a command, not a belief:
 
@@ -219,7 +217,7 @@ The report describes the host it runs on; run it on each host and read the
 union. Re-running rewrites the file for the requested window. It is operator
 telemetry (hostnames, run ids) and stays private.
 
-## Tabletop evidence: does the boundary hold when it is attacked? (Issue #4194)
+## Tabletop evidence: does the boundary hold when it is attacked?
 
 The green gate above measures how the fleet *ran*. The tabletop harness
 attacks the boundary on purpose, assuming the agent inside the container is

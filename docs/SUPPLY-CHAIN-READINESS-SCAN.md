@@ -2,8 +2,8 @@
 
 This document is the operator-facing reference for the Vibe Coder's
 supply-chain **readiness** audit. The intent is documented in the parent
-epic (#2396) and the sub-issues that built it: the template, prompt, and
-tests (#2398) and this manual (#2399).
+epic and the sub-issues that built it: the template, prompt, and
+tests and this manual.
 
 The supply-chain readiness scan is **template #5 of the idle-task
 framework** — the generic mechanism for "things the worker does when no
@@ -18,7 +18,7 @@ no bucket).
 
 For the **agent-facing** rules (label policy, suppression syntax,
 trigger summary) see
-[DESIGN-PRINCIPLES.md → Supply-chain readiness scans](../DESIGN-PRINCIPLES.md#supply-chain-readiness-scans-issue-2398-template-5).
+[DESIGN-PRINCIPLES.md → Supply-chain readiness scans](../DESIGN-PRINCIPLES.md#supply-chain-readiness-scans-template-5).
 
 ## Design intent — readiness, not active compromise
 
@@ -89,7 +89,7 @@ template and are never filed here.
 | `SCR-QUARANTINE-WINDOW` | **cross-link only** | n/a | Owned by `security-scan` (#1) via the dependency-update quarantine audit. |
 | `SCR-ACTIONS-PIN` | **cross-link only** | n/a | Owned by `github-actions-audit` (#4). |
 | `SCR-EOL-RUNTIME` | **cross-link only** | n/a | Owned by `best-practices` (#2) and `github-actions-audit` (#4). |
-| `SCR-ANOMALOUS-PUBLISH` | **cross-link only** | n/a | Owned by the proactive-detection epic (#2406). |
+| `SCR-ANOMALOUS-PUBLISH` | **cross-link only** | n/a | Owned by the proactive-detection epic. |
 
 The full per-check evidence rules and the "sensible-and-proportionate"
 discipline (is the control available to this ecosystem? does its absence
@@ -110,7 +110,7 @@ references it in prose rather than filing a parallel issue:
   [`best-practices`](BEST-PRACTICES-SCAN.md) (template #2) and
   `github-actions-audit` (#4).
 - **Anomalous-publish / proactive compromise detection** → the
-  proactive-detection epic (#2406).
+  proactive-detection epic.
 - **Reactive triage of a published upstream advisory** →
   [`docs/security-advisory-triage.md`](security-advisory-triage.md).
 - **Code-level security logging/alerting (OWASP A09:2025)** — the
@@ -135,9 +135,9 @@ The canonical example is `SCR-DEP-REVIEW`
 Graph review API, which on a private repo requires GHAS — a paid feature
 that is **off by default** — so the `dependency-review` check fails on
 every PR of a private, non-GHAS repo. (This is exactly what happened in
-issue #2508 → PR #2545: a finding fired on this private repo, the added
-`dependency-review.yml` then failed on every PR — symptoms #2546 / #2547
-/ #2548.)
+issue →: a finding fired on this private repo, the added
+`dependency-review.yml` then failed on every PR — symptoms /
+/.)
 
 The prompt (from v2 onward) gates every such check on **confirmed public
 visibility**:
@@ -221,7 +221,7 @@ flowchart TD
 
 ## Wrapper issue layout
 
-The wrapper issue is **human-style** (Issue #2077) — no hidden marker,
+The wrapper issue is **human-style** — no hidden marker,
 no parameters block. Anyone can paste the same prompt into a fresh issue
 with the `idle-task` label and the worker will run it identically.
 
@@ -236,7 +236,7 @@ with the `idle-task` label and the worker will run it identically.
 - **Body fingerprint:** the prompt's H1 begins
   `# Supply-chain readiness …`, matched by
   `SUPPLY_CHAIN_READINESS_BODY_FINGERPRINT` so dispatch recognises the
-  wrapper even if the title was edited (Issue #2087 body-fingerprint
+  wrapper even if the title was edited (body-fingerprint
   dispatch).
 - **Label:** the canonical `idle-task` label. No workflow labels.
 - **No milestone** — the template sets `skipMilestone: true`, so the
@@ -397,11 +397,11 @@ individually.
   (single prompt, language-agnostic). This document mirrors its
   structure.
 - Proactive supply-chain compromise detection — flagging malicious deps
-  before an advisory exists — is tracked under epic #2406.
+  before an advisory exists — is tracked under epic.
 - [`prompts/supply_chain_readiness/`](../prompts/supply_chain_readiness/)
   — Orchestrating prompt (Phases 1–4). The catalogue, cap, label set, id
   recipe, and per-finding body shape live in the prompt, not in Deno
   code.
-- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#supply-chain-readiness-scans-issue-2398-template-5)
+- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#supply-chain-readiness-scans-template-5)
   — Worker-side design principles for the supply-chain readiness scan.
 ```

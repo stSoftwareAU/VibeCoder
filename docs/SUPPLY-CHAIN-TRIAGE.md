@@ -12,7 +12,7 @@ label. The pickup labels — `top-priority`, `work-on`, `low-priority`,
 
 Under a steady, growing inflow of findings, manually toggling `work-on`
 per issue becomes the triage bottleneck. This doc covers the two parts
-of the throughput fix (Issue #2403):
+of the throughput fix:
 
 1. The `bulk-triage-security` Deno command for clearing the triage queue
    in one pass.

@@ -1,8 +1,8 @@
 # 🐤 GhostCommit canary regression tests
 
 > **Status:** implemented. Sibling sub-issue
-> [#3390](https://github.com/stSoftwareAU/VibeCoder/issues/3390) of parent
-> [#3384](https://github.com/stSoftwareAU/VibeCoder/issues/3384). This is the
+> of parent
+>. This is the
 > **empirical proof** half of the GhostCommit work — the
 > [threat-model assessment](ghostcommit-image-injection-assessment.md) evaluates
 > the design; these canary tests prove it at runtime and guard against

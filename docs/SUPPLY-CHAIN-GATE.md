@@ -1,8 +1,8 @@
 # 🔗 Supply-chain gate
 
 Operator manual for the supply-chain posture gate (Issue
-[#4192](https://github.com/stSoftwareAU/VibeCoder/issues/4192), part of the
-[#4160](https://github.com/stSoftwareAU/VibeCoder/issues/4160) proving-ground
+, part of the
+ proving-ground
 hardening).
 
 Every check here used to be a habit — "we always SHA-pin actions", "`run.sh`

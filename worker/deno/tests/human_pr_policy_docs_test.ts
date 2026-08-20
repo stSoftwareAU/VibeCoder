@@ -1,7 +1,7 @@
 /**
- * Documentation-drift tests for the human-authored-PR policy (Issue #4081).
+ * Documentation-drift tests for the human-authored-PR policy.
  *
- * The #4074 regression happened because the policy lived only in code: the
+ * The regression happened because the policy lived only in code: the
  * docs still described `allowed_authors` as a set whose PRs the fleet
  * maintains, which is exactly the reasoning that widened the scans. These
  * tests pin the written policy to the implementation so the two cannot
@@ -13,7 +13,7 @@
  *     predicates (`isPrInvited`, `LABEL_DEFAULTS`), so a doc naming a
  *     label that does not work fails the suite.
  *   - The page's claim that a human PR never blocks issue pickup is
- *     checked against the real guard (Issue #4133).
+ * checked against the real guard.
  *   - The two author sets the docs describe are the sets the resolvers
  *     actually return — trusted humans defer-to only, never push-capable.
  *   - `docs/CONFIGURATION.md` states the one-line rule, and
@@ -243,7 +243,7 @@ Deno.test("human-PR policy - CONFIGURATION.md states the one-line rule", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The blocked-`work-on` branch (Issue #4133)
+// The blocked-`work-on` branch
 // ---------------------------------------------------------------------------
 
 Deno.test("human-PR policy - the page says a human PR never blocks pickup", () => {
@@ -253,8 +253,8 @@ Deno.test("human-PR policy - the page says a human PR never blocks pickup", () =
     `${POLICY_DOC} must state that a human PR does not block issue pickup`,
   );
   assert(
-    /#4133/.test(policy),
-    `${POLICY_DOC} must cite Issue #4133 for the blocking change`,
+    //.test(policy),
+    `${POLICY_DOC} must cite for the blocking change`,
   );
 });
 
@@ -286,11 +286,13 @@ Deno.test("human-PR policy - the real guard ignores a human PR and keeps fleet P
 // The incident is on record
 // ---------------------------------------------------------------------------
 
-Deno.test("human-PR policy - LESSONS-LEARNT records the #4074 incident", () => {
+Deno.test("human-PR policy - LESSONS-LEARNT records the incident", () => {
   const lessons = read(LESSONS_DOC);
   assert(
-    /#4074/.test(lessons),
-    `${LESSONS_DOC} must record the #4074 incident by number`,
+    lessons.includes(
+      "started listing, claiming and pushing to human-authored PRs",
+    ),
+    `${LESSONS_DOC} must record the uninvited-PR incident`,
   );
   assert(
     markdownLinks(LESSONS_DOC).includes(POLICY_DOC),

@@ -41,9 +41,9 @@ the CI nudge — list PRs by author through the **push-capable** set
 (`resolveFleetMaintenanceAuthorSet`: the host's own login plus
 `fleet_pr_authors`). A trusted human's login never reaches
 `gh pr list --author`, so an uninvited human PR is not merely skipped late — it
-is never fetched (Issue #4076).
+is never fetched.
 
-The last row changed in Issue #4133. The worker used to defer to your open PR
+The last row changed in. The worker used to defer to your open PR
 through the wider fleet-owned set (`resolveFleetPrAuthorSet`), which meant one
 unrelated human PR parked every `work-on` issue in the repo. It no longer does:
 `getBlockingPRForIssue` only considers PRs authored by the **push-capable** set,
@@ -69,7 +69,7 @@ flowchart TD
 
 The policy is "only when asked", not "never". Every scan additionally lists the
 open PRs authored by `allowed_authors` and admits only those carrying an
-explicit invitation (Issue #4077). Two signals count:
+explicit invitation. Two signals count:
 
 | Signal      | How to give it                                                    | Who may give it                                                       |
 | ----------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
@@ -82,7 +82,7 @@ Details that decide real cases:
   worker resolves from the PR timeline who applied it. An unattributable label
   is not an invitation.
 - **A fleet account is never an inviter.** Fleet logins sit in `allowed_authors`
-  for PR dedup (Issue #3138), so without that exclusion a worker could label its
+  for PR dedup, so without that exclusion a worker could label its
   way onto your PR.
 - **Mentions must be genuine.** A `@worker` inside a fenced code block or a
   quoted log is ignored — pasted CI output must not conscript the worker.
@@ -113,7 +113,7 @@ branch — revoking stops future work, it does not rewrite history.
 
 ## 🚧 Your PR and the worker's queue
 
-Your open PR does not block the worker's issue pickup at all (Issue #4133).
+Your open PR does not block the worker's issue pickup at all.
 There is no stand-down, no `needs-human` label, and no comment on the blocked
 issue: the worker simply keeps working the issues it was invited to, in
 parallel with you.
@@ -147,6 +147,6 @@ worker action on a human-authored PR.
 - [Configuration Reference § Fleet PR authors](CONFIGURATION.md#-fleet-pr-authors-fleet-aware-pr-maintenance)
   — the two lists and how to set them.
 - [Lessons learnt § A set defined by trust is not a set defined by ownership](LESSONS-LEARNT.md#-a-set-defined-by-trust-is-not-a-set-defined-by-ownership-issue-4074)
-  — the #4074 incident this policy came from.
+  — the incident this policy came from.
 - [PR Feedback & Upkeep](workflows/pr-feedback.md) — what maintenance actually
   does to a PR it owns.

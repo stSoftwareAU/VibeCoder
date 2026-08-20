@@ -79,8 +79,7 @@ Deno.test("loadConfig - should parse repos from JSON config", async () => {
     configPath,
     JSON.stringify({
       repos: ["org/repo1", "org/repo2"],
-    }),
-  );
+    }),);
   const config = await loadConfig(configPath);
   assertEquals(config.repos[0], "org/repo1");
 });
@@ -123,7 +122,7 @@ reports. Keep running it until it passes cleanly. The quality gate is implemente
 in Deno TypeScript (`worker/deno/quality.ts`) and runs prompt-immutability,
 benchmark-audit, pages-liquid, markdownlint, `deno test`, `deno lint`,
 `deno check`, and `deno fmt --check`. Shellcheck is deliberately not run here —
-bash linting is owned by each repo's own CI (Issue #3129). See
+bash linting is owned by each repo's own CI. See
 [CONTRIBUTING.md → Local quality gate](CONTRIBUTING.md) for how to install the
 optional checks (Ruby + `liquid`, `markdownlint-cli2`).
 
@@ -184,7 +183,7 @@ small allowlist.
 `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, and any
 other hidden file not on the allowlist.
 
-**Also forbidden — private key material and credential files (Issue #3660):**
+**Also forbidden — private key material and credential files:**
 `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
 `service-account*.json`. These are not hidden files, so the `.*` rule never
 covered them — the worker reads a GitHub App private key from disk, and a
@@ -269,7 +268,7 @@ routing chain and the Fable-unavailable self-heal). The guidance below is
 model-generation-agnostic good practice for authoring prompt templates and
 agent instructions; it is not tied to any superseded model. Where a rule does
 depend on the model generation, it defers to
-[Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning-issue-3562),
+[Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning),
 which records what each generation needs and what was tried and reversed.
 
 - **Write precise, unambiguous instructions.** State exactly what you want done
@@ -284,7 +283,7 @@ which records what each generation needs and what was tried and reversed.
   correctness before proceeding") helps a generation that does not self-verify;
   on a generation that already does — Opus 5 — it is redundant and encourages
   over-work, which is why the current templates omit it. Check
-  [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning-issue-3562)
+  [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning)
   before adding or removing such scaffolding.
 - **State when and why a tool should be used** rather than assuming the model
   reaches for it — e.g. "Use the `gh` CLI to check the current PR status".

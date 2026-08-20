@@ -72,17 +72,15 @@ const REFERENCES: Array<{
   // Security-scans anchor — full slug (4 references).
   {
     source: "docs/SECURITY-SCAN.md",
-    link:
-      "../DESIGN-PRINCIPLES.md#security-scans-issue-1933-1944-simplified-by-2023",
+    link: "../DESIGN-PRINCIPLES.md#security-scans-simplified-by",
     target: "DESIGN-PRINCIPLES.md",
-    fragment: "security-scans-issue-1933-1944-simplified-by-2023",
+    fragment: "security-scans-simplified-by",
   },
   {
     source: "docs/BEST-PRACTICES-SCAN.md",
-    link:
-      "../DESIGN-PRINCIPLES.md#security-scans-issue-1933-1944-simplified-by-2023",
+    link: "../DESIGN-PRINCIPLES.md#security-scans-simplified-by",
     target: "DESIGN-PRINCIPLES.md",
-    fragment: "security-scans-issue-1933-1944-simplified-by-2023",
+    fragment: "security-scans-simplified-by",
   },
   // Model/effort precedence chain — renamed heading + emoji slug.
   {
@@ -114,9 +112,9 @@ const REFERENCES: Array<{
   // Cross-repo release-gating — em-dash double hyphen.
   {
     source: "docs/CROSS-REPO-FIX.md",
-    link: "#release-gating--never-auto-release-issue-2944",
+    link: "#release-gating--never-auto-release",
     target: "docs/CROSS-REPO-FIX.md",
-    fragment: "release-gating--never-auto-release-issue-2944",
+    fragment: "release-gating--never-auto-release",
   },
 ];
 

@@ -14,9 +14,8 @@ internal MythOS-style security audits (idle trigger, finding-issue format), see
 
 Use this process whenever someone posts an upstream advisory link (GHSA, CVE,
 vendor bulletin) and asks whether the Vibe Coder needs to react. Example
-precedent: [#1770](https://github.com/stSoftwareAU/VibeCoder/issues/1770) →
-[#1771](https://github.com/stSoftwareAU/VibeCoder/issues/1771) →
-[#1772](https://github.com/stSoftwareAU/VibeCoder/issues/1772).
+precedent: →
+ →.
 
 ## Process
 
@@ -40,9 +39,9 @@ Anyone can open a GitHub issue with:
 No further analysis is required at intake — the goal is to capture the advisory
 promptly so the worker or a human triager can pick it up.
 
-### Automatic intake for Deno dependencies (Issue #2691)
+### Automatic intake for Deno dependencies
 
-Renovate's `deno` manager is deliberately disabled (Issue #2536), so it never
+Renovate's `deno` manager is deliberately disabled, so it never
 raises a security-remediation PR for a JSR / `deno.land/x` dependency. To close
 that detect→react gap, the scheduled `deno audit` job in
 [`.github/workflows/dependency-audit.yml`](../.github/workflows/dependency-audit.yml)
@@ -55,7 +54,7 @@ exactly like a human-filed intake and run the triage checklist below; the
 [emergency dependency override](#emergency-dependency-override) covers the bump
 itself.
 
-The audit is **fail-closed** (Issue #3955): it runs without
+The audit is **fail-closed**: it runs without
 `--ignore-registry-errors`, so an advisory service that does not answer fails
 the job instead of exiting 0 having checked nothing. Two tracking issues are
 therefore possible, and they need different responses:
@@ -94,13 +93,12 @@ For each advisory, answer all of:
   [SECURITY.md](../SECURITY.md) "Known upstream advisories" section recording
   the assessment.
 - **Exposed** — open two sub-issues:
-  1. **Audit** — confirm the exposure with code search / tests (precedent:
-     #1771).
+  1. **Audit** — confirm the exposure with code search / tests (precedent:).
   2. **Remediation** — patch, sanitise, or upgrade as needed (see
      [Emergency dependency override](#emergency-dependency-override) below if
      the fix is a dependency bump being held back by the quarantine window).
      Then add an entry to [SECURITY.md](../SECURITY.md) once the audit concludes
-     (precedent: #1772).
+     (precedent:).
 
 ## Emergency dependency override
 
@@ -160,7 +158,7 @@ weaken the quarantine for any other dependency.
 ## 4. Documentation outcome
 
 Every triage produces an entry in [SECURITY.md](../SECURITY.md), in the format
-established by [#1772](https://github.com/stSoftwareAU/VibeCoder/issues/1772):
+established by:
 
 - Vulnerability id and CVSS.
 - Affected products (verbatim from upstream).
@@ -175,4 +173,4 @@ advisory has a precedent format to follow.
 
 | Advisory                                          | Intake                                                          | Audit                                                           | Documentation                                                   |
 | ------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- |
-| CVE-2026-3854 (GitHub git push command injection) | [#1770](https://github.com/stSoftwareAU/VibeCoder/issues/1770) | [#1771](https://github.com/stSoftwareAU/VibeCoder/issues/1771) | [#1772](https://github.com/stSoftwareAU/VibeCoder/issues/1772) |
+| CVE-2026-3854 (GitHub git push command injection) | |  | |

@@ -1,5 +1,5 @@
 /**
- * Regression tests for Issue #3596 — `DESIGN-PRINCIPLES.md` contradicted itself
+ * Regression tests for — `DESIGN-PRINCIPLES.md` contradicted itself
  * on how many idle-task templates are registered ("fifteen" / `1/15` in the
  * *Best-practices scans* section vs "sixteen" / `1/16` in the registry
  * section).
@@ -115,7 +115,7 @@ Deno.test("design digest - Best-practices scans defers to the registry section",
       link[1]
     }, which is not a heading in DESIGN-PRINCIPLES.md`,
   );
-  assertEquals(link[1], githubSlug("Idle-task framework (Issue #1959)"));
+  assertEquals(link[1], githubSlug("Idle-task framework"));
 });
 
 Deno.test("design digest - the registry enumerates every template module", async () => {

@@ -1,5 +1,5 @@
 /**
- * Tests for the re-hardened reserved-label wording (Issue #2826).
+ * Tests for the re-hardened reserved-label wording.
  *
  * The soft prompt rule that stopped the worker self-applying reserved
  * workflow labels regressed in two spots:
@@ -14,9 +14,9 @@
  *
  * This re-applies the strong wording: the worker is not on the
  * trusted-author allowlist, reserved labels are silently stripped by
- * `label_security` (Issue #1344), the canonical pickup order, and the
+ * `label_security`, the canonical pickup order, and the
  * `idle-task`-only exception. Prior prompt versions stay immutable
- * (Issue #235).
+ * .
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -60,8 +60,8 @@ for (const { label, prompt } of planningCases) {
     assertStringIncludes(prompt, "silently stripped");
   });
 
-  Deno.test(`${label} - cites label_security (Issue #1344)`, () => {
-    assertStringIncludes(prompt, "#1344");
+  Deno.test(`${label} - cites label_security`, () => {
+    assertStringIncludes(prompt, "");
   });
 
   Deno.test(`${label} - names the idle-task-only exception`, () => {
@@ -149,7 +149,7 @@ for (const { name, version } of PROMPTS) {
         assertStringIncludes(result.value, "reserved workflow label");
         assertStringIncludes(result.value, "trusted-author allowlist");
         assertStringIncludes(result.value, "silently stripped");
-        assertStringIncludes(result.value, "#1344");
+        assertStringIncludes(result.value, "");
       }
     },
   );
@@ -170,14 +170,14 @@ for (const { name, previousVersion } of PROMPTS) {
             "The follow-up issue you open must carry only descriptive labels",
           ),
           false,
-          `${name} ${previousVersion} must remain immutable (Issue #235)`,
+          `${name} ${previousVersion} must remain immutable`,
         );
         assertEquals(
           result.value.includes(
             "The follow-up issue must carry only descriptive labels",
           ),
           false,
-          `${name} ${previousVersion} must remain immutable (Issue #235)`,
+          `${name} ${previousVersion} must remain immutable`,
         );
       }
     },

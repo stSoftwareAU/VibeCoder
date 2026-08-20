@@ -1,8 +1,8 @@
 # 📦 Vibe Coder worker image
 
-Design rationale for `container/Containerfile` (Issue #4061). The prose lives
+Design rationale for `container/Containerfile`. The prose lives
 here rather than in the Containerfile because Apple `container` rejects
-Dockerfiles over 16384 bytes (apple/container#735) — and within a few bytes of
+Dockerfiles over 16384 bytes (apple/container) — and within a few bytes of
 that cap the build fails with an unexplained `Stream unexpectedly closed`
 instead of the named error. `worker/deno/tests/container_manifest_test.ts`
 enforces a size margin on the Containerfile; keep new commentary here.
@@ -23,10 +23,10 @@ scripts as root.
 ## Base image
 
 The base is the official Ruby image (itself built on `buildpack-deps:trixie`)
-because `./quality.sh` needs both (Issue #4090): the Pages scripts under
+because `./quality.sh` needs both: the Pages scripts under
 `.github/scripts/*.rb` need ruby >= 3.1 for `Psych.safe_load_file`
-(Issue #3661), and git >= 2.41 is required for `--end-of-options` to be dropped from
-argv rather than taken as a revision (Issue #3714). The image already ships
+, and git >= 2.41 is required for `--end-of-options` to be dropped from
+argv rather than taken as a revision. The image already ships
 bash, GNU coreutils (so `timeout` resolves without the macOS `gtimeout`
 fallback), git, curl and ca-certificates, which is why there is no
 package-manager install step to rot.
@@ -41,7 +41,7 @@ version reuses their cache. Within that block the order is least-to-most
 churn — the static analysers move rarely; Rust moves every few weeks and is
 the largest download, so it sits last and a Rust bump rebuilds only itself.
 
-## Coding-agent providers (Issues #4067, #4105)
+## Coding-agent providers
 
 The providers are a separable layer selected as a comma-separated *set*
 (quorum mode needs several agent CLIs in one image): the build runs one
@@ -50,9 +50,9 @@ provider means adding a fragment plus a `container/tools.json` `providers`
 entry — the base definition does not change. An empty list, a malformed or
 duplicate id, an id with no fragment, or a failing fragment aborts the build
 loudly, naming the fragments that do exist (`install-providers.sh`,
-Issue #3234). The default set is the manifest's `installedProviders`
+). The default set is the manifest's `installedProviders`
 (gate-checked), and the set is part of the hashed definition, so changing it
-changes the image tag (Issue #4062) rather than reusing a tag whose contents
+changes the image tag rather than reusing a tag whose contents
 differ.
 
 `COPY providers/*.sh` is a glob, not a bare directory COPY, because Apple
@@ -70,7 +70,7 @@ rustfmt and clippy are separate component packages, each with its own pinned
 checksum. `QUALITY_SKIP_RUST_UPDATE=1` stops private-repo-9's gate running
 `rustup update stable` — the image owns its toolchain.
 
-## Playwright + headless Chromium (Issue #4069)
+## Playwright + headless Chromium
 
 The worker captures PR evidence through the Playwright MCP server, and a
 contained worker has no host browser or desktop session to borrow, so
@@ -83,10 +83,9 @@ release pins its own revision; the gate fails when the pin drifts from
 `--with-deps` apt-installs the system-library and font set Playwright itself
 declares, and because Playwright only warns when it does not recognise a
 distribution, the build then launches the browser and renders a page: a
-missing library fails the build rather than the first screenshot
-(Issue #3234).
+missing library fails the build rather than the first screenshot.
 
-## Pre-warmed Deno cache (Issue #4392)
+## Pre-warmed Deno cache
 
 The MCP server itself is launched as `deno run npm:@playwright/mcp@<pin>`,
 and Deno resolves that package — with its own copy of `playwright-core` —
@@ -107,9 +106,9 @@ when the seed's pins drift from `screenshot.ts`, the Containerfile ARG or
 the worker lock, and Container Build drives the MCP server from the seed
 with `--network none`.
 
-## Built from a comment-stripped copy (Issue #4393)
+## Built from a comment-stripped copy
 
-Apple `container` rejects a Dockerfile over 16,384 bytes (apple/container#735),
+Apple `container` rejects a Dockerfile over 16,384 bytes (apple/container),
 and `container/Containerfile` is mostly the comments that make its pins
 reviewable. So nothing builds from the committed file directly: the launch
 plan (`container-launch-plan`) writes a comment-stripped copy beside its plan

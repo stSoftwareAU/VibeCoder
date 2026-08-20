@@ -1,5 +1,5 @@
 /**
- * Tests for Issue #4113 — the operator documentation must describe Quorum mode
+ * Tests for — the operator documentation must describe Quorum mode
  * and the multi-provider container image.
  *
  * The assertions are tied back to the code that owns each fact rather than to
@@ -166,8 +166,8 @@ Deno.test("docs/QUORUM.md - cross-references rather than restates the neighbouri
   for (const link of ["CONTAINMENT.md", "CONTAINER.md", "CONFIGURATION.md"]) {
     assertMentions(QUORUM_DOC, "docs/QUORUM.md", link);
   }
-  // Issue #4070 owns the sandboxed-environment guidance; link it, do not copy it.
-  assertMentions(QUORUM_DOC, "docs/QUORUM.md", "#4070");
+  // owns the sandboxed-environment guidance; link it, do not copy it.
+  assertMentions(QUORUM_DOC, "docs/QUORUM.md", "");
 });
 
 // ---------------------------------------------------------------------------

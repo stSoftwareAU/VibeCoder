@@ -1,6 +1,6 @@
 # 🎨 Vibe Coder social media images
 
-Transparent, outlined artwork of the Vibe Coder mascot (Issue #4201): a
+Transparent, outlined artwork of the Vibe Coder mascot: a
 smiling purple robot between two code brackets, in a vibrant purple-led
 palette that reads on both light and dark backgrounds. Each PNG ships with its
 editable SVG source beside it. Logo artwork only — no name, tagline or feature
@@ -20,7 +20,7 @@ text — so the images work wherever the surrounding page supplies the words.
 - [`docs/workflows/README.md`](../workflows/README.md) — the social preview at
   the top of the user manual.
 - GitHub repository social preview — upload `vibe-coder-social-preview.png`
-  under *Settings → General → Social preview* (Issue #4199).
+  under *Settings → General → Social preview*.
 
 ## Guidelines
 

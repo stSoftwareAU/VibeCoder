@@ -1,8 +1,6 @@
 # 🔬 Idle-task scans vs Anthropic & Visa agentic security harnesses — gap analysis
 
-**Status:** reference gap analysis for
-[stSoftwareAU/VibeCoder#3535](https://github.com/stSoftwareAU/VibeCoder/issues/3535)
-(absorbs the twin Visa question, #3536, closed as folded in).
+**Status:** reference gap analysis (absorbs the twin Visa question, closed as folded in).
 
 **Comparison axis:** *methodology and pipeline architecture* — threat
 modelling, multi-stage false-positive triage, and patch verification. This is
@@ -20,7 +18,7 @@ has fallen behind the two published agentic harnesses.
 Our repos are Deno / bash / Rust and our scans are **issue-only** (detect → file
 an issue → the fix rides the normal `work-on` pipeline; a scan never opens a
 PR). Harness ideas therefore transfer in **shape**, not tooling — every adopted
-gap stays per-repo (Issue #3239); nothing centralises a gate.
+gap stays per-repo; nothing centralises a gate.
 
 ## Sources compared
 
@@ -80,11 +78,11 @@ flowchart LR
 | Threat-model cuts severity/false positives | **covered** | Phase 3 recalibrates severity by the Phase 1 exposure band |
 | Multi-lens detection (crypto, access-control, logic, IaC, client, LLM) | **covered** | Phase 2 taxonomy sweeps every OWASP 2025 + GenAI class, HTTP/auth depth, client-side, and feature-abuse design lens |
 | Deterministic dedup by root cause | **covered** | Phase 3 collapses shared-root-cause candidates; stable `SEC-<hex>` id dedups across runs |
-| Adversarial verification | **delivered** | Phase 3 self-refutes (same-context), then an *independent* fresh-context verifier re-checks high/critical findings — G1 delivered (#3537) |
-| Semantic/consensus false-positive reduction | **delivered** | severity-gated N-vote consensus (default N = 3) for high/critical findings — G1 delivered (#3537) |
+| Adversarial verification | **delivered** | Phase 3 self-refutes (same-context), then an *independent* fresh-context verifier re-checks high/critical findings — G1 delivered |
+| Semantic/consensus false-positive reduction | **delivered** | severity-gated N-vote consensus (default N = 3) for high/critical findings — G1 delivered |
 | Structured machine-readable output (SARIF) | **gap** | issues only — see G2 |
 | Exploit-chain construction | **gap** | findings filed individually — see G3 |
-| Fix validation (original trigger closed, no bypass, tests pass) | **delivered** | the completion phase (`lib/phases/completion_phase.ts`) runs a per-repo security-fix patch-verification gate (`security_fix_gate.ts`) — G4 delivered (#3540), diff-backed since #3652, wired into the live phase by #3939 |
+| Fix validation (original trigger closed, no bypass, tests pass) | **delivered** | the completion phase (`lib/phases/completion_phase.ts`) runs a per-repo security-fix patch-verification gate (`security_fix_gate.ts`) — G4 delivered, diff-backed since, wired into the live phase by |
 | Dynamic fuzz/ASAN crash reproduction | **out of scope** | static side only (issue scope) |
 | D&R log-corpus attacker hunting | **out of scope** | static side only (issue scope) |
 
@@ -92,7 +90,7 @@ flowchart LR
 
 Each gap below is a distinct root cause. Adopt-worthy gaps get one follow-up
 issue (deduplicated against open issues, at most one per root cause,
-Issue #2943); skipped gaps are recorded here with rationale so they are not
+); skipped gaps are recorded here with rationale so they are not
 re-attempted.
 
 ### G1 — Independent adversarial verification / consensus voting — **ADOPT**
@@ -113,7 +111,7 @@ that bias.
 sub-agent that never saw the detection reasoning, defaulting to "refute unless
 proven"), optionally N-vote consensus for high/critical findings, gating a
 finding before it is filed. This is the highest-value transfer and generalises
-to the other LLM scans. → **delivered** (Issue #3537): `security-scan` Phase 3
+to the other LLM scans. → **delivered**: `security-scan` Phase 3
 now runs a severity-gated independent verification / consensus-voting step
 (step 6) — see the `security_scan` prompt (`prompts/security_scan/`). High and
 critical findings are re-checked by N independent verifiers (default `N = 3`)
@@ -131,7 +129,7 @@ code scanning would close that loop (dedup against tool alerts, unified triage
 UI, CWE tagging) with no new detection work.
 
 **Adopt:** emit SARIF for `security-scan` findings, tag each with a CWE id, and
-upload to GitHub code scanning (per-repo, Issue #3239). → **follow-up filed.**
+upload to GitHub code scanning (per-repo,). → **follow-up filed.**
 
 ### G3 — Vulnerability chaining / combined exploit-path finding — **ADOPT**
 
@@ -158,17 +156,17 @@ of "PoC no longer fires / no bypass").
 **Adopt:** require any PR that closes a `security`-labelled finding to add a
 regression test that fails against the unfixed code and to demonstrate the
 original trigger is closed with no trivial bypass. Fits our TDD standard and the
-"fail loud" principle (Issue #3234). → **delivered** (Issue #3540):
+"fail loud" principle. → **delivered**:
 the completion phase now runs a lightweight patch-verification gate
 (`security_fix_gate.ts`). The gate activates when the PR closes a security
 finding (the issue carries the `security` label, or the PR summary references a
 `SEC-<hex>` finding id) and blocks PR creation unless the summary shows both a
 **regression test** (fails against the unfixed code, passes after the fix) and
 that the **original trigger is closed** with no trivial bypass — static
-reasoning over the changed code path, no execution. Per-repo (Issue #3239); opt
+reasoning over the changed code path, no execution. Per-repo; opt
 out with the `skip_security_fix_check` repo config.
 
-**Hardened** (Issue #3652): the gate's *decisive* evidence is now machine-checkable
+**Hardened**: the gate's *decisive* evidence is now machine-checkable
 against the branch diff rather than the agent's own prose. Deciding a security
 outcome by regex over a summary the same agent authored is
 [LLM09:2025 Misinformation](https://genai.owasp.org/llmrisk/llm092025-misinformation/) —
@@ -178,8 +176,7 @@ requires that the diff **adds or modifies a test file** and that a **test
 identifier named in the summary actually appears** in the added lines of that
 test diff (`security_fix_diff.ts` runs `git diff` only — still no execution).
 The prose requirements are retained as a human-review aid, not as the gate. If
-the diff cannot be computed at all, the PR is blocked rather than assumed good
-(Issue #3234).
+the diff cannot be computed at all, the PR is blocked rather than assumed good.
 
 ```mermaid
 flowchart TD
@@ -213,9 +210,9 @@ scoping, multi-lens detection, root-cause dedup, and severity recalibration — 
 comparable depth. The genuine gaps are all on the **verification, emission, and
 remediation** side:
 
-1. **G1** — independent adversarial verification / voting (biggest win). ✅ **delivered** (#3537).
+1. **G1** — independent adversarial verification / voting (biggest win). ✅ **delivered**.
 2. **G2** — SARIF emission + code-scanning loop.
 3. **G3** — exploit-chain construction.
-4. **G4** — security-fix patch-verification gate. ✅ **delivered** (#3540).
+4. **G4** — security-fix patch-verification gate. ✅ **delivered**.
 
 Four follow-up issues track these; the dynamic and D&R tracks stay out of scope.

@@ -127,7 +127,7 @@ match wins and the loop restarts.
 4. **Mark processed** — Add eyes reaction to comment and/or dismiss review so it
    is not picked again.
 
-**Out-of-scope feedback → escape hatch (Issue #1826).** Sometimes a review
+**Out-of-scope feedback → escape hatch.** Sometimes a review
 comment asks for something genuinely too large for one run — a multi-day
 refactor, a change that depends on a product decision only a human can make, or
 work that bundles several independent pieces. Rather than looping until the
@@ -167,12 +167,12 @@ checks pass. The worker does the following:
    `baseRefName` from the GitHub API). The base is the branch the PR targets —
    this may be the repo default branch or a milestone branch (e.g.
    `milestone/oidc`). If `baseRefName` is unavailable, the repo default branch
-   is used as a fallback (Issue #498).
+   is used as a fallback.
 2. **Update the branch** — If the branch is behind the base: fetch the latest
    base branch, rebase the feature branch onto it, and push. The comparison and
    rebase always use the PR's actual base branch, so PRs targeting milestone
    branches are updated against that milestone branch, not the repo default
-   (Issue #498). This keeps the PR up to date and avoids merge conflicts at
+  . This keeps the PR up to date and avoids merge conflicts at
    merge time.
 3. **Resolve merge conflicts** — If rebase or merge hits conflicts, the worker
    attempts automatic resolution (e.g. resolve strategy). If resolution
@@ -201,7 +201,7 @@ intervene.
   catches PRs where auto-merge was not set due to transient failures during
   creation or where merge issues have since been fixed.
 
-## 🛡️ The dual-layer pre-merge gate (Issue #2561)
+## 🛡️ The dual-layer pre-merge gate
 
 Enabling auto-merge is **not** the last word. Every required CI status check
 must pass **before** a feature branch merges into the repo's default branch —
@@ -317,7 +317,7 @@ After feedback fixes and quality checks, the PR is auto-merged._
   never forced against a stale branch.
 - **Out-of-scope PR feedback:** The worker takes the **escape hatch** — files a
   follow-up issue, replies once naming it (mentioning `needs-human` if a person
-  should triage), and exits cleanly rather than looping (Issue #1826).
+  should triage), and exits cleanly rather than looping.
 
 ## 📚 Further reading
 
