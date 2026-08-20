@@ -52,6 +52,7 @@ import {
   getInaccessibleRepos,
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
+import { resolveClaimRunwayFloor } from "./claim_runway.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import { runWithWatchdog } from "./handler_watchdog.ts";
@@ -436,6 +437,15 @@ export interface RunCoreDeps {
    * deadline gate.
    */
   minClaimRunwaySeconds?: number;
+
+  /**
+   * The configured execute budget (`config.claudeTimeout`, Issue #47).
+   * When the cycle is long enough to ever offer this budget, the claim
+   * floor above is raised to it, so a deadline-bound execute is a
+   * documented exception rather than the default tail of every cycle.
+   * Optional: absent keeps the plain #4304 floor.
+   */
+  fullExecuteBudgetSeconds?: number;
 
   /**
    * How long a shutdown (SIGTERM / SIGINT) waits for in-flight slots to
@@ -1196,14 +1206,29 @@ async function runIssueScanLoop(
   let consecutiveFailures = 0;
   let iteration = 0;
 
+  // Claim-runway floor for this cycle (Issue #4304, raised to the full
+  // execute budget by Issue #47 when the cycle can fit one). Resolved once;
+  // applied before every claim below.
+  const runwayFloor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
+    fullExecuteBudgetSeconds: deps.fullExecuteBudgetSeconds,
+    cycleSeconds: config.runDurationSeconds,
+  });
+  if (runwayFloor.exceptionReason) {
+    deps.log(`Claim-runway floor: ${runwayFloor.exceptionReason}`);
+  }
+
   while (true) {
     // Deadline gate (Issue #3648): never claim another billed issue run once
     // the cycle's planned shutdown time has passed. Skipped on the first pass,
     // which the outer loop has already gated on the same deadline.
     // Minimum-runway floor (Issue #4304): a claim with less runway than any
     // plausible completion time is doomed on arrival, so it is not taken —
-    // the tail of the cycle goes to cheap maintenance instead.
-    const minRunwayMs = (deps.minClaimRunwaySeconds ?? 0) * 1000;
+    // the tail of the cycle goes to cheap maintenance instead. Issue #47
+    // raises the floor to the full execute budget when the cycle can fit one,
+    // so a deadline-bound execute is a documented exception, not the default
+    // tail of every cycle.
+    const minRunwayMs = runwayFloor.floorSeconds * 1000;
     const pastDeadline = iteration > 0 && deps.now() >= endTime;
     // The floor applies on EVERY pass, including the outer loop's re-entry
     // after a success — that re-entry is exactly where a doomed late claim
@@ -1217,8 +1242,11 @@ async function runIssueScanLoop(
       deps.log(
         !pastDeadline
           ? `Issue scan loop stopping before the next claim: ${remainingSeconds}s ` +
-            `of cycle runway left, below the ${deps.minClaimRunwaySeconds}s ` +
-            `claim floor (Issue #4304).`
+            `of cycle runway left, below the ${runwayFloor.floorSeconds}s ` +
+            (runwayFloor.fullBudgetGate
+              ? `claim floor — the full ${runwayFloor.floorSeconds}s execute ` +
+                `budget no longer fits this cycle (Issue #47).`
+              : `claim floor (Issue #4304).`)
           : "Issue scan loop reached the cycle deadline — stopping before the next claim.",
       );
       break;
@@ -1437,6 +1465,8 @@ interface SlotPoolState {
   spendCeilingReached: boolean;
   /** SIGTERM/SIGINT seen (Issue #4182): no new claims; bounded drain. */
   shouldShutdown: () => boolean;
+  /** Effective claim-runway floor for this cycle (Issues #4304, #47). */
+  claimFloorSeconds: number;
   /**
    * The primary rate-limit error a slot hit mid-run (Issue #4180). The pool
    * drains, then re-throws it so the cycle's existing pause-until-reset
@@ -1485,6 +1515,16 @@ async function runIssueScanPool(
   shouldShutdown: () => boolean = () => false,
 ): Promise<{ exitOuterLoop: boolean; spendCeilingReached: boolean }> {
   await deps.resetRepoFailures();
+  // Claim-runway floor for this cycle (Issues #4304, #47) — resolved once,
+  // applied by slotShouldStop before every claim in every slot.
+  const poolRunwayFloor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
+    fullExecuteBudgetSeconds: deps.fullExecuteBudgetSeconds,
+    cycleSeconds: config.runDurationSeconds,
+  });
+  if (poolRunwayFloor.exceptionReason) {
+    deps.log(`Claim-runway floor: ${poolRunwayFloor.exceptionReason}`);
+  }
   const pool: SlotPoolState = {
     consecutiveFailures: 0,
     exitOuterLoop: false,
@@ -1492,6 +1532,7 @@ async function runIssueScanPool(
     registry: deps.inFlightRepos ?? new InFlightRepoRegistry(),
     spendCeilingReached: false,
     shouldShutdown,
+    claimFloorSeconds: poolRunwayFloor.floorSeconds,
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
   // #4179): under pressure the pool STARTS fewer slots; it never cancels
@@ -1844,7 +1885,7 @@ async function slotShouldStop(
   if (pool.exitOuterLoop) return "exit";
   if (pool.shouldShutdown()) return "shutdown";
   if (pool.draining) return "draining";
-  const minRunwayMs = (deps.minClaimRunwaySeconds ?? 0) * 1000;
+  const minRunwayMs = pool.claimFloorSeconds * 1000;
   const now = deps.now();
   if (now >= endTime || (minRunwayMs > 0 && now + minRunwayMs >= endTime)) {
     return "deadline";
