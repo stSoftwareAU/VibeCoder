@@ -872,6 +872,10 @@ Deno.test("ensureIssueClosedIfPrMerged - a merged PR whose change did not land l
     assertEquals(result.value.closed, false);
     assert(result.value.reason?.includes("did not land"), result.value.reason);
     assert(result.value.reason?.includes("#3125"), result.value.reason);
+    // Issue #175: the verdict is handed back structurally so the caller can
+    // self-heal the orphaned milestone merge instead of parsing `reason`.
+    assertEquals(result.value.unlanded?.reason, "orphaned");
+    assertEquals(result.value.unlanded?.baseRefName, "milestone/clean-up");
   }
   assertEquals(closedIssue, false, "the issue must stay open");
   assert(warns.some((w) => w.includes("did not land")), JSON.stringify(warns));

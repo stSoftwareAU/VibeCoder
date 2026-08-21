@@ -22,7 +22,11 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { stopHeartbeat } from "./heartbeat.ts";
 import { startPhaseProgress } from "./phase_progress.ts";
 import { recordStepDuration } from "./cycle_timings.ts";
-import { deriveRunOutcome, type RunOutcome } from "./run_outcome.ts";
+import {
+  deriveRunOutcome,
+  expectedNoPrOutcome,
+  type RunOutcome,
+} from "./run_outcome.ts";
 import { deleteResumeState } from "./resume_state_store.ts";
 import {
   handOffAnalysisOnly,
@@ -273,11 +277,28 @@ async function workOnIssueCore(
       };
     }
     if (precheckResult.status === "early_exit") {
+      // Issue #175: a pre-check that could not resolve the issue (the PR
+      // merged but the change never landed) is a bounce, not a success. It
+      // is reported as an expected skip so the main loop records the retry
+      // cooldown and leaves it out of the processed-issue count, instead of
+      // freeing the slot for the very same issue on the next scan.
+      const expectedSkip = precheckResult.expectedSkip === true;
       return {
-        success: true,
+        success: !expectedSkip,
+        ...(expectedSkip ? { expectedSkip: true } : {}),
         phase: "merged_pr_precheck",
         reason: precheckResult.reason,
         timings,
+        // A bounce raised no PR by design — keep it out of the failure
+        // diagnosis so the claim-release comment states it plainly.
+        ...(expectedSkip
+          ? {
+            outcome: expectedNoPrOutcome(
+              "merged_pr_precheck",
+              precheckResult.reason,
+            ),
+          }
+          : {}),
       };
     }
 

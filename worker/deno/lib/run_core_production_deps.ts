@@ -13,7 +13,10 @@
 import type { GitHubClient, Logger, WorkerConfig } from "../types.ts";
 import { isTimeoutClassFailureReason } from "./failure_diagnosis.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
-import type { IssueContext } from "./issue_worker_types.ts";
+import {
+  isExpectedSkipResult,
+  type IssueContext,
+} from "./issue_worker_types.ts";
 import type {
   DiscoveredIssue,
   PriorityHandlerResult,
@@ -2141,9 +2144,10 @@ export async function createProductionRunCoreDeps(
       };
 
       const result = await workOnIssue(ctx, workerDeps);
-      const isExpectedSkip = !result.success && result.phase === "setup" &&
-        (result.reason.startsWith("Issue not available:") ||
-          result.reason === "claim_churn_escalation");
+      // Issue #175: a phase can declare its own bounce (`expectedSkip`) — a
+      // run that neither resolved the issue nor failed. It cools the issue
+      // down without failure tracking and without counting as processed.
+      const isExpectedSkip = isExpectedSkipResult(result);
       if (!result.success) {
         if (isExpectedSkip) {
           logger.warn(
