@@ -531,6 +531,47 @@ flowchart TD
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 
+## 🔁 One run, one attempt per issue
+
+The scan ranks a **cached** issue list (`issues_all`, TTL 600 s), and until
+Issue #181 the success path recorded no local exclusion at all — only skips and
+failures took a cooldown. So an idle-task wrapper that was scanned, commented
+and **closed** at 02:02Z was re-claimed and "processed" again at 02:05Z and
+02:08Z from the same stale list, while thirteen open wrappers in that repo were
+never reached and every bounce counted in `WORKER_SUMMARY`.
+
+Every terminal outcome — success, skip, failure — and every issue the worker
+itself closes is now recorded in a per-run
+[`ProcessedIssueRegistry`](../../worker/deno/lib/processed_issue_registry.ts):
+
+- **The scan excludes it.** `findNextIssue` treats a registry entry exactly like
+  a cooldown entry, across all four candidate tiers, so a free slot advances to
+  the next claimable issue instead of re-reading the same stale top candidate.
+- **The claim refuses it.** A claim against an issue this run closed returns
+  `already_closed` before any API call — a stale "OPEN" can no longer let a
+  closed issue be claimed. The claim's own state check
+  (`fetchIssueState`) deliberately reads through the **uncached**
+  `runGhCommand`.
+- **The caches are dropped.** A successful `gh issue close` (or `reopen`) at the
+  `gh` chokepoint invalidates that repo's `issues_all`, `issues_closed_all` and
+  the issue's own cache entries — see
+  [GH-API-OPTIMISATION](../GH-API-OPTIMISATION.md) → *Issue closes are never
+  left to the TTL*.
+
+The registry is in-process and one process is one run, so an entry lives exactly
+as long as the run: the next run reconsiders the issue normally, and a
+`gh issue reopen` clears the entry immediately.
+
+**Diagnosing:** an excluded candidate is logged by
+`ISSUE_FINDER_DEBUG=true` with the `cooldown` skip reason; a refused claim logs
+`claim_refused … reason=closed_by_this_run`.
+
+**Implementation:**
+[processed_issue_registry.ts](../../worker/deno/lib/processed_issue_registry.ts),
+[issue_close_notifier.ts](../../worker/deno/lib/issue_close_notifier.ts)
+(the chokepoint hook), `noteIssueProcessed` in
+[run_core.ts](../../worker/deno/lib/run_core.ts).
+
 ## 📚 Further reading
 
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue selection, PR monitoring, milestone/dependency handling.

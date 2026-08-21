@@ -56,12 +56,14 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     updateOpenPrBranches: () => Promise.resolve({ ok: true, value: undefined }),
     nudgeStalledCi: () => Promise.resolve({ ok: true, value: undefined }),
     ensureAutoMerge: () => Promise.resolve({ ok: true, value: undefined }),
-    cleanupMergedBranches: () => Promise.resolve({ ok: true, value: undefined }),
+    cleanupMergedBranches: () =>
+      Promise.resolve({ ok: true, value: undefined }),
     closeIssuesForMergedPrs: () =>
       Promise.resolve({ ok: true, value: undefined }),
     recoverAssignedWithClosedPr: () =>
       Promise.resolve({ ok: true, value: undefined }),
-    syncMilestoneBranches: () => Promise.resolve({ ok: true, value: undefined }),
+    syncMilestoneBranches: () =>
+      Promise.resolve({ ok: true, value: undefined }),
     checkMilestoneCompletions: () =>
       Promise.resolve({ ok: true, value: undefined }),
     findAndProcessRefinement: () =>
