@@ -1142,6 +1142,65 @@ never fail and silently behaves as a plain `--force`.
 `recover_from_push_rejection()` falls back to the bare lease only when no
 remote-tracking ref exists yet.
 
+### 📏 "Is it pushed?" is a question about origin
+
+Every push verdict is measured against **the branch's own head on origin** —
+never against "commits ahead of any `refs/remotes/origin/*` ref". The old
+probe, `git rev-list --count HEAD --not --remotes=origin`, answers a different
+question on a clone whose fetch refspec covers only the default branch: any
+clone made with a bare `--depth=1` (which implies `--single-branch`) never
+gains `refs/remotes/origin/<feature>`, not even from a successful push, so the
+probe kept reporting every commit ahead of the default branch. A good push then
+looked like "4 commits still unpushed", which triggered a bogus recovery, a
+"please check the branch status" comment to a human, and a `merge-conflict`
+label on a mergeable PR.
+
+Three places enforce the invariant:
+
+- **`countUnpushedCommits()`** ([git_push.ts](../worker/deno/lib/git_push.ts))
+  compares HEAD with `origin/<branch>`, and confirms against `git ls-remote`
+  whenever the local refs claim work is outstanding. When origin cannot be
+  reached the local estimate stands — unverifiable work is reported as
+  unpushed, never assumed pushed.
+- **`ensureAllBranchesFetchRefspec()`**
+  ([git_fetch_refspec.ts](../worker/deno/lib/git_fetch_refspec.ts)) repairs a
+  legacy single-branch clone in place from `setupRepo`, adding (never
+  substituting) `+refs/heads/*:refs/remotes/origin/*` and forcing one full
+  fetch so the tracking refs materialise.
+- **`alignBranchWithRemoteHead()`**
+  ([git_pull.ts](../worker/deno/lib/git_pull.ts)) moves a PR branch onto its
+  remote head before `update_pr_branch()` evaluates it, so a stale local branch
+  left behind by a failed push can no longer manufacture a conflict against the
+  base. Discarded local commits are counted and logged, and stay in the reflog.
+
+```mermaid
+flowchart TD
+    P[final-mile push] --> C{"countUnpushedCommits()"}
+    C -->|"origin/branch == HEAD"| Z[pushed — done]
+    C -->|"local refs say N > 0"| L[git ls-remote origin refs/heads/branch]
+    L -->|"remote head == HEAD"| Z
+    L -->|"remote head behind"| R[recoverAndRetryPush:<br/>rebase onto remote head, retry]
+    L -->|"ls-remote failed"| E[report N unpushed<br/>fail loud, never assume pushed]
+    R -->|clean| Z
+    R -->|"still unpushed"| F[log failing step + git stderr,<br/>then comment on the PR]
+```
+
+A rejected push logs the step that failed (`rebase-recovery` or `retry-push`)
+together with git's own message, via the shared
+[push_recovery_retry.ts](../worker/deno/lib/push_recovery_retry.ts) used by the
+CI-fix, PR-feedback and spelling processors.
+
+### 🔁 Fleet-superseded PR feedback
+
+Two fleet hosts maintain the same PR. When a sibling account pushes to the PR
+head **after** a comment was written, that comment has already been answered —
+claiming it burns a whole agent run re-doing landed work.
+`is_superseded_by_fleet_push()`
+([pr_comment_supersession.ts](../worker/deno/lib/pr_comment_supersession.ts))
+skips such a comment during the scan. It fails closed: a push by anyone outside
+the fleet, an unknown comment timestamp, or an unreadable head commit all leave
+the comment actionable.
+
 ### 🔀 Auto-merge: `worker/deno/lib/pr_auto_merge.ts`
 
 `enable_auto_merge()` enables squash auto-merge on a PR:
@@ -2364,6 +2423,8 @@ All business logic lives here. Shell tooling invokes them directly with `deno ru
 |                                               | [git_push.ts](../worker/deno/lib/git_push.ts)                                                                     | Push operations                                                                                                                                                                              |
 |                                               | [git_pull.ts](../worker/deno/lib/git_pull.ts)                                                                     | Pull operations                                                                                                                                                                              |
 |                                               | [git_push_recovery.ts](../worker/deno/lib/git_push_recovery.ts)                                                   | Push rejection recovery                                                                                                                                                                      |
+| | [push_recovery_retry.ts](../worker/deno/lib/push_recovery_retry.ts) | Shared recover-then-retry step; reports the failing step and git's reason |
+| | [git_fetch_refspec.ts](../worker/deno/lib/git_fetch_refspec.ts) | Repairs a legacy single-branch clone's fetch refspec |
 |                                               | [git_conflict_resolution.ts](../worker/deno/lib/git_conflict_resolution.ts)                                       | Automatic conflict resolution                                                                                                                                                                |
 |                                               | [git_state_recovery.ts](../worker/deno/lib/git_state_recovery.ts)                                                 | Git state recovery                                                                                                                                                                           |
 |                                               | [git_repo_validation.ts](../worker/deno/lib/git_repo_validation.ts)                                               | Repository validation                                                                                                                                                                        |
