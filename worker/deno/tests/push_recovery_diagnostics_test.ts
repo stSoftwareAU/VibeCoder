@@ -19,7 +19,11 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import type { ClaudeDeps, GitDeps, GitHubDeps } from "../lib/issue_worker_wiring.ts";
+import type {
+  ClaudeDeps,
+  GitDeps,
+  GitHubDeps,
+} from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 
 /** Run a git command in a repo, failing loudly on a non-zero exit. */

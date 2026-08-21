@@ -148,7 +148,10 @@ Deno.test("commitAndPushPending - still reports unpushed commits when the push g
     await git(["commit", "-m", "Local work"], workerPath);
 
     // Point origin at a path that does not exist so no push can land.
-    await git(["remote", "set-url", "origin", `${tmpDir}/vanished.git`], workerPath);
+    await git(
+      ["remote", "set-url", "origin", `${tmpDir}/vanished.git`],
+      workerPath,
+    );
 
     const result = await commitAndPushPending(
       FEATURE_BRANCH,

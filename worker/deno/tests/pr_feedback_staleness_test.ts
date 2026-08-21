@@ -15,7 +15,10 @@ import {
   FLEET_PUSH_COOL_OFF_MS,
   isSupersededByFleetPush,
 } from "../lib/pr_feedback_staleness.ts";
-import { findPrCommentsToFix, type PrScanOptions } from "../lib/pr_maintenance.ts";
+import {
+  findPrCommentsToFix,
+  type PrScanOptions,
+} from "../lib/pr_maintenance.ts";
 import type { Logger } from "../types.ts";
 
 const FLEET = ["vibe-bot", "stservice"];

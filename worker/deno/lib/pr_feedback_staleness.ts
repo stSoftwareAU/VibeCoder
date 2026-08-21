@@ -106,7 +106,7 @@ export async function fetchHeadCommitInfo(
       "api",
       `repos/${repo}/commits/${headRefOid}`,
       "--jq",
-      '{authorLogin: (.author.login // null), committerLogin: (.committer.login // null), committedAt: (.commit.committer.date // null)}',
+      "{authorLogin: (.author.login // null), committerLogin: (.committer.login // null), committedAt: (.commit.committer.date // null)}",
     ]);
     const parsed: unknown = JSON.parse(output);
     if (typeof parsed !== "object" || parsed === null) return null;

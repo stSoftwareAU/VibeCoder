@@ -1,162 +1,199 @@
 /**
- * Honest unpushed-commit counting (Issue #211).
+ * Remote-authoritative unpushed-commit counting (Issue #211).
  *
- * "How many of my commits are not on the remote branch?" was measured with
- * `git rev-list --count HEAD --not --remotes=origin` — commits reachable from
- * HEAD but from no *locally tracked* origin ref. That is only the same
- * question when the clone tracks the branch. It does not in a single-branch
- * clone: the fetch refspec covers the default branch alone, so `git push -u`
- * never creates `refs/remotes/origin/<feature>` (git still prints "set up to
- * track", but no ref is stored) and the count silently degrades to "commits
- * ahead of Develop".
+ * The worker used to answer "did my push land?" with
+ * `git rev-list --count HEAD --not --remotes=origin` — the number of commits
+ * not reachable from ANY `origin/*` remote-tracking ref. That is wrong on a
+ * `--single-branch` clone: its fetch refspec covers the default branch only, so
+ * `git push -u origin <feature>` never creates `refs/remotes/origin/<feature>`
+ * and every commit of a perfectly good push still looked unpushed. Live, that
+ * produced `commitsPushed=4 finalUnpushedCount=4`, a bogus recovery attempt, a
+ * "please check the branch status" comment to a human, and a spurious
+ * `merge-conflict` label on a PR that was mergeable (NEAT-AI-core #557, #563).
  *
- * Live consequence (NEAT-AI-core PR #557): a push of 4 commits succeeded and
- * was reported as `commitsPushed=4 finalUnpushedCount=4`, which triggered a
- * pointless rebase recovery, a "please check the branch status" comment aimed
- * at a human, and a `merge-conflict` label on a PR that was mergeable.
- *
- * The measure here always resolves the branch's real remote head first,
- * fetching the tracking ref explicitly when the clone's refspec does not cover
- * it, and never reports a number it could not measure — an unmeasurable count
- * is an error Result, not a quiet zero.
+ * This module answers the same question against the branch as it actually
+ * stands on the remote, and always names how it got its answer so a caller can
+ * log it. It never throws — on failure it degrades to the local count and says
+ * so via `source: "local-fallback"` plus a populated `detail`, so a degraded
+ * answer is never mistaken for an authoritative one.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
-import {
-  assertSafeRefComponent,
-  buildFetchTrackingRefArgs,
-} from "./git_ref_args.ts";
+import { assertSafeGitRef, buildFetchArgs } from "./git_ref_args.ts";
 
-/** Which remote reference the count was measured against. */
-export type UnpushedMeasure =
-  /** `refs/remotes/origin/<branch>` was already present locally. */
-  | "remote-tracking-ref"
-  /** The tracking ref was missing and was fetched from the remote. */
-  | "fetched-remote-branch"
-  /** The branch does not exist on the remote yet (first push pending). */
-  | "no-remote-branch";
+/** Matches a full git object id (SHA-1 or SHA-256). */
+const OBJECT_ID_PATTERN = /^[0-9a-f]{40,64}$/i;
+
+/** How an unpushed count was established. */
+export type UnpushedCountSource =
+  /** Counted against the local `origin/<branch>` tracking ref. */
+  | "tracking-ref"
+  /** Counted against the branch tip the remote itself reported. */
+  | "remote-head"
+  /** The branch does not exist on the remote — everything is unpushed. */
+  | "remote-absent"
+  /** The remote could not be consulted; the local-only count was used. */
+  | "local-fallback";
 
 /** Outcome of {@link countUnpushedCommits}. */
-export interface UnpushedCommits {
-  /** Commits on HEAD that the remote branch does not have. */
+export interface UnpushedCount {
+  /** Commits reachable from HEAD that the remote branch does not have. */
   count: number;
-  /** How the count was measured — logged so a 0 can be trusted. */
-  measuredAgainst: UnpushedMeasure;
+  /** How the count was established. */
+  source: UnpushedCountSource;
+  /** Why the remote could not be consulted (set for `local-fallback`). */
+  detail?: string;
 }
 
-/** Read `refs/remotes/<remote>/<branch>`, or null when it does not exist. */
-async function readTrackingSha(
-  branchName: string,
-  options: GitCommandOptions,
-): Promise<string | null> {
-  const result = await runGitCommand(
-    ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branchName}`],
-    options,
-  );
-  if (!result.ok || result.value.code !== 0) return null;
-  return result.value.stdout.trim() || null;
-}
-
-/** Count commits in a rev-list range, failing loudly when git cannot. */
+/** Read a count from `git rev-list --count …`, or null when the probe fails. */
 async function revListCount(
   args: string[],
+  options: GitCommandOptions,
+): Promise<number | null> {
+  const result = await runGitCommand(["rev-list", "--count", ...args], options);
+  if (!result.ok || result.value.code !== 0) return null;
+  const parsed = parseInt(result.value.stdout.trim(), 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/** The local-only count — commits on no `origin/*` ref at all. */
+async function localOnlyCount(options: GitCommandOptions): Promise<number> {
+  return await revListCount(["HEAD", "--not", "--remotes=origin"], options) ??
+    0;
+}
+
+/** Whether `sha` names a commit object present in this clone. */
+async function commitExistsLocally(
+  sha: string,
+  options: GitCommandOptions,
+): Promise<boolean> {
+  const result = await runGitCommand(
+    ["cat-file", "-e", `${sha}^{commit}`],
+    options,
+  );
+  return result.ok && result.value.code === 0;
+}
+
+/** The remote tip of `branchName`, or how the lookup failed. */
+async function lookupRemoteTip(
   branchName: string,
   options: GitCommandOptions,
-): Promise<Result<number>> {
-  const result = await runGitCommand(args, options);
-  if (!result.ok) return { ok: false, error: result.error };
+): Promise<{ sha: string | null; detail?: string }> {
+  const result = await runGitCommand(
+    ["ls-remote", "--end-of-options", "origin", `refs/heads/${branchName}`],
+    options,
+  );
+  if (!result.ok) return { sha: null, detail: result.error.message };
   if (result.value.code !== 0) {
     return {
-      ok: false,
-      error: new Error(
-        `Could not count unpushed commits for '${branchName}': ` +
-          `git ${args.join(" ")} exited ${result.value.code}: ` +
-          `${result.value.stderr.trim() || "no stderr"}`,
-      ),
+      sha: null,
+      detail: result.value.stderr.trim() ||
+        `ls-remote exit ${result.value.code}`,
     };
   }
-  const count = Number.parseInt(result.value.stdout.trim(), 10);
-  if (!Number.isFinite(count)) {
+
+  const firstLine = result.value.stdout.split("\n")[0]?.trim() ?? "";
+  if (firstLine === "") {
+    // Empty output is a definitive answer: the remote has no such branch.
+    return { sha: null };
+  }
+  const sha = firstLine.split(/\s+/)[0] ?? "";
+  if (!OBJECT_ID_PATTERN.test(sha)) {
     return {
-      ok: false,
-      error: new Error(
-        `Could not count unpushed commits for '${branchName}': ` +
-          `git printed '${result.value.stdout.trim()}'`,
-      ),
+      sha: null,
+      detail: `ls-remote returned no SHA for refs/heads/${branchName}`,
     };
   }
-  return { ok: true, value: count };
+  return { sha };
 }
 
 /**
- * Count the commits on HEAD that the branch's remote head does not have.
+ * Count the commits on HEAD that the remote branch does not yet have
+ * (Issue #211).
  *
- * @param branchName - The branch being pushed (its remote head is the yardstick)
- * @param options - Git command options (cwd selects the repo)
- * @returns The count and how it was measured, or an error when the state
- *   could not be measured at all (never a silent 0).
+ * Resolution order:
+ *   1. The local `origin/<branch>` tracking ref, when it already contains HEAD.
+ *      A tracking ref that contains HEAD proves the remote had those commits,
+ *      so this needs no network call — the ordinary full-clone happy path.
+ *   2. `git ls-remote origin refs/heads/<branch>` — the remote's own answer.
+ *      When the reported tip is unknown locally (a fleet sibling pushed while
+ *      we worked), it is fetched so the count is against the real head.
+ *   3. On any failure to consult the remote, the local-only count, flagged as
+ *      `local-fallback` with the reason in `detail`.
+ *
+ * @param branchName - The branch whose remote state to compare HEAD against
+ * @param options - Git command options (cwd selects the clone)
+ * @returns The count, how it was established, and any failure detail. Never
+ *   throws: an unsafe branch name degrades to `local-fallback` with detail.
  */
 export async function countUnpushedCommits(
   branchName: string,
   options: GitCommandOptions = {},
-): Promise<Result<UnpushedCommits>> {
+): Promise<UnpushedCount> {
   try {
-    assertSafeRefComponent(branchName, "unpushed-count branch name");
+    assertSafeGitRef(branchName, "unpushed-count branch name");
   } catch (err) {
     return {
-      ok: false,
-      error: err instanceof Error ? err : new Error(String(err)),
+      count: await localOnlyCount(options),
+      source: "local-fallback",
+      detail: err instanceof Error ? err.message : String(err),
     };
   }
 
-  let measuredAgainst: UnpushedMeasure = "remote-tracking-ref";
-  let remoteSha = await readTrackingSha(branchName, options);
-
-  if (remoteSha === null) {
-    // The clone's refspec does not cover this branch — ask the remote for it
-    // directly. A branch that does not exist there yet simply leaves the ref
-    // missing (the first-push case handled below).
-    await runGitCommand(
-      buildFetchTrackingRefArgs("origin", branchName),
-      options,
-    );
-    remoteSha = await readTrackingSha(branchName, options);
-    measuredAgainst = remoteSha === null
-      ? "no-remote-branch"
-      : "fetched-remote-branch";
+  // 1. Local tracking ref — only trusted when it already contains HEAD.
+  const trackingCount = await revListCount(
+    [`refs/remotes/origin/${branchName}..HEAD`],
+    options,
+  );
+  if (trackingCount === 0) {
+    return { count: 0, source: "tracking-ref" };
   }
 
-  if (measuredAgainst === "no-remote-branch") {
-    // Nothing to compare against: every commit not on some other origin ref
-    // is genuinely unpushed, which is exactly what a first push must send.
-    const counted = await revListCount(
-      ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"],
-      branchName,
-      options,
-    );
-    if (!counted.ok) return { ok: false, error: counted.error };
-    return { ok: true, value: { count: counted.value, measuredAgainst } };
+  // 2. Ask the remote what the branch actually points at.
+  const tip = await lookupRemoteTip(branchName, options);
+  if (tip.sha === null && tip.detail === undefined) {
+    return { count: await localOnlyCount(options), source: "remote-absent" };
+  }
+  if (tip.sha === null) {
+    return {
+      count: trackingCount ?? await localOnlyCount(options),
+      source: "local-fallback",
+      detail: tip.detail,
+    };
   }
 
-  // Fast path: the remote head *is* our HEAD, so nothing is unpushed. Decided
-  // on object ids alone, so a shallow clone's truncated history cannot turn a
-  // successful push into an unmeasurable one.
-  const headResult = await runGitCommand(["rev-parse", "HEAD"], options);
-  if (headResult.ok && headResult.value.code === 0) {
-    if (headResult.value.stdout.trim() === remoteSha) {
-      return { ok: true, value: { count: 0, measuredAgainst } };
+  // Fetch the tip when this clone has never seen it, so the count is against
+  // the real remote head rather than a stale local approximation.
+  if (!await commitExistsLocally(tip.sha, options)) {
+    const fetchResult = await runGitCommand(
+      buildFetchArgs("origin", branchName),
+      options,
+    );
+    const fetchFailed = !fetchResult.ok || fetchResult.value.code !== 0 ||
+      !await commitExistsLocally(tip.sha, options);
+    if (fetchFailed) {
+      const detail = fetchResult.ok
+        ? fetchResult.value.stderr.trim() ||
+          `fetch origin ${branchName} did not produce ${tip.sha.slice(0, 7)}`
+        : fetchResult.error.message;
+      return {
+        count: trackingCount ?? await localOnlyCount(options),
+        source: "local-fallback",
+        detail,
+      };
     }
   }
 
-  const counted = await revListCount(
-    ["rev-list", "--count", `refs/remotes/origin/${branchName}..HEAD`],
-    branchName,
-    options,
-  );
-  if (!counted.ok) return { ok: false, error: counted.error };
-  return { ok: true, value: { count: counted.value, measuredAgainst } };
+  const remoteCount = await revListCount([`${tip.sha}..HEAD`], options);
+  if (remoteCount === null) {
+    return {
+      count: trackingCount ?? await localOnlyCount(options),
+      source: "local-fallback",
+      detail: `rev-list ${tip.sha.slice(0, 7)}..HEAD failed`,
+    };
+  }
+  return { count: remoteCount, source: "remote-head" };
 }

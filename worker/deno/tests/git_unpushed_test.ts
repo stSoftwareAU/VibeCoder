@@ -1,265 +1,258 @@
 /**
- * Tests for countUnpushedCommits — honest unpushed counting (Issue #211).
+ * Remote-authoritative unpushed-commit counting (Issue #211).
  *
- * The old measure, `git rev-list --count HEAD --not --remotes=origin`, counts
- * commits that are on no *locally tracked* origin ref. In a single-branch
- * clone the fetch refspec only covers the default branch, so `git push` never
- * creates `refs/remotes/origin/<feature>` — a perfectly good push still
- * reported every commit as unpushed, which drove a bogus recovery, a "please
- * check the branch status" comment and a spurious `merge-conflict` label.
+ * `rev-list --count HEAD --not --remotes=origin` counts commits that are not
+ * on ANY origin remote-tracking ref. A `--single-branch` clone only tracks the
+ * default branch, and `git push -u origin <feature>` does NOT create
+ * `refs/remotes/origin/<feature>` there (the fetch refspec does not cover it).
+ * A perfectly good push therefore reported every commit as still unpushed,
+ * which drove bogus recovery, a "please check the branch" comment to a human,
+ * and a spurious `merge-conflict` label (NEAT-AI-core #557).
  *
- * These tests build real repositories and run real git.
+ * These tests drive real git repositories end to end.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { countUnpushedCommits } from "../lib/git_unpushed.ts";
-import { commitAndPushPending } from "../lib/git_push.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
 
-interface GitRunResult {
-  code: number;
-  stdout: string;
-  stderr: string;
+const DEFAULT_BRANCH = "Develop";
+const FEATURE_BRANCH = "issue-556-feature";
+
+/** Run a git command in a repo, failing loudly on a non-zero exit. */
+async function git(args: string[], cwd: string): Promise<string> {
+  const result = await runGitCommand(args, { cwd });
+  if (!result.ok) throw result.error;
+  if (result.value.code !== 0) {
+    throw new Error(
+      `git ${
+        args.join(" ")
+      } failed (${result.value.code}): ${result.value.stderr}`,
+    );
+  }
+  return result.value.stdout.trim();
 }
 
-async function runGit(args: string[], cwd: string): Promise<GitRunResult> {
-  const cmd = new Deno.Command("git", {
-    args,
-    cwd,
-    stdout: "piped",
-    stderr: "piped",
-    env: {
-      GIT_AUTHOR_NAME: "test",
-      GIT_AUTHOR_EMAIL: "test@example.com",
-      GIT_COMMITTER_NAME: "test",
-      GIT_COMMITTER_EMAIL: "test@example.com",
-      PATH: Deno.env.get("PATH") ?? "",
-      HOME: Deno.env.get("HOME") ?? "",
-    },
-  });
-  const out = await cmd.output();
-  return {
-    code: out.code,
-    stdout: new TextDecoder().decode(out.stdout),
-    stderr: new TextDecoder().decode(out.stderr),
-  };
+interface TestRepos {
+  tmpDir: string;
+  remotePath: string;
+  /** A `--single-branch` clone — only `origin/Develop` is tracked. */
+  singleBranchPath: string;
+  /** An ordinary full clone of the same remote. */
+  fullClonePath: string;
 }
 
-/**
- * Build an upstream with a `Develop` default branch and clone it with
- * `--single-branch` — exactly the clone shape that produced the false
- * "push failed" in NEAT-AI-core PR #557.
- */
-async function makeSingleBranchClone(
-  prefix: string,
-): Promise<{ tmp: string; downstream: string }> {
-  const tmp = await Deno.makeTempDir({ prefix });
-  const upstream = `${tmp}/upstream.git`;
-  const seed = `${tmp}/seed`;
-  const downstream = `${tmp}/downstream`;
+/** Create a bare remote seeded with `DEFAULT_BRANCH`, plus two clones. */
+async function setupRepos(): Promise<TestRepos> {
+  const tmpDir = await Deno.makeTempDir({ prefix: "git_unpushed_" });
+  const remotePath = `${tmpDir}/remote.git`;
+  const seedPath = `${tmpDir}/seed`;
+  const singleBranchPath = `${tmpDir}/single`;
+  const fullClonePath = `${tmpDir}/full`;
 
-  await runGit(["init", "--bare", "-b", "Develop", upstream], tmp);
-  await runGit(["clone", upstream, seed], tmp);
-  await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
-  await runGit(["add", "."], seed);
-  await runGit(["commit", "-m", "seed"], seed);
-  await runGit(["push", "-u", "origin", "Develop"], seed);
-
-  await runGit(
-    ["clone", "--single-branch", "--branch", "Develop", upstream, downstream],
-    tmp,
+  await Deno.mkdir(remotePath, { recursive: true });
+  await git(["init", "--bare"], remotePath);
+  await git(
+    ["symbolic-ref", "HEAD", `refs/heads/${DEFAULT_BRANCH}`],
+    remotePath,
   );
-  return { tmp, downstream };
+
+  await git(["clone", remotePath, seedPath], tmpDir);
+  await configureAuthor(seedPath);
+  await git(["checkout", "-b", DEFAULT_BRANCH], seedPath);
+  await Deno.writeTextFile(`${seedPath}/README.md`, "# Test\n");
+  await git(["add", "README.md"], seedPath);
+  await git(["commit", "-m", "Initial commit"], seedPath);
+  await git(["push", "-u", "origin", DEFAULT_BRANCH], seedPath);
+
+  await git(
+    [
+      "clone",
+      "--single-branch",
+      "--branch",
+      DEFAULT_BRANCH,
+      remotePath,
+      singleBranchPath,
+    ],
+    tmpDir,
+  );
+  await configureAuthor(singleBranchPath);
+
+  await git(["clone", remotePath, fullClonePath], tmpDir);
+  await configureAuthor(fullClonePath);
+
+  return { tmpDir, remotePath, singleBranchPath, fullClonePath };
 }
 
-Deno.test("countUnpushedCommits - single-branch clone reports 0 after a good push", async () => {
-  const branch = "issue-211-single-branch";
-  const { tmp, downstream } = await makeSingleBranchClone("unpushed_single_");
-  try {
-    await runGit(["checkout", "-b", branch], downstream);
-    for (const n of [1, 2, 3, 4]) {
-      await Deno.writeTextFile(`${downstream}/f${n}.txt`, `${n}\n`);
-      await runGit(["add", "."], downstream);
-      await runGit(["commit", "-m", `commit ${n}`], downstream);
-    }
-    const pushed = await runGit(["push", "-u", "origin", branch], downstream);
-    assertEquals(pushed.code, 0, pushed.stderr);
+async function configureAuthor(repoPath: string): Promise<void> {
+  await git(["config", "user.email", "worker@example.com"], repoPath);
+  await git(["config", "user.name", "Worker"], repoPath);
+}
 
-    // The old measure still says 4 here; the honest one says 0.
-    const stale = await runGit(
-      ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"],
-      downstream,
+/** Create `count` commits on a new branch checked out from HEAD. */
+async function commitOnNewBranch(
+  repoPath: string,
+  branch: string,
+  count: number,
+): Promise<void> {
+  await git(["checkout", "-b", branch], repoPath);
+  for (let i = 0; i < count; i++) {
+    await Deno.writeTextFile(`${repoPath}/file-${i}.txt`, `change ${i}\n`);
+    await git(["add", `file-${i}.txt`], repoPath);
+    await git(["commit", "-m", `Change ${i}`], repoPath);
+  }
+}
+
+async function cleanup(tmpDir: string): Promise<void> {
+  try {
+    await Deno.remove(tmpDir, { recursive: true });
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The regression: a good push on a single-branch clone
+// ---------------------------------------------------------------------------
+
+Deno.test("countUnpushedCommits - reports 0 after a successful push on a single-branch clone", async () => {
+  const { tmpDir, singleBranchPath } = await setupRepos();
+  try {
+    await commitOnNewBranch(singleBranchPath, FEATURE_BRANCH, 4);
+    await git(["push", "-u", "origin", FEATURE_BRANCH], singleBranchPath);
+
+    // Precondition: this clone genuinely has no remote-tracking ref for the
+    // feature branch, which is exactly what fooled the old local-only count.
+    const trackingRef = await runGitCommand(
+      [
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `refs/remotes/origin/${FEATURE_BRANCH}`,
+      ],
+      { cwd: singleBranchPath },
     );
-    assertEquals(stale.stdout.trim(), "4");
+    assertEquals(trackingRef.ok && trackingRef.value.code === 0, false);
 
-    const result = await countUnpushedCommits(branch, { cwd: downstream });
-    assert(result.ok, result.ok ? "" : result.error.message);
-    if (result.ok) {
-      assertEquals(result.value.count, 0);
-      assertEquals(result.value.measuredAgainst, "fetched-remote-branch");
-    }
+    const unpushed = await countUnpushedCommits(FEATURE_BRANCH, {
+      cwd: singleBranchPath,
+    });
+    assertEquals(unpushed.count, 0);
+    assertEquals(unpushed.source, "remote-head");
   } finally {
-    await Deno.remove(tmp, { recursive: true });
+    await cleanup(tmpDir);
   }
 });
 
-Deno.test("countUnpushedCommits - counts only the commits ahead of the remote branch", async () => {
-  const branch = "issue-211-ahead";
-  const { tmp, downstream } = await makeSingleBranchClone("unpushed_ahead_");
+Deno.test("countUnpushedCommits - counts genuinely unpushed commits on a single-branch clone", async () => {
+  const { tmpDir, singleBranchPath } = await setupRepos();
   try {
-    await runGit(["checkout", "-b", branch], downstream);
-    await Deno.writeTextFile(`${downstream}/a.txt`, "a\n");
-    await runGit(["add", "."], downstream);
-    await runGit(["commit", "-m", "pushed work"], downstream);
-    await runGit(["push", "-u", "origin", branch], downstream);
+    await commitOnNewBranch(singleBranchPath, FEATURE_BRANCH, 1);
+    await git(["push", "-u", "origin", FEATURE_BRANCH], singleBranchPath);
 
-    // Two genuinely unpushed commits on top of the pushed head.
-    for (const name of ["b", "c"]) {
-      await Deno.writeTextFile(`${downstream}/${name}.txt`, `${name}\n`);
-      await runGit(["add", "."], downstream);
-      await runGit(["commit", "-m", `local ${name}`], downstream);
-    }
+    // Two more commits that never reached the remote.
+    await Deno.writeTextFile(`${singleBranchPath}/late.txt`, "late\n");
+    await git(["add", "late.txt"], singleBranchPath);
+    await git(["commit", "-m", "Late one"], singleBranchPath);
+    await Deno.writeTextFile(`${singleBranchPath}/later.txt`, "later\n");
+    await git(["add", "later.txt"], singleBranchPath);
+    await git(["commit", "-m", "Later one"], singleBranchPath);
 
-    const result = await countUnpushedCommits(branch, { cwd: downstream });
-    assert(result.ok, result.ok ? "" : result.error.message);
-    if (result.ok) {
-      assertEquals(result.value.count, 2);
-    }
+    const unpushed = await countUnpushedCommits(FEATURE_BRANCH, {
+      cwd: singleBranchPath,
+    });
+    assertEquals(unpushed.count, 2);
+    assertEquals(unpushed.source, "remote-head");
   } finally {
-    await Deno.remove(tmp, { recursive: true });
+    await cleanup(tmpDir);
   }
 });
 
-Deno.test("countUnpushedCommits - branch absent from the remote counts every local commit", async () => {
-  const branch = "issue-211-never-pushed";
-  const { tmp, downstream } = await makeSingleBranchClone("unpushed_new_");
+Deno.test("countUnpushedCommits - counts every commit when the remote branch does not exist", async () => {
+  const { tmpDir, singleBranchPath } = await setupRepos();
   try {
-    await runGit(["checkout", "-b", branch], downstream);
-    for (const name of ["a", "b"]) {
-      await Deno.writeTextFile(`${downstream}/${name}.txt`, `${name}\n`);
-      await runGit(["add", "."], downstream);
-      await runGit(["commit", "-m", `local ${name}`], downstream);
-    }
+    await commitOnNewBranch(singleBranchPath, FEATURE_BRANCH, 3);
 
-    const result = await countUnpushedCommits(branch, { cwd: downstream });
-    assert(result.ok, result.ok ? "" : result.error.message);
-    if (result.ok) {
-      assertEquals(result.value.count, 2);
-      assertEquals(result.value.measuredAgainst, "no-remote-branch");
-    }
+    const unpushed = await countUnpushedCommits(FEATURE_BRANCH, {
+      cwd: singleBranchPath,
+    });
+    assertEquals(unpushed.count, 3);
+    assertEquals(unpushed.source, "remote-absent");
   } finally {
-    await Deno.remove(tmp, { recursive: true });
+    await cleanup(tmpDir);
   }
 });
 
-Deno.test("countUnpushedCommits - uses the local tracking ref when the clone has one", async () => {
-  const branch = "issue-211-tracked";
-  const tmp = await Deno.makeTempDir({ prefix: "unpushed_tracked_" });
+Deno.test("countUnpushedCommits - uses the local tracking ref on a full clone", async () => {
+  const { tmpDir, fullClonePath } = await setupRepos();
   try {
-    const upstream = `${tmp}/upstream.git`;
-    const seed = `${tmp}/seed`;
-    const downstream = `${tmp}/downstream`;
-    await runGit(["init", "--bare", "-b", "Develop", upstream], tmp);
-    await runGit(["clone", upstream, seed], tmp);
-    await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
-    await runGit(["add", "."], seed);
-    await runGit(["commit", "-m", "seed"], seed);
-    await runGit(["push", "-u", "origin", "Develop"], seed);
-    await runGit(["clone", upstream, downstream], tmp);
+    await commitOnNewBranch(fullClonePath, FEATURE_BRANCH, 2);
+    await git(["push", "-u", "origin", FEATURE_BRANCH], fullClonePath);
 
-    await runGit(["checkout", "-b", branch], downstream);
-    await Deno.writeTextFile(`${downstream}/a.txt`, "a\n");
-    await runGit(["add", "."], downstream);
-    await runGit(["commit", "-m", "work"], downstream);
-    await runGit(["push", "-u", "origin", branch], downstream);
-
-    const result = await countUnpushedCommits(branch, { cwd: downstream });
-    assert(result.ok, result.ok ? "" : result.error.message);
-    if (result.ok) {
-      assertEquals(result.value.count, 0);
-      assertEquals(result.value.measuredAgainst, "remote-tracking-ref");
-    }
+    const unpushed = await countUnpushedCommits(FEATURE_BRANCH, {
+      cwd: fullClonePath,
+    });
+    assertEquals(unpushed.count, 0);
+    assertEquals(unpushed.source, "tracking-ref");
   } finally {
-    await Deno.remove(tmp, { recursive: true });
+    await cleanup(tmpDir);
   }
 });
 
-Deno.test("countUnpushedCommits - refuses a dash-leading branch name", async () => {
-  const result = await countUnpushedCommits("--upload-pack=echo", {
-    cwd: Deno.cwd(),
-  });
-  assert(!result.ok);
-  if (!result.ok) {
-    assert(result.error.message.includes("must not begin with '-'"));
-  }
-});
-
-Deno.test("commitAndPushPending - single-branch clone: a good push reports finalUnpushedCount 0", async () => {
-  const branch = "issue-211-final-mile";
-  const { tmp, downstream } = await makeSingleBranchClone("unpushed_final_");
+Deno.test("countUnpushedCommits - counts against a sibling's newer remote head", async () => {
+  const { tmpDir, singleBranchPath, fullClonePath } = await setupRepos();
   try {
-    await runGit(["checkout", "-b", branch], downstream);
-    await runGit(["config", "user.email", "t@t"], downstream);
-    await runGit(["config", "user.name", "t"], downstream);
-    // Four commits, as in the reported run — none pushed yet.
-    for (const n of [1, 2, 3, 4]) {
-      await Deno.writeTextFile(`${downstream}/f${n}.txt`, `${n}\n`);
-      await runGit(["add", "."], downstream);
-      await runGit(["commit", "-m", `commit ${n}`], downstream);
-    }
+    await commitOnNewBranch(singleBranchPath, FEATURE_BRANCH, 1);
+    await git(["push", "-u", "origin", FEATURE_BRANCH], singleBranchPath);
 
-    const result = await commitAndPushPending(
-      branch,
-      "Final-mile commit (Issue #211)",
-      { cwd: downstream },
-    );
+    // A fleet sibling pushes a commit this clone has never seen.
+    await git(["fetch", "origin", FEATURE_BRANCH], fullClonePath);
+    await git(["checkout", FEATURE_BRANCH], fullClonePath);
+    await Deno.writeTextFile(`${fullClonePath}/sibling.txt`, "sibling\n");
+    await git(["add", "sibling.txt"], fullClonePath);
+    await git(["commit", "-m", "Sibling commit"], fullClonePath);
+    await git(["push", "origin", FEATURE_BRANCH], fullClonePath);
 
-    assert(result.ok, result.ok ? "" : result.error.message);
-    if (result.ok) {
-      assertEquals(result.value.commitsPushed, 4);
-      assertEquals(result.value.finalUnpushedCount, 0);
-    }
+    // Our clone adds one local commit on top of the now-stale head.
+    await Deno.writeTextFile(`${singleBranchPath}/ours.txt`, "ours\n");
+    await git(["add", "ours.txt"], singleBranchPath);
+    await git(["commit", "-m", "Our commit"], singleBranchPath);
+
+    const unpushed = await countUnpushedCommits(FEATURE_BRANCH, {
+      cwd: singleBranchPath,
+    });
+    // The remote head is unknown locally, so the count is established against
+    // the fetched remote head: only our own commit is unpushed.
+    assertEquals(unpushed.count, 1);
+    assertEquals(unpushed.source, "remote-head");
   } finally {
-    await Deno.remove(tmp, { recursive: true });
+    await cleanup(tmpDir);
   }
 });
 
-Deno.test("commitAndPushPending - a push that cannot reach origin still reports the commits as unpushed", async () => {
-  const branch = "issue-211-push-unreachable";
-  const { tmp, downstream } = await makeSingleBranchClone("unpushed_broken_");
+Deno.test("countUnpushedCommits - falls back loudly when the remote cannot be consulted", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "git_unpushed_noremote_" });
   try {
-    await runGit(["checkout", "-b", branch], downstream);
-    await runGit(["config", "user.email", "t@t"], downstream);
-    await runGit(["config", "user.name", "t"], downstream);
-    await Deno.writeTextFile(`${downstream}/a.txt`, "a\n");
-    await runGit(["add", "."], downstream);
-    await runGit(["commit", "-m", "a"], downstream);
+    const repoPath = `${tmpDir}/repo`;
+    await Deno.mkdir(repoPath, { recursive: true });
+    await git(["init", "-b", DEFAULT_BRANCH], repoPath);
+    await configureAuthor(repoPath);
+    await Deno.writeTextFile(`${repoPath}/README.md`, "# Test\n");
+    await git(["add", "README.md"], repoPath);
+    await git(["commit", "-m", "Initial commit"], repoPath);
+    await git(["remote", "add", "origin", `${tmpDir}/missing.git`], repoPath);
 
-    // Break the remote: neither the push nor the tracking-ref fetch can
-    // succeed, so the honest answer is "still unpushed", never a quiet 0.
-    await runGit(
-      ["remote", "set-url", "origin", `${tmp}/does-not-exist.git`],
-      downstream,
-    );
-
-    const result = await commitAndPushPending(
-      branch,
-      "Final-mile commit (Issue #211)",
-      { cwd: downstream },
-    );
-    assert(!result.ok, "an unreachable remote must fail the push loudly");
-
-    const count = await countUnpushedCommits(branch, { cwd: downstream });
-    assert(count.ok, count.ok ? "" : count.error.message);
-    if (count.ok) {
-      assertEquals(count.value.measuredAgainst, "no-remote-branch");
-      assert(
-        count.value.count > 0,
-        `a commit that never reached origin must still count as unpushed, got ${count.value.count}`,
-      );
-    }
+    const unpushed = await countUnpushedCommits(DEFAULT_BRANCH, {
+      cwd: repoPath,
+    });
+    assertEquals(unpushed.count, 1);
+    assertEquals(unpushed.source, "local-fallback");
+    // The reason the remote could not be consulted must reach the caller.
+    assertEquals(typeof unpushed.detail, "string");
+    assertEquals((unpushed.detail ?? "").length > 0, true);
   } finally {
-    await Deno.remove(tmp, { recursive: true });
+    await cleanup(tmpDir);
   }
 });

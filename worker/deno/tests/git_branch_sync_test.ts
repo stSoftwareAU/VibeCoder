@@ -185,7 +185,10 @@ Deno.test("updatePrBranch - does not report a conflict from a stale local branch
     await git(["add", "shared.txt"], workerPath);
     await git(["commit", "-m", "Worker adds shared.txt"], workerPath);
     await git(["fetch", "origin", DEFAULT_BRANCH], workerPath);
-    await git(["branch", "-f", DEFAULT_BRANCH, `origin/${DEFAULT_BRANCH}`], workerPath);
+    await git(
+      ["branch", "-f", DEFAULT_BRANCH, `origin/${DEFAULT_BRANCH}`],
+      workerPath,
+    );
 
     const result = await updatePrBranch(
       FEATURE_BRANCH,
@@ -221,7 +224,10 @@ Deno.test("updatePrBranch - judges the branch after aligning with the remote hea
     const remoteHead = await git(["rev-parse", "HEAD"], siblingPath);
 
     await git(["fetch", "origin", DEFAULT_BRANCH], workerPath);
-    await git(["branch", "-f", DEFAULT_BRANCH, `origin/${DEFAULT_BRANCH}`], workerPath);
+    await git(
+      ["branch", "-f", DEFAULT_BRANCH, `origin/${DEFAULT_BRANCH}`],
+      workerPath,
+    );
 
     const result = await updatePrBranch(
       FEATURE_BRANCH,

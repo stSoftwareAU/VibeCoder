@@ -900,11 +900,13 @@ async function findActionableComment(
         : "trusted-bot";
 
       // Issue #211: a fleet sibling's push may already have addressed this.
-      if (supersedeCheck && await isSupersededByRecentFleetPush(
-        repo,
-        comment.created_at,
-        supersedeCheck,
-      )) {
+      if (
+        supersedeCheck && await isSupersededByRecentFleetPush(
+          repo,
+          comment.created_at,
+          supersedeCheck,
+        )
+      ) {
         logger.info("Deferring PR comment superseded by a fleet push", {
           repo,
           prNumber,

@@ -1106,6 +1106,16 @@ avoid reprocessing. PR reviews use dismissal instead of reactions.
 HEAD SHA. If the review was left on an older commit, it is skipped (the worker
 has already pushed new commits since the review).
 
+**Superseded by a fleet push** — a trusted comment is also deferred when the PR
+head was pushed by a **fleet login** _after_ the comment was written and within
+the cool-off window (`FLEET_PUSH_COOL_OFF_MS`, 15 minutes; see
+[pr_feedback_staleness.ts](../worker/deno/lib/pr_feedback_staleness.ts)). Two
+hosts maintaining the same PR otherwise both act on the same feedback — one
+via its CI-fix claim, the other via the comment — and the second run works
+against a branch head that moved underneath it. The deferral expires with the
+window, so feedback the push did not address is reconsidered by a later scan.
+A **human's** push never defers a comment.
+
 **Self-loop prevention** — comments by the PR author (the worker's own account)
 are skipped to prevent infinite feedback loops.
 
@@ -1186,71 +1196,49 @@ never fail and silently behaves as a plain `--force`.
 `recover_from_push_rejection()` falls back to the bare lease only when no
 remote-tracking ref exists yet.
 
-### 📏 "Is it pushed?" is a question about origin
+**Recovery diagnostics** — every failure from `recoverFromPushRejection()`
+names the step that failed (`pull --rebase`, `conflict-resolution`,
+`force-with-lease`, `retry-push`) and carries git's own stderr. The CI,
+feedback, spelling and merge-conflict paths log that message rather than a bare
+"Push failed after recovery attempt".
 
-Every push verdict is measured against **the branch's own head on origin** —
-never against "commits ahead of any `refs/remotes/origin/*` ref". The old
-probe, `git rev-list --count HEAD --not --remotes=origin`, answers a different
-question on a clone whose fetch refspec covers only the default branch: any
-clone made with a bare `--depth=1` (which implies `--single-branch`) never
-gains `refs/remotes/origin/<feature>`, not even from a successful push, so the
-probe kept reporting every commit ahead of the default branch. A good push then
-looked like "4 commits still unpushed", which triggered a bogus recovery, a
-"please check the branch status" comment to a human, and a `merge-conflict`
-label on a mergeable PR.
+#### 🧮 "Is it pushed?" is a question for the remote
 
-Three places enforce the invariant:
-
-- **`countUnpushedCommits()`**
-  ([git_unpushed.ts](../worker/deno/lib/git_unpushed.ts)) counts
-  `refs/remotes/origin/<branch>..HEAD`, fetching that tracking ref first when
-  the clone's refspec does not cover it. A count it could not take is an error
-  `Result`, never a reassuring `0`, and the measure used
-  (`remote-tracking-ref`, `fetched-remote-branch` or `no-remote-branch`) rides
-  along in `unpushedMeasuredAgainst` so a logged `0` can be trusted.
-- **`ensureAllBranchesFetchRefspec()`**
-  ([git_fetch_refspec.ts](../worker/deno/lib/git_fetch_refspec.ts)) repairs a
-  legacy single-branch clone in place from `setupRepo`, adding (never
-  substituting) `+refs/heads/*:refs/remotes/origin/*` and forcing one full
-  fetch so the tracking refs materialise.
-- **`alignBranchWithRemoteHead()`**
-  ([git_pull.ts](../worker/deno/lib/git_pull.ts)) moves a PR branch onto its
-  remote head before `update_pr_branch()` evaluates it, so a stale local branch
-  left behind by a failed push can no longer manufacture a conflict against the
-  base. Discarded local commits are counted and logged, and stay in the reflog.
+The push post-condition is counted against the branch **as it stands on the
+remote** ([git_unpushed.ts](../worker/deno/lib/git_unpushed.ts)), not against
+the local remote-tracking refs. Fleet clones are `--single-branch`, so their
+fetch refspec covers the default branch only and `git push -u origin <feature>`
+never creates `refs/remotes/origin/<feature>` there. The old
+`rev-list --count HEAD --not --remotes=origin` probe therefore reported a
+landed push as entirely unpushed — live, `commitsPushed=4
+finalUnpushedCount=4`, a bogus recovery attempt, a "please check the branch
+status" comment to a human, and a `merge-conflict` label on a mergeable PR.
 
 ```mermaid
 flowchart TD
-    P[final-mile push] --> T{"refs/remotes/origin/branch<br/>present?"}
-    T -->|no| FE[git fetch origin branch:<br/>refs/remotes/origin/branch]
-    FE --> T2{"ref now present?"}
-    T2 -->|"no — branch not on origin"| FP[first push: count HEAD --not --remotes=origin]
-    T2 -->|yes| C
-    T -->|yes| C{"remote head == HEAD?"}
-    C -->|yes| Z[pushed — finalUnpushedCount 0]
-    C -->|no| N["count refs/remotes/origin/branch..HEAD"]
-    N -->|"0"| Z
-    N -->|"N > 0"| R[recoverAndRetryPush:<br/>rebase onto remote head, retry]
-    N -->|"count unreadable"| E[error Result<br/>fail loud, never a quiet 0]
-    R -->|clean| Z
-    R -->|"still unpushed"| F[log failing step + git's reason,<br/>then comment on the PR]
+    A["countUnpushedCommits(branch)"] --> B{"origin/branch contains HEAD?"}
+    B -- yes --> C["0 — source: tracking-ref"]
+    B -- "no / no such ref" --> D["git ls-remote origin refs/heads/branch"]
+    D -- "tip returned" --> E["fetch it if unknown locally<br/>count tip..HEAD"]
+    E --> F["source: remote-head"]
+    D -- "no such branch" --> G["local count<br/>source: remote-absent"]
+    D -- "lookup failed" --> H["local count<br/>source: local-fallback + detail"]
+    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style F fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style H fill:#9d0208,stroke:#6a040f,color:#fff
 ```
 
-A rejected push logs the step that failed (`rebase-recovery` or `retry-push`)
-together with git's own message, via the shared
-[push_recovery_retry.ts](../worker/deno/lib/push_recovery_retry.ts) used by the
-CI-fix, PR-feedback and spelling processors.
+Only an authoritative zero (`tracking-ref` or `remote-head`) may short-circuit
+a push or claim the work landed. A `local-fallback` count means the remote
+could not be consulted; it is logged with the reason so a degraded answer is
+never mistaken for proof.
 
-### 🔁 Fleet-superseded PR feedback
-
-Two fleet hosts maintain the same PR. When a sibling account pushes to the PR
-head **after** a comment was written, that comment has already been answered —
-claiming it burns a whole agent run re-doing landed work.
-`is_superseded_by_fleet_push()`
-([pr_comment_supersession.ts](../worker/deno/lib/pr_comment_supersession.ts))
-skips such a comment during the scan. It fails closed: a push by anyone outside
-the fleet, an unknown comment timestamp, or an unreadable head commit all leave
-the comment actionable.
+**Branch updates judge the PR, not the clone** — `updatePrBranch()` first
+fast-forwards the checked-out branch onto its remote head
+([git_branch_sync.ts](../worker/deno/lib/git_branch_sync.ts)) and refuses
+loudly, with a distinct error rather than a conflict verdict, when the local
+branch carries commits the remote does not. A conflict found on a stale local
+branch is not a conflict the PR has.
 
 ### 🔀 Auto-merge: `worker/deno/lib/pr_auto_merge.ts`
 
@@ -2474,11 +2462,6 @@ All business logic lives here. Shell tooling invokes them directly with `deno ru
 |                                               | [git_push.ts](../worker/deno/lib/git_push.ts)                                                                     | Push operations                                                                                                                                                                              |
 |                                               | [git_pull.ts](../worker/deno/lib/git_pull.ts)                                                                     | Pull operations                                                                                                                                                                              |
 |                                               | [git_push_recovery.ts](../worker/deno/lib/git_push_recovery.ts)                                                   | Push rejection recovery                                                                                                                                                                      |
-| | [push_recovery_retry.ts](../worker/deno/lib/push_recovery_retry.ts) | Shared recover-then-retry step; reports the failing step and git's reason |
-| | [git_fetch_refspec.ts](../worker/deno/lib/git_fetch_refspec.ts) | Repairs a legacy single-branch clone's fetch refspec |
-| | [git_unpushed.ts](../worker/deno/lib/git_unpushed.ts) | Counts unpushed commits against the branch's own remote head |
-| | [pr_branch_checkout.ts](../worker/deno/lib/pr_branch_checkout.ts) | Checks a PR branch out at its remote head before a maintenance pass |
-| | [pr_comment_supersession.ts](../worker/deno/lib/pr_comment_supersession.ts) | Skips PR feedback a later fleet push already answered |
 |                                               | [git_conflict_resolution.ts](../worker/deno/lib/git_conflict_resolution.ts)                                       | Automatic conflict resolution                                                                                                                                                                |
 |                                               | [git_state_recovery.ts](../worker/deno/lib/git_state_recovery.ts)                                                 | Git state recovery                                                                                                                                                                           |
 |                                               | [git_repo_validation.ts](../worker/deno/lib/git_repo_validation.ts)                                               | Repository validation                                                                                                                                                                        |
