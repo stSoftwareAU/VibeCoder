@@ -723,7 +723,12 @@ export async function findPrCommentsToFix(
         // straight into the feedback prompt, so it must pass the same
         // authorisation check as a PR comment. Without it, any reviewer —
         // allowlisted or not — could steer the run's own hand-off message.
-        if (!isAuthorisedCommenter(review.login)) {
+        // Trusted review bots (Issue #1857) stay actionable on this path too,
+        // exactly as they do for review comments.
+        if (
+          !isAuthorisedCommenter(review.login) &&
+          !trustedReviewBots.includes(review.login)
+        ) {
           logger.security(
             "UNAUTHORISED_REVIEW_SKIPPED",
             `Skipping CHANGES_REQUESTED review on ${repo}#${prNumber} from ` +

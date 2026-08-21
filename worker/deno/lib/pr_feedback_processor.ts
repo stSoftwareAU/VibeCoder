@@ -112,6 +112,13 @@ export interface PrFeedbackProcessorDeps {
   /** Unique worker ID for PR comment claiming (Issue #1072). */
   workerId?: string;
   /**
+   * The run's resolved worker GitHub login (Issue #185). Seeds the
+   * trusted-author set for the escape-hatch follow-up gate so a follow-up the
+   * worker filed itself is recognised without relying on the `GITHUB_USER`
+   * env var being set. Omitted → falls back to that env var.
+   */
+  githubUser?: string;
+  /**
    * Allowlisted bot logins whose unresolved line-level review comments
    * are bundled into the prompt as additional context (Issue #1858).
    * When empty or omitted, no bundling occurs.
@@ -595,7 +602,11 @@ async function _processFeedbackWithHeartbeat(
     ? await verifyFollowUpIssueExists({
       issueRef: escapeHatch.issueRef,
       currentRepo: repo,
-      trustedAuthors: await loadTrustedFollowUpAuthors(deps, logger),
+      trustedAuthors: await loadTrustedFollowUpAuthors(
+        deps,
+        logger,
+        processorDeps.githubUser,
+      ),
       ghClient: escapeHatchClient,
       logger,
     })

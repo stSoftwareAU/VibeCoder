@@ -9,8 +9,32 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { resolveTrustedFollowUpAuthors } from "../lib/escape_hatch_trusted_authors.ts";
+import {
+  loadTrustedFollowUpAuthors,
+  resolveTrustedFollowUpAuthors,
+} from "../lib/escape_hatch_trusted_authors.ts";
 import { isTrustedFollowUpAuthor } from "../lib/escape_hatch_verify.ts";
+import type { WorkerDeps } from "../lib/issue_worker_wiring.ts";
+import type { Logger } from "../types.ts";
+
+const silentLogger: Logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+  security: () => {},
+  skipReason: () => {},
+  timing: () => {},
+  scanSummary: () => {},
+  workerSummary: () => {},
+};
+
+/** Minimal WorkerDeps stub — only `config.loadConfig` is touched. */
+function makeStubDeps(
+  loadConfig: () => Promise<unknown>,
+): WorkerDeps {
+  return { config: { loadConfig } } as unknown as WorkerDeps;
+}
 
 Deno.test("resolveTrustedFollowUpAuthors - unions the worker, fleet and allowlists", () => {
   const authors = resolveTrustedFollowUpAuthors({
@@ -59,4 +83,68 @@ Deno.test("resolveTrustedFollowUpAuthors - an arbitrary reviewer is not trusted"
   });
   assert(isTrustedFollowUpAuthor("maintainer", authors));
   assertEquals(isTrustedFollowUpAuthor("drive-by-reviewer", authors), false);
+});
+
+/** Run `fn` with GITHUB_USER set to `value` (or unset when undefined). */
+async function withGithubUserEnv(
+  value: string | undefined,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const previous = Deno.env.get("GITHUB_USER");
+  if (value === undefined) Deno.env.delete("GITHUB_USER");
+  else Deno.env.set("GITHUB_USER", value);
+  try {
+    await fn();
+  } finally {
+    if (previous === undefined) Deno.env.delete("GITHUB_USER");
+    else Deno.env.set("GITHUB_USER", previous);
+  }
+}
+
+Deno.test("loadTrustedFollowUpAuthors - the passed worker login seeds the set (Issue #185)", async () => {
+  // The env var is unset, so without the passed login the gate would fail
+  // closed on a follow-up the worker filed itself.
+  await withGithubUserEnv(undefined, async () => {
+    const authors = await loadTrustedFollowUpAuthors(
+      makeStubDeps(() => Promise.resolve({ allowedAuthors: ["owner"] })),
+      silentLogger,
+      "vibe-bot",
+    );
+    assert(isTrustedFollowUpAuthor("vibe-bot", authors));
+    assert(isTrustedFollowUpAuthor("owner", authors));
+  });
+});
+
+Deno.test("loadTrustedFollowUpAuthors - the passed login wins over the env var", async () => {
+  await withGithubUserEnv("stale-login", async () => {
+    const authors = await loadTrustedFollowUpAuthors(
+      makeStubDeps(() => Promise.resolve({})),
+      silentLogger,
+      "vibe-bot",
+    );
+    assertEquals(authors, ["vibe-bot"]);
+  });
+});
+
+Deno.test("loadTrustedFollowUpAuthors - falls back to GITHUB_USER when no login is passed", async () => {
+  await withGithubUserEnv("env-bot", async () => {
+    const authors = await loadTrustedFollowUpAuthors(
+      makeStubDeps(() => Promise.resolve({})),
+      silentLogger,
+    );
+    assertEquals(authors, ["env-bot"]);
+  });
+});
+
+Deno.test("loadTrustedFollowUpAuthors - a config failure narrows to the worker login, never widens", async () => {
+  await withGithubUserEnv(undefined, async () => {
+    const errors: string[] = [];
+    const authors = await loadTrustedFollowUpAuthors(
+      makeStubDeps(() => Promise.reject(new Error("unreadable config"))),
+      { ...silentLogger, error: (msg: string) => errors.push(msg) },
+      "vibe-bot",
+    );
+    assertEquals(authors, ["vibe-bot"]);
+    assertEquals(errors.length, 1);
+  });
 });

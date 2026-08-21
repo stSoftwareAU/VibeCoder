@@ -59,26 +59,33 @@ export function resolveTrustedFollowUpAuthors(
 /**
  * Load the trusted follow-up author set from the worker config and env.
  *
- * On a config failure the set narrows to the worker's own `GITHUB_USER` login
- * — never widens — and is empty when that env var is unset too, which
+ * On a config failure the set narrows to the worker's own login — never
+ * widens — and is empty when no login is resolvable at all, which
  * `verifyFollowUpIssueExists` treats as "cannot verify" and rejects. The
  * failure is logged at ERROR so an unreadable config is never mistaken for a
  * clean run.
  *
  * @param deps - Worker dependencies providing `config.loadConfig`.
  * @param logger - Logger for the loud failure.
+ * @param githubUser - The run's resolved worker login. Preferred over the
+ *        `GITHUB_USER` env var, which is only a fallback for callers that
+ *        have not resolved it (the env var can be unset in the worker
+ *        container, which would otherwise fail the gate closed on a
+ *        legitimate self-filed follow-up).
  * @returns The trusted logins, or `[]` when they could not be resolved.
  */
 export async function loadTrustedFollowUpAuthors(
   deps: WorkerDeps,
   logger: Logger,
+  githubUser?: string,
 ): Promise<string[]> {
-  const githubUser = Deno.env.get("GITHUB_USER") ?? "";
+  const workerLogin = (githubUser ?? "").trim() ||
+    (Deno.env.get("GITHUB_USER") ?? "");
   try {
     const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
     const config = await deps.config.loadConfig(configPath);
     return resolveTrustedFollowUpAuthors({
-      githubUser,
+      githubUser: workerLogin,
       allowedAuthors: config.allowedAuthors,
       fleetPrAuthors: config.fleetPrAuthors,
       authorisedCommenters: config.authorisedCommenters,
@@ -89,6 +96,6 @@ export async function loadTrustedFollowUpAuthors(
         "follow-up gate — the hand-off will be rejected (Issue #185)",
       { error: err instanceof Error ? err.message : String(err) },
     );
-    return resolveTrustedFollowUpAuthors({ githubUser });
+    return resolveTrustedFollowUpAuthors({ githubUser: workerLogin });
   }
 }
