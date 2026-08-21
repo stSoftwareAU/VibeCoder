@@ -87,26 +87,34 @@ Deno.test("setup #148 - a matching resume pointer resumes the checkpointed branc
       baselineQualityPassed: true,
       baselineQualityOutput: "",
     };
+    // The branch the pointer names must exist on the remote for the #220
+    // issue-number lookup to find it, so the git mock answers ls-remote,
+    // the tip-age probe and the ahead-of-base count for it.
+    const checkpointBranch = "issue-148-preserve-a-timed-out-run-s-wip";
+    const checkpointSha = "7bc5ea8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const deps = createMockDeps({
       git: {
         resumeFeatureBranchFromRemote: () =>
           Promise.resolve({ ok: true as const, value: true }),
-        runGitCommand: (args: string[]) =>
-          Promise.resolve({
+        runGitCommand: (args: string[]) => {
+          const stdout = args[0] === "ls-remote"
+            ? `${checkpointSha}\trefs/heads/${checkpointBranch}\n`
+            : args[0] === "show"
+            ? `${Math.floor(Date.now() / 1000)}\n`
+            : args[0] === "rev-list"
+            ? "2\n"
+            : args[0] === "rev-parse" && args[1] === "HEAD"
+            ? "ff00ba9deadbeef\n"
+            : "";
+          return Promise.resolve({
             ok: true as const,
-            value: {
-              code: 0,
-              stdout: args[0] === "rev-parse" && args[1] === "HEAD"
-                ? "ff00ba9deadbeef\n"
-                : "",
-              stderr: "",
-            },
-          }),
+            value: { code: 0, stdout, stderr: "" },
+          });
+        },
       },
     });
 
-    // The resume file must name the branch the setup phase derives.
-    const branchName = deps.git.createBranchName(148, ctx.issueTitle);
+    const branchName = checkpointBranch;
     await saveResumeState(workDir, ctx.repo, 148, {
       sessionId: "sess-148",
       phaseCount: 3,
