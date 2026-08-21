@@ -17,6 +17,10 @@ import {
   spawnGh,
 } from "../lib/gh_spawn.ts";
 import {
+  resetSharedProcessedIssues,
+  sharedProcessedIssues,
+} from "../lib/processed_issue_registry.ts";
+import {
   _resetWriteRepoAllowlistSinks,
   _setWriteRepoAllowlistSinks,
   resetWriteRepoAllowlist,
@@ -205,6 +209,43 @@ Deno.test("spawnGh - forwards stdin and stream options to the runner", async () 
     assertEquals(seen[0]?.stdin, '{"a":1}');
     assertEquals(seen[0]?.stdout, "null");
   } finally {
+    restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Issue close bookkeeping at the chokepoint (Issue #181)
+// ---------------------------------------------------------------------------
+
+Deno.test("spawnGh - a successful issue close marks the issue finished for this run", async () => {
+  recordingRunner({ code: 0 });
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  resetSharedProcessedIssues();
+  try {
+    await spawnGh(["issue", "close", "9", "-R", "me/target"]);
+
+    assertEquals(
+      sharedProcessedIssues().wasClosedByWorker("me/target", 9),
+      true,
+    );
+  } finally {
+    resetSharedProcessedIssues();
+    restore();
+  }
+});
+
+Deno.test("spawnGh - a failed issue close marks nothing", async () => {
+  recordingRunner({ code: 1, stderr: "boom" });
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  resetSharedProcessedIssues();
+  try {
+    await spawnGh(["issue", "close", "9", "-R", "me/target"]);
+
+    assertEquals(sharedProcessedIssues().has("me/target", 9), false);
+  } finally {
+    resetSharedProcessedIssues();
     restore();
   }
 });

@@ -2731,3 +2731,51 @@ Deno.test("claim issue - resolveTrustedClaimAuthors disables filtering without a
   assertEquals(resolveTrustedClaimAuthors("", []), []);
   assertEquals(resolveTrustedClaimAuthors("   ", undefined), []);
 });
+
+// ---------------------------------------------------------------------------
+// Claims against an issue this run closed (Issue #181)
+// ---------------------------------------------------------------------------
+
+Deno.test("claim issue - refuses an issue this run already closed, without any gh call", async () => {
+  const calls: string[][] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.resolve("OPEN");
+  };
+
+  const result = await claimIssue({
+    repo: "org/repo",
+    issueNumber: 21,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: (repo, issueNumber) =>
+      repo === "org/repo" && issueNumber === 21,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.claimed, false);
+    assertEquals(result.value.reason, "already_closed");
+  }
+  assertEquals(calls.length, 0, "no API call is made for a known-closed issue");
+});
+
+Deno.test("claim issue - an issue not closed this run still runs the normal claim path", async () => {
+  const { ghCommandFn, calls } = createMockGh({
+    "issue view": "OPEN",
+  });
+
+  await claimIssue({
+    repo: "org/repo",
+    issueNumber: 22,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(calls.length > 0, true, "the claim path issued gh calls");
+});
