@@ -1,106 +1,163 @@
 /**
- * Shared "recover, then retry the push" step for the PR processors
- * (Issue #211).
+ * Shared "the push left commits behind — recover and retry" step (Issue #211).
  *
- * The CI-fix, PR-feedback and spelling processors each ran the same block
- * after a final-mile push left commits behind: call
- * `recoverFromPushRejection`, retry `commitAndPushPending`, and — when the
- * branch was still not pushed — log a bare `"Push failed after recovery
- * attempt"`. The one thing that line never carried was *why*:
- * `recoveryResult.error` names whether the rebase conflicted, automatic
- * conflict resolution failed, or `--force-with-lease` was refused, and it was
- * discarded at all three call sites. An operator reading the log (NEAT-AI-core
- * #557) saw a failure with no cause and a human got "please check the branch
- * status" with nothing to check.
- *
- * This helper performs the two steps and returns the failing step together
- * with git's own message, so each caller logs a cause instead of a symptom.
+ * The CI-fix, PR-feedback and spelling processors each carried their own copy
+ * of this block, and every copy threw away the reason: `recoverFromPushRejection`
+ * returns an error naming the step that failed and git's stderr, and all three
+ * logged a bare "Push failed after recovery attempt". The one incident this
+ * fixes (NEAT-AI-core #557) left an operator with no way to tell a rebase
+ * conflict from a refused lease.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { PreFlightGateSpec } from "./git_push.ts";
-import type { GitDeps } from "./issue_worker_wiring.ts";
+import type { Logger, Result } from "../types.ts";
+import type { GitCommandOptions } from "./git_timeout.ts";
+import type {
+  CommitAndPushPendingResult,
+  PreFlightGateSpec,
+} from "./git_push.ts";
 
-/** Git operations this helper needs — a subset of {@link GitDeps}. */
-export type PushRecoveryGitDeps = Pick<
-  GitDeps,
-  "recoverFromPushRejection" | "commitAndPushPending"
->;
-
-/** Inputs for {@link recoverAndRetryPush}. */
-export interface PushRecoveryRetryParams {
-  /** The branch whose push was left incomplete. */
-  branchName: string;
-  /** Working directory for git commands (the target repo checkout). */
-  cwd: string | undefined;
-  /** Commit message for the retry's automated commit. */
-  commitMessage: string;
-  /** Commits still unpushed when the recovery was triggered. */
-  unpushedBefore: number;
-  /** The repo's pre-flight gate, re-applied to the retry commit. */
-  preFlight?: PreFlightGateSpec;
-  /** Injected git operations. */
-  git: PushRecoveryGitDeps;
+/** The two git operations this step drives (injectable for testing). */
+export interface PushRecoveryGitDeps {
+  recoverFromPushRejection: (
+    branchName: string,
+    options?: GitCommandOptions,
+  ) => Promise<Result<string>>;
+  commitAndPushPending: (
+    branchName: string,
+    commitMessage: string,
+    options?: GitCommandOptions,
+    allowDefaultBranch?: boolean,
+    preFlight?: PreFlightGateSpec,
+  ) => Promise<Result<CommitAndPushPendingResult>>;
 }
 
-/** Which step of the recovery failed (Issue #211). */
-export type PushRecoveryStep = "rebase-recovery" | "retry-push";
+/** Inputs for {@link recoverAndRetryPush}. */
+export interface PushRecoveryRequest {
+  /** The branch whose push left commits behind. */
+  branchName: string;
+  /** Working directory of the repo clone (undefined = the process cwd). */
+  workDir: string | undefined;
+  /** Commit message for the retry's automated commit. */
+  retryCommitMessage: string;
+  /** Commits still unpushed when the step was entered (always > 0). */
+  unpushedCount: number;
+  /** Repo pre-flight gate, passed straight through to the retry. */
+  preFlight?: PreFlightGateSpec;
+  git: PushRecoveryGitDeps;
+  logger: Logger;
+  /** Extra log context (repo, prNumber…) merged into every line. */
+  logContext?: Record<string, unknown>;
+}
 
 /** Outcome of {@link recoverAndRetryPush}. */
-export interface PushRecoveryRetryResult {
-  /** Commits still unpushed after the attempt — 0 means the branch is clean. */
-  unpushed: number;
-  /** The step that failed; absent when the branch was pushed. */
-  failedStep?: PushRecoveryStep;
-  /** git's own reason for the failure; absent when the branch was pushed. */
-  detail?: string;
+export interface PushRecoveryOutcome {
+  /** True only when the branch is now fully on origin. */
+  pushed: boolean;
+  /** Commits still unpushed (0 when {@link pushed}). */
+  unpushedCount: number;
+  /**
+   * Why the branch is still not pushed — the failing step and git's own
+   * words. Empty string when {@link pushed}. Callers put this in the log
+   * and in any message they post, so a human never sees a bare
+   * "push failed" again.
+   */
+  failureDetail: string;
 }
 
 /**
- * Rebase onto the remote head and retry the push, reporting the failing step.
+ * Rebase onto the current remote head and push again (Issue #211).
  *
- * Never swallows a failure: when the branch is still not pushed the result
- * always carries both `failedStep` and a `detail` naming git's reason.
+ * `recoverFromPushRejection` fetches, rebases our commits onto whatever the
+ * remote head is now — including a head a sibling fleet host moved while the
+ * agent was running — and pushes. When that lands, the retry commit-and-push
+ * confirms the branch is clean. Every failure path returns the step that
+ * failed plus git's stderr instead of discarding it.
+ *
+ * @param request - See {@link PushRecoveryRequest}
+ * @returns Whether the branch is now pushed, and why not when it is not
  */
 export async function recoverAndRetryPush(
-  params: PushRecoveryRetryParams,
-): Promise<PushRecoveryRetryResult> {
-  const { branchName, cwd, commitMessage, unpushedBefore, preFlight, git } =
-    params;
+  request: PushRecoveryRequest,
+): Promise<PushRecoveryOutcome> {
+  const {
+    branchName,
+    workDir,
+    retryCommitMessage,
+    unpushedCount,
+    preFlight,
+    git,
+    logger,
+    logContext = {},
+  } = request;
 
-  const recovery = await git.recoverFromPushRejection(branchName, { cwd });
+  logger.warn("Local commits remain after push, attempting recovery", {
+    ...logContext,
+    branchName,
+    unpushed: unpushedCount,
+  });
+
+  const recovery = await git.recoverFromPushRejection(branchName, {
+    cwd: workDir,
+  });
+
   if (!recovery.ok) {
-    return {
-      unpushed: unpushedBefore,
-      failedStep: "rebase-recovery",
-      detail: recovery.error.message,
-    };
+    const failureDetail = recovery.error.message;
+    logger.error("Push recovery failed", {
+      ...logContext,
+      branchName,
+      unpushed: unpushedCount,
+      reason: failureDetail,
+    });
+    return { pushed: false, unpushedCount, failureDetail };
   }
+
+  logger.info("Push recovery rebased onto the current remote head", {
+    ...logContext,
+    branchName,
+    outcome: recovery.value,
+  });
 
   const retry = await git.commitAndPushPending(
     branchName,
-    commitMessage,
-    { cwd },
+    retryCommitMessage,
+    { cwd: workDir },
     false,
     preFlight,
   );
+
   if (!retry.ok) {
+    const failureDetail =
+      `retry commit-and-push after recovery failed: ${retry.error.message}`;
+    logger.error("Push retry after recovery failed", {
+      ...logContext,
+      branchName,
+      reason: retry.error.message,
+    });
+    return { pushed: false, unpushedCount, failureDetail };
+  }
+
+  if (retry.value.finalUnpushedCount > 0) {
+    const failureDetail =
+      `${retry.value.finalUnpushedCount} commit(s) still unpushed after ` +
+      `recovery and retry (${recovery.value})`;
+    logger.error("Push retry left commits unpushed", {
+      ...logContext,
+      branchName,
+      unpushed: retry.value.finalUnpushedCount,
+      reason: failureDetail,
+    });
     return {
-      unpushed: unpushedBefore,
-      failedStep: "retry-push",
-      detail: retry.error.message,
+      pushed: false,
+      unpushedCount: retry.value.finalUnpushedCount,
+      failureDetail,
     };
   }
 
-  const remaining = retry.value.finalUnpushedCount;
-  if (remaining === 0) return { unpushed: 0 };
-
-  return {
-    unpushed: remaining,
-    failedStep: "retry-push",
-    detail:
-      `${remaining} commit(s) still unpushed after '${recovery.value}' — the ` +
-      `retry push did not reach origin/${branchName}`,
-  };
+  logger.info("Push succeeded after recovery", {
+    ...logContext,
+    branchName,
+  });
+  return { pushed: true, unpushedCount: 0, failureDetail: "" };
 }

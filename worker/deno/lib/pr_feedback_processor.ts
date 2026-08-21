@@ -15,7 +15,6 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import { recoverAndRetryPush } from "./push_recovery_retry.ts";
 import type { CommentType } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import {
@@ -47,6 +46,8 @@ import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { verifyFollowUpIssueExists } from "./escape_hatch_verify.ts";
 import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
+import { recoverAndRetryPush } from "./push_recovery_retry.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -510,6 +511,8 @@ async function _processFeedbackWithHeartbeat(
   let pushSucceeded = false;
   let hasChanges = false;
   let finalUnpushedCount = 0;
+  /** Why the branch is still unpushed — empty when it landed (Issue #211). */
+  let pushRecoveryFailure = "";
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed } = finaliseResult.value;
     finalUnpushedCount = finaliseResult.value.finalUnpushedCount;
@@ -521,31 +524,24 @@ async function _processFeedbackWithHeartbeat(
     });
 
     if (finalUnpushedCount > 0) {
-      logger.warn("Local commits remain after push, attempting recovery", {
-        unpushed: finalUnpushedCount,
-      });
+      // Rebase onto the current remote head — a sibling fleet host may have
+      // moved it while the agent ran — and push again, logging the failing
+      // step and git's stderr rather than discarding them (Issue #211).
       const recovery = await recoverAndRetryPush({
         branchName: input.branchName,
-        cwd: processorDeps.workDir,
-        commitMessage:
+        workDir: processorDeps.workDir,
+        retryCommitMessage:
           `Address PR #${prNumber} feedback\n\nRetry after rebase recovery (Issue #1643).`,
-        unpushedBefore: finalUnpushedCount,
+        unpushedCount: finalUnpushedCount,
         preFlight,
         git: deps.git,
+        logger,
+        logContext: { repo, prNumber },
       });
-      finalUnpushedCount = recovery.unpushed;
-      if (recovery.unpushed === 0) {
+      finalUnpushedCount = recovery.unpushedCount;
+      pushRecoveryFailure = recovery.failureDetail;
+      if (recovery.pushed) {
         hasChanges = true;
-      } else {
-        // Issue #211: name the step that failed and git's own reason — a bare
-        // "Push failed" left operators with nothing to act on.
-        logger.error("Push failed after recovery attempt", {
-          repo,
-          prNumber,
-          failedStep: recovery.failedStep,
-          detail: recovery.detail,
-          unpushed: recovery.unpushed,
-        });
       }
     }
   } else {
@@ -679,7 +675,7 @@ async function _processFeedbackWithHeartbeat(
   if (hasChanges && pushSucceeded) {
     await replyWithResult(repo, prNumber, deps, customMessage);
   } else if (hasChanges && !pushSucceeded) {
-    await replyPushFailed(repo, prNumber, deps);
+    await replyPushFailed(repo, prNumber, deps, pushRecoveryFailure);
   } else {
     await replyNoChanges(
       repo,
@@ -744,8 +740,13 @@ async function replyPushFailed(
   repo: string,
   prNumber: number,
   deps: WorkerDeps,
+  reason: string,
 ): Promise<void> {
   try {
+    // Issue #211: name the recovery step that failed and git's own words.
+    // The bare "check the branch status" line gave the human nothing to act
+    // on. The detail is worker/git output, so it is redacted before posting.
+    const detail = reason ? `\n\nDetail: ${redactSecrets(reason)}` : "";
     await deps.github.runGhCommand([
       "pr",
       "comment",
@@ -753,7 +754,8 @@ async function replyPushFailed(
       "--repo",
       repo,
       "--body",
-      "I fixed the issues from this feedback locally but failed to push the changes. Please check the branch status.",
+      "I fixed the issues from this feedback locally but failed to push the " +
+      `changes. Please check the branch status.${detail}`,
     ]);
   } catch {
     // Comment failure is non-critical

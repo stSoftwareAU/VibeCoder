@@ -15,7 +15,6 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import { recoverAndRetryPush } from "./push_recovery_retry.ts";
 import {
   buildSpellingFixPrompt,
   type SpellingFixPromptOptions,
@@ -27,6 +26,8 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
+import { recoverAndRetryPush } from "./push_recovery_retry.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -376,6 +377,8 @@ async function _processSpellingWithHeartbeat(
   let pushSucceeded = false;
   let hasChanges = false;
   let finalUnpushedAfterPush = 0;
+  /** Why the branch is still unpushed — empty when it landed (Issue #211). */
+  let pushRecoveryFailure = "";
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -389,35 +392,25 @@ async function _processSpellingWithHeartbeat(
     });
 
     if (finalUnpushedCount > 0) {
-      logger.warn("Local commits remain after push, attempting recovery", {
-        unpushed: finalUnpushedCount,
-      });
+      // Rebase onto the current remote head and push again, logging the
+      // failing step and git's stderr rather than discarding them
+      // (Issue #211).
       const recovery = await recoverAndRetryPush({
         branchName: input.branchName,
-        cwd: processorDeps.workDir,
-        commitMessage:
+        workDir: processorDeps.workDir,
+        retryCommitMessage:
           `Fix spelling check failures: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
-        unpushedBefore: finalUnpushedCount,
+        unpushedCount: finalUnpushedCount,
         preFlight,
         git: deps.git,
+        logger,
+        logContext: { repo, prNumber },
       });
-      if (recovery.unpushed === 0) {
+      pushRecoveryFailure = recovery.failureDetail;
+      finalUnpushedAfterPush = recovery.unpushedCount;
+      if (recovery.pushed) {
         hasChanges = true;
         pushSucceeded = true;
-        finalUnpushedAfterPush = 0;
-      } else {
-        finalUnpushedAfterPush = recovery.unpushed;
-      }
-      if (!pushSucceeded) {
-        // Issue #211: name the step that failed and git's own reason — a bare
-        // "Push failed" left operators with nothing to act on.
-        logger.error("Push failed after recovery attempt", {
-          repo,
-          prNumber,
-          failedStep: recovery.failedStep,
-          detail: recovery.detail,
-          unpushed: recovery.unpushed,
-        });
       }
     }
   } else {
@@ -459,7 +452,12 @@ async function _processSpellingWithHeartbeat(
     await replyToComment(
       repo,
       prNumber,
-      "I fixed the spelling issues locally but failed to push the changes. Please check the branch status.",
+      "I fixed the spelling issues locally but failed to push the changes. " +
+        `Please check the branch status.${
+          pushRecoveryFailure
+            ? `\n\nDetail: ${redactSecrets(pushRecoveryFailure)}`
+            : ""
+        }`,
       deps,
     );
   } else {
