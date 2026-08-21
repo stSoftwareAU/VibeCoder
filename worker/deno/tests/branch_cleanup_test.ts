@@ -796,24 +796,20 @@ Deno.test("branch cleanup - a gone-upstream branch -d refuses is force-deleted o
       await runCleanupGit(["checkout", "main"], clone);
       await runCleanupGit(["push", "origin", `:${name}`], clone);
     };
+    // Git's own `@<epoch>` date form: parsed identically by every git
+    // version (an ISO string with fractional seconds is not).
     const nowEpoch = Math.floor(Date.now() / 1000);
-    await makeGone(
-      "old-squashed",
-      new Date((nowEpoch - 30 * 86400) * 1000).toISOString(),
-    );
-    await makeGone(
-      "young-unmerged",
-      new Date((nowEpoch - 3600) * 1000).toISOString(),
-    );
+    await makeGone("old-squashed", `@${nowEpoch - 30 * 86400}`);
+    await makeGone("young-unmerged", `@${nowEpoch - 3600}`);
 
     const result = await cleanupOrphanedLocalBranches("main", { cwd: clone }, {
       forceDeleteAgeDays: 7,
       nowFn: () => nowEpoch,
     });
     assert(result.ok);
-    assertEquals(result.value.deletedCount, 1);
-    assertEquals(result.value.skippedCount, 1);
     const branches = (await runCleanupGit(["branch"], clone)).stdout;
+    assertEquals(result.value.deletedCount, 1, branches);
+    assertEquals(result.value.skippedCount, 1, branches);
     assert(!branches.includes("old-squashed"), branches);
     assert(branches.includes("young-unmerged"), branches);
   } finally {
