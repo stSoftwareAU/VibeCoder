@@ -23,6 +23,11 @@ import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import {
+  isOwnRunPr,
+  lookupPrIdentity,
+  parsePrNumberFromUrl,
+} from "../pr_run_ownership.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { getRepoConfig } from "../repo_config.ts";
@@ -67,36 +72,51 @@ import {
 const WORK_ON_STATS_PHASE = "issue";
 
 /**
- * Look up the state of an existing PR. Returns null when the state cannot be
- * determined (e.g. gh API error) — the caller should treat that as "unknown"
- * and preserve existing non-merged behaviour.
+ * Resolve the PR this run owns — an OPEN PR whose head is the branch this run
+ * pushed — or null when the run still owes the fleet a PR (Issue #174).
+ *
+ * Two lookups, in order of authority:
+ *
+ *  1. by head branch, which can only return this run's PR; then
+ *  2. by issue number (the #872 defence-in-depth backstop), whose candidate is
+ *     verified against this run's branch before it is trusted.
+ *
+ * A candidate that fails verification is a sibling's PR for the same issue —
+ * a human's partial PR, another host's earlier attempt — and is logged at
+ * WARNING and ignored. On #42 exactly that PR was silently adopted, and the
+ * run's three commits were left with no PR at all.
  */
-async function lookupPrState(
-  repo: string,
-  prNumber: number,
+async function resolveOwnRunPrUrl(
+  ctx: IssueContext,
+  state: PhaseState,
   deps: WorkerDeps,
 ): Promise<string | null> {
-  if (prNumber <= 0) return null;
-  try {
-    const output = await deps.github.runGhCommand([
-      "pr",
-      "view",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--json",
-      "state",
-    ]);
-    const parsed = JSON.parse(output) as { state?: string };
-    return parsed.state ?? null;
-  } catch (err) {
-    deps.logger.warn("Recovery: PR state lookup errored (non-fatal)", {
-      repo,
-      prNumber,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
+  const { repo, issueNumber } = ctx;
+  const branchName = state.branchName;
+
+  const byBranch = await deps.pr.findExistingPrForBranch(repo, branchName);
+  if (byBranch.ok && byBranch.value) return byBranch.value;
+
+  const byIssue = await deps.pr.findExistingPrForIssue(repo, issueNumber);
+  if (!byIssue.ok || !byIssue.value) return null;
+
+  const identity = await lookupPrIdentity(
+    repo,
+    parsePrNumberFromUrl(byIssue.value),
+    deps.github.runGhCommand,
+    deps.logger,
+  );
+  if (isOwnRunPr(identity, branchName)) return byIssue.value;
+
+  deps.logger.warn(
+    `Ignoring ${byIssue.value}: it references issue #${issueNumber} but is ` +
+      `not this run's PR (state ${identity?.state ?? "unknown"}, head ` +
+      `'${identity?.headRefName ?? "unknown"}' — this run pushed ` +
+      `'${branchName}'). Raising a PR for this run's branch instead ` +
+      `(Issue #174).`,
+    { repo, issueNumber, prUrl: byIssue.value, runBranch: branchName },
+  );
+  return null;
 }
 
 /**
@@ -131,6 +151,11 @@ async function runGitOrThrow(
  * Issue #1559: When the recovered PR is already merged, skip the redundant
  * "PR created" link comment and call `ensureIssueClosedIfPrMerged` so the
  * worker does not loop re-picking up an issue whose work is already shipped.
+ *
+ * **Callers must pass a PR this run owns** — every live call site resolves it
+ * through {@link resolveOwnRunPrUrl} (Issue #174). This function closes the
+ * issue when the PR it is handed has merged, and closing on a *sibling's*
+ * merged PR is precisely what stranded three commits on #42.
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
@@ -169,8 +194,13 @@ export async function recoverAndFinaliseExistingPr(
 
   // Issue #1559: Check PR state up front so we can suppress the redundant
   // "PR created" link comment when the PR is already merged.
-  const prState = await lookupPrState(repo, prNumber, deps);
-  const prAlreadyMerged = prState === "MERGED";
+  const identity = await lookupPrIdentity(
+    repo,
+    prNumber,
+    deps.github.runGhCommand,
+    logger,
+  );
+  const prAlreadyMerged = identity?.state === "MERGED";
 
   // Post-recovery finalisation (best-effort)
   try {
@@ -790,47 +820,18 @@ async function completionBody(
     await clearSecurityFixGateBlock(gateStateDir, repo, issueNumber);
   }
 
-  // Issue #869: Pre-check for existing PR by issue number
-  const existingPrByIssue = await deps.pr.findExistingPrForIssue(
-    repo,
-    issueNumber,
-  );
-  if (existingPrByIssue.ok) {
-    const existingPrUrl = existingPrByIssue.value;
+  // Pre-check for the PR this run already owns (Issues #623, #869, #872).
+  // Only an OPEN PR whose head is this run's branch qualifies — a merged or
+  // foreign PR referencing the issue is a sibling's work, and this branch
+  // still needs a PR of its own (Issue #174).
+  const ownPrUrl = await resolveOwnRunPrUrl(ctx, state, deps);
+  if (ownPrUrl) {
     logger.info(
-      "IDEMPOTENT: PR already exists for issue number, skipping creation",
-      { prUrl: existingPrUrl },
+      "IDEMPOTENT: an open PR already exists for this run's branch, skipping creation",
+      { prUrl: ownPrUrl, branch: state.branchName },
     );
     return await recoverAndFinaliseExistingPr(
-      existingPrUrl,
-      ctx,
-      state,
-      prBody,
-      deps,
-    );
-  }
-
-  // Issue #623: Pre-check for existing PR by branch name
-  let existingPrByBranch = await deps.pr.findExistingPrForBranch(
-    repo,
-    state.branchName,
-  );
-
-  // Issue #872: Defence-in-depth — re-check by issue number
-  if (!existingPrByBranch.ok) {
-    const recheck = await deps.pr.findExistingPrForIssue(repo, issueNumber);
-    if (recheck.ok) {
-      existingPrByBranch = recheck;
-    }
-  }
-
-  if (existingPrByBranch.ok) {
-    const existingPrUrl = existingPrByBranch.value;
-    logger.info("IDEMPOTENT: PR already exists for branch, skipping creation", {
-      prUrl: existingPrUrl,
-    });
-    return await recoverAndFinaliseExistingPr(
-      existingPrUrl,
+      ownPrUrl,
       ctx,
       state,
       prBody,
@@ -874,25 +875,25 @@ async function completionBody(
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
 
-    // Self-healing: detect existing PR after creation failure (Issue #386, #1189)
-    const existingPrFromError = await deps.pr.findExistingPrForIssue(
-      repo,
-      issueNumber,
-    );
-    if (existingPrFromError.ok) {
-      logger.info("Found existing PR after creation error, recovering", {
-        prUrl: existingPrFromError.value,
+    // Self-healing: detect existing PR after creation failure (Issue #386,
+    // #1189). `gh pr create` refuses when a PR already exists for the head
+    // branch, so the recovery target must be *this run's* PR — recovering
+    // into a sibling's PR would report a creation failure as success and
+    // strand the branch (Issue #174).
+    const recoveredPrUrl = await resolveOwnRunPrUrl(ctx, state, deps);
+    if (recoveredPrUrl) {
+      logger.info("Found this run's PR after a creation error, recovering", {
+        prUrl: recoveredPrUrl,
       });
       return await recoverAndFinaliseExistingPr(
-        existingPrFromError.value,
+        recoveredPrUrl,
         ctx,
         state,
         prBody,
         deps,
       );
-    } else {
-      return { status: "failure", reason: `PR creation failed: ${errorMsg}` };
     }
+    return { status: "failure", reason: `PR creation failed: ${errorMsg}` };
   }
 
   // Extract PR number from URL for API calls

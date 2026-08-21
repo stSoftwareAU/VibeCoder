@@ -26,6 +26,7 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { ensureIssueClosedIfPrMerged } from "../issue_lifecycle.ts";
+import { findStrandedIssueBranch } from "../stranded_branch.ts";
 
 /** Reason string for the early-exit result — stable identifier used by the orchestrator. */
 export const MERGED_PR_PRECHECK_EARLY_EXIT_REASON = "pr_already_merged";
@@ -108,6 +109,50 @@ export async function workOnIssueMergedPrPrecheck(
 
   if (prState !== "MERGED") {
     return { status: "continue" };
+  }
+
+  // A merged PR referencing the issue does not mean this issue's work
+  // shipped (Issue #174). In a fleet, humans and sibling hosts land partial
+  // PRs against an issue that is still being worked; on VibeCoder#42 one of
+  // those closed the issue on every claim while three worker commits sat on
+  // a branch with no PR. If any `issue-<n>-…` branch is ahead of base with no
+  // PR of its own, the work is unshipped: continue the run so the branch gets
+  // its PR, rather than closing the issue over the top of it.
+  const scan = await findStrandedIssueBranch(
+    repo,
+    issueNumber,
+    deps.github.runGhCommand,
+  );
+  if (!scan.ok) {
+    // An undetermined scan must be audible — it is the only thing standing
+    // between a merged sibling PR and a closed issue with stranded work.
+    logger.warn(
+      `Stranded-branch guard could not run for issue #${issueNumber} — ` +
+        `proceeding with the merged-PR closure without it: ${scan.error.message}`,
+      { repo, issueNumber, prNumber },
+    );
+  } else if (scan.stranded) {
+    logger.warn(
+      `Not closing issue #${issueNumber} on PR #${prNumber}: branch ` +
+        `'${scan.stranded.branch}' is ${scan.stranded.aheadBy} commit(s) ` +
+        `ahead of '${scan.stranded.baseBranch}' with no PR of its own. That ` +
+        `merged PR is somebody else's; this run continues so the stranded ` +
+        `work gets a PR (Issue #174).`,
+      {
+        repo,
+        issueNumber,
+        prNumber,
+        branch: scan.stranded.branch,
+        aheadBy: scan.stranded.aheadBy,
+      },
+    );
+    return { status: "continue" };
+  } else if (scan.truncated) {
+    logger.warn(
+      `Stranded-branch guard stopped at its branch cap for issue ` +
+        `#${issueNumber} — later branches were not examined (Issue #174).`,
+      { repo, issueNumber },
+    );
   }
 
   // PR is merged — close the issue if still open. `ensureIssueClosedIfPrMerged`
