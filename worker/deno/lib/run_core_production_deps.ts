@@ -222,6 +222,8 @@ import { isRepoAllowed } from "./config_validator.ts";
 import { isAuthorisedCommenter } from "./security.ts";
 import { createGitHubClient, runGhCommand } from "./github.ts";
 import { InFlightRepoRegistry } from "./in_flight_repos.ts";
+import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
+import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import {
@@ -381,6 +383,13 @@ export async function createProductionRunCoreDeps(
   const issueCache = new IssueCache(
     config.workDir ? `${config.workDir}/.gh-scan-cache` : undefined,
   );
+  // Issue #181: a close the worker performs drops that repo's stale scan-cache
+  // entries, so the next scan cannot rank an issue this run already closed.
+  setScanCacheForCloseInvalidation(issueCache);
+  // Issue #181: issues this run has already finished with. One process is one
+  // run, so the shared registry is exactly this run's history — the `gh`
+  // chokepoint records closes into it and `findNextIssue` excludes them.
+  const processedIssues = sharedProcessedIssues();
   // Issue #1673: dedicated TTL cache for issue-timeline label events.
   const timelineCache = new TimelineCache(
     config.timelineCacheTtlSeconds,
@@ -1910,6 +1919,8 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 2: Issue scanning --
+    processedIssues,
+
     async findNextIssue(options?: { excludeRepos?: ReadonlySet<string> }) {
       // Load cooldown state once before scanning (synchronous check per issue)
       const cooldownState = await loadCooldownState(
@@ -1925,7 +1936,13 @@ export async function createProductionRunCoreDeps(
         cache: issueCache,
         timelineCache,
         timelineBatchRegistry,
-        isIssueInCooldown: (repo, num) => cooldownSet.has(`${repo}|${num}`),
+        // Issue #181: the persisted cooldown OR this run's own memory. The
+        // cached issue list has a 600 s TTL, so without the second term an
+        // issue this run just finished — or closed — is re-offered seconds
+        // later by the very same stale list.
+        isIssueInCooldown: (repo, num) =>
+          cooldownSet.has(`${repo}|${num}`) ||
+          processedIssues.has(repo, num),
         // Repositories held by sibling slots (Issue #4176): skipped so no
         // two slots share a clone.
         ...(options?.excludeRepos

@@ -13,7 +13,10 @@
  *   2. redacts secrets from the published body arguments
  *      (`redactGhBodyArgs`, Issue #3707), then
  *   3. journals the mutation to the tamper-evident audit log
- *      (`auditGhMutation`) once the exit code is known.
+ *      (`auditGhMutation`) once the exit code is known, and
+ *   4. notes an issue close/reopen (`noteGhIssueClose`, Issue #181) so the
+ *      stale scan-cache entries are dropped and the run never re-claims an
+ *      issue it just closed.
  *
  * A quality-gate check (`gh_spawn_chokepoint_check.ts`) fails the build on any
  * direct `new Deno.Command("gh", …)` outside this file, so the invariant
@@ -27,6 +30,7 @@
  *     R --> P["gh subprocess"]
  *     A -->|refused| E["throw — no subprocess"]
  *     P --> J["auditGhMutation<br/>(audit journal)"]
+ *     J --> N["noteGhIssueClose<br/>(cache + run registry)"]
  * ```
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -36,6 +40,7 @@ import { getGhTokenForSubprocess } from "./github_app_auth.ts";
 import { enforceGhWriteAllowlist } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
 import { redactGhBodyArgs } from "./gh_body_redaction.ts";
+import { noteGhIssueClose } from "./issue_close_notifier.ts";
 
 /** Options for a single `gh` invocation. */
 export interface GhSpawnOptions {
@@ -168,6 +173,10 @@ export async function spawnGh(
   const result = await runner(redactGhBodyArgs(args), options);
   // Best-effort — never lets journalling alter or abort the gh call.
   await auditGhMutation(args, result.code);
+  // Issue #181: a close the worker just performed invalidates the scan-cache
+  // entries that still describe the issue as open, and marks it finished for
+  // the rest of the run so no slot re-claims it. Also best-effort.
+  await noteGhIssueClose(args, result.code);
   return result;
 }
 
