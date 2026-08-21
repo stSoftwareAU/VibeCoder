@@ -2004,3 +2004,40 @@ in the `WARNING` line, never swallowed.
 [`issue_worker_types.ts`](worker/deno/lib/issue_worker_types.ts). See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
 Orphaned milestone merge for the operator detail.
+
+### An issue this run finished is never re-offered to the scan
+
+The scan ranks a cached issue list whose TTL is 600 s, and until Issue #181 the
+success path recorded no local exclusion at all — only skips and failures took
+a cooldown. So an idle-task wrapper that was scanned, commented and **closed**
+at 02:02Z was re-claimed and "processed" again at 02:05Z and 02:08Z from the
+same stale list, while thirteen open wrappers in that repo were never reached
+and every bounce counted in `WORKER_SUMMARY` as a processed issue.
+
+**The rule.** Every terminal outcome of the scan loop — success, skip, failure
+— and every issue the worker itself closes is recorded in a per-run
+[`ProcessedIssueRegistry`](worker/deno/lib/processed_issue_registry.ts). The
+scan excludes what it holds and the claim refuses it (`already_closed`), so
+re-claiming does not depend on a cache TTL, on invalidation having succeeded,
+or on an API round-trip. The registry is in-process and one process is one run,
+so an entry lives exactly as long as the run; a `gh issue reopen` clears it
+immediately.
+
+**Close, then forget — at the chokepoint.** The close hook lives in
+`spawnGh` ([`issue_close_notifier.ts`](worker/deno/lib/issue_close_notifier.ts)),
+the single place every worker `gh` call passes through, so the idle-task
+wrapper closure, close-on-merge, the self-healing closes and the stale-workflow
+purge are all covered without each remembering to invalidate for itself. The
+same hook drops the repo's `issues_all` / `issues_closed_all` and the per-issue
+cache entries. The claim's own open-state check (`fetchIssueState`) reads
+through the **uncached** `runGhCommand`: a stale "OPEN" there is exactly what
+lets a closed issue be claimed.
+
+**Implementation:**
+[`processed_issue_registry.ts`](worker/deno/lib/processed_issue_registry.ts),
+[`issue_close_notifier.ts`](worker/deno/lib/issue_close_notifier.ts),
+`noteIssueProcessed` in [`run_core.ts`](worker/deno/lib/run_core.ts), and the
+`findNextIssue` exclusion in
+[`run_core_production_deps.ts`](worker/deno/lib/run_core_production_deps.ts).
+See [`docs/GH-API-OPTIMISATION.md`](docs/GH-API-OPTIMISATION.md) → Issue closes
+are never left to the TTL.

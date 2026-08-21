@@ -168,6 +168,7 @@ trade-off.
 | Worker adds/removes a label | The repo's issue/PR list (so the next read sees the change) | `IssueCache.invalidate(repo, "issues_all")` or `IssueCache.invalidateRepo(repo)` |
 | Worker writes a claim comment | Repo's issue list (claim is reflected in the issue body / labels) | `IssueCache.invalidateRepo(repo)` |
 | Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
+| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}` and `pr_linkage_open_v2_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181) |
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
 | Worker label change to timeline (planned) | Timeline entry for the affected issue | `IssueCache.invalidate(repo, "${number}#timeline")` (future) |
@@ -175,6 +176,38 @@ trade-off.
 The TTL itself is the second line of defence: even without explicit
 invalidation, every entry is automatically refreshed at most 10 minutes
 (issues/PRs) or 90 seconds (rate-limit) after first write.
+
+### Issue closes are never left to the TTL (Issue #181)
+
+An issue the worker closed and a 600 s issue-list entry that still lists it
+as open is the one combination the TTL cannot absorb: the scan re-claimed a
+closed idle-task wrapper on each of the next three pool entries while
+thirteen open wrappers in the same repo went untouched. Two defences now
+apply, both driven from the single `gh` chokepoint (`spawnGh`):
+
+- **Cache invalidation** — a successful `gh issue close`/`gh issue reopen`
+  drops the repo's close-sensitive entries (the table row above), so the next
+  scan re-reads the list from GitHub.
+- **A per-run registry** — `ProcessedIssueRegistry`
+  (`worker/deno/lib/processed_issue_registry.ts`) records the close, and every
+  terminal outcome of the scan loop (success, skip, failure) besides.
+  `findNextIssue` excludes what it holds and `claimIssue` refuses a claim
+  against an issue this run closed, so correctness no longer depends on the
+  invalidation having succeeded. It costs no API call.
+
+```mermaid
+flowchart LR
+    C["gh issue close<br/>(any close path)"] --> S["spawnGh chokepoint"]
+    S --> I["invalidate issues_all,<br/>issues_closed_all, per-issue keys"]
+    S --> R["ProcessedIssueRegistry<br/>(this run)"]
+    P["processIssue terminal<br/>outcome"] --> R
+    R --> F["findNextIssue excludes"]
+    R --> K["claimIssue refuses<br/>already_closed"]
+```
+
+The registry is in-process and one process is one run, so an entry lives
+exactly as long as the run: a genuinely re-openable issue is reconsidered on
+the next run, and a `gh issue reopen` clears the entry immediately.
 
 ## Telemetry
 
