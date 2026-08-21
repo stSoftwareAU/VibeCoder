@@ -14,6 +14,13 @@
  * was blind to it. This resolver unions both lists (plus the host's own
  * login) so the guard can never be blind to a configured sibling.
  *
+ * Issue #209 closed the second half of the same hole: a fleet that lists
+ * its siblings only under `service_accounts` has an empty
+ * `fleet_pr_authors`, so every sibling sat outside the fleet set and its
+ * open PRs neither blocked a claim nor counted as already merged. A
+ * service account is by definition a fleet account, so `serviceAccounts`
+ * is unioned into both resolved sets as well.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
@@ -30,14 +37,22 @@
  * @param githubUser - The current host's GitHub login.
  * @param allowedAuthors - Trusted authors (`allowed_authors`).
  * @param fleetPrAuthors - Sibling fleet logins (`fleet_pr_authors`).
+ * @param serviceAccounts - Fleet service accounts (`service_accounts`),
+ *   which are fleet logins by definition (Issue #209).
  * @returns Deduplicated, non-empty fleet login list.
  */
 export function resolveFleetAuthors(
   githubUser: string,
   allowedAuthors: string[],
   fleetPrAuthors: string[],
+  serviceAccounts: string[] = [],
 ): string[] {
-  const combined = [githubUser, ...allowedAuthors, ...fleetPrAuthors];
+  const combined = [
+    githubUser,
+    ...allowedAuthors,
+    ...fleetPrAuthors,
+    ...serviceAccounts,
+  ];
   const seen = new Set<string>();
   const result: string[] = [];
   for (const raw of combined) {
@@ -71,6 +86,16 @@ export interface FleetAuthorSetInput {
   allowedAuthors?: readonly string[];
   /** Sibling fleet logins (`fleet_pr_authors`). */
   fleetPrAuthors?: readonly string[];
+  /**
+   * Fleet service-account logins (`service_accounts`) — the accounts this
+   * fleet runs as (Issue #209).
+   *
+   * A service account is a fleet account by definition, so it belongs in
+   * both resolved sets. Listing siblings under `service_accounts` alone
+   * used to leave them outside every PR guard: their open PRs did not
+   * block a claim and their merged PRs did not close one.
+   */
+  serviceAccounts?: readonly string[];
 }
 
 /**
@@ -98,7 +123,36 @@ export function resolveFleetPrAuthorSet(input: FleetAuthorSetInput): string[] {
     input.githubUser,
     [...(input.allowedAuthors ?? [])],
     [...(input.fleetPrAuthors ?? [])],
+    [...(input.serviceAccounts ?? [])],
   );
+}
+
+/**
+ * Resolve the effective sibling-fleet login list from the two
+ * configuration keys that name fleet accounts (Issue #209).
+ *
+ * `fleet_pr_authors` names sibling hosts; `service_accounts` names the
+ * accounts this fleet runs as. Both are fleet logins, and a fleet that
+ * filled in only the second was uncoordinated by construction — its
+ * siblings' open PRs were invisible to every guard. `loadConfig` folds
+ * the union into `config.fleetPrAuthors` so no consumer can see one key
+ * without the other.
+ *
+ * Normalisation matches {@link resolveFleetAuthors}: blank entries are
+ * dropped and duplicates removed case-insensitively, first-seen casing
+ * and order preserved.
+ *
+ * @param fleetPrAuthors - Configured `fleet_pr_authors`.
+ * @param serviceAccounts - Configured `service_accounts`.
+ * @returns The deduplicated union of both lists.
+ */
+export function resolveEffectiveFleetPrAuthors(
+  fleetPrAuthors: readonly string[],
+  serviceAccounts: readonly string[],
+): string[] {
+  return resolveFleetAuthors("", [], [...fleetPrAuthors], [
+    ...serviceAccounts,
+  ]);
 }
 
 /**
@@ -107,8 +161,8 @@ export function resolveFleetPrAuthorSet(input: FleetAuthorSetInput): string[] {
  *
  * This set answers: *may the worker claim this PR, push commits to it,
  * comment on it, or auto-merge it?* Membership is the host's own login
- * plus the sibling fleet logins (`fleetPrAuthors`) — accounts the fleet
- * actually operates.
+ * plus the sibling fleet logins (`fleetPrAuthors`) and the fleet's
+ * `serviceAccounts` (Issue #209) — accounts the fleet actually operates.
  *
  * `allowedAuthors` is deliberately excluded: a trusted human is trusted
  * to *instruct* the worker, not to have their PRs taken over. A login
@@ -133,6 +187,7 @@ export function resolveFleetMaintenanceAuthorSet(
     input.githubUser,
     [],
     [...(input.fleetPrAuthors ?? [])],
+    [...(input.serviceAccounts ?? [])],
   );
 }
 

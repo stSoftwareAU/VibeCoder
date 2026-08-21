@@ -18,6 +18,7 @@ import {
   setConfiguredEnabledAgentProviderIds,
 } from "./agent_provider.ts";
 import { resolveRunMode } from "./run_mode.ts";
+import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import {
@@ -304,12 +305,26 @@ export async function loadConfig(
   // Sibling fleet PR authors (fleet-aware PR maintenance). Precedence:
   // FLEET_PR_AUTHORS env var > .config.json (`fleet_pr_authors`) > [].
   const fleetPrAuthorsEnv = Deno.env.get("FLEET_PR_AUTHORS");
-  const fleetPrAuthors: string[] =
+  const configuredFleetPrAuthors: string[] =
     fleetPrAuthorsEnv !== undefined && fleetPrAuthorsEnv !== ""
       ? fleetPrAuthorsEnv.split(",").map((s) => s.trim()).filter((s) =>
         s !== ""
       )
       : (file.fleet_pr_authors ?? []);
+
+  // Issue #209: `service_accounts` names fleet accounts too, so the two
+  // keys resolve to one effective sibling list here. A fleet that listed
+  // its siblings only under `service_accounts` had an empty
+  // `fleet_pr_authors`, which left every sibling outside the PR guards:
+  // their open PRs did not block a claim and their merged PRs did not
+  // close one, so two hosts worked the same issue minutes apart. Unioning
+  // once at load means no consumer — including the ones that build their
+  // own author list from `fleetPrAuthors` — can see one key without the
+  // other.
+  const fleetPrAuthors = resolveEffectiveFleetPrAuthors(
+    configuredFleetPrAuthors,
+    serviceAccounts,
+  );
 
   // Label configuration — all from LABEL_DEFAULTS. Issue #1834 hardwires
   // workOnLabel and lowPriorityLabel; the remaining labels still load

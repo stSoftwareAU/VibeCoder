@@ -635,8 +635,12 @@ explained beneath the block, never inside it.
 - `service_accounts` — the worker identity guard's allowlist. The automated
   route defaults it to the login setup authenticated as; a hand-written config
   without it leaves the guard inactive, which the worker warns about loudly at
-  startup. See the identity guard notes under
-  [Service Account Authentication](CONFIGURATION.md#service-account-authentication-ssh--gh-auth).
+  startup. These logins are fleet accounts, so they are also unioned into the
+  effective `fleet_pr_authors` and a sibling's open PR blocks this host from
+  duplicating the work. See the identity guard notes under
+  [Service Account Authentication](CONFIGURATION.md#service-account-authentication-ssh--gh-auth)
+  and
+  [Service accounts are fleet PR authors too](CONFIGURATION.md#service-accounts-are-fleet-pr-authors-too).
 - `authorized_commenters` — logins whose issue comments the worker trusts.
   Note the key itself is spelt `authorized_commenters`; see
   [Authorised Commenters](CONFIGURATION.md#authorised-commenters).

@@ -85,6 +85,10 @@ either:
 | `fleet_pr_authors` | Sibling fleet logins | Their PRs are **maintained** — claimed, fixed, commented on, merged             |
 | `allowed_authors`  | Trusted humans       | They may **instruct** the worker — issues, labels, comments, invitations        |
 
+`service_accounts` names fleet logins too, so it is unioned into the effective
+`fleet_pr_authors` at load — see
+[Service accounts are fleet PR authors too](#service-accounts-are-fleet-pr-authors-too).
+
 In one line: **trusted to command, not to be commanded.** A trusted human's PR
 is **deferred to but never adopted** — the worker waits behind it so it never
 raises a duplicate, but never claims, pushes to, comments on, or merges it
@@ -1324,10 +1328,46 @@ guard — the root cause of the duplicate documented in
 [`DUPLICATE-PR-ROOT-CAUSE-3138.md`](DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
 At startup (and in `diagnose-repo`) the worker now validates this configuration
-and emits a `[fleet-config]` line: an **error** if the effective fleet set is
-empty, and a **warning** if `allowed_authors` is empty or a `fleet_pr_authors`
-sibling is missing from `allowed_authors`. To keep the two lists consistent, add
-every fleet login to `allowed_authors` as well.
+and emits `[fleet-config]` lines. The **effective author set is named on every
+run** — `[fleet-config] effective-authors=<login>,<login>` — so the logins the
+guards actually cover are visible without reading `.config.json`. Alongside it:
+an **error** if the effective fleet set is empty, and a **warning** if
+`allowed_authors` is empty or a sibling from `fleet_pr_authors` /
+`service_accounts` is missing from `allowed_authors` (the host's own login is
+never reported as a missing sibling). To keep the lists consistent, add every
+fleet login to `allowed_authors` as well.
+
+### Service accounts are fleet PR authors too
+
+`service_accounts` and `fleet_pr_authors` both name **fleet** logins, and a
+service account is a fleet account by definition. They are not
+interchangeable inputs, though — `service_accounts` is the identity guard's
+allowlist, while `fleet_pr_authors` is what every PR guard resolves its author
+set from. A fleet that listed its siblings under `service_accounts` **only**
+was therefore uncoordinated by construction, and silently so: with
+`fleet_pr_authors` unset, a sibling's open PR neither blocked a claim nor
+counted as already merged, because the guards read it as some unrelated human's
+PR. That is how a host claimed an issue three minutes after a sibling opened a
+PR for it and duplicated ten minutes of work.
+
+`loadConfig` closes the gap by resolving the two keys into **one effective
+sibling list**: `config.fleetPrAuthors` is the deduplicated union of
+`fleet_pr_authors` (or `FLEET_PR_AUTHORS`) and `service_accounts`. Configuring
+either key — or both — now reaches every guard, and no consumer can see one key
+without the other:
+
+```mermaid
+flowchart LR
+    F["fleet_pr_authors<br/>(or FLEET_PR_AUTHORS)"] --> U
+    S["service_accounts"] --> U
+    U["loadConfig union<br/>config.fleetPrAuthors"] --> G["Open-PR claim block<br/>merged-PR gate · duplicate guard<br/>PR maintenance"]
+    S --> I["Identity guard<br/>(unchanged)"]
+    style U fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+Listing a sibling in both keys is harmless — the union deduplicates
+case-insensitively — and `service_accounts` keeps its own meaning for the
+identity guard.
 
 That direction is one-way. Listing a fleet login in `allowed_authors` keeps the
 duplicate guard sighted; it does **not** follow that a login in
@@ -1371,7 +1411,7 @@ arguments each scan passes to `gh`.
 
 ```mermaid
 flowchart LR
-    C["github_user + allowed_authors<br/>+ fleet_pr_authors"]
+    C["github_user + allowed_authors<br/>+ fleet_pr_authors ∪ service_accounts"]
     C --> R["resolveFleetPrAuthorSet()<br/>defer-to"]
     C --> P["resolveFleetMaintenanceAuthorSet()<br/>push-capable"]
     R --> D["fetchOpenPRsForFleet<br/>(PR listing, dedup)"]
@@ -2158,6 +2198,10 @@ Behaviour:
   a human action once the guard surfaces it.
 - The list is an **allowlist, not a per-host key** — every fleet host shares the
   same `service_accounts` value.
+- **These logins are fleet accounts, so they also count as fleet PR authors.**
+  `loadConfig` unions `service_accounts` into the effective `fleet_pr_authors`,
+  which is what feeds every PR guard — see
+  [Service accounts are fleet PR authors too](#service-accounts-are-fleet-pr-authors-too).
 - When `service_accounts` is **empty** the guard cannot enforce. Rather than
   fail silently it logs a loud `[SECURITY] … INACTIVE` warning on every run.
   Since that state is only reachable by emptying the key by hand or

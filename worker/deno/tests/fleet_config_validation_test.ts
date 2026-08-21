@@ -78,6 +78,10 @@ Deno.test("formatFleetConfigValidation - ok renders single line", () => {
   assertStringIncludes(lines[0]!, "a,b");
 });
 
+// Issue #209 changed the non-ok output: the effective author set is now
+// named on every run, not only a clean one, so an operator can see which
+// logins the guards actually cover while the warning is on screen. The two
+// tests below assert the message lines around that leading line.
 Deno.test("formatFleetConfigValidation - error lines carry ERROR tag", () => {
   const lines = formatFleetConfigValidation({
     level: "error",
@@ -85,7 +89,10 @@ Deno.test("formatFleetConfigValidation - error lines carry ERROR tag", () => {
     missingFromAllowed: [],
     messages: ["boom"],
   });
-  assertEquals(lines, ["[fleet-config] ERROR boom"]);
+  assertEquals(lines, [
+    "[fleet-config] effective-authors=(none)",
+    "[fleet-config] ERROR boom",
+  ]);
 });
 
 Deno.test("formatFleetConfigValidation - warning lines carry WARNING tag", () => {
@@ -95,6 +102,32 @@ Deno.test("formatFleetConfigValidation - warning lines carry WARNING tag", () =>
     missingFromAllowed: ["stsvcbot"],
     messages: ["m1", "m2"],
   });
-  assertEquals(lines.length, 2);
-  assertStringIncludes(lines[0]!, "[fleet-config] WARNING m1");
+  assertEquals(lines.length, 3);
+  assertEquals(lines[0], "[fleet-config] effective-authors=host");
+  assertStringIncludes(lines[1]!, "[fleet-config] WARNING m1");
+  assertStringIncludes(lines[2]!, "[fleet-config] WARNING m2");
+});
+
+Deno.test("formatFleetConfigValidation - the effective set is named on every run (Issue #209)", () => {
+  for (
+    const result of [
+      {
+        level: "ok" as const,
+        effectiveAuthors: ["host", "stsvcbot"],
+        missingFromAllowed: [],
+        messages: [],
+      },
+      {
+        level: "warning" as const,
+        effectiveAuthors: ["host", "stsvcbot"],
+        missingFromAllowed: ["stsvcbot"],
+        messages: ["m1"],
+      },
+    ]
+  ) {
+    assertStringIncludes(
+      formatFleetConfigValidation(result)[0]!,
+      "effective-authors=host,stsvcbot",
+    );
+  }
 });
