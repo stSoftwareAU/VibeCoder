@@ -112,16 +112,21 @@ const MARKER_RE = new RegExp(
   "i",
 );
 
-/** Build an attribute matcher for `name="…"` / `name='…'`. */
-function attributePattern(name: string): RegExp {
-  return new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i");
-}
+/**
+ * Matches every `name="…"` / `name='…'` attribute in the marker's inner text.
+ * Hardcoded rather than built per attribute name: the name is data, matched
+ * against the captured group, so no pattern is ever compiled from a variable.
+ */
+const ATTRIBUTE_RE = /([A-Za-z][A-Za-z0-9_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 
 /** Extract one attribute from the marker's inner text. */
 function attribute(inner: string, name: string): string | undefined {
-  const match = attributePattern(name).exec(inner);
-  if (!match) return undefined;
-  return match[1] ?? match[2];
+  const wanted = name.toLowerCase();
+  for (const match of inner.matchAll(ATTRIBUTE_RE)) {
+    if (match[1]?.toLowerCase() !== wanted) continue;
+    return match[2] ?? match[3];
+  }
+  return undefined;
 }
 
 /**

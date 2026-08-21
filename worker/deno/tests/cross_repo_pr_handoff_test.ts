@@ -152,6 +152,19 @@ Deno.test("detectCrossRepoPrDeclaration - single-quoted attributes are accepted"
   assertEquals(detection.status, "declared");
 });
 
+Deno.test("detectCrossRepoPrDeclaration - an attribute whose name merely ends with a field name is not that field", () => {
+  const detection = detectCrossRepoPrDeclaration(
+    marker(
+      `repo="${DEP_REPO}" branch="${BRANCH}" title="Fix the signal" ` +
+        `not-base="evil-base" x_summary="injected"`,
+    ),
+  );
+  assertEquals(detection.status, "declared");
+  if (detection.status !== "declared") return;
+  assertEquals(detection.declaration.base, undefined);
+  assertEquals(detection.declaration.summary, undefined);
+});
+
 Deno.test("detectCrossRepoPrDeclaration - a missing required field is malformed, not ignored", () => {
   const detection = detectCrossRepoPrDeclaration(
     marker(`repo="${DEP_REPO}" title="Fix the signal"`),
