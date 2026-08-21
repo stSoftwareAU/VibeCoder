@@ -68,6 +68,7 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { pushRecoveryDetail } from "./push_recovery_detail.ts";
 import {
   formatPrFailureActionsExcerpt,
   type PrFailureActionResult,
@@ -876,8 +877,12 @@ async function _processCiWithHeartbeat(
   let hasChanges = postQualityResult.committedChanges;
   let finalUnpushedAfterPush = 0;
   if (finaliseResult.ok) {
-    const { committedNewChanges, commitsPushed, finalUnpushedCount } =
-      finaliseResult.value;
+    const {
+      committedNewChanges,
+      commitsPushed,
+      finalUnpushedCount,
+      unpushedMeasuredAgainst,
+    } = finaliseResult.value;
     hasChanges = hasChanges || committedNewChanges || commitsPushed > 0;
     finalUnpushedAfterPush = finalUnpushedCount;
     pushSucceeded = finalUnpushedCount === 0 && hasChanges;
@@ -885,6 +890,7 @@ async function _processCiWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
+      unpushedMeasuredAgainst,
     });
 
     // If push left commits unpushed, attempt rejection recovery and retry.
@@ -896,8 +902,11 @@ async function _processCiWithHeartbeat(
         input.branchName,
         { cwd: processorDeps.workDir },
       );
+      let retryFinalise:
+        | Awaited<ReturnType<typeof deps.git.commitAndPushPending>>
+        | undefined;
       if (recoveryResult.ok) {
-        const retryFinalise = await deps.git.commitAndPushPending(
+        retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
           `Fix CI failure: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
           { cwd: processorDeps.workDir },
@@ -911,7 +920,17 @@ async function _processCiWithHeartbeat(
         }
       }
       if (!pushSucceeded) {
-        logger.error("Push failed after recovery attempt", { repo, prNumber });
+        // Issue #211: name the step that failed and carry git's own stderr —
+        // a bare "push failed" told the operator nothing.
+        logger.error("Push failed after recovery attempt", {
+          repo,
+          prNumber,
+          detail: pushRecoveryDetail({
+            recovery: recoveryResult,
+            retry: retryFinalise,
+            unpushed: finalUnpushedAfterPush,
+          }),
+        });
       }
     }
   } else {

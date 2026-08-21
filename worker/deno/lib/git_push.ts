@@ -13,7 +13,9 @@ import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
-import { buildPushArgs } from "./git_ref_args.ts";
+import { countUnpushedCommits } from "./git_unpushed.ts";
+import type { UnpushedMeasure } from "./git_unpushed.ts";
+import { assertSafeGitRef, buildPushArgs } from "./git_ref_args.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
@@ -296,6 +298,18 @@ export async function pushUnpushedCommits(
   options: GitCommandOptions = {},
   allowDefaultBranch = false,
 ): Promise<Result<number>> {
+  // Refuse an option-injecting ref before any git runs (Issue #148). The
+  // push builder below validates too, but the branch now also reaches a count
+  // and a fetch first, so the fault is thrown at the entry point.
+  try {
+    assertSafeGitRef(branchName, "push branch name");
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+
   // Read-only default-branch guard (Issue #2584) — refuse before doing any
   // work when the target is the repo's default branch.
   const guard = await assertPushTargetAllowed(
@@ -307,37 +321,23 @@ export async function pushUnpushedCommits(
     return { ok: false, error: guard.error };
   }
 
-  // Check how many commits are ahead of origin. This probe only succeeds
-  // when origin/<branchName> already exists. On a freshly created feature
-  // branch it fails with exit 128 — that is *not* "nothing to push".
-  const countResult = await runGitCommand(
-    ["rev-list", "--count", `origin/${branchName}..HEAD`],
-    options,
-  );
-  const probeOk = countResult.ok && countResult.value.code === 0;
-  let unpushedCount = probeOk
-    ? parseInt(countResult.value.stdout.trim(), 10) || 0
-    : 0;
-
-  // Only short-circuit when the probe truly succeeded and reported zero.
-  // A failed probe means the upstream ref is missing — fall through and
-  // create it via `git push -u`.
-  if (probeOk && unpushedCount === 0) {
-    return { ok: true, value: 0 };
+  // Count what the remote branch is actually missing (Issue #211). The count
+  // resolves the branch's real remote head — fetching the tracking ref when
+  // the clone's refspec does not cover it — so it never degrades into
+  // "commits ahead of the default branch" on a single-branch clone.
+  const unpushed = await countUnpushedCommits(branchName, options);
+  if (!unpushed.ok) {
+    return { ok: false, error: unpushed.error };
   }
+  const unpushedCount = unpushed.value.count;
 
-  // When the standard probe failed (origin/<branchName> does not exist),
-  // fall back to counting commits reachable from HEAD that are not on any
-  // other origin ref. This gives callers a correct count for the
-  // first-time push of a feature branch instead of reporting 0.
-  if (!probeOk) {
-    const fallbackCount = await runGitCommand(
-      ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"],
-      options,
-    );
-    if (fallbackCount.ok && fallbackCount.value.code === 0) {
-      unpushedCount = parseInt(fallbackCount.value.stdout.trim(), 10) || 0;
-    }
+  // Short-circuit only when the remote branch exists and already has
+  // everything. When it does not exist yet, fall through and create it via
+  // `git push -u` even at a count of zero.
+  if (unpushed.value.measuredAgainst !== "no-remote-branch" &&
+    unpushedCount === 0
+  ) {
+    return { ok: true, value: 0 };
   }
 
   // Use -u so the first push sets the upstream tracking ref. This is a
@@ -396,6 +396,12 @@ export interface CommitAndPushPendingResult {
   commitsPushed: number;
   /** Number of commits still unpushed after the push attempt (0 = clean). */
   finalUnpushedCount: number;
+  /**
+   * Which remote reference `finalUnpushedCount` was measured against
+   * (Issue #211) — logged so a caller can see a 0 came from the branch's real
+   * remote head rather than a locally tracked ref that may not exist.
+   */
+  unpushedMeasuredAgainst: UnpushedMeasure;
 }
 
 /**
@@ -554,14 +560,14 @@ export async function commitAndPushPending(
 
   // Step 3 — verify the branch is in sync with origin. This is the honest
   // post-condition the caller needs: 0 means we did our job; >0 means we
-  // still have local work that the user is being lied to about.
-  const remainingResult = await runGitCommand(
-    ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"],
-    options,
-  );
-  let finalUnpushedCount = 0;
-  if (remainingResult.ok && remainingResult.value.code === 0) {
-    finalUnpushedCount = parseInt(remainingResult.value.stdout.trim(), 10) || 0;
+  // still have local work that the user is being lied to about. Measured
+  // against the branch's remote head (Issue #211) — the old
+  // `HEAD --not --remotes=origin` measure reported a good push as failed on
+  // every single-branch clone. A measurement that cannot be taken is an
+  // error, never a reassuring 0.
+  const remaining = await countUnpushedCommits(branchName, options);
+  if (!remaining.ok) {
+    return { ok: false, error: remaining.error };
   }
 
   return {
@@ -569,7 +575,8 @@ export async function commitAndPushPending(
     value: {
       committedNewChanges,
       commitsPushed: pushResult.value,
-      finalUnpushedCount,
+      finalUnpushedCount: remaining.value.count,
+      unpushedMeasuredAgainst: remaining.value.measuredAgainst,
     },
   };
 }

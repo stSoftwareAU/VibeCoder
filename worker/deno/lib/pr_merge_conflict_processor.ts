@@ -523,7 +523,10 @@ async function resolveConflict(
       input,
       processorDeps,
       conflictedFiles,
-      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed`,
+      // Issue #211: name the yardstick — an unpushed count is only meaningful
+      // alongside the remote reference it was measured against.
+      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed ` +
+        `(measured against ${finalise.value.unpushedMeasuredAgainst})`,
       attemptNumber,
     );
   }

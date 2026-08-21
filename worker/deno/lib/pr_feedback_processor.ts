@@ -15,6 +15,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { pushRecoveryDetail } from "./push_recovery_detail.ts";
 import type { CommentType } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import {
@@ -517,6 +518,7 @@ async function _processFeedbackWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
+      unpushedMeasuredAgainst: finaliseResult.value.unpushedMeasuredAgainst,
     });
 
     if (finalUnpushedCount > 0) {
@@ -527,8 +529,11 @@ async function _processFeedbackWithHeartbeat(
         input.branchName,
         { cwd: processorDeps.workDir },
       );
+      let retryFinalise:
+        | Awaited<ReturnType<typeof deps.git.commitAndPushPending>>
+        | undefined;
       if (recoveryResult.ok) {
-        const retryFinalise = await deps.git.commitAndPushPending(
+        retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
           `Address PR #${prNumber} feedback\n\nRetry after rebase recovery (Issue #1643).`,
           { cwd: processorDeps.workDir },
@@ -543,7 +548,16 @@ async function _processFeedbackWithHeartbeat(
         }
       }
       if (finalUnpushedCount > 0) {
-        logger.error("Push failed after recovery attempt", { repo, prNumber });
+        // Issue #211: the reason the push did not land, not just that it did not.
+        logger.error("Push failed after recovery attempt", {
+          repo,
+          prNumber,
+          detail: pushRecoveryDetail({
+            recovery: recoveryResult,
+            retry: retryFinalise,
+            unpushed: finalUnpushedCount,
+          }),
+        });
       }
     }
   } else {

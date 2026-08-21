@@ -1299,20 +1299,6 @@ export async function createProductionRunCoreDeps(
           }) => {
             const gitOptions = { cwd: params.repoPath };
 
-            // Fetch branches from remote
-            const fetchHead = await runGitCommand(
-              buildFetchArgs("origin", params.branchName),
-              gitOptions,
-            );
-            if (!fetchHead.ok || fetchHead.value.code !== 0) {
-              return {
-                ok: false as const,
-                error: new Error(
-                  `Failed to fetch branch '${params.branchName}'`,
-                ),
-              };
-            }
-
             const fetchBase = await runGitCommand(
               buildFetchArgs("origin", params.baseBranch),
               gitOptions,
@@ -1326,27 +1312,15 @@ export async function createProductionRunCoreDeps(
               };
             }
 
-            // Ensure local branch exists (checkout or create tracking branch)
-            const checkoutResult = await runGitCommand(
-              buildCheckoutArgs(params.branchName),
+            // Judge the PR by its remote head, not by whatever this shared
+            // clone's local branch holds (Issue #211) — a stale local branch
+            // invents conflicts the remote PR does not have.
+            const aligned = await checkoutPrBranchAtRemoteHead(
+              params.branchName,
               gitOptions,
             );
-            if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
-              const createResult = await runGitCommand(
-                buildCheckoutNewBranchArgs(
-                  params.branchName,
-                  `origin/${params.branchName}`,
-                ),
-                gitOptions,
-              );
-              if (!createResult.ok || createResult.value.code !== 0) {
-                return {
-                  ok: false as const,
-                  error: new Error(
-                    `Failed to checkout branch '${params.branchName}'`,
-                  ),
-                };
-              }
+            if (!aligned.ok) {
+              return { ok: false as const, error: aligned.error };
             }
 
             // Update the PR branch (rebase + force-push)
