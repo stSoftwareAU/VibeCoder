@@ -519,14 +519,28 @@ async function resolveConflict(
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
+    // Issue #211: name what git actually holds. "5 commit(s) could not be
+    // pushed" with no heads and no stderr told an operator nothing about
+    // whether the branch had diverged, been rejected, or never left the box.
+    const localHead = await git(run, ["rev-parse", "HEAD"], workDir);
+    const remoteHead = await git(
+      run,
+      ["ls-remote", "origin", `refs/heads/${branchName}`],
+      workDir,
+    );
+    const remoteSha = remoteHead.stdout.trim().split(/\s+/)[0] || "unknown";
     return await failAttempt(
       input,
       processorDeps,
       conflictedFiles,
-      // Issue #211: name the yardstick — an unpushed count is only meaningful
-      // alongside the remote reference it was measured against.
-      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed ` +
-        `(measured against ${finalise.value.unpushedMeasuredAgainst})`,
+      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed to ` +
+        `origin/${branchName} (local HEAD ${
+          localHead.stdout.trim().slice(0, 7) || "unknown"
+        }, origin head ${remoteSha.slice(0, 7)})${
+          remoteHead.code !== 0 && remoteHead.stderr.trim()
+            ? `: ${remoteHead.stderr.trim()}`
+            : ""
+        }`,
       attemptNumber,
     );
   }

@@ -68,7 +68,7 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import { pushRecoveryDetail } from "./push_recovery_detail.ts";
+import { recoverAndRetryPush } from "./push_recovery_retry.ts";
 import {
   formatPrFailureActionsExcerpt,
   type PrFailureActionResult,
@@ -877,12 +877,8 @@ async function _processCiWithHeartbeat(
   let hasChanges = postQualityResult.committedChanges;
   let finalUnpushedAfterPush = 0;
   if (finaliseResult.ok) {
-    const {
-      committedNewChanges,
-      commitsPushed,
-      finalUnpushedCount,
-      unpushedMeasuredAgainst,
-    } = finaliseResult.value;
+    const { committedNewChanges, commitsPushed, finalUnpushedCount } =
+      finaliseResult.value;
     hasChanges = hasChanges || committedNewChanges || commitsPushed > 0;
     finalUnpushedAfterPush = finalUnpushedCount;
     pushSucceeded = finalUnpushedCount === 0 && hasChanges;
@@ -890,7 +886,6 @@ async function _processCiWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
-      unpushedMeasuredAgainst,
     });
 
     // If push left commits unpushed, attempt rejection recovery and retry.
@@ -898,38 +893,31 @@ async function _processCiWithHeartbeat(
       logger.warn("Local commits remain after push, attempting recovery", {
         unpushed: finalUnpushedCount,
       });
-      const recoveryResult = await deps.git.recoverFromPushRejection(
-        input.branchName,
-        { cwd: processorDeps.workDir },
-      );
-      let retryFinalise:
-        | Awaited<ReturnType<typeof deps.git.commitAndPushPending>>
-        | undefined;
-      if (recoveryResult.ok) {
-        retryFinalise = await deps.git.commitAndPushPending(
-          input.branchName,
+      const recovery = await recoverAndRetryPush({
+        branchName: input.branchName,
+        cwd: processorDeps.workDir,
+        commitMessage:
           `Fix CI failure: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
-          { cwd: processorDeps.workDir },
-          false,
-          preFlight,
-        );
-        if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
-          hasChanges = true;
-          pushSucceeded = true;
-          finalUnpushedAfterPush = 0;
-        }
+        unpushedBefore: finalUnpushedCount,
+        preFlight,
+        git: deps.git,
+      });
+      if (recovery.unpushed === 0) {
+        hasChanges = true;
+        pushSucceeded = true;
+        finalUnpushedAfterPush = 0;
+      } else {
+        finalUnpushedAfterPush = recovery.unpushed;
       }
       if (!pushSucceeded) {
-        // Issue #211: name the step that failed and carry git's own stderr —
-        // a bare "push failed" told the operator nothing.
+        // Issue #211: name the step that failed and git's own reason — a bare
+        // "Push failed" left operators with nothing to act on.
         logger.error("Push failed after recovery attempt", {
           repo,
           prNumber,
-          detail: pushRecoveryDetail({
-            recovery: recoveryResult,
-            retry: retryFinalise,
-            unpushed: finalUnpushedAfterPush,
-          }),
+          failedStep: recovery.failedStep,
+          detail: recovery.detail,
+          unpushed: recovery.unpushed,
         });
       }
     }

@@ -15,7 +15,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import { pushRecoveryDetail } from "./push_recovery_detail.ts";
+import { recoverAndRetryPush } from "./push_recovery_retry.ts";
 import type { CommentType } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import {
@@ -518,45 +518,33 @@ async function _processFeedbackWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
-      unpushedMeasuredAgainst: finaliseResult.value.unpushedMeasuredAgainst,
     });
 
     if (finalUnpushedCount > 0) {
       logger.warn("Local commits remain after push, attempting recovery", {
         unpushed: finalUnpushedCount,
       });
-      const recoveryResult = await deps.git.recoverFromPushRejection(
-        input.branchName,
-        { cwd: processorDeps.workDir },
-      );
-      let retryFinalise:
-        | Awaited<ReturnType<typeof deps.git.commitAndPushPending>>
-        | undefined;
-      if (recoveryResult.ok) {
-        retryFinalise = await deps.git.commitAndPushPending(
-          input.branchName,
+      const recovery = await recoverAndRetryPush({
+        branchName: input.branchName,
+        cwd: processorDeps.workDir,
+        commitMessage:
           `Address PR #${prNumber} feedback\n\nRetry after rebase recovery (Issue #1643).`,
-          { cwd: processorDeps.workDir },
-          false,
-          preFlight,
-        );
-        if (retryFinalise.ok) {
-          finalUnpushedCount = retryFinalise.value.finalUnpushedCount;
-          if (retryFinalise.value.finalUnpushedCount === 0) {
-            hasChanges = true;
-          }
-        }
-      }
-      if (finalUnpushedCount > 0) {
-        // Issue #211: the reason the push did not land, not just that it did not.
+        unpushedBefore: finalUnpushedCount,
+        preFlight,
+        git: deps.git,
+      });
+      finalUnpushedCount = recovery.unpushed;
+      if (recovery.unpushed === 0) {
+        hasChanges = true;
+      } else {
+        // Issue #211: name the step that failed and git's own reason — a bare
+        // "Push failed" left operators with nothing to act on.
         logger.error("Push failed after recovery attempt", {
           repo,
           prNumber,
-          detail: pushRecoveryDetail({
-            recovery: recoveryResult,
-            retry: retryFinalise,
-            unpushed: finalUnpushedCount,
-          }),
+          failedStep: recovery.failedStep,
+          detail: recovery.detail,
+          unpushed: recovery.unpushed,
         });
       }
     }
