@@ -33,6 +33,12 @@ import type {
   IdleTaskTemplate,
 } from "../lib/idle_task_template.ts";
 import { buildAttributionFooter } from "../lib/idle_task_attribution.ts";
+import {
+  getIdleTaskRunContext,
+  IDLE_TASK_TIMEOUT_SECONDS,
+  withIdleTaskBudget,
+} from "../lib/idle_task_claude_budget.ts";
+import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -579,5 +585,135 @@ Deno.test(
       () => [template],
     );
     assertEquals(found, undefined);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Cycle-deadline run context (Issue #186)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "handleIdleTaskIssue - the cycle deadline bounds the scan's Claude budget",
+  async () => {
+    // A wrapper claimed five minutes before the deadline used to receive the
+    // flat hour and ran ~55 min past the cycle. The deadline now reaches the
+    // template's Claude invocation as a run context.
+    const now = 1_700_000_000_000;
+    const deadline = now + 300_000;
+    let seenTimeout: number | undefined;
+    const template = makeTemplate(
+      "security-scan",
+      "Run a security scan",
+      () => {
+        seenTimeout =
+          withIdleTaskBudget({ prompt: "scan", phase: "security_scan" }, now)
+            .timeoutSeconds;
+        return Promise.resolve({ ok: true, summary: "ran" });
+      },
+    );
+    const { deps } = makeDeps([template]);
+    const result = await handleIdleTaskIssue(
+      {
+        repo: "acme/widget",
+        issueNumber: 42,
+        issueTitle: "Run a security scan",
+        issueLabels: [IDLE_TASK_LABEL],
+        issueBody: "body",
+        workDir: "/tmp/widget",
+        cycleDeadlineEpochMs: deadline,
+      },
+      deps,
+    );
+
+    assertEquals(result.ok, true);
+    assertEquals(seenTimeout, 300 + OPERATIONAL_DEFAULTS.claudeKillAfter);
+    // The context does not outlive the run.
+    assertEquals(getIdleTaskRunContext(), {});
+  },
+);
+
+Deno.test(
+  "handleIdleTaskIssue - no cycle deadline leaves the full idle-task budget",
+  async () => {
+    const now = 1_700_000_000_000;
+    let seenTimeout: number | undefined;
+    const template = makeTemplate(
+      "security-scan",
+      "Run a security scan",
+      () => {
+        seenTimeout =
+          withIdleTaskBudget({ prompt: "scan" }, now).timeoutSeconds;
+        return Promise.resolve({ ok: true, summary: "ran" });
+      },
+    );
+    const { deps } = makeDeps([template]);
+    await handleIdleTaskIssue(
+      {
+        repo: "acme/widget",
+        issueNumber: 42,
+        issueTitle: "Run a security scan",
+        issueLabels: [IDLE_TASK_LABEL],
+        issueBody: "body",
+        workDir: "/tmp/widget",
+      },
+      deps,
+    );
+    assertEquals(seenTimeout, IDLE_TASK_TIMEOUT_SECONDS);
+  },
+);
+
+Deno.test(
+  "handleIdleTaskIssue - the worker logger reaches the scan so progress is logged",
+  async () => {
+    // Issue #186 defect 3: idle-task scans passed no logger, so the runner's
+    // per-minute `[agent-progress]` lines had nowhere to go.
+    let seenLogger: unknown;
+    const template = makeTemplate(
+      "security-scan",
+      "Run a security scan",
+      () => {
+        seenLogger = withIdleTaskBudget({ prompt: "scan" }).logger;
+        return Promise.resolve({ ok: true, summary: "ran" });
+      },
+    );
+    const { deps } = makeDeps([template]);
+    await handleIdleTaskIssue(
+      {
+        repo: "acme/widget",
+        issueNumber: 42,
+        issueTitle: "Run a security scan",
+        issueLabels: [IDLE_TASK_LABEL],
+        issueBody: "body",
+        workDir: "/tmp/widget",
+      },
+      deps,
+    );
+    assertEquals(seenLogger, deps.logger);
+  },
+);
+
+Deno.test(
+  "handleIdleTaskIssue - a throwing runTask still clears the run context",
+  async () => {
+    const template = makeTemplate(
+      "security-scan",
+      "Run a security scan",
+      () => Promise.reject(new Error("scan blew up")),
+    );
+    const { deps } = makeDeps([template]);
+    const result = await handleIdleTaskIssue(
+      {
+        repo: "acme/widget",
+        issueNumber: 42,
+        issueTitle: "Run a security scan",
+        issueLabels: [IDLE_TASK_LABEL],
+        issueBody: "body",
+        workDir: "/tmp/widget",
+        cycleDeadlineEpochMs: 1_700_000_000_000,
+      },
+      deps,
+    );
+    assertEquals(result.ok, false);
+    assertEquals(getIdleTaskRunContext(), {});
   },
 );

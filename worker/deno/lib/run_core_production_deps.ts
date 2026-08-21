@@ -2074,6 +2074,12 @@ export async function createProductionRunCoreDeps(
           issueLabels: issueData.labels ?? [],
           issueBody: issueData.body ?? "",
           workDir: config.workDir,
+          // Issue #186: the scan is bounded by the cycle deadline, exactly as
+          // the execute phase is (Issue #4254) — a wrapper claimed minutes
+          // before the deadline must not hold its slot past it.
+          ...(cycleDeadlineEpochMs !== undefined
+            ? { cycleDeadlineEpochMs }
+            : {}),
         },
         { logger },
       );

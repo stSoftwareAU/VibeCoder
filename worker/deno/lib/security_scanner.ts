@@ -41,7 +41,7 @@ import {
   type RunClaudeOptions,
   runClaudeWithRetry,
 } from "./claude_runner.ts";
-import { withIdleTaskBudget } from "./idle_task_claude_budget.ts";
+import { runIdleTaskClaude } from "./idle_task_claude_budget.ts";
 import { loadPrompt } from "./prompt_manager.ts";
 import { buildAttributionFooter } from "./idle_task_attribution.ts";
 import { getRunId } from "./run_id.ts";
@@ -314,7 +314,7 @@ export async function runSecurityScan(
   //    are always set (Issue #3657): an omitted timeout takes the shared
   //    idle-task budget rather than the 4h library default, and the silence
   //    watchdog is never left disabled.
-  const runOpts: RunClaudeOptions = withIdleTaskBudget({
+  const runOpts: RunClaudeOptions = {
     prompt,
     cwd: opts.workDir,
     phase: "security_scan",
@@ -326,8 +326,16 @@ export async function runSecurityScan(
     ...(opts.noOutputTimeout !== undefined
       ? { noOutputTimeout: opts.noOutputTimeout }
       : {}),
-  });
-  const runResult = await deps.runClaudeFn(runOpts);
+  };
+  // Issue #186: through the shared entry point rather than
+  // `withIdleTaskBudget` + a bare call, so the scan also picks up the cycle
+  // deadline bound, the worker logger (hence `[agent-progress]` lines), and
+  // the no-retry rule a deadline-bound run needs.
+  const runResult = await runIdleTaskClaude(
+    runOpts,
+    undefined,
+    deps.runClaudeFn,
+  );
   if (!runResult.ok) {
     return {
       ok: false,

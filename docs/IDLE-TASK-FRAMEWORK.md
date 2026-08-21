@@ -1426,6 +1426,50 @@ flowchart LR
 `worker/deno/tests/idle_task_template_budget_3657_test.ts` fails closed if a
 template bypasses the wrapper.
 
+### The cycle deadline bounds a scan too (Issue #186)
+
+The hour-long budget above is a **ceiling**, not an entitlement. A wrapper
+claimed five minutes before the cycle deadline used to receive the full hour
+and ran ~15 minutes past the planned shutdown with the worker log silent — the
+slot could not drain, so the hourly refresh (and the pick-up of new worker
+code) waited on it.
+
+The claim handler now publishes an **idle-task run context** —
+`withIdleTaskRunContext({ cycleDeadlineEpochMs, logger }, …)` — around
+`template.runTask()`, and `runIdleTaskClaude` applies it:
+
+| Fact                  | Effect on the scan                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cycleDeadlineEpochMs` | Timeout becomes `min(requested, runway + claude_kill_after)`, floored at 60 s — the same `resolveExecuteTimeoutSeconds` rule the execute phase uses (Issue #4254). |
+| `cycleDeadlineEpochMs` | Retries are suppressed for that run: the timeout is resolved once, so a retry after a back-off would start from past the deadline. A scan has no WIP to protect. |
+| `logger`              | The worker logger reaches the runner, so its per-minute `[agent-progress] <phase>: …` lines land in `worker-*.log` instead of nowhere.                          |
+
+The context is ambient rather than an argument threaded through all seventeen
+templates — the same choke-point reasoning as the budget itself: a template
+cannot forget to pass what it never sees. It is removed in `finally`, by
+identity, so two concurrent slots each drop only their own entry.
+
+```mermaid
+sequenceDiagram
+    participant L as Slot loop
+    participant R as idle-task route
+    participant H as claim handler
+    participant T as template.runTask
+    participant C as runIdleTaskClaude
+    L->>R: processIssue(issue, cycleDeadlineEpochMs)
+    R->>H: handleIdleTaskIssue({…, cycleDeadlineEpochMs})
+    H->>H: withIdleTaskRunContext({deadline, logger})
+    H->>T: runTask()
+    T->>C: scan options
+    C->>C: min(budget, runway + kill grace), no retries
+    C-->>L: killed at deadline + claude_kill_after at the latest
+```
+
+With the scan bounded, the deadline drain in `run_core.drainSlots` finishes on
+its own: the slot's last Claude run cannot outlive the cycle deadline by more
+than `claude_kill_after`, so a run whose last claim is an idle task still exits
+within `run_duration` plus grace.
+
 ## Regression coverage
 
 The idle-task pipeline is guarded by a dedicated end-to-end test that exercises
