@@ -51,6 +51,7 @@ sequenceDiagram
     participant Trigger as Idle trigger / Comment dispatcher
     participant Registry as Idle-task registry
     participant GH as GitHub
+    participant Route as Idle-task route
     participant Claim as Claim handler
     participant Runner as Template runTask()
 
@@ -65,14 +66,20 @@ sequenceDiagram
     GH-->>Trigger: idle-task issue #N
     Note over Main,GH: next worker iteration
     Main->>GH: priority scan picks up issue #N
-    Main->>Claim: handleIdleTaskIssue(issue #N)
-    Claim->>Registry: getTemplate(name from marker)
-    Registry-->>Claim: IdleTaskTemplate
+    Main->>Route: routeIdleTaskInProcessIssue(issue #N)
+    Route->>Registry: findIdleTaskTemplate(title/body)
+    Registry-->>Route: IdleTaskTemplate
+    Route->>Route: ensureRepoClone(repo, workDir)
+    Route->>Claim: handleIdleTaskIssue(issue #N)
     Claim->>Runner: runTask({ repo, workDir, idleTaskIssueNumber })
     Runner->>Runner: run scan / file findings
     Runner-->>Claim: IdleTaskRunResult { ok, summary }
-    Claim->>GH: comment summary on issue #N
-    Claim->>GH: close issue #N
+    Claim-->>Route: { handled: true, ok, summary }
+    alt ok — the scan ran
+        Route->>GH: close issue #N with the summary
+    else failed — the scan never produced a result
+        Route->>GH: comment the failure, leave issue #N OPEN
+    end
 ```
 
 Key points:
@@ -94,8 +101,24 @@ Key points:
   self-apply it (the other three are reserved for trusted humans). See
   [Issue selection priority](workflows/issue-processing.md#-issue-selection-priority).
 - The claim handler **never throws** — every failure mode (malformed body,
-  unknown template, runner error) logs a structured warning and still closes the
-  issue so the queue does not stall.
+  unknown template, runner error) logs a structured warning and returns a
+  `{ handled: true, ok: false }` result so the queue does not stall.
+- **Only a scan that actually ran closes its wrapper** (Issue #179). A run that
+  returns `ok: false` — a missing clone, a detector crash, an `ENOENT` — gets a
+  failure **comment** and the wrapper stays **open**. The ordinary failure
+  cooldown (`issue_retry_cooldown`) then gates the retry, and a later claim runs
+  the scan again. The route used to close every handled wrapper regardless of
+  `ok`, so an infrastructure failure was recorded as the scan's result and
+  nothing re-raised it until the next cadence tick.
+- **The repo is cloned on demand before a template runs** (Issue #179). A
+  template walks `${workDir}/<repo>`, and nothing on the idle-task path had ever
+  cloned it — a repo freshly added to `.config.json` failed every scan with
+  `ENOENT`. The route now calls
+  [`ensureRepoClone`](../worker/deno/lib/ensure_repo_clone.ts) for a recognised
+  wrapper, which reuses the setup phase's `setupRepo()` **only when the clone is
+  missing**; an existing clone is left untouched (no fetch, no `reset --hard`).
+  Adding a repo to `.config.json` and raising its wrappers is therefore enough
+  to bring it up — no manual clone.
 - **A claimed idle task always runs to completion.** The throttle
   is **file-time only**: `isRepoBusyForIdleTask` refuses to _file_
   a wrapper into a repo with approved work in flight. There is no runTask-level

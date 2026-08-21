@@ -141,6 +141,37 @@ export interface HandleIdleTaskIssueDeps {
 }
 
 // ---------------------------------------------------------------------------
+// Wrapper identification
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the registered template a claimed issue belongs to, or `undefined`
+ * when the issue is not a recognised scan wrapper.
+ *
+ * Dispatch is by title first (Issue #2077 — the first template whose
+ * `buildIssueTitle(repo)` matches), then by body fingerprint (Issue #2087 —
+ * `matchesIdleTaskBody`) for wrappers that have lost both label and title.
+ *
+ * Exported (Issue #179) so a caller can tell a wrapper from ordinary work
+ * *before* running it — the production route needs that to ensure the repo's
+ * local clone exists before the template walks its tree. Pure: no side
+ * effects, safe to call twice.
+ */
+export function findIdleTaskTemplate(
+  opts: { repo: string; issueTitle: string; issueBody: string },
+  listTemplatesFn: () => IdleTaskTemplate[] = defaultListTemplates,
+): IdleTaskTemplate | undefined {
+  const wantedTitle = opts.issueTitle.trim();
+  for (const t of listTemplatesFn()) {
+    if (t.buildIssueTitle(opts.repo).trim() === wantedTitle) return t;
+  }
+  for (const t of listTemplatesFn()) {
+    if (t.matchesIdleTaskBody?.(opts.issueBody) === true) return t;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -170,22 +201,10 @@ export async function handleIdleTaskIssue(
   // Issue #2087: when no title match, fall back to body fingerprint —
   // a template may declare `matchesIdleTaskBody(body)` to claim
   // wrappers that have lost both their label and their title.
-  const wantedTitle = issueTitle.trim();
-  let template: IdleTaskTemplate | undefined;
-  for (const t of listTemplates()) {
-    if (t.buildIssueTitle(repo).trim() === wantedTitle) {
-      template = t;
-      break;
-    }
-  }
-  if (template === undefined) {
-    for (const t of listTemplates()) {
-      if (t.matchesIdleTaskBody?.(issueBody) === true) {
-        template = t;
-        break;
-      }
-    }
-  }
+  const template = findIdleTaskTemplate(
+    { repo, issueTitle, issueBody },
+    listTemplates,
+  );
 
   // Route to a scan template only when the issue is identifiable as a
   // registered wrapper — its title matches `buildIssueTitle(repo)` or
