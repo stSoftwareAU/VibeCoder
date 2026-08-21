@@ -875,6 +875,10 @@ async function _processCiWithHeartbeat(
   let pushSucceeded = false;
   let hasChanges = postQualityResult.committedChanges;
   let finalUnpushedAfterPush = 0;
+  // Issue #211: why the branch is still not on origin — the failing recovery
+  // step and git's own words. Reaches both the log and the PR comment, so a
+  // human never gets a bare "please check the branch status" again.
+  let pushFailureDetail = "";
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -921,15 +925,18 @@ async function _processCiWithHeartbeat(
         }
       }
       if (!pushSucceeded) {
+        pushFailureDetail = failureDetail ?? "no detail reported";
         logger.error("Push failed after recovery attempt", {
           repo,
           prNumber,
+          unpushed: finalUnpushedCount,
           recoveryStep: recoveryResult.ok ? "retry-push" : "recovery",
-          detail: failureDetail ?? "no detail reported",
+          recoveryError: pushFailureDetail,
         });
       }
     }
   } else {
+    pushFailureDetail = finaliseResult.error.message;
     logger.error("commitAndPushPending failed", {
       error: finaliseResult.error.message,
     });
@@ -1036,10 +1043,15 @@ async function _processCiWithHeartbeat(
       `I've pushed a fix for the CI failure (**${checkName}**). Please review the changes.`;
     await replyToComment(repo, prNumber, body, deps);
   } else if (hasChanges && !pushSucceeded) {
+    // Issue #211: carry the failing recovery step and git's stderr into the
+    // comment — "check the branch status" alone gives a human nothing to act on.
+    const detail = pushFailureDetail
+      ? `\n\nPush recovery detail: ${pushFailureDetail}`
+      : "";
     await replyToComment(
       repo,
       prNumber,
-      `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.`,
+      `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.${detail}`,
       deps,
     );
   } else {

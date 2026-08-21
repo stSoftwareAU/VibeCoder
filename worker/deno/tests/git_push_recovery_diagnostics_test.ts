@@ -127,8 +127,12 @@ Deno.test("recoverFromPushRejection - a protected branch names the step it refus
     assertEquals(result.ok, false);
     if (!result.ok) {
       assert(
-        result.error.message.includes("Push recovery failed"),
+        result.error.message.includes("Push recovery step"),
         `error must be labelled as a recovery failure, got: ${result.error.message}`,
+      );
+      assert(
+        result.error.message.includes("protected branch 'main'"),
+        `error must name the step it refused at, got: ${result.error.message}`,
       );
     }
   } finally {
