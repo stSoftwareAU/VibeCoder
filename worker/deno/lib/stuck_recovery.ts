@@ -25,6 +25,10 @@ import {
 } from "./heartbeat_storage.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import {
+  isHeldByLiveSlot,
+  skipBecauseLiveSlotHolds,
+} from "./live_slot_holds.ts";
+import {
   fetchAllIssues,
   fetchClosedPRsByUser,
   fetchPRsForIssueByTitle,
@@ -97,6 +101,11 @@ import {
  * `ghCommandFn` is injectable (defaulting to the module-level `runGh`) so the
  * three observable side effects — unassign, recovery comment, heartbeat clear —
  * can be asserted in tests without reaching the live GitHub API (Issue #3039).
+ *
+ * Issue #214: an issue a live slot on this host owns is left completely
+ * alone. Only the owning slot's release may remove an in-flight claim's
+ * assignee; recovering it here would drop the claim lock while the run is
+ * still beating, and any host could then double-claim the issue.
  */
 export async function recoverStuckIssue(
   workDir: string,
@@ -106,6 +115,15 @@ export async function recoverStuckIssue(
   stuckIssueTimeout: number,
   ghCommandFn?: (args: string[]) => Promise<string>,
 ): Promise<Result<void>> {
+  if (skipBecauseLiveSlotHolds("recoverStuckIssue", repo, issueNumber)) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refused to recover ${repo}#${issueNumber}: a live slot on this host ` +
+          `owns this claim (Issue #214)`,
+      ),
+    };
+  }
   const ghFn = ghCommandFn ?? runGh;
 
   // Step 1: Unassign the worker
@@ -312,9 +330,13 @@ async function emitDecision(args: {
   const elapsedSinceUpdate = isNaN(updatedEpoch) ? null : now - updatedEpoch;
 
   // Decide which path applies — order matches the historical control
-  // flow so behaviour is preserved.
+  // flow so behaviour is preserved, with the live-slot hold ahead of
+  // everything (Issue #214): an issue this host is actively working is
+  // never a recovery candidate, whatever GitHub's state looks like.
   let decision: RecoveryDecision;
-  if (localHeartbeatPresent) {
+  if (isHeldByLiveSlot(repo, issue.number)) {
+    decision = "skipped:live_slot";
+  } else if (localHeartbeatPresent) {
     decision = "skipped:has_local_heartbeat";
   } else if (linkedOpenPR !== null) {
     decision = "skipped:open_pr";
@@ -802,6 +824,18 @@ export async function detectAssignedWithClosedPr(
 
     for (const issue of issues) {
       if (issue.labels?.some((l) => l.name === planningLabel)) {
+        continue;
+      }
+      // A live slot on this host owns this claim (Issue #214) — its
+      // assignee is the claim lock of a run still in flight, and this pass
+      // decides from GitHub state alone, so it must not touch it.
+      if (
+        skipBecauseLiveSlotHolds(
+          "detectAssignedWithClosedPr",
+          repo,
+          issue.number,
+        )
+      ) {
         continue;
       }
       // Skip if there is a local heartbeat

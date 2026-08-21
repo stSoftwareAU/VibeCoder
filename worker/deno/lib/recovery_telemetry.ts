@@ -51,6 +51,8 @@ export type RecoveryDecision =
   | "skipped:own_machine"
   | "skipped:within_threshold"
   | "skipped:has_local_heartbeat"
+  /** A live slot on this host owns the claim (Issue #214). */
+  | "skipped:live_slot"
   | "skipped:cleared_marker"
   | "skipped:invalid_updated_at";
 

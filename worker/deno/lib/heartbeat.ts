@@ -12,6 +12,7 @@
 
 import type { RunOutcome } from "./run_outcome.ts";
 import {
+  clearClaimReleaseGuard,
   setPendingReleaseOutcome,
   takePendingReleaseOutcome,
 } from "./heartbeat_storage.ts";
@@ -114,6 +115,10 @@ export async function startHeartbeat(
   }
 
   const intervalMs = options.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+
+  // A new claim on this issue may beat again (Issue #214): lift the
+  // write-after-release guard a previous claim's release armed.
+  clearClaimReleaseGuard(options.workDir, options.repo, options.issueNumber);
 
   const state: ActiveHeartbeat = {
     intervalId: null,
