@@ -13,6 +13,18 @@ This changelog is a human-readable digest grouped by version.
 
 ### Changed
 
+- **Retitling an issue no longer orphans its WIP branch (Issue #220).**
+  Resume-on-reclaim keyed on the title-derived branch name, so when #211 was
+  retitled between two claims the second claim built a different slug, never
+  looked at the 20-file WIP commit on
+  `origin/issue-211-two-hosts-…`, and started from scratch. Prior work is now
+  found by issue *number* — `git ls-remote --heads origin refs/heads/issue-<N>
+  refs/heads/issue-<N>-*` plus the branch the resume file names, whatever it is
+  called — and the lookup no longer sits behind `enable_session_resume`, which
+  gates only the CLI `--resume` conversation replay. Candidates must carry
+  commits beyond base with a tip inside the 24 h resume window; the persisted
+  branch wins, else the most recently pushed, and every claim logs which branch
+  it resumed or that none existed.
 - **An exhausted primary GraphQL quota no longer discards finished work
   (Issue #42).** `gh pr create` is GraphQL-backed, so a run that had committed,
   pushed and quality-gated its work lost the PR entirely when the quota ran

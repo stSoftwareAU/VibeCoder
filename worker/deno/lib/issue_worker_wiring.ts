@@ -32,6 +32,11 @@ import {
   resumeFeatureBranchFromRemote,
 } from "./git_branch.ts";
 import {
+  countCommitsAhead,
+  listRemoteIssueBranches,
+  orderBranchesByRecency,
+} from "./git_issue_branches.ts";
+import {
   commitAndPushPending,
   ensureDefaultBranchCurrent,
   pushUnpushedCommits,
@@ -175,6 +180,10 @@ export interface GitDeps {
   createBranchName: typeof createBranchName;
   createFeatureBranchFromBase: typeof createFeatureBranchFromBase;
   resumeFeatureBranchFromRemote: typeof resumeFeatureBranchFromRemote;
+  /** Find an issue's pushed branches by number rather than title (#220). */
+  listRemoteIssueBranches: typeof listRemoteIssueBranches;
+  orderBranchesByRecency: typeof orderBranchesByRecency;
+  countCommitsAhead: typeof countCommitsAhead;
   reconcileHeadToBranch: typeof reconcileHeadToBranch;
   pushUnpushedCommits: typeof pushUnpushedCommits;
   commitAndPushPending: typeof commitAndPushPending;
@@ -401,6 +410,9 @@ export function createDefaultDeps(
       createBranchName,
       createFeatureBranchFromBase,
       resumeFeatureBranchFromRemote,
+      listRemoteIssueBranches,
+      orderBranchesByRecency,
+      countCommitsAhead,
       reconcileHeadToBranch,
       pushUnpushedCommits,
       commitAndPushPending,
@@ -691,6 +703,17 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     resumeFeatureBranchFromRemote: mockFn<
       GitDeps["resumeFeatureBranchFromRemote"]
     >(() => Promise.resolve({ ok: true, value: false })),
+    // Default: the remote carries no branch for the issue, so a mocked run
+    // starts clean unless the test says otherwise (#220).
+    listRemoteIssueBranches: mockFn<GitDeps["listRemoteIssueBranches"]>(() =>
+      Promise.resolve({ ok: true, value: [] })
+    ),
+    orderBranchesByRecency: mockFn<GitDeps["orderBranchesByRecency"]>((
+      branches: readonly string[],
+    ) => Promise.resolve([...branches])),
+    countCommitsAhead: mockFn<GitDeps["countCommitsAhead"]>(() =>
+      Promise.resolve({ ok: true, value: 1 })
+    ),
     reconcileHeadToBranch: mockFn<GitDeps["reconcileHeadToBranch"]>(() =>
       Promise.resolve({
         ok: true,
