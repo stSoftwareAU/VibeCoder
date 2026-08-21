@@ -395,6 +395,11 @@ async function _processSpellingWithHeartbeat(
         input.branchName,
         { cwd: processorDeps.workDir },
       );
+      // Issue #211: keep the reason the recovery failed — it names the step
+      // that failed and carries git's stderr.
+      let failureDetail = recoveryResult.ok
+        ? undefined
+        : recoveryResult.error.message;
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
@@ -407,12 +412,18 @@ async function _processSpellingWithHeartbeat(
           hasChanges = true;
           pushSucceeded = true;
           finalUnpushedAfterPush = 0;
+        } else {
+          failureDetail = retryFinalise.ok
+            ? `retry after rebase recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
+            : retryFinalise.error.message;
         }
       }
       if (!pushSucceeded) {
         logger.error("Push failed after recovery attempt", {
           repo,
           prNumber,
+          recoveryStep: recoveryResult.ok ? "retry-push" : "recovery",
+          detail: failureDetail ?? "no detail reported",
         });
       }
     }

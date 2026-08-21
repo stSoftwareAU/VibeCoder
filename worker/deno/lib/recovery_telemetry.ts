@@ -54,12 +54,18 @@ export type RecoveryDecision =
   /** A live slot on this host owns the claim (Issue #214). */
   | "skipped:live_slot"
   | "skipped:cleared_marker"
-  | "skipped:invalid_updated_at";
+  | "skipped:invalid_updated_at"
+  /** The issue is already closed — a leftover heartbeat file only (Issue #230). */
+  | "skipped:issue_closed"
+  /** The issue is no longer assigned to this account (Issue #230). */
+  | "skipped:not_assigned";
 
 /** Source recovery scan that produced the decision. */
 export type RecoverySource =
   | "detectAssignedWithoutHeartbeat"
-  | "recoverStaleGithubAssignments";
+  | "recoverStaleGithubAssignments"
+  /** Start-up sweep of leftover local heartbeat files (Issue #230). */
+  | "detectAndRecoverStuckHeartbeats";
 
 /** A single recovery decision event. */
 export interface RecoveryDecisionEvent {

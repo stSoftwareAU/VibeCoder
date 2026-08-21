@@ -27,6 +27,33 @@ import { buildForceWithLeaseArgs } from "./git_push_lease_args.ts";
 const OBJECT_ID_PATTERN = /^[0-9a-f]{7,64}$/;
 
 /**
+ * Name the recovery step that failed and carry git's own words with it
+ * (Issue #211).
+ *
+ * Callers used to log a bare "Push failed after recovery attempt" — which
+ * rebase conflicted, which auto-resolution gave up, whether the lease was
+ * refused, all discarded. Every failure Result from this module is built here
+ * so the step and the git stderr always reach the log.
+ */
+function recoveryError(step: string, detail: string): Error {
+  const trimmed = detail.trim();
+  return new Error(
+    `Push recovery step '${step}' failed: ${
+      trimmed || "git reported no output"
+    }`,
+  );
+}
+
+/** The last few stderr lines of a git result, whichever way it failed. */
+function gitFailureDetail(
+  result: Result<{ code: number; stdout: string; stderr: string }>,
+): string {
+  if (!result.ok) return result.error.message;
+  const text = result.value.stderr.trim() || result.value.stdout.trim();
+  return text.split("\n").slice(-5).join(" | ");
+}
+
+/**
  * Capture `refs/remotes/origin/<branch>` before anything refreshes it (Issue #3723).
  *
  * @param branchName - The branch whose remote-tracking ref to read
@@ -81,11 +108,15 @@ export async function recoverFromPushRejection(
   );
 
   if (!pullResult.ok) {
-    return { ok: false, error: pullResult.error };
+    return {
+      ok: false,
+      error: recoveryError("pull --rebase", pullResult.error.message),
+    };
   }
 
   if (pullResult.value.code !== 0) {
     // Rebase failed — attempt automatic conflict resolution (Issue #321)
+    const rebaseDetail = gitFailureDetail(pullResult);
     const conflictResult = await resolveRebaseConflicts(options);
 
     if (!conflictResult.ok) {
@@ -96,8 +127,10 @@ export async function recoverFromPushRejection(
       if (isProtectedBranch(branchName)) {
         return {
           ok: false,
-          error: new Error(
-            `Cannot force-push to protected branch '${branchName}'`,
+          error: recoveryError(
+            "conflict-resolution",
+            `cannot force-push to protected branch '${branchName}' after ` +
+              `rebase conflicted: ${rebaseDetail}`,
           ),
         };
       }
@@ -114,12 +147,14 @@ export async function recoverFromPushRejection(
         return { ok: true, value: "Push succeeded via --force-with-lease" };
       }
 
-      const forceError = forceResult.ok
-        ? forceResult.value.stderr
-        : forceResult.error.message;
       return {
         ok: false,
-        error: new Error(`--force-with-lease push also failed: ${forceError}`),
+        error: recoveryError(
+          "force-with-lease",
+          `${gitFailureDetail(forceResult)} (rebase first failed with: ${
+            rebaseDetail || "no output"
+          }; auto-resolution: ${conflictResult.error.message})`,
+        ),
       };
     }
   }
@@ -130,14 +165,10 @@ export async function recoverFromPushRejection(
     options,
   );
 
-  if (!retryResult.ok) {
-    return { ok: false, error: retryResult.error };
-  }
-
-  if (retryResult.value.code !== 0) {
+  if (!retryResult.ok || retryResult.value.code !== 0) {
     return {
       ok: false,
-      error: new Error(`Retry push failed: ${retryResult.value.stderr}`),
+      error: recoveryError("retry-push", gitFailureDetail(retryResult)),
     };
   }
 

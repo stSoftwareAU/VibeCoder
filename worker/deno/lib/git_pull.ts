@@ -25,6 +25,7 @@ import {
   buildFetchArgs,
   buildRebaseArgs,
 } from "./git_ref_args.ts";
+import { syncBranchToRemoteHead } from "./git_branch_sync.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -554,6 +555,23 @@ export async function updatePrBranch(
     }
   }
 
+  // Issue #211: judge the PR by its *remote* head. The worker reuses a clone
+  // across passes, so the local copy of a PR branch can carry commits origin
+  // does not have; rebasing those onto the base can conflict where the PR's
+  // real head would not, and PR #557 was labelled `merge-conflict` while
+  // GitHub reported it mergeable. Fast-forward onto the remote head, and
+  // refuse loudly — with a distinct error, never a conflict verdict — when
+  // the local branch is ahead: those commits are unpushed work, and the pass
+  // force-pushes whatever it produces, so resetting them away would destroy
+  // them silently.
+  const alignResult = await syncBranchToRemoteHead(branchName, options);
+  if (!alignResult.ok) {
+    return { ok: false, error: alignResult.error };
+  }
+  const alignNote = alignResult.value.action === "fast-forwarded"
+    ? `${alignResult.value.detail}. `
+    : "";
+
   // Ensure enough history for range detection on a shallow clone (Issue #1502)
   await ensureHistoryDepth(["HEAD", baseBranch], options);
 
@@ -571,15 +589,22 @@ export async function updatePrBranch(
   // detected conflicts — rebase will fail for divergent branches.
   // Use merge (with -X theirs fallback) to accept base branch changes.
   if (reason === "conflicting") {
-    return await resolveConflictingPrBranch(branchName, baseBranch, options);
+    const conflicting = await resolveConflictingPrBranch(
+      branchName,
+      baseBranch,
+      options,
+    );
+    return conflicting.ok
+      ? { ok: true, value: `${alignNote}${conflicting.value}` }
+      : conflicting;
   }
 
   // Return early when not behind and no conflict reason provided.
   if (behindCount === 0) {
     return {
       ok: true,
-      value:
-        `PR branch '${branchName}' is already up to date with '${baseBranch}'`,
+      value: `${alignNote}PR branch '${branchName}' is already up to date ` +
+        `with '${baseBranch}'`,
     };
   }
 
@@ -590,7 +615,10 @@ export async function updatePrBranch(
   );
 
   if (rebaseResult.ok && rebaseResult.value.code === 0) {
-    return await forcePushFeatureBranch(branchName, options);
+    const pushed = await forcePushFeatureBranch(branchName, options);
+    return pushed.ok
+      ? { ok: true, value: `${alignNote}${pushed.value}` }
+      : pushed;
   }
 
   // Rebase conflicted (Issue #4373): abort and leave the branch exactly as

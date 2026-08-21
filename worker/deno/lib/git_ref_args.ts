@@ -69,6 +69,64 @@ export function buildFetchArgs(remote: string, ref?: string): string[] {
   return ["fetch", "--end-of-options", remote, ref];
 }
 
+/**
+ * Build the argv for fetching one branch straight into its remote-tracking
+ * ref (Issue #211).
+ *
+ * `git clone --single-branch` (and any clone whose `remote.origin.fetch`
+ * refspec is narrowed) never creates `refs/remotes/origin/<feature>`, not even
+ * after `git push -u` reports the branch as tracked. An explicit refspec is the
+ * one fetch that creates it regardless of the clone's own refspec, so the
+ * unpushed count can be measured against the branch's real remote head.
+ *
+ * The branch name lands inside the refspec, where a `:` would split it into a
+ * different source/destination pair — so it is validated as a ref component,
+ * not merely checked for a leading dash.
+ *
+ * @param remote - The remote to fetch from (usually "origin").
+ * @param branchName - The branch to fetch (untrusted positional).
+ * @returns e.g. `["fetch", "--end-of-options", "origin",
+ *   "+refs/heads/x:refs/remotes/origin/x"]`.
+ */
+export function buildFetchTrackingRefArgs(
+  remote: string,
+  branchName: string,
+): string[] {
+  assertSafeGitRef(remote, "fetch remote");
+  assertSafeRefComponent(branchName, "fetch branch name");
+  return [
+    "fetch",
+    "--end-of-options",
+    remote,
+    `+refs/heads/${branchName}:refs/remotes/${remote}/${branchName}`,
+  ];
+}
+
+/** Characters git itself refuses in a ref component (`git check-ref-format`). */
+const UNSAFE_REF_CHARS = /[\s~^:?*[\\]/;
+
+/**
+ * Throw unless `ref` is safe to embed *inside* a composed ref or refspec.
+ *
+ * Stricter than {@link assertSafeGitRef}: a name that is harmless as a bare
+ * positional can still break a refspec it is interpolated into (`a:b` becomes
+ * a different source/destination pair). Git rejects every character below in a
+ * ref component, so a name carrying one is always either a bug or an attack.
+ *
+ * @param ref - The candidate ref component.
+ * @param context - Short description of the argument slot.
+ * @throws Error when the component is empty, dash-leading, or malformed.
+ */
+export function assertSafeRefComponent(ref: string, context: string): void {
+  assertSafeGitRef(ref, context);
+  if (UNSAFE_REF_CHARS.test(ref) || ref.includes("..")) {
+    throw new Error(
+      `Refusing to run git: ${context} is not a valid ref component ` +
+        `(got '${ref}')`,
+    );
+  }
+}
+
 /** Options for {@link buildPullArgs}. */
 export interface PullArgsOptions {
   /** Add `--rebase` (integrate by rebasing rather than merging). */
