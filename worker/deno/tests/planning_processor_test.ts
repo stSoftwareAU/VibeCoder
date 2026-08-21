@@ -7,7 +7,12 @@
  */
 
 import { captureReleaseOutcomes } from "./fixtures/release_outcome_capture.ts";
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildCritiqueFallbackPublishPrompt,
   buildFallbackDraftPlanningPrompt,
@@ -3620,6 +3625,69 @@ Deno.test("processIssuePlanning - drafts, self-critiques, revises, then publishe
   assertEquals(closedIssue, true);
   assertEquals(postedComment.includes("## Planning Complete"), true);
   assertEquals(postedComment.toLowerCase().includes("critique"), false);
+});
+
+Deno.test("processIssuePlanning - every turn's session id is a UUID the CLI accepts (Issue #204)", async () => {
+  const ctx = makeContext();
+
+  // The Claude CLI refuses a non-UUID --session-id ("Invalid session ID. Must
+  // be a valid UUID."), which killed both planning turns 0.2 s after spawn.
+  const uuidRe =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const sessionIds: Array<string | undefined> = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (
+        opts: { sessionResumeState?: { sessionId: string } },
+      ) => {
+        sessionIds.push(opts.sessionResumeState?.sessionId);
+        const output = sessionIds.length === 1
+          ? "Draft plan: two sub-issues. No GitHub issues created yet."
+          : "Created:\n- https://github.com/org/repo/issues/801";
+        return Promise.resolve({
+          ok: true,
+          value: { output, exitCode: 0, timedOut: false },
+        });
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: () => Promise.resolve(undefined),
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(sessionIds.length, 2);
+  for (const id of sessionIds) {
+    assertMatch(id ?? "", uuidRe);
+  }
+  // Both turns share the one session so the critique turn can resume it.
+  assertEquals(sessionIds[0], sessionIds[1]);
 });
 
 Deno.test("buildPlanningCritiquePrompt - sanitises injected issue content (Issue #2652)", async () => {

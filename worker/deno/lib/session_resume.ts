@@ -21,7 +21,7 @@
  * (subsequent phases) to the Claude CLI.
  */
 export interface SessionResumeState {
-  /** Deterministic session ID for this issue invocation. */
+  /** UUID session ID for this issue invocation (Issue #204). */
   sessionId: string;
   /** Number of phases completed using this session. */
   phaseCount: number;
@@ -38,43 +38,45 @@ export interface SessionResumeFlags {
 }
 
 /**
- * Generate a deterministic session ID for an issue invocation.
- *
- * The ID combines the repository, issue number, and a timestamp to
- * ensure uniqueness across invocations while remaining deterministic
- * within a single run.
- *
- * @param repo - Repository in "owner/repo" format
- * @param issueNumber - The issue number
- * @param timestamp - Unix timestamp in milliseconds (defaults to Date.now())
- * @returns A sanitised session ID string safe for CLI usage
+ * A canonical RFC 4122 UUID — the only `--session-id` the Claude CLI accepts.
  */
-export function generateSessionId(
-  repo: string,
-  issueNumber: number,
-  timestamp?: number,
-): string {
-  const ts = timestamp ?? Date.now();
-  // Sanitise repo name: replace non-alphanumeric characters with hyphens
-  const sanitisedRepo = repo.replace(/[^a-zA-Z0-9]/g, "-");
-  return `${sanitisedRepo}-${issueNumber}-${ts}`;
+const SESSION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Would the Claude CLI accept this session id? (Issue #204)
+ *
+ * Used to reject ids persisted before the UUID fix so a stale entry degrades
+ * to "no session continuity" rather than killing the invocation.
+ */
+export function isValidSessionId(sessionId: string): boolean {
+  return SESSION_ID_RE.test(sessionId);
+}
+
+/**
+ * Generate a session ID for an issue invocation.
+ *
+ * The ID was once `<repo>-<issue>-<timestamp>`, which the Claude CLI refuses
+ * outright — it validates `--session-id` as a UUID and exits ~0.2 s after
+ * spawn with "Invalid session ID. Must be a valid UUID." (Issue #204). Every
+ * planning turn died on that refusal, so the id is now a real UUID; the
+ * repo/issue/timestamp identity lives in the resume-state file name instead
+ * (see `resume_state_store.ts`).
+ *
+ * @returns A UUID safe to pass to `--session-id`
+ */
+export function generateSessionId(): string {
+  return crypto.randomUUID();
 }
 
 /**
  * Create initial session resume state for a new issue invocation.
  *
- * @param repo - Repository in "owner/repo" format
- * @param issueNumber - The issue number
- * @param timestamp - Optional timestamp for deterministic testing
  * @returns Initial session resume state
  */
-export function createSessionResumeState(
-  repo: string,
-  issueNumber: number,
-  timestamp?: number,
-): SessionResumeState {
+export function createSessionResumeState(): SessionResumeState {
   return {
-    sessionId: generateSessionId(repo, issueNumber, timestamp),
+    sessionId: generateSessionId(),
     phaseCount: 0,
   };
 }

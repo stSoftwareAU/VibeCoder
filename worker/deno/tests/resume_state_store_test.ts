@@ -19,6 +19,12 @@ import {
 
 const REPO = "stSoftwareAU/VibeCoder";
 
+/**
+ * A session id the Claude CLI accepts. Since Issue #204 the store drops any
+ * id that is not a UUID on load, so the round-trip fixture must be one.
+ */
+const SESSION_ID = "6f1f2c0a-9b7d-4c3e-8a11-2b3c4d5e6f70";
+
 Deno.test("resume_state_store - path is slugged under .claude-sessions/resume", () => {
   assertEquals(
     resumeStatePath("/work", REPO, 4170),
@@ -30,14 +36,14 @@ Deno.test("resume_state_store - save then load round-trips", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "resume_store_" });
   try {
     const saved = await saveResumeState(workDir, REPO, 4170, {
-      sessionId: "sess-1",
+      sessionId: SESSION_ID,
       phaseCount: 2,
       branch: "issue-4170-checkpoint",
     }, 1_000_000);
     assert(saved);
     const loaded = await loadResumeState(workDir, REPO, 4170, 1_000_000);
     assert(loaded);
-    assertEquals(loaded.sessionId, "sess-1");
+    assertEquals(loaded.sessionId, SESSION_ID);
     assertEquals(loaded.phaseCount, 2);
     assertEquals(loaded.branch, "issue-4170-checkpoint");
     assertEquals(loaded.savedAtEpochMs, 1_000_000);

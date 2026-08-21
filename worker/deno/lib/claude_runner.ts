@@ -27,6 +27,7 @@ import {
   buildClaudeModelArgs,
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
+  detectInvalidSessionId,
   detectModelUnavailable,
   detectOutOfMemory,
   detectRateLimit,
@@ -2060,6 +2061,34 @@ export async function runClaudeWithRetry(
       // and with no stream-json `result` line stdout is empty — scanning
       // stdout alone made every stderr-only refusal an "unknown" failure.
       const bothStreams = `${output}\n${stderr ?? ""}`;
+
+      // The CLI refused the session id (Issue #204) — checked first because it
+      // is a start-up failure: the process died before any model call, so
+      // nothing downstream (rate limit, model availability) can be read from
+      // this output. The remedy is the flags, not the model or a wait: drop
+      // them and retry once. Clearing the state is also what bounds the retry —
+      // a second refusal has no session flags left to blame and falls through
+      // to the ordinary failure path. Loud, because the run continues without
+      // CLI session continuity and the caller must see that in the log.
+      if (
+        currentOptions.sessionResumeState &&
+        detectInvalidSessionId(bothStreams, errorScanTailLines)
+      ) {
+        const rejectedId = currentOptions.sessionResumeState.sessionId;
+        currentOptions.logger?.warn(
+          `Claude CLI rejected the session id "${rejectedId}" ` +
+            `("Invalid session ID") and exited ${exitCode} without running. ` +
+            `Retrying once without --session-id/--resume — this run loses CLI ` +
+            `session continuity (Issue #204).`,
+        );
+        currentOptions.logger?.security?.(
+          "INVALID_SESSION_ID",
+          `exit_code=${exitCode} session_id=${rejectedId}`,
+        );
+        currentOptions = { ...currentOptions, sessionResumeState: undefined };
+        continue;
+      }
+
       if (detectModelUnavailable(bothStreams, errorScanTailLines)) {
         const currentModel = resolveCurrentModel(
           currentOptions.model,
