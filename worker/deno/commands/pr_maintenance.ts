@@ -15,7 +15,6 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   assertSafeGitRef,
   buildCheckoutArgs,
-  buildCheckoutNewBranchArgs,
   buildFetchArgs,
 } from "../lib/git_ref_args.ts";
 import {
@@ -453,18 +452,6 @@ export const prMaintenanceCommand: Command = {
             };
           }
 
-          // Fetch branches from remote
-          const fetchHead = await runGitCommand(
-            buildFetchArgs("origin", params.branchName),
-            gitOptions,
-          );
-          if (!fetchHead.ok || fetchHead.value.code !== 0) {
-            return {
-              ok: false as const,
-              error: new Error(`Failed to fetch branch '${params.branchName}'`),
-            };
-          }
-
           const fetchBase = await runGitCommand(
             buildFetchArgs("origin", params.baseBranch),
             gitOptions,
@@ -478,30 +465,9 @@ export const prMaintenanceCommand: Command = {
             };
           }
 
-          // Ensure local branch exists (checkout or create tracking branch)
-          const checkoutResult = await runGitCommand(
-            buildCheckoutArgs(params.branchName),
-            gitOptions,
-          );
-          if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
-            const createResult = await runGitCommand(
-              buildCheckoutNewBranchArgs(
-                params.branchName,
-                `origin/${params.branchName}`,
-              ),
-              gitOptions,
-            );
-            if (!createResult.ok || createResult.value.code !== 0) {
-              return {
-                ok: false as const,
-                error: new Error(
-                  `Failed to checkout branch '${params.branchName}'`,
-                ),
-              };
-            }
-          }
-
-          // Update the PR branch (rebase + force-push)
+          // Update the PR branch (rebase + force-push). It checks the branch
+          // out at its remote head itself (Issue #211), so this pass never
+          // judges the PR by whatever the shared clone's local branch holds.
           const updateResult = await updatePrBranch(
             params.branchName,
             params.baseBranch,

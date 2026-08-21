@@ -64,6 +64,7 @@ import {
   measureSessionSize,
 } from "../lib/session_compaction.ts";
 import { isLocalDefaultBranchUpToDate } from "../lib/remote_sha_cache.ts";
+import { ensureAllBranchesFetchRefspec } from "../lib/git_fetch_refspec.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
 
 /** Helper to convert unknown to number. */
@@ -581,6 +582,28 @@ export async function setupRepo(
 
       await runGitCommand(["checkout", defaultBranch], { cwd: repoPath });
 
+      // Repair a legacy single-branch clone (Issue #211). A clone made with a
+      // bare `--depth=1` only ever tracks the default branch, so every
+      // feature branch is invisible to `origin/<branch>` — which made a good
+      // push look failed and a mergeable PR look conflicted. Re-fetch
+      // immediately after a repair so the tracking refs actually materialise.
+      const refspecRepair = await ensureAllBranchesFetchRefspec({
+        cwd: repoPath,
+      });
+      if (!refspecRepair.ok) {
+        console.warn(
+          `[setup-repo] Could not check the fetch refspec for ${repo}: ${refspecRepair.error.message}`,
+        );
+      } else if (refspecRepair.value.repaired) {
+        console.log(
+          `[setup-repo] Repaired single-branch fetch refspec for ${repo} (Issue #211): was [${
+            refspecRepair.value.before.join(", ")
+          }]`,
+        );
+      }
+      const refspecWasRepaired = refspecRepair.ok &&
+        refspecRepair.value.repaired;
+
       // Fast-path: if `origin/<defaultBranch>` already matches the remote
       // tip, skip `git fetch origin` (Issue #1810). Most priority cycles on
       // most repos are no-op fetches; `git ls-remote refs/heads/<branch>`
@@ -590,13 +613,15 @@ export async function setupRepo(
         repoPath,
         defaultBranch,
       );
-      if (freshness.upToDate) {
+      if (freshness.upToDate && !refspecWasRepaired) {
         console.log(
           `[setup-repo] fast-path skip (Issue #1810): ${repo} ${freshness.reason} (remote-sha source: ${freshness.remoteShaSource})`,
         );
       } else {
         console.log(
-          `[setup-repo] full fetch (Issue #1810): ${repo} ${freshness.reason}`,
+          `[setup-repo] full fetch (Issue #1810): ${repo} ${
+            refspecWasRepaired ? "fetch refspec repaired" : freshness.reason
+          }`,
         );
 
         // Pre-check disk space before fetch (Issue #1174)

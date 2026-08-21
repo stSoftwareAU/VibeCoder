@@ -24,6 +24,7 @@ function okPush(
       committedNewChanges: committed,
       commitsPushed: pushed,
       finalUnpushedCount: 0,
+      finalUnpushedSource: "remote-head",
     },
   };
 }

@@ -28,6 +28,17 @@ import {
 } from "./pr_ci_checks.ts";
 import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
 import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
+import {
+  fetchPrHeadCommit,
+  type HeadCommitInfo,
+  isSupersededByFleetPush,
+} from "./pr_feedback_supersede.ts";
+// Re-exported so callers and tests can reason about the scan's supersession
+// decision without reaching past the module that makes it (Issue #211).
+export {
+  FLEET_PUSH_COOL_OFF_MS,
+  isSupersededByFleetPush,
+} from "./pr_feedback_supersede.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import type { IssueCache } from "./issue_cache.ts";
@@ -60,6 +71,8 @@ export interface CommentEntry {
   id: number;
   body: string;
   thumbs_up: number;
+  /** ISO 8601 creation time — used for fleet-push supersession (Issue #211). */
+  created_at?: string;
 }
 
 /** Review entry from the GitHub API. */
@@ -446,7 +459,7 @@ export async function fetchPrComments(
       "api",
       apiPath,
       "--jq",
-      '[.[] | select(.reactions.eyes == 0) | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0)}]',
+      '[.[] | select(.reactions.eyes == 0) | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), created_at: .created_at}]',
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -671,6 +684,34 @@ export async function findPrCommentsToFix(
     for (const pr of prs) {
       const { number: prNumber, headRefName: branchName, headRefOid } = pr;
 
+      // Issue #211: a comment a sibling fleet host has already answered with a
+      // push is not actionable. The head commit is fetched at most once per PR,
+      // and only after a comment has passed the authorisation checks.
+      let headCommit: HeadCommitInfo | null | undefined;
+      const supersededByFleetPush = async (
+        commentCreatedAt?: string,
+      ): Promise<boolean> => {
+        if (!headRefOid) return false;
+        if (headCommit === undefined) {
+          headCommit = await fetchPrHeadCommit(repo, headRefOid, ghCommandFn);
+        }
+        return isSupersededByFleetPush({
+          commentCreatedAt,
+          headCommit,
+          fleetAuthors: scanAuthors,
+        });
+      };
+      const logSuperseded = (commentId: string, commentType: string): void => {
+        logger.info("Skipping PR comment superseded by a fleet push", {
+          repo,
+          prNumber,
+          commentId,
+          commentType,
+          headSha: headRefOid,
+          pushedAt: headCommit?.committedAt ?? undefined,
+        });
+      };
+
       // Check review comments (inline)
       const reviewComment = await findActionableComment(
         repo,
@@ -683,13 +724,17 @@ export async function findPrCommentsToFix(
         trustedReviewBots,
       );
       if (reviewComment) {
-        return {
-          ok: true,
-          value: {
-            ...reviewComment,
-            branchName,
-          },
-        };
+        if (await supersededByFleetPush(reviewComment.commentCreatedAt)) {
+          logSuperseded(reviewComment.commentId, "review");
+        } else {
+          return {
+            ok: true,
+            value: {
+              ...reviewComment,
+              branchName,
+            },
+          };
+        }
       }
 
       // Check issue comments
@@ -704,13 +749,17 @@ export async function findPrCommentsToFix(
         trustedReviewBots,
       );
       if (issueComment) {
-        return {
-          ok: true,
-          value: {
-            ...issueComment,
-            branchName,
-          },
-        };
+        if (await supersededByFleetPush(issueComment.commentCreatedAt)) {
+          logSuperseded(issueComment.commentId, "issue");
+        } else {
+          return {
+            ok: true,
+            value: {
+              ...issueComment,
+              branchName,
+            },
+          };
+        }
       }
 
       // Check PR reviews (CHANGES_REQUESTED)
@@ -847,6 +896,7 @@ async function findActionableComment(
         commentId: String(comment.id),
         encodedBody,
         commentAuthor: comment.login,
+        commentCreatedAt: comment.created_at,
       };
     } else {
       logger.debug(
