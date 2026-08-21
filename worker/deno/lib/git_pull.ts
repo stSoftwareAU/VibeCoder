@@ -25,11 +25,13 @@ import {
   buildFetchArgs,
   buildRebaseArgs,
 } from "./git_ref_args.ts";
-import { syncBranchToRemoteHead } from "./git_branch_sync.ts";
+import {
+  countUnpushedCommits,
+  resolveRemoteBranchHead,
+} from "./git_remote_head.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
-import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 
 /**
  * Sync a feature branch with the latest default branch (Issue #230).
@@ -469,135 +471,6 @@ export async function syncMilestoneBranchWithDefault(
   };
 }
 
-/**
- * Bring the checked-out branch to origin's head before it is judged
- * (Issue #211).
- *
- * The branch-update pass runs `git checkout <branch>` in a long-lived
- * workdir, so it can pick up a **stale local copy** of the branch left by an
- * earlier pass. Merging the base into that old tree finds conflicts that do
- * not exist on the branch GitHub is actually merging — which is how a
- * mergeable PR ended up labelled `merge-conflict` (NEAT-AI-core #557).
- *
- * - Local behind or equal to origin → fast-forward to origin's head.
- * - Local ahead of origin (genuine unpushed work) → refuse, loudly. Those
- *   commits are never reset away, and "I hold unpushed work" is reported as
- *   itself rather than mislabelled a base-branch conflict.
- * - Branch absent from origin → nothing to sync; carry on.
- *
- * @param branchName - The PR head branch
- * @param options - Git command options
- * @returns Ok with a note on what happened, or a loud error
- */
-async function alignBranchWithRemoteHead(
-  branchName: string,
-  options: GitCommandOptions = {},
-): Promise<Result<string>> {
-  const fetchResult = await runGitCommand(
-    buildFetchArgs("origin", branchName),
-    options,
-  );
-  if (!fetchResult.ok || fetchResult.value.code !== 0) {
-    const stderr = fetchResult.ok
-      ? fetchResult.value.stderr.trim()
-      : fetchResult.error.message;
-    if (/couldn't find remote ref|no such ref/i.test(stderr)) {
-      return { ok: true, value: `Branch '${branchName}' is not on origin yet` };
-    }
-    return {
-      ok: false,
-      error: new Error(
-        `Cannot align '${branchName}' with origin before evaluating it: ${
-          stderr || "git reported no stderr"
-        }`,
-      ),
-    };
-  }
-
-  const remoteHeadResult = await runGitCommand(
-    ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"],
-    options,
-  );
-  const remoteHead = remoteHeadResult.ok && remoteHeadResult.value.code === 0
-    ? remoteHeadResult.value.stdout.trim()
-    : "";
-  if (!remoteHead) {
-    return {
-      ok: false,
-      error: new Error(
-        `Cannot align '${branchName}' with origin: FETCH_HEAD did not resolve`,
-      ),
-    };
-  }
-
-  const aheadResult = await runGitCommand(
-    ["rev-list", "--count", "--end-of-options", `${remoteHead}..HEAD`],
-    options,
-  );
-  const ahead = aheadResult.ok && aheadResult.value.code === 0
-    ? parseInt(aheadResult.value.stdout.trim(), 10) || 0
-    : 0;
-  if (ahead > 0) {
-    return {
-      ok: false,
-      error: new Error(
-        `PR branch '${branchName}' holds ${ahead} unpushed commit(s) locally, ` +
-          `so it cannot be evaluated against its base — origin's head is what ` +
-          `GitHub merges (Issue #211). Push or discard the local commits first.`,
-      ),
-    };
-  }
-
-  const localHeadResult = await runGitCommand(["rev-parse", "HEAD"], options);
-  const localHead = localHeadResult.ok && localHeadResult.value.code === 0
-    ? localHeadResult.value.stdout.trim()
-    : "";
-  if (localHead === remoteHead) {
-    return {
-      ok: true,
-      value: `Branch '${branchName}' already at origin's head`,
-    };
-  }
-
-  // Nothing local-only to lose (ahead === 0), but never discard a dirty tree.
-  const statusResult = await runGitCommand(["status", "--porcelain"], options);
-  if (
-    statusResult.ok && statusResult.value.code === 0 &&
-    statusResult.value.stdout.trim().length > 0
-  ) {
-    return {
-      ok: false,
-      error: new Error(
-        `PR branch '${branchName}' has uncommitted changes, so it cannot be ` +
-          `brought to origin's head for evaluation (Issue #211)`,
-      ),
-    };
-  }
-
-  const resetResult = await runGitCommand(
-    ["reset", "--hard", "--end-of-options", remoteHead],
-    options,
-  );
-  if (!resetResult.ok || resetResult.value.code !== 0) {
-    const stderr = resetResult.ok
-      ? resetResult.value.stderr.trim()
-      : resetResult.error.message;
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to bring '${branchName}' to origin's head: ${
-          stderr || "git reported no stderr"
-        }`,
-      ),
-    };
-  }
-
-  return {
-    ok: true,
-    value: `Branch '${branchName}' fast-forwarded to origin's head`,
-  };
-}
-
 /** Error name for a PR branch left untouched because its changes conflict (Issue #4373). */
 export const PR_BRANCH_CONFLICT_ERROR = "PrBranchConflict";
 
@@ -663,33 +536,39 @@ export async function updatePrBranch(
   // Ensure the local base branch is current
   await ensureDefaultBranchCurrent(baseBranch, options);
 
-  // Check the feature branch out at its remote head (Issue #211). This pass
-  // shares a long-lived clone, so a plain checkout lands on whatever the local
-  // branch happens to hold — a stale branch from a run that failed to push
-  // made the base look conflicted when the remote PR was mergeable, which
-  // spuriously labelled it `merge-conflict`. The PR is what lives on origin.
-  const aligned = await checkoutPrBranchAtRemoteHead(branchName, options);
-  if (!aligned.ok) {
-    return { ok: false, error: aligned.error };
+  // Check out the feature branch
+  const currentBranchResult = await runGitCommand(
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    options,
+  );
+  const currentBranch = currentBranchResult.ok
+    ? currentBranchResult.value.stdout.trim()
+    : "";
+
+  if (currentBranch !== branchName) {
+    const checkoutResult = await runGitCommand(
+      buildCheckoutArgs(branchName),
+      options,
+    );
+    if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
+      return {
+        ok: false,
+        error: new Error(`Failed to checkout branch '${branchName}'`),
+      };
+    }
   }
 
-  // Issue #211: judge origin's head, not whatever this workdir happens to
-  // hold. A stale local copy of the branch produces conflicts that do not
-  // exist on the branch GitHub merges.
+  // Issue #211: judge the PR by its *remote* head. The worker reuses a clone
+  // across passes, so the local copy of a PR branch can carry commits origin
+  // does not have; rebasing those onto the base can conflict where the PR's
+  // real head would not, and PR #557 was labelled `merge-conflict` while
+  // GitHub reported it mergeable. The pass force-pushes the result anyway, so
+  // the remote head is the only honest starting point.
   const alignResult = await alignBranchWithRemoteHead(branchName, options);
   if (!alignResult.ok) {
     return { ok: false, error: alignResult.error };
   }
-
-  // Judge the PR, not this clone (Issue #211). The checkout above takes
-  // whatever local branch of that name the clone holds; a fleet sibling's push
-  // — or commits an earlier run left behind — makes that branch something the
-  // PR is not, and a conflict found on it labelled a mergeable PR
-  // `merge-conflict`. Align with the remote head first, or refuse loudly.
-  const sync = await syncBranchToRemoteHead(branchName, options);
-  if (!sync.ok) {
-    return { ok: false, error: sync.error };
-  }
+  const alignNote = alignResult.value;
 
   // Ensure enough history for range detection on a shallow clone (Issue #1502)
   await ensureHistoryDepth(["HEAD", baseBranch], options);
@@ -708,15 +587,22 @@ export async function updatePrBranch(
   // detected conflicts — rebase will fail for divergent branches.
   // Use merge (with -X theirs fallback) to accept base branch changes.
   if (reason === "conflicting") {
-    return await resolveConflictingPrBranch(branchName, baseBranch, options);
+    const conflicting = await resolveConflictingPrBranch(
+      branchName,
+      baseBranch,
+      options,
+    );
+    return conflicting.ok
+      ? { ok: true, value: `${alignNote}${conflicting.value}` }
+      : conflicting;
   }
 
   // Return early when not behind and no conflict reason provided.
   if (behindCount === 0) {
     return {
       ok: true,
-      value:
-        `PR branch '${branchName}' is already up to date with '${baseBranch}'`,
+      value: `${alignNote}PR branch '${branchName}' is already up to date ` +
+        `with '${baseBranch}'`,
     };
   }
 
@@ -727,7 +613,10 @@ export async function updatePrBranch(
   );
 
   if (rebaseResult.ok && rebaseResult.value.code === 0) {
-    return await forcePushFeatureBranch(branchName, options);
+    const pushed = await forcePushFeatureBranch(branchName, options);
+    return pushed.ok
+      ? { ok: true, value: `${alignNote}${pushed.value}` }
+      : pushed;
   }
 
   // Rebase conflicted (Issue #4373): abort and leave the branch exactly as
@@ -739,6 +628,91 @@ export async function updatePrBranch(
   return {
     ok: false,
     error: prBranchConflictError(branchName, baseBranch, "rebase"),
+  };
+}
+
+/**
+ * Reset the checked-out PR branch to its remote head (Issue #211).
+ *
+ * The branch-update pass force-pushes whatever it produces, so any local-only
+ * commit it starts from is either already obsolete or about to overwrite the
+ * PR's real head. Worse, such a commit skews the conflict verdict: PR #557 was
+ * labelled `merge-conflict` because the pass rebased a stale local branch, not
+ * the head GitHub reported as mergeable.
+ *
+ * Fails loud when the remote head cannot be established — a conflict verdict
+ * derived from an unknown starting point is worse than no verdict.
+ *
+ * @param branchName - The PR branch, already checked out
+ * @param options - Git command options
+ * @returns A note naming any discarded local-only commits (empty when the
+ *   branch already matched the remote), to prefix the caller's message
+ */
+async function alignBranchWithRemoteHead(
+  branchName: string,
+  options: GitCommandOptions,
+): Promise<Result<string>> {
+  // Refresh the tracking ref first so the remote head is current.
+  await runGitCommand(buildFetchArgs("origin", branchName), options);
+
+  const headResult = await resolveRemoteBranchHead(branchName, options);
+  if (!headResult.ok) {
+    return { ok: false, error: headResult.error };
+  }
+  const remoteSha = headResult.value.sha;
+  if (remoteSha === null) {
+    // Not on the remote at all — nothing to align to. The PR could not exist
+    // without a remote branch, so this is a vanished branch, not a stale one.
+    return { ok: true, value: "" };
+  }
+
+  const localHead = await runGitCommand(["rev-parse", "HEAD"], options);
+  if (!localHead.ok || localHead.value.code !== 0) {
+    const detail = localHead.ok
+      ? localHead.value.stderr.trim() || `exit ${localHead.value.code}`
+      : localHead.error.message;
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot read the local head of '${branchName}' before updating it ` +
+          `(Issue #211): ${detail}`,
+      ),
+    };
+  }
+  if (localHead.value.stdout.trim() === remoteSha) {
+    return { ok: true, value: "" };
+  }
+
+  const aheadResult = await countUnpushedCommits(branchName, options);
+  const discarded = aheadResult.ok ? aheadResult.value : 0;
+
+  const resetResult = await runGitCommand(
+    ["reset", "--hard", "--end-of-options", remoteSha],
+    options,
+  );
+  if (!resetResult.ok || resetResult.value.code !== 0) {
+    const detail = resetResult.ok
+      ? resetResult.value.stderr.trim() || `exit ${resetResult.value.code}`
+      : resetResult.error.message;
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot reset '${branchName}' to its remote head ${remoteSha} before ` +
+          `updating it (Issue #211): ${detail}`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: discarded > 0
+      ? `Reset '${branchName}' to its remote head ${
+        remoteSha.substring(0, 7)
+      }, discarding ${discarded} local-only commit(s) — ` +
+        `the PR is judged by what origin holds (Issue #211). `
+      : `Reset '${branchName}' to its remote head ${
+        remoteSha.substring(0, 7)
+      } (Issue #211). `,
   };
 }
 

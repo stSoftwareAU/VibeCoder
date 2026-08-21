@@ -13,8 +13,10 @@ import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
-import { countUnpushedCommits } from "./git_unpushed.ts";
-import type { UnpushedMeasure } from "./git_unpushed.ts";
+import {
+  countUnpushedCommits,
+  describeUnpushedCommits,
+} from "./git_remote_head.ts";
 import { assertSafeGitRef, buildPushArgs } from "./git_ref_args.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
@@ -280,12 +282,16 @@ export async function assertPushTargetAllowed(
  * This ensures changes are never left unpushed on an unattended machine.
  *
  * Also handles the first-time push of a freshly created feature branch
- * (Issue #1463 regression): when `origin/<branchName>` does not yet exist,
- * the `rev-list --count origin/<branch>..HEAD` probe fails with exit 128
- * ("unknown revision"). Treating that as "0 commits to push" silently
- * skips the push and leaves the remote branch missing — `gh pr create`
- * then fails with "No commits between …". When the probe fails we fall
- * through and push with `-u` so the upstream is created.
+ * (Issue #1463 regression): a branch that is not on the remote yet must be
+ * pushed with `-u` so the upstream is created — treating "no upstream" as
+ * "0 commits to push" silently skips the push and leaves the remote branch
+ * missing, and `gh pr create` then fails with "No commits between …".
+ *
+ * The unpushed count comes from {@link describeUnpushedCommits} (Issue #211),
+ * which measures against the branch's own remote head — `ls-remote` when the
+ * clone keeps no remote-tracking ref for it — rather than against every origin
+ * ref, which on a single-branch clone counts commits ahead of the default
+ * branch and reports a fully pushed branch as four commits behind.
  *
  * @param branchName - The branch to push
  * @param options - Git command options
@@ -298,18 +304,6 @@ export async function pushUnpushedCommits(
   options: GitCommandOptions = {},
   allowDefaultBranch = false,
 ): Promise<Result<number>> {
-  // Refuse an option-injecting ref before any git runs (Issue #148). The
-  // push builder below validates too, but the branch now also reaches a count
-  // and a fetch first, so the fault is thrown at the entry point.
-  try {
-    assertSafeGitRef(branchName, "push branch name");
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err : new Error(String(err)),
-    };
-  }
-
   // Read-only default-branch guard (Issue #2584) — refuse before doing any
   // work when the target is the repo's default branch.
   const guard = await assertPushTargetAllowed(
@@ -321,22 +315,33 @@ export async function pushUnpushedCommits(
     return { ok: false, error: guard.error };
   }
 
-  // Count what the remote branch is actually missing (Issue #211). The count
-  // resolves the branch's real remote head — fetching the tracking ref when
-  // the clone's refspec does not cover it — so it never degrades into
-  // "commits ahead of the default branch" on a single-branch clone.
-  const unpushed = await countUnpushedCommits(branchName, options);
-  if (!unpushed.ok) {
-    return { ok: false, error: unpushed.error };
+  // Refuse an option-injecting ref before any remote lookup runs (Issue #148).
+  // Named for this slot so the failure says which argument was refused.
+  try {
+    assertSafeGitRef(branchName, "push branch name");
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
   }
-  const unpushedCount = unpushed.value.count;
 
-  // Short-circuit only when the remote branch exists and already has
-  // everything. When it does not exist yet, fall through and create it via
-  // `git push -u` even at a count of zero.
-  if (unpushed.value.measuredAgainst !== "no-remote-branch" &&
-    unpushedCount === 0
-  ) {
+  // Count what the branch's *own* remote head is missing (Issue #211). The
+  // old probe pair — `origin/<branch>..HEAD`, falling back to
+  // `HEAD --not --remotes=origin` — reports "commits ahead of the default
+  // branch" on any clone without a remote-tracking ref for this branch (a
+  // single-branch clone never gains one, even after a successful push), so a
+  // fully pushed branch looked four commits behind.
+  const stateResult = await describeUnpushedCommits(branchName, options);
+  if (!stateResult.ok) {
+    return { ok: false, error: stateResult.error };
+  }
+  const unpushedCount = stateResult.value.count;
+
+  // Short-circuit only when the branch exists on the remote and holds every
+  // local commit. When it does not exist yet we still push, so `-u` creates
+  // the upstream ref.
+  if (stateResult.value.sha !== null && unpushedCount === 0) {
     return { ok: true, value: 0 };
   }
 
@@ -375,6 +380,17 @@ export async function pushUnpushedCommits(
       if (recoveryResult.ok) {
         return { ok: true, value: unpushedCount };
       }
+      // Issue #211: the recovery error names the step that failed — rebase
+      // conflict, failed auto-resolution, or a refused --force-with-lease —
+      // and carries git's stderr. Dropping it left callers logging a bare
+      // "push failed" with nothing to act on.
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to push unpushed commits: ${pushOutput}\n` +
+            `Recovery from the rejection also failed: ${recoveryResult.error.message}`,
+        ),
+      };
     }
 
     return {
@@ -396,12 +412,6 @@ export interface CommitAndPushPendingResult {
   commitsPushed: number;
   /** Number of commits still unpushed after the push attempt (0 = clean). */
   finalUnpushedCount: number;
-  /**
-   * Which remote reference `finalUnpushedCount` was measured against
-   * (Issue #211) — logged so a caller can see a 0 came from the branch's real
-   * remote head rather than a locally tracked ref that may not exist.
-   */
-  unpushedMeasuredAgainst: UnpushedMeasure;
 }
 
 /**
@@ -560,23 +570,27 @@ export async function commitAndPushPending(
 
   // Step 3 — verify the branch is in sync with origin. This is the honest
   // post-condition the caller needs: 0 means we did our job; >0 means we
-  // still have local work that the user is being lied to about. Measured
-  // against the branch's remote head (Issue #211) — the old
-  // `HEAD --not --remotes=origin` measure reported a good push as failed on
-  // every single-branch clone. A measurement that cannot be taken is an
-  // error, never a reassuring 0.
-  const remaining = await countUnpushedCommits(branchName, options);
-  if (!remaining.ok) {
-    return { ok: false, error: remaining.error };
+  // still have local work that the user is being lied to about.
+  //
+  // Issue #211: counted against this branch's own remote head. The previous
+  // `HEAD --not --remotes=origin` counted commits ahead of the default branch
+  // whenever no remote-tracking ref existed for the branch, so a successful
+  // push reported `commitsPushed=4 finalUnpushedCount=4` — self-contradictory,
+  // and enough to trigger a bogus recovery and a "please check the branch
+  // status" comment to a human. A count that cannot be determined is an error,
+  // never a silent 0.
+  const remainingResult = await countUnpushedCommits(branchName, options);
+  if (!remainingResult.ok) {
+    return { ok: false, error: remainingResult.error };
   }
+  const finalUnpushedCount = remainingResult.value;
 
   return {
     ok: true,
     value: {
       committedNewChanges,
       commitsPushed: pushResult.value,
-      finalUnpushedCount: remaining.value.count,
-      unpushedMeasuredAgainst: remaining.value.measuredAgainst,
+      finalUnpushedCount,
     },
   };
 }
