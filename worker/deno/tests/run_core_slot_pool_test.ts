@@ -1028,3 +1028,113 @@ Deno.test("slot pool - a run extended past its original budget is drained as in-
     "an extended run must be drained, not abandoned",
   );
 });
+
+// ============================================================================
+// A slot keeps claiming after a success (Issue #178)
+// ============================================================================
+
+Deno.test("slot pool - a success is followed by the normal sleep and another claim in the SAME slot, not a pool drain (Issue #178)", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  /** Ordered trace of everything the slot did, so the sleep's position is checked too. */
+  const events: string[] = [];
+  const unclaimed = [issue("o/a", 1), issue("o/a", 2)];
+  let poolEntries = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      if (m.includes("Issue scan pool:")) poolEntries++;
+    },
+    sleep: (ms?: number) => {
+      events.push(`sleep:${ms ?? 0}`);
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    // Both issues live in one repo, so only one slot can ever hold it: the
+    // second claim can only come from the slot that just succeeded. An
+    // issue stays findable until it is actually processed, as in production
+    // — a slot that loses the acquire race must not consume it.
+    findNextIssue: (options) =>
+      Promise.resolve({
+        ok: true,
+        value: unclaimed.find((i) => !options?.excludeRepos?.has(i.repo)) ??
+          null,
+      }),
+    processIssue: (i) => {
+      unclaimed.splice(unclaimed.indexOf(i), 1);
+      events.push(`process:${i.repo}#${i.issueNumber}`);
+      // End the cycle once both are done so the outer loop cannot supply
+      // the second claim from a fresh pool.
+      if (events.filter((e) => e.startsWith("process:")).length >= 2) {
+        now = cycleMs + 1;
+      }
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(
+    events.slice(0, 3),
+    [
+      "process:o/a#1",
+      `sleep:${config.sleepInterval * 1000}`,
+      "process:o/a#2",
+    ],
+    `a slot must sleep the normal interval and claim again: ${
+      events.join(", ")
+    }`,
+  );
+  assertEquals(
+    poolEntries,
+    1,
+    "both claims must come from one pool invocation — the slot must not drain after its first success",
+  );
+});
+
+Deno.test("slot pool - two slots, one long execute: the other slot completes issue after issue throughout (Issue #178)", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  const shortDone: number[] = [];
+  let longFinished = false;
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([
+      issue("o/long", 1),
+      issue("o/short", 2),
+      issue("o/short", 3),
+      issue("o/short", 4),
+      issue("o/short", 5),
+    ]),
+    processIssue: async (i) => {
+      if (i.repo === "o/long") {
+        // One long execute holding its slot while the sibling works.
+        // Bounded so a regression fails the assertion instead of hanging.
+        for (let tick = 0; tick < 500 && shortDone.length < 4; tick++) {
+          await new Promise((r) => setTimeout(r, 1));
+        }
+        longFinished = true;
+        now = cycleMs + 1; // the long run's return ends the cycle
+        return { ok: true, value: { success: true } };
+      }
+      await new Promise((r) => setTimeout(r, 1));
+      shortDone.push(i.issueNumber);
+      return { ok: true, value: { success: true } };
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(
+    shortDone,
+    [2, 3, 4, 5],
+    "the free slot must keep claiming for the whole of the sibling's long execute",
+  );
+  assert(longFinished, "the long execute must run to completion");
+});
