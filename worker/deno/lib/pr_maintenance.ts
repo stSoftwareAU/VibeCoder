@@ -28,6 +28,11 @@ import {
 } from "./pr_ci_checks.ts";
 import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
 import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
+import {
+  fetchHeadCommitInfo,
+  type HeadCommitInfo,
+  isSupersededByFleetPush,
+} from "./pr_feedback_staleness.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import type { IssueCache } from "./issue_cache.ts";
@@ -60,7 +65,7 @@ export interface CommentEntry {
   id: number;
   body: string;
   thumbs_up: number;
-  /** ISO-8601 creation time, used for the fleet-push staleness check. */
+  /** ISO-8601 creation time, used to spot feedback a push superseded (#211). */
   created_at?: string;
 }
 
@@ -501,87 +506,6 @@ export async function fetchCommentThumbsUpReactors(
 }
 
 /**
- * How long a fleet push suppresses an older comment (Issue #211).
- *
- * The skip is a de-duplication window, not a veto: two hosts maintaining the
- * same PR within a couple of minutes is the collision worth avoiding. Once
- * the sibling's push is this old and the comment is still unactioned, the
- * comment becomes claimable again so genuine feedback is never starved.
- */
-export const FLEET_PUSH_SUPERSEDE_WINDOW_MINUTES = 30;
-
-/**
- * Whether a fleet push has already superseded a PR comment (Issue #211).
- *
- * True only when a fleet author pushed **after** the comment and that push
- * is still inside {@link FLEET_PUSH_SUPERSEDE_WINDOW_MINUTES}.
- *
- * @param commentCreatedAt - ISO-8601 time the comment was posted
- * @param fleetPushAt - ISO-8601 time of the last fleet push, or null
- * @param now - Current time (injectable for testing)
- */
-export function isSupersededByFleetPush(
-  commentCreatedAt: string | undefined,
-  fleetPushAt: string | null,
-  now: Date = new Date(),
-): boolean {
-  if (!commentCreatedAt || !fleetPushAt) return false;
-  const commentMs = Date.parse(commentCreatedAt);
-  const pushMs = Date.parse(fleetPushAt);
-  if (Number.isNaN(commentMs) || Number.isNaN(pushMs)) return false;
-  if (pushMs <= commentMs) return false;
-  const ageMinutes = (now.getTime() - pushMs) / 60_000;
-  return ageMinutes >= 0 && ageMinutes <= FLEET_PUSH_SUPERSEDE_WINDOW_MINUTES;
-}
-
-/**
- * Time of the most recent commit on a PR pushed by a fleet account
- * (Issue #211).
- *
- * @param repo - Repository in "owner/repo" format
- * @param prNumber - PR number
- * @param fleetAuthors - Logins the fleet operates
- * @param ghCommandFn - Function to run gh commands
- * @returns ISO-8601 timestamp, or null when no fleet commit is found
- */
-export async function fetchLatestFleetPushAt(
-  repo: string,
-  prNumber: number,
-  fleetAuthors: string[],
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<string | null> {
-  if (fleetAuthors.length === 0) return null;
-  try {
-    const output = await ghCommandFn([
-      "api",
-      `repos/${repo}/pulls/${prNumber}/commits`,
-      "--jq",
-      '[.[] | {login: (.author.login // ""), date: .commit.committer.date}]',
-    ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return null;
-
-    let latest: number | null = null;
-    let latestIso: string | null = null;
-    for (const entry of parsed as Array<{ login?: string; date?: string }>) {
-      if (!entry?.login || !entry.date) continue;
-      if (!fleetAuthors.includes(entry.login)) continue;
-      const ms = Date.parse(entry.date);
-      if (Number.isNaN(ms)) continue;
-      if (latest === null || ms > latest) {
-        latest = ms;
-        latestIso = entry.date;
-      }
-    }
-    return latestIso;
-  } catch {
-    // A failed lookup must never *invent* a superseding push — fall back to
-    // the previous behaviour and let the comment be evaluated normally.
-    return null;
-  }
-}
-
-/**
  * Fetch PR reviews with CHANGES_REQUESTED state.
  *
  * @param repo - Repository in "owner/repo" format
@@ -754,21 +678,12 @@ export async function findPrCommentsToFix(
     for (const pr of prs) {
       const { number: prNumber, headRefName: branchName, headRefOid } = pr;
 
-      // Issue #211: a sibling fleet host may have pushed a fix for this very
-      // comment moments ago. Resolve the last fleet push once per PR, and
-      // only when a comment is otherwise claimable, so the extra API call
-      // costs nothing on the overwhelmingly common quiet PR.
-      let fleetPushAt: string | null | undefined;
-      const getFleetPushAt = async (): Promise<string | null> => {
-        if (fleetPushAt === undefined) {
-          fleetPushAt = await fetchLatestFleetPushAt(
-            repo,
-            prNumber,
-            scanAuthors,
-            ghCommandFn,
-          );
-        }
-        return fleetPushAt;
+      // Issue #211: shared across both comment surfaces so the head commit is
+      // read at most once per PR, and only when a trusted comment is found.
+      const supersedeCheck: FleetPushSupersedeCheck = {
+        headRefOid,
+        fleetAuthors: scanAuthors,
+        ghCommandFn,
       };
 
       // Check review comments (inline)
@@ -781,7 +696,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
-        getFleetPushAt,
+        supersedeCheck,
       );
       if (reviewComment) {
         return {
@@ -803,7 +718,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
-        getFleetPushAt,
+        supersedeCheck,
       );
       if (issueComment) {
         return {
@@ -869,6 +784,50 @@ export async function findPrCommentsToFix(
 }
 
 /**
+ * What {@link findActionableComment} needs to spot feedback a fleet push has
+ * already superseded (Issue #211).
+ */
+interface FleetPushSupersedeCheck {
+  /** The PR head SHA, when the listing supplied one. */
+  headRefOid: string | undefined;
+  /** Logins the fleet pushes under (this host included). */
+  fleetAuthors: readonly string[];
+  /** Run gh commands. */
+  ghCommandFn: (args: string[]) => Promise<string>;
+  /** Clock override for tests; defaults to `Date.now`. */
+  now?: () => number;
+  /** Memoised head-commit lookup — one API call per PR at most. */
+  headCommit?: { value: HeadCommitInfo | null; loaded: boolean };
+}
+
+/** Whether a fleet push landed after this comment and is still in cool-off. */
+async function isSupersededByRecentFleetPush(
+  repo: string,
+  commentCreatedAt: string | undefined,
+  check: FleetPushSupersedeCheck,
+): Promise<boolean> {
+  if (!check.headRefOid || !commentCreatedAt) return false;
+
+  const cache = check.headCommit ?? { value: null, loaded: false };
+  check.headCommit = cache;
+  if (!cache.loaded) {
+    cache.value = await fetchHeadCommitInfo(
+      repo,
+      check.headRefOid,
+      check.ghCommandFn,
+    );
+    cache.loaded = true;
+  }
+
+  return isSupersededByFleetPush({
+    commentCreatedAt,
+    headCommit: cache.value,
+    fleetAuthors: check.fleetAuthors,
+    now: (check.now ?? Date.now)(),
+  });
+}
+
+/**
  * Find the first actionable comment of a given type on a PR.
  *
  * A comment is actionable when any of the following is true:
@@ -883,9 +842,11 @@ export async function findPrCommentsToFix(
  *   an authorised thumbs-up or authorisation, because top-level comments
  *   are the higher-injection-risk surface.
  *
- * A comment that clears every trust path is still skipped when a fleet
- * author pushed to the PR after it (Issue #211) — a sibling host is already
- * on it, and claiming it duplicates a whole agent run.
+ * A trusted comment is still skipped when a fleet sibling has just pushed to
+ * the PR (Issue #211): claiming feedback another host's push already addressed
+ * burns an agent run against a branch head that moved underneath it. The
+ * deferral expires with the cool-off window, so unaddressed feedback is
+ * reconsidered by a later scan.
  */
 async function findActionableComment(
   repo: string,
@@ -896,7 +857,7 @@ async function findActionableComment(
   ghCommandFn: (args: string[]) => Promise<string>,
   logger: Logger,
   trustedReviewBots: string[] = [],
-  getFleetPushAt?: () => Promise<string | null>,
+  supersedeCheck?: FleetPushSupersedeCheck,
 ): Promise<Omit<PrCommentToFix, "branchName"> | null> {
   const comments = await fetchPrComments(
     repo,
@@ -932,29 +893,28 @@ async function findActionableComment(
     }
 
     if (isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot) {
-      // Issue #211: a fleet sibling pushed to this PR after the comment was
-      // written, so the comment may already be addressed. Leave it for the
-      // next scan to re-evaluate rather than burning a duplicate agent run.
-      if (getFleetPushAt) {
-        const fleetPushAt = await getFleetPushAt();
-        if (isSupersededByFleetPush(comment.created_at, fleetPushAt)) {
-          logger.info("Skipping comment superseded by a fleet push", {
-            repo,
-            prNumber,
-            commentId: comment.id,
-            commentType,
-            commentCreatedAt: comment.created_at,
-            fleetPushAt,
-          });
-          continue;
-        }
-      }
-
       const trustReason = isAuthorised
         ? "authorised"
         : hasAuthorisedThumbsUp
         ? "thumbs-up"
         : "trusted-bot";
+
+      // Issue #211: a fleet sibling's push may already have addressed this.
+      if (supersedeCheck && await isSupersededByRecentFleetPush(
+        repo,
+        comment.created_at,
+        supersedeCheck,
+      )) {
+        logger.info("Deferring PR comment superseded by a fleet push", {
+          repo,
+          prNumber,
+          commentId: comment.id,
+          commentType,
+          author: comment.login,
+        });
+        continue;
+      }
+
       logger.info("Found actionable PR comment", {
         repo,
         prNumber,
