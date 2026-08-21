@@ -3502,3 +3502,78 @@ Deno.test("executeClaude #148 - a timeout with a CLEAN tree commits nothing and 
     `a clean tree claims no preservation: ${reason}`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Issue #175 — a pre-check that cannot resolve the issue is a bounce
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "workOnIssue - an orphaned merged PR is reported as an expected skip, not a success",
+  async () => {
+    // GRQ#4173: PR #27 merged into `milestone/4168-…` hours after that
+    // milestone's rollup PR #4195 had merged into Develop, so the merge
+    // commit never reached Develop. Reporting the refusal as a success made
+    // the scan forget the issue immediately and both pool slots re-claimed
+    // it every cycle.
+    const branch = "milestone/4168-feed-completion-signal";
+    const gh = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes(".default_branch")) return Promise.resolve("Develop\n");
+      if (args[0] === "api" && key.includes("/compare/")) {
+        return Promise.resolve(
+          key.includes(".ahead_by")
+            ? "4"
+            : JSON.stringify({ status: "diverged" }),
+        );
+      }
+      if (args[0] === "pr" && args[1] === "list") {
+        return Promise.resolve(
+          args.includes("all")
+            ? JSON.stringify([{
+              number: 4195,
+              state: "MERGED",
+              baseRefName: "Develop",
+              mergedAt: "2026-08-20T08:29:52Z",
+            }])
+            : "[]",
+        );
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.resolve(
+          args[2] === "4195"
+            ? JSON.stringify({ mergedAt: "2026-08-20T08:29:52Z" })
+            : JSON.stringify({
+              state: "MERGED",
+              mergeCommit: { oid: "09ad4105" },
+              baseRefName: branch,
+              mergedAt: "2026-08-20T18:02:11Z",
+            }),
+        );
+      }
+      if (args[0] === "pr" && args[1] === "create") {
+        return Promise.resolve("https://github.com/org/repo/pull/4400\n");
+      }
+      return Promise.resolve("");
+    };
+
+    const deps = createMockDeps({
+      github: { runGhCommand: gh },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({
+            ok: true,
+            value: "https://github.com/org/repo/pull/27",
+          }),
+      },
+    });
+
+    const result = await workOnIssue(makeContext(), deps);
+
+    assertEquals(result.phase, "merged_pr_precheck");
+    assertEquals(result.success, false);
+    assertEquals(result.expectedSkip, true);
+    assertStringIncludes(result.reason, "merged_pr_did_not_land");
+    // A bounce raised no PR by design — it is not diagnosed as a failure.
+    assertEquals(result.outcome?.kind, "no_pr_expected");
+  },
+);
