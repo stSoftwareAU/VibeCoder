@@ -694,6 +694,8 @@ prompt_interactive_config() {
     fi
     echo -e "  Service account login(s) this fleet runs as (comma-separated)${service_accounts_display}"
     echo -e "  The worker refuses to run as any account not on this list."
+    echo -e "  They also count as fleet PR authors (unioned into fleet_pr_authors),"
+    echo -e "  so a sibling's open PR blocks this host from duplicating the work."
     echo -e "  Leave blank to default to the account you are authenticated as."
     echo -n "  Service accounts: "
     read -r input_service_accounts

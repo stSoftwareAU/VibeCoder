@@ -101,6 +101,9 @@ export const runCoreCommand: Command = {
         githubUser,
         allowedAuthors: _config.allowedAuthors,
         fleetPrAuthors: _config.fleetPrAuthors ?? [],
+        // Issue #209: siblings listed only under `service_accounts` are
+        // fleet accounts too — the effective set the log names must say so.
+        serviceAccounts: _config.serviceAccounts ?? [],
       });
       for (const line of formatFleetConfigValidation(fleetValidation)) {
         if (fleetValidation.level === "ok") {

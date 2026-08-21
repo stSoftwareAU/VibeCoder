@@ -179,11 +179,16 @@ export const diagnoseRepoCommand: Command = {
       githubUser,
       allowedAuthors: config.allowedAuthors,
       fleetPrAuthors: config.fleetPrAuthors ?? [],
+      serviceAccounts: config.serviceAccounts ?? [],
     });
     const fleetAuthors = resolveFleetAuthors(
       githubUser,
       config.allowedAuthors,
       config.fleetPrAuthors ?? [],
+      // Issue #209: a sibling listed only under `service_accounts` must
+      // still have its open PRs fetched here, or diagnose-repo reports a
+      // blind spot as healthy.
+      config.serviceAccounts ?? [],
     );
     const prs = await fetchOpenPRsForFleet(repo, fleetAuthors, undefined, ghFn);
 

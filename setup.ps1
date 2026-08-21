@@ -895,6 +895,8 @@ function Read-VibeInteractiveConfig {
         -Existing $existing.service_accounts `
         -Notes @(
             "The worker refuses to run as any account not on this list.",
+            "They also count as fleet PR authors (unioned into fleet_pr_authors),",
+            "so a sibling's open PR blocks this host from duplicating the work.",
             "Leave blank to default to the account you are authenticated as.")
     if ($serviceAccounts) {
         $answers.service_accounts = ConvertTo-VibeList -Value $serviceAccounts
