@@ -55,6 +55,15 @@ The pool test also reproduces the production shape: a bouncing issue that
 costs almost no time re-entered the pool seconds later and was re-processed
 forever (the un-fixed run only stops at the test's hard call cap).
 
+Local `./quality.sh`: every check passes except `deno tests`, which reports
+**10 pre-existing, environment-dependent failures** in
+`fleet_health_test.ts`, `host_workdir_guard_test.ts`,
+`optional_feature_env_test.ts` and `setup_workdir_reminder_test.ts` — all four
+untouched by this PR. Verified pre-existing by running the same four files in a
+clean worktree at the parent commit: the same 10 fail there
+(`FAILED | 63 passed | 10 failed`). This PR's run: `14733 passed | 10 failed`,
+with the failing set unchanged.
+
 ```mermaid
 flowchart LR
     C["gh issue close<br/>(any close path)"] --> S["spawnGh chokepoint"]
