@@ -794,6 +794,9 @@ Example log entries:
 | `AUTH_FAILURE` | An authorisation check failed (e.g., comment from non-authorised user) |
 | `WORKON_LABEL_VERIFIED` | The work-on label was verified as added by ALLOWED_AUTHOR |
 | `RATE_LIMIT` | Rate limiting was encountered during processing |
+| `UNAUTHORISED_PR_REVIEW` | A CHANGES_REQUESTED review was skipped — the reviewer is neither an authorised commenter nor a trusted review bot |
+| `ESCAPE_HATCH_UNTRUSTED_FOLLOW_UP` | An escape-hatch hand-off was rejected — the follow-up issue it named was filed by an untrusted author |
+| `ESCAPE_HATCH_AUTHOR_UNVERIFIABLE` | An escape-hatch hand-off was rejected — no trusted follow-up authors are configured, so authorship could not be checked |
 
 ### 📂 Optional Separate Security Log File
 

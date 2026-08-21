@@ -21,6 +21,18 @@
  *   hand-off would put the worker back into the retry loop the escape hatch
  *   exists to prevent.
  *
+ * **Existence alone is forgeable (Issue #185, SEC-8f21c4a0e7b3).** Any actor
+ * whose text reaches the PR-feedback prompt — including a reviewer who is not
+ * on the `authorized_commenters` allowlist — can steer the model into writing
+ * "tracked separately in #N" for an issue that already exists. The number then
+ * passes the existence check and the run is recorded as resolved, skipping the
+ * escalation genuinely unresolved feedback would trigger. The check therefore
+ * also requires an **unforgeable** signal: GitHub's own record of who filed the
+ * follow-up. The author must be the worker itself, a fleet sibling, or an
+ * allowlisted author (`allowed_authors` / `authorized_commenters`); anyone else
+ * is rejected, loudly. With no allowlist to check against, the gate cannot be
+ * applied at all, so it fails closed rather than waving the hand-off through.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -37,7 +49,34 @@ export interface FollowUpVerification {
     | "unparseable-ref"
     | "not-found"
     | "lookup-failed"
-    | "no-ref";
+    | "no-ref"
+    /** The follow-up exists but was filed by an untrusted login (#185). */
+    | "untrusted-author"
+    /** No trusted-author allowlist was available, so the gate failed closed. */
+    | "no-trusted-authors";
+}
+
+/**
+ * Is `author` on the trusted follow-up author allowlist (Issue #185)?
+ *
+ * GitHub logins are case-insensitive, so matching is too. Blank entries on
+ * either side never match — an empty allowlist entry must not become a
+ * wildcard that admits an issue with a missing author.
+ *
+ * @param author - The `author` GitHub reports for the follow-up issue.
+ * @param trustedAuthors - Worker login + fleet siblings + allowlisted authors.
+ * @returns true when the follow-up was filed by a trusted login.
+ */
+export function isTrustedFollowUpAuthor(
+  author: string | undefined,
+  trustedAuthors: readonly string[],
+): boolean {
+  const key = (author ?? "").trim().toLowerCase();
+  if (key.length === 0) return false;
+  return trustedAuthors.some(
+    (candidate) =>
+      typeof candidate === "string" && candidate.trim().toLowerCase() === key,
+  );
 }
 
 /**
@@ -55,11 +94,16 @@ export function isDefinitiveNotFound(message: string): boolean {
 }
 
 /**
- * Verify that the follow-up issue named by an escape-hatch message exists.
+ * Verify that the follow-up issue named by an escape-hatch message exists
+ * **and was filed by a trusted login**.
  *
  * @param args.issueRef - The `#NNN` / `owner/repo#NNN` ref from
  *   `detectEscapeHatch` (`undefined` when none was found).
  * @param args.currentRepo - Repository in `owner/repo` form, for a bare ref.
+ * @param args.trustedAuthors - Logins whose authorship makes the follow-up
+ *   genuine (Issue #185): the worker's own login, fleet siblings, and the
+ *   configured `allowed_authors` / `authorized_commenters`. An empty list
+ *   rejects every hand-off — the gate fails closed, loudly.
  * @param args.ghClient - GitHub client used for the lookup.
  * @param args.logger - Logger for the loud rejection / inconclusive warning.
  * @returns Whether the hand-off may be accepted, and why.
@@ -67,10 +111,11 @@ export function isDefinitiveNotFound(message: string): boolean {
 export async function verifyFollowUpIssueExists(args: {
   issueRef: string | undefined;
   currentRepo: string;
+  trustedAuthors: readonly string[];
   ghClient: Pick<GitHubClient, "getIssue">;
   logger: Logger;
 }): Promise<FollowUpVerification> {
-  const { issueRef, currentRepo, ghClient, logger } = args;
+  const { issueRef, currentRepo, trustedAuthors, ghClient, logger } = args;
 
   if (!issueRef) return { verified: false, reason: "no-ref" };
 
@@ -84,8 +129,38 @@ export async function verifyFollowUpIssueExists(args: {
     return { verified: true, reason: "unparseable-ref" };
   }
 
+  // Issue #185: without an allowlist there is no unforgeable signal to check,
+  // so accepting would be back to trusting the model's prose. Fail closed.
+  const usableAuthors = trustedAuthors.filter(
+    (candidate) => typeof candidate === "string" && candidate.trim().length > 0,
+  );
+  if (usableAuthors.length === 0) {
+    logger.error(
+      "Rejecting escape-hatch hand-off: no trusted-author allowlist was " +
+        "available to verify who filed the follow-up issue (Issue #185)",
+      { repo: parsed.repo, issueNumber: parsed.issueNumber, issueRef },
+    );
+    return { verified: false, reason: "no-trusted-authors" };
+  }
+
   try {
-    await ghClient.getIssue(parsed.repo, parsed.issueNumber);
+    const issue = await ghClient.getIssue(parsed.repo, parsed.issueNumber);
+    // Issue #185: the issue existing proves nothing — a prompt-injected
+    // message can name any pre-existing issue. Only GitHub's record of the
+    // author is unforgeable by the actor who wrote the prompt text.
+    if (!isTrustedFollowUpAuthor(issue.author, usableAuthors)) {
+      logger.error(
+        "Rejecting escape-hatch hand-off: the follow-up issue it names was " +
+          "not filed by the worker or an allowlisted author (Issue #185)",
+        {
+          repo: parsed.repo,
+          issueNumber: parsed.issueNumber,
+          issueRef,
+          author: issue.author,
+        },
+      );
+      return { verified: false, reason: "untrusted-author" };
+    }
     return { verified: true, reason: "exists" };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

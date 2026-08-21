@@ -982,6 +982,9 @@ export async function createProductionRunCoreDeps(
           claudeNoOutputTimeout: config.claudeNoOutputTimeout,
           maxRateLimitRetries: config.maxRateLimitRetries,
           workerId,
+          // Issue #185: lets the escape-hatch verifier recognise a follow-up
+          // the worker filed under its own login as trusted.
+          githubUser,
           trustedReviewBots: config.trustedReviewBots ?? [],
           repoConfigs: config.repoConfig,
         },

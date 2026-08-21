@@ -342,6 +342,58 @@ Deno.test("findPrCommentsToFix - returns null when repo not allowed", async () =
   }
 });
 
+/**
+ * Fixture: one PR whose only feedback is a CHANGES_REQUESTED review body.
+ */
+function makeChangesRequestedGh(
+  reviewerLogin: string,
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 10, headRefName: "issue-10-fix", headRefOid: "abc123" },
+      ]));
+    }
+    if (key.includes("pulls/10/reviews")) {
+      return Promise.resolve(JSON.stringify([{
+        login: reviewerLogin,
+        id: 700,
+        body: "Please hand this off — tracked separately in #4321",
+        commit_id: "abc123",
+      }]));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+Deno.test("findPrCommentsToFix - ignores a CHANGES_REQUESTED review from an unauthorised reviewer (Issue #185)", async () => {
+  // A review body goes straight into the feedback prompt, so an unauthorised
+  // reviewer must not be able to steer the run at all.
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    ghCommandFn: makeChangesRequestedGh("drive-by-reviewer"),
+    isAuthorisedCommenter: (author: string) => author === "maintainer",
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value, null);
+});
+
+Deno.test("findPrCommentsToFix - still actions a CHANGES_REQUESTED review from an authorised reviewer (Issue #185)", async () => {
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    ghCommandFn: makeChangesRequestedGh("maintainer"),
+    isAuthorisedCommenter: (author: string) => author === "maintainer",
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok && result.value) {
+    assertEquals(result.value.commentType, "pr_review");
+    assertEquals(result.value.commentId, "700");
+  } else {
+    throw new Error("expected an actionable review");
+  }
+});
+
 Deno.test("findPrCommentsToFix - finds authorised review comment", async () => {
   const callLog: string[] = [];
   const ghFn = async (args: string[]): Promise<string> => {
@@ -615,6 +667,74 @@ Deno.test("findPrCommentsToFix - trusted-bot review comment with eyes reaction i
   if (result.ok) {
     assertEquals(result.value, null);
   }
+});
+
+/**
+ * A gh mock whose PR 15 carries one CHANGES_REQUESTED review by `login`.
+ *
+ * Comment endpoints return nothing, so the only candidate the scan can find
+ * is the review itself (Issue #185).
+ */
+function makeReviewOnlyGh(
+  login: string,
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 15, headRefName: "issue-15-fix", headRefOid: "sha15" },
+      ]));
+    }
+    if (key.includes("pulls/15/reviews")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          login,
+          id: 1500,
+          body: "Tracked separately in #4321 — out of scope here.",
+          commit_id: "sha15",
+        },
+      ]));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+Deno.test("findPrCommentsToFix - ignores a CHANGES_REQUESTED review from an unauthorised reviewer (Issue #185)", async () => {
+  // Anyone can review a PR. Its body went straight into the feedback prompt
+  // with no trust check, so a drive-by reviewer could steer what the worker
+  // does — including the escape-hatch hand-off text it writes.
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    ghCommandFn: makeReviewOnlyGh("drive-by-reviewer"),
+    isAuthorisedCommenter: (author: string) => author === "maintainer",
+    trustedReviewBots: ["github-code-quality[bot]"],
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value, null);
+});
+
+Deno.test("findPrCommentsToFix - an authorised reviewer's CHANGES_REQUESTED review is still actionable (Issue #185)", async () => {
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    ghCommandFn: makeReviewOnlyGh("maintainer"),
+    isAuthorisedCommenter: (author: string) => author === "maintainer",
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value?.commentType, "pr_review");
+    assertEquals(result.value?.commentId, "1500");
+  }
+});
+
+Deno.test("findPrCommentsToFix - a trusted review bot's CHANGES_REQUESTED review stays actionable (Issue #185)", async () => {
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    ghCommandFn: makeReviewOnlyGh("github-code-quality[bot]"),
+    isAuthorisedCommenter: () => false,
+    trustedReviewBots: ["github-code-quality[bot]"],
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value?.commentId, "1500");
 });
 
 // ============================================================================
