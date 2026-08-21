@@ -21,7 +21,7 @@ import {
   invalidatePRsForIssueByTitle,
 } from "./issue_query.ts";
 import { postMilestoneProgressComment } from "./milestone_progress.ts";
-import { verifyMergeLanded } from "./merge_landing.ts";
+import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,12 @@ export interface CloseIfMergedResult {
   closed: boolean;
   /** Human-readable explanation of what happened. */
   reason: string;
+  /**
+   * The landing verdict when the PR merged but its change did NOT land
+   * (Issue #175). Present only for that case, so callers can self-heal an
+   * orphaned milestone merge structurally instead of matching on `reason`.
+   */
+  unlanded?: Extract<MergeLanding, { landed: false }>;
 }
 
 /** Result of handling a closed PR. */
@@ -265,6 +271,9 @@ export async function ensureIssueClosedIfPrMerged(
           closed: false,
           reason:
             `PR #${prNumber} merged but its change did not land (${landing.reason}): ${landing.detail} — issue left open (Issue #4396)`,
+          // Issue #175: hand the verdict back so the caller can self-heal an
+          // orphaned milestone merge rather than bouncing on it every cycle.
+          unlanded: landing,
         },
       };
     }

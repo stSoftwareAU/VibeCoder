@@ -26,9 +26,19 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { ensureIssueClosedIfPrMerged } from "../issue_lifecycle.ts";
+import { repairOrphanedMilestoneMerge } from "../orphaned_rollup.ts";
 
 /** Reason string for the early-exit result — stable identifier used by the orchestrator. */
 export const MERGED_PR_PRECHECK_EARLY_EXIT_REASON = "pr_already_merged";
+
+/**
+ * Reason prefix for a pre-check that refused to close the issue because the
+ * merge never landed (Issue #175). Distinct from
+ * {@link MERGED_PR_PRECHECK_EARLY_EXIT_REASON} so the orchestrator can report
+ * a bounce rather than a success — a bounce reported as success is what let
+ * both pool slots re-claim the same issue every scan cycle.
+ */
+export const MERGED_PR_PRECHECK_UNRESOLVED_REASON = "merged_pr_did_not_land";
 
 /**
  * Pre-flight check: close the issue and exit early when a merged PR already exists.
@@ -139,7 +149,76 @@ export async function workOnIssueMergedPrPrecheck(
     );
     // Still short-circuit — the PR is merged, so running the full pipeline
     // would waste cycles. A subsequent run will retry the close.
+    return {
+      status: "early_exit",
+      reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON,
+    };
+  }
+
+  // Issue #175: the merge did not land, so the pre-check could not resolve
+  // the issue. Self-heal what it can (an orphaned milestone merge needs a
+  // fresh rollup PR), then report a bounce — NOT a success. Reporting it as
+  // a success made the scan forget the issue immediately, and both pool
+  // slots re-claimed it every cycle for the whole run.
+  const unlanded = closeResult.value.unlanded;
+  if (unlanded) {
+    const repair = await selfHealOrphanedMerge(
+      repo,
+      prNumber,
+      unlanded.baseRefName ?? "",
+      deps,
+    );
+    logger.warn(
+      `Merged PR pre-check could not resolve issue #${issueNumber}: ` +
+        `${closeResult.value.reason}. Self-heal: ${repair}. The issue is ` +
+        `placed in the retry cooldown so it is not re-claimed until ` +
+        `something changes (Issue #175)`,
+      { repo, issueNumber, prNumber, landingReason: unlanded.reason },
+    );
+    return {
+      status: "early_exit",
+      reason:
+        `${MERGED_PR_PRECHECK_UNRESOLVED_REASON}: ${closeResult.value.reason}`,
+      expectedSkip: true,
+    };
   }
 
   return { status: "early_exit", reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON };
+}
+
+/**
+ * Raise (or confirm) a rollup PR for a milestone branch carrying an orphaned
+ * merge, and describe the outcome for the warning log.
+ *
+ * Never throws: the pre-check's job is to report the bounce, and a repair
+ * that failed is reported as a failure in the message rather than swallowed.
+ */
+async function selfHealOrphanedMerge(
+  repo: string,
+  prNumber: number,
+  baseRefName: string,
+  deps: WorkerDeps,
+): Promise<string> {
+  const outcome = await repairOrphanedMilestoneMerge({
+    repo,
+    milestoneBranch: baseRefName,
+    orphanedPrNumber: prNumber,
+    ghCommandFn: deps.github.runGhCommand,
+  }).catch((err) => ({
+    action: "failed" as const,
+    reason: err instanceof Error ? err.message : String(err),
+  }));
+
+  switch (outcome.action) {
+    case "created":
+      return `raised rollup PR ${outcome.prUrl} for ${outcome.milestoneBranch}`;
+    case "exists":
+      return `rollup PR #${outcome.prNumber} for ${outcome.milestoneBranch} is already open`;
+    case "nothing-to-merge":
+      return `${outcome.milestoneBranch} is not ahead of the default branch — no rollup PR needed`;
+    case "not-applicable":
+      return `no rollup repair applies (${outcome.reason})`;
+    case "failed":
+      return `rollup repair FAILED — ${outcome.reason}`;
+  }
 }
