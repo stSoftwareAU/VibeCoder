@@ -301,6 +301,49 @@ match**:
 | 1.85     | Planning (`planning` label)                     | [planning_processor.ts](../worker/deno/lib/planning_processor.ts)       |
 | 2        | New implementation issues (globally oldest)     | [issue_worker.ts](../worker/deno/lib/issue_worker.ts)                   |
 
+#### 🚦 Primary GraphQL quota exhaustion
+
+GitHub's **primary GraphQL quota** and its **core (REST) quota** are separate
+buckets. Once the GraphQL bucket is empty every further GraphQL-backed `gh`
+call in the window is guaranteed to fail, while REST calls keep working — the
+worker exploits exactly that split (Issue #42).
+
+```mermaid
+flowchart TD
+    pass["Top of a priority pass"]
+    pre{"gh api rate_limit<br/>(free, core quota)<br/>quota gone?"}
+    pause["Pause until reset<br/>(Issue #1780 path)"]
+    work["Dispatch priorities"]
+    call["Any GraphQL-backed gh call"]
+    latched{"Primary-quota<br/>latch set?"}
+    skip["Skip before the spawn<br/>one line, no retry"]
+    fail{"Fails with<br/>'rate limit already exceeded'?"}
+    latch["Latch the process until reset<br/>+ write the rate-limit signal"]
+    rest["REST fallback on the core quota:<br/>PR create, claim release, label ops"]
+
+    pass --> pre
+    pre -- yes --> pause --> pass
+    pre -- no --> work --> call --> latched
+    latched -- yes --> skip --> rest
+    latched -- no --> fail
+    fail -- yes --> latch --> rest
+```
+
+- **The latch** ([primary_quota_latch.ts](../worker/deno/lib/primary_quota_latch.ts))
+  is a process-global set by the shared `gh` chokepoint the first time a call
+  reports the primary-quota message. Every later GraphQL-backed call
+  short-circuits before the spawn, the telemetry and the retry, so a scan that
+  catches-and-continues can no longer drive hundreds of doomed `gh` processes.
+  It auto-expires the instant the recorded reset passes.
+- **REST stays callable.** `isQuotaExemptGhCall` exempts `gh api <rest-path>`
+  (but never `gh api graphql`), so the free `gh api rate_limit` read can still
+  learn the reset, a finished run still releases its claim, and
+  [pr_create_rest.ts](../worker/deno/lib/pr_create_rest.ts) still opens the PR
+  for an already-pushed, quality-gated branch instead of orphaning it.
+- **The per-pass pre-flight gate** re-reads `gh api rate_limit` at the top of
+  every priority pass, not just at process start, so exhaustion caused by a
+  sibling worker sharing the token is caught before this pass spends anything.
+
 #### 🧭 Scan cursor — resume near where a rate limit fired
 
 A primary GraphQL rate limit that fires mid-cycle pauses the worker until the

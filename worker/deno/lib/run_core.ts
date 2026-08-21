@@ -2480,6 +2480,36 @@ export async function runCoreLoop(
             continue;
           }
 
+          // --- Per-pass pre-flight quota gate (Issue #42) ---
+          // The pre-flight gate above the main loop runs once, at process
+          // start. The signal check immediately above only sees exhaustion
+          // this process (or a sibling sharing the work dir) already
+          // recorded — so when another worker on the same token drains the
+          // primary GraphQL quota mid-run, this pass would learn about it
+          // only by making a doomed call of its own. `gh api rate_limit` is
+          // free and rides the core quota, so re-reading it at the top of
+          // every priority pass catches an exhausted window before the pass
+          // spends anything, and pauses on the same #1780 path.
+          const passPreflight = await deps.preflightGitHubRateLimit();
+          if (passPreflight.rateLimited) {
+            const nowSec = Math.floor(deps.now() / 1000);
+            const resetEpoch = nowSec +
+              Math.max(1, passPreflight.remainingSeconds);
+            deps.log(
+              `Per-pass pre-flight: ${passPreflight.message} — pausing until reset ${
+                formatRateLimitReset(resetEpoch, nowSec)
+              }`,
+            );
+            const wait = await pauseUntilRateLimitReset(
+              resetEpoch,
+              "Per-pass pre-flight",
+            );
+            if (wait.outcome === "shutdown" || wait.outcome === "duration") {
+              break;
+            }
+            continue;
+          }
+
           // --- Health checks ---
           // Issue #2602: a failed check marks the worker unhealthy so neither
           // the per-iteration heartbeat below nor the end-of-run report
