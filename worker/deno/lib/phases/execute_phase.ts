@@ -41,7 +41,15 @@ import {
   startWipCheckpoints,
 } from "../wip_checkpoint.ts";
 import { buildProgressExtension } from "../progress_extension_runtime.ts";
-import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
+import {
+  hasRunwayForInfraRetry,
+  MIN_INFRA_RETRY_RUNWAY_SECONDS,
+  shouldRetryInfrastructureFailure,
+} from "../infra_retry.ts";
+import {
+  DEADLINE_BOUND_TIMEOUT_MARKER,
+  detectFailureCategory,
+} from "../failure_diagnosis.ts";
 import { describeMemoryPressure } from "../memory_pressure.ts";
 import {
   checkContextBudget,
@@ -85,6 +93,25 @@ async function branchHasCommitsAhead(
 }
 
 /**
+ * Commits the current run added to the branch since the execute phase began
+ * (VibeCoder#174) — i.e. WIP checkpoints (#4170) pushed while or after the
+ * agent ran. Best effort: no start SHA or any git error resolves to 0.
+ */
+async function commitsSinceExecuteStart(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<number> {
+  if (!state.executeStartHeadSha) return 0;
+  const log = await deps.git.runGitCommand(
+    ["rev-list", "--count", `${state.executeStartHeadSha}..HEAD`],
+    { cwd: state.repoPath },
+  );
+  if (!log.ok || log.value.code !== 0) return 0;
+  const n = parseInt(log.value.stdout.trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
  * Build the prompt and execute Claude to implement the issue.
  *
  * Handles prompt building, Claude invocation with timeout, change
@@ -116,6 +143,28 @@ export async function workOnIssueExecuteClaude(
       "Not retrying the killed run in-process: memory pressure was still " +
         "high at the kill, so a retry would meet the same wall (Issue #4374)",
       { phase: "execute", memoryPressure: describeMemoryPressure(pressure) },
+    );
+    return result;
+  }
+
+  // VibeCoder#174: a retry needs runway. Late in the cycle the retry gets
+  // the 60 s execute floor, cannot possibly finish, and its verdict replaces
+  // the first attempt's (which may have preserved WIP). Keep the first
+  // attempt's outcome and let the next cycle resume the branch.
+  if (!hasRunwayForInfraRetry(ctx.cycleDeadlineEpochMs)) {
+    deps.logger.warn(
+      "Not retrying the failed run in-process: fewer than " +
+        `${MIN_INFRA_RETRY_RUNWAY_SECONDS}s of cycle runway remain, so a ` +
+        "retry could not finish — the next cycle resumes the branch " +
+        "(VibeCoder#174)",
+      {
+        phase: "execute",
+        category: detectFailureCategory(result.reason),
+        runwaySeconds: Math.max(
+          0,
+          Math.round(((ctx.cycleDeadlineEpochMs ?? 0) - Date.now()) / 1000),
+        ),
+      },
     );
     return result;
   }
@@ -444,6 +493,17 @@ async function executeClaudeBody(
     // wait for `enable_session_resume`; that flag remains the opt-in half
     // that auto-resumes from the branch on re-claim.
     let wipNote: string | undefined;
+    // The phase-end checkpoint (#4170) may already have committed and pushed
+    // the run's work before this branch counted dirty files — on
+    // VibeCoder#174 the tree was clean, a WIP commit was on the branch, and
+    // the release comment still said "without creating changes". Count the
+    // commits the run added so the message tells the truth.
+    const wipCommits = await commitsSinceExecuteStart(state, deps);
+    if (dirtyFiles === 0 && wipCommits > 0) {
+      wipNote = `WIP preserved: ${wipCommits} checkpoint commit` +
+        `${wipCommits === 1 ? "" : "s"} pushed to '${state.branchName}' — ` +
+        `the next claim resumes from that branch (Issue #4170)`;
+    }
     if (dirtyFiles > 0) {
       const preserved = await preserveTimedOutWip({
         repoPath: state.repoPath,
@@ -490,13 +550,21 @@ async function executeClaudeBody(
     // failure as zero_output (infrastructure) so the infra-retry wrapper
     // fires. Pure timeouts with partial output remain in the generic
     // `timeout` category and are not retried.
+    // A deadline-bound run timed out because the cycle ended, not because
+    // the issue defeated a full budget: say so (the marker also keeps it out
+    // of the escalating timeout cooldown, VibeCoder#174).
+    const deadlineNote = executeTimeout.deadlineBound
+      ? ` ${DEADLINE_BOUND_TIMEOUT_MARKER}`
+      : "";
     const baseReason = (state.claudeOutput.length === 0
-      ? "Claude timed out with zero output and made no changes"
+      ? `Claude timed out${deadlineNote} with zero output and made no changes`
       : dirtyFiles > 0
-      ? `Claude timed out with uncommitted changes (${dirtyFiles} file${
+      ? `Claude timed out${deadlineNote} with uncommitted changes (${dirtyFiles} file${
         dirtyFiles === 1 ? "" : "s"
       })`
-      : "Claude timed out without creating changes") +
+      : wipCommits > 0
+      ? `Claude timed out${deadlineNote} with its work preserved on the branch`
+      : `Claude timed out${deadlineNote} without creating changes`) +
       (wipNote ? ` — ${wipNote}` : "");
     const reason = formatDetailedFailureMessage(baseReason, {
       elapsedSeconds,

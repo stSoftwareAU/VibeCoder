@@ -79,18 +79,27 @@ export interface DiagnosticContext {
 export function detectFailureCategory(failureMessage: string): FailureCategory {
   if (!failureMessage) return "unknown";
 
+  // The worker's OWN watchdog ends a timed-out agent with SIGTERM (then
+  // SIGKILL), so a genuine timeout's diagnostics legitimately read
+  // `Raw exit code: 143 (SIGTERM)` or `137 (SIGKILL)`. That evidence must not
+  // be mistaken for an external kill (VibeCoder#174: every hard timeout was
+  // classified `killed`, retried in-process with 60 s of runway, and blamed
+  // on the OOM killer). `Watchdog:` only appears in messages the timeout
+  // path builds, so it is the discriminator.
+  const ownWatchdogFired = watchdogFiredIn(failureMessage);
+
   // SIGKILL first (Issue #4202): a killed run's message must never be read as
   // a timeout — that mislabelling is precisely what this category exists to
   // end. The signal name is the discriminator because it only appears when
   // the runner classified a genuine kill.
-  if (failureMessage.includes("SIGKILL")) {
+  if (!ownWatchdogFired && failureMessage.includes("SIGKILL")) {
     return "killed";
   }
 
   // Issue #46: an external SIGTERM the worker never requested is an
   // environment kill too — not a property of the issue. Classify it as
   // `killed` (infrastructure) so it is retried and not blamed on the issue.
-  if (failureMessage.includes("SIGTERM")) {
+  if (!ownWatchdogFired && failureMessage.includes("SIGTERM")) {
     return "killed";
   }
 
@@ -180,6 +189,37 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   }
 
   return "unknown";
+}
+
+/**
+ * True when the message carries the worker watchdog's own evidence line
+ * (`Watchdog: hard-timeout` / `Watchdog: no-output`, written by
+ * `formatDetailedFailureMessage` for a timed-out run). Such a run was ended
+ * by the worker, so any signal named in its raw-exit diagnostics is the
+ * watchdog's doing, not an external kill (VibeCoder#174).
+ */
+export function watchdogFiredIn(failureMessage: string): boolean {
+  return /\bWatchdog: (?:hard-timeout|no-output)\b/.test(failureMessage);
+}
+
+/**
+ * Marker the execute phase puts in a timeout reason when the run's budget was
+ * bound by the cycle deadline rather than `claude_timeout` (VibeCoder#174).
+ * A deadline-bound timeout is the cycle ending, not the issue defeating a full
+ * budget, so it must not feed the escalating timeout cooldown (Issue #4304)
+ * — the next cycle should simply resume the preserved WIP.
+ */
+export const DEADLINE_BOUND_TIMEOUT_MARKER = "at the cycle deadline";
+
+/**
+ * Does this failure reason describe a timeout-class failure for the
+ * escalating re-claim cooldown (Issue #4304)? A run that burned its whole
+ * configured budget and produced nothing does; a deadline-bound timeout
+ * (VibeCoder#174) does not.
+ */
+export function isTimeoutClassFailureReason(reason: string): boolean {
+  if (!/\btim(?:ed[ -]?out|eout)\b/i.test(reason)) return false;
+  return !reason.includes(DEADLINE_BOUND_TIMEOUT_MARKER);
 }
 
 /** Every valid {@link FailureCategory} value — the source of truth for {@link normaliseFailureCategory}. */

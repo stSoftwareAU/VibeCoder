@@ -28,6 +28,27 @@ export const DEFAULT_INFRA_RETRY_BACKOFF_MS = 15_000;
 /** Maximum in-process retries per phase per issue. */
 export const MAX_INFRA_RETRIES_PER_PHASE = 1;
 
+/**
+ * Least cycle runway (seconds) an in-process retry needs to be worth a
+ * billed start (VibeCoder#174). Observed live: a 795 s deadline-bound
+ * execute timed out, was retried with the 60 s execute floor, and the doomed
+ * retry's "no changes" verdict replaced the real outcome (WIP preserved).
+ */
+export const MIN_INFRA_RETRY_RUNWAY_SECONDS = 300;
+
+/**
+ * True when the cycle deadline (if any) leaves at least
+ * {@link MIN_INFRA_RETRY_RUNWAY_SECONDS} for a retry. No deadline (CLI
+ * single-issue runs, tests) means unbounded runway.
+ */
+export function hasRunwayForInfraRetry(
+  cycleDeadlineEpochMs: number | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (cycleDeadlineEpochMs === undefined) return true;
+  return cycleDeadlineEpochMs - nowMs >= MIN_INFRA_RETRY_RUNWAY_SECONDS * 1000;
+}
+
 /** Options for `shouldRetryInfrastructureFailure`. */
 export interface InfraRetryOptions {
   /** Backoff in milliseconds before the retry. Defaults to 15s. */

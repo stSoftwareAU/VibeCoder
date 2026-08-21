@@ -11,6 +11,7 @@
  */
 
 import type { GitHubClient, Logger, WorkerConfig } from "../types.ts";
+import { isTimeoutClassFailureReason } from "./failure_diagnosis.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
 import type { IssueContext } from "./issue_worker_types.ts";
 import type {
@@ -2171,8 +2172,10 @@ export async function createProductionRunCoreDeps(
       // Timeout-class classification (Issue #4304): a run that burned its
       // whole budget and produced nothing feeds the escalating re-claim
       // cooldown; every other failure keeps the flat base cooldown.
+      // A deadline-bound timeout is exempt (VibeCoder#174): the cycle ended
+      // with WIP preserved, so the next cycle should resume it, not wait 2 h.
       const failureKind = !result.success && !isExpectedSkip &&
-          /\btim(?:ed[ -]?out|eout)\b/i.test(result.reason)
+          isTimeoutClassFailureReason(result.reason)
         ? "timeout" as const
         : undefined;
 
