@@ -264,6 +264,17 @@ RUN set -eu; s=/opt/deno-seed-src; m="npm:@playwright/mcp@${PLAYWRIGHT_MCP_VERSI
 COPY entrypoint.sh /usr/local/bin/vibe-entrypoint
 RUN chmod 0755 /usr/local/bin/vibe-entrypoint
 
+# Volume init (Issues #4186, #229): the one-shot root run the launchers make
+# before the worker — fsck the block-device volumes, then chown the roots.
+# e2fsprogs supplies e2fsck; without it a volume carrying recorded ext4
+# errors can only be recreated, never repaired.
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends e2fsprogs; \
+    rm -rf /var/lib/apt/lists/*
+COPY volume-init.sh /usr/local/bin/vibe-volume-init
+RUN chmod 0755 /usr/local/bin/vibe-volume-init
+
 USER vibe
 WORKDIR /workspace
 

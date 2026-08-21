@@ -21,6 +21,8 @@ const DEFAULT_GIT_COMMAND_TIMEOUT = 60;
 const DEFAULT_GIT_MERGE_TIMEOUT = 120;
 
 /** Exit code returned when a git operation times out. */
+import { noteGitOutputForVolumeFault } from "./work_volume_fault.ts";
+
 export const TIMEOUT_EXIT_CODE = 124;
 
 /** Result of running a git command. */
@@ -114,6 +116,13 @@ export async function runGitCommand(
 
     const stdout = new TextDecoder().decode(process.stdout);
     const stderr = new TextDecoder().decode(process.stderr);
+
+    // Issue #229: a filesystem-level failure in git's output is a host
+    // fault, not this call's — record it once so the claim guards stop new
+    // work on the broken volume.
+    if (process.code !== 0) {
+      noteGitOutputForVolumeFault(args, stderr, stdout);
+    }
 
     // Issue #2380: journal `git push` mutations to the audit log.
     // Best-effort — never lets journalling alter or abort the git call.
