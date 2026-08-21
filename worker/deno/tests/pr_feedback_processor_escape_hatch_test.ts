@@ -68,7 +68,16 @@ interface CapturedGh {
    * follow-up issue that does not exist (Issue #3661).
    */
   getIssueError?: string;
+  /**
+   * Login `getIssue` reports as the follow-up issue's author (Issue #185).
+   * Defaults to the worker itself; a different login models the decoy issue
+   * a prompt-injected hand-off message names.
+   */
+  followUpAuthor: string;
 }
+
+/** The worker's own login in these fixtures — a trusted follow-up author. */
+const WORKER_LOGIN = "worker";
 
 /**
  * A `createClient` stub backed by `captured.followUpLabels` so the escape-hatch
@@ -88,7 +97,7 @@ function makeMockClient(captured: CapturedGh): GitHubClient {
         title: "follow-up",
         body: "",
         labels: captured.followUpLabels[`${repo}#${issueNumber}`] ?? [],
-        author: "worker",
+        author: captured.followUpAuthor,
         assignees: [],
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
@@ -154,6 +163,7 @@ async function runWithResponseMessage(
   followUpLabels: Record<string, string[]> = {},
   configRepos?: string[],
   getIssueError?: string,
+  followUpAuthor: string = WORKER_LOGIN,
 ): Promise<{
   captured: CapturedGh;
   logs: CapturedLog[];
@@ -169,6 +179,7 @@ async function runWithResponseMessage(
       labelsRemoved: [],
       followUpLabels,
       getIssueError,
+      followUpAuthor,
     };
     const logs: CapturedLog[] = [];
 
@@ -185,10 +196,15 @@ async function runWithResponseMessage(
       github: makeMockGithub(captured),
       // Issue #3074: the cross-repo follow-up strip allowlist is the configured
       // `repos`. Override `loadConfig` so the test controls that allowlist.
-      config: configRepos === undefined ? undefined : {
+      // Issue #185: the same config supplies the trusted follow-up authors, so
+      // the worker login must be on the allowlist for a genuine hand-off.
+      config: {
         loadConfig: (() =>
           Promise.resolve(
-            { repos: configRepos } as WorkerConfig,
+            {
+              repos: configRepos ?? [],
+              allowedAuthors: [WORKER_LOGIN],
+            } as WorkerConfig,
           )) as ConfigDeps["loadConfig"],
       },
       git: {
@@ -392,6 +408,50 @@ Deno.test("processPrFeedback - a hand-off naming a non-existent follow-up is rej
   assertStringIncludes(
     captured.comments[0]!,
     "could not identify a code change",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #185 (SEC-8f21c4a0e7b3): existence is forgeable — the named issue must
+// also have been *filed by* the worker or an allowlisted author.
+// ---------------------------------------------------------------------------
+
+Deno.test("processPrFeedback - a hand-off naming an existing issue filed by an untrusted author is rejected (Issue #185)", async () => {
+  // The attack: injected PR-review text steers the run's own message into
+  // citing a real decoy issue the attacker opened. It exists, so the #3661
+  // existence check passes — only authorship exposes it.
+  const message = "This work is tracked separately in stSoftwareAU/foo#4321, " +
+    "so it is out of scope here.";
+
+  const { captured, result, logs } = await runWithResponseMessage(
+    message,
+    undefined,
+    { "stSoftwareAU/foo#4321": ["top-priority"] },
+    undefined,
+    undefined,
+    "drive-by-reviewer",
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.summary.includes("escape hatch"),
+    false,
+    "a forged hand-off must not be recorded as a resolution",
+  );
+  // The ordinary reply path runs instead of the hand-off reply...
+  assertEquals(captured.comments.length, 1);
+  assertStringIncludes(
+    captured.comments[0]!,
+    "could not identify a code change",
+  );
+  // ...and no label is mutated on the attacker-named issue.
+  assertEquals(captured.labelsRemoved, []);
+  assert(
+    logs.some((l) =>
+      l.level === "error" && l.message.includes("not filed by the worker")
+    ),
+    "the rejection must be logged loudly",
   );
 });
 

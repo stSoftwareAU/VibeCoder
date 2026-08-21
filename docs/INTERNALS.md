@@ -1052,7 +1052,7 @@ feedback:
 | ---------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Inline review comments** | `repos/{repo}/pulls/{pr}/comments` | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (a bare `+1` count is not trusted, since any user can self-react). |
 | **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments.                                                                                                                                                                      |
-| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | All CHANGES_REQUESTED reviews are processed (no thumbs-up needed).                                                                                                                            |
+| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt.                                              |
 
 **Processed-comment tracking** — comments are marked as processed by adding an
 "eyes" (👀) reaction. The discovery query filters for `.reactions.eyes == 0` to
