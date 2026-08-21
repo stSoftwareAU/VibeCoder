@@ -9,7 +9,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   countCommitsAhead,
   issueBranchRefPatterns,
@@ -116,7 +121,10 @@ Deno.test("#220 - several candidates and no resume file: the most recently pushe
         "issue-211-newer": { ahead: 2 },
       },
       // Recency ordering puts the newest first.
-      { orderBranchesByRecency: () => Promise.resolve(["issue-211-newer", "issue-211-older"]) },
+      {
+        orderBranchesByRecency: () =>
+          Promise.resolve(["issue-211-newer", "issue-211-older"]),
+      },
     ),
   );
 
@@ -188,10 +196,13 @@ Deno.test("#220 - a candidate that cannot be checked out is skipped for the next
       persistedBranch: "issue-211-gone",
       gitOptions: GIT_OPTIONS,
     },
-    fakeGit({ "issue-211-gone": { ahead: 1 }, "issue-211-here": { ahead: 2 } }, {
-      resumeFeatureBranchFromRemote: (branch) =>
-        Promise.resolve({ ok: true, value: branch === "issue-211-here" }),
-    }),
+    fakeGit(
+      { "issue-211-gone": { ahead: 1 }, "issue-211-here": { ahead: 2 } },
+      {
+        resumeFeatureBranchFromRemote: (branch) =>
+          Promise.resolve({ ok: true, value: branch === "issue-211-here" }),
+      },
+    ),
   );
 
   assertEquals(outcome.branch, "issue-211-here");

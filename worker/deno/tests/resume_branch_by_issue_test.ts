@@ -57,37 +57,37 @@ function makeContext(
 /**
  * Mock deps whose remote carries `remoteBranches` (branch → tip SHA) and
  * whose checkout of an existing remote branch succeeds.
+ *
+ * `listRemoteIssueBranches` is the seam the setup phase actually uses, so the
+ * fixture stands in for it and reproduces the refspec `ls-remote` is given:
+ * `issue-<N>`, `issue-<N>-*`, plus any exact ref the resume pointer names.
+ * Every fixture branch carries work, so the default ahead-count stub applies.
  */
 function makeDeps(remoteBranches: Record<string, string>): WorkerDeps {
-  const resumed: string[] = [];
-  const deps = createMockDeps({
+  return createMockDeps({
     git: {
-      runGitCommand: (args: string[]) => {
-        let stdout = "";
-        let code = 0;
-        if (args[0] === "ls-remote") {
-          stdout = Object.entries(remoteBranches)
-            .map(([branch, sha]) => `${sha}\trefs/heads/${branch}`)
-            .join("\n");
-        } else if (args[0] === "merge-base") {
-          // Not contained in base — every fixture branch carries work.
-          code = 1;
-        } else if (args[0] === "log") {
-          stdout = "1700000000\n";
-        }
-        return Promise.resolve({
+      listRemoteIssueBranches: (
+        issueNumber: number,
+        _options?: unknown,
+        extraRefs: readonly string[] = [],
+      ) =>
+        Promise.resolve({
           ok: true as const,
-          value: { code, stdout, stderr: "" },
-        });
-      },
-      resumeFeatureBranchFromRemote: (branchName: string) => {
-        const exists = branchName in remoteBranches;
-        if (exists) resumed.push(branchName);
-        return Promise.resolve({ ok: true as const, value: exists });
-      },
+          value: Object.entries(remoteBranches)
+            .filter(([branch]) =>
+              branch === `issue-${issueNumber}` ||
+              branch.startsWith(`issue-${issueNumber}-`) ||
+              extraRefs.includes(branch)
+            )
+            .map(([branch, sha]) => ({ branch, sha })),
+        }),
+      resumeFeatureBranchFromRemote: (branchName: string) =>
+        Promise.resolve({
+          ok: true as const,
+          value: branchName in remoteBranches,
+        }),
     },
   });
-  return deps;
 }
 
 Deno.test("setup #220 - a retitled issue resumes the persisted branch, not the new slug", async () => {

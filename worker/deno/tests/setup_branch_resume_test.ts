@@ -18,8 +18,15 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { saveResumeState } from "../lib/resume_state_store.ts";
 import { stopHeartbeat } from "../lib/heartbeat.ts";
 
+/**
+ * A session id the CLI would accept — RFC 4122 v4. A v7 id is rejected by
+ * `isValidSessionId` (Issue #204), so the fixture must not use one.
+ */
+const SESSION_ID = "0199fd1e-2a4b-4c3d-8e5f-6a7b8c9d0e1f";
+
 /** The branch the previous claim pushed WIP to, under the previous title. */
-const WIP_BRANCH = "issue-211-two-hosts-maintaining-the-same-pr-after-a-sibling";
+const WIP_BRANCH =
+  "issue-211-two-hosts-maintaining-the-same-pr-after-a-sibling";
 
 function buildState(): PhaseState {
   return {
@@ -56,8 +63,13 @@ function buildContext(
   };
 }
 
-/** Mock deps whose remote carries {@link WIP_BRANCH} and nothing else. */
-function depsWithPushedWip(freshBranches: string[]) {
+/**
+ * Mock deps whose remote carries {@link WIP_BRANCH} and nothing else.
+ *
+ * `freshBranches` records every branch cut from base, so a test can assert
+ * that no fresh branch was created; tests that do not care omit it.
+ */
+function depsWithPushedWip(freshBranches: string[] = []) {
   return createMockDeps({
     git: {
       listRemoteIssueBranches: () =>
@@ -86,7 +98,7 @@ Deno.test("#220 - a retitled issue resumes its pushed branch instead of starting
 
     // The resume file still names the pre-retitle branch.
     await saveResumeState(workDir, ctx.repo, 211, {
-      sessionId: "0199fd1e-2a4b-7c3d-8e5f-6a7b8c9d0e1f",
+      sessionId: SESSION_ID,
       phaseCount: 2,
       branch: WIP_BRANCH,
     });
@@ -96,16 +108,15 @@ Deno.test("#220 - a retitled issue resumes its pushed branch instead of starting
     assertEquals(result.status, "continue");
     // The run continues on the pushed branch, not the title-derived one.
     assertEquals(state.branchName, WIP_BRANCH);
-    assertNotEquals(state.branchName, deps.git.createBranchName(211, ctx.issueTitle));
+    assertNotEquals(
+      state.branchName,
+      deps.git.createBranchName(211, ctx.issueTitle),
+    );
     assertEquals(state.resumedFromCheckpoint, true);
     // No fresh branch was cut from base.
-    assertEquals(
-      (deps.git.createFeatureBranchFromBase as { calls: unknown[] }).calls
-        .length,
-      0,
-    );
+    assertEquals(freshBranches, []);
     // Session resume is on, so the CLI conversation is primed too.
-    assertEquals(state.sessionResumeState?.sessionId, "0199fd1e-2a4b-7c3d-8e5f-6a7b8c9d0e1f");
+    assertEquals(state.sessionResumeState?.sessionId, SESSION_ID);
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {
@@ -141,6 +152,7 @@ Deno.test("#220 - a branch level with base is left alone and a fresh branch is c
   try {
     const ctx = buildContext(workDir, false);
     const state = buildState();
+    const freshBranches: string[] = [];
     const deps = createMockDeps({
       git: {
         listRemoteIssueBranches: () =>
@@ -153,19 +165,24 @@ Deno.test("#220 - a branch level with base is left alone and a fresh branch is c
           Promise.resolve({ ok: true as const, value: 0 }),
         resumeFeatureBranchFromRemote: () =>
           Promise.resolve({ ok: true as const, value: true }),
+        createFeatureBranchFromBase: (branch: string) => {
+          freshBranches.push(branch);
+          return Promise.resolve({ ok: true as const, value: branch });
+        },
       },
     });
 
     const result = await workOnIssueSetupBranch(ctx, state, deps);
 
     assertEquals(result.status, "continue");
-    assertEquals(state.branchName, deps.git.createBranchName(211, ctx.issueTitle));
-    assertEquals(state.resumedFromCheckpoint, false);
     assertEquals(
-      (deps.git.createFeatureBranchFromBase as { calls: unknown[] }).calls
-        .length,
-      1,
+      state.branchName,
+      deps.git.createBranchName(211, ctx.issueTitle),
     );
+    assertEquals(state.resumedFromCheckpoint, false);
+    assertEquals(freshBranches, [
+      deps.git.createBranchName(211, ctx.issueTitle),
+    ]);
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {

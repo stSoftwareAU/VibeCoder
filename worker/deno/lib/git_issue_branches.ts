@@ -94,7 +94,13 @@ export async function listRemoteIssueBranches(
   extraRefs: readonly string[] = [],
 ): Promise<Result<RemoteIssueBranch[]>> {
   const patterns = issueBranchRefPatterns(issueNumber, extraRefs);
-  const args = ["ls-remote", "--heads", "--end-of-options", "origin", ...patterns];
+  const args = [
+    "ls-remote",
+    "--heads",
+    "--end-of-options",
+    "origin",
+    ...patterns,
+  ];
   const result = await runGitCommand(args, options);
   if (!result.ok) {
     return { ok: false, error: result.error };

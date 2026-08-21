@@ -129,7 +129,12 @@ export async function resumeIssueBranch(
 
   const candidates = dedupeBranches(listed.value);
   if (candidates.length === 0) {
-    return { branch: null, reason: "no-candidates", candidates: [], skipped: [] };
+    return {
+      branch: null,
+      reason: "no-candidates",
+      candidates: [],
+      skipped: [],
+    };
   }
 
   const ordered = candidates.length > 1
@@ -137,8 +142,13 @@ export async function resumeIssueBranch(
     : candidates;
 
   const skipped: string[] = [];
-  for (const { branch, reason } of rankResumeCandidates(ordered, persistedBranch)) {
-    const checkout = await git.resumeFeatureBranchFromRemote(branch, gitOptions);
+  for (
+    const { branch, reason } of rankResumeCandidates(ordered, persistedBranch)
+  ) {
+    const checkout = await git.resumeFeatureBranchFromRemote(
+      branch,
+      gitOptions,
+    );
     if (!checkout.ok || checkout.value !== true) {
       skipped.push(`${branch} (could not be checked out)`);
       continue;
@@ -154,7 +164,9 @@ export async function resumeIssueBranch(
       candidates,
       skipped: [...skipped, ...remainingAfter(ordered, branch, skipped)],
       ...(ahead.ok ? { aheadCount: ahead.value } : {}),
-      ...(ahead.ok ? {} : { detail: `ahead-count unavailable: ${ahead.error.message}` }),
+      ...(ahead.ok
+        ? {}
+        : { detail: `ahead-count unavailable: ${ahead.error.message}` }),
     };
   }
 
