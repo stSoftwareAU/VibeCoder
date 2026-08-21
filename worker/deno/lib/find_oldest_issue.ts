@@ -455,10 +455,12 @@ export async function findOldestIssue(
       );
     }
   }
-  diag.getSummary();
+  // Issue #219: the counts ride the result so a caller that gets nothing
+  // back can say why, whether or not diagnostics are enabled.
+  const diagnosticSummary = diag.getSummary();
 
   if (!selected) {
-    return noResult;
+    return { ...noResult, diagnosticSummary };
   }
 
   const stats = cache.getStats();
@@ -471,5 +473,6 @@ export async function findOldestIssue(
     summary: `Selected issue #${selected.number} from ${selected.repo} ` +
       `(cache: ${stats.hits} hits, ${stats.misses} misses, ` +
       `gh-calls: ${ghMetrics.total} total)`,
+    diagnosticSummary,
   };
 }
