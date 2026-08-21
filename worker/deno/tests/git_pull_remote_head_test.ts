@@ -12,11 +12,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import {
-  alignBranchWithRemoteHead,
-  isPrBranchConflictError,
-  updatePrBranch,
-} from "../lib/git_pull.ts";
+import { isPrBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 
 const BRANCH = "issue-556-feature";
@@ -85,74 +81,7 @@ async function seedStaleLocalBranch(localPath: string): Promise<string> {
   return remoteHead;
 }
 
-Deno.test("alignBranchWithRemoteHead - moves a stale local branch onto the remote head (Issue #211)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "remote_head_align_" });
-  try {
-    const { localPath } = await setupRepos(tmpDir);
-    const remoteHead = await seedStaleLocalBranch(localPath);
-
-    const result = await alignBranchWithRemoteHead(BRANCH, { cwd: localPath });
-
-    assert(result.ok, !result.ok ? result.error.message : "");
-    if (result.ok) {
-      assertEquals(result.value.aligned, true);
-      assertEquals(result.value.discardedLocalCommits, 1);
-    }
-    assertEquals(await headSha(localPath), remoteHead);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("alignBranchWithRemoteHead - leaves an in-sync branch untouched (Issue #211)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "remote_head_insync_" });
-  try {
-    const { localPath } = await setupRepos(tmpDir);
-    await runGitCommand(["checkout", "-b", BRANCH], { cwd: localPath });
-    await Deno.writeTextFile(`${localPath}/feature.txt`, "feature\n");
-    await runGitCommand(["add", "."], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "PR commit"], { cwd: localPath });
-    await runGitCommand(["push", "-u", "origin", BRANCH], { cwd: localPath });
-    const before = await headSha(localPath);
-
-    const result = await alignBranchWithRemoteHead(BRANCH, { cwd: localPath });
-
-    assert(result.ok);
-    if (result.ok) {
-      assertEquals(result.value.aligned, false);
-      assertEquals(result.value.discardedLocalCommits, 0);
-    }
-    assertEquals(await headSha(localPath), before);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("alignBranchWithRemoteHead - leaves a branch that origin does not have alone (Issue #211)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "remote_head_local_only_" });
-  try {
-    const { localPath } = await setupRepos(tmpDir);
-    await runGitCommand(["checkout", "-b", BRANCH], { cwd: localPath });
-    await Deno.writeTextFile(`${localPath}/feature.txt`, "feature\n");
-    await runGitCommand(["add", "."], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "local only"], { cwd: localPath });
-    const before = await headSha(localPath);
-
-    const result = await alignBranchWithRemoteHead(BRANCH, { cwd: localPath });
-
-    assert(result.ok);
-    if (result.ok) assertEquals(result.value.aligned, false);
-    assertEquals(
-      await headSha(localPath),
-      before,
-      "a branch origin has never seen must not be reset",
-    );
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("updatePrBranch - does not report a conflict that exists only on the stale local branch (Issue #211)", async () => {
+Deno.test("updatePrBranch - refuses loudly instead of reporting a conflict that exists only on the stale local branch (Issue #211)", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "remote_head_update_" });
   try {
     const { localPath } = await setupRepos(tmpDir);
@@ -160,17 +89,77 @@ Deno.test("updatePrBranch - does not report a conflict that exists only on the s
 
     const result = await updatePrBranch(BRANCH, "main", { cwd: localPath });
 
-    assert(
-      !isPrBranchConflictError(!result.ok ? result.error : null),
-      `the remote PR is mergeable, so no conflict must be reported: ${
-        !result.ok ? result.error.message : ""
-      }`,
-    );
-    assert(result.ok, !result.ok ? result.error.message : "");
+    assertEquals(result.ok, false, "unpushed local commits must not be judged");
+    if (!result.ok) {
+      // A plain failure, never the conflict error — the conflict error is what
+      // hands the PR to the pass that labels it `merge-conflict`, and the
+      // remote PR is mergeable.
+      assertEquals(
+        isPrBranchConflictError(result.error),
+        false,
+        `must not look like a base conflict: ${result.error.message}`,
+      );
+      assert(
+        result.error.message.includes("1 commit(s)"),
+        `must name the unpushed commits: ${result.error.message}`,
+      );
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
 
-    // The base's change really is on the branch now.
-    const shared = await Deno.readTextFile(`${localPath}/shared.txt`);
-    assertEquals(shared, "base version\n");
+Deno.test("updatePrBranch - evaluates the sibling's remote head, not the behind local branch (Issue #211)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "remote_head_sibling_" });
+  try {
+    const { localPath } = await setupRepos(tmpDir);
+    const siblingPath = `${tmpDir}/sibling`;
+
+    // The PR as this clone last saw it.
+    await runGitCommand(["checkout", "-b", BRANCH], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/feature.txt`, "feature work\n");
+    await runGitCommand(["add", "."], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "PR commit"], { cwd: localPath });
+    await runGitCommand(["push", "-u", "origin", BRANCH], { cwd: localPath });
+
+    // A sibling fleet host pushes to the same PR branch.
+    await runGitCommand(["clone", `${tmpDir}/remote.git`, siblingPath], {
+      cwd: tmpDir,
+    });
+    await runGitCommand(["config", "user.email", "sibling@example.com"], {
+      cwd: siblingPath,
+    });
+    await runGitCommand(["config", "user.name", "Sibling"], {
+      cwd: siblingPath,
+    });
+    await runGitCommand(["checkout", BRANCH], { cwd: siblingPath });
+    await Deno.writeTextFile(`${siblingPath}/feature.txt`, "sibling fix\n");
+    await runGitCommand(["add", "."], { cwd: siblingPath });
+    await runGitCommand(["commit", "-m", "sibling fix"], { cwd: siblingPath });
+    await runGitCommand(["push", "origin", BRANCH], { cwd: siblingPath });
+
+    // The base moves on too, so the branch is genuinely behind.
+    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/base.txt`, "base change\n");
+    await runGitCommand(["add", "."], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "base change"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runGitCommand(["checkout", BRANCH], { cwd: localPath });
+
+    const result = await updatePrBranch(BRANCH, "main", { cwd: localPath });
+
+    assert(result.ok, !result.ok ? result.error.message : "");
+    // The sibling's work rode through the update — the stale local head, which
+    // still held the pre-sibling content, was never what got rebased.
+    assertEquals(
+      await Deno.readTextFile(`${localPath}/feature.txt`),
+      "sibling fix\n",
+    );
+    // …and the base's change is on the branch, so it really was updated.
+    assertEquals(
+      await Deno.readTextFile(`${localPath}/base.txt`),
+      "base change\n",
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

@@ -119,7 +119,6 @@ import { updatePrBranch } from "./git_pull.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
   buildCheckoutArgs,
-  buildCheckoutNewBranchArgs,
   buildFetchArgs,
   buildPullArgs,
 } from "./git_ref_args.ts";
@@ -1317,18 +1316,9 @@ export async function createProductionRunCoreDeps(
               };
             }
 
-            // Judge the PR by its remote head, not by whatever this shared
-            // clone's local branch holds (Issue #211) — a stale local branch
-            // invents conflicts the remote PR does not have.
-            const aligned = await checkoutPrBranchAtRemoteHead(
-              params.branchName,
-              gitOptions,
-            );
-            if (!aligned.ok) {
-              return { ok: false as const, error: aligned.error };
-            }
-
-            // Update the PR branch (rebase + force-push)
+            // Update the PR branch (rebase + force-push). It checks the branch
+            // out at its remote head itself (Issue #211), so a stale local
+            // branch can no longer invent a conflict the remote PR lacks.
             // Issue #1313: Pass the reason so conflicting PRs are handled
             // even when behindCount is 0 locally.
             const updateResult = await updatePrBranch(

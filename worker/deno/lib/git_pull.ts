@@ -28,6 +28,7 @@ import {
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
+import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 
 /**
  * Sync a feature branch with the latest default branch (Issue #230).
@@ -467,114 +468,6 @@ export async function syncMilestoneBranchWithDefault(
   };
 }
 
-/** Outcome of {@link alignBranchWithRemoteHead} (Issue #211). */
-export interface RemoteHeadAlignment {
-  /** True when the local branch had to be moved onto the remote head. */
-  aligned: boolean;
-  /** Local commits the remote head did not have (discarded by the reset). */
-  discardedLocalCommits: number;
-  /** The remote head the branch now sits on, when one was found. */
-  remoteSha?: string;
-}
-
-/**
- * Move the checked-out branch onto its remote head before it is evaluated
- * (Issue #211).
- *
- * The branch-update pass reuses a long-lived clone, and nothing there ever
- * resets a feature branch: a run that failed to push leaves its commits on the
- * local branch forever. The next pass then merged the *base* into that stale
- * branch, hit a conflict that exists only locally, and labelled a perfectly
- * mergeable PR `merge-conflict` (NEAT-AI-core #557). The PR is what lives on
- * origin, so that is what must be evaluated.
- *
- * The reset is bounded and recoverable: it only runs when the remote head is
- * known, and any discarded commits stay in the reflog. Their count is
- * returned so the caller can log the fact loudly rather than lose it.
- *
- * @param branchName - The branch to align (must already be checked out)
- * @param options - Git command options
- * @returns What the alignment did, or the git failure that blocked it
- */
-export async function alignBranchWithRemoteHead(
-  branchName: string,
-  options: GitCommandOptions = {},
-): Promise<Result<RemoteHeadAlignment>> {
-  try {
-    assertSafeGitRef(branchName, "PR head branch name");
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err : new Error(String(err)),
-    };
-  }
-
-  // Refresh the tracking ref first — an alignment against a stale ref would
-  // simply move the branch to a different wrong place.
-  await runGitCommand(buildFetchArgs("origin", branchName), options);
-
-  const remote = await runGitCommand(
-    ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branchName}`],
-    options,
-  );
-  if (!remote.ok || remote.value.code !== 0) {
-    // No tracking ref (a clone that does not track this branch, or a branch
-    // that only exists locally). Leave the branch alone — never guess.
-    return {
-      ok: true,
-      value: { aligned: false, discardedLocalCommits: 0 },
-    };
-  }
-  const remoteSha = remote.value.stdout.trim();
-
-  const headResult = await runGitCommand(["rev-parse", "HEAD"], options);
-  const headSha = headResult.ok && headResult.value.code === 0
-    ? headResult.value.stdout.trim()
-    : "";
-  if (headSha === remoteSha) {
-    return {
-      ok: true,
-      value: { aligned: false, discardedLocalCommits: 0, remoteSha },
-    };
-  }
-
-  const aheadResult = await runGitCommand(
-    ["rev-list", "--count", `${remoteSha}..HEAD`],
-    options,
-  );
-  const discardedLocalCommits = aheadResult.ok && aheadResult.value.code === 0
-    ? parseInt(aheadResult.value.stdout.trim(), 10) || 0
-    : 0;
-
-  const reset = await runGitCommand(
-    ["reset", "--hard", remoteSha],
-    options,
-  );
-  if (!reset.ok || reset.value.code !== 0) {
-    const detail = reset.ok
-      ? reset.value.stderr.trim() || `git reset exit ${reset.value.code}`
-      : reset.error.message;
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to align '${branchName}' with origin/${branchName} ` +
-          `(${remoteSha.slice(0, 7)}): ${detail}`,
-      ),
-    };
-  }
-
-  if (discardedLocalCommits > 0) {
-    console.warn(
-      `[git-pull] Aligned '${branchName}' with origin/${branchName} ` +
-        `(${remoteSha.slice(0, 7)}), setting aside ${discardedLocalCommits} ` +
-        `local commit(s) that never reached origin — they remain in the ` +
-        `reflog at ${headSha.slice(0, 7)} (Issue #211)`,
-    );
-  }
-
-  return { ok: true, value: { aligned: true, discardedLocalCommits, remoteSha } };
-}
-
 /** Error name for a PR branch left untouched because its changes conflict (Issue #4373). */
 export const PR_BRANCH_CONFLICT_ERROR = "PrBranchConflict";
 
@@ -640,38 +533,14 @@ export async function updatePrBranch(
   // Ensure the local base branch is current
   await ensureDefaultBranchCurrent(baseBranch, options);
 
-  // Check out the feature branch
-  const currentBranchResult = await runGitCommand(
-    ["rev-parse", "--abbrev-ref", "HEAD"],
-    options,
-  );
-  const currentBranch = currentBranchResult.ok
-    ? currentBranchResult.value.stdout.trim()
-    : "";
-
-  if (currentBranch !== branchName) {
-    const checkoutResult = await runGitCommand(
-      buildCheckoutArgs(branchName),
-      options,
-    );
-    if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
-      return {
-        ok: false,
-        error: new Error(`Failed to checkout branch '${branchName}'`),
-      };
-    }
-  }
-
-  // Issue #211: evaluate the PR as it exists on origin. A stale local branch
-  // (commits from a run that failed to push) made the base look conflicted
-  // when the remote PR was mergeable, which spuriously labelled it
-  // `merge-conflict`. A failure here is not fatal — the pass continues on
-  // whatever is checked out, exactly as it did before.
-  const alignment = await alignBranchWithRemoteHead(branchName, options);
-  if (!alignment.ok) {
-    console.warn(
-      `[git-pull] Could not align '${branchName}' with its remote head: ${alignment.error.message}`,
-    );
+  // Check the feature branch out at its remote head (Issue #211). This pass
+  // shares a long-lived clone, so a plain checkout lands on whatever the local
+  // branch happens to hold — a stale branch from a run that failed to push
+  // made the base look conflicted when the remote PR was mergeable, which
+  // spuriously labelled it `merge-conflict`. The PR is what lives on origin.
+  const aligned = await checkoutPrBranchAtRemoteHead(branchName, options);
+  if (!aligned.ok) {
+    return { ok: false, error: aligned.error };
   }
 
   // Ensure enough history for range detection on a shallow clone (Issue #1502)

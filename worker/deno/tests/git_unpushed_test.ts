@@ -224,3 +224,42 @@ Deno.test("commitAndPushPending - single-branch clone: a good push reports final
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("commitAndPushPending - a push that cannot reach origin still reports the commits as unpushed", async () => {
+  const branch = "issue-211-push-unreachable";
+  const { tmp, downstream } = await makeSingleBranchClone("unpushed_broken_");
+  try {
+    await runGit(["checkout", "-b", branch], downstream);
+    await runGit(["config", "user.email", "t@t"], downstream);
+    await runGit(["config", "user.name", "t"], downstream);
+    await Deno.writeTextFile(`${downstream}/a.txt`, "a\n");
+    await runGit(["add", "."], downstream);
+    await runGit(["commit", "-m", "a"], downstream);
+
+    // Break the remote: neither the push nor the tracking-ref fetch can
+    // succeed, so the honest answer is "still unpushed", never a quiet 0.
+    await runGit(
+      ["remote", "set-url", "origin", `${tmp}/does-not-exist.git`],
+      downstream,
+    );
+
+    const result = await commitAndPushPending(
+      branch,
+      "Final-mile commit (Issue #211)",
+      { cwd: downstream },
+    );
+    assert(!result.ok, "an unreachable remote must fail the push loudly");
+
+    const count = await countUnpushedCommits(branch, { cwd: downstream });
+    assert(count.ok, count.ok ? "" : count.error.message);
+    if (count.ok) {
+      assertEquals(count.value.measuredAgainst, "no-remote-branch");
+      assert(
+        count.value.count > 0,
+        `a commit that never reached origin must still count as unpushed, got ${count.value.count}`,
+      );
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

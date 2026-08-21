@@ -1201,11 +1201,13 @@ label on a mergeable PR.
 
 Three places enforce the invariant:
 
-- **`countUnpushedCommits()`** ([git_push.ts](../worker/deno/lib/git_push.ts))
-  compares HEAD with `origin/<branch>`, and confirms against `git ls-remote`
-  whenever the local refs claim work is outstanding. When origin cannot be
-  reached the local estimate stands — unverifiable work is reported as
-  unpushed, never assumed pushed.
+- **`countUnpushedCommits()`**
+  ([git_unpushed.ts](../worker/deno/lib/git_unpushed.ts)) counts
+  `refs/remotes/origin/<branch>..HEAD`, fetching that tracking ref first when
+  the clone's refspec does not cover it. A count it could not take is an error
+  `Result`, never a reassuring `0`, and the measure used
+  (`remote-tracking-ref`, `fetched-remote-branch` or `no-remote-branch`) rides
+  along in `unpushedMeasuredAgainst` so a logged `0` can be trusted.
 - **`ensureAllBranchesFetchRefspec()`**
   ([git_fetch_refspec.ts](../worker/deno/lib/git_fetch_refspec.ts)) repairs a
   legacy single-branch clone in place from `setupRepo`, adding (never
@@ -1219,14 +1221,19 @@ Three places enforce the invariant:
 
 ```mermaid
 flowchart TD
-    P[final-mile push] --> C{"countUnpushedCommits()"}
-    C -->|"origin/branch == HEAD"| Z[pushed — done]
-    C -->|"local refs say N > 0"| L[git ls-remote origin refs/heads/branch]
-    L -->|"remote head == HEAD"| Z
-    L -->|"remote head behind"| R[recoverAndRetryPush:<br/>rebase onto remote head, retry]
-    L -->|"ls-remote failed"| E[report N unpushed<br/>fail loud, never assume pushed]
+    P[final-mile push] --> T{"refs/remotes/origin/branch<br/>present?"}
+    T -->|no| FE[git fetch origin branch:<br/>refs/remotes/origin/branch]
+    FE --> T2{"ref now present?"}
+    T2 -->|"no — branch not on origin"| FP[first push: count HEAD --not --remotes=origin]
+    T2 -->|yes| C
+    T -->|yes| C{"remote head == HEAD?"}
+    C -->|yes| Z[pushed — finalUnpushedCount 0]
+    C -->|no| N["count refs/remotes/origin/branch..HEAD"]
+    N -->|"0"| Z
+    N -->|"N > 0"| R[recoverAndRetryPush:<br/>rebase onto remote head, retry]
+    N -->|"count unreadable"| E[error Result<br/>fail loud, never a quiet 0]
     R -->|clean| Z
-    R -->|"still unpushed"| F[log failing step + git stderr,<br/>then comment on the PR]
+    R -->|"still unpushed"| F[log failing step + git's reason,<br/>then comment on the PR]
 ```
 
 A rejected push logs the step that failed (`rebase-recovery` or `retry-push`)
@@ -2469,6 +2476,9 @@ All business logic lives here. Shell tooling invokes them directly with `deno ru
 |                                               | [git_push_recovery.ts](../worker/deno/lib/git_push_recovery.ts)                                                   | Push rejection recovery                                                                                                                                                                      |
 | | [push_recovery_retry.ts](../worker/deno/lib/push_recovery_retry.ts) | Shared recover-then-retry step; reports the failing step and git's reason |
 | | [git_fetch_refspec.ts](../worker/deno/lib/git_fetch_refspec.ts) | Repairs a legacy single-branch clone's fetch refspec |
+| | [git_unpushed.ts](../worker/deno/lib/git_unpushed.ts) | Counts unpushed commits against the branch's own remote head |
+| | [pr_branch_checkout.ts](../worker/deno/lib/pr_branch_checkout.ts) | Checks a PR branch out at its remote head before a maintenance pass |
+| | [pr_comment_supersession.ts](../worker/deno/lib/pr_comment_supersession.ts) | Skips PR feedback a later fleet push already answered |
 |                                               | [git_conflict_resolution.ts](../worker/deno/lib/git_conflict_resolution.ts)                                       | Automatic conflict resolution                                                                                                                                                                |
 |                                               | [git_state_recovery.ts](../worker/deno/lib/git_state_recovery.ts)                                                 | Git state recovery                                                                                                                                                                           |
 |                                               | [git_repo_validation.ts](../worker/deno/lib/git_repo_validation.ts)                                               | Repository validation                                                                                                                                                                        |

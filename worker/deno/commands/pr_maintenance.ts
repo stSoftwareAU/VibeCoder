@@ -15,7 +15,6 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   assertSafeGitRef,
   buildCheckoutArgs,
-  buildCheckoutNewBranchArgs,
   buildFetchArgs,
 } from "../lib/git_ref_args.ts";
 import {
@@ -466,17 +465,9 @@ export const prMaintenanceCommand: Command = {
             };
           }
 
-          // Judge the PR by its remote head, not by whatever this shared
-          // clone's local branch holds (Issue #211).
-          const aligned = await checkoutPrBranchAtRemoteHead(
-            params.branchName,
-            gitOptions,
-          );
-          if (!aligned.ok) {
-            return { ok: false as const, error: aligned.error };
-          }
-
-          // Update the PR branch (rebase + force-push)
+          // Update the PR branch (rebase + force-push). It checks the branch
+          // out at its remote head itself (Issue #211), so this pass never
+          // judges the PR by whatever the shared clone's local branch holds.
           const updateResult = await updatePrBranch(
             params.branchName,
             params.baseBranch,
