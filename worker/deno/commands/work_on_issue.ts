@@ -45,6 +45,7 @@ import {
   handleIdleTaskIssue,
   type HandleIdleTaskIssueResult,
 } from "../lib/idle_task_claim_handler.ts";
+import { finaliseIdleTaskWrapper } from "../lib/idle_task_wrapper_closure.ts";
 import { runGhCommand } from "../lib/github.ts";
 import {
   type PickupContentIntegrityInput,
@@ -232,23 +233,12 @@ export async function runWorkOnIssueCommand(
   );
   if (idleResult.handled) {
     const summary = idleResult.summary ?? "idle-task processed";
-    try {
-      await ghCommandFn([
-        "issue",
-        "close",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--comment",
-        summary,
-      ]);
-    } catch (err) {
-      idleDeps.logger.warn("Failed to close idle-task issue", {
-        repo,
-        issueNumber,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    // Issue #179: only a scan that actually ran closes its wrapper. A failed
+    // run comments the failure and leaves the wrapper open for retry.
+    await finaliseIdleTaskWrapper(
+      { repo, issueNumber, ok: idleResult.ok ?? false, summary },
+      { logger: idleDeps.logger, ghCommandFn },
+    );
     const orchestratorResult: WorkOnIssueResult = {
       success: idleResult.ok ?? false,
       phase: "idle_task",

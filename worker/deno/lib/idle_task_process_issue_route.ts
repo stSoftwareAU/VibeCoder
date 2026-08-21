@@ -10,15 +10,24 @@
  * in isolation: the production factory wires real `gh` and
  * `handleIdleTaskIssue` implementations; tests inject stubs.
  *
+ * Issue #179 added the two invariants this route now owns:
+ *   - the repo's local clone is ensured before a template walks its tree,
+ *     so a repo freshly added to `.config.json` scans on the next run;
+ *   - only a scan that actually ran closes its wrapper — a failed run
+ *     comments and leaves the wrapper open for a cooldown-gated retry.
+ *
  * Australian English spelling used throughout.
  */
 
 import type { Logger } from "../types.ts";
 import {
+  findIdleTaskTemplate as defaultFindIdleTaskTemplate,
   handleIdleTaskIssue as defaultHandleIdleTaskIssue,
   type HandleIdleTaskIssueResult,
 } from "./idle_task_claim_handler.ts";
 import { runGhCommand as defaultRunGhCommand } from "./github.ts";
+import { ensureRepoClone as defaultEnsureRepoClone } from "./ensure_repo_clone.ts";
+import { finaliseIdleTaskWrapper } from "./idle_task_wrapper_closure.ts";
 
 /** Input describing the issue under consideration. */
 export interface RouteIdleTaskInput {
@@ -35,6 +44,10 @@ export interface RouteIdleTaskDeps {
   logger: Logger;
   handleIdleTaskFn?: typeof defaultHandleIdleTaskIssue;
   ghCommandFn?: typeof defaultRunGhCommand;
+  /** Wrapper identification, used to decide whether a clone is needed. */
+  findTemplateFn?: typeof defaultFindIdleTaskTemplate;
+  /** Lazy clone helper — same `setupRepo` the setup phase uses. */
+  ensureCloneFn?: typeof defaultEnsureRepoClone;
 }
 
 /**
@@ -42,7 +55,8 @@ export interface RouteIdleTaskDeps {
  * - `{ routed: false }` — the issue is not an idle-task wrapper; the
  *   caller should run the standard `workOnIssue` pipeline.
  * - `{ routed: true, success }` — the claim handler took ownership.
- *   The wrapper issue has been closed with the template summary.
+ *   A successful run closed the wrapper with the template summary; a
+ *   failed run left it open carrying a failure comment (Issue #179).
  *   `success` mirrors `HandleIdleTaskIssueResult.ok`.
  */
 export type RouteIdleTaskOutcome =
@@ -64,6 +78,51 @@ export async function routeIdleTaskInProcessIssue(
 ): Promise<RouteIdleTaskOutcome> {
   const handleIdleTask = deps.handleIdleTaskFn ?? defaultHandleIdleTaskIssue;
   const ghCommand = deps.ghCommandFn ?? defaultRunGhCommand;
+  const findTemplate = deps.findTemplateFn ?? defaultFindIdleTaskTemplate;
+  const ensureClone = deps.ensureCloneFn ?? defaultEnsureRepoClone;
+
+  // Issue #179: a template walks `${workDir}/<repo>`, and nothing on this
+  // path had ever cloned it. A repo freshly added to `.config.json` therefore
+  // failed every scan with ENOENT. Ensure the clone before running — but only
+  // for a recognised wrapper, so ordinary issues take the standard setup
+  // phase's clone as before. An existing clone is left untouched.
+  const template = findTemplate({
+    repo: input.repo,
+    issueTitle: input.issueTitle,
+    issueBody: input.issueBody,
+  });
+  if (template !== undefined) {
+    const clone = await ensureClone(input.repo, input.workDir);
+    if (!clone.ok) {
+      const summary = `idle-task ${template.name} could not run: no local ` +
+        `clone of ${input.repo} at ${clone.repoPath} — ${clone.message}`;
+      deps.logger.warn("idle-task clone preparation failed", {
+        repo: input.repo,
+        issueNumber: input.issueNumber,
+        template: template.name,
+        repoPath: clone.repoPath,
+        error: clone.message,
+      });
+      await finaliseIdleTaskWrapper(
+        {
+          repo: input.repo,
+          issueNumber: input.issueNumber,
+          ok: false,
+          summary,
+        },
+        { logger: deps.logger, ghCommandFn: ghCommand },
+      );
+      return { routed: true, success: false };
+    }
+    if (clone.cloned) {
+      deps.logger.info("Cloned repo for idle-task scan", {
+        repo: input.repo,
+        issueNumber: input.issueNumber,
+        template: template.name,
+        repoPath: clone.repoPath,
+      });
+    }
+  }
 
   const idleResult: HandleIdleTaskIssueResult = await handleIdleTask(
     {
@@ -82,23 +141,15 @@ export async function routeIdleTaskInProcessIssue(
   }
 
   const summary = idleResult.summary ?? "idle-task processed";
-  try {
-    await ghCommand([
-      "issue",
-      "close",
-      String(input.issueNumber),
-      "--repo",
-      input.repo,
-      "--comment",
-      summary,
-    ]);
-  } catch (err) {
-    deps.logger.warn("Failed to close idle-task issue", {
-      repo: input.repo,
-      issueNumber: input.issueNumber,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const ok = idleResult.ok ?? false;
 
-  return { routed: true, success: idleResult.ok ?? false };
+  // Issue #179: only a scan that actually ran closes its wrapper. A failed
+  // run comments the failure and leaves the wrapper open, so the standard
+  // failure cooldown applies and a later claim retries the scan.
+  await finaliseIdleTaskWrapper(
+    { repo: input.repo, issueNumber: input.issueNumber, ok, summary },
+    { logger: deps.logger, ghCommandFn: ghCommand },
+  );
+
+  return { routed: true, success: ok };
 }

@@ -22,6 +22,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { Logger } from "../types.ts";
 import {
+  findIdleTaskTemplate,
   handleIdleTaskIssue,
   type HandleIdleTaskIssueDeps,
 } from "../lib/idle_task_claim_handler.ts";
@@ -513,5 +514,70 @@ Deno.test(
     const warnings = records.filter((r) => r.level === "warn");
     assertEquals(warnings.length, 1);
     assertStringIncludes(warnings[0]!.message, "model tier");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// findIdleTaskTemplate (Issue #179)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "findIdleTaskTemplate - matches a wrapper by title",
+  () => {
+    const template = makeTemplate(
+      "security-scan",
+      "Run a security scan",
+      () => Promise.resolve({ ok: true, summary: "ran" }),
+    );
+    const found = findIdleTaskTemplate(
+      {
+        repo: "acme/widget",
+        issueTitle: "  Run a security scan  ",
+        issueBody: "anything",
+      },
+      () => [template],
+    );
+    assertEquals(found?.name, "security-scan");
+  },
+);
+
+Deno.test(
+  "findIdleTaskTemplate - falls back to the body fingerprint",
+  () => {
+    const template = makeTemplate(
+      "test-audit",
+      "Run a test audit",
+      () => Promise.resolve({ ok: true, summary: "ran" }),
+      "FOUR-PHASE TEST AUDIT",
+    );
+    const found = findIdleTaskTemplate(
+      {
+        repo: "acme/widget",
+        issueTitle: "renamed by a human",
+        issueBody: "# FOUR-PHASE TEST AUDIT\n\nAudit the suite...",
+      },
+      () => [template],
+    );
+    assertEquals(found?.name, "test-audit");
+  },
+);
+
+Deno.test(
+  "findIdleTaskTemplate - ordinary work matches no template",
+  () => {
+    const template = makeTemplate(
+      "security-scan",
+      "Run a security scan",
+      () => Promise.resolve({ ok: true, summary: "ran" }),
+    );
+    const found = findIdleTaskTemplate(
+      {
+        repo: "acme/widget",
+        issueTitle: "Fix the date parser",
+        issueBody: "The parser drops the timezone offset.",
+      },
+      () => [template],
+    );
+    assertEquals(found, undefined);
   },
 );
