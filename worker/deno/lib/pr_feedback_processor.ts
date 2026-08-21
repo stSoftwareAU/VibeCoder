@@ -15,6 +15,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { reconcileRejectedPush } from "./push_reconciler.ts";
 import type { CommentType } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import {
@@ -515,27 +516,24 @@ async function _processFeedbackWithHeartbeat(
       logger.warn("Local commits remain after push, attempting recovery", {
         unpushed: finalUnpushedCount,
       });
-      const recoveryResult = await deps.git.recoverFromPushRejection(
-        input.branchName,
-        { cwd: processorDeps.workDir },
-      );
-      if (recoveryResult.ok) {
-        const retryFinalise = await deps.git.commitAndPushPending(
-          input.branchName,
+      // Issue #211: recover, then re-apply onto the head a sibling fleet host
+      // pushed while the agent ran. The reconciler logs the failing step and
+      // git's stderr, so "check the branch status" is never the whole story.
+      const reconciled = await reconcileRejectedPush({
+        branchName: input.branchName,
+        commitMessage:
           `Address PR #${prNumber} feedback\n\nRetry after rebase recovery (Issue #1643).`,
-          { cwd: processorDeps.workDir },
-          false,
-          preFlight,
-        );
-        if (retryFinalise.ok) {
-          finalUnpushedCount = retryFinalise.value.finalUnpushedCount;
-          if (retryFinalise.value.finalUnpushedCount === 0) {
-            hasChanges = true;
-          }
-        }
-      }
-      if (finalUnpushedCount > 0) {
-        logger.error("Push failed after recovery attempt", { repo, prNumber });
+        options: { cwd: processorDeps.workDir },
+        preFlight,
+        unpushedCount: finalUnpushedCount,
+        git: deps.git,
+        logger,
+        repo,
+        prNumber,
+      });
+      finalUnpushedCount = reconciled.finalUnpushedCount;
+      if (reconciled.pushed) {
+        hasChanges = true;
       }
     }
   } else {

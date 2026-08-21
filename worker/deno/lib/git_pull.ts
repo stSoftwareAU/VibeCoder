@@ -25,6 +25,7 @@ import {
   buildFetchArgs,
   buildRebaseArgs,
 } from "./git_ref_args.ts";
+import { alignBranchWithRemoteHead } from "./git_remote_head_align.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -552,6 +553,16 @@ export async function updatePrBranch(
         error: new Error(`Failed to checkout branch '${branchName}'`),
       };
     }
+  }
+
+  // Issue #211: the working copy is reused between passes, so this branch may
+  // still carry commits an earlier pass failed to push. Conflict detection
+  // must judge the PR as the remote has it — otherwise those local commits
+  // produce a "conflicts with the base" verdict (and a `merge-conflict` label)
+  // for a PR that is perfectly mergeable on GitHub.
+  const alignment = await alignBranchWithRemoteHead(branchName, options);
+  if (!alignment.ok) {
+    return { ok: false, error: alignment.error };
   }
 
   // Ensure enough history for range detection on a shallow clone (Issue #1502)

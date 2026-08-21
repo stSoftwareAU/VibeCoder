@@ -564,11 +564,17 @@ export async function commitAndPushPending(
     finalUnpushedCount = parseInt(remainingResult.value.stdout.trim(), 10) || 0;
   }
 
+  // Issue #211: `pushUnpushedCommits` reports what it *intended* to push, so a
+  // push that was rejected (or that a recovery step silently rewound) produced
+  // the self-contradictory `commitsPushed=4 finalUnpushedCount=4`. Report only
+  // the commits that actually landed — the count the caller can trust.
+  const commitsPushed = Math.max(0, pushResult.value - finalUnpushedCount);
+
   return {
     ok: true,
     value: {
       committedNewChanges,
-      commitsPushed: pushResult.value,
+      commitsPushed,
       finalUnpushedCount,
     },
   };

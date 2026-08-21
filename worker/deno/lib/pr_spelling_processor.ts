@@ -15,6 +15,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { reconcileRejectedPush } from "./push_reconciler.ts";
 import {
   buildSpellingFixPrompt,
   type SpellingFixPromptOptions,
@@ -391,29 +392,24 @@ async function _processSpellingWithHeartbeat(
       logger.warn("Local commits remain after push, attempting recovery", {
         unpushed: finalUnpushedCount,
       });
-      const recoveryResult = await deps.git.recoverFromPushRejection(
-        input.branchName,
-        { cwd: processorDeps.workDir },
-      );
-      if (recoveryResult.ok) {
-        const retryFinalise = await deps.git.commitAndPushPending(
-          input.branchName,
+      // Issue #211: recover, then re-apply onto a head a sibling fleet host
+      // moved while the agent ran; the reconciler logs the failing step.
+      const reconciled = await reconcileRejectedPush({
+        branchName: input.branchName,
+        commitMessage:
           `Fix spelling check failures: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
-          { cwd: processorDeps.workDir },
-          false,
-          preFlight,
-        );
-        if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
-          hasChanges = true;
-          pushSucceeded = true;
-          finalUnpushedAfterPush = 0;
-        }
-      }
-      if (!pushSucceeded) {
-        logger.error("Push failed after recovery attempt", {
-          repo,
-          prNumber,
-        });
+        options: { cwd: processorDeps.workDir },
+        preFlight,
+        unpushedCount: finalUnpushedCount,
+        git: deps.git,
+        logger,
+        repo,
+        prNumber,
+      });
+      finalUnpushedAfterPush = reconciled.finalUnpushedCount;
+      if (reconciled.pushed) {
+        hasChanges = true;
+        pushSucceeded = true;
       }
     }
   } else {

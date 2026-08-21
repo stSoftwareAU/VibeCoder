@@ -68,6 +68,7 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { reconcileRejectedPush } from "./push_reconciler.ts";
 import {
   formatPrFailureActionsExcerpt,
   type PrFailureActionResult,
@@ -887,31 +888,29 @@ async function _processCiWithHeartbeat(
       finalUnpushedCount,
     });
 
-    // If push left commits unpushed, attempt rejection recovery and retry.
+    // If push left commits unpushed, reconcile: recover, then re-apply onto
+    // the head a sibling fleet host may have pushed (Issue #211). The
+    // reconciler logs the failing step and git's stderr either way.
     if (finalUnpushedCount > 0) {
       logger.warn("Local commits remain after push, attempting recovery", {
         unpushed: finalUnpushedCount,
       });
-      const recoveryResult = await deps.git.recoverFromPushRejection(
-        input.branchName,
-        { cwd: processorDeps.workDir },
-      );
-      if (recoveryResult.ok) {
-        const retryFinalise = await deps.git.commitAndPushPending(
-          input.branchName,
+      const reconciled = await reconcileRejectedPush({
+        branchName: input.branchName,
+        commitMessage:
           `Fix CI failure: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
-          { cwd: processorDeps.workDir },
-          false,
-          preFlight,
-        );
-        if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
-          hasChanges = true;
-          pushSucceeded = true;
-          finalUnpushedAfterPush = 0;
-        }
-      }
-      if (!pushSucceeded) {
-        logger.error("Push failed after recovery attempt", { repo, prNumber });
+        options: { cwd: processorDeps.workDir },
+        preFlight,
+        unpushedCount: finalUnpushedCount,
+        git: deps.git,
+        logger,
+        repo,
+        prNumber,
+      });
+      finalUnpushedAfterPush = reconciled.finalUnpushedCount;
+      if (reconciled.pushed) {
+        hasChanges = true;
+        pushSucceeded = true;
       }
     }
   } else {

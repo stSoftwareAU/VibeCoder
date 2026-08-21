@@ -297,3 +297,47 @@ Deno.test("commitAndPushPending - reports finalUnpushedCount=0 after successful 
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("commitAndPushPending - never reports commits as pushed while they remain unpushed (Issue #211)", async () => {
+  // The incident shape from NEAT-AI-core#557: `commitsPushed=4` logged beside
+  // `finalUnpushedCount=4`. It happens when HEAD carries commits the branch ref
+  // does not (an interrupted rebase leaves HEAD detached), so `git push` reports
+  // "Everything up-to-date" while the work is still local.
+  const branch = "issue-211-honest-count";
+  const { tmp, downstream } = await makeUpstreamAndDownstream(
+    "commit_push_pending_honest_count_",
+    branch,
+  );
+  try {
+    await runGit(["checkout", "--detach"], downstream);
+    await Deno.writeTextFile(`${downstream}/detached-1.txt`, "one\n");
+    await runGit(["add", "-A"], downstream);
+    await runGit(["commit", "-m", "detached one"], downstream);
+    await Deno.writeTextFile(`${downstream}/detached-2.txt`, "two\n");
+    await runGit(["add", "-A"], downstream);
+    await runGit(["commit", "-m", "detached two"], downstream);
+
+    const result = await commitAndPushPending(
+      branch,
+      "Auto-commit pending changes",
+      { cwd: downstream },
+    );
+
+    assert(result.ok);
+    if (result.ok) {
+      const { commitsPushed, finalUnpushedCount } = result.value;
+      assertEquals(finalUnpushedCount, 2, "the work is still local");
+      assertEquals(
+        commitsPushed,
+        0,
+        "no commit landed, so none may be reported as pushed",
+      );
+      assert(
+        commitsPushed + finalUnpushedCount <= 2,
+        "the counts must not double-count the same commits",
+      );
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

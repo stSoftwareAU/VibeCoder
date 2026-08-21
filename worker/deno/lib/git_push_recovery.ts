@@ -27,6 +27,18 @@ import { buildForceWithLeaseArgs } from "./git_push_lease_args.ts";
 const OBJECT_ID_PATTERN = /^[0-9a-f]{7,64}$/;
 
 /**
+ * Build a recovery failure that names the step and carries the git stderr
+ * (Issue #211). Callers log this message verbatim, so "the push was rejected"
+ * is never all the operator gets — the failing step and git's own words are.
+ */
+function recoveryStepError(step: string, detail: string): Error {
+  const trimmed = detail.trim();
+  return new Error(
+    `push recovery step '${step}' failed${trimmed ? `: ${trimmed}` : ""}`,
+  );
+}
+
+/**
  * Capture `refs/remotes/origin/<branch>` before anything refreshes it (Issue #3723).
  *
  * @param branchName - The branch whose remote-tracking ref to read
@@ -81,7 +93,10 @@ export async function recoverFromPushRejection(
   );
 
   if (!pullResult.ok) {
-    return { ok: false, error: pullResult.error };
+    return {
+      ok: false,
+      error: recoveryStepError("pull --rebase", pullResult.error.message),
+    };
   }
 
   if (pullResult.value.code !== 0) {
@@ -89,6 +104,10 @@ export async function recoverFromPushRejection(
     const conflictResult = await resolveRebaseConflicts(options);
 
     if (!conflictResult.ok) {
+      // Issue #211: keep both halves of the story — why the rebase failed and
+      // why auto-resolution could not save it.
+      const rebaseDetail = `${pullResult.value.stderr.trim()} | ` +
+        `auto-resolution failed: ${conflictResult.error.message}`;
       // Abort the rebase
       await runGitCommand(["rebase", "--abort"], options);
 
@@ -96,8 +115,9 @@ export async function recoverFromPushRejection(
       if (isProtectedBranch(branchName)) {
         return {
           ok: false,
-          error: new Error(
-            `Cannot force-push to protected branch '${branchName}'`,
+          error: recoveryStepError(
+            "force-with-lease",
+            `cannot force-push to protected branch '${branchName}' — ${rebaseDetail}`,
           ),
         };
       }
@@ -119,7 +139,10 @@ export async function recoverFromPushRejection(
         : forceResult.error.message;
       return {
         ok: false,
-        error: new Error(`--force-with-lease push also failed: ${forceError}`),
+        error: recoveryStepError(
+          "force-with-lease",
+          `${forceError.trim()} (after ${rebaseDetail})`,
+        ),
       };
     }
   }
@@ -131,13 +154,16 @@ export async function recoverFromPushRejection(
   );
 
   if (!retryResult.ok) {
-    return { ok: false, error: retryResult.error };
+    return {
+      ok: false,
+      error: recoveryStepError("retry-push", retryResult.error.message),
+    };
   }
 
   if (retryResult.value.code !== 0) {
     return {
       ok: false,
-      error: new Error(`Retry push failed: ${retryResult.value.stderr}`),
+      error: recoveryStepError("retry-push", retryResult.value.stderr),
     };
   }
 

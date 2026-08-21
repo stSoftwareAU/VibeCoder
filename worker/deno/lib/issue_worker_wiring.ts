@@ -42,6 +42,7 @@ import { recoverGitState } from "./git_state_recovery.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { syncFeatureBranchWithDefault } from "./git_pull.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
+import { reapplyOntoRemoteHead } from "./git_reapply.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo as setupRepoCommand } from "../commands/git_operations.ts";
@@ -185,6 +186,8 @@ export interface GitDeps {
   runGitCommand: typeof runGitCommand;
   syncFeatureBranchWithDefault: typeof syncFeatureBranchWithDefault;
   recoverFromPushRejection: typeof recoverFromPushRejection;
+  /** Re-apply local commits onto a moved remote head (Issue #211). */
+  reapplyOntoRemoteHead: typeof reapplyOntoRemoteHead;
   validateRepoState: typeof validateRepoState;
   ensureMilestoneBranchExists: typeof ensureMilestoneBranchExists;
   captureBranchHead: typeof captureBranchHead;
@@ -411,6 +414,7 @@ export function createDefaultDeps(
       runGitCommand,
       syncFeatureBranchWithDefault,
       recoverFromPushRejection,
+      reapplyOntoRemoteHead,
       validateRepoState,
       ensureMilestoneBranchExists,
       captureBranchHead,
@@ -730,6 +734,17 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     >(() => Promise.resolve({ ok: true, value: "synced" })),
     recoverFromPushRejection: mockFn<GitDeps["recoverFromPushRejection"]>(() =>
       Promise.resolve({ ok: true, value: "recovered" })
+    ),
+    reapplyOntoRemoteHead: mockFn<GitDeps["reapplyOntoRemoteHead"]>(() =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          rebased: false,
+          pushed: false,
+          commitsReapplied: 0,
+          detail: "mock re-apply",
+        },
+      })
     ),
     validateRepoState: mockFn<GitDeps["validateRepoState"]>(() =>
       Promise.resolve({

@@ -43,6 +43,7 @@ import {
   releaseBranchUpdateLock,
 } from "./pr_branch_lock.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { reconcileRejectedPush } from "./push_reconciler.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
@@ -519,13 +520,30 @@ async function resolveConflict(
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
-    return await failAttempt(
-      input,
-      processorDeps,
-      conflictedFiles,
-      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed`,
-      attemptNumber,
-    );
+    // Issue #211: a sibling fleet host may have pushed while the agent ran.
+    // Recover and re-apply onto that head before declaring the attempt lost,
+    // and carry the failing step's git stderr into the failure detail.
+    const reconciled = await reconcileRejectedPush({
+      branchName,
+      commitMessage:
+        `Merge ${baseBranch} into ${branchName} (Issue #84)\n\nRetry after rebase recovery.`,
+      options: { cwd: workDir },
+      preFlight,
+      unpushedCount: finalise.value.finalUnpushedCount,
+      git: deps.git,
+      logger: processorDeps.logger,
+      repo,
+      prNumber,
+    });
+    if (!reconciled.pushed) {
+      return await failAttempt(
+        input,
+        processorDeps,
+        conflictedFiles,
+        `${reconciled.finalUnpushedCount} commit(s) could not be pushed — ${reconciled.detail}`,
+        attemptNumber,
+      );
+    }
   }
 
   // The merge only counts when the base is genuinely an ancestor of the

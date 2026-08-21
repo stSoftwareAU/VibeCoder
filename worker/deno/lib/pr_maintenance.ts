@@ -28,6 +28,11 @@ import {
 } from "./pr_ci_checks.ts";
 import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
 import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
+import {
+  fetchPrHeadCommit,
+  isCommentSuperseded,
+  type PrHeadCommit,
+} from "./pr_comment_supersession.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import type { IssueCache } from "./issue_cache.ts";
@@ -60,6 +65,8 @@ export interface CommentEntry {
   id: number;
   body: string;
   thumbs_up: number;
+  /** ISO-8601 creation time, used for fleet-push supersession (Issue #211). */
+  created_at?: string;
 }
 
 /** Review entry from the GitHub API. */
@@ -446,7 +453,7 @@ export async function fetchPrComments(
       "api",
       apiPath,
       "--jq",
-      '[.[] | select(.reactions.eyes == 0) | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0)}]',
+      '[.[] | select(.reactions.eyes == 0) | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), created_at: .created_at}]',
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -671,6 +678,21 @@ export async function findPrCommentsToFix(
     for (const pr of prs) {
       const { number: prNumber, headRefName: branchName, headRefOid } = pr;
 
+      // Issue #211: resolve the head commit at most once per PR, and only
+      // when a comment is otherwise about to be claimed.
+      let headCommitCache: PrHeadCommit | null | undefined;
+      const supersession: PrCommentSupersessionContext = {
+        fleetAuthors: scanAuthors,
+        headCommit: async () => {
+          if (headCommitCache === undefined) {
+            headCommitCache = headRefOid
+              ? await fetchPrHeadCommit(repo, headRefOid, ghCommandFn)
+              : null;
+          }
+          return headCommitCache;
+        },
+      };
+
       // Check review comments (inline)
       const reviewComment = await findActionableComment(
         repo,
@@ -681,6 +703,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
+        supersession,
       );
       if (reviewComment) {
         return {
@@ -702,6 +725,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
+        supersession,
       );
       if (issueComment) {
         return {
@@ -749,6 +773,28 @@ export async function findPrCommentsToFix(
 }
 
 /**
+ * Fleet-push supersession context for one PR (Issue #211). `headCommit` is
+ * lazy and memoised by the caller so the extra API call is made only when a
+ * comment would otherwise be claimed.
+ */
+interface PrCommentSupersessionContext {
+  fleetAuthors: string[];
+  headCommit: () => Promise<PrHeadCommit | null>;
+}
+
+/** Whether a fleet push already answered this comment (Issue #211). */
+async function isSupersededByFleetPush(
+  comment: CommentEntry,
+  context: PrCommentSupersessionContext,
+): Promise<boolean> {
+  return isCommentSuperseded({
+    commentCreatedAt: comment.created_at,
+    headCommit: await context.headCommit(),
+    fleetAuthors: context.fleetAuthors,
+  });
+}
+
+/**
  * Find the first actionable comment of a given type on a PR.
  *
  * A comment is actionable when any of the following is true:
@@ -762,6 +808,11 @@ export async function findPrCommentsToFix(
  *   line-level review comments — top-level issue comments still require
  *   an authorised thumbs-up or authorisation, because top-level comments
  *   are the higher-injection-risk surface.
+ *
+ * An otherwise-actionable comment is skipped when a fleet author pushed the
+ * PR head after it was written (Issue #211) — a sibling host has already
+ * addressed it, so claiming it now duplicates that run and collides with its
+ * push. The comment stays unclaimed and is re-evaluated on the next scan.
  */
 async function findActionableComment(
   repo: string,
@@ -772,6 +823,7 @@ async function findActionableComment(
   ghCommandFn: (args: string[]) => Promise<string>,
   logger: Logger,
   trustedReviewBots: string[] = [],
+  supersession?: PrCommentSupersessionContext,
 ): Promise<Omit<PrCommentToFix, "branchName"> | null> {
   const comments = await fetchPrComments(
     repo,
@@ -807,6 +859,23 @@ async function findActionableComment(
     }
 
     if (isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot) {
+      // Issue #211: a fleet sibling pushed after this comment — it has already
+      // been answered by that push. Leave it unclaimed for re-evaluation.
+      if (
+        supersession && await isSupersededByFleetPush(comment, supersession)
+      ) {
+        logger.info("Skipping PR comment superseded by a fleet push", {
+          repo,
+          prNumber,
+          author: comment.login,
+          commentType,
+          commentCreatedAt: comment.created_at,
+          headPushedAt: (await supersession.headCommit())?.committedAt,
+          headAuthor: (await supersession.headCommit())?.authorLogin,
+        });
+        continue;
+      }
+
       const trustReason = isAuthorised
         ? "authorised"
         : hasAuthorisedThumbsUp
