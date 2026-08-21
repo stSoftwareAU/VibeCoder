@@ -49,6 +49,11 @@
  *      #3860 seed-idle-tasks flow (`commands/process_seed_idle_tasks.ts`),
  *      which never spawns the agent and releases the grant in a `finally`.
  *   3. Refcounted heartbeat pins ({@link pinWriteRepo}, Issue #3760).
+ *   4. {@link withScopedWriteRepo} — a **worker-process** grant scoped to a
+ *      single validated call and removed in a `finally` (Issue #182). Its one
+ *      production caller is the cross-repo dependency-PR bridge
+ *      (`cross_repo_pr_handoff.ts`), which validates the target as an
+ *      internal, reachable, pushable `stSoftwareAU/*` repo first.
  *
  * None of them reaches an agent subprocess that is already running.
  * `gh_guard_shim.ts` bakes a snapshot of this allowlist into the child's `gh`
@@ -305,6 +310,56 @@ export function registerWriteRepo(repo: string): void {
     );
   }
   c.allowed.add(n);
+}
+
+/**
+ * Run `fn` with `repo` temporarily on the **worker's** allowlist, then remove
+ * it again (Issue #182).
+ *
+ * The one production caller is the cross-repo dependency-PR bridge
+ * (`cross_repo_pr_handoff.ts`): the agent cannot open a PR in an internal
+ * `stSoftwareAU/*` dependency (its `gh` guard only knows the claim repo), so it
+ * pushes the branch and declares the PR, and the *worker* opens it. That single
+ * `gh pr create` is the only write the grant covers.
+ *
+ * The grant is deliberately narrower than {@link registerWriteRepo}:
+ *
+ * - **Scoped in time** — the repo is removed from the allowlist as soon as
+ *   `fn` settles, including when it throws, so the boundary re-closes.
+ * - **Worker-only** — the agent subprocess baked its own allowlist snapshot at
+ *   spawn time (see the module doc above and SECURITY.md §6), so this cannot
+ *   widen what the agent itself may write to.
+ * - **Announced** — a `[SECURITY] [WRITE_REPO_SCOPED_GRANT]` line records the
+ *   grant, so a cross-repo write is never invisible.
+ *
+ * Callers MUST validate the target first (internal owner + reachable + push
+ * permission); this helper enforces scope, not policy. A repo already on the
+ * allowlist (or pinned) is left exactly as it was.
+ *
+ * @param repo - `owner/repo` the worker may write to for the duration of `fn`.
+ * @param fn - The single validated cross-repo operation.
+ */
+export async function withScopedWriteRepo<T>(
+  repo: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const n = normalise(repo);
+  const c = ctx();
+  // Nothing to grant: no slug, enforcement inactive, or already writable.
+  if (n.length === 0 || !c.active || c.allowed.has(n) || c.pinned.has(n)) {
+    return await fn();
+  }
+  securityLogger(
+    `[SECURITY] [WRITE_REPO_SCOPED_GRANT] Granted ${repo.trim()} for the duration of one ` +
+      "validated cross-repo call — worker process only; the running agent " +
+      "subprocess cannot write to it.",
+  );
+  c.allowed.add(n);
+  try {
+    return await fn();
+  } finally {
+    c.allowed.delete(n);
+  }
 }
 
 /**

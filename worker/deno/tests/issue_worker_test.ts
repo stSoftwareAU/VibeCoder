@@ -20,6 +20,7 @@ import {
   workOnIssueSetupBranch,
 } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { CLARIFICATION_NEXT_STEP } from "../lib/phases/clarity_assessment_phase.ts";
@@ -3577,3 +3578,145 @@ Deno.test(
     assertEquals(result.outcome?.kind, "no_pr_expected");
   },
 );
+
+Deno.test({
+  name:
+    "workOnIssue - a declared dependency PR is opened by the worker and cross-linked (Issue #182)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const calls = makeStubGhCalls();
+    const prUrl = "https://github.com/stSoftwareAU/NEAT-AI-Discovery/pull/9";
+    const ghArgs: string[][] = [];
+    // The worker's own gh chokepoint, faked: reachable + pushable dep repo,
+    // the branch the agent pushed, no PR yet, then the created PR URL.
+    _setGhSpawnRunner((args) => {
+      ghArgs.push([...args]);
+      const joined = args.join(" ");
+      const reply = (stdout: string) =>
+        Promise.resolve({ code: 0, success: true, stdout, stderr: "" });
+      if (joined.includes("pr create")) return reply(`${prUrl}\n`);
+      if (joined.includes("pr list")) return reply("");
+      if (joined.includes("/branches/")) return reply('{"name":"branch"}');
+      return reply(
+        JSON.stringify({
+          full_name: "stSoftwareAU/NEAT-AI-Discovery",
+          default_branch: "Develop",
+          permissions: { push: true },
+        }),
+      );
+    });
+    const ctx = makeContext({
+      issueBody: "The root cause is in the NEAT-AI-Discovery scorer.",
+    });
+    const deps = createMockDeps({
+      github: {
+        createClient: () => makeStubGhClient(calls),
+      },
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              exitCode: 0,
+              output: [
+                "Fixed the root cause in the dependency and pushed the branch.",
+                '<!-- vibe-cross-repo-pr repo="stSoftwareAU/NEAT-AI-Discovery" ' +
+                'branch="fix/4140-lock-free-kept-candidate-signal" base="Develop" ' +
+                'title="Fix the lock-free kept-candidate signal" ' +
+                'summary="Root cause of the consuming issue lives here." -->',
+              ].join("\n"),
+              timedOut: false,
+            },
+          }),
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      },
+    });
+
+    try {
+      const result = await workOnIssue(ctx, deps);
+
+      // The bridge ran and opened the PR the agent could not open itself.
+      assertEquals(typeof result.timings["cross_repo_pr_handoff"], "number");
+      assertEquals(
+        ghArgs.some((a) => a.join(" ").includes("pr create")),
+        true,
+      );
+      // It is cross-linked on the consuming issue, and it is not an escalation.
+      const linked = calls.postComment.find((c) => c.body.includes(prUrl));
+      assertEquals(linked?.repo, ctx.repo);
+      // The bridge itself did not escalate — the PR was opened, not stranded.
+      assertEquals(
+        calls.postComment.some((c) =>
+          c.body.includes("Dependency PR could not be opened")
+        ),
+        false,
+      );
+    } finally {
+      _resetGhSpawnRunner();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "workOnIssue - a dependency PR the worker cannot open escalates instead of stranding the branch (Issue #182)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const calls = makeStubGhCalls();
+    // The dependency repo is unreachable — the PR cannot be opened.
+    _setGhSpawnRunner(() =>
+      Promise.resolve({
+        code: 1,
+        success: false,
+        stdout: "",
+        stderr: "gh: Not Found (HTTP 404)",
+      })
+    );
+    const ctx = makeContext();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => makeStubGhClient(calls),
+      },
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              exitCode: 0,
+              output:
+                '<!-- vibe-cross-repo-pr repo="stSoftwareAU/NEAT-AI-Discovery" ' +
+                'branch="fix/4140-lock-free-kept-candidate-signal" ' +
+                'title="Fix the lock-free kept-candidate signal" -->',
+              timedOut: false,
+            },
+          }),
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      },
+    });
+
+    try {
+      const result = await workOnIssue(ctx, deps);
+
+      assertEquals(typeof result.timings["cross_repo_pr_handoff"], "number");
+      // Fails loud: needs-human plus a paired comment naming the branch.
+      assertEquals(
+        calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+        true,
+      );
+      const escalation = calls.postComment.find((c) =>
+        c.body.includes("fix/4140-lock-free-kept-candidate-signal")
+      );
+      assertEquals(escalation?.repo, ctx.repo);
+    } finally {
+      _resetGhSpawnRunner();
+    }
+  },
+});
