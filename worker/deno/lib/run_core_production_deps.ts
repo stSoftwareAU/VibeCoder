@@ -222,6 +222,7 @@ import { isRepoAllowed } from "./config_validator.ts";
 import { isAuthorisedCommenter } from "./security.ts";
 import { createGitHubClient, runGhCommand } from "./github.ts";
 import { InFlightRepoRegistry } from "./in_flight_repos.ts";
+import { setLiveSlotHolds } from "./live_slot_holds.ts";
 import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
@@ -367,6 +368,10 @@ export async function createProductionRunCoreDeps(
   // wedged worker while the run was fine.
   const workerDeps = createDefaultDeps({ logger });
   const inFlightRepos = new InFlightRepoRegistry();
+  // The recovery and cleanup passes consult these holds before unassigning
+  // anything (Issue #214), so an in-flight claim's assignee is only ever
+  // removed by the owning slot's release.
+  setLiveSlotHolds(() => inFlightRepos.heldIssues());
   // One process is one run: a fresh run may spawn agents again (Issue #4369).
   resetAgentRunsTerminating();
   let lastStatusLine: string | undefined;

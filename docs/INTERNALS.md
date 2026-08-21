@@ -725,6 +725,50 @@ network hiccups, and even its own mistakes:
   is a harmless no-op. This fixes incident, where the failure path cleared
   the marker but left the issue permanently assigned, blocking all future
   pickup.
+- **Claim-lock integrity** — the assignee _is_ the claim lock every
+  host checks, so an issue must never be "unassigned with a live heartbeat".
+  VibeCoder#185 was unassigned at 06:31Z with no release comment while its
+  heartbeat kept beating to 06:40Z; for nine minutes any host could have
+  started a second agent on the same issue and branch. Three invariants hold
+  it shut:
+
+  1. **Claim availability** — `claimIssue`
+     ([`claim_issue.ts`](../worker/deno/lib/claim_issue.ts)) treats an
+     unassigned issue whose fleet-authored heartbeat beat within
+     `LIVE_HEARTBEAT_WINDOW_SECONDS` (2× the marker refresh interval) as
+     unavailable, refusing the claim with reason `heartbeat_active` and
+     logging `heartbeat_active_without_assignee` at WARNING so the broken
+     state is visible. A released marker (epoch 0 + `cleared:`) and a forged
+     marker from outside the fleet never block a claim.
+  2. **Live-slot holds** — the recovery and cleanup passes
+     (`recoverStuckIssue`, `detectAssignedWithoutHeartbeat`,
+     `recoverStaleGithubAssignments`, and the Priority 1.68 closed-PR pass in
+     [`stuck_recovery.ts`](../worker/deno/lib/stuck_recovery.ts)) consult the
+     pool's `InFlightRepoRegistry` through
+     [`live_slot_holds.ts`](../worker/deno/lib/live_slot_holds.ts) and leave
+     an issue a live slot owns completely alone — only the owning slot's
+     release may remove an in-flight claim's assignee. The skip is logged and
+     recorded as the `skipped:live_slot` recovery decision.
+  3. **Release order** — `releaseClaim()` stops the heartbeat and posts
+     the outcome **before** dropping the assignee, and `recordHeartbeat()`
+     refuses a beat for an already-released claim (loudly: WARNING plus an
+     `{ ok: false }` result). The next claim on the issue lifts that guard via
+     `startHeartbeat` / marker seeding.
+
+  ```mermaid
+  sequenceDiagram
+      participant S as Owning slot
+      participant H as heartbeat_storage
+      participant G as GitHub issue
+      participant P as Sibling host
+      S->>H: releaseClaim()
+      H->>G: PATCH marker — epoch 0, cleared, outcome
+      Note over H: guard armed — no beat may follow
+      H->>G: remove assignee (claim lock dropped last)
+      P->>G: pre-claim check — assignees + heartbeat markers
+      G-->>P: unassigned, marker cleared → claim allowed
+  ```
+
 - **Release the claim on terminal failure** — the same invariant
   applies to the self-assigning **phase processors** (grill-me, clarity,
   planning, refinement, question, revision), not just the scan loop. Every such
@@ -2450,6 +2494,7 @@ All business logic lives here. Shell tooling invokes them directly with `deno ru
 |                                               | [run_entrypoint.ts](../worker/deno/lib/run_entrypoint.ts)                                                         | Run entrypoint logic                                                                                                                                                                         |
 | | [fleet_health.ts](../worker/deno/lib/fleet_health.ts) | FLEET health reporting |
 |                                               | [heartbeat.ts](../worker/deno/lib/heartbeat.ts)                                                                   | Heartbeat tracking for stuck-issue detection                                                                                                                                                 |
+| | [live_slot_holds.ts](../worker/deno/lib/live_slot_holds.ts) | Issues live slots own — recovery passes never touch them |
 | | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts) | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file) |
 |                                               | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                                     |
 |                                               | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                               |
