@@ -32,6 +32,10 @@ import {
 import { runPreSetupCommand } from "../repo_config.ts";
 import { escalateToHuman } from "../needs_human_escalation.ts";
 import { loadResumeState } from "../resume_state_store.ts";
+import {
+  describeResumeOutcome,
+  resumeIssueBranch,
+} from "../issue_branch_resume.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -298,44 +302,69 @@ export async function workOnIssueSetupBranch(
     }
   }
 
-  // Resume-on-reclaim (Issue #4170): a fresh (< 24 h) resume file whose
-  // branch matches this claim means a prior attempt died mid-work. Its WIP
-  // checkpoints live on the remote issue branch and its conversation
-  // transcript in the durable CLAUDE_CONFIG_DIR — pick both up instead of
-  // recreating the branch from base and restarting from zero.
+  // Resume-on-reclaim (Issue #4170, #220): a prior attempt that died mid-work
+  // left its WIP checkpoints on a pushed `issue-<N>-…` branch. Find that work
+  // by ISSUE NUMBER rather than by the current title slug — retitling #211
+  // between two claims orphaned a 20-file WIP commit because the second claim
+  // derived a different branch name and never looked at the pushed one.
+  //
+  // The lookup is deliberately NOT gated on `enable_session_resume`: that flag
+  // gates the CLI `--resume` conversation replay below, never whether pushed
+  // work is used. Discarding a pushed commit is data loss, not an opt-in.
   state.resumedFromCheckpoint = false;
-  if (config.enableSessionResume) {
-    const persisted = await loadResumeState(config.workDir, repo, issueNumber);
-    if (persisted && persisted.branch === state.branchName) {
-      const resumeResult = await deps.git.resumeFeatureBranchFromRemote(
-        state.branchName,
-        { cwd: repoPath },
-      );
-      state.resumedFromCheckpoint = resumeResult.ok &&
-        resumeResult.value === true;
-      // Where the resumed branch started is recorded by the execute phase as
-      // `executeStartHeadSha` (Issue #148) — the completion phase reads that
-      // to tell "this run advanced the checkpoint" from "this run added
-      // nothing to it", so setup does not capture its own copy.
-      if (persisted.sessionId) {
-        // Prime CLI session continuity (Issue #1324) from the persisted
-        // state. phaseCount is forced to at least 1 so the execute phase
-        // passes `--resume` and replays the prior conversation from the
-        // durable transcript.
-        state.sessionResumeState = {
-          sessionId: persisted.sessionId,
-          phaseCount: Math.max(1, persisted.phaseCount),
-        };
-      }
-      logger.info(
-        state.resumedFromCheckpoint
-          ? "Resuming prior progress from checkpointed branch (Issue #4170)"
-          : "Resume state found but no remote checkpoint branch — starting clean",
-        {
-          branch: state.branchName,
-          sessionResume: persisted.sessionId !== undefined,
-        },
-      );
+  const persisted = await loadResumeState(config.workDir, repo, issueNumber);
+  const resumeOutcome = await resumeIssueBranch(
+    {
+      issueNumber,
+      baseBranch: state.baseBranch,
+      ...(persisted ? { persistedBranch: persisted.branch } : {}),
+      gitOptions: { cwd: repoPath },
+    },
+    {
+      listRemoteIssueBranches: deps.git.listRemoteIssueBranches,
+      orderBranchesByRecency: deps.git.orderBranchesByRecency,
+      countCommitsAhead: deps.git.countCommitsAhead,
+      resumeFeatureBranchFromRemote: deps.git.resumeFeatureBranchFromRemote,
+    },
+  );
+  // One line on every claim naming the branch resumed, or saying none existed.
+  const resumeMessage = describeResumeOutcome(resumeOutcome, issueNumber);
+  if (resumeOutcome.reason === "lookup-failed") {
+    logger.warn(resumeMessage, { repo, issueNumber });
+  } else {
+    logger.info(resumeMessage, {
+      repo,
+      issueNumber,
+      candidates: resumeOutcome.candidates,
+      ...(resumeOutcome.skipped.length > 0
+        ? { skipped: resumeOutcome.skipped }
+        : {}),
+    });
+  }
+  if (resumeOutcome.branch) {
+    // The resumed branch — not the title-derived name — is the branch this run
+    // commits, pushes and opens its PR from.
+    state.branchName = resumeOutcome.branch;
+    state.resumedFromCheckpoint = true;
+    // Where the resumed branch started is recorded by the execute phase as
+    // `executeStartHeadSha` (Issue #148) — the completion phase reads that to
+    // tell "this run advanced the checkpoint" from "this run added nothing to
+    // it", so setup does not capture its own copy.
+    if (
+      config.enableSessionResume && persisted?.sessionId &&
+      persisted.branch === resumeOutcome.branch
+    ) {
+      // Prime CLI session continuity (Issue #1324) from the persisted state.
+      // phaseCount is forced to at least 1 so the execute phase passes
+      // `--resume` and replays the prior conversation from the durable
+      // transcript.
+      state.sessionResumeState = {
+        sessionId: persisted.sessionId,
+        phaseCount: Math.max(1, persisted.phaseCount),
+      };
+      logger.info("Priming CLI session resume from persisted state", {
+        branch: state.branchName,
+      });
     }
   }
 

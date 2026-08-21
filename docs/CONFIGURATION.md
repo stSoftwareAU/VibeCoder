@@ -1030,21 +1030,32 @@ and improving coherence.
 - Leave disabled (default) if your workflow is predominantly single-phase or if
   you prefer each phase to start with a clean slate.
 
-**Resume-on-reclaim:** with session resume enabled, a killed
-session (reboot, OOM, container death) resumes instead of restarting from
-zero:
+**Resume-on-reclaim:** a killed session (reboot, OOM, container death) resumes
+instead of restarting from zero. **Picking up pushed WIP does not depend on
+`enable_session_resume`** (Issue #220) — that flag gates only the CLI
+`--resume` conversation replay and the periodic checkpoints:
 
 - During the execute phase the worker makes a **WIP checkpoint** every ~10
   minutes — and once more at phase end — committing and pushing the agent's
   progress to the claim-locked issue branch (squashed on PR merge). Each
   checkpoint runs through the standard commit chokepoint, so the pre-commit
-  secret gate, default-branch guard, and run-id trailer all apply.
+  secret gate, default-branch guard, and run-id trailer all apply. A deadline
+  timeout preserves WIP the same way regardless of the flag.
 - The session id, phase count, and branch are persisted to
   `${WORK_DIR}/.claude-sessions/resume/<owner>-<repo>-<issue>.json`.
-- On re-claiming an issue with a fresh (< 24 h) resume file, the worker checks
-  the branch out from its remote checkpoint instead of recreating it from
-  base, passes `--resume` so the durable transcript replays the prior
-  conversation, and tells the agent prior progress exists on the branch.
+- On every claim the worker asks the remote what already exists **for the
+  issue number** — `git ls-remote --heads origin refs/heads/issue-<N>
+  refs/heads/issue-<N>-*`, plus whatever branch the resume file names — and
+  resumes the branch that carries commits beyond base with a tip inside the
+  24 h window. Where several qualify, the branch the resume file names wins,
+  otherwise the most recently pushed; the rest are named in the log. Keying on
+  the number rather than the title slug is what makes the contract survive a
+  retitle: renaming an issue mid-flight used to orphan its WIP branch, because
+  the next claim derived a different slug and started from scratch (#220).
+- Every claim logs which branch it resumed, or that no prior branch existed.
+- When session resume is enabled and a branch was resumed, the worker also
+  passes `--resume` so the durable transcript replays the prior conversation,
+  and tells the agent prior progress exists on the branch.
 - The resume file is deleted on successful PR creation and on claim release,
   so deliberate outcomes always start the next attempt clean. The one
   exception is a release whose run **preserved WIP** on the issue branch
@@ -1065,6 +1076,7 @@ zero:
 > size.
 
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
+`worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
 `worker/deno/lib/config_defaults.ts` (default value).
 
 ## 📦 Session Compaction
