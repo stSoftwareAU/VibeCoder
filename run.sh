@@ -478,6 +478,24 @@ if [[ ${#builder_stop_args[@]} -gt 0 ]]; then
   fi
 fi
 
+# Reclaim the host container store (Issue #227). Host GRQ-23 crashed out of
+# disk with ~20 GB reclaimable that nothing touched: the stopped builder's
+# 13 GB rootfs, 5.8 GB of dangling image layers, and throwaway volumes the
+# container tests leaked when they were killed. The command removes
+# `vibe-test-*` volumes by name (never the production volumes, which nothing
+# references at this point), prunes dangling layers (never the pinned base
+# images), and deletes the builder only when the store's filesystem is below
+# the free-space floor — its cache is what keeps a rebuild cheap. Best-effort:
+# reclaiming disk must never block a launch.
+if ! bounded 600 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-run \
+  "${BASE_DIR}/worker/deno/mod.ts" container-store-prune \
+  --runtime "${RUNTIME}" \
+  --store-path "${container_store}" </dev/null >&2; then
+  echo "[run.sh] warning: could not reclaim the ${RUNTIME} store" >&2
+fi
+
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
 # live on runtime-managed volumes, not host directories. `volume inspect` /
 # `volume create` are spelled identically on every supported runtime; the
