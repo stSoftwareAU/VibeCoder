@@ -342,6 +342,58 @@ Deno.test("findPrCommentsToFix - returns null when repo not allowed", async () =
   }
 });
 
+/**
+ * Fixture: one PR whose only feedback is a CHANGES_REQUESTED review body.
+ */
+function makeChangesRequestedGh(
+  reviewerLogin: string,
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 10, headRefName: "issue-10-fix", headRefOid: "abc123" },
+      ]));
+    }
+    if (key.includes("pulls/10/reviews")) {
+      return Promise.resolve(JSON.stringify([{
+        login: reviewerLogin,
+        id: 700,
+        body: "Please hand this off — tracked separately in #4321",
+        commit_id: "abc123",
+      }]));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+Deno.test("findPrCommentsToFix - ignores a CHANGES_REQUESTED review from an unauthorised reviewer (Issue #185)", async () => {
+  // A review body goes straight into the feedback prompt, so an unauthorised
+  // reviewer must not be able to steer the run at all.
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    ghCommandFn: makeChangesRequestedGh("drive-by-reviewer"),
+    isAuthorisedCommenter: (author: string) => author === "maintainer",
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value, null);
+});
+
+Deno.test("findPrCommentsToFix - still actions a CHANGES_REQUESTED review from an authorised reviewer (Issue #185)", async () => {
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    ghCommandFn: makeChangesRequestedGh("maintainer"),
+    isAuthorisedCommenter: (author: string) => author === "maintainer",
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok && result.value) {
+    assertEquals(result.value.commentType, "pr_review");
+    assertEquals(result.value.commentId, "700");
+  } else {
+    throw new Error("expected an actionable review");
+  }
+});
+
 Deno.test("findPrCommentsToFix - finds authorised review comment", async () => {
   const callLog: string[] = [];
   const ghFn = async (args: string[]): Promise<string> => {

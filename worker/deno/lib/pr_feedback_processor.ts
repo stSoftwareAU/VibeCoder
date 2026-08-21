@@ -44,6 +44,7 @@ import { detectEscapeHatch } from "./escape_hatch.ts";
 import { stripReservedLabelsFromFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { verifyFollowUpIssueExists } from "./escape_hatch_verify.ts";
+import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
 
 // ---------------------------------------------------------------------------
@@ -581,6 +582,11 @@ async function _processFeedbackWithHeartbeat(
   // evidence. Confirm the follow-up issue the message names actually exists
   // before recording the run as resolved; a definitively-absent issue falls
   // through to the ordinary reply path instead of silently suppressing it.
+  //
+  // Issue #185 (SEC-8f21c4a0e7b3): existence is forgeable — any actor whose
+  // text reaches this prompt can steer the message into naming a real,
+  // pre-existing issue. Also require GitHub's own record of *who filed it* to
+  // be the worker, a fleet sibling, or an allowlisted author.
   const escapeHatch = detectEscapeHatch(customMessage, repo);
   const escapeHatchClient = escapeHatch.invoked
     ? deps.github.createClient(logger)
@@ -589,6 +595,7 @@ async function _processFeedbackWithHeartbeat(
     ? await verifyFollowUpIssueExists({
       issueRef: escapeHatch.issueRef,
       currentRepo: repo,
+      trustedAuthors: await loadTrustedFollowUpAuthors(deps, logger),
       ghClient: escapeHatchClient,
       logger,
     })

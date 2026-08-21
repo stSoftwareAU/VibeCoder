@@ -719,6 +719,19 @@ export async function findPrCommentsToFix(
         if (!review.body) continue;
         if (review.login === githubUser) continue;
 
+        // Issue #185 (SEC-8f21c4a0e7b3): a CHANGES_REQUESTED body goes
+        // straight into the feedback prompt, so it must pass the same
+        // authorisation check as a PR comment. Without it, any reviewer —
+        // allowlisted or not — could steer the run's own hand-off message.
+        if (!isAuthorisedCommenter(review.login)) {
+          logger.security(
+            "UNAUTHORISED_REVIEW_SKIPPED",
+            `Skipping CHANGES_REQUESTED review on ${repo}#${prNumber} from ` +
+              `'${review.login}' — not an authorised commenter`,
+          );
+          continue;
+        }
+
         // Skip if commits pushed since review
         if (headRefOid && review.commit_id !== headRefOid) {
           logger.debug("Skipping stale CHANGES_REQUESTED review", {

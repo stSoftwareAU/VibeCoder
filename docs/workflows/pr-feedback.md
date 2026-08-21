@@ -83,7 +83,8 @@ monitor the PR — author is sufficient.
 
 - **Triggers (in priority order):** (1) PR feedback — an **open PR authored by
   the configured GitHub user** has unprocessed feedback (comment with thumbs-up
-  or from authorised commenter, or CHANGES_REQUESTED review). (1.5)
+  or from authorised commenter, or CHANGES_REQUESTED review **from an
+  authorised commenter**). (1.5)
   Spelling/quality — such a PR has a failed check: **spelling** (e.g. spell,
   cspell, typo, codespell) or **quality** (e.g. shellcheck, Deno quality checks)
   — fixed automatically. (1.6) Branch updates — the PR branch is behind base or
@@ -120,7 +121,10 @@ match wins and the loop restarts.
 
 1. **Discover** — Find an open PR by this user that has unprocessed feedback
    (comment with thumbs-up or from authorised commenter, or CHANGES_REQUESTED
-   review).
+   review). A review body goes straight into the feedback prompt, so — like a
+   PR comment — it is only actioned when its author is an **authorised
+   commenter**; an unauthorised reviewer's `CHANGES_REQUESTED` body is skipped
+   with a `UNAUTHORISED_REVIEW_SKIPPED` security log (Issue #185).
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; commit and push.
@@ -137,7 +141,10 @@ and what a solution would look like), posts **one** reply on the PR naming that
 follow-up issue (using the words "out of scope" / "follow-up issue") and
 mentioning `needs-human` if a person should triage, then exits cleanly without
 retrying the original change. The relief valve only fires after a serious
-attempt — it is not a shortcut to skip difficult work. See
+attempt — it is not a shortcut to skip difficult work. The hand-off is only
+recorded as a resolution when the follow-up issue it names **exists and was
+filed by the worker, a fleet sibling, or an allowlisted author** — naming a
+pre-existing issue is not evidence of a hand-off (Issue #185). See
 [DESIGN-PRINCIPLES.md → Escape hatch for out-of-scope work](../../DESIGN-PRINCIPLES.md).
 
 ### 🟠 Priority 1.5 — Spelling and quality fixes (automatic)

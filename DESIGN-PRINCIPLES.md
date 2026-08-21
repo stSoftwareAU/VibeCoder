@@ -782,6 +782,26 @@ The relief valve only fires when both signals (issue link + follow-up wording)
 are present, so an incidental issue mention in a normal fix reply will not
 trigger it.
 
+**The hand-off needs an unforgeable signal, not just prose.** Both
+detection signals are model-authored text, and any actor whose content reaches
+the PR-feedback prompt can steer that text — so "tracked separately in #N",
+naming a real pre-existing issue, used to be accepted as a resolution.
+`verifyFollowUpIssueExists()` (`worker/deno/lib/escape_hatch_verify.ts`) now
+requires GitHub's own record of the follow-up: it must **exist** and its
+**author** must be the worker's own login, a fleet sibling
+(`fleet_pr_authors`), or an allowlisted human (`allowed_authors`,
+`authorized_commenters`) — the set resolved by
+`resolveTrustedFollowUpAuthors()` (`escape_hatch_trusted_authors.ts`). An issue
+filed by anyone else is rejected at ERROR and the run falls through to the
+ordinary reply path, so genuinely unresolved feedback still escalates. With no
+allowlist resolvable the gate fails **closed**: it cannot be applied, so the
+hand-off is not accepted. The one deliberate asymmetry survives — an
+inconclusive lookup (timeout, 5xx) still accepts, because turning a transient
+API error into a rejection would restore the retry loop the hatch exists to
+prevent. The same issue closed the upstream half: a `CHANGES_REQUESTED` review
+body is only fed into the feedback prompt when its author passes the
+`authorized_commenters` check that PR comments already applied.
+
 **Reserved-label strip on the follow-up.** Claude builds the
 follow-up `gh issue create` itself, so the worker never gets to filter labels
 *before* creation. When the hatch is detected with a follow-up `issueRef`,
