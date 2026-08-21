@@ -764,3 +764,59 @@ Deno.test("branch cleanup - orphaned deletions aggregate to one summary event (I
     await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
   }
 });
+
+Deno.test("branch cleanup - a gone-upstream branch -d refuses is force-deleted once its tip is a week old, kept while young (Issue #228)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "branch_cleanup_228_" });
+  try {
+    const origin = `${tmp}/origin`;
+    const clone = `${tmp}/clone`;
+    await Deno.mkdir(origin, { recursive: true });
+    await runCleanupGit(["init", "--bare", "-b", "main"], origin);
+    await runCleanupGit(["clone", origin, clone], tmp);
+    await Deno.writeTextFile(`${clone}/f.txt`, "x\n");
+    await runCleanupGit(["add", "f.txt"], clone);
+    await runCleanupGit(["commit", "-m", "seed"], clone);
+    await runCleanupGit(["push", "origin", "main"], clone);
+
+    // Two "squash-merged" branches: a commit main does not contain, upstream
+    // deleted. One tip is 30 days old, the other is fresh.
+    const makeGone = async (name: string, committedAt: string) => {
+      await runCleanupGit(["checkout", "-b", name, "main"], clone);
+      await Deno.writeTextFile(`${clone}/${name}.txt`, "y\n");
+      await runCleanupGit(["add", `${name}.txt`], clone);
+      const commit = new Deno.Command("git", {
+        args: ["commit", "-m", name],
+        cwd: clone,
+        env: { GIT_COMMITTER_DATE: committedAt, GIT_AUTHOR_DATE: committedAt },
+        stdout: "null",
+        stderr: "null",
+      });
+      assertEquals((await commit.output()).code, 0);
+      await runCleanupGit(["push", "-u", "origin", name], clone);
+      await runCleanupGit(["checkout", "main"], clone);
+      await runCleanupGit(["push", "origin", `:${name}`], clone);
+    };
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    await makeGone(
+      "old-squashed",
+      new Date((nowEpoch - 30 * 86400) * 1000).toISOString(),
+    );
+    await makeGone(
+      "young-unmerged",
+      new Date((nowEpoch - 3600) * 1000).toISOString(),
+    );
+
+    const result = await cleanupOrphanedLocalBranches("main", { cwd: clone }, {
+      forceDeleteAgeDays: 7,
+      nowFn: () => nowEpoch,
+    });
+    assert(result.ok);
+    assertEquals(result.value.deletedCount, 1);
+    assertEquals(result.value.skippedCount, 1);
+    const branches = (await runCleanupGit(["branch"], clone)).stdout;
+    assert(!branches.includes("old-squashed"), branches);
+    assert(branches.includes("young-unmerged"), branches);
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
+  }
+});

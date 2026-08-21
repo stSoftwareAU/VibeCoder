@@ -319,11 +319,26 @@ function summariseBranches(names: string[]): string {
     : shown;
 }
 
+/**
+ * A gone-upstream branch whose tip is older than this is force-deleted
+ * (Issue #228). Squash merges leave the local branch "unmerged" from git's
+ * point of view, so `branch -d` refused it every cycle and the clones
+ * accumulated 50+ dead branches. A week with no upstream and no new
+ * commits is abandoned work by any measure; younger unmerged branches are
+ * left for the next pass in case the remote deletion was a mistake.
+ */
+export const ORPHANED_BRANCH_FORCE_DELETE_AGE_DAYS = 7;
+
 export async function cleanupOrphanedLocalBranches(
   defaultBranch: string,
   options: GitCommandOptions = {},
+  policy: { forceDeleteAgeDays?: number; nowFn?: () => number } = {},
 ): Promise<Result<CleanupResult>> {
   let deletedCount = 0;
+  let skippedCount = 0;
+  const forceAgeSeconds = (policy.forceDeleteAgeDays ??
+    ORPHANED_BRANCH_FORCE_DELETE_AGE_DAYS) * 86400;
+  const now = (policy.nowFn ?? (() => Math.floor(Date.now() / 1000)))();
 
   // Prune remote tracking references first
   await runGitCommand(["fetch", "--prune"], options);
@@ -358,9 +373,39 @@ export async function cleanupOrphanedLocalBranches(
       buildBranchDeleteArgs(branchName),
       options,
     );
-    if (!deleteResult.ok || deleteResult.value.code !== 0) continue;
+    if (deleteResult.ok && deleteResult.value.code === 0) {
+      deletedCount++;
+      deletedNames.push(branchName);
+      continue;
+    }
+    // `-d` refused — an unmerged tip, which is what a squash-merged branch
+    // looks like locally (Issue #228). Force it only once the tip is old
+    // enough to be abandoned by any measure.
+    const tipResult = await runGitCommand(
+      ["log", "-1", "--format=%ct", branchName, "--"],
+      options,
+    );
+    const tipEpoch = tipResult.ok && tipResult.value.code === 0
+      ? Number(tipResult.value.stdout.trim())
+      : NaN;
+    if (!Number.isFinite(tipEpoch) || now - tipEpoch < forceAgeSeconds) {
+      skippedCount++;
+      continue;
+    }
+    const forced = await runGitCommand(
+      buildBranchDeleteArgs(branchName, true),
+      options,
+    );
+    if (!forced.ok || forced.value.code !== 0) {
+      skippedCount++;
+      continue;
+    }
     deletedCount++;
-    deletedNames.push(branchName);
+    deletedNames.push(
+      `${branchName} (forced, tip ${
+        Math.floor((now - tipEpoch) / 86400)
+      }d old)`,
+    );
   }
 
   // One summary event per invocation, not one per branch (Issue #4306):
@@ -376,7 +421,7 @@ export async function cleanupOrphanedLocalBranches(
     });
   }
 
-  return { ok: true, value: { deletedCount, skippedCount: 0 } };
+  return { ok: true, value: { deletedCount, skippedCount } };
 }
 
 /**
