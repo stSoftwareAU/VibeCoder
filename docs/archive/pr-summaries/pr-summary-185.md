@@ -2,144 +2,132 @@
 
 ## Summary
 
-The escape-hatch hand-off was accepted on nothing but issue **existence** plus
-the model's own prose. `verifyFollowUpIssueExists()` called
-`ghClient.getIssue()` and returned `verified: true` on success, so a
-prompt-injected `.pr_response_message` that named any pre-existing issue
-("tracked separately in #4321") was recorded as `processed: true`, replied to
-as a hand-off, and skipped the escalation genuinely unresolved feedback would
-trigger — while also reaching the label-strip mutation on the named issue.
+The escape-hatch hand-off was accepted on the *existence* of the issue number
+the model wrote, and nothing else. `verifyFollowUpIssueExists` returned
+`verified: true, reason: "exists"` the moment `getIssue` succeeded, so a
+`.pr_response_message` steered by an injected PR review comment ("tracked
+separately in #N") could name any real issue — an attacker's decoy or any issue
+already open — and `pr_feedback_processor.ts` recorded the run as
+`processed: true`, replied with the model's own text, and mutated labels on the
+named issue, skipping the escalation genuinely unresolved feedback would get.
 
-Two changes close the chain:
+Two gates close the chain, both on signals GitHub attests and the model cannot
+forge:
 
-1. **Authorship gate on the follow-up** (`escape_hatch_verify.ts`). Existence
-   alone is forgeable by whoever steers the prompt text; GitHub's record of
-   **who filed the issue** is not. The follow-up must be authored by the
-   worker's own login, a fleet sibling (`fleet_pr_authors`), or an allowlisted
-   human (`allowed_authors`, `authorized_commenters`) — the set resolved by the
-   new `resolveTrustedFollowUpAuthors()`
-   (`escape_hatch_trusted_authors.ts`, reusing the shared
-   `resolveFleetAuthors()` helper). Anything else is rejected at ERROR
-   (`reason: "untrusted-author"`) and the run falls through to the ordinary
-   reply path. With no allowlist resolvable the gate **fails closed**
-   (`reason: "no-trusted-authors"`, logged at ERROR) rather than waving the
-   hand-off through. The deliberate #3661 asymmetry survives: an inconclusive
-   lookup (timeout, 5xx) still accepts, so a transient API error cannot push
-   the worker back into the retry loop the hatch exists to prevent.
-2. **Trust gate on the upstream input** (`pr_maintenance.ts`). A
-   `CHANGES_REQUESTED` review body was fed straight into the feedback prompt
-   with no authorisation check, unlike PR comments. It now passes the same
-   `isAuthorisedCommenter` check; an unauthorised reviewer's review is skipped
-   with an `UNAUTHORISED_REVIEW_SKIPPED` security log.
-
-**Original trigger closed, no trivial bypass.** The reported attack —
-a reviewer's injected text steering the run's message into citing an existing
-issue `#N` — now fails at both hops. The review body no longer reaches the
-prompt at all unless its author is an authorised commenter, and even if the
-message names `#N` by some other route, `#N` is only accepted when GitHub
-reports its author as a trusted login. The attacker controls the *number* in
-the prose but not the *author* GitHub recorded for that issue, and there is no
-looser path: an empty or unresolvable allowlist rejects rather than accepts,
-matching is exact (case-insensitive, blank entries dropped, so an empty
-allowlist entry cannot act as a wildcard), and no code path skips the gate
-before the label-mutation/`processed: true` outcome.
+1. **Authorship, not existence.** `verifyFollowUpIssueExists` now also requires
+   the referenced issue to have been filed by a trusted account — the host's own
+   login, the fleet accounts (`fleet_pr_authors` / `service_accounts`), or an
+   allowlisted human (`allowed_authors` / `authorised_commenters`), resolved by
+   the new `lib/escape_hatch_trusted_authors.ts`. An untrusted or blank author
+   is rejected loudly (`untrusted-author`), and an empty trusted set — no gate to
+   apply — is rejected before the lookup (`author-unverifiable`) rather than
+   silently degrading to bare existence. The documented #3661 asymmetry is
+   unchanged: a definitive 404 still rejects, a transient API error still
+   accepts.
+2. **The injection surface itself.** `findPrCommentsToFix` fed every
+   CHANGES_REQUESTED review body straight into the feedback prompt with no trust
+   check, so any reviewer could steer the model's final message. Reviews now
+   clear the same check PR comments do — authorised commenter or
+   `trusted_review_bots` — and a skipped review logs
+   `[SECURITY] UNAUTHORISED_PR_REVIEW`.
 
 Closes #185.
 
 ## Evidence
 
-Backend/CLI change — no web interface to screenshot. Evidence is the test suite.
-
-Hand-off acceptance after the change:
+Backend/CLI change — no web interface to screenshot. Evidence is the test suite
+below plus the authority chain, which now has an unforgeable check on every hop:
 
 ```mermaid
 flowchart TD
-    A[".pr_response_message<br/>(model prose)"] --> B{"detectEscapeHatch<br/>ref + wording?"}
-    B -->|no| Z["Ordinary reply path"]
-    B -->|yes| C{"Trusted-author set<br/>resolvable?"}
-    C -->|no| E1["ERROR no-trusted-authors<br/>→ reject"]
-    C -->|yes| D{"getIssue: exists?"}
-    D -->|404| E2["ERROR not-found<br/>→ reject"]
-    D -->|inconclusive| W["WARN lookup-failed<br/>→ accept (#3661)"]
-    D -->|yes| F{"issue.author trusted?"}
-    F -->|no| E3["ERROR untrusted-author<br/>→ reject (#185)"]
-    F -->|yes| G["Hand-off accepted<br/>processed: true"]
-    E1 --> Z
-    E2 --> Z
-    E3 --> Z
+    A["PR review comment<br/>(any GitHub user)"] -->|"#185: authorised commenter<br/>or trusted review bot?"| B{Trusted?}
+    B -->|no| X["Skipped<br/>[SECURITY] UNAUTHORISED_PR_REVIEW"]
+    B -->|yes| C["Feedback prompt → Claude"]
+    C --> D[".pr_response_message<br/>(model prose — untrusted)"]
+    D --> E["detectEscapeHatch<br/>prose markers + #NNN"]
+    E --> F{"Issue exists?<br/>(#3661)"}
+    F -->|no| Y["Rejected — ordinary reply path"]
+    F -->|yes| G{"Filed by a trusted author?<br/>(#185)"}
+    G -->|no| Z["Rejected<br/>[SECURITY] ESCAPE_HATCH_UNTRUSTED_FOLLOW_UP"]
+    G -->|yes| H["processed: true<br/>hand-off recorded"]
+    style Z fill:#7f1d1d,stroke:#450a0a,color:#fff
+    style X fill:#7f1d1d,stroke:#450a0a,color:#fff
+    style H fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-Targeted runs (all green):
+**Regression tests, fail-before / pass-after.** Added
+`worker/deno/tests/escape_hatch_verify_test.ts::verifyFollowUpIssueExists - rejects an existing issue filed by an untrusted author (Issue #185)`,
+which reproduces the exact trigger — an issue that genuinely exists, filed by
+somebody who is not the worker. Run against the unfixed library
+(`deno test --no-check` with `lib/escape_hatch_verify.ts` and
+`lib/pr_maintenance.ts` reverted) it fails, together with three siblings:
 
 ```
-deno test --allow-all tests/escape_hatch_verify_test.ts \
-  tests/escape_hatch_trusted_authors_test.ts \
-  tests/pr_feedback_processor_escape_hatch_test.ts \
-  tests/pr_maintenance_test.ts
-ok | 86 passed | 0 failed
+verifyFollowUpIssueExists - rejects an existing issue filed by an untrusted author (Issue #185) ... FAILED
+verifyFollowUpIssueExists - rejects when the issue author is missing (Issue #185) ... FAILED
+verifyFollowUpIssueExists - rejects when no trusted authors are known (Issue #185) ... FAILED
+findPrCommentsToFix - ignores a CHANGES_REQUESTED review from an unauthorised reviewer (Issue #185) ... FAILED
+FAILED | 69 passed | 4 failed
 ```
 
-`./quality.sh` passes lint, type check, fmt, markdownlint, mermaid and the
-chokepoint gates. The `deno tests` gate reports 10 failures in
-`setup_workdir_reminder_test.ts`, `fleet_health_test.ts`,
-`optional_feature_env_test.ts` and `host_workdir_guard_test.ts` — all
-pre-existing and unrelated: the identical 10 fail on a clean `git stash`-ed tree
-in this container (they assert on host work-dir layout).
+After the fix the same files pass (`ok | 77 passed | 0 failed`), and the
+end-to-end processor test
+`worker/deno/tests/pr_feedback_processor_escape_hatch_test.ts::processPrFeedback - a hand-off naming somebody else's existing issue is rejected (Issue #185)`
+confirms the run is no longer recorded as a resolution and the named issue's
+labels are not touched.
+
+**Original trigger is closed, with no trivial bypass.** The attack input — a
+hand-off message citing a real, pre-existing issue with escape-hatch phrasing —
+now reaches `verifyFollowUpIssueExists`, which rejects it because
+`isFleetAuthor(issue.author, trustedAuthors)` is false; only accounts the
+operator configured can satisfy it, and the model cannot choose an issue's
+author. Equivalent bypasses are closed on the same path: a blank or missing
+author fails closed rather than matching, comparison is case-insensitive so
+casing tricks do not help, an empty trusted set rejects instead of falling back
+to existence, and the pre-existing `not-found` rejection still covers a
+hallucinated number. The only remaining accept-on-doubt branch is the
+deliberate #3661 `lookup-failed` case (a transient network/rate-limit error,
+not attacker-selectable — GitHub answers an inaccessible or missing issue with
+404, which rejects). Upstream, the review body that produced the message must
+now come from an authorised commenter or a trusted review bot, so the
+drive-by-reviewer attacker of the issue's threat model no longer reaches the
+prompt at all.
+
+**Full quality gate:** `./quality.sh` passes every check except `deno tests`,
+which reports the same 10 pre-existing, environment-dependent failures
+(`buildFleetHealthConfig`, `host workdir guard`, `applyOptionalFeatureEnv`,
+`remind_obsolete_host_work_dirs`) on a clean checkout of `main` with these
+changes stashed. All 14,786 other tests pass.
 
 ## Test Plan
 
-Regression tests that **fail against the unfixed code and pass after the fix**
-(verified by disabling the new gates and re-running):
+- `worker/deno/tests/escape_hatch_verify_test.ts` — added: rejects an existing
+  issue filed by an untrusted author (Issue #185); accepts a follow-up filed by
+  a trusted account regardless of login casing; rejects when the issue author is
+  missing; rejects when no trusted authors are known. Existing cases updated to
+  pass the new required `trustedAuthors` argument — none removed or disabled.
+- `worker/deno/tests/escape_hatch_trusted_authors_test.ts` (new) — the resolver
+  unions host/fleet/allowlisted logins, drops blanks and case-insensitive
+  duplicates, resolves an unconfigured fleet to an empty set, and never admits
+  an attacker login.
+- `worker/deno/tests/pr_maintenance_test.ts` — added: an unauthorised reviewer's
+  CHANGES_REQUESTED review is ignored; an authorised reviewer's is still
+  actionable; a trusted review bot's stays actionable.
+- `worker/deno/tests/pr_feedback_processor_escape_hatch_test.ts` — added the
+  end-to-end rejection above; the harness now wires the host login
+  (`githubUser`) as production does, so the existing hand-off tests still
+  verify.
 
-- `worker/deno/tests/escape_hatch_verify_test.ts::verifyFollowUpIssueExists - rejects an existing issue filed by an untrusted author (Issue #185)`
-  — reproduces the flaw at the unit level: the named issue exists, so the
-  #3661 existence check passes; only authorship exposes the decoy.
-- `worker/deno/tests/pr_feedback_processor_escape_hatch_test.ts::processPrFeedback - a hand-off naming an existing issue filed by an untrusted author is rejected (Issue #185)`
-  — end-to-end through `processPrFeedback`: the run is not recorded as a
-  resolution, the neutral reply is posted instead, and no label is mutated on
-  the attacker-named issue.
-- `worker/deno/tests/pr_maintenance_test.ts::findPrCommentsToFix - ignores a CHANGES_REQUESTED review from an unauthorised reviewer (Issue #185)`
-  — the injected review body never reaches the feedback prompt.
+## Security Self-Check
 
-Supporting tests added:
-
-- `worker/deno/tests/escape_hatch_verify_test.ts::verifyFollowUpIssueExists - accepts a follow-up filed by an allowlisted author (Issue #185)`
-- `worker/deno/tests/escape_hatch_verify_test.ts::verifyFollowUpIssueExists - author matching ignores login case (Issue #185)`
-- `worker/deno/tests/escape_hatch_verify_test.ts::verifyFollowUpIssueExists - rejects when no trusted author set is available (Issue #185)`
-- `worker/deno/tests/escape_hatch_verify_test.ts::isTrustedFollowUpAuthor - matches case-insensitively and rejects strangers`
-- `worker/deno/tests/escape_hatch_trusted_authors_test.ts::resolveTrustedFollowUpAuthors - unions the worker, fleet and allowlists`
-- `worker/deno/tests/escape_hatch_trusted_authors_test.ts::resolveTrustedFollowUpAuthors - drops blanks and de-duplicates by login case`
-- `worker/deno/tests/escape_hatch_trusted_authors_test.ts::resolveTrustedFollowUpAuthors - an unconfigured worker yields an empty set (Issue #185)`
-- `worker/deno/tests/escape_hatch_trusted_authors_test.ts::resolveTrustedFollowUpAuthors - an arbitrary reviewer is not trusted`
-- `worker/deno/tests/pr_maintenance_test.ts::findPrCommentsToFix - still actions a CHANGES_REQUESTED review from an authorised reviewer (Issue #185)`
-
-Existing tests modified (no test removed or disabled):
-
-- `escape_hatch_verify_test.ts` — every `verifyFollowUpIssueExists` call now
-  passes the new required `trustedAuthors` argument, and the fake client's
-  issue author is configurable.
-- `pr_feedback_processor_escape_hatch_test.ts` — the fixture config now supplies
-  `allowed_authors` (the trusted-author source) and the follow-up author is a
-  parameter, so the existing hand-off scenarios model a worker-filed follow-up.
-
-## Documentation
-
-- `DESIGN-PRINCIPLES.md` — "Escape hatch for out-of-scope work" gains the
-  unforgeable-signal rule, the fail-closed behaviour, and the review-body trust
-  gate.
-- `docs/workflows/pr-feedback.md` — trigger, discovery and escape-hatch
-  paragraphs updated to match the new authorisation and authorship checks.
-
-## Security self-check
-
-- **Input validation** — the follow-up author is compared against an explicit
-  allowlist (trimmed, case-insensitive, blanks dropped); the reviewer login goes
-  through the existing `isAuthorisedCommenter` allowlist.
-- **Secrets** — none added or staged.
-- **Injection surface** — no new shell, SQL or filesystem calls; the GitHub read
-  uses the existing `gh` client with a parsed repo/number.
+- **Input validation** — the follow-up ref is still parsed by the existing
+  anchored `parseFollowUpIssueRef`; the added check validates the API-reported
+  author against a configured allowlist (allowlist, not denylist).
+- **Secrets** — none staged; no `.config*.json` or hidden files touched.
+- **Injection surface** — no new shell, SQL, or HTTP construction; the only new
+  GitHub read is the existing `getIssue` call.
 - **Authorisation** — this change *adds* authorisation to two paths that had
-  none; both fail closed.
-- **Error handling** — rejections log a machine-readable reason at ERROR with no
-  internal state leaked; no error is swallowed.
+  none, matching the check adjacent code already applies.
+- **Error handling** — rejections log a reason and a `[SECURITY]` event; no
+  stack traces or internal state reach user-facing replies.
 - **Dependencies** — none added.
