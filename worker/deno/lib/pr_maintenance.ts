@@ -28,6 +28,11 @@ import {
 } from "./pr_ci_checks.ts";
 import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
 import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
+import {
+  fetchPrHeadCommit,
+  type HeadCommitInfo,
+  isSupersededByFleetPush,
+} from "./pr_comment_supersession.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import type { IssueCache } from "./issue_cache.ts";
@@ -60,6 +65,8 @@ export interface CommentEntry {
   id: number;
   body: string;
   thumbs_up: number;
+  /** ISO-8601 creation time, used for fleet-push supersession (Issue #211). */
+  created_at?: string;
 }
 
 /** Review entry from the GitHub API. */
@@ -446,7 +453,7 @@ export async function fetchPrComments(
       "api",
       apiPath,
       "--jq",
-      '[.[] | select(.reactions.eyes == 0) | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0)}]',
+      '[.[] | select(.reactions.eyes == 0) | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), created_at: .created_at}]',
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -671,6 +678,23 @@ export async function findPrCommentsToFix(
     for (const pr of prs) {
       const { number: prNumber, headRefName: branchName, headRefOid } = pr;
 
+      // Issue #211: read the head commit at most once per PR, and only when a
+      // comment is otherwise actionable.
+      let headCommit: HeadCommitInfo | null | undefined;
+      const supersession = {
+        fleetAuthors: scanAuthors,
+        getHeadCommit: async () => {
+          if (headCommit === undefined) {
+            headCommit = await fetchPrHeadCommit(
+              repo,
+              headRefOid ?? "",
+              ghCommandFn,
+            );
+          }
+          return headCommit;
+        },
+      };
+
       // Check review comments (inline)
       const reviewComment = await findActionableComment(
         repo,
@@ -681,6 +705,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
+        supersession,
       );
       if (reviewComment) {
         return {
@@ -702,6 +727,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
+        supersession,
       );
       if (issueComment) {
         return {
@@ -790,6 +816,12 @@ async function findActionableComment(
   ghCommandFn: (args: string[]) => Promise<string>,
   logger: Logger,
   trustedReviewBots: string[] = [],
+  supersession?: {
+    /** Logins the fleet pushes under. */
+    fleetAuthors: readonly string[];
+    /** Lazily-read PR head commit — one API call per PR, at most. */
+    getHeadCommit: () => Promise<HeadCommitInfo | null>;
+  },
 ): Promise<Omit<PrCommentToFix, "branchName"> | null> {
   const comments = await fetchPrComments(
     repo,
@@ -825,6 +857,33 @@ async function findActionableComment(
     }
 
     if (isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot) {
+      // Issue #211: a sibling fleet host may have pushed to this PR after the
+      // comment was written, addressing it. Claiming it then burns a whole
+      // agent run re-doing work that already landed. Checked only for a
+      // comment that is otherwise actionable, so it costs one API call per
+      // PR at most.
+      if (supersession) {
+        const headCommit = await supersession.getHeadCommit();
+        if (
+          isSupersededByFleetPush({
+            commentCreatedAt: comment.created_at,
+            headCommit,
+            fleetAuthors: supersession.fleetAuthors,
+          })
+        ) {
+          logger.info("Skipping PR comment superseded by a fleet push", {
+            repo,
+            prNumber,
+            commentType,
+            author: comment.login,
+            commentCreatedAt: comment.created_at,
+            headSha: headCommit?.sha,
+            headCommittedAt: headCommit?.committedAt,
+          });
+          continue;
+        }
+      }
+
       const trustReason = isAuthorised
         ? "authorised"
         : hasAuthorisedThumbsUp
