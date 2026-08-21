@@ -31,6 +31,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { isValidSessionId } from "./session_resume.ts";
 import { describesPreservedWip } from "./wip_markers.ts";
 
 /** Resume state older than this is stale — the next attempt starts clean. */
@@ -188,10 +189,16 @@ function parsePersisted(raw: string): PersistedResumeState | null {
   if (record.sessionId !== undefined && typeof record.sessionId !== "string") {
     return null;
   }
+  // An id written before the UUID fix (Issue #204) is stale: the CLI refuses
+  // it outright, so `--resume` with it kills the invocation 0.2 s after spawn.
+  // Drop the id and keep the entry — the branch checkpoint is still resumable,
+  // it just resumes without CLI session continuity.
+  const sessionId = typeof record.sessionId === "string" &&
+      isValidSessionId(record.sessionId)
+    ? record.sessionId
+    : undefined;
   return {
-    ...(record.sessionId !== undefined
-      ? { sessionId: record.sessionId as string }
-      : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
     phaseCount: record.phaseCount,
     branch: record.branch,
     savedAtEpochMs: record.savedAtEpochMs,

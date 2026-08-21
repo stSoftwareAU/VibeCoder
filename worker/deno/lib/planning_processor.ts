@@ -1104,7 +1104,7 @@ async function _processPlanningWithHeartbeat(
   // revises once, and only then publishes the final sub-issues. The critique
   // text itself is never published. Sub-issue detection runs on the turn-2
   // output, so the existing fallback/retry logic below is unchanged.
-  const sessionState = createSessionResumeState(repo, issueNumber);
+  const sessionState = createSessionResumeState();
 
   // Collect stats from every planning Claude invocation in the run (Issue
   // #2649). Designed for a list — draft + critique (#2648), plus the #1219
