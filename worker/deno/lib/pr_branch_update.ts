@@ -14,6 +14,7 @@
  */
 
 import { isPrBranchConflictError } from "./git_pull.ts";
+import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import type { Logger, Result } from "../types.ts";
 import type { BranchUpdateLockResult } from "./pr_branch_lock.ts";
 import {
@@ -380,8 +381,16 @@ export async function scanPrBranchUpdates(
       } else {
         try {
           behindBy = await deps.getBehindBy(repo, baseBranch, pr.headRefName);
-        } catch {
+        } catch (err) {
+          // Issue #231: a PR that cannot even be compared must be named —
+          // a bare counter hid which one failed every hour.
           failedCount++;
+          deps.logger.warn(
+            `PR #${pr.number} (${pr.headRefName}) ahead/behind lookup against ${baseBranch} failed — skipped this pass: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            { repo, prNumber: pr.number },
+          );
           continue;
         }
 
@@ -513,6 +522,16 @@ export async function executePrBranchUpdates(
     const setupResult = await deps.setupRepo(action.repo, deps.workDir);
     if (!setupResult.ok) {
       failedCount++;
+      // Issue #231: name the PR and the reason — the summary line only
+      // carried the count, so a PR failing every pass was invisible.
+      deps.logger.warn(
+        `PR #${action.prNumber} (${action.branchName}) branch update failed — repository setup: ${setupResult.error.message}`,
+        { repo: action.repo, prNumber: action.prNumber },
+      );
+      recordFaultEvent(
+        "catch_block_warning",
+        `pr-branch-update setup failed ${action.repo}#${action.prNumber}: ${setupResult.error.message}`,
+      );
       details.push({
         repo: action.repo,
         prNumber: action.prNumber,
@@ -587,6 +606,15 @@ export async function executePrBranchUpdates(
       });
     } else {
       failedCount++;
+      // Issue #231: see above — every failure names its PR and cause.
+      deps.logger.warn(
+        `PR #${action.prNumber} (${action.branchName}) branch update against ${action.baseBranch} failed: ${updateResult.error.message}`,
+        { repo: action.repo, prNumber: action.prNumber },
+      );
+      recordFaultEvent(
+        "catch_block_warning",
+        `pr-branch-update failed ${action.repo}#${action.prNumber}: ${updateResult.error.message}`,
+      );
       details.push({
         repo: action.repo,
         prNumber: action.prNumber,

@@ -55,6 +55,13 @@ export interface FleetHealthConfig {
    * `FLEET_HEALTH_TIMEOUT_MS` environment variable (Issue #3127).
    */
   reportTimeoutMs: number;
+  /**
+   * Extra host conditions to name on the report (Issue #226) — today the
+   * host-disk status when it is `low`. Each string joins the `--message`
+   * payload; an empty list leaves a healthy report byte-identical to the
+   * historical invocation.
+   */
+  hostNotes?: () => string[];
 }
 
 /**
@@ -522,8 +529,16 @@ export async function reportFleetHealth(
   // repurposed — and it is omitted entirely on a healthy host, so a
   // healthy report is byte-identical to the historical invocation.
   const args = [healthScript, identity];
+  const messages: string[] = [];
   if (inaccessibleRepos.length > 0) {
-    args.push("--message", formatInaccessibleReposReason(inaccessibleRepos));
+    messages.push(formatInaccessibleReposReason(inaccessibleRepos));
+  }
+  // Issue #226: a host short of disk says so on the fleet board.
+  for (const note of config.hostNotes?.() ?? []) {
+    if (note.trim() !== "") messages.push(note.trim());
+  }
+  if (messages.length > 0) {
+    args.push("--message", messages.join(" | "));
   }
 
   // Do NOT pass quiet:true here (Issues #3173, #3174). repos.sh prints the

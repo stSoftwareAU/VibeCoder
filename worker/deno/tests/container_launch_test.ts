@@ -930,26 +930,26 @@ Deno.test("buildContainerLaunchPlan - carries the builder-stop arguments only fo
   );
 });
 
-Deno.test("buildContainerLaunchPlan - carries the container_tools spec as a build arg (Issue #72)", () => {
-  const spec =
-    '[{"id":"java","url":{"noarch":"file:///x.tar.gz"},"sha256":{"noarch":"ab"}}]';
+Deno.test("buildContainerLaunchPlan - passes the host disk reading into the container (Issue #226)", () => {
+  // Inside the container df sees the virtual work volume, not the host
+  // filesystem it is thin-provisioned on; the launcher's reading is what
+  // the worker gates new claims on.
   const plan = buildContainerLaunchPlan(
-    inputs({ containerToolsSpecJson: spec }),
+    inputs({
+      hostDisk: { availableBytes: 24_000_000_000, totalBytes: 494_000_000_000 },
+    }),
   );
-  const at = plan.buildArgs.indexOf("--build-arg");
-  assert(at !== -1, "expected a --build-arg for the tool spec");
-  assertEquals(plan.buildArgs[at + 1], `VIBE_CONTAINER_TOOLS=${spec}`);
-  // Options precede the build-context PATH, which is the last build argument.
-  assert(
-    at + 1 < plan.buildArgs.length - 1,
-    "the --build-arg must come before the build-context path",
-  );
-
-  // Absent → no extra build arg, so the default fleet build is unchanged.
-  const bare = buildContainerLaunchPlan(inputs());
-  assertEquals(bare.buildArgs.includes("--build-arg"), false);
   assertEquals(
-    bare.buildArgs.some((a) => a.startsWith("VIBE_CONTAINER_TOOLS=")),
+    plan.runArgs.includes("VIBE_HOST_DISK_AVAIL_BYTES=24000000000"),
+    true,
+  );
+  assertEquals(
+    plan.runArgs.includes("VIBE_HOST_DISK_TOTAL_BYTES=494000000000"),
+    true,
+  );
+  const bare = buildContainerLaunchPlan(inputs());
+  assertEquals(
+    bare.runArgs.some((arg) => arg.startsWith("VIBE_HOST_DISK_")),
     false,
   );
 });

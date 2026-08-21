@@ -1071,3 +1071,71 @@ Deno.test("executePrBranchUpdates - each conflicting PR gets its own warning (Is
   assertEquals(warnings.filter((w) => w.includes("PR #101")).length, 1);
   assertEquals(warnings.filter((w) => w.includes("PR #102")).length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #231: every failure names its PR and cause in the log
+// ---------------------------------------------------------------------------
+
+function captureWarnings(
+  deps: { logger: Logger },
+): string[] {
+  const warnings: string[] = [];
+  deps.logger = {
+    ...deps.logger,
+    warn: (m: string) => {
+      warnings.push(m);
+    },
+  } as Logger;
+  return warnings;
+}
+
+Deno.test("scanPrBranchUpdates - a getBehindBy failure names the PR and the error (Issue #231)", async () => {
+  const deps = makeBaseDeps({
+    listPrs:
+      async () => [makePr({ number: 4231, headRefName: "issue-4221-x" })],
+    getBehindBy: async () => {
+      throw new Error("GraphQL quota exhausted");
+    },
+  });
+  const warnings = captureWarnings(deps);
+  await scanPrBranchUpdates(deps);
+  const line = warnings.find((w) => w.includes("#4231"));
+  assertEquals(line !== undefined, true, warnings.join(" | "));
+  assertEquals(line!.includes("issue-4221-x"), true);
+  assertEquals(line!.includes("GraphQL quota exhausted"), true);
+});
+
+Deno.test("executePrBranchUpdates - a setupRepo failure is logged with PR, branch and cause (Issue #231)", async () => {
+  const actions = [makeAction({ prNumber: 4231, branchName: "issue-4221-x" })];
+  const deps = makeExecDeps({
+    setupRepo: async () => ({ ok: false, error: new Error("Clone failed") }),
+  });
+  const warnings = captureWarnings(deps);
+  await executePrBranchUpdates(actions, deps);
+  const line = warnings.find((w) => w.includes("#4231"));
+  assertEquals(line !== undefined, true, warnings.join(" | "));
+  assertEquals(line!.includes("issue-4221-x"), true);
+  assertEquals(line!.includes("Clone failed"), true);
+});
+
+Deno.test("executePrBranchUpdates - a performBranchUpdate failure is logged with PR, base and cause (Issue #231)", async () => {
+  const actions = [
+    makeAction({
+      prNumber: 4231,
+      branchName: "issue-4221-x",
+      baseBranch: "milestone/4217-feed",
+    }),
+  ];
+  const deps = makeExecDeps({
+    performBranchUpdate: async () => ({
+      ok: false,
+      error: new Error("Rebase failed: base moved"),
+    }),
+  });
+  const warnings = captureWarnings(deps);
+  await executePrBranchUpdates(actions, deps);
+  const line = warnings.find((w) => w.includes("#4231"));
+  assertEquals(line !== undefined, true, warnings.join(" | "));
+  assertEquals(line!.includes("milestone/4217-feed"), true);
+  assertEquals(line!.includes("Rebase failed: base moved"), true);
+});

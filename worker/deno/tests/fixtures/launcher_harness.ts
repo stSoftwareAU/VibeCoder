@@ -54,11 +54,21 @@ fi
 # their own action names so they cannot overwrite it.
 if [[ "\${sub}" == "image" || "\${sub}" == "images" ]]; then
   case "\${2:-none}" in
-    list|ls|rm|delete|remove) sub="image-\${2}" ;;
+    list|ls|rm|delete|remove|prune) sub="image-\${2}" ;;
   esac
 fi
 printf '%s\\0' "\$@" > "\${record_dir}/\${sub}.args"
 case "\${sub}" in
+  image-prune)
+    # The store prune's dangling-layer pass (Issue #227): nothing to reclaim.
+    printf 'Total reclaimed space: 0B\\n'
+    exit "\${STUB_IMAGE_PRUNE_EXIT:-0}"
+    ;;
+  volume-ls|volume-list)
+    # The store prune's volume listing (Issue #227): no throwaway volumes.
+    printf '%s\\n' "\${STUB_VOLUME_LIST:-[]}"
+    exit 0
+    ;;
   image-list|image-ls)
     # Local image store for the prune. Empty by default, so a launch on a host
     # holding nothing but the current reference prunes nothing.
