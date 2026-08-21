@@ -1101,19 +1101,45 @@ flags:
 | **First phase** (e.g., clarification) | `--session-id <id>` | Creates a new named session |
 | **Subsequent phases** (e.g., implementation, quality) | `--session-id <id> --resume` | Resumes the existing session |
 
-#### Deterministic Session ID
+#### Session ID — a UUID (Issue #204)
 
-The session ID is generated deterministically from:
+`generateSessionId()` returns a `crypto.randomUUID()`. The Claude CLI
+validates `--session-id` as a UUID and refuses anything else:
 
 ```
-{sanitised-repo}-{issue-number}-{timestamp}
+Error: Invalid session ID. Must be a valid UUID.
 ```
 
-For example: `myorg-myrepo-42-1713168000000`
+It exits ~0.2 s after spawn, before reaching a model call. The worker
+previously generated `{sanitised-repo}-{issue-number}-{timestamp}`, so
+**every** planning draft and publish turn died instantly and only the
+legacy sessionless retry did any work.
 
-The repository name is sanitised (non-alphanumeric characters replaced
-with hyphens) to ensure the ID is safe for CLI usage. The timestamp
-ensures uniqueness across separate processing runs of the same issue.
+The repository/issue identity lives in the resume-state **file name**
+(`.claude-sessions/resume/<owner>-<repo>-<issue>.json`), not in the session
+ID. A persisted entry whose `sessionId` is not a UUID was written before
+this fix: `loadResumeState()` drops the ID and keeps the entry, so the
+checkpointed branch still resumes but without `--resume`.
+
+#### Recovering from a rejected session ID
+
+If the CLI ever refuses a session ID again, `runClaudeWithRetry()`
+recognises the refusal, drops the session flags and retries once, at
+`WARNING` — the run continues without CLI session continuity rather than
+failing, and never silently.
+
+```mermaid
+flowchart TD
+    A[Invoke agent<br/>--session-id UUID] --> B{Exit non-zero?}
+    B -- no --> C[Success]
+    B -- yes --> D{stderr says<br/>Invalid session ID?}
+    D -- no --> E[Ordinary failure path<br/>rate limit / model / report]
+    D -- yes --> F[WARN + INVALID_SESSION_ID<br/>drop session flags]
+    F --> G[Retry once, no session flags]
+    G --> H{Exit non-zero?}
+    H -- no --> C
+    H -- yes --> E
+```
 
 #### Phase Counting
 

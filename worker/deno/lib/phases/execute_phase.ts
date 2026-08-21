@@ -296,7 +296,7 @@ async function executeClaudeBody(
 
   // Initialise session resume state if enabled (Issue #1324)
   if (config.enableSessionResume && !state.sessionResumeState) {
-    state.sessionResumeState = createSessionResumeState(repo, issueNumber);
+    state.sessionResumeState = createSessionResumeState();
     logger.info("Session resume enabled", {
       sessionId: state.sessionResumeState.sessionId,
     });

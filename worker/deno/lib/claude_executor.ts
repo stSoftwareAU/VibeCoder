@@ -578,6 +578,45 @@ export function detectModelUnavailable(
 }
 
 // ---------------------------------------------------------------------------
+// Invalid-session-id detection (Issue #204)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Claude CLI's refusal of a `--session-id` it will not accept.
+ *
+ * The CLI validates the flag as a UUID and, when it fails, exits ~0.2 s after
+ * spawn with `Error: Invalid session ID. Must be a valid UUID.` — before it
+ * ever reaches a model call. Anchored to session-id phrasing so an unrelated
+ * "invalid" (a bad model alias, a git reference) cannot match: the remedy here
+ * is to drop the session flags, which would silently discard continuity if it
+ * fired on the wrong failure.
+ */
+const INVALID_SESSION_ID_RE =
+  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid/i;
+
+/**
+ * Check if the tail of output indicates the CLI rejected the session id.
+ *
+ * Tail-scoped like {@link detectModelUnavailable} — only consulted on a
+ * non-zero exit, where the tail is the CLI's own error.
+ *
+ * @param output - The output text to scan (stdout and stderr)
+ * @param tailLines - Number of lines from the end to check (default: 30)
+ * @returns true if the failure is a rejected `--session-id`
+ */
+export function detectInvalidSessionId(
+  output: string,
+  tailLines: number = 30,
+): boolean {
+  if (!output.trim()) return false;
+
+  const lines = output.split("\n");
+  const tail = lines.slice(-tailLines).join("\n");
+
+  return INVALID_SESSION_ID_RE.test(tail);
+}
+
+// ---------------------------------------------------------------------------
 // Out-of-memory detection (Issue #2740, parent #2721)
 // ---------------------------------------------------------------------------
 

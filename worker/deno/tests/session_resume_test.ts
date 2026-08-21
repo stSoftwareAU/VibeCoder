@@ -2,10 +2,15 @@
  * Tests for session resume support (Issue #1324).
  *
  * Covers:
- * - Session ID generation (deterministic, sanitised)
+ * - Session ID generation (a UUID the Claude CLI accepts — Issue #204)
  * - Session state creation and phase tracking
  * - CLI flag construction (first phase vs subsequent phases)
- * - Edge cases (disabled feature, zero phases, special characters)
+ * - Edge cases (disabled feature, zero phases)
+ *
+ * The `<repo>-<issue>-<timestamp>` id these tests once asserted was rejected
+ * by the CLI ("Invalid session ID. Must be a valid UUID."), so the generation
+ * tests now assert the UUID contract instead; see
+ * `session_id_uuid_204_test.ts` for the full #204 coverage.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -24,49 +29,14 @@ import {
 // Session ID generation
 // =============================================================================
 
-Deno.test("generateSessionId - produces deterministic ID with fixed timestamp", () => {
-  const id1 = generateSessionId("owner/repo", 42, 1700000000000);
-  const id2 = generateSessionId("owner/repo", 42, 1700000000000);
-  assertEquals(id1, id2);
-});
-
-Deno.test("generateSessionId - includes repo name, issue number, and timestamp", () => {
-  const id = generateSessionId("owner/repo", 42, 1700000000000);
-  assertEquals(id, "owner-repo-42-1700000000000");
-});
-
-Deno.test("generateSessionId - sanitises special characters in repo name", () => {
-  const id = generateSessionId("my.org/my_repo", 7, 1000);
-  assertEquals(id, "my-org-my-repo-7-1000");
-});
-
-Deno.test("generateSessionId - different issue numbers produce different IDs", () => {
-  const id1 = generateSessionId("owner/repo", 1, 1000);
-  const id2 = generateSessionId("owner/repo", 2, 1000);
+Deno.test("generateSessionId - every call produces a distinct ID", () => {
+  const id1 = generateSessionId();
+  const id2 = generateSessionId();
   assertNotEquals(id1, id2);
-});
-
-Deno.test("generateSessionId - different timestamps produce different IDs", () => {
-  const id1 = generateSessionId("owner/repo", 42, 1000);
-  const id2 = generateSessionId("owner/repo", 42, 2000);
-  assertNotEquals(id1, id2);
-});
-
-Deno.test("generateSessionId - uses Date.now() when no timestamp provided", () => {
-  const before = Date.now();
-  const id = generateSessionId("owner/repo", 42);
-  const after = Date.now();
-
-  // ID should contain a timestamp between before and after
-  const match = id.match(/owner-repo-42-(\d+)/);
-  assertEquals(match !== null, true);
-  const ts = parseInt(match![1]!, 10);
-  assertEquals(ts >= before, true);
-  assertEquals(ts <= after, true);
 });
 
 Deno.test("generateSessionId - produces CLI-safe characters only", () => {
-  const id = generateSessionId("owner/repo.special", 42, 1000);
+  const id = generateSessionId();
   // Should only contain alphanumeric characters and hyphens
   assertMatch(id, /^[a-zA-Z0-9-]+$/);
 });
@@ -76,13 +46,13 @@ Deno.test("generateSessionId - produces CLI-safe characters only", () => {
 // =============================================================================
 
 Deno.test("createSessionResumeState - initialises with zero phase count", () => {
-  const state = createSessionResumeState("owner/repo", 42, 1000);
+  const state = createSessionResumeState();
   assertEquals(state.phaseCount, 0);
 });
 
-Deno.test("createSessionResumeState - generates session ID from params", () => {
-  const state = createSessionResumeState("owner/repo", 42, 1000);
-  assertEquals(state.sessionId, "owner-repo-42-1000");
+Deno.test("createSessionResumeState - generates a non-empty session ID", () => {
+  const state = createSessionResumeState();
+  assertNotEquals(state.sessionId, "");
 });
 
 // =============================================================================
@@ -178,13 +148,13 @@ Deno.test("buildSessionResumeArgs - resume without sessionId produces only --res
 
 Deno.test("session resume lifecycle - first phase then subsequent phase", () => {
   // Create initial state
-  const state = createSessionResumeState("org/my-app", 99, 1700000000000);
+  const state = createSessionResumeState();
   assertEquals(state.phaseCount, 0);
 
   // First phase: should get session-id only
   const firstFlags = buildSessionResumeFlags(state);
   const firstArgs = buildSessionResumeArgs(firstFlags);
-  assertEquals(firstArgs, ["--session-id", "org-my-app-99-1700000000000"]);
+  assertEquals(firstArgs, ["--session-id", state.sessionId]);
 
   // Record completion of first phase
   const afterFirst = recordPhaseCompletion(state);
@@ -195,7 +165,7 @@ Deno.test("session resume lifecycle - first phase then subsequent phase", () => 
   const secondArgs = buildSessionResumeArgs(secondFlags);
   assertEquals(secondArgs, [
     "--session-id",
-    "org-my-app-99-1700000000000",
+    state.sessionId,
     "--resume",
   ]);
 
