@@ -7,6 +7,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  describeAttemptOutcome,
   formatDuration,
   OUTCOME_BLOCK_MAX_LENGTH,
   parseHeartbeatMarker,
@@ -53,6 +54,19 @@ const CASES: { name: string; outcome: RunOutcome | undefined }[] = [
     },
   },
   { name: "absent", outcome: undefined },
+  {
+    // Issue #218 — the issue was resolved by another PR mid-run.
+    name: "superseded",
+    outcome: {
+      kind: "superseded",
+      phase: "execute",
+      prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/215",
+      prNumber: 215,
+      prState: "MERGED",
+      wipNote:
+        "WIP preserved: committed and pushed to 'issue-185-forgeable' (Issue #47)",
+    },
+  },
 ];
 
 function render(outcome: RunOutcome | undefined): string {
@@ -183,4 +197,26 @@ Deno.test("outcome render - formatDuration phrases (Issue #4326)", () => {
   assertEquals(formatDuration(3600), "1 h");
   assertEquals(formatDuration(90000), "1 d");
   assertEquals(formatDuration(-3), "under 1 min");
+});
+
+Deno.test("outcome render - superseded: ✅ line naming the merged PR and the preserved WIP, never ⚠️ (Issue #218)", () => {
+  const outcome = CASES[4]!.outcome!;
+  const body = render(outcome);
+  assertStringIncludes(body, "✅ **Vibe Coder released this claim**");
+  assertStringIncludes(
+    body,
+    "Superseded by merged #215 — https://github.com/stSoftwareAU/VibeCoder/pull/215 (this run raised no PR).",
+  );
+  // The preserved branch is named so the work this run did do is findable.
+  assertStringIncludes(body, "issue-185-forgeable");
+  // A superseded run is not a failure: no warning banner, no failure block.
+  assert(!body.includes("⚠️"));
+  assert(!body.includes("**Outcome:** no PR raised"));
+});
+
+Deno.test("outcome render - a superseded attempt is tallied by the PR that resolved it (Issue #218)", () => {
+  assertEquals(
+    describeAttemptOutcome(CASES[4]!.outcome),
+    "superseded by #215",
+  );
 });

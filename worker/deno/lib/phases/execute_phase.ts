@@ -37,9 +37,18 @@ import {
 } from "../resume_state_store.ts";
 import {
   buildTimedOutWipCommitMessage,
-  preserveTimedOutWip,
   startWipCheckpoints,
 } from "../wip_checkpoint.ts";
+import {
+  type PreservedRunWip,
+  preserveRunWip,
+} from "./run_wip_preservation.ts";
+import {
+  classifyExistingPrForIssue,
+  type ExistingPrDisposition,
+  formatSupersededReason,
+} from "../superseding_pr.ts";
+import { supersededOutcome } from "../run_outcome.ts";
 import { buildProgressExtension } from "../progress_extension_runtime.ts";
 import {
   hasRunwayForInfraRetry,
@@ -93,22 +102,58 @@ async function branchHasCommitsAhead(
 }
 
 /**
- * Commits the current run added to the branch since the execute phase began
- * (VibeCoder#174) — i.e. WIP checkpoints (#4170) pushed while or after the
- * agent ran. Best effort: no start SHA or any git error resolves to 0.
+ * Existing PR for this issue, classified as absent / open / superseding
+ * (Issue #218). Every interrupted-run branch asks this instead of "did
+ * `findExistingPrForIssue` return anything" — a merged sibling PR is not a
+ * reason to carry on as though this run had succeeded.
  */
-async function commitsSinceExecuteStart(
-  state: PhaseState,
+function classifyExistingPr(
+  ctx: IssueContext,
   deps: WorkerDeps,
-): Promise<number> {
-  if (!state.executeStartHeadSha) return 0;
-  const log = await deps.git.runGitCommand(
-    ["rev-list", "--count", `${state.executeStartHeadSha}..HEAD`],
-    { cwd: state.repoPath },
+): Promise<ExistingPrDisposition> {
+  return classifyExistingPrForIssue(ctx.repo, ctx.issueNumber, {
+    findExistingPrForIssue: deps.pr.findExistingPrForIssue,
+    runGhCommand: deps.github.runGhCommand,
+    warn: (m: string) => deps.logger.warn(m),
+  });
+}
+
+/**
+ * Stop the run because a merged/closed PR already resolved the issue
+ * (Issue #218) — not a failure, so no failure label, no `unknown` class and
+ * no auto-filed run-failure issue.
+ */
+function supersededResult(
+  phase: string,
+  disposition: Extract<ExistingPrDisposition, { kind: "superseded" }>,
+  wip: PreservedRunWip,
+  deps: WorkerDeps,
+): PhaseResult {
+  const reason = formatSupersededReason(disposition, wip.wipNote);
+  deps.logger.warn(
+    `Issue already resolved by ${
+      disposition.prState === "MERGED" ? "merged" : "closed"
+    } PR #${disposition.prNumber} — stopping this run rather ` +
+      `than continuing against a branch that has nothing left to raise ` +
+      `(Issue #218)`,
+    {
+      phase,
+      prUrl: disposition.prUrl,
+      ...(disposition.headRefName ? { prBranch: disposition.headRefName } : {}),
+      ...(wip.wipNote ? { wip: wip.wipNote } : {}),
+    },
   );
-  if (!log.ok || log.value.code !== 0) return 0;
-  const n = parseInt(log.value.stdout.trim(), 10);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  return {
+    status: "early_exit",
+    reason,
+    outcome: supersededOutcome({
+      phase,
+      prUrl: disposition.prUrl,
+      prNumber: disposition.prNumber,
+      prState: disposition.prState,
+      ...(wip.wipNote ? { wipNote: wip.wipNote } : {}),
+    }),
+  };
 }
 
 /**
@@ -456,96 +501,60 @@ async function executeClaudeBody(
   if (claudeResult.value.timedOut) {
     logger.warn("Claude timed out", { exitCode: claudeResult.value.exitCode });
 
-    // Self-healing: check if PR was already created (Issue #386)
-    const existingPr = await deps.pr.findExistingPrForIssue(repo, issueNumber);
-    if (existingPr.ok && existingPr.value) {
-      logger.info("PR already exists despite timeout, treating as success");
-      return { status: "continue" };
-    }
-
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );
     const snippet = state.claudeOutput.slice(-500);
+    // WIP preservation runs FIRST, unconditionally (Issues #47, #218).
+    //
     // Issue #47: "without creating changes" was misleading — a timed-out run
     // usually left uncommitted work in the tree (on #5 the agent was running
-    // `deno test` on its own changes at the 38-minute kill). Count the dirty
-    // files so the release comment tells the truth: the work existed, it just
-    // was not committed. (Preserving that work — a WIP commit/push so the next
-    // claim resumes it — is the larger follow-up.)
-    let dirtyFiles = 0;
-    if (state.claudeOutput.length > 0) {
-      const statusResult = await deps.git.runGitCommand(
-        ["status", "--porcelain"],
-        { cwd: state.repoPath },
-      );
-      if (statusResult.ok && statusResult.value.code === 0) {
-        dirtyFiles = statusResult.value.stdout.trim().split("\n").filter((l) =>
-          l.trim().length > 0
-        ).length;
-      }
-    }
-    // WIP preservation (Issue #47): a hard timeout with a dirty tree must
-    // not discard the work — on #5, 134 tool calls and ~20 M cached-token
-    // reads were lost because nothing was committed. One commit on the
-    // claim-locked issue branch, pushed through the guarded chokepoint,
-    // UNCONDITIONALLY — unlike the periodic #4170 checkpoints this does not
-    // wait for `enable_session_resume`; that flag remains the opt-in half
-    // that auto-resumes from the branch on re-claim.
-    let wipNote: string | undefined;
-    // The phase-end checkpoint (#4170) may already have committed and pushed
-    // the run's work before this branch counted dirty files — on
-    // VibeCoder#174 the tree was clean, a WIP commit was on the branch, and
-    // the release comment still said "without creating changes". Count the
-    // commits the run added so the message tells the truth.
-    const wipCommits = await commitsSinceExecuteStart(state, deps);
-    if (dirtyFiles === 0 && wipCommits > 0) {
-      wipNote = `WIP preserved: ${wipCommits} checkpoint commit` +
-        `${wipCommits === 1 ? "" : "s"} pushed to '${state.branchName}' — ` +
-        `the next claim resumes from that branch (Issue #4170)`;
-    }
-    if (dirtyFiles > 0) {
-      const preserved = await preserveTimedOutWip({
-        repoPath: state.repoPath,
-        branchName: state.branchName,
-        message: buildTimedOutWipCommitMessage({
+    // `deno test` on its own changes at the 38-minute kill), and on #5 that
+    // work was simply discarded. One commit on the claim-locked issue branch,
+    // pushed through the guarded chokepoint, UNCONDITIONALLY — unlike the
+    // periodic #4170 checkpoints this does not wait for
+    // `enable_session_resume`; that flag remains the opt-in half that
+    // auto-resumes from the branch on re-claim.
+    //
+    // Issue #218: this used to sit BELOW the "a PR already exists → continue"
+    // self-heal, so any PR for the issue — including a sibling host's, and
+    // including an already-merged one — skipped preservation entirely. On
+    // VibeCoder#185 that discarded 51 minutes of uncommitted work. The
+    // existing-PR lookup now happens after the work is safe.
+    const wip = await preserveRunWip({
+      state,
+      deps,
+      // Zero output means the agent produced nothing, so nothing in the tree
+      // is its work — leave the tree alone, as before.
+      inspectWorkingTree: state.claudeOutput.length > 0,
+      buildMessage: (dirtyFiles) =>
+        buildTimedOutWipCommitMessage({
           elapsedSeconds,
           deadlineBound: executeTimeout.deadlineBound === true,
           dirtyFiles,
         }),
-        logger: {
-          info: (m: string) => logger.info(m),
-          warn: (m: string) => logger.warn(m),
-        },
-        deps: {
-          currentBranch: async (repoPath: string) => {
-            const head = await deps.git.runGitCommand(
-              ["rev-parse", "--abbrev-ref", "HEAD"],
-              { cwd: repoPath },
-            );
-            if (!head.ok || head.value.code !== 0) return null;
-            const branch = head.value.stdout.trim();
-            return branch.length > 0 ? branch : null;
-          },
-          commitAndPush: (branch, message, repoPath) =>
-            deps.git.commitAndPushPending(branch, message, { cwd: repoPath }),
-        },
+      // Refresh the durable resume state so resume-on-reclaim (#4170) finds
+      // the checkpoint when session resume is enabled.
+      onPreserved: () => saveCheckpointState(),
+    });
+    const { dirtyFiles, wipCommits, wipNote } = wip;
+
+    // Self-healing: check if a PR was already created (Issue #386), now that
+    // the work is safe. An OPEN PR means work is in flight and continuing is
+    // right; a MERGED/CLOSED one means this run has nothing left to raise
+    // (Issue #218).
+    const disposition = await classifyExistingPr(ctx, deps);
+    if (disposition.kind === "open") {
+      logger.info("PR already exists despite timeout, treating as success", {
+        prUrl: disposition.prUrl,
+        ...(wipNote ? { wip: wipNote } : {}),
       });
-      if (preserved.kind === "pushed") {
-        wipNote = `WIP preserved: committed and pushed to ` +
-          `'${state.branchName}' — the next claim resumes from that branch ` +
-          `(Issue #47)`;
-        // Refresh the durable resume state so resume-on-reclaim (#4170)
-        // finds the checkpoint when session resume is enabled.
-        await saveCheckpointState().catch(() => undefined);
-      } else if (preserved.kind === "clean") {
-        wipNote = `WIP already checkpointed on '${state.branchName}' ` +
-          `(Issue #4170)`;
-      } else {
-        wipNote = `WIP preservation failed (${preserved.reason}) — ` +
-          `uncommitted work remains only in the local clone (Issue #47)`;
-      }
+      return { status: "continue" };
     }
+    if (disposition.kind === "superseded") {
+      return supersededResult("execute", disposition, wip, deps);
+    }
+
     // Issue #1550: When Claude times out with an empty output, classify the
     // failure as zero_output (infrastructure) so the infra-retry wrapper
     // fires. Pure timeouts with partial output remain in the generic
@@ -600,16 +609,38 @@ async function executeClaudeBody(
         : "unprobed",
     });
 
-    // Self-healing: a kill late in the run may follow a pushed PR (#386).
-    const existingPr = await deps.pr.findExistingPrForIssue(repo, issueNumber);
-    if (existingPr.ok && existingPr.value) {
-      logger.info("PR already exists despite the kill, treating as success");
-      return { status: "continue" };
-    }
-
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );
+    // Same ordering as the timeout path (Issue #218): the work is made safe
+    // before anything can decide this run is finished with.
+    const wip = await preserveRunWip({
+      state,
+      deps,
+      inspectWorkingTree: state.claudeOutput.length > 0,
+      buildMessage: (dirtyFiles) =>
+        buildTimedOutWipCommitMessage({
+          elapsedSeconds,
+          deadlineBound: executeTimeout.deadlineBound === true,
+          dirtyFiles,
+        }),
+      onPreserved: () => saveCheckpointState(),
+    });
+
+    // Self-healing: a kill late in the run may follow a pushed PR (#386);
+    // a merged/closed one instead means the issue is already resolved (#218).
+    const disposition = await classifyExistingPr(ctx, deps);
+    if (disposition.kind === "open") {
+      logger.info("PR already exists despite the kill, treating as success", {
+        prUrl: disposition.prUrl,
+        ...(wip.wipNote ? { wip: wip.wipNote } : {}),
+      });
+      return { status: "continue" };
+    }
+    if (disposition.kind === "superseded") {
+      return supersededResult("execute", disposition, wip, deps);
+    }
+
     // stderr is where a V8 heap abort or a CLI self-termination writes its
     // last words (Issue #4237) — surfaced beside the stdout tail so a killed
     // run carries every stream's evidence.
@@ -618,7 +649,8 @@ async function executeClaudeBody(
       .filter((part) => part.length > 0)
       .join("\n--- stderr ---\n");
     const reason = formatDetailedFailureMessage(
-      "Claude was killed (exit 137, SIGKILL) without creating changes",
+      "Claude was killed (exit 137, SIGKILL)" +
+        (wip.wipNote ? ` — ${wip.wipNote}` : " without creating changes"),
       {
         elapsedSeconds,
         outputSize: state.claudeOutput.length,
@@ -640,16 +672,36 @@ async function executeClaudeBody(
   // reason (which classifies as `killed` -> infrastructure, so the bounded
   // retry applies), after the same pushed-PR self-heal the SIGKILL path uses.
   if (claudeResult.value.externalSigterm) {
-    const existingPr = await deps.pr.findExistingPrForIssue(repo, issueNumber);
-    if (existingPr.ok && existingPr.value) {
-      logger.info(
-        "PR already exists despite the external SIGTERM, treating as success",
-      );
-      return { status: "continue" };
-    }
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );
+    // Preserve before classifying, as on the timeout and kill paths (#218).
+    const wip = await preserveRunWip({
+      state,
+      deps,
+      inspectWorkingTree: state.claudeOutput.length > 0,
+      buildMessage: (dirtyFiles) =>
+        buildTimedOutWipCommitMessage({
+          elapsedSeconds,
+          deadlineBound: executeTimeout.deadlineBound === true,
+          dirtyFiles,
+        }),
+      onPreserved: () => saveCheckpointState(),
+    });
+    const disposition = await classifyExistingPr(ctx, deps);
+    if (disposition.kind === "open") {
+      logger.info(
+        "PR already exists despite the external SIGTERM, treating as success",
+        {
+          prUrl: disposition.prUrl,
+          ...(wip.wipNote ? { wip: wip.wipNote } : {}),
+        },
+      );
+      return { status: "continue" };
+    }
+    if (disposition.kind === "superseded") {
+      return supersededResult("execute", disposition, wip, deps);
+    }
     const stderrTail = (claudeResult.value.stderr ?? "").trim().slice(-400);
     const snippet = [state.claudeOutput.slice(-500), stderrTail]
       .filter((part) => part.length > 0)
@@ -660,7 +712,7 @@ async function executeClaudeBody(
     );
     const reason = formatDetailedFailureMessage(
       "Claude was killed by an external SIGTERM (exit 143) — the worker did " +
-        "not request this shutdown",
+        "not request this shutdown" + (wip.wipNote ? ` — ${wip.wipNote}` : ""),
       {
         elapsedSeconds,
         outputSize: state.claudeOutput.length,
