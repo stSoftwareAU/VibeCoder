@@ -272,6 +272,111 @@ Deno.test("commitAndPushPending - stamps the commit with the run-id trailer (Iss
   }
 });
 
+/**
+ * Build the fleet's clone shape: `--single-branch --branch main`, with the
+ * feature branch checked out from `FETCH_HEAD`. Such a clone has NO
+ * `refs/remotes/origin/<feature>` ref (Issue #211).
+ */
+async function makeSingleBranchClone(
+  prefix: string,
+  branchName: string,
+): Promise<{ tmp: string; downstream: string }> {
+  const tmp = await Deno.makeTempDir({ prefix });
+  const upstream = `${tmp}/upstream.git`;
+  const seed = `${tmp}/seed`;
+  const downstream = `${tmp}/downstream`;
+
+  await runGit(["init", "--bare", "-b", "main", upstream], tmp);
+  await runGit(["clone", upstream, seed], tmp);
+  await runGit(["config", "user.email", "t@t"], seed);
+  await runGit(["config", "user.name", "t"], seed);
+  await Deno.writeTextFile(`${seed}/README.md`, "seed\n");
+  await runGit(["add", "."], seed);
+  await runGit(["commit", "-m", "seed"], seed);
+  await runGit(["push", "origin", "main"], seed);
+
+  await runGit(["checkout", "-b", branchName], seed);
+  await Deno.writeTextFile(`${seed}/feature.txt`, "existing feature work\n");
+  await runGit(["add", "."], seed);
+  await runGit(["commit", "-m", "existing feature work"], seed);
+  await runGit(["push", "-u", "origin", branchName], seed);
+
+  await runGit(
+    ["clone", "--single-branch", "--branch", "main", upstream, downstream],
+    tmp,
+  );
+  await runGit(["config", "user.email", "t@t"], downstream);
+  await runGit(["config", "user.name", "t"], downstream);
+  await runGit(["fetch", "origin", branchName], downstream);
+  await runGit(["checkout", "-b", branchName, "FETCH_HEAD"], downstream);
+
+  return { tmp, downstream };
+}
+
+Deno.test("commitAndPushPending - single-branch clone reports an honest 0 after a good push (Issue #211)", async () => {
+  const branch = "issue-211-single-branch";
+  const { tmp, downstream } = await makeSingleBranchClone(
+    "commit_push_pending_single_",
+    branch,
+  );
+  try {
+    await Deno.writeTextFile(`${downstream}/fix.txt`, "ci fix\n");
+
+    const result = await commitAndPushPending(
+      branch,
+      "Fix CI failure: Quality Checks",
+      { cwd: downstream },
+    );
+
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    if (result.ok) {
+      assertEquals(result.value.committedNewChanges, true);
+      assertEquals(
+        result.value.commitsPushed,
+        1,
+        "only the new commit was pushed — the branch's pre-existing commit was already on origin",
+      );
+      assertEquals(
+        result.value.finalUnpushedCount,
+        0,
+        "a successful push must not report commits-ahead-of-the-default-branch as unpushed",
+      );
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - single-branch clone with nothing to do reports 0 pushed and 0 unpushed (Issue #211)", async () => {
+  const branch = "issue-211-single-branch-sync";
+  const { tmp, downstream } = await makeSingleBranchClone(
+    "commit_push_pending_single_sync_",
+    branch,
+  );
+  try {
+    const result = await commitAndPushPending(
+      branch,
+      "Fix CI failure: Quality Checks",
+      { cwd: downstream },
+    );
+
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    if (result.ok) {
+      assertEquals(result.value.committedNewChanges, false);
+      assertEquals(result.value.commitsPushed, 0);
+      assertEquals(result.value.finalUnpushedCount, 0);
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test("commitAndPushPending - reports finalUnpushedCount=0 after successful push", async () => {
   // Sanity check: after the helper returns ok, callers can rely on
   // finalUnpushedCount===0 to know nothing remains unpushed.
