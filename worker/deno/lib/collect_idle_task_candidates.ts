@@ -49,6 +49,7 @@ import {
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
   wasLabelAddedByAllowedAuthor,
+  wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
 import type { ClosedPR, OpenPR } from "./issue_query.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
@@ -294,7 +295,20 @@ export async function collectIdleTaskCandidates(
 
     if (repoClosedPRs.length > 0) {
       const closedPR = isBlockedByRecentlyClosedPR(repoClosedPRs, issue.number);
-      if (closedPR) {
+      // VibeCoder#42: a trusted re-label dated after the PR closed/merged
+      // reopens the issue for the fleet — the gate's documented escape hatch.
+      const reopened = closedPR !== null &&
+        await wasLabelReappliedAfterClosedPR(
+          repo,
+          issue.number,
+          IDLE_TASK_LABEL,
+          idleTaskTrustedAuthors,
+          closedPR,
+          batchedGh,
+          options.timelineCache,
+          [],
+        );
+      if (closedPR && !reopened) {
         diag?.logIssueSkipped(
           repo,
           issue.number,
