@@ -2,115 +2,111 @@
 
 ## Summary
 
-A successful push was reported as failed on any clone whose fetch refspec
-covers only the default branch. `finalUnpushedCount` was
-`git rev-list --count HEAD --not --remotes=origin` — commits on no *locally
-tracked* origin ref. A single-branch clone never gains
-`refs/remotes/origin/<feature>`, not even from a good push, so the number
-silently degraded to "commits ahead of Develop" (4 on NEAT-AI-core #557, 5 on
-#563 — exactly the PR sizes). Everything downstream was a consequence: a
-pointless rebase recovery, an "I fixed the issues … but failed to push" comment
-aimed at a human, and a `merge-conflict` label on a PR that was mergeable.
+A fully pushed branch was reported as having unpushed commits, so a good push
+was declared a failure: bogus rejection recovery, a "please check the branch
+status" comment addressed to a human, and a `merge-conflict` label on a PR that
+was perfectly mergeable (NEAT-AI-core #557, #563). Closes #211.
 
-Closes #211.
+Root cause, reproduced with real git: every fleet workdir is a **single-branch
+clone**, whose fetch refspec maps only the default branch. `refs/remotes/origin/<feature>`
+therefore never exists — not even after `git push -u`, because push only updates
+a remote-tracking ref the refspec covers. Both the pre-push and post-push counts
+fell back to `rev-list --count HEAD --not --remotes=origin`, which in that clone
+means *commits ahead of Develop*. A four-commit branch reported
+`commitsPushed=4 finalUnpushedCount=4` after a push that had, in fact, landed.
 
-What changed:
+What changed, one defect at a time:
 
-1. **Count against the branch's own remote head.** `countUnpushedCommits()`
-   (`worker/deno/lib/git_unpushed.ts`) resolves
-   `refs/remotes/origin/<branch>` — fetching that tracking ref explicitly when
-   the clone's refspec does not cover it — and counts
-   `origin/<branch>..HEAD`. A count it could not take is an error `Result`,
-   never a quiet `0`, and `commitAndPushPending` now reports
-   `unpushedMeasuredAgainst` alongside the count so a logged `0` can be
-   trusted. The same blind spot in the pre-push probe is gone with it.
-2. **Repair the clone.** `ensureAllBranchesFetchRefspec()`
-   (`git_fetch_refspec.ts`) adds — never substitutes —
-   `+refs/heads/*:refs/remotes/origin/*` to a legacy single-branch clone from
-   `setupRepo`, and forces one full fetch so the tracking refs materialise.
-3. **Log why a push failed.** `recoverAndRetryPush()`
-   (`push_recovery_retry.ts`) replaces the block the CI-fix, PR-feedback and
-   spelling processors each carried, and returns the failing step
-   (`rebase-recovery` / `retry-push`) with git's own message. The
-   merge-conflict pass now names both heads and git's stderr instead of
-   `5 commit(s) could not be pushed`.
-4. **Judge the PR by its remote head.** `updatePrBranch()` checks the branch
-   out at `origin/<branch>` via `checkoutPrBranchAtRemoteHead()`, and refuses
-   loudly when the local branch holds commits origin has never seen — that
-   refusal is a plain failure, not the conflict error that hands a PR to the
-   `merge-conflict` labelling pass.
-5. **Do not claim superseded feedback.** `isSupersededByFleetPush()`
-   (`pr_comment_supersession.ts`) skips a PR comment when a fleet account
-   pushed to the PR head after it was written. It fails closed: a human push,
-   an unknown comment time or an unreadable head commit all leave the comment
-   actionable.
+1. **Honest count** — new `worker/deno/lib/git_unpushed_count.ts` resolves the
+   remote head of the branch itself (tracking ref when present; otherwise a
+   fetch of that branch) and counts against it. A branch missing from origin
+   still counts every local-only commit, so the Issue #1463 first-push path is
+   unchanged. A count that cannot be established is a loud error, never a
+   silent `0`.
+2. **Recovery reason kept** — `recoverFromPushRejection` now names the step that
+   failed (`pull-rebase`, `force-with-lease`, `retry-push`) and carries git's own
+   stderr. The CI-fix, PR-feedback and spelling processors share one
+   `recoverAndRetryPush` step that logs that reason and folds it into the reply,
+   replacing three copies of a block that discarded it.
+3. **Moved head is rebased onto** — that shared step fetches, rebases our commits
+   onto the current remote head (which a sibling host may have moved) and pushes
+   again. The "check the branch status" comment now fires only when that recovery
+   genuinely fails, and carries the reason.
+4. **Superseded feedback is not claimed** — `findPrCommentsToFix` skips a comment
+   a fleet author pushed against after it was written, within a 30-minute
+   de-duplication window. Bounded on purpose: an old fleet push must never starve
+   genuine feedback.
+5. **Conflicts judged on origin's head** — `updatePrBranch` fast-forwards the
+   checked-out branch to origin's head before evaluating it, so a stale local copy
+   in a long-lived workdir can no longer manufacture a conflict. A branch holding
+   genuinely unpushed commits is reported as exactly that — never reset away, never
+   relabelled a base-branch conflict.
 
 ## Evidence
 
-Backend/CLI change — no web interface to screenshot. Verified by tests that
-build real git repositories (single-branch clones, bare remotes, sibling
-pushes) and run real git.
+Backend/CLI change with no web interface, so no screenshot applies. The root
+cause was verified against real git before any code was written:
+
+```text
+$ git clone --single-branch --branch Develop remote.git work
+$ git -C work fetch origin feat && git -C work checkout -b feat FETCH_HEAD
+$ git -C work push -u origin feat        # succeeds
+$ git -C work for-each-ref refs/remotes  # only refs/remotes/origin/Develop
+$ git -C work rev-list --count HEAD --not --remotes=origin
+2                                        # ← "unpushed" after a successful push
+```
+
+That exact shape is now a test fixture
+(`tests/git_unpushed_count_test.ts::makeSingleBranchClone`), which asserts the
+legacy probe still reports `4` while `countUnpushedCommits` reports `0`.
 
 ```mermaid
-flowchart TD
-    P[final-mile push] --> T{"refs/remotes/origin/branch<br/>present?"}
-    T -->|no| FE["git fetch origin branch:refs/remotes/origin/branch"]
-    FE --> T2{"ref now present?"}
-    T2 -->|"no — branch not on origin"| FP[first push: count against all origin refs]
-    T2 -->|yes| C
-    T -->|yes| C{"remote head == HEAD?"}
-    C -->|yes| Z[pushed — finalUnpushedCount 0]
-    C -->|no| N["count origin/branch..HEAD"]
-    N -->|"0"| Z
-    N -->|"N > 0"| R[recoverAndRetryPush:<br/>rebase onto remote head, retry]
-    N -->|"count unreadable"| E[error Result<br/>fail loud, never a quiet 0]
-    R -->|clean| Z
-    R -->|"still unpushed"| F[log failing step + git's reason,<br/>then comment on the PR]
+sequenceDiagram
+    participant W as This host
+    participant S as Sibling host
+    participant O as origin
+    S->>O: push fix (head moves)
+    W->>O: push final-mile commit
+    O-->>W: commits remain
+    W->>W: count against origin/<branch>, not --remotes=origin
+    W->>O: fetch + rebase onto the new head
+    W->>O: push again
+    O-->>W: accepted → no "check the branch" comment
 ```
 
-Regression test for the reported incident — it fails against the unfixed
-measure, which reported 4:
-
-```
-countUnpushedCommits - single-branch clone reports 0 after a good push ... ok
-commitAndPushPending - single-branch clone: a good push reports finalUnpushedCount 0 ... ok
-```
-
-`docs/INTERNALS.md` gains the "Is it pushed? is a question about origin" and
-"Fleet-superseded PR feedback" sections, plus the new modules in the module
-table.
+All affected suites pass — 285 tests across the push, recovery, branch-update,
+PR-maintenance and processor files. `./quality.sh` passes every gate except
+`deno tests`, which fails on ten pre-existing host-environment tests
+(`setup_workdir_reminder`, `host_workdir_guard`, `optional_feature_env`,
+`fleet_health` work-dir cases). Those same ten fail with this branch's changes
+stashed, so they are not caused by this work.
 
 ## Test Plan
 
-New:
+Added:
 
-- `worker/deno/tests/git_unpushed_test.ts` — a good push on a `--single-branch`
-  clone reports 0; only commits ahead of the remote branch are counted; a
-  branch absent from origin counts every local commit; an existing tracking ref
-  is used as-is; a dash-leading branch name is refused; `commitAndPushPending`
-  reports `finalUnpushedCount=0` after pushing 4 commits (the incident shape);
-  an unreachable origin still reports the commits as unpushed rather than 0.
-- `worker/deno/tests/git_fetch_refspec_test.ts` — repairs a single-branch
-  clone, leaves a full clone untouched, is idempotent, and reports a git
-  failure rather than claiming a repair.
-- `worker/deno/tests/pr_branch_checkout_test.ts` — creates the branch from the
-  remote head on a single-branch clone, resets a stale local branch onto a
-  sibling's push, refuses when the local branch holds unpushed commits, refuses
-  a branch that exists only locally, and refuses a refspec-breaking name.
-- `worker/deno/tests/push_recovery_retry_test.ts` — a clean push reports
-  nothing unpushed; the rebase failure reason, a failed retry commit-and-push,
-  and commits surviving the retry are each surfaced with the failing step.
-- `worker/deno/tests/pr_comment_supersession_test.ts` — supersession by a later
-  fleet push, no supersession for an earlier push, a human push or missing
-  data; `fetchPrHeadCommit` parsing and failure; and `findPrCommentsToFix`
-  skipping a superseded comment while still claiming the other two shapes.
-- `worker/deno/tests/git_pull_remote_head_test.ts` — `updatePrBranch` refuses
-  loudly (not as a base conflict) when the local branch carries an unpushed
-  commit that collides with the base, and evaluates a sibling's remote head
-  rather than the behind local branch.
+- `tests/git_unpushed_count_test.ts` — single-branch clone in sync reports `0`
+  (with the legacy probe's `4` asserted alongside it); genuinely unpushed commits
+  counted correctly; branch absent from origin counts local-only commits; full
+  clone uses the tracking ref; an unreachable origin fails loud; a dash-leading
+  ref is refused.
+- `tests/commit_and_push_pending_test.ts` — two single-branch-clone cases:
+  `finalUnpushedCount=0` after a good push, and `0 pushed / 0 unpushed` when
+  there is nothing to do.
+- `tests/git_push_recovery_diagnostics_test.ts` — a refused lease names the step
+  and carries git's stderr; every recovery failure is labelled as one.
+- `tests/push_recovery_retry_test.ts` — the shared step reports success, a failed
+  recovery (with the step and stderr in the log context), a residual-commit
+  retry, and a failed retry.
+- `tests/pr_feedback_superseded_comment_test.ts` — a sibling fleet push
+  suppresses the comment; a comment posted after the push is claimed; a human
+  push does not suppress; an old fleet push stops suppressing; plus the
+  `isSupersededByFleetPush` window boundaries.
+- `tests/git_pull_remote_head_test.ts` — a sibling's merge on origin clears the
+  conflict a stale local branch still shows; a branch holding unpushed commits
+  is refused by name, not labelled conflicted, and its commits survive.
+- `tests/pr_ci_processor_moved_head_test.ts` — the moved-head incident end to
+  end: rebase, push, no "check the branch status" comment; and an unrecoverable
+  push whose comment names the failing step.
 
-Modified: none of the pre-existing suites needed changing;
-`git_pull_conflict_test.ts` and `pr_branch_arg_injection_test.ts` pass
-unchanged against the new checkout path.
-
-Full gate: `./quality.sh` passes.
+No existing tests were removed or weakened.
