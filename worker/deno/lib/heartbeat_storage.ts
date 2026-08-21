@@ -278,6 +278,8 @@ export function describeAttemptOutcome(
       return `no PR expected (phase \`${
         normaliseMilestoneText(outcome.phase)
       }\`)`;
+    case "superseded":
+      return `superseded by #${outcome.prNumber}`;
   }
 }
 
@@ -481,6 +483,18 @@ export function renderRunOutcomeClause(outcome: RunOutcome): string {
         OUTCOME_DETAIL_MAX_LENGTH,
       );
       return ` ${summary} (no PR expected for this phase.)`;
+    }
+    case "superseded": {
+      // Issue #218 — a sibling's PR resolved the issue mid-run. Say so
+      // plainly, and name the branch the preserved WIP is on so the work
+      // this run did do is findable rather than silently orphaned.
+      const url = boundOutcomeText(outcome.prUrl, OUTCOME_DETAIL_MAX_LENGTH);
+      const verb = outcome.prState === "MERGED" ? "merged" : "closed";
+      const wip = outcome.wipNote
+        ? ` ${boundOutcomeText(outcome.wipNote, OUTCOME_DETAIL_MAX_LENGTH)}.`
+        : "";
+      return ` Superseded by ${verb} #${outcome.prNumber} — ${url}` +
+        ` (this run raised no PR).${wip}`;
     }
     case "no_pr": {
       const display = getFailureCategoryDisplay(outcome.category);

@@ -35,7 +35,24 @@ export type RunOutcome =
     /** Raw failure message, for downstream classification/filing. */
     message: string;
   }
-  | { kind: "no_pr_expected"; phase: string; summary: string };
+  | { kind: "no_pr_expected"; phase: string; summary: string }
+  /**
+   * The issue was resolved by another PR while this run was working on it
+   * (Issue #218) — a sibling host's PR merged mid-run on VibeCoder#185. The
+   * run raised no PR and nothing failed, so it is neither a `no_pr` failure
+   * (which files a run-failure issue and labels the issue) nor a plain
+   * `no_pr_expected` (which says nothing about what resolved the issue).
+   */
+  | {
+    kind: "superseded";
+    /** Phase that discovered the superseding PR. */
+    phase: string;
+    prUrl: string;
+    prNumber: number;
+    prState: "MERGED" | "CLOSED";
+    /** WIP this run preserved on its branch before stopping, if any. */
+    wipNote?: string;
+  };
 
 /** The subset of a work result the builder reads. */
 export interface RunOutcomeSource {
@@ -104,7 +121,30 @@ export function describeRunOutcome(outcome: RunOutcome | undefined): string {
       return `no_pr:${outcome.category}:${outcome.phase}`;
     case "no_pr_expected":
       return `no_pr_expected:${outcome.phase}`;
+    case "superseded":
+      return `superseded:pr#${outcome.prNumber}`;
   }
+}
+
+/**
+ * Outcome for a run whose issue was resolved by another PR mid-run (Issue
+ * #218). Not a failure: no category, no `unknown` class, nothing filed.
+ */
+export function supersededOutcome(options: {
+  phase: string;
+  prUrl: string;
+  prNumber: number;
+  prState: "MERGED" | "CLOSED";
+  wipNote?: string;
+}): RunOutcome {
+  return {
+    kind: "superseded",
+    phase: options.phase,
+    prUrl: options.prUrl,
+    prNumber: options.prNumber,
+    prState: options.prState,
+    ...(options.wipNote ? { wipNote: options.wipNote } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

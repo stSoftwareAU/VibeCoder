@@ -382,6 +382,19 @@ gitGraph
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
 - **Timed-out run — WIP preserved, but no half-done PR:** A hard timeout with a dirty tree commits the work as a `wip:` commit on the claim-locked issue branch and pushes it, so the next claim (or a human) resumes from the branch instead of starting from zero; the release comment names the branch. Because that commit leaves the branch *ahead of base*, the completion phase adds a second guard beside the ahead-of-base check: when **every** commit ahead of base is a worker-authored WIP marker (`wip: …` or `WIP checkpoint: …`) **and** the branch tip is exactly where it stood before this run's agent started, no PR is raised — the resume must advance the branch first. Anything the guard cannot determine (the pre-run HEAD was unreadable, the commit log failed) fails open and the PR proceeds. See [`wip_commit_marker.ts`](../../worker/deno/lib/wip_commit_marker.ts) and [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
+- **Preservation runs before the existing-PR lookup:** An interrupted execute (timeout, SIGKILL, external SIGTERM) preserves its work **first**, then asks whether a PR exists. The order matters: the "a PR already exists → treat the run as a success" self-heal used to run first, so *any* PR for the issue — including a sibling host's, and including one already merged — skipped preservation entirely and the run's uncommitted work was discarded. The completion phase's "no commits ahead" bail-out preserves the tree the same way instead of only reporting that uncommitted changes were present. See [`phases/run_wip_preservation.ts`](../../worker/deno/lib/phases/run_wip_preservation.ts).
+- **Superseded by another PR (`superseded:pr#N`):** The existing-PR lookup distinguishes an **open** PR (work in flight — the run continues, as before) from a **merged or closed** one (this run has nothing left to raise). A merged sibling PR stops the run cleanly: the claim releases with a `superseded` outcome naming the PR and the branch any preserved WIP is on, the issue is **not** labelled failed, and no `unknown`-class run-failure issue is filed. Every lookup failure fails safe to "open", so a `gh` hiccup can never invent a superseded stop. See [`superseding_pr.ts`](../../worker/deno/lib/superseding_pr.ts) and [`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts).
+
+```mermaid
+flowchart TD
+    T["Execute interrupted<br/>(timeout / SIGKILL / SIGTERM)"] --> P["Preserve WIP<br/>wip: commit pushed to the issue branch"]
+    P --> L["Look up the existing PR for the issue"]
+    L -->|none| F["Fail with the diagnosis<br/>+ 'WIP preserved: …'"]
+    L -->|open| C["Continue — work is in flight"]
+    L -->|merged / closed| S["Stop: outcome superseded:pr#N<br/>no failure label, nothing filed"]
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#1d3557,stroke:#14213d,color:#fff
+```
 
 ## 🤝 Worker escalation via `needs-human`
 

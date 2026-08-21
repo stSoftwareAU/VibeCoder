@@ -180,6 +180,14 @@ export type PhaseResult =
      * issue down instead of counting it as a processed issue.
      */
     expectedSkip?: boolean;
+    /**
+     * Outcome the phase determined for itself (Issue #218) — used by the
+     * superseded-by-a-merged-PR stop, whose outcome cannot be derived from
+     * `success`/`reason` alone. The orchestrator carries it through to the
+     * claim-release comment unchanged; absent, the outcome is derived as
+     * before.
+     */
+    outcome?: RunOutcome;
   }
   | { status: "failure"; reason: string };
 

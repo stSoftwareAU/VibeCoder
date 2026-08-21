@@ -606,6 +606,10 @@ async function workOnIssueCore(
         phase: "execute",
         reason: executeResult.reason,
         timings,
+        // A phase that decided its own outcome keeps it (Issue #218): the
+        // superseded-by-a-merged-PR stop names the PR that resolved the
+        // issue, which cannot be derived from success/reason alone.
+        ...(executeResult.outcome ? { outcome: executeResult.outcome } : {}),
       };
     }
 
@@ -640,6 +644,21 @@ async function workOnIssueCore(
         phase: "completion",
         reason: completionResult.reason,
         timings,
+      };
+    }
+    // The completion phase stopped without raising a PR and without failing
+    // (Issue #218) — a merged/closed PR already resolved the issue, so the
+    // branch was level with its base. Report the phase's own outcome; the
+    // durable resume state is deleted below only on the PR path.
+    if (completionResult.status === "early_exit") {
+      return {
+        success: true,
+        phase: "completion",
+        reason: completionResult.reason,
+        timings,
+        ...(completionResult.outcome
+          ? { outcome: completionResult.outcome }
+          : {}),
       };
     }
 
