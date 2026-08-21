@@ -46,8 +46,6 @@ import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { verifyFollowUpIssueExists } from "./escape_hatch_verify.ts";
 import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
-import { recoverAndRetryPush } from "./push_recovery_retry.ts";
-import { redactSecrets } from "./secret_redaction.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -511,8 +509,6 @@ async function _processFeedbackWithHeartbeat(
   let pushSucceeded = false;
   let hasChanges = false;
   let finalUnpushedCount = 0;
-  /** Why the branch is still unpushed — empty when it landed (Issue #211). */
-  let pushRecoveryFailure = "";
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed } = finaliseResult.value;
     finalUnpushedCount = finaliseResult.value.finalUnpushedCount;
@@ -521,27 +517,52 @@ async function _processFeedbackWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
+      // Issue #211: how the count was established — a `local-fallback`
+      // source means the remote could not be consulted, not that the push
+      // failed.
+      unpushedSource: finaliseResult.value.finalUnpushedSource,
+      unpushedDetail: finaliseResult.value.finalUnpushedDetail,
     });
 
     if (finalUnpushedCount > 0) {
-      // Rebase onto the current remote head — a sibling fleet host may have
-      // moved it while the agent ran — and push again, logging the failing
-      // step and git's stderr rather than discarding them (Issue #211).
-      const recovery = await recoverAndRetryPush({
-        branchName: input.branchName,
-        workDir: processorDeps.workDir,
-        retryCommitMessage:
-          `Address PR #${prNumber} feedback\n\nRetry after rebase recovery (Issue #1643).`,
-        unpushedCount: finalUnpushedCount,
-        preFlight,
-        git: deps.git,
-        logger,
-        logContext: { repo, prNumber },
+      logger.warn("Local commits remain after push, attempting recovery", {
+        unpushed: finalUnpushedCount,
+        unpushedSource: finaliseResult.value.finalUnpushedSource,
       });
-      finalUnpushedCount = recovery.unpushedCount;
-      pushRecoveryFailure = recovery.failureDetail;
-      if (recovery.pushed) {
-        hasChanges = true;
+      const recoveryResult = await deps.git.recoverFromPushRejection(
+        input.branchName,
+        { cwd: processorDeps.workDir },
+      );
+      let retryDetail: string | undefined;
+      if (recoveryResult.ok) {
+        const retryFinalise = await deps.git.commitAndPushPending(
+          input.branchName,
+          `Address PR #${prNumber} feedback\n\nRetry after rebase recovery (Issue #1643).`,
+          { cwd: processorDeps.workDir },
+          false,
+          preFlight,
+        );
+        if (retryFinalise.ok) {
+          finalUnpushedCount = retryFinalise.value.finalUnpushedCount;
+          if (retryFinalise.value.finalUnpushedCount === 0) {
+            hasChanges = true;
+          }
+        } else {
+          retryDetail = retryFinalise.error.message;
+        }
+      }
+      if (finalUnpushedCount > 0) {
+        // Issue #211: the recovery step and git's own stderr, not a bare
+        // "push failed" a human cannot act on.
+        logger.error("Push failed after recovery attempt", {
+          repo,
+          prNumber,
+          unpushed: finalUnpushedCount,
+          recoveryError: recoveryResult.ok
+            ? undefined
+            : recoveryResult.error.message,
+          retryError: retryDetail,
+        });
       }
     }
   } else {
@@ -675,7 +696,7 @@ async function _processFeedbackWithHeartbeat(
   if (hasChanges && pushSucceeded) {
     await replyWithResult(repo, prNumber, deps, customMessage);
   } else if (hasChanges && !pushSucceeded) {
-    await replyPushFailed(repo, prNumber, deps, pushRecoveryFailure);
+    await replyPushFailed(repo, prNumber, deps);
   } else {
     await replyNoChanges(
       repo,
@@ -740,13 +761,8 @@ async function replyPushFailed(
   repo: string,
   prNumber: number,
   deps: WorkerDeps,
-  reason: string,
 ): Promise<void> {
   try {
-    // Issue #211: name the recovery step that failed and git's own words.
-    // The bare "check the branch status" line gave the human nothing to act
-    // on. The detail is worker/git output, so it is redacted before posting.
-    const detail = reason ? `\n\nDetail: ${redactSecrets(reason)}` : "";
     await deps.github.runGhCommand([
       "pr",
       "comment",
@@ -754,8 +770,7 @@ async function replyPushFailed(
       "--repo",
       repo,
       "--body",
-      "I fixed the issues from this feedback locally but failed to push the " +
-      `changes. Please check the branch status.${detail}`,
+      "I fixed the issues from this feedback locally but failed to push the changes. Please check the branch status.",
     ]);
   } catch {
     // Comment failure is non-critical

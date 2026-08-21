@@ -519,28 +519,19 @@ async function resolveConflict(
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
-    // Issue #211: name what git actually holds. "5 commit(s) could not be
-    // pushed" with no heads and no stderr told an operator nothing about
-    // whether the branch had diverged, been rejected, or never left the box.
-    const localHead = await git(run, ["rev-parse", "HEAD"], workDir);
-    const remoteHead = await git(
-      run,
-      ["ls-remote", "origin", `refs/heads/${branchName}`],
-      workDir,
-    );
-    const remoteSha = remoteHead.stdout.trim().split(/\s+/)[0] || "unknown";
+    // Issue #211: say how the count was established. A bare
+    // "N commit(s) could not be pushed" left an operator guessing whether the
+    // remote rejected the push or the worker simply could not read the remote.
+    const source = finalise.value.finalUnpushedSource ?? "unknown";
+    const why = finalise.value.finalUnpushedDetail
+      ? `; ${finalise.value.finalUnpushedDetail}`
+      : "";
     return await failAttempt(
       input,
       processorDeps,
       conflictedFiles,
-      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed to ` +
-        `origin/${branchName} (local HEAD ${
-          localHead.stdout.trim().slice(0, 7) || "unknown"
-        }, origin head ${remoteSha.slice(0, 7)})${
-          remoteHead.code !== 0 && remoteHead.stderr.trim()
-            ? `: ${remoteHead.stderr.trim()}`
-            : ""
-        }`,
+      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed ` +
+        `(counted against ${source}${why})`,
       attemptNumber,
     );
   }

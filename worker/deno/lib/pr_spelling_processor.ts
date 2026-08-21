@@ -26,8 +26,6 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
-import { recoverAndRetryPush } from "./push_recovery_retry.ts";
-import { redactSecrets } from "./secret_redaction.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -377,8 +375,6 @@ async function _processSpellingWithHeartbeat(
   let pushSucceeded = false;
   let hasChanges = false;
   let finalUnpushedAfterPush = 0;
-  /** Why the branch is still unpushed — empty when it landed (Issue #211). */
-  let pushRecoveryFailure = "";
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -389,28 +385,52 @@ async function _processSpellingWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
+      // Issue #211: how the count was established — a `local-fallback`
+      // source means the remote could not be consulted, not that the push
+      // failed.
+      unpushedSource: finaliseResult.value.finalUnpushedSource,
+      unpushedDetail: finaliseResult.value.finalUnpushedDetail,
     });
 
     if (finalUnpushedCount > 0) {
-      // Rebase onto the current remote head and push again, logging the
-      // failing step and git's stderr rather than discarding them
-      // (Issue #211).
-      const recovery = await recoverAndRetryPush({
-        branchName: input.branchName,
-        workDir: processorDeps.workDir,
-        retryCommitMessage:
-          `Fix spelling check failures: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
-        unpushedCount: finalUnpushedCount,
-        preFlight,
-        git: deps.git,
-        logger,
-        logContext: { repo, prNumber },
+      logger.warn("Local commits remain after push, attempting recovery", {
+        unpushed: finalUnpushedCount,
+        unpushedSource: finaliseResult.value.finalUnpushedSource,
       });
-      pushRecoveryFailure = recovery.failureDetail;
-      finalUnpushedAfterPush = recovery.unpushedCount;
-      if (recovery.pushed) {
-        hasChanges = true;
-        pushSucceeded = true;
+      const recoveryResult = await deps.git.recoverFromPushRejection(
+        input.branchName,
+        { cwd: processorDeps.workDir },
+      );
+      let retryDetail: string | undefined;
+      if (recoveryResult.ok) {
+        const retryFinalise = await deps.git.commitAndPushPending(
+          input.branchName,
+          `Fix spelling check failures: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
+          { cwd: processorDeps.workDir },
+          false,
+          preFlight,
+        );
+        if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
+          hasChanges = true;
+          pushSucceeded = true;
+          finalUnpushedAfterPush = 0;
+        } else {
+          retryDetail = retryFinalise.ok
+            ? `${retryFinalise.value.finalUnpushedCount} commit(s) still unpushed`
+            : retryFinalise.error.message;
+        }
+      }
+      if (!pushSucceeded) {
+        // Issue #211: name the failing recovery step and carry git's stderr.
+        logger.error("Push failed after recovery attempt", {
+          repo,
+          prNumber,
+          unpushed: finalUnpushedAfterPush,
+          recoveryError: recoveryResult.ok
+            ? undefined
+            : recoveryResult.error.message,
+          retryError: retryDetail,
+        });
       }
     }
   } else {
@@ -452,12 +472,7 @@ async function _processSpellingWithHeartbeat(
     await replyToComment(
       repo,
       prNumber,
-      "I fixed the spelling issues locally but failed to push the changes. " +
-        `Please check the branch status.${
-          pushRecoveryFailure
-            ? `\n\nDetail: ${redactSecrets(pushRecoveryFailure)}`
-            : ""
-        }`,
+      "I fixed the spelling issues locally but failed to push the changes. Please check the branch status.",
       deps,
     );
   } else {

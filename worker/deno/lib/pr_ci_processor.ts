@@ -68,8 +68,6 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import { recoverAndRetryPush } from "./push_recovery_retry.ts";
-import { redactSecrets } from "./secret_redaction.ts";
 import {
   formatPrFailureActionsExcerpt,
   type PrFailureActionResult,
@@ -877,8 +875,6 @@ async function _processCiWithHeartbeat(
   let pushSucceeded = false;
   let hasChanges = postQualityResult.committedChanges;
   let finalUnpushedAfterPush = 0;
-  /** Why the branch is still unpushed — empty when it landed (Issue #211). */
-  let pushRecoveryFailure = "";
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -889,29 +885,55 @@ async function _processCiWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
+      // Issue #211: how the count was established — a `local-fallback`
+      // source means the remote could not be consulted, not that the push
+      // failed.
+      unpushedSource: finaliseResult.value.finalUnpushedSource,
+      unpushedDetail: finaliseResult.value.finalUnpushedDetail,
     });
 
-    // If push left commits unpushed, rebase onto the current remote head —
-    // which a sibling fleet host may have moved while the agent ran — and
-    // push again. The failing step and git's stderr are logged rather than
-    // discarded (Issue #211).
+    // If push left commits unpushed, attempt rejection recovery and retry.
     if (finalUnpushedCount > 0) {
-      const recovery = await recoverAndRetryPush({
-        branchName: input.branchName,
-        workDir: processorDeps.workDir,
-        retryCommitMessage:
-          `Fix CI failure: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
-        unpushedCount: finalUnpushedCount,
-        preFlight,
-        git: deps.git,
-        logger,
-        logContext: { repo, prNumber },
+      logger.warn("Local commits remain after push, attempting recovery", {
+        unpushed: finalUnpushedCount,
+        unpushedSource: finaliseResult.value.finalUnpushedSource,
       });
-      pushRecoveryFailure = recovery.failureDetail;
-      finalUnpushedAfterPush = recovery.unpushedCount;
-      if (recovery.pushed) {
-        hasChanges = true;
-        pushSucceeded = true;
+      const recoveryResult = await deps.git.recoverFromPushRejection(
+        input.branchName,
+        { cwd: processorDeps.workDir },
+      );
+      let retryDetail: string | undefined;
+      if (recoveryResult.ok) {
+        const retryFinalise = await deps.git.commitAndPushPending(
+          input.branchName,
+          `Fix CI failure: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
+          { cwd: processorDeps.workDir },
+          false,
+          preFlight,
+        );
+        if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
+          hasChanges = true;
+          pushSucceeded = true;
+          finalUnpushedAfterPush = 0;
+        } else {
+          retryDetail = retryFinalise.ok
+            ? `${retryFinalise.value.finalUnpushedCount} commit(s) still unpushed`
+            : retryFinalise.error.message;
+        }
+      }
+      if (!pushSucceeded) {
+        // Issue #211: name the recovery step and carry git's own stderr —
+        // "Push failed after recovery attempt" alone told nobody whether the
+        // rebase conflicted, auto-resolution gave up, or the lease was refused.
+        logger.error("Push failed after recovery attempt", {
+          repo,
+          prNumber,
+          unpushed: finalUnpushedAfterPush,
+          recoveryError: recoveryResult.ok
+            ? undefined
+            : recoveryResult.error.message,
+          retryError: retryDetail,
+        });
       }
     }
   } else {
@@ -979,8 +1001,7 @@ async function _processCiWithHeartbeat(
     await recordCiMilestone(
       processorDeps,
       input,
-      `Fix made locally but the push failed for \`${checkName}\`` +
-        (pushRecoveryFailure ? ` — ${pushRecoveryFailure}` : ""),
+      `Fix made locally but the push failed for \`${checkName}\``,
     );
   } else {
     await recordCiMilestone(
@@ -1025,12 +1046,7 @@ async function _processCiWithHeartbeat(
     await replyToComment(
       repo,
       prNumber,
-      `I fixed the CI failure (**${checkName}**) locally but failed to push ` +
-        `the changes. Please check the branch status.${
-          pushRecoveryFailure
-            ? `\n\nDetail: ${redactSecrets(pushRecoveryFailure)}`
-            : ""
-        }`,
+      `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.`,
       deps,
     );
   } else {

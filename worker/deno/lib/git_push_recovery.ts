@@ -26,41 +26,31 @@ import { buildForceWithLeaseArgs } from "./git_push_lease_args.ts";
 /** Matches a git object id (SHA-1 or SHA-256, in full or abbreviated form). */
 const OBJECT_ID_PATTERN = /^[0-9a-f]{7,64}$/;
 
-/** The recovery steps a caller can be told about (Issue #211). */
-export type PushRecoveryStep =
-  | "pull-rebase"
-  | "conflict-resolution"
-  | "force-with-lease"
-  | "retry-push";
-
-/** Last few lines of git output — enough context, no wall of text. */
-function tail(output: string, lines = 3): string {
-  return output.trim().split("\n").slice(-lines).join(" | ").trim();
+/**
+ * Name the recovery step that failed and carry git's own words with it
+ * (Issue #211).
+ *
+ * Callers used to log a bare "Push failed after recovery attempt" — which
+ * rebase conflicted, which auto-resolution gave up, whether the lease was
+ * refused, all discarded. Every failure Result from this module is built here
+ * so the step and the git stderr always reach the log.
+ */
+function recoveryError(step: string, detail: string): Error {
+  const trimmed = detail.trim();
+  return new Error(
+    `Push recovery step '${step}' failed: ${
+      trimmed || "git reported no output"
+    }`,
+  );
 }
 
-/**
- * Build the error a failed recovery returns (Issue #211).
- *
- * The caller logs this verbatim, so it must say **which step** gave up and
- * repeat **git's own words**. The old messages dropped both, leaving
- * "Push failed after recovery attempt" as the entire diagnosis of an
- * incident that cost two agent runs and a comment addressed to a human.
- */
-function recoveryError(
-  step: PushRecoveryStep,
-  detail: string,
-  ...priorDetails: string[]
-): Error {
-  const context = priorDetails
-    .map((d) => d.trim())
-    .filter((d) => d.length > 0)
-    .join(" | ");
-  return new Error(
-    `Push recovery failed at step '${step}': ${
-      detail || "git reported no stderr"
-    }` +
-      (context ? ` (earlier steps: ${context})` : ""),
-  );
+/** The last few stderr lines of a git result, whichever way it failed. */
+function gitFailureDetail(
+  result: Result<{ code: number; stdout: string; stderr: string }>,
+): string {
+  if (!result.ok) return result.error.message;
+  const text = result.value.stderr.trim() || result.value.stdout.trim();
+  return text.split("\n").slice(-5).join(" | ");
 }
 
 /**
@@ -120,13 +110,13 @@ export async function recoverFromPushRejection(
   if (!pullResult.ok) {
     return {
       ok: false,
-      error: recoveryError("pull-rebase", pullResult.error.message),
+      error: recoveryError("pull --rebase", pullResult.error.message),
     };
   }
 
   if (pullResult.value.code !== 0) {
-    const pullStderr = tail(pullResult.value.stderr || pullResult.value.stdout);
     // Rebase failed — attempt automatic conflict resolution (Issue #321)
+    const rebaseDetail = gitFailureDetail(pullResult);
     const conflictResult = await resolveRebaseConflicts(options);
 
     if (!conflictResult.ok) {
@@ -138,10 +128,9 @@ export async function recoverFromPushRejection(
         return {
           ok: false,
           error: recoveryError(
-            "force-with-lease",
-            `cannot force-push to protected branch '${branchName}'`,
-            pullStderr,
-            conflictResult.error.message,
+            "conflict-resolution",
+            `cannot force-push to protected branch '${branchName}' after ` +
+              `rebase conflicted: ${rebaseDetail}`,
           ),
         };
       }
@@ -158,16 +147,13 @@ export async function recoverFromPushRejection(
         return { ok: true, value: "Push succeeded via --force-with-lease" };
       }
 
-      const forceError = forceResult.ok
-        ? tail(forceResult.value.stderr || forceResult.value.stdout)
-        : forceResult.error.message;
       return {
         ok: false,
         error: recoveryError(
           "force-with-lease",
-          forceError,
-          pullStderr,
-          conflictResult.error.message,
+          `${gitFailureDetail(forceResult)} (rebase first failed with: ${
+            rebaseDetail || "no output"
+          }; auto-resolution: ${conflictResult.error.message})`,
         ),
       };
     }
@@ -179,20 +165,10 @@ export async function recoverFromPushRejection(
     options,
   );
 
-  if (!retryResult.ok) {
+  if (!retryResult.ok || retryResult.value.code !== 0) {
     return {
       ok: false,
-      error: recoveryError("retry-push", retryResult.error.message),
-    };
-  }
-
-  if (retryResult.value.code !== 0) {
-    return {
-      ok: false,
-      error: recoveryError(
-        "retry-push",
-        tail(retryResult.value.stderr || retryResult.value.stdout),
-      ),
+      error: recoveryError("retry-push", gitFailureDetail(retryResult)),
     };
   }
 
