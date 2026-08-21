@@ -183,8 +183,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issues #4197/#4198 added `export-links` (135 → 136).
   // Issue #4441 added `container-build-heal` (count 136 → 137).
   // Issue #227 added `container-store-prune` (count 136 → 137).
+  // Issue #228 added `work-volume-prune` (count 137 → 138).
   // Issue #4 removed `seatbelt-profile` — containment is mandatory (137 → 136).
-  assertEquals(commands.length, 137);
+  assertEquals(commands.length, 138);
   assertEquals(commands.includes("security-tree-sweep"), true);
   assertEquals(commands.includes("green-gate-report"), true);
   assertEquals(commands.includes("security-tabletop"), true);
