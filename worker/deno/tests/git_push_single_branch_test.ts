@@ -181,8 +181,15 @@ Deno.test("commitAndPushPending - still reports unpushed commits honestly when t
       { cwd: clone },
     );
 
-    // Whatever the outcome, the report must match reality: ok means the
-    // commits are on the remote, and finalUnpushedCount is the truth.
+    // The head moved during the run, so recovery rebases onto it and pushes:
+    // the work lands, nothing is reported unpushed, and no caller has cause to
+    // ask a human to check the branch.
+    assert(
+      result.ok,
+      `expected the rebase-and-push recovery to land the work, got: ${
+        !result.ok ? result.error.message : ""
+      }`,
+    );
     if (result.ok) {
       assertEquals(result.value.finalUnpushedCount, 0);
       const remote = await runGit(
@@ -193,6 +200,12 @@ Deno.test("commitAndPushPending - still reports unpushed commits honestly when t
       assert(
         remote.stdout.startsWith(local.stdout.trim()),
         "an ok Result must mean the local head really is on origin",
+      );
+      // The sibling's commit survived — we rebased onto it, not over it.
+      const subjects = await runGit(["log", "--format=%s"], clone);
+      assert(
+        subjects.stdout.includes("add sibling.txt"),
+        `the sibling's commit must survive the recovery, got:\n${subjects.stdout}`,
       );
     }
   } finally {

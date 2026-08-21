@@ -1119,6 +1119,15 @@ A **human's** push never defers a comment.
 **Self-loop prevention** — comments by the PR author (the worker's own account)
 are skipped to prevent infinite feedback loops.
 
+**Fleet-push supersession (Issue #211)** — the fleet maintains the same PR from
+several hosts, so a comment can be answered by a sibling before this host gets
+to it. Once a comment is otherwise actionable,
+[`pr_feedback_supersede.ts`](../worker/deno/lib/pr_feedback_supersede.ts) reads
+the PR head commit once and drops the comment when a **fleet account pushed
+that head after the comment was written**. Unknown state — no `created_at`, an
+unreadable head commit, an unparseable date — is never treated as superseded, so
+genuine feedback is not silently dropped.
+
 ### 🔄 Feedback processing flow
 
 When a comment is found:
@@ -1136,6 +1145,49 @@ When a comment is found:
 6. **Push** — `push_unpushed_commits()` with self-healing for push rejections.
 7. **Mark processed** — add eyes reaction (or dismiss review) and post a reply
    comment.
+
+### 📏 How "did we push?" is answered (Issue #211)
+
+`commitAndPushPending` reports `finalUnpushedCount`, and every processor treats
+`0` as "the work landed". That count is measured against **this branch's own
+remote head**, resolved by
+[`git_remote_head.ts`](../worker/deno/lib/git_remote_head.ts):
+`refs/remotes/origin/<branch>` when the clone keeps one, otherwise
+`git ls-remote --heads origin <branch>`.
+
+The count used to be `git rev-list --count HEAD --not --remotes=origin`, which
+answers "commits ahead of the default branch" whenever no remote-tracking ref
+exists for the branch — a single-branch clone never gains one, even after a
+successful `git push -u`. A good push then reported
+`commitsPushed=4 finalUnpushedCount=4`, which triggered a pointless recovery, a
+"please check the branch status" comment to a human, and a `merge-conflict`
+label on a mergeable PR.
+
+```mermaid
+flowchart TD
+    A[commit pending work] --> B[push unpushed commits]
+    B -->|rejected non-fast-forward| C[recover: fetch, rebase,<br/>auto-resolve, retry push]
+    C -->|failed| E[log recoveryStep + git stderr]
+    B --> D{count vs the branch's<br/>own remote head}
+    C -->|recovered| D
+    D -->|0| F[push confirmed]
+    D -->|> 0| E
+    D -->|cannot determine| G[error: fail loud,<br/>never a silent 0]
+    style F fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style E fill:#9d0208,stroke:#6a040f,color:#fff
+    style G fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
+A failed recovery logs the step that failed (`recoveryStep`) and git's own
+stderr (`detail`) — the merge-conflict pass asks git for the rejection reason
+with a dry-run push — so a genuine push failure is diagnosable from the log
+alone.
+
+The same remote head governs the **branch-update pass**: `updatePrBranch`
+fetches and resets the PR branch to its remote head before deciding whether it
+is behind or conflicted, reporting any discarded local-only commits. Judging a
+reused clone's stale local branch is what produced a conflict verdict for a PR
+GitHub reported as mergeable.
 
 ### 🔤 Spelling and quality fix flow
 
