@@ -25,6 +25,7 @@ import {
   buildFetchArgs,
   buildRebaseArgs,
 } from "./git_ref_args.ts";
+import { syncBranchToRemoteHead } from "./git_branch_sync.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -678,6 +679,16 @@ export async function updatePrBranch(
   const alignResult = await alignBranchWithRemoteHead(branchName, options);
   if (!alignResult.ok) {
     return { ok: false, error: alignResult.error };
+  }
+
+  // Judge the PR, not this clone (Issue #211). The checkout above takes
+  // whatever local branch of that name the clone holds; a fleet sibling's push
+  // — or commits an earlier run left behind — makes that branch something the
+  // PR is not, and a conflict found on it labelled a mergeable PR
+  // `merge-conflict`. Align with the remote head first, or refuse loudly.
+  const sync = await syncBranchToRemoteHead(branchName, options);
+  if (!sync.ok) {
+    return { ok: false, error: sync.error };
   }
 
   // Ensure enough history for range detection on a shallow clone (Issue #1502)
