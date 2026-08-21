@@ -1347,3 +1347,46 @@ Deno.test("slot pool - host disk drops low during slot A's run: no slot claims a
     "the low disk is reported once, not once per slot",
   );
 });
+
+Deno.test("slot pool - a work-volume fault surfaced during slot A's run stops every further claim (Issue #229)", async () => {
+  let faulted = false;
+  let processed = 0;
+  let now = 0;
+  const errors: string[] = [];
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    logError: (m) => {
+      errors.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    checkWorkVolumeFault: () =>
+      faulted
+        ? {
+          faulted: true,
+          detail: "fatal: Structure needs cleaning (git fetch)",
+        }
+        : { faulted: false, detail: "" },
+    processIssue: async () => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 5));
+      faulted = true;
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runCoreLoop({ ...config, maxConcurrentIssues: 3 }, deps);
+  assert(
+    processed <= 3,
+    `processed ${processed} — a slot claimed on a faulted volume`,
+  );
+  assertEquals(
+    errors.filter((m) => m.startsWith("[WORK_VOLUME_FAULT]")).length,
+    1,
+  );
+});

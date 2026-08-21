@@ -130,7 +130,10 @@ Deno.test("run.sh - ensures the named volumes and runs the ownership init (Issue
     assert(init, "the volume-ownership init must run before the worker");
     assertEquals(init.includes("--user"), true);
     assertEquals(init[init.indexOf("--user") + 1], "0:0");
-    assertEquals(init[init.indexOf("--entrypoint") + 1], "chown");
+    assertEquals(
+      init[init.indexOf("--entrypoint") + 1],
+      "/usr/local/bin/vibe-volume-init",
+    );
     assertEquals(mountValues(init), [
       `${WORK_VOLUME_NAME}:${TARGETS.work}`,
       `${APPROVAL_STATE_VOLUME_NAME}:${TARGETS.approvalState}`,

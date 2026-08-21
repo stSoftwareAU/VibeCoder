@@ -249,6 +249,7 @@ import {
 import { enableAutoMerge } from "./pr_auto_merge.ts";
 import { closeIssuesForMergedPrs as prIssueCloseForMerged } from "./pr_issue_linking.ts";
 import { HostDiskMonitor } from "./host_disk.ts";
+import { workVolumeFault } from "./work_volume_fault.ts";
 
 // FLEET health
 import {
@@ -590,8 +591,12 @@ export async function createProductionRunCoreDeps(
   const fleetHealthConfig = buildFleetHealthConfig(repoDir);
   // Issue #226: name a low host disk on the fleet-health payload.
   fleetHealthConfig.hostNotes = () => {
+    const notes: string[] = [];
     const status = hostDisk.status;
-    return status.level === "low" ? [`host-disk low: ${status.detail}`] : [];
+    if (status.level === "low") notes.push(`host-disk low: ${status.detail}`);
+    const fault = workVolumeFault();
+    if (fault !== null) notes.push(`work-volume fault: ${fault.detail}`);
+    return notes;
   };
   const fleetHealthDeps = createProductionFleetHealthDeps(logger);
 
@@ -783,6 +788,12 @@ export async function createProductionRunCoreDeps(
         "host-disk",
         () => disk.level !== "low",
         `Host filesystem has room for new work — ${disk.detail}`,
+      );
+      // Issue #229: a work volume that has surfaced an I/O fault.
+      registry.register(
+        "work-volume",
+        () => workVolumeFault() === null,
+        "Work volume filesystem has surfaced no I/O fault",
       );
       const results = registry.checkAll();
       for (const featureResult of results) {
@@ -1998,6 +2009,12 @@ export async function createProductionRunCoreDeps(
     inFlightRepos,
     slotCeiling,
     checkHostDisk: () => hostDisk.check(),
+    checkWorkVolumeFault: () => {
+      const fault = workVolumeFault();
+      return fault === null
+        ? { faulted: false, detail: "" }
+        : { faulted: true, detail: `${fault.detail} (${fault.command})` };
+    },
     // Issue #4369: no agent runs detached or is relaunched after run end.
     terminateActiveAgentRuns: async (
       reason: string,
