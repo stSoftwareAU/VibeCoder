@@ -20,10 +20,7 @@ import {
   workOnIssueSetupBranch,
 } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import {
-  _resetGhSpawnRunner,
-  _setGhSpawnRunner,
-} from "../lib/gh_spawn.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { CLARIFICATION_NEXT_STEP } from "../lib/phases/clarity_assessment_phase.ts";

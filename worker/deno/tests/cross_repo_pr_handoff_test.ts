@@ -20,10 +20,7 @@ import {
   openDeclaredCrossRepoPr,
 } from "../lib/cross_repo_pr_handoff.ts";
 import type { CommandOutput, RunCommand } from "../lib/cross_repo_fix.ts";
-import {
-  _resetGhSpawnRunner,
-  _setGhSpawnRunner,
-} from "../lib/gh_spawn.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
   _resetWriteRepoAllowlistSinks,
   _setWriteRepoAllowlistSinks,
@@ -182,7 +179,9 @@ Deno.test("detectCrossRepoPrDeclaration - a traversal branch is malformed", () =
 
 Deno.test("detectCrossRepoPrDeclaration - a flag-shaped title is malformed", () => {
   const detection = detectCrossRepoPrDeclaration(
-    marker(`repo="${DEP_REPO}" branch="${BRANCH}" title="--body-file /etc/passwd"`),
+    marker(
+      `repo="${DEP_REPO}" branch="${BRANCH}" title="--body-file /etc/passwd"`,
+    ),
   );
   assertEquals(detection.status, "malformed");
 });
@@ -402,8 +401,7 @@ Deno.test({
   fn: async () => {
     const logs: string[] = [];
     _setWriteRepoAllowlistSinks({
-      record: () =>
-        Promise.resolve({ ok: true, value: {} as never }),
+      record: () => Promise.resolve({ ok: true, value: {} as never }),
       log: (line) => logs.push(line),
     });
     const seen: string[][] = [];
@@ -419,7 +417,12 @@ Deno.test({
         });
       }
       if (joined.includes("pr list")) {
-        return Promise.resolve({ code: 0, success: true, stdout: "", stderr: "" });
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: "",
+          stderr: "",
+        });
       }
       if (joined.includes("/branches/")) {
         return Promise.resolve({
@@ -513,7 +516,9 @@ Deno.test("handOffCrossRepoPr - a successful dependency PR is cross-linked on th
     },
     logger: silentLogger(),
     runner,
-    deps: { ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }) },
+    deps: {
+      ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }),
+    },
   });
 
   assertEquals(result.status, "opened");
@@ -541,7 +546,9 @@ Deno.test("handOffCrossRepoPr - a refused declaration escalates to a human with 
     },
     logger: silentLogger(),
     runner,
-    deps: { ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }) },
+    deps: {
+      ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }),
+    },
   });
 
   assertEquals(result.status, "escalated");
@@ -567,7 +574,9 @@ Deno.test("handOffCrossRepoPr - a malformed marker escalates rather than failing
     detection: { status: "malformed", reason: "missing branch" },
     logger: silentLogger(),
     runner,
-    deps: { ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }) },
+    deps: {
+      ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }),
+    },
   });
 
   assertEquals(result.status, "escalated");

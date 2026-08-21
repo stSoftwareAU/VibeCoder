@@ -60,7 +60,7 @@ import {
  * Canonical form (on its own line):
  *
  *   <!-- vibe-cross-repo-pr repo="stSoftwareAU/Dep" branch="fix/123-thing"
- *        base="Develop" title="Fix the thing" summary="why" -->
+ *        base="<base-branch>" title="Fix the thing" summary="why" -->
  *
  * `repo`, `branch` and `title` are required; `base` defaults to the
  * dependency's default branch and `summary` is folded into the PR body.
@@ -186,7 +186,10 @@ export function detectCrossRepoPrDeclaration(
     attribute(inner, "title"),
     MAX_TITLE_LENGTH,
   );
-  const base = sanitiseDeclarationField(attribute(inner, "base"), MAX_REF_LENGTH);
+  const base = sanitiseDeclarationField(
+    attribute(inner, "base"),
+    MAX_REF_LENGTH,
+  );
   const summary = sanitiseDeclarationField(
     attribute(inner, "summary"),
     MAX_SUMMARY_LENGTH,
@@ -207,10 +210,16 @@ export function detectCrossRepoPrDeclaration(
   }
 
   if (!REPO_SLUG_PATTERN.test(repo)) {
-    return { status: "malformed", reason: `'${repo}' is not an owner/repo slug` };
+    return {
+      status: "malformed",
+      reason: `'${repo}' is not an owner/repo slug`,
+    };
   }
   if (!isSafeRef(branch)) {
-    return { status: "malformed", reason: `'${branch}' is not a usable branch` };
+    return {
+      status: "malformed",
+      reason: `'${branch}' is not a usable branch`,
+    };
   }
   if (base.length > 0 && !isSafeRef(base)) {
     return { status: "malformed", reason: `'${base}' is not a usable base` };
@@ -313,7 +322,10 @@ export async function openDeclaredCrossRepoPr(
   const { repo, branch } = declaration;
 
   if (!REPO_SLUG_PATTERN.test(repo)) {
-    return { ok: false, error: new Error(`Invalid repository slug '${repo}'.`) };
+    return {
+      ok: false,
+      error: new Error(`Invalid repository slug '${repo}'.`),
+    };
   }
   const owner = repo.slice(0, repo.indexOf("/"));
   if (owner.toLowerCase() !== INTERNAL_OWNER.toLowerCase()) {
@@ -351,7 +363,11 @@ export async function openDeclaredCrossRepoPr(
 
   // 2. The head must already exist on the dependency remote — the bridge
   //    opens a PR for a branch the run pushed, it never creates one.
-  const head = await runner(["gh", "api", `repos/${target}/branches/${branch}`]);
+  const head = await runner([
+    "gh",
+    "api",
+    `repos/${target}/branches/${branch}`,
+  ]);
   if (!head.success) {
     return {
       ok: false,
@@ -573,7 +589,9 @@ export async function handOffCrossRepoPr(
     await ghClient.postComment(
       repo,
       issueNumber,
-      `🔀 **Dependency PR ${status === "existing" ? "already open" : "opened"}:** ` +
+      `🔀 **Dependency PR ${
+        status === "existing" ? "already open" : "opened"
+      }:** ` +
         `${prUrl}\n\n` +
         `The root cause was fixed in \`${result.value.repo}\` on branch ` +
         `\`${result.value.branch}\`, and the worker opened the PR there on the ` +

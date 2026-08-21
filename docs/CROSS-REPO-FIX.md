@@ -95,12 +95,72 @@ deno run --allow-env --allow-run worker/deno/mod.ts \
 ```
 
 The PR-raising half (`openCrossRepoFixPr`) needs an `applyFix` callback and is
-therefore driven from the consuming issue-fix flow, not the CLI. It is verified
+therefore driven from a consuming flow, not the CLI. It is verified
 by the integration test
 [`worker/deno/tests/cross_repo_fix_test.ts`](../worker/deno/tests/cross_repo_fix_test.ts),
 which drives the full clone → branch → fix → commit → push → PR sequence with a
 scripted runner and asserts an actual PR is opened against a **different** repo
 than the run started in, with its URL surfaced back.
+
+## The bridge — how an agent run actually opens the dependency PR
+
+The capability above lives in the **worker**. The agent that does the fixing
+cannot use it directly: the `gh` guard shim bakes the run's write-repo allowlist
+— the claim repo, and nothing else — into the agent subprocess at spawn time
+(SECURITY.md §6a), so `gh pr create --repo stSoftwareAU/<dep>` from the agent's
+own shell is refused with `[SECURITY] [WRITE_REPO_BLOCKED]`. Before Issue #182
+there was no sanctioned alternative, and a run whose only remaining step was
+that PR could not finish: `stSoftwareAU/GRQ#4206` burned two runs on the same
+blocked call and left a finished fix on an unreferenced branch.
+
+`worker/deno/lib/cross_repo_pr_handoff.ts` closes that gap **without changing
+the agent's boundary**:
+
+1. The agent pushes the fix branch to the dependency repo — `git` is not
+   guarded — and **declares** the PR it wants with a marker in its output:
+
+   ```text
+   <!-- vibe-cross-repo-pr repo="stSoftwareAU/Dep" branch="fix/123-thing" base="Develop" title="Fix the thing" summary="why" -->
+   ```
+
+   `repo`, `branch` and `title` are required; `base` defaults to the
+   dependency's default branch and `summary` is folded into the PR body. The
+   instruction lives in `prompts/coding_guidelines/` and `prompts/issue/`.
+2. The worker parses the declaration, treats every field as untrusted model
+   output (shape-validated before it becomes a `gh` argument), and validates the
+   target: internal `stSoftwareAU/*` owner, reachable, pushable
+   (`probeCrossRepoAccess`), the head branch actually present on the dependency
+   remote, and not that repo's default branch. An already-open PR for the same
+   head is reused, never duplicated.
+3. The single `gh pr create` runs through the worker's own `spawnGh` chokepoint
+   inside `withScopedWriteRepo()` — the allowlist opens for that one call and
+   closes again in a `finally`, announced with
+   `[SECURITY] [WRITE_REPO_SCOPED_GRANT]`.
+4. The dependency PR URL is cross-linked onto the consuming issue. Anything that
+   stops the PR being opened — malformed declaration, unreachable repo, branch
+   never pushed — escalates to `needs-human` with the branch details through the
+   guarded `escalateToHuman` chokepoint. The run never ends with the fix
+   stranded and unmentioned.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent subprocess
+    participant D as Dependency repo
+    participant W as Worker (issue_worker)
+    participant I as Consuming issue
+    A->>D: git push the fix branch (unguarded)
+    A-->>W: "vibe-cross-repo-pr" marker in output
+    W->>D: gh api repos — internal? reachable? pushable?
+    W->>D: gh api branches — was the branch pushed?
+    W->>D: gh pr list --head — already open?
+    W->>D: gh pr create (inside withScopedWriteRepo)
+    W->>I: cross-link the dependency PR
+    Note over W,I: any refusal → needs-human + branch details
+```
+
+Tests: `worker/deno/tests/cross_repo_pr_handoff_test.ts` (detection, every
+refusal, the scoped grant opening and re-closing the boundary) and the two
+wiring cases in `worker/deno/tests/issue_worker_test.ts`.
 
 ## Release-gating — never auto-release
 
