@@ -784,14 +784,29 @@ Deno.test("branch cleanup - a gone-upstream branch -d refuses is force-deleted o
       await runCleanupGit(["checkout", "-b", name, "main"], clone);
       await Deno.writeTextFile(`${clone}/${name}.txt`, "y\n");
       await runCleanupGit(["add", `${name}.txt`], clone);
+      // Inherit the environment (HOME, PATH, the harness's git identity):
+      // `env` replaces it wholesale, and a bare git on CI exits 128.
       const commit = new Deno.Command("git", {
-        args: ["commit", "-m", name],
+        args: [
+          "-c",
+          "user.name=branch-cleanup-test",
+          "-c",
+          "user.email=branch-cleanup-test@example.invalid",
+          "commit",
+          "-m",
+          name,
+        ],
         cwd: clone,
-        env: { GIT_COMMITTER_DATE: committedAt, GIT_AUTHOR_DATE: committedAt },
+        env: {
+          ...Deno.env.toObject(),
+          GIT_COMMITTER_DATE: committedAt,
+          GIT_AUTHOR_DATE: committedAt,
+        },
         stdout: "null",
-        stderr: "null",
+        stderr: "piped",
       });
-      assertEquals((await commit.output()).code, 0);
+      const out = await commit.output();
+      assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
       await runCleanupGit(["push", "-u", "origin", name], clone);
       await runCleanupGit(["checkout", "main"], clone);
       await runCleanupGit(["push", "origin", `:${name}`], clone);
