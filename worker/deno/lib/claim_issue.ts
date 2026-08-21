@@ -31,6 +31,7 @@ import { runGhCommand } from "./github.ts";
 import { formatHeartbeatMarker, seedMarkerState } from "./heartbeat_storage.ts";
 import { fetchOpenPRsForFleet, getBlockingPRForIssue } from "./issue_query.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
+import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { postCooldownComment } from "./shared_cooldown.ts";
 import { getHostname } from "./worker_identity.ts";
 
@@ -113,6 +114,14 @@ export interface ClaimOptions {
    * overwrites it with the fresh result (Issue #3150).
    */
   cache?: IssueCache;
+  /**
+   * Whether this worker itself closed the issue earlier in this run
+   * (Issue #181). Defaults to the run's shared processed-issue registry,
+   * which the `gh` chokepoint records every close into. A claim against such
+   * an issue is refused before any API call: the scan that offered it was
+   * ranking a cached issue list written before the close.
+   */
+  wasClosedThisRun?: (repo: string, issueNumber: number) => boolean;
 }
 
 /** Claim comment parsed from the GitHub API. */
@@ -422,6 +431,11 @@ export interface FetchIssueStateOptions {
  * attempt fails the state is treated as "CLOSED" (fail closed / blocked) so
  * the worker skips the issue this cycle rather than starting work on it. A
  * genuinely-open issue is simply retried next cycle once `gh` recovers.
+ *
+ * Issue #181: this read must never be served from the `IssueCache` — a stale
+ * "OPEN" here is exactly what lets a closed issue be claimed. `ghCommandFn`
+ * defaults to the uncached `runGhCommand`, and callers must not pass a
+ * cache-backed reader in its place.
  */
 export async function fetchIssueState(
   repo: string,
@@ -465,6 +479,15 @@ export async function fetchIssueState(
       `starting work on a possibly-merged issue (Issue #3151)`,
   );
   return "CLOSED"; // Fail closed
+}
+
+/**
+ * Default closed-this-run predicate (Issue #181) — the run's shared
+ * processed-issue registry, which every `gh issue close` is recorded into at
+ * the `gh` chokepoint.
+ */
+function defaultWasClosedThisRun(repo: string, issueNumber: number): boolean {
+  return sharedProcessedIssues().wasClosedByWorker(repo, issueNumber);
 }
 
 /**
@@ -840,7 +863,28 @@ export async function claimIssue(
     pushCapableAuthors,
     milestoneTitle,
     cache,
+    wasClosedThisRun = defaultWasClosedThisRun,
   } = options;
+
+  // Issue #181: the worker closed this issue earlier in this run, so no
+  // amount of cached "OPEN" can make it claimable. Refused before any API
+  // call — the scan only offered it because the issue list it ranked (600 s
+  // TTL) was written before the close.
+  if (wasClosedThisRun(repo, issueNumber)) {
+    console.warn(
+      `[claim_issue] claim_refused repo=${repo} issue=#${issueNumber} ` +
+        `reason=closed_by_this_run — the scan ranked a cached issue list ` +
+        `written before this worker closed it (Issue #181)`,
+    );
+    return {
+      ok: true,
+      value: {
+        claimed: false,
+        reason: "already_closed",
+        reasonDetail: "this worker closed the issue earlier in this run",
+      },
+    };
+  }
 
   // Resolve the host that is making the claim. Surfacing the hostname in
   // the visible comment lets operators jump directly to the right machine

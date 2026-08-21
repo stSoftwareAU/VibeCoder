@@ -38,6 +38,10 @@ import {
   startCycleTimings,
 } from "./cycle_timings.ts";
 import { formatInFlightHold, InFlightRepoRegistry } from "./in_flight_repos.ts";
+import type {
+  ProcessedIssueReason,
+  ProcessedIssueRegistry,
+} from "./processed_issue_registry.ts";
 import type { SlotCeiling } from "./slot_governor.ts";
 import {
   deriveRunOutcome,
@@ -459,6 +463,15 @@ export interface RunCoreDeps {
    * status rendering and heartbeat sweeps see the same holds.
    */
   inFlightRepos?: InFlightRepoRegistry;
+  /**
+   * Per-run record of issues already finished this run (Issue #181). Every
+   * terminal outcome — success, skip, failure — is recorded here, and the
+   * production `findNextIssue` excludes what it holds, so a stale cached
+   * issue list (600 s TTL) can no longer re-offer an issue this run has
+   * already handled or closed. Optional: absent means no exclusion, which is
+   * the pre-#181 behaviour.
+   */
+  processedIssues?: ProcessedIssueRegistry;
   /**
    * Memory-pressure slot ceiling (Issue #4179). Optional: absent means the
    * configured `maxConcurrentIssues` is the effective count.
@@ -1243,6 +1256,21 @@ async function releaseIssueClaim(
 }
 
 /**
+ * Mark an issue as finished for the rest of this run (Issue #181).
+ *
+ * Called on every terminal outcome in both the serial loop and the pool. The
+ * scan excludes what this registry holds, so a cached issue list that still
+ * lists the issue — the list TTL is 600 s — cannot re-offer it seconds later.
+ */
+function noteIssueProcessed(
+  deps: RunCoreDeps,
+  issue: DiscoveredIssue,
+  reason: ProcessedIssueReason,
+): void {
+  deps.processedIssues?.record(issue.repo, issue.issueNumber, reason);
+}
+
+/**
  * Priority 2 issue-scanning inner loop.
  *
  * Issue #3648: the loop used to take `_config` (unused) and had no view of the
@@ -1378,6 +1406,7 @@ async function runIssueScanLoop(
 
     if (processResult.ok && processResult.value.success) {
       // Success path
+      noteIssueProcessed(deps, issue, "success");
       tracker.recordSuccess();
       // Issue #2427: a successful claim resets the scan cursor to the
       // start-of-cycle position so the next cycle dispatches from
@@ -1413,6 +1442,7 @@ async function runIssueScanLoop(
     // don't track as a failure (no circuit breaker / repo failure impact).
     const skipped = processResult.ok && processResult.value.skipped;
     if (skipped) {
+      noteIssueProcessed(deps, issue, "skip");
       await deps.recordIssueCooldown(issue.repo, issue.issueNumber);
       // Issue #2670: release any claim taken before the skip. Removing only
       // the worker's own assignment is a no-op when the claim was rejected,
@@ -1424,6 +1454,7 @@ async function runIssueScanLoop(
     // Failure path (detailed reason already logged by processIssue).
     // Timeout-class failures feed the escalating cooldown (Issue #4304) so
     // the same doomed issue cannot burn consecutive hourly cycles.
+    noteIssueProcessed(deps, issue, "failure");
     await deps.recordIssueCooldown(
       issue.repo,
       issue.issueNumber,
@@ -1617,6 +1648,9 @@ type SlotStop =
  *   pool-wide, so N slots cannot multiply the failure budget;
  * - `exitOuterLoop` from any slot drains the rest: running slots finish,
  *   no new claims;
+ * - a slot that succeeds sleeps `sleepInterval` and claims again rather
+ *   than retiring (Issue #178) — retiring parked it until every sibling
+ *   drained, degrading two slots to one after the first completion;
  * - the pool is fully drained before this returns, so the serial
  *   priorities that follow never overlap with issue work.
  *
@@ -1831,6 +1865,8 @@ async function runSlot(
       continue;
     }
 
+    /** Set by a successful claim so the settle sleep runs holding no repo. */
+    let claimSucceeded = false;
     try {
       // Every line written on behalf of this claim — the pool's own, the
       // issue phases, the agent's progress heartbeats — is attributed to
@@ -1863,13 +1899,16 @@ async function runSlot(
         pool.draining = true;
         return;
       }
-      if (outcome === "success") {
-        // The serial loop returns to the priority ladder after one
-        // success; the pool keeps its other slots busy but this slot
-        // yields the same way, so the ladder runs once every slot has
-        // finished or found no work.
-        return;
-      }
+      // A success must NOT retire the slot (Issue #178). The serial loop's
+      // `break` hands back to the outer loop, which runs the maintenance
+      // ladder and re-scans seconds later — cheap. In the pool a return
+      // parks the slot until EVERY sibling drains, so one long execute
+      // next door left `max_concurrent_issues: 2` running as one slot plus
+      // an idle one for the rest of the cycle. The slot claims again after
+      // the settle sleep below, re-gated by `slotShouldStop` and the
+      // pre-claim guards at the top of the loop; the maintenance ladder
+      // runs when the pool next drains.
+      claimSucceeded = outcome === "success";
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       deps.logError(
@@ -1908,6 +1947,16 @@ async function runSlot(
       }
     } finally {
       pool.registry.release(issue.repo);
+    }
+
+    // Settle sleep after a success (Issue #178): the same `sleepInterval`
+    // the serial loop earns between issues, so a slot paces its claims
+    // instead of hot-looping. Taken AFTER the registry hold is released so
+    // a sibling is never locked out of the repository while this slot
+    // idles.
+    if (claimSucceeded) {
+      const settleMs = Math.max(0, config.sleepInterval) * 1000;
+      if (settleMs > 0) await deps.sleep(settleMs);
     }
   }
 }
@@ -2067,6 +2116,7 @@ async function runSlotIssue(
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
 
   if (processResult.ok && processResult.value.success) {
+    noteIssueProcessed(deps, issue, "success");
     tracker.recordSuccess();
     if (deps.resetScanCursor) {
       try {
@@ -2095,6 +2145,7 @@ async function runSlotIssue(
 
   const skipped = processResult.ok && processResult.value.skipped;
   if (skipped) {
+    noteIssueProcessed(deps, issue, "skip");
     await deps.recordIssueCooldown(issue.repo, issue.issueNumber);
     await releaseIssueClaim(deps, issue.repo, issue.issueNumber);
     if (siblingsWorking()) {
@@ -2105,6 +2156,7 @@ async function runSlotIssue(
     return "skip";
   }
 
+  noteIssueProcessed(deps, issue, "failure");
   await deps.recordIssueCooldown(
     issue.repo,
     issue.issueNumber,
