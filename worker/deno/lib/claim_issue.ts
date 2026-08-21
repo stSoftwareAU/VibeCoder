@@ -28,7 +28,12 @@ import type { BlockingPRInfo } from "./issue_query.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { runGhCommand } from "./github.ts";
-import { formatHeartbeatMarker, seedMarkerState } from "./heartbeat_storage.ts";
+import {
+  DEFAULT_MARKER_REFRESH_SECONDS,
+  formatHeartbeatMarker,
+  scanHeartbeatMarkers,
+  seedMarkerState,
+} from "./heartbeat_storage.ts";
 import { fetchOpenPRsForFleet, getBlockingPRForIssue } from "./issue_query.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
@@ -149,6 +154,13 @@ export type ClaimFailureReason =
   | "already_assigned"
   /** Pre-claim freshness check found a recent CLAIM_LOCK from another worker. */
   | "recent_claim"
+  /**
+   * The issue carries no assignee but its heartbeat marker is still beating
+   * (Issue #214). The assignee — the claim lock every host checks — was
+   * dropped out from under a run that is still going, so claiming here
+   * would start a second agent on the same issue and branch.
+   */
+  | "heartbeat_active"
   /** The issue is closed. */
   | "already_closed"
   /** Another worker won the claim race (their CLAIM_LOCK comment is earlier). */
@@ -319,6 +331,104 @@ export function classifyGhAssignError(message: string): ClaimFailureReason {
 }
 
 /**
+ * How recently a heartbeat marker must have beaten for the issue to count as
+ * held by a live run (Issue #214).
+ *
+ * Twice the interval at which a marker comment is refreshed — the only beat
+ * rate another host can observe. The in-process heartbeat timer fires every
+ * {@link DEFAULT_HEARTBEAT_INTERVAL_MS}, but a beat only reaches GitHub every
+ * {@link DEFAULT_MARKER_REFRESH_SECONDS}, so a healthy claim's published
+ * marker is routinely one refresh old. One missed refresh is tolerated;
+ * beyond that the run is gone and the ordinary stale-assignment recovery
+ * (default 1800 s, comfortably longer than this window) takes over.
+ */
+export const LIVE_HEARTBEAT_WINDOW_SECONDS = 2 * DEFAULT_MARKER_REFRESH_SECONDS;
+
+/** A heartbeat marker that is still beating. */
+export interface LiveHeartbeatMarker {
+  machineId: string;
+  /** Epoch seconds of the last beat. */
+  epoch: number;
+  /** Seconds since that beat (never negative — a skewed clock clamps to 0). */
+  ageSeconds: number;
+}
+
+/**
+ * Pick the most recent heartbeat marker that is still beating (Issue #214).
+ *
+ * A released claim's marker carries epoch 0 plus the `cleared:` signal and is
+ * ignored, as is a marker older than `windowSeconds`. Returns null when no
+ * marker qualifies — the issue is genuinely free.
+ *
+ * @param markers - Markers parsed from the issue's comments (fleet-authored
+ *   only; a forged marker must never keep the fleet off an issue).
+ * @param nowSeconds - Current epoch seconds.
+ * @param windowSeconds - Freshness window, default
+ *   {@link LIVE_HEARTBEAT_WINDOW_SECONDS}.
+ */
+export function findLiveHeartbeatMarker(
+  markers: ReadonlyArray<
+    { machineId: string; epoch: number; cleared: boolean }
+  >,
+  nowSeconds: number,
+  windowSeconds: number = LIVE_HEARTBEAT_WINDOW_SECONDS,
+): LiveHeartbeatMarker | null {
+  let live: LiveHeartbeatMarker | null = null;
+  for (const marker of markers) {
+    if (marker.cleared) continue;
+    if (!Number.isFinite(marker.epoch) || marker.epoch <= 0) continue;
+    const ageSeconds = Math.max(0, nowSeconds - marker.epoch);
+    if (ageSeconds > windowSeconds) continue;
+    if (live === null || marker.epoch > live.epoch) {
+      live = { machineId: marker.machineId, epoch: marker.epoch, ageSeconds };
+    }
+  }
+  return live;
+}
+
+/**
+ * Live-heartbeat availability check for an unassigned issue (Issue #214).
+ *
+ * The assignee is the claim lock every host checks, so an issue whose
+ * assignee was dropped mid-run reads as free — and a sibling host starts a
+ * second agent on the same issue and branch. A marker that beat inside
+ * {@link LIVE_HEARTBEAT_WINDOW_SECONDS} proves a run still holds it, so the
+ * claim is refused and the broken invariant is logged at WARNING.
+ *
+ * Fails open on any API error, matching the other pre-claim checks: an
+ * unreachable GitHub must not stop the fleet claiming work.
+ */
+async function liveHeartbeatWithoutAssigneeCheck(
+  repo: string,
+  issueNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  allowedAuthors: string[],
+  nowSeconds: number,
+): Promise<LiveHeartbeatMarker | null> {
+  let markers: Array<{ machineId: string; epoch: number; cleared: boolean }>;
+  try {
+    markers = await scanHeartbeatMarkers(
+      repo,
+      issueNumber,
+      ghCommandFn,
+      allowedAuthors,
+    );
+  } catch {
+    return null; // Fail open — proceed with the claim
+  }
+  const live = findLiveHeartbeatMarker(markers, nowSeconds);
+  if (live === null) return null;
+  console.warn(
+    `[claim_issue] repo=${repo} issue=#${issueNumber} ` +
+      `heartbeat_active_without_assignee machine=${live.machineId} ` +
+      `last_beat_age=${live.ageSeconds}s — the claim lock was dropped while ` +
+      `the run is still beating; refusing to claim so a second agent is not ` +
+      `started on the same issue (Issue #214)`,
+  );
+  return live;
+}
+
+/**
  * Pre-claim freshness re-check (Issue #1086).
  *
  * Re-fetches the issue's current assignees and recent claim comments
@@ -346,7 +456,14 @@ async function preClaimFreshnessCheck(
   issueNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
   allowedAuthors: string[] = [],
-): Promise<{ shouldBailOut: boolean; reason?: ClaimFailureReason }> {
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): Promise<
+  {
+    shouldBailOut: boolean;
+    reason?: ClaimFailureReason;
+    reasonDetail?: string;
+  }
+> {
   // Check 1: Re-fetch current assignees
   try {
     const assigneesJson = await ghCommandFn([
@@ -373,6 +490,25 @@ async function preClaimFreshnessCheck(
     }
   } catch {
     // Fail open — proceed with claim
+  }
+
+  // Check 1b (Issue #214): the issue is unassigned, but a heartbeat that
+  // beat within the live window means a run still holds it — the claim lock
+  // was dropped out from under it. Treat it as unavailable.
+  const liveHeartbeat = await liveHeartbeatWithoutAssigneeCheck(
+    repo,
+    issueNumber,
+    ghCommandFn,
+    allowedAuthors,
+    nowSeconds,
+  );
+  if (liveHeartbeat !== null) {
+    return {
+      shouldBailOut: true,
+      reason: "heartbeat_active",
+      reasonDetail: `machine ${liveHeartbeat.machineId} beat ` +
+        `${liveHeartbeat.ageSeconds}s ago with no assignee`,
+    };
   }
 
   // Check 2: Look for recent CLAIM_LOCK comments (within last 60 seconds)
@@ -927,7 +1063,13 @@ export async function claimIssue(
   if (freshnessCheck.shouldBailOut) {
     return {
       ok: true,
-      value: { claimed: false, reason: freshnessCheck.reason },
+      value: {
+        claimed: false,
+        reason: freshnessCheck.reason,
+        ...(freshnessCheck.reasonDetail
+          ? { reasonDetail: freshnessCheck.reasonDetail }
+          : {}),
+      },
     };
   }
 

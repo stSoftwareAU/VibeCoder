@@ -767,6 +767,9 @@ export async function seedMarkerState(
     workerId?: string;
   },
 ): Promise<void> {
+  // Seeding happens as a claim is taken (Issue #214), so any guard left by a
+  // previous claim on this issue is lifted here too.
+  clearClaimReleaseGuard(workDir, repo, issueNumber);
   await writeMarkerState(workDir, repo, issueNumber, state);
 }
 
@@ -1417,6 +1420,12 @@ async function writeMilestonesOnly(
  * heartbeat must succeed before a claim is considered live) or non-fatal
  * (periodic refresh — counted via the consecutive-failure counter and
  * retried on the next interval).
+ *
+ * Issue #214: a beat after the claim was released is refused, loudly. A
+ * heartbeat that outlives its release is what leaves an issue "unassigned
+ * with a live heartbeat" — the state that made every host read VibeCoder#185
+ * as free while a sibling was still working it. The guard is lifted by the
+ * next claim on this work directory (see {@link clearClaimReleaseGuard}).
  */
 export async function recordHeartbeat(
   workDir: string,
@@ -1425,6 +1434,14 @@ export async function recordHeartbeat(
   nowFn: () => number = () => Math.floor(Date.now() / 1000),
   markerOptions?: HeartbeatMarkerOptions,
 ): Promise<Result<void>> {
+  if (isClaimReleased(workDir, repo, issueNumber)) {
+    const message =
+      `Refused to record a heartbeat for ${repo}#${issueNumber}: ` +
+      `the claim was already released (Issue #214)`;
+    console.warn(`[heartbeat] heartbeat_after_release ${message}`);
+    recordFaultEvent("catch_block_warning", message);
+    return { ok: false, error: new Error(message) };
+  }
   const path = heartbeatFilePath(workDir, repo, issueNumber);
   try {
     await Deno.writeTextFile(path, String(nowFn()));
@@ -1485,6 +1502,60 @@ function pendingKey(repo: string, issueNumber: number): string {
   return `${repo}#${issueNumber}`;
 }
 
+/**
+ * Claims released in this process, keyed by work directory and issue
+ * (Issue #214).
+ *
+ * The release path is ordered stop heartbeat → post outcome → unassign, so
+ * an issue is never unassigned while its heartbeat is still beating. This
+ * set closes the other direction: once a claim is released, nothing may
+ * write a heartbeat for it again — not a straggling interval callback, not a
+ * keep-alive from a processor that has already handed the issue back. The
+ * key includes the work directory because that is what identifies the claim
+ * a heartbeat belongs to; a different slot's directory is a different claim.
+ */
+const releasedClaims = new Set<string>();
+
+function releaseKey(
+  workDir: string,
+  repo: string,
+  issueNumber: number,
+): string {
+  return `${workDir} ${repo}#${issueNumber}`;
+}
+
+/** Record that this claim has been released — no further beats allowed. */
+export function markClaimReleased(
+  workDir: string,
+  repo: string,
+  issueNumber: number,
+): void {
+  releasedClaims.add(releaseKey(workDir, repo, issueNumber));
+}
+
+/**
+ * Lift the guard because a new claim on this issue has begun (Issue #214).
+ *
+ * Called by `startHeartbeat` and by the claim path's marker seeding, so a
+ * legitimate re-claim beats normally while a released claim stays silent.
+ */
+export function clearClaimReleaseGuard(
+  workDir: string,
+  repo: string,
+  issueNumber: number,
+): void {
+  releasedClaims.delete(releaseKey(workDir, repo, issueNumber));
+}
+
+/** Whether this claim has been released and must not beat again. */
+export function isClaimReleased(
+  workDir: string,
+  repo: string,
+  issueNumber: number,
+): boolean {
+  return releasedClaims.has(releaseKey(workDir, repo, issueNumber));
+}
+
 /** Park an outcome for the next clear of this issue (Issue #4330). */
 export function setPendingReleaseOutcome(
   repo: string,
@@ -1522,6 +1593,9 @@ export async function clearHeartbeat(
   nowFn: () => number = () => Math.floor(Date.now() / 1000),
   outcome?: RunOutcome,
 ): Promise<Result<void>> {
+  // The claim is released from here on (Issue #214): any later beat for it
+  // is a leak and is refused by `recordHeartbeat`.
+  markClaimReleased(workDir, repo, issueNumber);
   const path = heartbeatFilePath(workDir, repo, issueNumber);
   try {
     await Deno.remove(path);
@@ -1707,6 +1781,14 @@ export interface ReleaseClaimOptions {
  * harmless — `gh issue edit --remove-assignee` is a no-op when the worker is
  * not an assignee, and removing only `githubUser` never touches another
  * worker's assignment. Returns which actions succeeded for logging.
+ *
+ * Issue #214: the order is stop the heartbeat and post the outcome FIRST,
+ * unassign LAST. The assignee is the claim lock every other host checks, so
+ * dropping it while the heartbeat still beats leaves the issue readable as
+ * free by a sibling host that would then start a second agent on the same
+ * issue (live evidence: VibeCoder#185, unassigned 06:31Z, still beating at
+ * 06:40Z). Clearing first also arms the write-after-release guard before the
+ * lock is dropped, so no straggling beat can revive the marker.
  */
 export async function releaseClaim(
   workDir: string,
@@ -1717,7 +1799,27 @@ export async function releaseClaim(
   let unassigned = false;
   let heartbeatCleared = false;
 
-  // Step 1: unassign the worker (best-effort, independent of step 2).
+  // Step 1: stop the heartbeat, post the outcome on the marker comment, and
+  // arm the write-after-release guard (best-effort, independent of step 2).
+  try {
+    const result = await clearHeartbeat(
+      workDir,
+      repo,
+      issueNumber,
+      options.markerOptions,
+      undefined,
+      options.outcome,
+    );
+    heartbeatCleared = result.ok;
+  } catch (err) {
+    recordFaultEvent(
+      "catch_block_warning",
+      `releaseClaim clearHeartbeat failed for ${repo}#${issueNumber}: ${err}`,
+    );
+  }
+
+  // Step 2: drop the claim lock (best-effort, independent of step 1, so a
+  // clear failure never leaves the issue assigned — Issue #2670).
   if (repo.length > 0 && issueNumber > 0 && options.githubUser.length > 0) {
     const ghFn = options.ghFn ?? runGh;
     try {
@@ -1737,25 +1839,6 @@ export async function releaseClaim(
         `releaseClaim unassign failed for ${repo}#${issueNumber}: ${err}`,
       );
     }
-  }
-
-  // Step 2: clear the heartbeat + invalidate the marker (best-effort,
-  // independent of step 1, so an unassign failure never blocks cleanup).
-  try {
-    const result = await clearHeartbeat(
-      workDir,
-      repo,
-      issueNumber,
-      options.markerOptions,
-      undefined,
-      options.outcome,
-    );
-    heartbeatCleared = result.ok;
-  } catch (err) {
-    recordFaultEvent(
-      "catch_block_warning",
-      `releaseClaim clearHeartbeat failed for ${repo}#${issueNumber}: ${err}`,
-    );
   }
 
   return { ok: true, value: { unassigned, heartbeatCleared } };
