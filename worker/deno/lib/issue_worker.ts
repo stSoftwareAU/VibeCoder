@@ -39,6 +39,10 @@ import {
   handOffSuspiciousImage,
 } from "./suspicious_image_handoff.ts";
 import {
+  detectCrossRepoPrDeclaration,
+  handOffCrossRepoPr,
+} from "./cross_repo_pr_handoff.ts";
+import {
   isLegacyInRepoConfigPresent,
   LEGACY_IN_REPO_CONFIG_WARNING,
 } from "./legacy_in_repo_config_warning.ts";
@@ -504,6 +508,33 @@ async function workOnIssueCore(
         reason: "suspicious_image_flagged",
         timings,
       };
+    }
+
+    // Issue #182 — cross-repo dependency-PR bridge. The guidelines require a
+    // root cause in an internal `stSoftwareAU/*` dependency to be fixed there
+    // with a PR in that repo, but the agent's `gh` guard only allows writes to
+    // the claim repo, so `gh pr create --repo stSoftwareAU/<dep>` is refused
+    // and the fix strands on an unreferenced branch (GRQ#4206 burned two runs
+    // on it). The agent instead pushes the branch and declares the PR; the
+    // worker validates the target and opens it here, behind a grant scoped to
+    // that single write. Runs whatever the execute status: the dependency PR
+    // can be the entire deliverable, with no change in the consuming repo. It
+    // never terminates the run — the consuming repo's own PR still follows.
+    const crossRepoPr = detectCrossRepoPrDeclaration(state.claudeOutput);
+    if (crossRepoPr.status !== "none") {
+      await runPhase("cross_repo_pr_handoff", async () => {
+        await handOffCrossRepoPr({
+          ghClient: deps.github.createClient(logger),
+          repo: ctx.repo,
+          issueNumber: ctx.issueNumber,
+          needsHumanLabel: ctx.config.needsHumanLabel,
+          githubUser: ctx.githubUser,
+          detection: crossRepoPr,
+          logger,
+          deps: { ensureLabelExists: deps.github.ensureLabelExists },
+        });
+        return { status: "continue" };
+      });
     }
 
     // Issue #3708 (SEC-6403af1e8b72) — the issue-work escape hatch also lets
