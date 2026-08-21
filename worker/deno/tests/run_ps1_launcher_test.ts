@@ -105,7 +105,10 @@ Deno.test({
       assert(await recorded(harness, "volume-create"));
       const init = await recorded(harness, "run-init");
       assert(init, "the volume-ownership init must run before the worker");
-      assertEquals(init[init.indexOf("--entrypoint") + 1], "chown");
+      assertEquals(
+        init[init.indexOf("--entrypoint") + 1],
+        "/usr/local/bin/vibe-volume-init",
+      );
 
       // The image is present, so nothing was built.
       assertEquals(await recorded(harness, "build"), null);

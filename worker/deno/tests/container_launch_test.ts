@@ -157,7 +157,7 @@ Deno.test("buildContainerLaunchPlan - named volumes carry the work dir and appro
     "--user",
     "0:0",
     "--entrypoint",
-    "chown",
+    "/usr/local/bin/vibe-volume-init",
     "--volume",
     `${WORK_VOLUME_NAME}:${targets.work}`,
     "--volume",

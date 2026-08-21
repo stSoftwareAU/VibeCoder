@@ -82,6 +82,9 @@ import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts"
  * never derived from the per-run container name or the image tag — so the
  * content survives every cycle and every image upgrade.
  */
+/** The image's volume-init script (container/volume-init.sh, Issue #229). */
+export const VOLUME_INIT_ENTRYPOINT = "/usr/local/bin/vibe-volume-init";
+
 export const WORK_VOLUME_NAME = "vibe-work";
 
 /**
@@ -810,12 +813,15 @@ export function buildContainerLaunchPlan(
 
   assertRunArgumentsContained(runArgs);
 
-  // The volume-ownership init (Issue #4186): a fresh named volume is
+  // The volume init (Issues #4186, #229): a fresh named volume is
   // root-owned and the worker runs as the manifest's unprivileged account,
   // so root chowns the two mount roots (non-recursive — the roots are all
-  // the runtime creates) before the worker starts. Only the volumes and the
-  // image are visible to this run: no host mount, no credentials, no
-  // network use. Idempotent, so the launchers re-run it every launch.
+  // the runtime creates) before the worker starts; since Issue #229 the
+  // same run first checks and repairs a block-device volume's filesystem
+  // (see container/volume-init.sh) and reports one it cannot repair with
+  // exit 3 so the launcher can recreate it. Only the volumes and the image
+  // are visible to this run: no host mount, no credentials, no network use.
+  // Idempotent, so the launchers re-run it every launch.
   const volumeMounts = mounts.filter((mount) => mount.volume);
   const initArgs: string[] = [
     "run",
@@ -825,7 +831,7 @@ export function buildContainerLaunchPlan(
     "--user",
     "0:0",
     "--entrypoint",
-    "chown",
+    VOLUME_INIT_ENTRYPOINT,
     ...volumeMounts.flatMap(
       (mount) => buildMountArguments(descriptor, mount),
     ),
@@ -875,6 +881,9 @@ export function buildContainerLaunchPlan(
     runArgs,
   };
 }
+
+/** Exit status volume-init uses for a volume it could not repair (#229). */
+export const VOLUME_INIT_UNREPAIRABLE_EXIT_STATUS = 3;
 
 /** Keys the rendered plan uses, in the order they are emitted. */
 export type ContainerLaunchPlanKey =

@@ -639,6 +639,13 @@ export interface RunCoreDeps {
   checkHostDisk?: () => Promise<
     { level: "ok" | "low" | "unknown"; detail: string }
   >;
+  /**
+   * Work-volume I/O fault (Issue #229): set once a git call surfaced a
+   * filesystem-level error ("Structure needs cleaning", EIO, read-only).
+   * Consulted next to the host-disk status: a faulted volume claims
+   * nothing new; the launcher repairs or recreates it next launch.
+   */
+  checkWorkVolumeFault?: () => { faulted: boolean; detail: string };
 
   // Misc
   touchPidFile: () => Promise<void>;
@@ -1333,6 +1340,7 @@ async function runIssueScanLoop(
     exitOuterLoop: boolean;
     spendCeilingReached?: boolean;
     hostDiskLow?: boolean;
+    workVolumeFaulted?: boolean;
   }
 > {
   // Concurrent slots (Issue #4177, part of #4168): above one slot the pool
@@ -1648,6 +1656,8 @@ interface SlotPoolState {
   spendCeilingReached: boolean;
   /** Set once the host-disk guard tripped, so it is logged once (Issue #226). */
   hostDiskLow?: boolean;
+  /** Set once the work-volume fault guard tripped (Issue #229). */
+  workVolumeFaulted?: boolean;
   /** SIGTERM/SIGINT seen (Issue #4182): no new claims; bounded drain. */
   shouldShutdown: () => boolean;
   /** Effective claim-runway floor for this cycle (Issues #4304, #47). */
@@ -1702,7 +1712,12 @@ async function runIssueScanPool(
   endTime: number,
   shouldShutdown: () => boolean = () => false,
 ): Promise<
-  { exitOuterLoop: boolean; spendCeilingReached: boolean; hostDiskLow: boolean }
+  {
+    exitOuterLoop: boolean;
+    spendCeilingReached: boolean;
+    hostDiskLow: boolean;
+    workVolumeFaulted: boolean;
+  }
 > {
   await deps.resetRepoFailures();
   // Claim-runway floor for this cycle (Issues #4304, #47) — resolved once,
@@ -1751,6 +1766,7 @@ async function runIssueScanPool(
     exitOuterLoop: pool.exitOuterLoop,
     spendCeilingReached: pool.spendCeilingReached,
     hostDiskLow: pool.hostDiskLow === true,
+    workVolumeFaulted: pool.workVolumeFaulted === true,
   };
 }
 
@@ -2139,6 +2155,22 @@ async function slotPreClaimGuardTripped(
         return true;
       }
     }
+    // Work-volume fault (Issue #229): a broken filesystem under the clones
+    // fails every run the same way — stop claiming until the launcher has
+    // repaired or recreated the volume.
+    if (deps.checkWorkVolumeFault) {
+      const fault = deps.checkWorkVolumeFault();
+      if (fault.faulted) {
+        if (!pool.workVolumeFaulted) {
+          deps.logError(
+            `[WORK_VOLUME_FAULT] ${fault.detail} — draining the issue pool; the volume is checked on the next launch (Issue #229).`,
+          );
+        }
+        pool.workVolumeFaulted = true;
+        pool.draining = true;
+        return true;
+      }
+    }
     if (await deps.isRateLimitActive()) {
       deps.log(
         `[${slotId}] Rate limit signal active — no further claims; draining the pool.`,
@@ -2409,6 +2441,8 @@ export async function runCoreLoop(
   let spendCeilingReached = false;
   /** Set once the low host disk has been reported this cycle (Issue #226). */
   let hostDiskLowReported = false;
+  /** Set once the work-volume fault has been reported this cycle (Issue #229). */
+  let workVolumeFaultReported = false;
   // Issue #2602: tracks whether the latest iteration's health checks passed.
   // Starts false so a run that never reaches a healthy iteration (e.g. Claude
   // 401 every cycle) does not report healthy at end of run.
@@ -2656,6 +2690,19 @@ export async function runCoreLoop(
                 hostDiskLowReported = true;
                 deps.logError(
                   `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues this cycle; maintenance continues (Issue #226).`,
+                );
+              }
+            }
+          }
+          // Work-volume fault (Issue #229): same treatment as a low disk.
+          if (deps.checkWorkVolumeFault) {
+            const fault = deps.checkWorkVolumeFault();
+            if (fault.faulted) {
+              skipScanForHostDisk = true;
+              if (!workVolumeFaultReported) {
+                workVolumeFaultReported = true;
+                deps.logError(
+                  `[WORK_VOLUME_FAULT] ${fault.detail} — claiming no new issues this cycle; the volume is checked on the next launch (Issue #229).`,
                 );
               }
             }
@@ -2993,6 +3040,7 @@ export async function runCoreLoop(
             exitOuterLoop: boolean;
             spendCeilingReached?: boolean;
             hostDiskLow?: boolean;
+            workVolumeFaulted?: boolean;
           };
           try {
             scanResult = skipScanForHostDisk
@@ -3022,6 +3070,9 @@ export async function runCoreLoop(
             // The pool already reported the drop (Issue #226); the next
             // iteration's own check must not repeat it.
             hostDiskLowReported = true;
+          }
+          if (scanResult.workVolumeFaulted) {
+            workVolumeFaultReported = true;
           }
 
           // --- Idle-task issue filer (Issue #2005, #2023, #2048) ---

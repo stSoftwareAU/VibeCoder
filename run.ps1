@@ -610,9 +610,31 @@ foreach ($volume in $VolumeNames) {
     }
 }
 $initialised = Invoke-HostCommand -FilePath $Runtime -ArgumentList $InitArgs -Capture
+if ($initialised.ExitCode -eq 3) {
+    # Issue #229: the init names volumes it could not repair; recreate them
+    # (clones are disposable) and run the init once more. Docker/Podman
+    # bind-mount host directories, so this is plan parity with run.sh.
+    $recreated = $false
+    foreach ($line in ($initialised.StdOut -split "`n")) {
+        if ($line -notmatch '^VOLUME_UNREPAIRABLE (.+)$') { continue }
+        $target = $Matches[1].Trim()
+        $volume = $null
+        foreach ($candidate in $VolumeNames) {
+            if ($InitArgs -contains "$($candidate):$target") { $volume = $candidate }
+        }
+        if (-not $volume) { continue }
+        [Console]::Error.WriteLine("[run.ps1] recreating volume $volume - filesystem unrepairable (Issue #229)")
+        Invoke-HostCommand -FilePath $Runtime -ArgumentList @("volume", "rm", $volume) -Capture | Out-Null
+        Invoke-HostCommand -FilePath $Runtime -ArgumentList @("volume", "create", $volume) -Capture | Out-Null
+        $recreated = $true
+    }
+    if ($recreated) {
+        $initialised = Invoke-HostCommand -FilePath $Runtime -ArgumentList $InitArgs -Capture
+    }
+}
 if ($initialised.ExitCode -ne 0) {
     [Console]::Error.WriteLine(
-        "Error: the volume-ownership init failed (Issue #4186)")
+        "Error: the volume init failed (Issues #4186, #229)")
     Exit-Launcher $initialised.ExitCode
 }
 

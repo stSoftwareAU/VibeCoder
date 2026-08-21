@@ -37,6 +37,7 @@ import { worktreeCleanupCommand } from "../commands/worktree_cleanup.ts";
 import { sessionSweepCommand } from "../commands/session_sweep.ts";
 import { denoCacheGuardCommand } from "../commands/deno_cache_guard.ts";
 import { branchCleanupCommand } from "../commands/branch_cleanup.ts";
+import { workVolumePruneCommand } from "../commands/work_volume_prune.ts";
 import { workerLogCleanupCommand } from "../commands/worker_log_cleanup.ts";
 import {
   DEFAULT_HARD_CAP_COUNT,
@@ -69,6 +70,7 @@ export const HOUSEKEEPING_STEP_IDS = [
   "worktree-cleanup",
   "session-sweep",
   "deno-cache-guard",
+  "work-volume-prune",
   "branch-cleanup-orphaned",
   "branch-cleanup-stale",
 ] as const;
@@ -290,6 +292,25 @@ export function buildHousekeepingSteps(
       },
     },
     {
+      // Issue #228: bound the work volume — cargo target/ dirs by age and a
+      // total cap, agent scratch left in the work root, stale marker files.
+      id: "work-volume-prune",
+      command: "work-volume-prune",
+      args: {
+        "work-dir": options.workDir,
+        "artefact-max-age-days": envInt("WORK_VOLUME_ARTEFACT_MAX_AGE_DAYS", 2),
+        "artefact-max-total-bytes": envInt(
+          "WORK_VOLUME_ARTEFACT_MAX_TOTAL_BYTES",
+          10737418240,
+        ),
+        "scratch-max-age-hours": envInt(
+          "WORK_VOLUME_SCRATCH_MAX_AGE_HOURS",
+          24,
+        ),
+        "marker-max-age-days": envInt("WORK_VOLUME_MARKER_MAX_AGE_DAYS", 2),
+      },
+    },
+    {
       id: "branch-cleanup-orphaned",
       command: "branch-cleanup",
       args: {
@@ -320,6 +341,7 @@ const HOUSEKEEPING_COMMANDS = {
   "session-sweep": sessionSweepCommand,
   "deno-cache-guard": denoCacheGuardCommand,
   "branch-cleanup": branchCleanupCommand,
+  "work-volume-prune": workVolumePruneCommand,
 } as const;
 
 /** Build the production dependency set for {@link runStartupHousekeeping}. */

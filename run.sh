@@ -530,7 +530,43 @@ for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
   fi
 done
-"${RUNTIME}" "${init_args[@]}" </dev/null >/dev/null
+# The init run (Issues #4186, #229) checks each block-device volume's
+# filesystem and chowns the roots. Exit 3 names the volume(s) e2fsck could
+# not repair on stdout (`VOLUME_UNREPAIRABLE <target>`): those are recreated
+# — the clones are disposable, everything of value is pushed — and the init
+# runs once more. Any other failure is the launch failure it always was.
+run_volume_init() {
+  local out status=0
+  out="$("${RUNTIME}" "${init_args[@]}" </dev/null)" || status=$?
+  if ((status == 3)); then
+    local target volume line recreated=0
+    while IFS= read -r line; do
+      [[ "${line}" == VOLUME_UNREPAIRABLE\ * ]] || continue
+      target="${line#VOLUME_UNREPAIRABLE }"
+      volume=""
+      for candidate in ${volume_names[@]+"${volume_names[@]}"}; do
+        for arg in "${init_args[@]}"; do
+          if [[ "${arg}" == "${candidate}:${target}" ]]; then volume="${candidate}"; fi
+        done
+      done
+      if [[ -z "${volume}" ]]; then
+        echo "[run.sh] volume-init reported ${target} unrepairable but no volume maps to it" >&2
+        continue
+      fi
+      echo "[run.sh] recreating volume ${volume}: its filesystem could not be repaired (Issue #229)" >&2
+      log_run_core "volume-init: recreating ${volume} (${target}) - filesystem unrepairable (Issue #229)"
+      "${RUNTIME}" volume delete "${volume}" </dev/null >/dev/null 2>&1 || true
+      "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
+      recreated=1
+    done <<<"${out}"
+    if ((recreated)); then
+      "${RUNTIME}" "${init_args[@]}" </dev/null >/dev/null
+      return
+    fi
+  fi
+  return "${status}"
+}
+run_volume_init
 
 # Exit status this launcher reports after reaping a wedged container - a named
 # reason rather than a bare failure, and deliberately outside the runtime CLI's
