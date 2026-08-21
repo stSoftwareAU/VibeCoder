@@ -841,6 +841,68 @@ Deno.test("run_core - skip-after-claim path releases the claim", async () => {
   assertEquals(released[0], { repo: "org/repo", issueNumber: 2648 });
 });
 
+Deno.test("run_core - a skip is cooled down and not counted as a processed issue (Issue #175)", async () => {
+  // The merged-PR pre-check bounce arrives here as a skip. It must record the
+  // retry cooldown (so neither slot re-claims the same issue on the next
+  // scan) and must NOT reach WORKER_SUMMARY's processed count or failure
+  // tracking — reporting it as a success is what livelocked the pool.
+  const cooldowns: Array<{ repo: string; issueNumber: number }> = [];
+  const failures: string[] = [];
+  const summaries: number[] = [];
+  let findCalls = 0;
+  let nowValue = 1_000_000;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 1) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    findNextIssue: () => {
+      findCalls++;
+      if (findCalls === 1) {
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            repo: "org/repo",
+            issueNumber: 4173,
+            issueTitle: "Feed completion signal",
+            milestoneTitle: "",
+          },
+        });
+      }
+      return Promise.resolve({ ok: true as const, value: null });
+    },
+    processIssue: () =>
+      Promise.resolve({
+        ok: true as const,
+        value: { success: false, skipped: true },
+      }),
+    recordIssueCooldown: (repo: string, issueNumber: number) => {
+      cooldowns.push({ repo, issueNumber });
+      return Promise.resolve();
+    },
+    trackFailure: (key: string) => {
+      failures.push(key);
+      return Promise.resolve();
+    },
+    logWorkerSummary: (processed: number) => {
+      summaries.push(processed);
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  const result = await runCoreLoop(config, deps);
+
+  assertEquals(cooldowns, [{ repo: "org/repo", issueNumber: 4173 }]);
+  assertEquals(failures, []);
+  assertEquals(result.issuesProcessed, 0);
+  assertEquals(summaries.every((n) => n === 0), true);
+});
+
 Deno.test("run_core - falls back to clearHeartbeat when releaseClaim dep is absent", async () => {
   // Backwards compatibility: deps that predate releaseClaim still clear the
   // heartbeat on the failure path.

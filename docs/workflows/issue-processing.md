@@ -484,6 +484,53 @@ never re-run indefinitely.
 [handle_no_changes_phase.ts](../../worker/deno/lib/phases/handle_no_changes_phase.ts)
 (signal b).
 
+## 🩹 Orphaned milestone merge — self-heal, then bounce
+
+A merged PR is not a landed change. When a child PR merges into
+`milestone/<n>-…` **after** that milestone's rollup PR has already merged into
+the default branch, the merge commit is unreachable from the default branch and
+the work went nowhere, so
+[`verifyMergeLanded`](../../worker/deno/lib/merge_landing.ts) reports
+`orphaned` and the merged-PR pre-check refuses to close the issue.
+
+Refusing is only half a fix. Reported as a *success*, the refusal made the scan
+forget the issue immediately, so both pool slots re-claimed the same issue every
+cycle for a whole run (GRQ#4173, 13 bounces in 40 minutes) while every other
+claimable issue in the fleet went untouched. Two behaviours close the loop:
+
+- **Self-heal.** The milestone branch is genuinely ahead of the default branch,
+  so [`repairOrphanedMilestoneMerge`](../../worker/deno/lib/orphaned_rollup.ts)
+  raises a fresh rollup PR (`milestone/<n>-… → <default>`) in the same cycle.
+  It is idempotent — an already-open rollup PR for that branch is reported, not
+  duplicated — and a branch that is not ahead raises nothing. Once the rollup
+  lands, the merge commit becomes reachable and the ordinary close-on-merge path
+  closes the issue with no human action.
+- **Bounce, not success.** A pre-check that cannot resolve the issue returns an
+  **expected skip**: the retry cooldown is recorded (so neither slot re-claims
+  it until the window expires), the refusal and the self-heal outcome are stated
+  at `WARNING`, no failure tracking or circuit-breaker counting occurs, and
+  `WORKER_SUMMARY`'s `issues_processed` does not count the bounce.
+
+```mermaid
+flowchart TD
+  Pre["Merged-PR pre-check"] --> Landed{"Merge reachable from<br/>the default branch?"}
+  Landed -->|Yes| Close["Close the issue<br/>(success)"]
+  Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
+  Heal --> Bounce["Expected skip:<br/>cooldown + WARNING,<br/>not counted as processed"]
+  Bounce --> Next["Slot takes a DIFFERENT issue"]
+  Heal -.->|"rollup merges"| Close
+  style Pre fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Close fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Heal fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Bounce fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
+```
+
+**Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
+(the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
+(detect → self-heal → bounce), `isExpectedSkipResult` in
+[issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
+loop's skip-versus-failure classification).
+
 ## 📚 Further reading
 
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue selection, PR monitoring, milestone/dependency handling.

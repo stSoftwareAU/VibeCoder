@@ -1969,3 +1969,38 @@ re-runs the same issue indefinitely.
 (signal b). See
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
 Analysis-only / no-PR hand-off for the operator detail.
+
+### A refused pre-check is a bounce, never a success
+
+The merged-PR pre-check refuses to close an issue whose PR merged but whose
+change never landed — a child PR merged into a milestone branch after that
+milestone's rollup PR had already merged into the default branch. Reporting the
+refusal as a **success** is what livelocked the pool: the scan forgot the issue
+immediately, both slots re-claimed the same top candidate every cycle
+(GRQ#4173, 13 bounces in the first 40 minutes of a run), no rollup PR was ever
+raised, and every bounce was counted in `WORKER_SUMMARY` as a processed issue.
+
+**The rule.** A phase that ends a run without resolving the issue and without
+failing declares an **expected skip**
+(`WorkOnIssueResult.expectedSkip`). The main loop then treats it exactly like a
+claim rejection: record the retry cooldown, release the claim, leave failure
+tracking and the circuit breaker alone, and do **not** count it as a processed
+issue. Because the cooldown state is shared across slots and re-read on every
+scan, one unresolvable issue can no longer consume both slots.
+
+**Self-heal first.** A refusal that nothing can change is a loop by
+construction, so the pre-check repairs what it can before bouncing: an orphaned
+merge into a milestone branch that is ahead of the default branch gets a fresh
+rollup PR raised in the same cycle
+([`orphaned_rollup.ts`](worker/deno/lib/orphaned_rollup.ts), idempotent — an
+open rollup PR for that branch is reported, never duplicated). When the rollup
+lands the merge commit becomes reachable and the ordinary close-on-merge path
+closes the issue with no human action. A repair that fails is reported loudly
+in the `WARNING` line, never swallowed.
+
+**Implementation:** [`phases/merged_pr_precheck_phase.ts`](worker/deno/lib/phases/merged_pr_precheck_phase.ts),
+[`orphaned_rollup.ts`](worker/deno/lib/orphaned_rollup.ts), and
+`isExpectedSkipResult` in
+[`issue_worker_types.ts`](worker/deno/lib/issue_worker_types.ts). See
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
+Orphaned milestone merge for the operator detail.
