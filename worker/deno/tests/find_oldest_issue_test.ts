@@ -11,7 +11,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { findOldestIssue } from "../lib/find_oldest_issue.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -1039,3 +1039,49 @@ Deno.test("findOldestIssue - no exclusion set: serial ordering unchanged (oldest
   assertEquals(result.output.includes("owner/repo-a"), true);
   assertEquals(result.output.includes("|1|"), true);
 });
+
+Deno.test(
+  "findOldestIssue - a scan that selects nothing still reports its counts (Issue #219)",
+  async () => {
+    // Every candidate is in cooldown, so the scan returns nothing. The
+    // counts must come back with the result: a pool slot that finds no work
+    // logs them instead of retiring silently.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          {
+            number: 1,
+            title: "Top-priority bug",
+            url: "https://github.com/owner/repo-a/issues/1",
+            assignees: [],
+            labels: [{ name: "top-priority" }],
+            createdAt: "2024-06-01T00:00:00Z",
+            author: ALICE,
+            milestone: null,
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "top-priority" }, actor: ALICE },
+        ],
+      },
+      "owner/repo-b": { issues: [] },
+    });
+
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      isIssueInCooldown: () => true,
+    });
+
+    assertEquals(result.found, false);
+    const summary = result.diagnosticSummary;
+    assert(
+      summary,
+      "a scan must report its counts so an idle slot can say why it found nothing",
+    );
+    assertEquals(summary.totalConsidered, 1);
+    assertEquals(summary.skippedByReason.cooldown, 1);
+  },
+);

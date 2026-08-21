@@ -255,6 +255,37 @@ export function sanitiseLogField(value: string): string {
 }
 
 /**
+ * Render a scan's counts as one log field set (Issue #219).
+ *
+ * A pool slot that finds no work logs this line, so "no eligible work" is
+ * always accompanied by *why* — without needing `ISSUE_FINDER_DEBUG`, which
+ * is off in production. `skipped` is the number of skip decisions taken
+ * (the sum of `skippedByReason`), which counts repo-level skips that never
+ * reach the per-issue `considered` tally.
+ *
+ * @param summary - Counts collected during the scan.
+ * @param topReasons - How many skip reasons to name, busiest first.
+ * @returns A single-line `key=value` summary.
+ */
+export function formatScanSummary(
+  summary: DiagnosticSummary,
+  topReasons = 3,
+): string {
+  const counts = Object.entries(summary.skippedByReason)
+    .map(([reason, count]) => [reason, count ?? 0] as const)
+    .filter(([, count]) => count > 0);
+  const skipped = counts.reduce((total, [, count]) => total + count, 0);
+  const top = counts
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, Math.max(0, topReasons))
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(",");
+  return `considered=${summary.totalConsidered} ` +
+    `eligible=${summary.totalEligible} skipped=${skipped} ` +
+    `top-skips=${top || "(none)"}`;
+}
+
+/**
  * Check whether issue finder diagnostics are enabled.
  *
  * Reads from the ISSUE_FINDER_DEBUG environment variable.

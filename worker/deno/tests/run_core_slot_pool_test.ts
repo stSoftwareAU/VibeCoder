@@ -7,7 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
   type DiscoveredIssue,
@@ -15,6 +15,7 @@ import {
   runCoreLoop,
 } from "../lib/run_core.ts";
 import { reportRunDeadline } from "../lib/slot_context.ts";
+import type { DiagnosticSummary } from "../lib/issue_finder_logger.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -1137,4 +1138,160 @@ Deno.test("slot pool - two slots, one long execute: the other slot completes iss
     "the free slot must keep claiming for the whole of the sibling's long execute",
   );
   assert(longFinished, "the long execute must run to completion");
+});
+
+/** A scan that considered work and skipped all of it (Issue #219). */
+function emptyScanSummary(
+  skippedByReason: DiagnosticSummary["skippedByReason"],
+  totalConsidered: number,
+): DiagnosticSummary {
+  return {
+    totalConsidered,
+    totalEligible: 0,
+    skippedByReason,
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  };
+}
+
+Deno.test("slot pool - a slot that finds nothing while a sibling works states why and re-scans instead of retiring (Issue #219)", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  const logs: string[] = [];
+  let emptyScans = 0;
+  let lateProcessed = false;
+  const available: DiscoveredIssue[] = [issue("o/long", 1)];
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => logs.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: (options) => {
+      const found = available.find((i) =>
+        !options?.excludeRepos?.has(i.repo)
+      ) ?? null;
+      if (found === null) {
+        emptyScans++;
+        options?.onScanSummary?.(
+          emptyScanSummary({ cooldown: 8, "repo-busy": 4 }, 12),
+        );
+        // Eligible work reappears a couple of scans later — the state the
+        // #219 log shows while the second slot sat silent for an hour.
+        if (emptyScans === 3) available.push(issue("o/late", 2));
+      }
+      return Promise.resolve({ ok: true as const, value: found });
+    },
+    processIssue: async (i) => {
+      if (i.repo === "o/long") {
+        // Hold this slot until the idle sibling has claimed the late issue.
+        // Bounded so a regression fails the assertion instead of hanging.
+        for (let tick = 0; tick < 2000 && !lateProcessed; tick++) {
+          await new Promise((r) => setTimeout(r, 1));
+        }
+        now = cycleMs + 1; // the long run's return ends the cycle
+        return { ok: true, value: { success: true } };
+      }
+      available.splice(available.findIndex((x) => x.repo === i.repo), 1);
+      lateProcessed = true;
+      return { ok: true, value: { success: true } };
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assert(
+    lateProcessed,
+    "a slot that finds nothing must re-scan and claim the work that appears next, not retire",
+  );
+  const idleLines = logs.filter((m) => m.includes("no eligible work:"));
+  assert(
+    idleLines.length > 0,
+    `an empty scan must log its reason: ${logs.join(" | ")}`,
+  );
+  assertStringIncludes(idleLines[0]!, "considered=12 eligible=0 skipped=12");
+  assertStringIncludes(idleLines[0]!, "top-skips=cooldown=8,repo-busy=4");
+  assertStringIncludes(
+    idleLines[0]!,
+    `re-scanning in ${config.sleepInterval}s`,
+  );
+});
+
+Deno.test("slot pool - a slot that finds nothing with no sibling running retires with a stated reason (Issue #219)", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  let scans = 0;
+  const logs: string[] = [];
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => logs.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: (options) => {
+      scans++;
+      options?.onScanSummary?.(emptyScanSummary({ cooldown: 7 }, 7));
+      // Both slots have scanned once — end the cycle so the assertion sees
+      // exactly one pool's worth of exits.
+      if (scans >= 2) now = cycleMs + 1;
+      return Promise.resolve({ ok: true as const, value: null });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  const stops = logs.filter((m) => m.includes("stop reason=no-work"));
+  assertEquals(
+    stops.length,
+    2,
+    `every slot must state why it stopped: ${logs.join(" | ")}`,
+  );
+  assertStringIncludes(
+    stops[0]!,
+    "no eligible work: considered=7 eligible=0 skipped=7 top-skips=cooldown=7",
+  );
+});
+
+Deno.test("slot pool - a slot that loses the acquire race drops that repo's cached issue list before re-scanning (Issue #219)", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  const invalidated: string[] = [];
+  // One issue in one repo: the slot that loses the acquire race must clear
+  // the repo's cached list so its next scan is not served the same ranking.
+  const unclaimed = [issue("o/a", 1)];
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    invalidateRepoIssueCache: (repo: string) => {
+      invalidated.push(repo);
+      return Promise.resolve();
+    },
+    findNextIssue: (options) =>
+      Promise.resolve({
+        ok: true,
+        value: unclaimed.find((i) => !options?.excludeRepos?.has(i.repo)) ??
+          null,
+      }),
+    processIssue: (i) => {
+      unclaimed.splice(unclaimed.indexOf(i), 1);
+      now = cycleMs + 1; // one claim is enough; end the cycle
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(
+    invalidated[0],
+    "o/a",
+    "the slot that lost the race must invalidate the winner's cached issue list",
+  );
 });

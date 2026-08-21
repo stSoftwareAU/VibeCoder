@@ -8,6 +8,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createDiagnostics,
+  formatScanSummary,
   type IssueFinderDiagnostics,
   sanitiseLogField,
 } from "../lib/issue_finder_logger.ts";
@@ -507,4 +508,55 @@ Deno.test("issue_finder_logger - a maintained login invisible to the guard still
   assertEquals(lines.length, 1);
   assertStringIncludes(lines[0]!, "missing-from-blocking=stsvcbot");
   assertStringIncludes(lines[0]!, "missing-from-maintenance=(none)");
+});
+
+// =============================================================================
+// Scan-summary formatting (Issue #219)
+// =============================================================================
+
+Deno.test("formatScanSummary - names the counts and the busiest skip reasons (Issue #219)", () => {
+  const line = formatScanSummary({
+    totalConsidered: 12,
+    totalEligible: 0,
+    skippedByReason: { cooldown: 8, "repo-busy": 3, assigned: 1 },
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  });
+
+  assertEquals(
+    line,
+    "considered=12 eligible=0 skipped=12 top-skips=cooldown=8,repo-busy=3,assigned=1",
+  );
+});
+
+Deno.test("formatScanSummary - reports only the top reasons, busiest first (Issue #219)", () => {
+  const line = formatScanSummary({
+    totalConsidered: 9,
+    totalEligible: 1,
+    skippedByReason: {
+      assigned: 1,
+      cooldown: 5,
+      "pr-blocked": 2,
+      "needs-human": 4,
+    },
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  }, 2);
+
+  assertEquals(
+    line,
+    "considered=9 eligible=1 skipped=12 top-skips=cooldown=5,needs-human=4",
+  );
+});
+
+Deno.test("formatScanSummary - a scan with no skips still renders (Issue #219)", () => {
+  const line = formatScanSummary({
+    totalConsidered: 0,
+    totalEligible: 0,
+    skippedByReason: {},
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  });
+
+  assertEquals(line, "considered=0 eligible=0 skipped=0 top-skips=(none)");
 });
