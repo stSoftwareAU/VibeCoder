@@ -110,7 +110,8 @@ async function runCompletion(
             fromRef: "issue-16-milestone-branch-title",
           },
         }),
-      pushUnpushedCommits: () => Promise.resolve({ ok: true as const, value: 2 }),
+      pushUnpushedCommits: () =>
+        Promise.resolve({ ok: true as const, value: 2 }),
       runGitCommand: (args: string[]) =>
         Promise.resolve({
           ok: true as const,
@@ -154,7 +155,9 @@ const QUOTA_ERROR =
 Deno.test("completion - an exhausted GraphQL quota falls back to the REST pulls endpoint", async () => {
   const run = await runCompletion((args) => {
     if (args[0] === "pr" && args[1] === "create") throw new Error(QUOTA_ERROR);
-    if (args[0] === "api" && args.includes("repos/stSoftwareAU/VibeCoder/pulls")) {
+    if (
+      args[0] === "api" && args.includes("repos/stSoftwareAU/VibeCoder/pulls")
+    ) {
       return "https://github.com/stSoftwareAU/VibeCoder/pull/171\n";
     }
     return "";
@@ -213,7 +216,9 @@ Deno.test("completion - the latch's own skip message also triggers the REST fall
 Deno.test("completion - a non-quota create failure does NOT use the REST fallback", async () => {
   const run = await runCompletion((args) => {
     if (args[0] === "pr" && args[1] === "create") {
-      throw new Error("gh command failed (exit 1): No commits between main and branch");
+      throw new Error(
+        "gh command failed (exit 1): No commits between main and branch",
+      );
     }
     if (args[0] === "api") {
       return "https://github.com/stSoftwareAU/VibeCoder/pull/173\n";

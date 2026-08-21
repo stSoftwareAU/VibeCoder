@@ -13,6 +13,15 @@ This changelog is a human-readable digest grouped by version.
 
 ### Changed
 
+- **An exhausted primary GraphQL quota no longer discards finished work
+  (Issue #42).** `gh pr create` is GraphQL-backed, so a run that had committed,
+  pushed and quality-gated its work lost the PR entirely when the quota ran
+  out — branch orphaned, issue still assigned. Completion now falls back to
+  the REST `pulls` endpoint, which rides GitHub's separate core quota, and
+  recovers an already-open PR on a 422. The pre-flight quota gate also re-runs
+  at the top of every priority pass (it previously ran only at process start),
+  so exhaustion caused by a sibling worker on the same token is caught before
+  the pass spends anything.
 - **A preserved WIP commit can no longer become a half-done PR (Issue #148).**
   The `wip:` commit left by a timed-out run makes the issue branch ahead of
   base, so a later claim that added nothing used to pass the completion
