@@ -57,6 +57,7 @@ import {
   seedWriteRepoAllowlist,
 } from "./write_repo_allowlist.ts";
 import { parseWrapperModelTier } from "./idle_task_model_tier.ts";
+import { withIdleTaskRunContext } from "./idle_task_claude_budget.ts";
 
 // Importing the bundled templates for their registration side-effect
 // keeps the production set wired up regardless of which call site
@@ -108,6 +109,14 @@ export interface HandleIdleTaskIssueOptions {
   issueBody: string;
   /** Working directory passed through to the template runner. */
   workDir: string;
+  /**
+   * Epoch-ms deadline of the current cycle (Issue #186). When supplied, the
+   * scan's Claude budget is bounded to the runway left instead of the flat
+   * hour — a wrapper claimed minutes before the deadline must not hold its
+   * slot for the next 55. Optional: the `work-on-issue` CLI path, which has
+   * no cycle, omits it and the scan keeps the full idle-task budget.
+   */
+  cycleDeadlineEpochMs?: number;
 }
 
 /** Structured outcome from {@link handleIdleTaskIssue}. */
@@ -194,6 +203,7 @@ export async function handleIdleTaskIssue(
   deps: HandleIdleTaskIssueDeps,
 ): Promise<HandleIdleTaskIssueResult> {
   const { repo, issueNumber, issueTitle, issueBody, workDir } = opts;
+  const { cycleDeadlineEpochMs } = opts;
   const listTemplates = deps.listTemplatesFn ?? defaultListTemplates;
 
   // Issue #2077: dispatch by title. The first template whose
@@ -240,12 +250,23 @@ export async function handleIdleTaskIssue(
 
   let result: IdleTaskRunResult;
   try {
-    result = await template.runTask({
-      repo,
-      workDir,
-      idleTaskIssueNumber: issueNumber,
-      ...(modelTier !== undefined ? { modelTier } : {}),
-    });
+    // Issue #186 — the cycle deadline and the worker logger reach the scan's
+    // Claude invocation as an ambient run context rather than as arguments
+    // threaded through every template: a template cannot forget to pass what
+    // it never sees, and the bound therefore holds for templates added later.
+    result = await withIdleTaskRunContext(
+      {
+        ...(cycleDeadlineEpochMs !== undefined ? { cycleDeadlineEpochMs } : {}),
+        logger: deps.logger,
+      },
+      () =>
+        template.runTask({
+          repo,
+          workDir,
+          idleTaskIssueNumber: issueNumber,
+          ...(modelTier !== undefined ? { modelTier } : {}),
+        }),
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     deps.logger.warn("idle-task runTask threw", {

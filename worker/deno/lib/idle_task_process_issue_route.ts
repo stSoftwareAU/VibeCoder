@@ -37,6 +37,12 @@ export interface RouteIdleTaskInput {
   issueLabels: string[];
   issueBody: string;
   workDir: string;
+  /**
+   * Epoch-ms deadline of the current cycle (Issue #186), forwarded to the
+   * claim handler so the scan's Claude budget is bounded by the runway left.
+   * Optional — the CLI single-issue path has no cycle and omits it.
+   */
+  cycleDeadlineEpochMs?: number;
 }
 
 /** Injectable seams. Defaults wire the production implementations. */
@@ -132,6 +138,9 @@ export async function routeIdleTaskInProcessIssue(
       issueLabels: input.issueLabels,
       issueBody: input.issueBody,
       workDir: input.workDir,
+      ...(input.cycleDeadlineEpochMs !== undefined
+        ? { cycleDeadlineEpochMs: input.cycleDeadlineEpochMs }
+        : {}),
     },
     { logger: deps.logger },
   );
