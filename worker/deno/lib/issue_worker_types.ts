@@ -170,7 +170,17 @@ export function recordClaudeRunStats(
 /** Result code from a phase function. */
 export type PhaseResult =
   | { status: "continue" }
-  | { status: "early_exit"; reason: string }
+  | {
+    status: "early_exit";
+    reason: string;
+    /**
+     * The phase ended the run without resolving the issue and without
+     * failing (Issue #175) — a bounce. The orchestrator reports it as
+     * {@link WorkOnIssueResult.expectedSkip} so the main loop cools the
+     * issue down instead of counting it as a processed issue.
+     */
+    expectedSkip?: boolean;
+  }
   | { status: "failure"; reason: string };
 
 /** Result of the full workOnIssue orchestration. */
@@ -184,4 +194,36 @@ export interface WorkOnIssueResult {
    * no-PR — for the claim-release comment (Issue #4325, part of #4291).
    */
   outcome?: RunOutcome;
+  /**
+   * The run neither resolved the issue nor failed (Issue #175): a
+   * deliberate bounce, such as a merged-PR pre-check that cannot close the
+   * issue because the merge never landed. The main loop treats it as a
+   * skip — cooldown recorded, no failure tracking, not counted in
+   * `WORKER_SUMMARY` — so one unresolvable issue cannot livelock the pool.
+   */
+  expectedSkip?: boolean;
+}
+
+/**
+ * Whether a work result is a skip rather than a failure (Issue #175).
+ *
+ * A skip cools the issue down and is left out of the processed-issue count,
+ * but never trips failure tracking or the circuit breaker. Two shapes qualify:
+ *
+ * - a phase that declared its own bounce via {@link WorkOnIssueResult.expectedSkip}
+ *   — the merged-PR pre-check that cannot close an issue whose merge never
+ *   landed; and
+ * - the setup phase's claim rejections, which mean another worker holds the
+ *   issue (or the claim churned) rather than that anything went wrong.
+ */
+export function isExpectedSkipResult(
+  result: Pick<WorkOnIssueResult, "success" | "phase" | "reason"> & {
+    expectedSkip?: boolean;
+  },
+): boolean {
+  if (result.success) return false;
+  if (result.expectedSkip === true) return true;
+  return result.phase === "setup" &&
+    (result.reason.startsWith("Issue not available:") ||
+      result.reason === "claim_churn_escalation");
 }

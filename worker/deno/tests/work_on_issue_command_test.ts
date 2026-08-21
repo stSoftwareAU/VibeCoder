@@ -709,7 +709,10 @@ Deno.test("runWorkOnIssueCommand - non-idle-task issue falls through to the stan
   assertEquals(result.data?.phase, "completion");
 });
 
-Deno.test("runWorkOnIssueCommand - idle-task failure surfaces summary and still closes the issue", async () => {
+Deno.test("runWorkOnIssueCommand - idle-task failure surfaces summary, comments and leaves the issue open", async () => {
+  // Behaviour change (Issue #179): the failing run used to be closed with the
+  // error text as its result. A scan that never ran must stay open so a later
+  // claim retries it after the failure cooldown.
   const config = makeConfig({ workDir: "/tmp/work" });
   const parsed = {
     repo: "org/repo",
@@ -747,7 +750,12 @@ Deno.test("runWorkOnIssueCommand - idle-task failure surfaces summary and still 
   assertEquals(result.data?.phase, "idle_task");
   assertEquals(result.data?.reason, "idle-task body could not be parsed");
   assertEquals(ghCalls.length, 1);
-  assertEquals(ghCalls[0]?.[1], "close");
+  assertEquals(ghCalls[0]?.[1], "comment");
+  assertEquals(ghCalls[0]?.includes("close"), false);
+  assertEquals(
+    String(ghCalls[0]?.[6]).includes("idle-task body could not be parsed"),
+    true,
+  );
 });
 
 // ============================================================================
