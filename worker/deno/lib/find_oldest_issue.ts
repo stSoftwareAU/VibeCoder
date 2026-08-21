@@ -174,6 +174,9 @@ export async function findOldestIssue(
   // Issue #4024: resolved once per iteration through the shared
   // `resolveFleetPrAuthorSet` helper — the single source of truth every
   // consumer of "PRs the fleet owns" shares.
+  // Issue #209: `config.fleetPrAuthors` is the *effective* sibling list —
+  // `loadConfig` has already unioned `service_accounts` into it, so a
+  // sibling configured only under that key is covered here too.
   const fleetAuthors = resolveFleetPrAuthorSet({
     githubUser: options.githubUser,
     allowedAuthors: config.allowedAuthors,

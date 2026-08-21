@@ -79,6 +79,11 @@ export interface WorkerConfig {
    * is always covered implicitly; default `[]` keeps the prior
    * single-author behaviour. See `PrScanOptions.prAuthors` in
    * `lib/pr_maintenance.ts`.
+   *
+   * This is the **effective** list: `loadConfig` unions `service_accounts`
+   * into it (Issue #209), because a service account is a fleet account by
+   * definition. A fleet that named its siblings only under
+   * `service_accounts` was previously invisible to every PR guard.
    */
   fleetPrAuthors: string[];
   /** Label to signal work on issues not created by allowedAuthor */

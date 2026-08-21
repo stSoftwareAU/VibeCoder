@@ -22,6 +22,11 @@ There are two author lists, and they answer two different questions.
 In one line: **trusted to command, not to be commanded.** Being trusted to
 direct the worker never makes your PR the worker's to take over.
 
+`service_accounts` is not a third list: those logins are fleet accounts, so
+`loadConfig` unions them into the effective `fleet_pr_authors`
+([Configuration](CONFIGURATION.md#service-accounts-are-fleet-pr-authors-too)).
+A sibling named only there is a fleet login everywhere, never a human.
+
 ## 🚫 What the worker will and will not do
 
 For a PR authored by a trusted human, with no invitation:

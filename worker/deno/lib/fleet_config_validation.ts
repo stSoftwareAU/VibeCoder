@@ -9,8 +9,9 @@
  * letting it fail silently.
  *
  * Note: `resolveFleetAuthors` (fleet_authors.ts) already unions
- * `fleet_pr_authors` into the guard's author set, so a sibling listed
- * *only* in `fleet_pr_authors` is no longer a blind spot. This validation
+ * `fleet_pr_authors` and `service_accounts` (Issue #209) into the guard's
+ * author set, so a sibling listed *only* in one of them is no longer a
+ * blind spot. This validation
  * still warns on that state because the two lists diverging is a
  * configuration smell worth an operator's attention, and it hard-errors
  * on the genuinely broken case: an empty effective fleet set.
@@ -30,8 +31,9 @@ export interface FleetConfigValidation {
   /** The effective fleet author set the guard will query. */
   effectiveAuthors: string[];
   /**
-   * Sibling logins present in `fleet_pr_authors` but absent from
-   * `allowed_authors` (case-insensitive) — the exact blind-spot shape.
+   * Sibling logins present in `fleet_pr_authors` or `service_accounts`
+   * but absent from `allowed_authors` (case-insensitive) — the exact
+   * blind-spot shape. The host's own login is never reported.
    */
   missingFromAllowed: string[];
   /** Human-readable diagnostic messages, most severe first. */
@@ -43,6 +45,11 @@ export interface FleetConfigInput {
   githubUser: string;
   allowedAuthors: string[];
   fleetPrAuthors: string[];
+  /**
+   * Fleet service accounts (`service_accounts`) — fleet logins by
+   * definition, so they join the effective author set (Issue #209).
+   */
+  serviceAccounts?: string[];
 }
 
 /** Trim, drop blanks, and return a lowercase membership set. */
@@ -73,21 +80,30 @@ export function validateFleetConfig(
   input: FleetConfigInput,
 ): FleetConfigValidation {
   const { githubUser, allowedAuthors, fleetPrAuthors } = input;
+  const serviceAccounts = input.serviceAccounts ?? [];
 
   const effectiveAuthors = resolveFleetAuthors(
     githubUser,
     allowedAuthors,
     fleetPrAuthors,
+    serviceAccounts,
   );
 
   const allowedSet = lowerSet(allowedAuthors);
+  const hostKey = typeof githubUser === "string"
+    ? githubUser.trim().toLowerCase()
+    : "";
   const seenMissing = new Set<string>();
   const missingFromAllowed: string[] = [];
-  for (const sibling of fleetPrAuthors) {
+  for (const sibling of [...fleetPrAuthors, ...serviceAccounts]) {
     if (typeof sibling !== "string") continue;
     const trimmed = sibling.trim();
     if (trimmed.length === 0) continue;
     const key = trimmed.toLowerCase();
+    // The host's own login is never a sibling — `service_accounts`
+    // routinely contains it (Issue #4030 defaults it), and warning that
+    // the host is missing from `allowed_authors` is noise (Issue #209).
+    if (key === hostKey) continue;
     if (allowedSet.has(key)) continue;
     if (seenMissing.has(key)) continue;
     seenMissing.add(key);
@@ -119,10 +135,11 @@ export function validateFleetConfig(
   for (const sibling of missingFromAllowed) {
     if (level === "ok") level = "warning";
     messages.push(
-      `Fleet sibling "${sibling}" is in fleet_pr_authors but not ` +
-        "allowed_authors. The open-PR guard now covers it via the union " +
-        "(Issue #3138), but the two lists diverging is a configuration " +
-        "smell — add it to allowed_authors to keep them consistent.",
+      `Fleet sibling "${sibling}" is in fleet_pr_authors/service_accounts ` +
+        "but not allowed_authors. The open-PR guard now covers it via the " +
+        "union (Issues #3138, #209), but the lists diverging is a " +
+        "configuration smell — add it to allowed_authors to keep them " +
+        "consistent.",
     );
   }
 
@@ -133,20 +150,25 @@ export function validateFleetConfig(
  * Format a {@link FleetConfigValidation} as prefixed log lines suitable
  * for both the startup banner and `diagnose-repo` output.
  *
+ * The effective author set is named on **every** run, not just a clean
+ * one (Issue #209): when a host is uncoordinated, the one fact an
+ * operator needs from the log is which logins the guards actually see.
+ *
  * @param result - The validation result to render.
- * @returns One `[fleet-config]` line per message (a single `ok` line when
- *   there are no messages).
+ * @returns One `[fleet-config]` line per message, preceded by the
+ *   effective-authors line (which is the whole output when there are no
+ *   messages).
  */
 export function formatFleetConfigValidation(
   result: FleetConfigValidation,
 ): string[] {
+  const authors = result.effectiveAuthors.join(",") || "(none)";
   if (result.messages.length === 0) {
-    return [
-      `[fleet-config] ok effective-authors=${
-        result.effectiveAuthors.join(",") || "(none)"
-      }`,
-    ];
+    return [`[fleet-config] ok effective-authors=${authors}`];
   }
   const tag = result.level === "error" ? "ERROR" : "WARNING";
-  return result.messages.map((m) => `[fleet-config] ${tag} ${m}`);
+  return [
+    `[fleet-config] effective-authors=${authors}`,
+    ...result.messages.map((m) => `[fleet-config] ${tag} ${m}`),
+  ];
 }
