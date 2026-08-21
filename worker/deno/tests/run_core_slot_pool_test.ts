@@ -1295,3 +1295,55 @@ Deno.test("slot pool - a slot that loses the acquire race drops that repo's cach
     "the slot that lost the race must invalidate the winner's cached issue list",
   );
 });
+
+// ============================================================================
+// Host disk guard (Issue #226)
+// ============================================================================
+
+Deno.test("slot pool - host disk drops low during slot A's run: no slot claims again, the pool drains, running work finishes (Issue #226)", async () => {
+  let low = false;
+  let processed = 0;
+  let now = 0;
+  const errors: string[] = [];
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    logError: (m) => {
+      errors.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue(
+      Array.from({ length: 9 }, (_, i) => issue(`o/r${i}`, i)),
+    ),
+    checkHostDisk: () =>
+      Promise.resolve(
+        low
+          ? {
+            level: "low" as const,
+            detail:
+              "18.0 GB free (3.9%) of 460.0 GB, floor 46.0 GB — below the floor",
+          }
+          : { level: "ok" as const, detail: "200 GB free" },
+      ),
+    processIssue: async () => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 5));
+      // The host fills while the first run is in flight.
+      low = true;
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runCoreLoop({ ...config, maxConcurrentIssues: 3 }, deps);
+  assert(
+    processed <= 3,
+    `processed ${processed} — a slot claimed with the host disk low`,
+  );
+  assertEquals(
+    errors.filter((m) => m.startsWith("[HOST_DISK_LOW]")).length,
+    1,
+    "the low disk is reported once, not once per slot",
+  );
+});

@@ -496,6 +496,28 @@ if ! bounded 600 "${DENO_CMD}" run \
   echo "[run.sh] warning: could not reclaim the ${RUNTIME} store" >&2
 fi
 
+# Hard free-disk floor (Issue #226). Host GRQ-23 ran its data volume to zero
+# with the worker running: log writes failed, two issues' work was lost and
+# the host went down. Everything above has had its chance to reclaim; if the
+# filesystem holding the container store is still below the floor, this
+# launch stops here — the supervisor's backoff retries later. Measured on the
+# store when it exists, else on HOME (the same filesystem on macOS).
+disk_gate_path="${HOME}"
+if [[ -d "${container_store}" ]]; then
+  disk_gate_path="${container_store}"
+fi
+disk_avail_kb="$(df -kP "${disk_gate_path}" 2>/dev/null | awk 'NR>1 {v=$(NF-2)} END {print v}')"
+disk_hard_floor_gb="${VIBE_HOST_DISK_HARD_FLOOR_GB:-5}"
+if [[ "${disk_avail_kb}" =~ ^[0-9]+$ && "${disk_hard_floor_gb}" =~ ^[0-9]+$ ]]; then
+  if ((disk_avail_kb < disk_hard_floor_gb * 1024 * 1024)); then
+    echo "[run.sh] refusing to launch: ${disk_gate_path} has $((disk_avail_kb / 1024)) MB free," \
+      "below the ${disk_hard_floor_gb} GB hard floor (VIBE_HOST_DISK_HARD_FLOOR_GB) (Issue #226)" >&2
+    log_run_core "host-disk: refused launch - $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} is below the ${disk_hard_floor_gb} GB hard floor (Issue #226)"
+    exit 1
+  fi
+  log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}"
+fi
+
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
 # live on runtime-managed volumes, not host directories. `volume inspect` /
 # `volume create` are spelled identically on every supported runtime; the

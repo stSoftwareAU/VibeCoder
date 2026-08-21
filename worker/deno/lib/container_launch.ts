@@ -162,6 +162,14 @@ export interface ContainerLaunchInputs {
    */
   hostId?: string;
   /**
+   * The host filesystem's free/total bytes at launch (Issue #226), passed in
+   * as VIBE_HOST_DISK_AVAIL_BYTES / VIBE_HOST_DISK_TOTAL_BYTES so the worker
+   * can gate new claims on the *host's* disk rather than the virtual work
+   * volume's. Optional: absent means the worker reads df itself, which in
+   * container mode sees only the volume image.
+   */
+  hostDisk?: { availableBytes: number; totalBytes: number };
+  /**
    * VM sizing for the worker container. Optional: absent falls back to the
    * built-in floor (8g / 6 cpus) — never to the runtime's 1 GiB default,
    * which memory-stalled real work (the agent CLI plus a cargo-build
@@ -774,6 +782,20 @@ export function buildContainerLaunchPlan(
   // Fleet telemetry names the real host, not the per-run container name.
   if (inputs.hostId) {
     runArgs.push("--env", `VIBE_HOST_ID=${inputs.hostId}`);
+  }
+  // The host's own disk reading (Issue #226): inside the container df sees
+  // the virtual volume, not the filesystem it is thin-provisioned on.
+  if (inputs.hostDisk) {
+    runArgs.push(
+      "--env",
+      `VIBE_HOST_DISK_AVAIL_BYTES=${
+        Math.floor(inputs.hostDisk.availableBytes)
+      }`,
+    );
+    runArgs.push(
+      "--env",
+      `VIBE_HOST_DISK_TOTAL_BYTES=${Math.floor(inputs.hostDisk.totalBytes)}`,
+    );
   }
   // Last, so the launcher can append the worker's own arguments after it.
   runArgs.push(image);
