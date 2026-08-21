@@ -306,3 +306,140 @@ Deno.test("execute_phase - the failure message carries the kill-time process tab
     reason,
   );
 });
+
+// ---------------------------------------------------------------------------
+// VibeCoder#174 — a watchdog timeout is not an external kill; a retry needs
+// runway; preserved checkpoints are reported truthfully.
+// ---------------------------------------------------------------------------
+
+import {
+  hasRunwayForInfraRetry,
+  MIN_INFRA_RETRY_RUNWAY_SECONDS,
+} from "../lib/infra_retry.ts";
+
+const WATCHDOG_TIMEOUT_143 = {
+  output: "partial work",
+  exitCode: 124,
+  rawExitCode: 143,
+  timedOut: true,
+  timeoutReason: "hard-timeout",
+};
+
+async function runPhaseWithContext(
+  runnerValues: Array<Record<string, unknown>>,
+  contextExtra: Partial<IssueContext>,
+  gitStdout: (args: string[]) => string | undefined = () => undefined,
+): Promise<
+  { status: string; reason?: string; runnerCalls: number; warns: string[] }
+> {
+  let runnerCalls = 0;
+  const warns: string[] = [];
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (() => {
+        const value =
+          runnerValues[Math.min(runnerCalls, runnerValues.length - 1)];
+        runnerCalls++;
+        return Promise.resolve({ ok: true, value });
+      }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: (() =>
+        Promise.resolve({ ok: true, value: null })) as never,
+    },
+  });
+  const baseGit = deps.git.runGitCommand;
+  deps.git.runGitCommand = ((args: string[], opts?: unknown) => {
+    const stdout = gitStdout(args);
+    if (stdout !== undefined) {
+      return Promise.resolve({
+        ok: true,
+        value: { code: 0, stdout, stderr: "" },
+      });
+    }
+    return baseGit(args, opts as never);
+  }) as never;
+  const baseLogger = deps.logger;
+  deps.logger = {
+    ...baseLogger,
+    warn: (message: string, context?: Record<string, unknown>) => {
+      warns.push(message);
+      baseLogger.warn(message, context);
+    },
+  };
+  const config = makeConfig();
+  const result = await workOnIssueExecuteClaude(
+    { ...makeContext(config), ...contextExtra },
+    makeState(),
+    deps,
+  ) as { status: string; reason?: string };
+  return { ...result, runnerCalls, warns };
+}
+
+Deno.test("execute_phase - a watchdog timeout (raw exit 143) classifies as timeout and is not retried as a kill (VibeCoder#174)", async () => {
+  const result = await runPhaseWithContext([WATCHDOG_TIMEOUT_143], {});
+  assertEquals(result.status, "failure");
+  const reason = result.reason ?? "";
+  assert(reason.includes("143"), reason);
+  assertEquals(detectFailureCategory(reason), "timeout");
+  assertEquals(result.runnerCalls, 1, "a plain timeout is never retried");
+});
+
+Deno.test("execute_phase - a killed run is not retried when the cycle has no runway left (VibeCoder#174)", async () => {
+  const result = await runPhaseWithContext([KILLED_OK_PRESSURE], {
+    cycleDeadlineEpochMs: Date.now() + 120_000,
+  });
+  assertEquals(result.status, "failure");
+  assertEquals(result.runnerCalls, 1);
+  assert(
+    result.warns.some((w) => w.includes("cycle runway")),
+    `expected a runway warning, got: ${result.warns.join(" | ")}`,
+  );
+});
+
+Deno.test("execute_phase - a killed run with runway left keeps its single retry (VibeCoder#174)", async () => {
+  const result = await runPhaseWithContext([KILLED_OK_PRESSURE], {
+    cycleDeadlineEpochMs: Date.now() + 3_600_000,
+  });
+  assertEquals(result.runnerCalls, 2);
+});
+
+Deno.test("hasRunwayForInfraRetry - threshold and no-deadline cases (VibeCoder#174)", () => {
+  const now = 1_000_000_000_000;
+  assertEquals(hasRunwayForInfraRetry(undefined, now), true);
+  assertEquals(
+    hasRunwayForInfraRetry(now + MIN_INFRA_RETRY_RUNWAY_SECONDS * 1000, now),
+    true,
+  );
+  assertEquals(
+    hasRunwayForInfraRetry(
+      now + MIN_INFRA_RETRY_RUNWAY_SECONDS * 1000 - 1,
+      now,
+    ),
+    false,
+  );
+});
+
+Deno.test("execute_phase - a deadline-bound timeout whose checkpoint already landed reports the preserved work, not 'without creating changes' (VibeCoder#174)", async () => {
+  const result = await runPhaseWithContext(
+    [WATCHDOG_TIMEOUT_143],
+    { cycleDeadlineEpochMs: Date.now() + 800_000 },
+    (args) => {
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return "abc123\n";
+      if (args[0] === "rev-list" && args[1] === "--count") return "1\n";
+      if (args[0] === "status") return "";
+      return undefined;
+    },
+  );
+  assertEquals(result.status, "failure");
+  const reason = result.reason ?? "";
+  assert(
+    !reason.includes("without creating changes"),
+    `the checkpointed work must be acknowledged: ${reason}`,
+  );
+  assert(reason.includes("work preserved on the branch"), reason);
+  assert(reason.includes("1 checkpoint commit pushed"), reason);
+  assert(reason.includes("at the cycle deadline"), reason);
+  assertEquals(detectFailureCategory(reason), "timeout");
+  assertEquals(result.runnerCalls, 1);
+});

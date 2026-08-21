@@ -535,3 +535,53 @@ Deno.test("detectFailureCategory - an external SIGTERM classifies as killed (Iss
     "killed",
   );
 });
+
+// ---------------------------------------------------------------------------
+// VibeCoder#174 — the worker's own watchdog is a timeout, whatever signal it
+// used to end the agent; only an EXTERNAL signal is a kill.
+// ---------------------------------------------------------------------------
+
+import {
+  DEADLINE_BOUND_TIMEOUT_MARKER,
+  isTimeoutClassFailureReason,
+  watchdogFiredIn,
+} from "../lib/failure_diagnosis.ts";
+
+const WATCHDOG_TIMEOUT_143 =
+  "Claude timed out without creating changes\n\n### Diagnostics\n" +
+  "- Elapsed: 800s\n- Output: partial (110 characters captured before timeout)\n" +
+  "- Timeout: 795s\n- Watchdog: hard-timeout\n- Raw exit code: 143 (SIGTERM)";
+
+Deno.test("detectFailureCategory - a watchdog timeout whose raw exit names SIGTERM is a timeout, not a kill (VibeCoder#174)", () => {
+  assertEquals(watchdogFiredIn(WATCHDOG_TIMEOUT_143), true);
+  assertEquals(detectFailureCategory(WATCHDOG_TIMEOUT_143), "timeout");
+  assertEquals(
+    isInfrastructureFailure(detectFailureCategory(WATCHDOG_TIMEOUT_143)),
+    false,
+  );
+});
+
+Deno.test("detectFailureCategory - a watchdog timeout escalated to SIGKILL is still a timeout (VibeCoder#174)", () => {
+  const msg = WATCHDOG_TIMEOUT_143.replace("143 (SIGTERM)", "137 (SIGKILL)")
+    .replace("hard-timeout", "no-output");
+  assertEquals(detectFailureCategory(msg), "timeout");
+});
+
+Deno.test("detectFailureCategory - an external SIGTERM with no watchdog line stays killed (Issue #46, VibeCoder#174)", () => {
+  const msg =
+    "Claude was killed by an external SIGTERM (exit 143) — the worker did not " +
+    "request this shutdown\n\n### Diagnostics\n- Elapsed: 120s\n- Raw exit code: 143 (SIGTERM)";
+  assertEquals(watchdogFiredIn(msg), false);
+  assertEquals(detectFailureCategory(msg), "killed");
+});
+
+Deno.test("isTimeoutClassFailureReason - a deadline-bound timeout is exempt from the escalating cooldown (VibeCoder#174)", () => {
+  assertEquals(isTimeoutClassFailureReason(WATCHDOG_TIMEOUT_143), true);
+  assertEquals(
+    isTimeoutClassFailureReason(
+      `Claude timed out ${DEADLINE_BOUND_TIMEOUT_MARKER} with its work preserved on the branch`,
+    ),
+    false,
+  );
+  assertEquals(isTimeoutClassFailureReason("Quality checks failed"), false);
+});
