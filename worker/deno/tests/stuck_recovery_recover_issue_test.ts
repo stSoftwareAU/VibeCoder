@@ -19,6 +19,17 @@ import {
 } from "../lib/stuck_recovery.ts";
 import { heartbeatFilePath } from "../lib/heartbeat_storage.ts";
 
+/**
+ * Issue #230: `recoverStuckIssue` now reads the issue (and its heartbeat
+ * markers) before mutating. These tests assert the *mutations*, so strip
+ * the read-only calls first.
+ */
+function mutating(calls: string[][]): string[][] {
+  return calls.filter((c) =>
+    c[0] === "issue" && (c[1] === "edit" || c[1] === "comment")
+  );
+}
+
 Deno.test("recoverStuckIssue - unassigns the worker first", async () => {
   const workDir = await Deno.makeTempDir();
   try {
@@ -37,7 +48,7 @@ Deno.test("recoverStuckIssue - unassigns the worker first", async () => {
       fakeGh,
     );
 
-    assertEquals(calls[0], [
+    assertEquals(mutating(calls)[0], [
       "issue",
       "edit",
       "42",
@@ -70,14 +81,14 @@ Deno.test("recoverStuckIssue - posts the recovery comment with the right body", 
     );
 
     // Second call is the comment.
-    assertEquals(calls[1]!.slice(0, 5), [
+    assertEquals(mutating(calls)[1]!.slice(0, 5), [
       "issue",
       "comment",
       "42",
       "--repo",
       "org/repo",
     ]);
-    const body = calls[1]!.at(-1)!;
+    const body = mutating(calls)[1]!.at(-1)!;
     assertStringIncludes(body, "Automatic recovery");
     // 1800s / 60 = 30 minutes.
     assertStringIncludes(body, "30 minutes");
@@ -133,7 +144,7 @@ Deno.test("recoverStuckIssue - computes minutes via floor division", async () =>
     // 1799s / 60 floors to 29 minutes.
     await recoverStuckIssue(workDir, "org/repo", 7, "bot", 1799, fakeGh);
 
-    const body = calls[1]!.at(-1)!;
+    const body = mutating(calls)[1]!.at(-1)!;
     assertStringIncludes(body, "29 minutes");
   } finally {
     await Deno.remove(workDir, { recursive: true });
@@ -148,8 +159,10 @@ Deno.test("recoverStuckIssue - performs the three steps in order", async () => {
 
     const order: string[] = [];
     const fakeGh = (args: string[]): Promise<string> => {
-      // First two gh calls: unassign, then comment.
-      order.push(args[1] ?? ""); // "edit" or "comment"
+      // Mutating gh calls: unassign, then comment (reads are skipped).
+      if (args[1] === "edit" || args[1] === "comment") {
+        order.push(args[1]);
+      }
       return Promise.resolve("");
     };
 
@@ -206,7 +219,7 @@ Deno.test("detectAndRecoverStuckHeartbeats - sweepAllHeartbeats recovers a young
       },
     );
     assertEquals(recovered, 1);
-    assertEquals(calls[0]?.slice(0, 2), ["issue", "edit"]);
+    assertEquals(mutating(calls)[0]?.slice(0, 2), ["issue", "edit"]);
     // The heartbeat file itself is gone — nothing left to suppress recovery.
     let gone = false;
     try {

@@ -95,6 +95,144 @@ import {
   type StuckIssueConfig,
 } from "./stuck_detection.ts";
 
+/** Optional context for `recoverStuckIssue` (Issue #230). */
+export interface RecoverStuckIssueOptions {
+  /** This host's stable machine id — names the dead run in the comment. */
+  machineId?: string;
+  /** Fleet logins whose heartbeat markers are trusted (Issue #3164). */
+  fleetAuthors?: string[];
+  /** Epoch-seconds clock, injectable for tests. */
+  nowFn?: () => number;
+}
+
+/** What GitHub says about an issue a leftover heartbeat file points at. */
+interface PreRecoveryVerdict {
+  decision: RecoveryDecision;
+  reason: string;
+  markerClass: MarkerClassification;
+}
+
+/**
+ * Look at GitHub before recovering from a local heartbeat file (Issue #230).
+ *
+ * Observed live: host GRQ-23 crashed mid-run, the fleet recovered both of
+ * its issues within the hour, one was closed with its PR merged — and when
+ * the host came back 10 hours later the sweep posted "unassigned from
+ * VibeCoderST … no heartbeat" on both, having looked at nothing but the
+ * file. With a same-account sibling host that had re-claimed the issue in
+ * the meantime, the blind `--remove-assignee` would have dropped a live
+ * claim.
+ *
+ * Fails toward the previous behaviour: when GitHub cannot be read the
+ * recovery proceeds as it always did, so an API blip never leaves a truly
+ * dead claim in place.
+ */
+async function checkGithubBeforeRecovery(
+  repo: string,
+  issueNumber: number,
+  githubUser: string,
+  stuckIssueTimeout: number,
+  ghFn: (args: string[]) => Promise<string>,
+  options: RecoverStuckIssueOptions,
+): Promise<PreRecoveryVerdict> {
+  const none: MarkerClassification = {
+    state: "none",
+    latest: null,
+    skip: { skip: false },
+  };
+
+  let view: { state?: string; assignees?: Array<{ login?: string }> } | null =
+    null;
+  try {
+    const json = await ghFn([
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "state,assignees",
+    ]);
+    view = json ? JSON.parse(json) : null;
+  } catch (err) {
+    recordFaultEvent(
+      "catch_block_warning",
+      `issue view failed before recovering ${repo}#${issueNumber}: ${err}`,
+    );
+    view = null;
+  }
+  if (view === null || typeof view !== "object") {
+    return {
+      decision: "recovered",
+      reason: "github_unreadable",
+      markerClass: none,
+    };
+  }
+
+  if (typeof view.state === "string" && view.state.toUpperCase() === "CLOSED") {
+    return {
+      decision: "skipped:issue_closed",
+      reason: "issue is closed",
+      markerClass: none,
+    };
+  }
+
+  const assignees = Array.isArray(view.assignees)
+    ? view.assignees.map((a) => a?.login ?? "").filter((l) => l.length > 0)
+    : [];
+  if (!assignees.includes(githubUser)) {
+    return {
+      decision: "skipped:not_assigned",
+      reason: assignees.length === 0
+        ? "no assignee"
+        : `assigned to ${assignees.join(", ")}`,
+      markerClass: none,
+    };
+  }
+
+  // Still ours on GitHub. A fresh heartbeat from another machine on the
+  // same account means a sibling host owns the claim now.
+  let markers: Array<{ machineId: string; epoch: number; cleared: boolean }> =
+    [];
+  try {
+    markers = await scanHeartbeatMarkers(
+      repo,
+      issueNumber,
+      ghFn,
+      options.fleetAuthors,
+    );
+  } catch (err) {
+    recordFaultEvent(
+      "catch_block_warning",
+      `scanHeartbeatMarkers failed before recovering ${repo}#${issueNumber}: ${err}`,
+    );
+  }
+  const now = (options.nowFn ?? (() => Math.floor(Date.now() / 1000)))();
+  const markerClass = classifyMarkers(
+    markers,
+    options.machineId,
+    now,
+    stuckIssueTimeout,
+  );
+  if (
+    markerClass.skip.skip &&
+    markerClass.skip.decision === "skipped:live_marker"
+  ) {
+    return {
+      decision: "skipped:live_marker",
+      reason: `machine ${markerClass.latest?.machineId} beat ${
+        now - (markerClass.latest?.epoch ?? now)
+      }s ago`,
+      markerClass,
+    };
+  }
+  return {
+    decision: "recovered",
+    reason: "assigned to us, no live sibling",
+    markerClass,
+  };
+}
+
 /**
  * Recover a stuck issue by unassigning the worker and posting a comment.
  *
@@ -114,6 +252,7 @@ export async function recoverStuckIssue(
   githubUser: string,
   stuckIssueTimeout: number,
   ghCommandFn?: (args: string[]) => Promise<string>,
+  options: RecoverStuckIssueOptions = {},
 ): Promise<Result<void>> {
   if (skipBecauseLiveSlotHolds("recoverStuckIssue", repo, issueNumber)) {
     return {
@@ -125,6 +264,45 @@ export async function recoverStuckIssue(
     };
   }
   const ghFn = ghCommandFn ?? runGh;
+
+  // Issue #230: a local heartbeat file is evidence that *this host* once
+  // ran the issue — not that GitHub still shows it assigned to us. After a
+  // crash the fleet recovers the issue long before this host comes back,
+  // so consult GitHub before touching anything.
+  const verdict = await checkGithubBeforeRecovery(
+    repo,
+    issueNumber,
+    githubUser,
+    stuckIssueTimeout,
+    ghFn,
+    options,
+  );
+  recordRecoveryDecision({
+    source: "detectAndRecoverStuckHeartbeats",
+    issue: `${repo}#${issueNumber}`,
+    assignee: githubUser,
+    elapsedSinceUpdate: null,
+    markerState: verdict.markerClass.state,
+    markerMachineId: verdict.markerClass.latest?.machineId ?? null,
+    markerEpoch: verdict.markerClass.latest?.epoch ?? null,
+    linkedOpenPR: null,
+    localHeartbeatPresent: true,
+    crossAccount: false,
+    decision: verdict.decision,
+  });
+  if (verdict.decision !== "recovered") {
+    // Someone else already dealt with it (or it is a sibling's live claim):
+    // drop the stale local file so it stops suppressing recovery, and say
+    // nothing on the issue — the timeline already tells the true story.
+    await clearHeartbeat(workDir, repo, issueNumber);
+    return {
+      ok: false,
+      error: new Error(
+        `Skipped recovery of ${repo}#${issueNumber}: ${verdict.decision} ` +
+          `(${verdict.reason}) — stale local heartbeat removed (Issue #230)`,
+      ),
+    };
+  }
 
   // Step 1: Unassign the worker
   await ghFn([
@@ -139,8 +317,17 @@ export async function recoverStuckIssue(
 
   // Step 2: Post a recovery comment
   const minutes = Math.floor(stuckIssueTimeout / 60);
+  const who = options.machineId !== undefined
+    ? ` on machine \`${options.machineId}\``
+    : "";
+  const lastBeat = verdict.markerClass.latest !== null &&
+      verdict.markerClass.latest.epoch > 0
+    ? ` (last heartbeat ${
+      new Date(verdict.markerClass.latest.epoch * 1000).toISOString()
+    })`
+    : "";
   const commentBody =
-    `Automatic recovery: this issue was unassigned from \`${githubUser}\` because the worker appears to have stopped responding (no heartbeat for over ${minutes} minutes). The issue is now available to be picked up again on the next scan cycle.
+    `Automatic recovery: this issue was unassigned from \`${githubUser}\` because the worker${who} appears to have stopped responding (no heartbeat for over ${minutes} minutes)${lastBeat}. The issue is now available to be picked up again on the next scan cycle.
 
 ---
 
@@ -214,6 +401,11 @@ export async function detectAndRecoverStuckHeartbeats(
           githubUser,
           config.stuckIssueTimeout,
           options.ghCommandFn,
+          {
+            machineId: config.machineId,
+            fleetAuthors: config.fleetAuthors,
+            nowFn,
+          },
         );
         if (result.ok) recoveredCount++;
       }
