@@ -5,7 +5,9 @@
  * carry commits the remote does not have (a previous run's leftovers, or work a
  * sibling host rebased away). Rebasing *that* onto the base branch can conflict
  * where the PR's real head would not — which is how PR #557 was labelled
- * `merge-conflict` while GitHub reported it mergeable.
+ * `merge-conflict` while GitHub reported it mergeable. The pass therefore
+ * fast-forwards onto the remote head, and refuses loudly — with a distinct
+ * error, never a conflict verdict — when the local branch is ahead of it.
  *
  * Real git repositories — no stubs.
  *
@@ -14,6 +16,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { isPrBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
+import { isLocalAheadOfRemoteError } from "../lib/git_branch_sync.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 
 async function git(args: string[], cwd: string): Promise<string> {
@@ -83,7 +86,7 @@ async function setupStaleLocalBranch(): Promise<{
   return { tmpDir, localPath, staleSha, remoteHead };
 }
 
-Deno.test("updatePrBranch - rebases the PR's remote head, not a stale local branch (Issue #211)", async () => {
+Deno.test("updatePrBranch - refuses a local branch ahead of the PR's remote head (Issue #211)", async () => {
   const { tmpDir, localPath, staleSha, remoteHead } =
     await setupStaleLocalBranch();
   try {
@@ -91,41 +94,25 @@ Deno.test("updatePrBranch - rebases the PR's remote head, not a stale local bran
       cwd: localPath,
     });
 
-    assert(
-      result.ok,
-      `expected the update to succeed; the stale local commit made it look ` +
-        `conflicted: ${
-          !result.ok
-            ? `${result.error.message} (conflict=${
-              isPrBranchConflictError(result.error)
-            })`
-            : ""
-        }`,
-    );
-    if (result.ok) {
-      // The discarded local-only commit must be reported, not dropped quietly.
-      assertStringIncludes(result.value, "local-only commit");
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      // The refusal must not read as a conflict verdict — that is what put a
+      // `merge-conflict` label on a mergeable PR.
+      assertEquals(isPrBranchConflictError(result.error), false);
+      assert(
+        isLocalAheadOfRemoteError(result.error),
+        `expected the ahead-of-remote refusal, got: ${result.error.message}`,
+      );
+      assertStringIncludes(result.error.message, "1 commit(s)");
     }
 
-    // The stale commit is gone and main's change survived.
+    // The local-only commit is unpushed work: left exactly where it was, not
+    // reset away, and never force-pushed over the PR's real head.
     const log = await git(["log", "--format=%H", "issue-556-fix"], localPath);
-    assert(
-      !log.includes(staleSha),
-      "the stale local-only commit must not be pushed to the PR branch",
-    );
+    assertStringIncludes(log, staleSha);
     assertEquals(
-      await Deno.readTextFile(`${localPath}/shared.txt`),
-      "main change\n",
-    );
-    // The PR's own commit survived the update.
-    const subjects = await git(
-      ["log", "--format=%s", "issue-556-fix"],
-      localPath,
-    );
-    assertStringIncludes(subjects, "Add feature");
-    assert(
-      remoteHead.length === 40,
-      "precondition: the remote head SHA was captured",
+      await git(["rev-parse", "refs/remotes/origin/issue-556-fix"], localPath),
+      remoteHead,
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

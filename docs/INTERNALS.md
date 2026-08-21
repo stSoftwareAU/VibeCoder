@@ -1188,8 +1188,10 @@ with a dry-run push — so a genuine push failure is diagnosable from the log
 alone.
 
 The same remote head governs the **branch-update pass**: `updatePrBranch`
-fetches and resets the PR branch to its remote head before deciding whether it
-is behind or conflicted, reporting any discarded local-only commits. Judging a
+fast-forwards the PR branch onto its remote head before deciding whether it is
+behind or conflicted, and refuses loudly — with a distinct error, not a
+conflict verdict — when the local branch is ahead of that head, because those
+commits are unpushed work the pass would otherwise force-push over. Judging a
 reused clone's stale local branch is what produced a conflict verdict for a PR
 GitHub reported as mergeable.
 

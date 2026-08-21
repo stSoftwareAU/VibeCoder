@@ -30,11 +30,14 @@ Four changes, one per defect in the issue:
    account pushed the PR head *after* the comment was written. Unknown state (no
    `created_at`, unreadable head commit, unparseable date) still claims, so
    genuine feedback is never silently dropped.
-4. **The branch-update pass judges the remote head.** `updatePrBranch` fetches
-   and resets the PR branch to its remote head before evaluating behind/conflict
-   state, naming any discarded local-only commits in its message and failing
-   loud if the remote head cannot be established. A genuine conflict on the
-   remote head is still left untouched (Issue #4373 behaviour unchanged).
+4. **The branch-update pass judges the remote head.** `updatePrBranch`
+   fast-forwards the PR branch onto its remote head
+   (`syncBranchToRemoteHead`) before evaluating behind/conflict state, and
+   refuses loudly — with a distinct `LocalAheadOfRemoteHead` error, not a
+   conflict verdict — when the local branch carries commits origin does not
+   have, rather than resetting that unpushed work away. It still fails loud if
+   the remote head cannot be established, and a genuine conflict on the remote
+   head is left untouched (Issue #4373 behaviour unchanged).
 
 A head that moved during the run was already handled inside the push path
 (reject → fetch → rebase → auto-resolve → retry); with the count fixed, that
