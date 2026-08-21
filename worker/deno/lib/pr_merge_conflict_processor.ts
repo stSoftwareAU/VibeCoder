@@ -519,11 +519,23 @@ async function resolveConflict(
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
+    // Issue #211: `detail=5 commit(s) could not be pushed` with no git output
+    // told an operator nothing. Ask git what the remote would say — a dry-run
+    // push has no side effects and names the rejection reason.
+    const dryRun = await git(
+      run,
+      ["push", "--dry-run", "--end-of-options", "origin", branchName],
+      workDir,
+    );
+    const gitDetail = (dryRun.stderr + dryRun.stdout).trim().split("\n")
+      .slice(-3).join(" | ");
     return await failAttempt(
       input,
       processorDeps,
       conflictedFiles,
-      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed`,
+      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed: ${
+        gitDetail || "git reported no output"
+      }`,
       attemptNumber,
     );
   }

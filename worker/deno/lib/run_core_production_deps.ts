@@ -120,7 +120,6 @@ import { updatePrBranch } from "./git_pull.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
   buildCheckoutArgs,
-  buildCheckoutNewBranchArgs,
   buildFetchArgs,
   buildPullArgs,
 } from "./git_ref_args.ts";
@@ -1305,20 +1304,6 @@ export async function createProductionRunCoreDeps(
           }) => {
             const gitOptions = { cwd: params.repoPath };
 
-            // Fetch branches from remote
-            const fetchHead = await runGitCommand(
-              buildFetchArgs("origin", params.branchName),
-              gitOptions,
-            );
-            if (!fetchHead.ok || fetchHead.value.code !== 0) {
-              return {
-                ok: false as const,
-                error: new Error(
-                  `Failed to fetch branch '${params.branchName}'`,
-                ),
-              };
-            }
-
             const fetchBase = await runGitCommand(
               buildFetchArgs("origin", params.baseBranch),
               gitOptions,
@@ -1332,30 +1317,9 @@ export async function createProductionRunCoreDeps(
               };
             }
 
-            // Ensure local branch exists (checkout or create tracking branch)
-            const checkoutResult = await runGitCommand(
-              buildCheckoutArgs(params.branchName),
-              gitOptions,
-            );
-            if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
-              const createResult = await runGitCommand(
-                buildCheckoutNewBranchArgs(
-                  params.branchName,
-                  `origin/${params.branchName}`,
-                ),
-                gitOptions,
-              );
-              if (!createResult.ok || createResult.value.code !== 0) {
-                return {
-                  ok: false as const,
-                  error: new Error(
-                    `Failed to checkout branch '${params.branchName}'`,
-                  ),
-                };
-              }
-            }
-
-            // Update the PR branch (rebase + force-push)
+            // Update the PR branch (rebase + force-push). It checks the branch
+            // out at its remote head itself (Issue #211), so a stale local
+            // branch can no longer invent a conflict the remote PR lacks.
             // Issue #1313: Pass the reason so conflicting PRs are handled
             // even when behindCount is 0 locally.
             const updateResult = await updatePrBranch(

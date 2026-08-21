@@ -36,6 +36,12 @@ export interface PrCommentToFix {
    * second `gh` fetch.
    */
   commentAuthor?: string;
+  /**
+   * ISO 8601 creation time of the comment, when the API supplied one
+   * (Issue #211). The scan uses it to drop feedback a later fleet push has
+   * already answered.
+   */
+  commentCreatedAt?: string;
 }
 
 /** Default gh command function — routed through the shared chokepoint. */

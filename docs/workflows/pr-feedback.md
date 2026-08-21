@@ -125,11 +125,49 @@ match wins and the loop restarts.
    PR comment — it is only actioned when its author is an **authorised
    commenter**; an unauthorised reviewer's `CHANGES_REQUESTED` body is skipped
    with a `UNAUTHORISED_REVIEW_SKIPPED` security log (Issue #185).
+   A comment a **sibling fleet host has already pushed against** is not
+   claimed: if a fleet author pushed to the PR after the comment was written,
+   and that push is less than 15 minutes old, the comment is left for the next
+   scan to re-evaluate (Issue #211). The window is a de-duplication guard, not
+   a veto — an older fleet push never suppresses feedback permanently.
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; commit and push.
 4. **Mark processed** — Add eyes reaction to comment and/or dismiss review so it
    is not picked again.
+
+#### The final mile — did the push actually land?
+
+Every Claude-driven phase ends with a commit-and-push, and the worker only
+claims success when git says the branch is on origin. Two rules make that
+honest (Issue #211):
+
+- **The count is measured against origin's copy of the branch.** Fleet workdirs
+  are single-branch clones, so `refs/remotes/origin/<feature>` does not exist —
+  counting with `--remotes=origin` measured commits ahead of the *default*
+  branch and reported a fully pushed branch as unpushed. When the tracking ref
+  is absent the branch is fetched and the count is taken against that head. A
+  count that cannot be established is an error, never a silent zero.
+- **A head that moved mid-run is rebased onto, not handed to a human.** When
+  commits genuinely remain, the worker fetches, rebases onto the current remote
+  head (which a sibling host may have moved) and pushes again. Only when that
+  recovery genuinely fails does it reply on the PR — and the reply names the
+  step that failed (`pull-rebase`, `force-with-lease`, `retry-push`) plus git's
+  own stderr.
+
+```mermaid
+sequenceDiagram
+    participant W as This host
+    participant S as Sibling host
+    participant O as origin
+    S->>O: push fix (head moves)
+    W->>O: push final-mile commit
+    O-->>W: rejected / commits remain
+    W->>W: count against origin/<branch>, not --remotes=origin
+    W->>O: fetch + rebase onto new head
+    W->>O: push again
+    O-->>W: accepted → no "check the branch" comment
+```
 
 **Out-of-scope feedback → escape hatch.** Sometimes a review
 comment asks for something genuinely too large for one run — a multi-day
@@ -181,7 +219,13 @@ checks pass. The worker does the following:
    branches are updated against that milestone branch, not the repo default
   . This keeps the PR up to date and avoids merge conflicts at
    merge time.
-3. **Resolve merge conflicts** — If rebase or merge hits conflicts, the worker
+3. **Resolve merge conflicts** — Conflicts are judged against **origin's head
+   for the branch**, which is what GitHub merges: the branch is fast-forwarded
+   to that head before it is evaluated, so a stale local copy left in the
+   workdir can no longer produce a conflict that does not exist on the PR
+   (Issue #211). A local branch holding genuinely unpushed commits is reported
+   as exactly that and left untouched — never relabelled a base-branch
+   conflict. If rebase or merge hits real conflicts, the worker
    attempts automatic resolution (e.g. resolve strategy). If resolution
    succeeds, push the updated branch. If it fails, the branch is left as-is and
    the failure is logged; the PR remains in a non-mergeable state until the user

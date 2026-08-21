@@ -707,6 +707,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
           committedNewChanges: false,
           commitsPushed: 0,
           finalUnpushedCount: 0,
+          finalUnpushedSource: "remote-head" as const,
         },
       })
     ),
