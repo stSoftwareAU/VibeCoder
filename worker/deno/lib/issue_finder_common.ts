@@ -12,7 +12,10 @@
 import { IssueCache } from "./issue_cache.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import type { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
-import type { IssueFinderDiagnostics } from "./issue_finder_logger.ts";
+import type {
+  DiagnosticSummary,
+  IssueFinderDiagnostics,
+} from "./issue_finder_logger.ts";
 import type { ContentApprovalDeps } from "./content_approval_tracker.ts";
 import type { EscalateUnworkableDeps } from "./escalate_unworkable_work_on.ts";
 import type { SelectionOptions } from "./issue_priority.ts";
@@ -121,6 +124,14 @@ export interface FindIssuesResult {
   found: boolean;
   /** Summary for logging */
   summary: string;
+  /**
+   * Counts collected while scanning (Issue #219). Present whenever the
+   * finder actually scanned, so a caller that receives `found: false` can
+   * state how many issues were considered, how many were eligible, and
+   * which skip reasons dominated — the diagnostics themselves stay gated
+   * behind `ISSUE_FINDER_DEBUG`, but these counts do not.
+   */
+  diagnosticSummary?: DiagnosticSummary;
 }
 
 /** Check whether an error represents a GitHub API rate limit. */

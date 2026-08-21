@@ -57,6 +57,7 @@ import {
 // Issue finding
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
+import type { DiagnosticSummary } from "./issue_finder_logger.ts";
 import { fetchAllOpenPRs, fetchOpenPRsByUser } from "./issue_query.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
@@ -1893,7 +1894,17 @@ export async function createProductionRunCoreDeps(
     // -- Priority 2: Issue scanning --
     processedIssues,
 
-    async findNextIssue(options?: { excludeRepos?: ReadonlySet<string> }) {
+    // Issue #219: a slot that lost the acquire race drops the winner's
+    // cached issue list, so its next scan re-reads that repo instead of
+    // being served the same ranking from the 600 s cache.
+    async invalidateRepoIssueCache(repo: string) {
+      await issueCache.invalidateRepo(repo);
+    },
+
+    async findNextIssue(options?: {
+      excludeRepos?: ReadonlySet<string>;
+      onScanSummary?: (summary: DiagnosticSummary) => void;
+    }) {
       // Load cooldown state once before scanning (synchronous check per issue)
       const cooldownState = await loadCooldownState(
         cooldownConfig.workDir,
@@ -1925,6 +1936,13 @@ export async function createProductionRunCoreDeps(
         // any divergence from the blocking guard warns this iteration.
         maintenanceAuthors,
       });
+
+      // Issue #219: hand the scan's counts to the caller before returning,
+      // so a slot that gets nothing back logs why rather than retiring in
+      // silence.
+      if (result.diagnosticSummary) {
+        options?.onScanSummary?.(result.diagnosticSummary);
+      }
 
       if (!result.found || !result.output) {
         return { ok: true, value: null };

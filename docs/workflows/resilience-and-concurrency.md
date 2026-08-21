@@ -145,6 +145,58 @@ flowchart TD
 4. **Single assignee (self):** Claim success; proceed.
 5. **Multiple assignees:** Contested; alphabetical tie-break on assignee logins; winner keeps claim; losers unassign themselves and skip.
 
+### 🕵️ An idle pool slot states why — and keeps looking
+
+A slot that found no work used to `return` without writing a single line. In
+the hour after `s1` claimed GRQ#4202 (Issue #219), `s2` logged **nothing** while
+a dozen eligible `top-priority` issues waited: a two-slot pool ran as one and
+the log could not say so. Three behaviours close that hole:
+
+- **Every slot exit names its reason.** `no eligible work`, `deadline`,
+  `shutdown`, `drain`, `exit`, `find-error` — each is written at INFO with the
+  `[sN]` prefix, so an idle slot is distinguishable from a working one by
+  reading the log alone.
+- **An empty scan is quantified.** The `no eligible work:` line carries
+  `considered=N eligible=N skipped=N top-skips=reason=count,…`, taken from the
+  scan's own diagnostic counts. Those counts now ride the scan result, so they
+  are visible **without** `ISSUE_FINDER_DEBUG` (which is off in production).
+- **A slot that finds nothing re-scans.** While a sibling slot still holds
+  work, the empty slot sleeps `sleep_interval` and scans again, so work that
+  becomes claimable mid-cycle is picked up within one interval. Only when *no*
+  sibling is running does the slot retire — that is the pool draining so the
+  cycle's maintenance ladder can run, and it says so (`stop reason=no-work`).
+
+A slot that loses the `tryAcquire` race also drops the winning repository's
+cached issue list before scanning again, so the next scan cannot be served the
+same ranking that just lost from the 600 s cache.
+
+```mermaid
+flowchart TD
+  Scan["Slot scans for work"] --> Found{"Issue found?"}
+  Found -->|Yes| Race{"Won tryAcquire?"}
+  Race -->|Yes| Work["Claim and process"]
+  Race -->|"No — sibling won"| Drop["Drop that repo's cached<br/>issue list, scan again"]
+  Drop --> Scan
+  Found -->|No| Log["Log: no eligible work:<br/>considered / eligible / skipped<br/>+ top skip reasons"]
+  Log --> Sibling{"Any sibling slot<br/>still working?"}
+  Sibling -->|Yes| Wait["Sleep sleep_interval,<br/>re-scan"]
+  Wait --> Scan
+  Sibling -->|No| Retire["stop reason=no-work —<br/>pool drains, cycle continues"]
+  style Scan fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Found fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style Race fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style Sibling fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Drop fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Log fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Wait fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Retire fill:#707070,stroke:#3a3a3a,color:#fff
+```
+
+**Implementation:** `runSlot` in
+[run_core.ts](../../worker/deno/lib/run_core.ts), `formatScanSummary` in
+[issue_finder_logger.ts](../../worker/deno/lib/issue_finder_logger.ts).
+
 ### 🔍 Milestone-aware repo availability (multi-worker contention)
 
 When multiple workers share the same GitHub username, the worker prefers repos with no assigned issues to avoid contention. However, this preference is **milestone-aware**: a repo is only considered "fully busy" when **every work stream** (each milestone plus non-milestone) has assigned work. If only the non-milestone stream is occupied (e.g. a stuck PR targeting the default branch), milestone issues in the same repo remain eligible. This prevents a single stuck default-branch PR from blocking all milestone work. See [milestones.md](milestones.md#milestone-aware-repo-availability) for details.

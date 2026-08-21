@@ -58,6 +58,10 @@ import {
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
 import { resolveClaimRunwayFloor } from "./claim_runway.ts";
+import {
+  type DiagnosticSummary,
+  formatScanSummary,
+} from "./issue_finder_logger.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
 import { isPrimaryRateLimitMessage } from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
@@ -406,10 +410,26 @@ export interface RunCoreDeps {
    * repositories currently held by another slot on this host — skipped so
    * a free slot gets the next eligible issue from a different repository.
    * Absent: unchanged serial behaviour.
+   *
+   * `options.onScanSummary` (Issue #219): invoked with the scan's counts
+   * before the result is returned, so a slot that receives `null` can log
+   * how many issues were considered and which skip reasons dominated. Not
+   * every implementation reports one; a caller must handle its absence.
    */
   findNextIssue: (
-    options?: { excludeRepos?: ReadonlySet<string> },
+    options?: {
+      excludeRepos?: ReadonlySet<string>;
+      onScanSummary?: (summary: DiagnosticSummary) => void;
+    },
   ) => Promise<Result<DiscoveredIssue | null>>;
+  /**
+   * Drop the cached issue list for one repository (Issue #219).
+   *
+   * Called by a slot that lost the acquire race, so its next scan is not
+   * served the same ranking that just lost from the per-cycle cache.
+   * Optional: absent means the next scan reuses whatever the cache holds.
+   */
+  invalidateRepoIssueCache?: (repo: string) => Promise<void>;
   processIssue: (
     issue: DiscoveredIssue,
     /**
@@ -1810,17 +1830,28 @@ async function runSlot(
 ): Promise<void> {
   const slotId = `s${slotIndex + 1}`;
   const log = (message: string) => deps.log(`[${slotId}] ${message}`);
+  // Issue #219: how long an idle slot waits before scanning again. At least
+  // one second, so a misconfigured `sleepInterval: 0` cannot turn the
+  // re-scan into a hot loop against the GitHub API.
+  const rescanMs = Math.max(1, config.sleepInterval) * 1000;
   while (true) {
     const stop = await slotShouldStop(deps, endTime, pool);
     if (stop) {
+      // Every slot exit states its reason (Issue #219) — a slot that stops
+      // silently is indistinguishable from one that is still working.
       if (stop === "deadline") {
         pool.draining = true;
         log(
-          "reached the cycle deadline / runway floor — stopping before the next claim.",
+          "stop reason=deadline — reached the cycle deadline / runway floor; " +
+            "stopping before the next claim.",
         );
       } else if (stop === "shutdown") {
         pool.draining = true;
-        log("shutdown requested — no further claims (Issue #4182).");
+        log("stop reason=shutdown — no further claims (Issue #4182).");
+      } else if (stop === "exit") {
+        log("stop reason=exit — the cycle is ending; no further claims.");
+      } else {
+        log("stop reason=drain — the pool is draining; no further claims.");
       }
       return;
     }
@@ -1847,21 +1878,60 @@ async function runSlot(
     }
 
     // Find the next issue outside the repositories siblings hold.
+    let scanSummary: DiagnosticSummary | undefined;
     const findResult = await deps.findNextIssue({
       excludeRepos: pool.registry.heldRepos(),
+      onScanSummary: (summary) => {
+        scanSummary = summary;
+      },
     });
     if (!findResult.ok) {
       deps.logError(
-        `[${slotId}] Issue scanning error: ${findResult.error.message}`,
+        `[${slotId}] stop reason=find-error — Issue scanning error: ${findResult.error.message}`,
       );
       return;
     }
     const issue = findResult.value;
-    if (issue === null) return; // no eligible work for this slot
+    if (issue === null) {
+      // Issue #219: an empty scan is reported with its counts, and the slot
+      // retires only when nothing else is running. Returning on the first
+      // null parked the slot until the whole pool drained — a two-slot pool
+      // ran as one for an hour with a dozen eligible issues waiting, and
+      // the log said nothing at all.
+      const detail = scanSummary
+        ? formatScanSummary(scanSummary)
+        : "scan summary unavailable";
+      const siblings = pool.registry.holds()
+        .filter((h) => h.slotId !== slotId).length;
+      if (siblings === 0) {
+        log(
+          `stop reason=no-work — no eligible work: ${detail}; ` +
+            "no sibling slot is running, so the pool drains and the cycle continues.",
+        );
+        return;
+      }
+      log(
+        `no eligible work: ${detail} — re-scanning in ${
+          rescanMs / 1000
+        }s while ${siblings} sibling slot(s) work (Issue #219).`,
+      );
+      await deps.sleep(rescanMs);
+      await yieldToEventLoop();
+      continue;
+    }
 
     // Atomic against sibling starts (Issue #4176): exactly one slot wins a
     // repository; a loser looks again.
     if (!pool.registry.tryAcquire(issue.repo, issue.issueNumber, slotId)) {
+      // Issue #219: the ranking this scan produced has already lost, so
+      // drop the repository's cached issue list before looking again —
+      // otherwise the next scan can be served the same stale list.
+      log(
+        `lost the acquire race for ${issue.repo}#${issue.issueNumber} — ` +
+          "invalidating its cached issue list before re-scanning (Issue #219).",
+      );
+      await invalidateRepoIssueCache(deps, slotId, issue.repo);
+      await yieldToEventLoop();
       continue;
     }
 
@@ -1958,6 +2028,43 @@ async function runSlot(
       const settleMs = Math.max(0, config.sleepInterval) * 1000;
       if (settleMs > 0) await deps.sleep(settleMs);
     }
+  }
+}
+
+/**
+ * Hand control back to the event loop (Issue #219).
+ *
+ * A slot that re-scans without claiming only awaits injected functions, and
+ * an injected `sleep` can resolve immediately. Without a macrotask boundary
+ * such a loop starves a sibling slot's in-flight I/O — the idle slot would
+ * spin while the working one made no progress.
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Drop a repository's cached issue list (Issue #219), best effort.
+ *
+ * A cache that refuses to clear is reported — the next scan may then be
+ * served a stale ranking — but it never retires the slot: looking again
+ * with a stale list still beats idling for the rest of the cycle.
+ */
+async function invalidateRepoIssueCache(
+  deps: RunCoreDeps,
+  slotId: string,
+  repo: string,
+): Promise<void> {
+  if (!deps.invalidateRepoIssueCache) return;
+  try {
+    await deps.invalidateRepoIssueCache(repo);
+  } catch (err) {
+    deps.logError(
+      `[${slotId}] failed to invalidate the cached issue list for ${repo} ` +
+        `(the next scan may be served a stale ranking): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
   }
 }
 
