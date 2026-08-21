@@ -162,7 +162,16 @@ export function classifyDependencySpec(spec: string): DependencyClassification {
  * the precondition for pushing a feature branch and creating a PR.
  */
 export type CrossRepoAccess =
-  | { reachable: true; repo: string }
+  | {
+    reachable: true;
+    repo: string;
+    /**
+     * The repo's default branch, when GitHub reported one. Callers that open
+     * a PR against an already-pushed branch use it as the base and to refuse
+     * a default-branch head (Issue #182).
+     */
+    defaultBranch?: string;
+  }
   | { reachable: false; reason: string };
 
 /**
@@ -194,7 +203,11 @@ export async function probeCrossRepoAccess(
     };
   }
 
-  let body: { full_name?: string; permissions?: { push?: boolean } };
+  let body: {
+    full_name?: string;
+    default_branch?: string;
+    permissions?: { push?: boolean };
+  };
   try {
     body = JSON.parse(result.stdout);
   } catch {
@@ -213,7 +226,16 @@ export async function probeCrossRepoAccess(
     ? body.full_name
     : repo;
 
-  return { reachable: true, repo: canonical };
+  const defaultBranch = typeof body.default_branch === "string" &&
+      body.default_branch.length > 0
+    ? body.default_branch
+    : undefined;
+
+  return {
+    reachable: true,
+    repo: canonical,
+    ...(defaultBranch ? { defaultBranch } : {}),
+  };
 }
 
 /** Resolved cross-repo target: an internal-reachable dep, or external. */

@@ -36,6 +36,7 @@ import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
   unpinWriteRepo,
+  withScopedWriteRepo,
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
 import type { AuditMutation } from "../lib/audit_journal.ts";
@@ -576,6 +577,79 @@ Deno.test("write-repo-allowlist - (b) off-config sweep target is refused, allowl
       [],
       "a refused target must never be added to the allowlist",
     );
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// withScopedWriteRepo — the fourth extension point (Issue #182)
+// ---------------------------------------------------------------------------
+
+Deno.test("write-repo-allowlist - a scoped grant opens the boundary only for the wrapped call", async () => {
+  try {
+    const { logs } = captureSinks();
+    seedWriteRepoAllowlist("stSoftwareAU/GRQ");
+    assertEquals(isWriteRepoAllowed("stSoftwareAU/NEAT-AI-Discovery"), false);
+
+    let allowedInside = false;
+    await withScopedWriteRepo("stSoftwareAU/NEAT-AI-Discovery", () => {
+      allowedInside = isWriteRepoAllowed("stSoftwareAU/NEAT-AI-Discovery");
+      return Promise.resolve();
+    });
+
+    assertEquals(allowedInside, true);
+    assertEquals(isWriteRepoAllowed("stSoftwareAU/NEAT-AI-Discovery"), false);
+    assert(
+      logs.some((l) => l.includes("[WRITE_REPO_SCOPED_GRANT]")),
+      "the scoped grant must be announced",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - a scoped grant is released when the wrapped call throws", async () => {
+  try {
+    captureSinks();
+    seedWriteRepoAllowlist("stSoftwareAU/GRQ");
+    let threw = false;
+    try {
+      await withScopedWriteRepo("stSoftwareAU/NEAT-AI-Discovery", () => {
+        throw new Error("gh pr create failed");
+      });
+    } catch {
+      threw = true;
+    }
+    assertEquals(threw, true);
+    assertEquals(isWriteRepoAllowed("stSoftwareAU/NEAT-AI-Discovery"), false);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - a scoped grant never removes a repo that was already allowed", async () => {
+  try {
+    captureSinks();
+    seedWriteRepoAllowlist("stSoftwareAU/GRQ");
+    await withScopedWriteRepo("stSoftwareAU/GRQ", () => Promise.resolve());
+    assertEquals(isWriteRepoAllowed("stSoftwareAU/GRQ"), true);
+    assertEquals(listAllowedWriteRepos(), ["stsoftwareau/grq"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - a scoped grant blocks nothing while enforcement is inactive", async () => {
+  try {
+    captureSinks();
+    let ran = false;
+    await withScopedWriteRepo("stSoftwareAU/NEAT-AI-Discovery", () => {
+      ran = true;
+      return Promise.resolve();
+    });
+    assertEquals(ran, true);
+    assertEquals(listAllowedWriteRepos(), []);
   } finally {
     cleanup();
   }
