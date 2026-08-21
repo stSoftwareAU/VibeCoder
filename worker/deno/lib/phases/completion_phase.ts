@@ -56,6 +56,13 @@ import {
   referencesFindingId,
 } from "../security_fix_gate.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
+import { preserveRunWip } from "./run_wip_preservation.ts";
+import { buildUncommittedWorkWipCommitMessage } from "../wip_checkpoint.ts";
+import {
+  classifyExistingPrForIssue,
+  formatSupersededReason,
+} from "../superseding_pr.ts";
+import { supersededOutcome } from "../run_outcome.ts";
 import {
   clearSecurityFixGateBlock,
   recordSecurityFixGateBlock,
@@ -579,18 +586,71 @@ async function completionBody(
         if (halfDone) return { status: "failure", reason: halfDone };
       }
       if (Number.isFinite(aheadCount) && aheadCount === 0) {
-        const statusResult = await deps.git.runGitCommand(
-          ["status", "--porcelain"],
-          { cwd: state.repoPath },
+        // Issue #218: this used to describe the loss and stop — "uncommitted
+        // changes are present … Claude likely modified files but did not
+        // commit them" — while discarding exactly those changes. Preserve
+        // them onto the claim-locked branch first, so the next claim resumes
+        // the work instead of starting from zero. The commit carries the
+        // `wip:` prefix, so the #148 WIP-only gate still refuses to build a
+        // "finished" PR out of it.
+        const wip = await preserveRunWip({
+          state,
+          deps,
+          buildMessage: (dirtyFiles) =>
+            buildUncommittedWorkWipCommitMessage({ dirtyFiles }),
+        });
+
+        // The branch can be level with base because a sibling's PR merged
+        // this issue's work mid-run (VibeCoder#185). That is not a failure of
+        // this run: stop with `superseded:pr#N` rather than an `unknown`
+        // no-PR failure that labels the issue and files a run-failure issue.
+        const disposition = await classifyExistingPrForIssue(
+          repo,
+          issueNumber,
+          {
+            findExistingPrForIssue: deps.pr.findExistingPrForIssue,
+            runGhCommand: deps.github.runGhCommand,
+            warn: (m: string) => logger.warn(m),
+          },
         );
-        const uncommittedHint = statusResult.ok &&
-            statusResult.value.stdout.trim().length > 0
-          ? " — uncommitted changes are present in the working tree, so Claude likely modified files but did not commit them"
+        if (disposition.kind === "superseded") {
+          logger.warn(
+            `Branch '${state.branchName}' is level with '${baseBranch}' ` +
+              `because ${
+                disposition.prState === "MERGED" ? "merged" : "closed"
+              } PR #${disposition.prNumber} already resolved this issue — ` +
+              `releasing as superseded (Issue #218)`,
+            {
+              prUrl: disposition.prUrl,
+              ...(wip.wipNote ? { wip: wip.wipNote } : {}),
+            },
+          );
+          return {
+            status: "early_exit",
+            reason: formatSupersededReason(disposition, wip.wipNote),
+            outcome: supersededOutcome({
+              phase: "completion",
+              prUrl: disposition.prUrl,
+              prNumber: disposition.prNumber,
+              prState: disposition.prState,
+              ...(wip.wipNote ? { wipNote: wip.wipNote } : {}),
+            }),
+          };
+        }
+
+        // A dirty tree always yields a note (preserved, already checkpointed,
+        // or preservation failed), so the diagnostic now says what happened
+        // to the work as well as that it existed.
+        const wipHint = wip.dirtyFiles > 0
+          ? ` — ${wip.dirtyFiles} file(s) carried uncommitted changes; ` +
+            `${wip.wipNote}`
+          : wip.wipNote
+          ? ` — ${wip.wipNote}`
           : "";
         return {
           status: "failure",
           reason:
-            `Branch \`${state.branchName}\` has no commits ahead of \`${baseBranch}\` — cannot create PR${uncommittedHint}`,
+            `Branch \`${state.branchName}\` has no commits ahead of \`${baseBranch}\` — cannot create PR${wipHint}`,
         };
       }
     }

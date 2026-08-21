@@ -69,6 +69,22 @@ export function buildTimedOutWipCommitMessage(options: {
     ` — preserving ${options.dirtyFiles} uncommitted file(s) (Issue #47)`;
 }
 
+/**
+ * Commit message for preserving work the run left uncommitted when the
+ * completion phase found the branch level with its base (Issue #218).
+ *
+ * The `wip:` prefix is deliberate: the completion phase's WIP-only gate
+ * (Issue #148) must recognise this commit as parked work, so a later run
+ * cannot raise a "finished" PR built from it alone.
+ */
+export function buildUncommittedWorkWipCommitMessage(options: {
+  /** Uncommitted files the run left behind. */
+  dirtyFiles: number;
+}): string {
+  return `wip: preserving ${options.dirtyFiles} uncommitted file(s) left by ` +
+    `a run that raised no PR (Issue #218)`;
+}
+
 /** What a single checkpoint attempt did. */
 export type WipCheckpointOutcome =
   | { kind: "pushed"; committed: boolean; commitsPushed: number }
