@@ -168,6 +168,7 @@ import { containerLaunchPlanCommand } from "./commands/container_launch_plan.ts"
 import { containerRestartBackoffCommand } from "./commands/container_restart_backoff.ts";
 import { containerReapCommand } from "./commands/container_reap.ts";
 import { containerImagePruneCommand } from "./commands/container_image_prune.ts";
+import { containerStorePruneCommand } from "./commands/container_store_prune.ts";
 import { containerBuildHealCommand } from "./commands/container_build_heal.ts";
 import { runModeCommand } from "./commands/run_mode.ts";
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
@@ -353,6 +354,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(containerRestartBackoffCommand);
   registry.register(containerReapCommand);
   registry.register(containerImagePruneCommand);
+  registry.register(containerStorePruneCommand);
   registry.register(containerBuildHealCommand);
   registry.register(runModeCommand);
   registry.register(auditDefaultBranchRulesetsCommand);
@@ -568,6 +570,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-reap",
       // The launchers call this to prune superseded image tags (Issue #4162).
       "container-image-prune",
+      // The launchers call this to reclaim the host store (Issue #227).
+      "container-store-prune",
       // The launchers call this when a build fails (Issue #4441).
       "container-build-heal",
       // The launchers ask this which mode to run in (Issue #4146).
@@ -670,6 +674,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-reap",
       // The launchers call this to prune superseded image tags (Issue #4162).
       "container-image-prune",
+      // The launchers call this to reclaim the host store (Issue #227).
+      "container-store-prune",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
       // Read-only sweep; runs against --org/--repos with no config (Issue #4356).

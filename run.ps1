@@ -554,6 +554,23 @@ if ($BuilderStopArgs.Count -gt 0) {
     }
 }
 
+# Reclaim the host container store (Issue #227): leaked `vibe-test-*`
+# volumes, dangling image layers, and the stopped builder when the store is
+# short of room. Mirrors run.sh; best-effort, never blocks a launch.
+$storePruned = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+    "run",
+    "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+    "--allow-env", "--allow-read", "--allow-run",
+    "$BaseDir/worker/deno/mod.ts", "container-store-prune",
+    "--runtime", $Runtime
+)
+if ($storePruned.StdOut) { [Console]::Error.Write($storePruned.StdOut) }
+if ($storePruned.StdErr) { [Console]::Error.Write($storePruned.StdErr) }
+if ($storePruned.ExitCode -ne 0) {
+    [Console]::Error.WriteLine(
+        "[run.ps1] warning: could not reclaim the $Runtime store")
+}
+
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
 # live on runtime-managed volumes, not host directories. `volume inspect` /
 # `volume create` are spelled identically on Docker and Podman; the plan

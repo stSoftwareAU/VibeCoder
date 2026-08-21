@@ -121,6 +121,25 @@ export interface ContainerRuntimeDialect {
   /** Sub-command that removes one image, before its reference (#4162). */
   imageRemoveArgs: readonly string[];
   /**
+   * Sub-command that removes dangling (untagged, unreferenced) image layers
+   * (Issue #227). The tag prune (#4162) deletes superseded `vibe-coder`
+   * tags, but the snapshot layers of untagged intermediates stayed — 5.8 GB
+   * reclaimable on the host that crashed out of disk. Non-interactive
+   * where the runtime would otherwise prompt.
+   */
+  imagePruneArgs: readonly string[];
+  /** Sub-command that lists the named volumes (Issue #227). */
+  volumeListArgs: readonly string[];
+  /** Sub-command that removes one volume, before its name (Issue #227). */
+  volumeRemoveArgs: readonly string[];
+  /**
+   * Sub-command that deletes the runtime's stopped build helper outright
+   * (Issue #227), or empty when the runtime has none. Apple container's
+   * stopped builder keeps a 13 GB rootfs on disk for ever; `container build`
+   * recreates it on the next definition change.
+   */
+  builderDeleteArgs: readonly string[];
+  /**
    * Sub-command that lists the running containers as JSON (Issue #4173).
    *
    * The watchdog's pre-launch reaper reads this to find leaked `vibe-coder-*`
@@ -252,7 +271,13 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   // shorthand, and one reference per line is what the prune compares anyway.
   imageListArgs: ["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"],
   imageRemoveArgs: ["image", "rm"],
+  // `-f` answers the confirmation prompt; dangling layers only (Issue #227).
+  imagePruneArgs: ["image", "prune", "-f"],
+  volumeListArgs: ["volume", "ls", "--format", "{{.Name}}"],
+  volumeRemoveArgs: ["volume", "rm"],
   builderStopArgs: [],
+  // No builder container to delete (Issue #227).
+  builderDeleteArgs: [],
   // No builder VM to bounce (Issue #4441): the equivalent remedy for a build
   // that died on storage is to drop the build cache, which is what fills the
   // builder store. The escalation is the same command — there is nothing
@@ -285,6 +310,15 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   // (Issue #4162), and the removal is spelled `delete` rather than `rm`.
   imageListArgs: ["image", "list", "--format", "json"],
   imageRemoveArgs: ["image", "delete"],
+  // Dangling layers only — never `--all`, which would drop the pinned base
+  // images every rebuild pulls (Issue #227).
+  imagePruneArgs: ["image", "prune"],
+  volumeListArgs: ["volume", "ls", "--format", "json"],
+  volumeRemoveArgs: ["volume", "delete"],
+  // The stopped builder keeps its 13 GB rootfs on disk (Issue #227); the
+  // store prune deletes it when the host is short of room. `container
+  // build` starts a fresh builder when none exists.
+  builderDeleteArgs: ["builder", "delete"],
   // The builder VM outlives the build it was started for (Issue #4331):
   // stop it once the image exists so it stops holding 2 CPUs, 2 GB and a
   // 13 GB rootfs on every fleet host. `builder start` is implicit on the
