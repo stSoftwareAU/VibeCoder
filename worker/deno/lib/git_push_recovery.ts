@@ -56,7 +56,9 @@ function recoveryError(
     .filter((d) => d.length > 0)
     .join(" | ");
   return new Error(
-    `Push recovery failed at step '${step}': ${detail || "git reported no stderr"}` +
+    `Push recovery failed at step '${step}': ${
+      detail || "git reported no stderr"
+    }` +
       (context ? ` (earlier steps: ${context})` : ""),
   );
 }

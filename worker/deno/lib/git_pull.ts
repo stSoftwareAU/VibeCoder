@@ -552,7 +552,10 @@ async function alignBranchWithRemoteHead(
     ? localHeadResult.value.stdout.trim()
     : "";
   if (localHead === remoteHead) {
-    return { ok: true, value: `Branch '${branchName}' already at origin's head` };
+    return {
+      ok: true,
+      value: `Branch '${branchName}' already at origin's head`,
+    };
   }
 
   // Nothing local-only to lose (ahead === 0), but never discard a dirty tree.

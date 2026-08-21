@@ -117,7 +117,10 @@ Deno.test("recoverFromPushRejection - a protected branch names the step it refus
     await Deno.writeTextFile(`${workerPath}/local.txt`, "local\n");
     await git(["add", "local.txt"], workerPath);
     await git(["commit", "-m", "Local commit"], workerPath);
-    await git(["remote", "set-url", "origin", `${tmpDir}/missing.git`], workerPath);
+    await git(
+      ["remote", "set-url", "origin", `${tmpDir}/missing.git`],
+      workerPath,
+    );
 
     const result = await recoverFromPushRejection("main", { cwd: workerPath });
 

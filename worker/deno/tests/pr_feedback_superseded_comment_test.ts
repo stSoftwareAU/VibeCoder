@@ -178,9 +178,13 @@ Deno.test("isSupersededByFleetPush - only within the de-duplication window", () 
     "an undated comment is never treated as superseded",
   );
   assertEquals(
-    isSupersededByFleetPush(comment, "2026-08-21T04:52:00Z", new Date(
-      "2026-08-21T08:00:00Z",
-    )),
+    isSupersededByFleetPush(
+      comment,
+      "2026-08-21T04:52:00Z",
+      new Date(
+        "2026-08-21T08:00:00Z",
+      ),
+    ),
     false,
     "outside the window the comment becomes actionable again",
   );
