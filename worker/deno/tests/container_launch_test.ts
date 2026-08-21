@@ -929,3 +929,27 @@ Deno.test("buildContainerLaunchPlan - carries the builder-stop arguments only fo
     true,
   );
 });
+
+Deno.test("buildContainerLaunchPlan - passes the host disk reading into the container (Issue #226)", () => {
+  // Inside the container df sees the virtual work volume, not the host
+  // filesystem it is thin-provisioned on; the launcher's reading is what
+  // the worker gates new claims on.
+  const plan = buildContainerLaunchPlan(
+    inputs({
+      hostDisk: { availableBytes: 24_000_000_000, totalBytes: 494_000_000_000 },
+    }),
+  );
+  assertEquals(
+    plan.runArgs.includes("VIBE_HOST_DISK_AVAIL_BYTES=24000000000"),
+    true,
+  );
+  assertEquals(
+    plan.runArgs.includes("VIBE_HOST_DISK_TOTAL_BYTES=494000000000"),
+    true,
+  );
+  const bare = buildContainerLaunchPlan(inputs());
+  assertEquals(
+    bare.runArgs.some((arg) => arg.startsWith("VIBE_HOST_DISK_")),
+    false,
+  );
+});

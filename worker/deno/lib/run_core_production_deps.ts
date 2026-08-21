@@ -248,6 +248,7 @@ import {
 } from "./software_updates.ts";
 import { enableAutoMerge } from "./pr_auto_merge.ts";
 import { closeIssuesForMergedPrs as prIssueCloseForMerged } from "./pr_issue_linking.ts";
+import { HostDiskMonitor } from "./host_disk.ts";
 
 // FLEET health
 import {
@@ -379,6 +380,12 @@ export async function createProductionRunCoreDeps(
   // cadence; transitions are logged with the reading.
   const slotCeiling = new SlotGovernor({
     probe: () => probeHostMemoryPressure(),
+    log: (message: string) => logger.info(message),
+  });
+  // Host free-disk monitor (Issue #226): the launcher's df baseline plus
+  // the work volume's growth since launch; native mode reads df directly.
+  const hostDisk = new HostDiskMonitor({
+    workDir,
     log: (message: string) => logger.info(message),
   });
   // Cache directories live on the durable work volume (Issue #4303) so a
@@ -581,6 +588,11 @@ export async function createProductionRunCoreDeps(
   // failure mode (the original 17h-stale-dashboard symptom that prompted
   // this fix).
   const fleetHealthConfig = buildFleetHealthConfig(repoDir);
+  // Issue #226: name a low host disk on the fleet-health payload.
+  fleetHealthConfig.hostNotes = () => {
+    const status = hostDisk.status;
+    return status.level === "low" ? [`host-disk low: ${status.detail}`] : [];
+  };
   const fleetHealthDeps = createProductionFleetHealthDeps(logger);
 
   /**
@@ -764,6 +776,14 @@ export async function createProductionRunCoreDeps(
     async checkFeatureAvailability() {
       const registry = createFeatureRegistry();
       registerBuiltinFeatures(registry);
+      // Issue #226: the host's disk is a feature like any other — a `low`
+      // reading shows as `Feature host-disk: degraded` in the startup log.
+      const disk = await hostDisk.check();
+      registry.register(
+        "host-disk",
+        () => disk.level !== "low",
+        `Host filesystem has room for new work — ${disk.detail}`,
+      );
       const results = registry.checkAll();
       for (const featureResult of results) {
         logger.info(`Feature ${featureResult.name}: ${featureResult.status}`);
@@ -1977,6 +1997,7 @@ export async function createProductionRunCoreDeps(
     // all read the same holds.
     inFlightRepos,
     slotCeiling,
+    checkHostDisk: () => hostDisk.check(),
     // Issue #4369: no agent runs detached or is relaunched after run end.
     terminateActiveAgentRuns: async (
       reason: string,

@@ -38,6 +38,7 @@ import {
 } from "../lib/containerfile_strip.ts";
 import { detectContainerRuntime } from "../lib/container_runtime.ts";
 import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
+import { formatGb, probeDiskReading } from "../lib/host_disk.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
 import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
@@ -203,6 +204,30 @@ export async function buildLaunchPlanForCommand(
     hostId = undefined;
   }
 
+  // The host filesystem's free space (Issue #226), measured where the
+  // container store lives — VIBE_HOST_STORE_PATH, else the home directory,
+  // which on macOS shares the Data volume with the store. Best-effort: an
+  // unreadable df just omits the env and the worker does not gate.
+  let hostDisk: { availableBytes: number; totalBytes: number } | undefined;
+  try {
+    const storePath = Deno.env.get("VIBE_HOST_STORE_PATH")?.trim() ||
+      Deno.env.get("HOME")?.trim() || ".";
+    const reading = await probeDiskReading(storePath);
+    if (reading) {
+      hostDisk = {
+        availableBytes: reading.availableBytes,
+        totalBytes: reading.totalBytes,
+      };
+      console.error(
+        `container-launch-plan: host disk ${
+          formatGb(reading.availableBytes)
+        } free of ${formatGb(reading.totalBytes)} at ${storePath}`,
+      );
+    }
+  } catch {
+    hostDisk = undefined;
+  }
+
   // Host-aware VM sizing. systemMemoryInfo needs its --allow-sys entry in
   // the launchers; an unreadable value falls back to the floor (with a
   // stderr note), never to the runtime's 1 GiB default.
@@ -255,6 +280,7 @@ export async function buildLaunchPlanForCommand(
     hostPaths,
     agentProviders: enabledAgentProviders(selection),
     ...(hostId ? { hostId } : {}),
+    ...(hostDisk ? { hostDisk } : {}),
     resources,
     ...(containerfile ? { containerfile } : {}),
   });

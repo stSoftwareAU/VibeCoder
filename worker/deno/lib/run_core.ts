@@ -629,6 +629,16 @@ export interface RunCoreDeps {
    * `checkDailySpendCeiling`.
    */
   checkSpendCeiling?: () => Promise<{ exceeded: boolean; message?: string }>;
+  /**
+   * Host free-disk status (Issue #226). Consulted before every claim, next
+   * to the spend ceiling: a `low` reading drains the pool / stops the
+   * serial loop claiming, so a host short of disk finishes what it is
+   * running and starts nothing new. Optional so test deps and native
+   * deployments without the launcher baseline can omit it.
+   */
+  checkHostDisk?: () => Promise<
+    { level: "ok" | "low" | "unknown"; detail: string }
+  >;
 
   // Misc
   touchPidFile: () => Promise<void>;
@@ -1318,7 +1328,13 @@ async function runIssueScanLoop(
   tracker: WorkProgressTracker,
   endTime: number,
   shouldShutdown: () => boolean = () => false,
-): Promise<{ exitOuterLoop: boolean; spendCeilingReached?: boolean }> {
+): Promise<
+  {
+    exitOuterLoop: boolean;
+    spendCeilingReached?: boolean;
+    hostDiskLow?: boolean;
+  }
+> {
   // Concurrent slots (Issue #4177, part of #4168): above one slot the pool
   // takes over. At the default of 1 the serial loop below runs unchanged —
   // exactly today's call sequence, including its shutdown timing (Issue
@@ -1630,6 +1646,8 @@ interface SlotPoolState {
   registry: InFlightRepoRegistry;
   /** Set when the pre-claim spend-ceiling gate tripped (Issue #4180). */
   spendCeilingReached: boolean;
+  /** Set once the host-disk guard tripped, so it is logged once (Issue #226). */
+  hostDiskLow?: boolean;
   /** SIGTERM/SIGINT seen (Issue #4182): no new claims; bounded drain. */
   shouldShutdown: () => boolean;
   /** Effective claim-runway floor for this cycle (Issues #4304, #47). */
@@ -1683,7 +1701,9 @@ async function runIssueScanPool(
   tracker: WorkProgressTracker,
   endTime: number,
   shouldShutdown: () => boolean = () => false,
-): Promise<{ exitOuterLoop: boolean; spendCeilingReached: boolean }> {
+): Promise<
+  { exitOuterLoop: boolean; spendCeilingReached: boolean; hostDiskLow: boolean }
+> {
   await deps.resetRepoFailures();
   // Claim-runway floor for this cycle (Issues #4304, #47) — resolved once,
   // applied by slotShouldStop before every claim in every slot.
@@ -1730,6 +1750,7 @@ async function runIssueScanPool(
   return {
     exitOuterLoop: pool.exitOuterLoop,
     spendCeilingReached: pool.spendCeilingReached,
+    hostDiskLow: pool.hostDiskLow === true,
   };
 }
 
@@ -2102,6 +2123,22 @@ async function slotPreClaimGuardTripped(
         return true;
       }
     }
+    // Host disk (Issue #226): a host short of room must not start more
+    // agent work — every byte the work volume gains is a byte the host
+    // loses, and a full host takes the running work and the host down.
+    if (deps.checkHostDisk) {
+      const disk = await deps.checkHostDisk();
+      if (disk.level === "low") {
+        if (!pool.hostDiskLow) {
+          deps.logError(
+            `[HOST_DISK_LOW] ${disk.detail} — draining the issue pool before claiming further work (Issue #226).`,
+          );
+        }
+        pool.hostDiskLow = true;
+        pool.draining = true;
+        return true;
+      }
+    }
     if (await deps.isRateLimitActive()) {
       deps.log(
         `[${slotId}] Rate limit signal active — no further claims; draining the pool.`,
@@ -2370,6 +2407,8 @@ export async function runCoreLoop(
   let shutdownRequested = false;
   /** Set when the daily spend ceiling stopped the cycle (Issue #3648). */
   let spendCeilingReached = false;
+  /** Set once the low host disk has been reported this cycle (Issue #226). */
+  let hostDiskLowReported = false;
   // Issue #2602: tracks whether the latest iteration's health checks passed.
   // Starts false so a run that never reaches a healthy iteration (e.g. Claude
   // 401 every cycle) does not report healthy at end of run.
@@ -2600,6 +2639,25 @@ export async function runCoreLoop(
               );
               spendCeilingReached = true;
               break;
+            }
+          }
+
+          // --- Host disk (Issue #226) ---
+          // A host short of room claims nothing new this iteration, but the
+          // maintenance passes below still run — they are what lands the
+          // PRs already open and what reclaims space. Reported once per
+          // cycle; the pool's own pre-claim guard reports a mid-pool drop.
+          let skipScanForHostDisk = false;
+          if (deps.checkHostDisk) {
+            const disk = await deps.checkHostDisk();
+            if (disk.level === "low") {
+              skipScanForHostDisk = true;
+              if (!hostDiskLowReported) {
+                hostDiskLowReported = true;
+                deps.logError(
+                  `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues this cycle; maintenance continues (Issue #226).`,
+                );
+              }
             }
           }
 
@@ -2934,15 +2992,18 @@ export async function runCoreLoop(
           let scanResult: {
             exitOuterLoop: boolean;
             spendCeilingReached?: boolean;
+            hostDiskLow?: boolean;
           };
           try {
-            scanResult = await runIssueScanLoop(
-              config,
-              deps,
-              tracker,
-              endTime,
-              () => shutdownRequested,
-            );
+            scanResult = skipScanForHostDisk
+              ? { exitOuterLoop: false }
+              : await runIssueScanLoop(
+                config,
+                deps,
+                tracker,
+                endTime,
+                () => shutdownRequested,
+              );
           } finally {
             recordStepDuration("Issue Scanning", deps.now() - scanStartMs);
             exitPriority();
@@ -2956,6 +3017,11 @@ export async function runCoreLoop(
             // #4180): end the cycle the way the serial gate above does.
             spendCeilingReached = true;
             break;
+          }
+          if (scanResult.hostDiskLow) {
+            // The pool already reported the drop (Issue #226); the next
+            // iteration's own check must not repeat it.
+            hostDiskLowReported = true;
           }
 
           // --- Idle-task issue filer (Issue #2005, #2023, #2048) ---
