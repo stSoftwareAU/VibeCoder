@@ -55,6 +55,7 @@ function makeGitDeps(
           committedNewChanges: false,
           commitsPushed: 1,
           finalUnpushedCount: 0,
+          finalUnpushedSource: "remote-head" as const,
         },
       }),
     ...overrides,
@@ -135,6 +136,7 @@ Deno.test("recoverAndRetryPush - a retry that still leaves commits reports the r
           committedNewChanges: false,
           commitsPushed: 0,
           finalUnpushedCount: 2,
+          finalUnpushedSource: "remote-head" as const,
         },
       }),
   });

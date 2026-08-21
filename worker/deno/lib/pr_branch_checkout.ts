@@ -105,21 +105,32 @@ export async function checkoutPrBranchAtRemoteHead(
         ok: false,
         error: new Error(
           `Failed to create branch '${branchName}' from its remote head: ` +
-            `${stderr || (created.ok ? `exit ${created.value.code}` : created.error.message)}`,
+            `${
+              stderr || (created.ok
+                ? `exit ${created.value.code}`
+                : created.error.message)
+            }`,
         ),
       };
     }
     return { ok: true, value: "created-from-remote" };
   }
 
-  const checkedOut = await runGitCommand(buildCheckoutArgs(branchName), options);
+  const checkedOut = await runGitCommand(
+    buildCheckoutArgs(branchName),
+    options,
+  );
   if (!checkedOut.ok || checkedOut.value.code !== 0) {
     const stderr = checkedOut.ok ? checkedOut.value.stderr.trim() : "";
     return {
       ok: false,
       error: new Error(
         `Failed to checkout branch '${branchName}': ` +
-          `${stderr || (checkedOut.ok ? `exit ${checkedOut.value.code}` : checkedOut.error.message)}`,
+          `${
+            stderr || (checkedOut.ok
+              ? `exit ${checkedOut.value.code}`
+              : checkedOut.error.message)
+          }`,
       ),
     };
   }
@@ -138,7 +149,11 @@ export async function checkoutPrBranchAtRemoteHead(
       ok: false,
       error: new Error(
         `Could not compare '${branchName}' with its remote head: ` +
-          `${stderr || (aheadResult.ok ? `exit ${aheadResult.value.code}` : aheadResult.error.message)}`,
+          `${
+            stderr || (aheadResult.ok
+              ? `exit ${aheadResult.value.code}`
+              : aheadResult.error.message)
+          }`,
       ),
     };
   }
@@ -175,7 +190,10 @@ export async function checkoutPrBranchAtRemoteHead(
       ok: false,
       error: new Error(
         `Failed to reset '${branchName}' onto its remote head: ` +
-          `${stderr || (reset.ok ? `exit ${reset.value.code}` : reset.error.message)}`,
+          `${
+            stderr ||
+            (reset.ok ? `exit ${reset.value.code}` : reset.error.message)
+          }`,
       ),
     };
   }

@@ -64,7 +64,8 @@ export async function ensureAllBranchesFetchRefspec(
       ok: false,
       error: new Error(
         `Failed to read remote.origin.fetch: ${
-          existing.value.stderr.trim() || `git config exit ${existing.value.code}`
+          existing.value.stderr.trim() ||
+          `git config exit ${existing.value.code}`
         }`,
       ),
     };

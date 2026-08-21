@@ -33,6 +33,12 @@ import {
   type HeadCommitInfo,
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
+// Re-exported so callers and tests can reason about the scan's supersession
+// decision without reaching past the module that makes it (Issue #211).
+export {
+  FLEET_PUSH_COOL_OFF_MS,
+  isSupersededByFleetPush,
+} from "./pr_feedback_supersede.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import type { IssueCache } from "./issue_cache.ts";

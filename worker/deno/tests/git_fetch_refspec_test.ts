@@ -92,7 +92,9 @@ Deno.test("ensureAllBranchesFetchRefspec - repairs a single-branch clone so feat
 });
 
 Deno.test("ensureAllBranchesFetchRefspec - leaves a full clone untouched and is idempotent (Issue #211)", async () => {
-  const { tmp, downstream } = await makeSingleBranchClone("refspec_idempotent_");
+  const { tmp, downstream } = await makeSingleBranchClone(
+    "refspec_idempotent_",
+  );
   try {
     const first = await ensureAllBranchesFetchRefspec({ cwd: downstream });
     assert(first.ok);

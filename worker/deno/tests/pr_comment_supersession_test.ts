@@ -159,7 +159,18 @@ Deno.test("fetchPrHeadCommit - returns null when the API call fails", async () =
 // findPrCommentsToFix — the scan must not claim a superseded comment
 // ---------------------------------------------------------------------------
 
-/** gh mock reproducing NEAT-AI-core #557: comment at 04:49, fleet push 04:55. */
+/** An ISO timestamp `minutes` before now. */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
+/**
+ * The scan's comment, relative to the real clock: the fleet-push deferral is
+ * bounded by a cool-off window, so a fixed date would silently expire.
+ */
+const SCAN_COMMENT_AT = minutesAgo(11);
+
+/** gh mock reproducing NEAT-AI-core #557: a comment, then a fleet push. */
 function makeGh(headCommitJson: string): (args: string[]) => Promise<string> {
   return (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -175,7 +186,7 @@ function makeGh(headCommitJson: string): (args: string[]) => Promise<string> {
           id: 5365332005,
           body: "Please fix the quality issues.",
           thumbs_up: 0,
-          created_at: HUMAN_COMMENT_AT,
+          created_at: SCAN_COMMENT_AT,
         },
       ]));
     }
@@ -202,7 +213,7 @@ function scanOptions(
 
 Deno.test("findPrCommentsToFix - does not claim a comment a fleet push already superseded (Issue #211)", async () => {
   const result = await findPrCommentsToFix(scanOptions(makeGh(JSON.stringify({
-    committedAt: "2026-08-21T04:55:29Z",
+    committedAt: minutesAgo(5),
     authorLogin: "stservice",
     committerLogin: null,
   }))));
@@ -219,14 +230,17 @@ Deno.test("findPrCommentsToFix - does not claim a comment a fleet push already s
 
 Deno.test("findPrCommentsToFix - still claims a comment written after the fleet push (Issue #211)", async () => {
   const result = await findPrCommentsToFix(scanOptions(makeGh(JSON.stringify({
-    committedAt: "2026-08-21T04:30:00Z",
+    committedAt: minutesAgo(30),
     authorLogin: "stservice",
     committerLogin: null,
   }))));
 
   assert(result.ok);
   if (result.ok) {
-    assert(result.value, "feedback newer than the last fleet push is actionable");
+    assert(
+      result.value,
+      "feedback newer than the last fleet push is actionable",
+    );
     assertEquals(result.value.prNumber, 557);
     assertEquals(result.value.commentId, "5365332005");
   }
@@ -234,7 +248,7 @@ Deno.test("findPrCommentsToFix - still claims a comment written after the fleet 
 
 Deno.test("findPrCommentsToFix - still claims a comment when a human made the last push (Issue #211)", async () => {
   const result = await findPrCommentsToFix(scanOptions(makeGh(JSON.stringify({
-    committedAt: "2026-08-21T05:10:00Z",
+    committedAt: minutesAgo(2),
     authorLogin: "nleck",
     committerLogin: "nleck",
   }))));

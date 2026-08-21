@@ -22,6 +22,13 @@ const BRANCH = "issue-556-fix";
 const HEAD_SHA = "5827e605aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const FLEET_HOST = "stservice";
 const HUMAN = "nleck";
+/** Pinned clock: the deferral is bounded by a cool-off window (Issue #211). */
+const NOW = Date.parse("2026-08-21T05:00:00Z");
+
+/** An ISO timestamp `minutes` before the real clock's now. */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
+}
 
 function makeSilentLogger(): Logger {
   const noop = () => {};
@@ -53,6 +60,7 @@ Deno.test("isSupersededByFleetPush - a later fleet push supersedes the comment",
         committedAt: "2026-08-21T04:55:29Z",
       },
       fleetAuthors: ["vibe-bot", FLEET_HOST],
+      now: NOW,
     }),
     true,
   );
@@ -101,6 +109,7 @@ Deno.test("isSupersededByFleetPush - matches the fleet login case-insensitively"
         committedAt: "2026-08-21T04:55:29Z",
       },
       fleetAuthors: [FLEET_HOST],
+      now: NOW,
     }),
     true,
   );
@@ -191,16 +200,18 @@ function makeScanOptions(
   };
 }
 
+// A fleet push inside the cool-off window, relative to the real clock so the
+// scan tests exercise the window rather than a date that has since expired.
 const FLEET_HEAD_COMMIT = JSON.stringify({
   sha: HEAD_SHA,
   authorLogin: FLEET_HOST,
   committerLogin: FLEET_HOST,
-  committedAt: "2026-08-21T04:55:29Z",
+  committedAt: minutesAgo(5),
 });
 
 Deno.test("findPrCommentsToFix - does not claim a comment a fleet push already answered (Issue #211)", async () => {
   const result = await findPrCommentsToFix(
-    makeScanOptions(makeGh("2026-08-21T04:49:36Z", FLEET_HEAD_COMMIT)),
+    makeScanOptions(makeGh(minutesAgo(11), FLEET_HEAD_COMMIT)),
   );
   assert(result.ok, "scan should succeed");
   assertEquals(
@@ -212,7 +223,7 @@ Deno.test("findPrCommentsToFix - does not claim a comment a fleet push already a
 
 Deno.test("findPrCommentsToFix - still claims a comment made after the fleet push (Issue #211)", async () => {
   const result = await findPrCommentsToFix(
-    makeScanOptions(makeGh("2026-08-21T05:10:00Z", FLEET_HEAD_COMMIT)),
+    makeScanOptions(makeGh(minutesAgo(1), FLEET_HEAD_COMMIT)),
   );
   assert(result.ok, "scan should succeed");
   assert(result.value !== null, "fresh feedback must still be actionable");
@@ -226,7 +237,7 @@ Deno.test("findPrCommentsToFix - claims the comment when the head commit cannot 
     if (key.includes(`commits/${HEAD_SHA}`)) {
       return Promise.reject(new Error("gh api failed"));
     }
-    return makeGh("2026-08-21T04:49:36Z", FLEET_HEAD_COMMIT)(args);
+    return makeGh(minutesAgo(11), FLEET_HEAD_COMMIT)(args);
   };
   const result = await findPrCommentsToFix(makeScanOptions(gh));
   assert(result.ok, "scan should succeed");

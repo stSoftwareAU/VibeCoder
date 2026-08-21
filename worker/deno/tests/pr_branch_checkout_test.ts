@@ -109,7 +109,10 @@ Deno.test("checkoutPrBranchAtRemoteHead - resets a stale local branch onto the s
     const remote = await runGit(["rev-parse", `refs/heads/${branch}`], sibling);
     const local = await runGit(["rev-parse", "HEAD"], worker);
     assertEquals(local.stdout.trim(), remote.stdout.trim());
-    assertEquals(await Deno.readTextFile(`${worker}/feature.txt`), "one\ntwo\n");
+    assertEquals(
+      await Deno.readTextFile(`${worker}/feature.txt`),
+      "one\ntwo\n",
+    );
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

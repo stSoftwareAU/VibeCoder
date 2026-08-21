@@ -127,7 +127,7 @@ match wins and the loop restarts.
    with a `UNAUTHORISED_REVIEW_SKIPPED` security log (Issue #185).
    A comment a **sibling fleet host has already pushed against** is not
    claimed: if a fleet author pushed to the PR after the comment was written,
-   and that push is less than 30 minutes old, the comment is left for the next
+   and that push is less than 15 minutes old, the comment is left for the next
    scan to re-evaluate (Issue #211). The window is a de-duplication guard, not
    a veto — an older fleet push never suppresses feedback permanently.
 2. **Checkout** — Checkout the PR branch in the target repo.

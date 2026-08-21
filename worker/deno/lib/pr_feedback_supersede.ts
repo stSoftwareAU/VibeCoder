@@ -13,8 +13,17 @@
  * unknown — no timestamp, no head commit, an unparseable date — is *not*
  * superseded, so feedback is never silently dropped.
  *
+ * The deferral is a de-duplication window, never a veto: once the fleet push is
+ * older than {@link FLEET_PUSH_COOL_OFF_MS} the comment becomes actionable
+ * again. Without that expiry a single fleet push would suppress a human's
+ * comment on that head for as long as the head stood — the comment would starve
+ * rather than be re-evaluated.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
+
+/** How long a fleet push defers feedback on the same PR (15 minutes). */
+export const FLEET_PUSH_COOL_OFF_MS = 15 * 60 * 1000;
 
 /** The PR head commit, as far as the scan can see it. */
 export interface HeadCommitInfo {
@@ -36,14 +45,20 @@ export interface SupersedeCheck {
   headCommit?: HeadCommitInfo | null;
   /** Fleet logins whose pushes count as the fleet answering the comment. */
   fleetAuthors: readonly string[];
+  /** Now, in epoch milliseconds. Defaults to the current time. */
+  now?: number;
+  /** Override the cool-off window; defaults to {@link FLEET_PUSH_COOL_OFF_MS}. */
+  coolOffMs?: number;
 }
 
 /**
  * Whether a fleet push has already superseded this comment (Issue #211).
  *
- * @param check - Comment timestamp, head commit, and the fleet login set
+ * @param check - Comment timestamp, head commit, the fleet login set, and the
+ *   optional clock and cool-off window
  * @returns True only when a fleet account pushed the head commit after the
- *   comment was written; false whenever the answer is not knowable.
+ *   comment was written and within the cool-off window; false whenever the
+ *   answer is not knowable.
  */
 export function isSupersededByFleetPush(check: SupersedeCheck): boolean {
   const commentTime = parseTimestamp(check.commentCreatedAt);
@@ -55,6 +70,11 @@ export function isSupersededByFleetPush(check: SupersedeCheck): boolean {
   const pushTime = parseTimestamp(head.committedAt);
   if (pushTime === null) return false;
   if (pushTime <= commentTime) return false;
+
+  // The deferral expires: an older push must not suppress the comment forever.
+  const now = check.now ?? Date.now();
+  const coolOffMs = check.coolOffMs ?? FLEET_PUSH_COOL_OFF_MS;
+  if (now - pushTime >= coolOffMs) return false;
 
   const fleet = new Set(
     check.fleetAuthors.map((login) => login.trim().toLowerCase()).filter((

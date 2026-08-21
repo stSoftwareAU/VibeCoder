@@ -65,8 +65,7 @@ export function isSupersededByFleetPush(input: SupersessionInput): boolean {
   const { commentCreatedAt, headCommit, fleetAuthors } = input;
   if (!headCommit) return false;
 
-  const pushedByFleet =
-    isFleetLogin(headCommit.authorLogin, fleetAuthors) ||
+  const pushedByFleet = isFleetLogin(headCommit.authorLogin, fleetAuthors) ||
     isFleetLogin(headCommit.committerLogin, fleetAuthors);
   if (!pushedByFleet) return false;
 
@@ -98,7 +97,7 @@ export async function fetchPrHeadCommit(
       "api",
       `repos/${repo}/commits/${headSha}`,
       "--jq",
-      '{committedAt: .commit.committer.date, authorLogin: (.author.login // null), committerLogin: (.committer.login // null)}',
+      "{committedAt: .commit.committer.date, authorLogin: (.author.login // null), committerLogin: (.committer.login // null)}",
     ]);
     const parsed: unknown = JSON.parse(output);
     if (parsed === null || typeof parsed !== "object") return null;

@@ -13,10 +13,7 @@ import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
-import {
-  countUnpushedCommits,
-  describeUnpushedCommits,
-} from "./git_remote_head.ts";
+import { describeUnpushedCommits } from "./git_remote_head.ts";
 import { assertSafeGitRef, buildPushArgs } from "./git_ref_args.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
@@ -403,6 +400,20 @@ export async function pushUnpushedCommits(
 }
 
 /**
+ * What {@link CommitAndPushPendingResult.finalUnpushedCount} was measured
+ * against (Issue #211).
+ *
+ * A count is only proof that the work landed when it was taken against the
+ * branch's own head on the remote, so the reference point is reported
+ * alongside the number rather than left for the reader to assume.
+ */
+export type FinalUnpushedSource =
+  /** Counted against the branch's head on origin — an authoritative answer. */
+  | "remote-head"
+  /** Origin has no such branch yet, so every local commit is unpushed. */
+  | "remote-absent";
+
+/**
  * Result of {@link commitAndPushPending}.
  */
 export interface CommitAndPushPendingResult {
@@ -412,6 +423,8 @@ export interface CommitAndPushPendingResult {
   commitsPushed: number;
   /** Number of commits still unpushed after the push attempt (0 = clean). */
   finalUnpushedCount: number;
+  /** What {@link finalUnpushedCount} was measured against. */
+  finalUnpushedSource: FinalUnpushedSource;
 }
 
 /**
@@ -429,12 +442,15 @@ export interface CommitAndPushPendingResult {
  *      provided message.
  *   2. `pushUnpushedCommits` — push every commit ahead of origin (handles
  *      first-time push and non-fast-forward recovery internally).
- *   3. Re-count unpushed commits — `finalUnpushedCount` MUST be 0 for the
- *      caller to claim the push succeeded honestly.
+ *   3. Re-count unpushed commits against the branch's own remote head —
+ *      `finalUnpushedCount` MUST be 0, and `finalUnpushedSource` names what
+ *      that count was measured against, for the caller to claim the push
+ *      succeeded honestly.
  *
  * Callers should always invoke this at the end of any Claude-driven phase.
  * It is idempotent — when there is nothing to commit and nothing to push
- * it returns `{ committedNewChanges: false, commitsPushed: 0, finalUnpushedCount: 0 }`.
+ * it reports `committedNewChanges: false, commitsPushed: 0` and a
+ * `finalUnpushedCount` of 0.
  *
  * @param branchName - The branch to push
  * @param commitMessage - Commit message used when staging dirty working-tree changes
@@ -579,18 +595,20 @@ export async function commitAndPushPending(
   // and enough to trigger a bogus recovery and a "please check the branch
   // status" comment to a human. A count that cannot be determined is an error,
   // never a silent 0.
-  const remainingResult = await countUnpushedCommits(branchName, options);
+  const remainingResult = await describeUnpushedCommits(branchName, options);
   if (!remainingResult.ok) {
     return { ok: false, error: remainingResult.error };
   }
-  const finalUnpushedCount = remainingResult.value;
 
   return {
     ok: true,
     value: {
       committedNewChanges,
       commitsPushed: pushResult.value,
-      finalUnpushedCount,
+      finalUnpushedCount: remainingResult.value.count,
+      finalUnpushedSource: remainingResult.value.sha === null
+        ? "remote-absent"
+        : "remote-head",
     },
   };
 }

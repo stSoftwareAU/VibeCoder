@@ -6,8 +6,9 @@
  * sibling fleet host claimed the failing check and pushed a fix at 04:55Z;
  * this host claimed the same 04:49 comment at 04:57Z and burned a full agent
  * run redoing work that had already landed. When a fleet author has pushed to
- * the PR since the comment, the comment is left for the next scan to
- * re-evaluate rather than claimed on the spot.
+ * the PR since the comment, and that push is still inside the cool-off window,
+ * the comment is left for the next scan to re-evaluate rather than claimed on
+ * the spot. Once the window passes the comment is actionable again.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -26,6 +27,7 @@ const BRANCH = "issue-556-quality";
 const HUMAN = "nleck";
 const FLEET_SIBLING = "stservice";
 const HOST_USER = "vibe-bot";
+const HEAD_SHA = "5827e605aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 function makeSilentLogger(): Logger {
   const noop = () => {};
@@ -49,8 +51,8 @@ function minutesAgo(minutes: number): string {
 interface Fixture {
   /** ISO timestamp of the human's comment. */
   commentCreatedAt: string;
-  /** Commits the PR-commits endpoint reports. */
-  commits: Array<{ login: string; date: string }>;
+  /** Who pushed the PR head commit and when, or null when it is unreadable. */
+  headCommit: { login: string; date: string } | null;
 }
 
 function makeGh(fixture: Fixture): (args: string[]) => Promise<string> {
@@ -59,8 +61,19 @@ function makeGh(fixture: Fixture): (args: string[]) => Promise<string> {
 
     if (key.includes("pr list")) {
       return Promise.resolve(JSON.stringify([
-        { number: PR_NUMBER, headRefName: BRANCH, headRefOid: "sha557" },
+        { number: PR_NUMBER, headRefName: BRANCH, headRefOid: HEAD_SHA },
       ]));
+    }
+
+    if (key.includes(`commits/${HEAD_SHA}`)) {
+      const head = fixture.headCommit;
+      if (head === null) return Promise.resolve("null");
+      return Promise.resolve(JSON.stringify({
+        sha: HEAD_SHA,
+        authorLogin: head.login,
+        committerLogin: head.login,
+        committedAt: head.date,
+      }));
     }
 
     if (key.includes(`issues/${PR_NUMBER}/comments`)) {
@@ -73,10 +86,6 @@ function makeGh(fixture: Fixture): (args: string[]) => Promise<string> {
           created_at: fixture.commentCreatedAt,
         },
       ]));
-    }
-
-    if (key.includes(`pulls/${PR_NUMBER}/commits`)) {
-      return Promise.resolve(JSON.stringify(fixture.commits));
     }
 
     return Promise.resolve("[]");
@@ -98,10 +107,7 @@ function makeScanOptions(fixture: Fixture): PrScanOptions {
 Deno.test("findPrCommentsToFix - skips a comment a sibling fleet push already superseded (Issue #211)", async () => {
   const result = await findPrCommentsToFix(makeScanOptions({
     commentCreatedAt: minutesAgo(8),
-    commits: [
-      { login: HOST_USER, date: minutesAgo(40) },
-      { login: FLEET_SIBLING, date: minutesAgo(2) },
-    ],
+    headCommit: { login: FLEET_SIBLING, date: minutesAgo(2) },
   }));
 
   assert(result.ok);
@@ -115,7 +121,7 @@ Deno.test("findPrCommentsToFix - skips a comment a sibling fleet push already su
 Deno.test("findPrCommentsToFix - claims a comment posted after the last fleet push (Issue #211)", async () => {
   const result = await findPrCommentsToFix(makeScanOptions({
     commentCreatedAt: minutesAgo(2),
-    commits: [{ login: FLEET_SIBLING, date: minutesAgo(20) }],
+    headCommit: { login: FLEET_SIBLING, date: minutesAgo(20) },
   }));
 
   assert(result.ok);
@@ -127,7 +133,7 @@ Deno.test("findPrCommentsToFix - claims a comment posted after the last fleet pu
 Deno.test("findPrCommentsToFix - claims a comment a human push (not a fleet push) followed (Issue #211)", async () => {
   const result = await findPrCommentsToFix(makeScanOptions({
     commentCreatedAt: minutesAgo(8),
-    commits: [{ login: HUMAN, date: minutesAgo(2) }],
+    headCommit: { login: HUMAN, date: minutesAgo(2) },
   }));
 
   assert(result.ok);
@@ -143,7 +149,7 @@ Deno.test("findPrCommentsToFix - reclaims a comment a stale fleet push never add
   // actionable again rather than starving forever.
   const result = await findPrCommentsToFix(makeScanOptions({
     commentCreatedAt: minutesAgo(300),
-    commits: [{ login: FLEET_SIBLING, date: minutesAgo(200) }],
+    headCommit: { login: FLEET_SIBLING, date: minutesAgo(200) },
   }));
 
   assert(result.ok);
@@ -154,37 +160,47 @@ Deno.test("findPrCommentsToFix - reclaims a comment a stale fleet push never add
 });
 
 Deno.test("isSupersededByFleetPush - only within the de-duplication window", () => {
-  const now = new Date("2026-08-21T05:00:00Z");
+  const now = Date.parse("2026-08-21T05:00:00Z");
   const comment = "2026-08-21T04:49:36Z";
+  const check = (
+    commentCreatedAt: string | undefined,
+    pushedAt: string | null,
+    at = now,
+  ) =>
+    isSupersededByFleetPush({
+      commentCreatedAt,
+      headCommit: pushedAt === null ? null : {
+        sha: HEAD_SHA,
+        authorLogin: FLEET_SIBLING,
+        committerLogin: null,
+        committedAt: pushedAt,
+      },
+      fleetAuthors: [HOST_USER, FLEET_SIBLING],
+      now: at,
+    });
 
   assertEquals(
-    isSupersededByFleetPush(comment, "2026-08-21T04:55:29Z", now),
+    check(comment, "2026-08-21T04:55:29Z"),
     true,
     "a fleet push two minutes ago supersedes the comment",
   );
   assertEquals(
-    isSupersededByFleetPush(comment, "2026-08-21T04:40:00Z", now),
+    check(comment, "2026-08-21T04:40:00Z"),
     false,
     "a push made before the comment cannot have addressed it",
   );
   assertEquals(
-    isSupersededByFleetPush(comment, null, now),
+    check(comment, null),
     false,
     "no fleet push means nothing to supersede it",
   );
   assertEquals(
-    isSupersededByFleetPush(undefined, "2026-08-21T04:55:29Z", now),
+    check(undefined, "2026-08-21T04:55:29Z"),
     false,
     "an undated comment is never treated as superseded",
   );
   assertEquals(
-    isSupersededByFleetPush(
-      comment,
-      "2026-08-21T04:52:00Z",
-      new Date(
-        "2026-08-21T08:00:00Z",
-      ),
-    ),
+    check(comment, "2026-08-21T04:52:00Z", Date.parse("2026-08-21T08:00:00Z")),
     false,
     "outside the window the comment becomes actionable again",
   );

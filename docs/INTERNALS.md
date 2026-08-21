@@ -1124,7 +1124,11 @@ several hosts, so a comment can be answered by a sibling before this host gets
 to it. Once a comment is otherwise actionable,
 [`pr_feedback_supersede.ts`](../worker/deno/lib/pr_feedback_supersede.ts) reads
 the PR head commit once and drops the comment when a **fleet account pushed
-that head after the comment was written**. Unknown state — no `created_at`, an
+that head after the comment was written**, and that push is still inside the
+`FLEET_PUSH_COOL_OFF_MS` (15 minute) window. The window matters: without an
+expiry a single fleet push would suppress the comment for as long as that head
+stood, so genuine feedback the push did not address would starve instead of
+being reconsidered by a later scan. Unknown state — no `created_at`, an
 unreadable head commit, an unparseable date — is never treated as superseded, so
 genuine feedback is not silently dropped.
 
@@ -1257,10 +1261,10 @@ feedback, spelling and merge-conflict paths log that message rather than a bare
 #### 🧮 "Is it pushed?" is a question for the remote
 
 The push post-condition is counted against the branch **as it stands on the
-remote** ([git_unpushed.ts](../worker/deno/lib/git_unpushed.ts)), not against
-the local remote-tracking refs. Fleet clones are `--single-branch`, so their
-fetch refspec covers the default branch only and `git push -u origin <feature>`
-never creates `refs/remotes/origin/<feature>` there. The old
+remote** ([git_remote_head.ts](../worker/deno/lib/git_remote_head.ts)), not
+against the local remote-tracking refs. Fleet clones are `--single-branch`, so
+their fetch refspec covers the default branch only and a push of a feature
+branch never creates `refs/remotes/origin/<feature>` there. The old
 `rev-list --count HEAD --not --remotes=origin` probe therefore reported a
 landed push as entirely unpushed — live, `commitsPushed=4
 finalUnpushedCount=4`, a bogus recovery attempt, a "please check the branch
@@ -1268,22 +1272,23 @@ status" comment to a human, and a `merge-conflict` label on a mergeable PR.
 
 ```mermaid
 flowchart TD
-    A["countUnpushedCommits(branch)"] --> B{"origin/branch contains HEAD?"}
-    B -- yes --> C["0 — source: tracking-ref"]
-    B -- "no / no such ref" --> D["git ls-remote origin refs/heads/branch"]
-    D -- "tip returned" --> E["fetch it if unknown locally<br/>count tip..HEAD"]
-    E --> F["source: remote-head"]
-    D -- "no such branch" --> G["local count<br/>source: remote-absent"]
-    D -- "lookup failed" --> H["local count<br/>source: local-fallback + detail"]
-    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
-    style F fill:#2d6a4f,stroke:#1b4332,color:#fff
+    A["describeUnpushedCommits(branch)"] --> B{"refs/remotes/origin/branch exists?"}
+    B -- yes --> C["remote head = tracking ref"]
+    B -- no --> D["git ls-remote --heads origin branch"]
+    D -- "tip returned" --> C
+    D -- "no such branch" --> G["count HEAD --not --remotes=origin<br/>finalUnpushedSource: remote-absent"]
+    D -- "lookup failed" --> H["error Result carrying git's stderr"]
+    C --> E["fetch the tip if unknown locally<br/>count tip..HEAD<br/>finalUnpushedSource: remote-head"]
+    style E fill:#2d6a4f,stroke:#1b4332,color:#fff
     style H fill:#9d0208,stroke:#6a040f,color:#fff
 ```
 
-Only an authoritative zero (`tracking-ref` or `remote-head`) may short-circuit
-a push or claim the work landed. A `local-fallback` count means the remote
-could not be consulted; it is logged with the reason so a degraded answer is
-never mistaken for proof.
+`commitAndPushPending()` reports that reference point back to the caller as
+`finalUnpushedSource`, so a count is never read as proof without knowing what
+it was measured against. Only a `remote-head` zero says the work landed; a
+`remote-absent` count is the first-push case. A count that cannot be
+established at all is an error Result carrying git's own stderr — never a
+fabricated 0.
 
 **Branch updates judge the PR, not the clone** — `updatePrBranch()` first
 fast-forwards the checked-out branch onto its remote head
