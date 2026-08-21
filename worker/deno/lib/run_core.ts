@@ -1617,6 +1617,9 @@ type SlotStop =
  *   pool-wide, so N slots cannot multiply the failure budget;
  * - `exitOuterLoop` from any slot drains the rest: running slots finish,
  *   no new claims;
+ * - a slot that succeeds sleeps `sleepInterval` and claims again rather
+ *   than retiring (Issue #178) — retiring parked it until every sibling
+ *   drained, degrading two slots to one after the first completion;
  * - the pool is fully drained before this returns, so the serial
  *   priorities that follow never overlap with issue work.
  *
@@ -1831,6 +1834,8 @@ async function runSlot(
       continue;
     }
 
+    /** Set by a successful claim so the settle sleep runs holding no repo. */
+    let claimSucceeded = false;
     try {
       // Every line written on behalf of this claim — the pool's own, the
       // issue phases, the agent's progress heartbeats — is attributed to
@@ -1863,13 +1868,16 @@ async function runSlot(
         pool.draining = true;
         return;
       }
-      if (outcome === "success") {
-        // The serial loop returns to the priority ladder after one
-        // success; the pool keeps its other slots busy but this slot
-        // yields the same way, so the ladder runs once every slot has
-        // finished or found no work.
-        return;
-      }
+      // A success must NOT retire the slot (Issue #178). The serial loop's
+      // `break` hands back to the outer loop, which runs the maintenance
+      // ladder and re-scans seconds later — cheap. In the pool a return
+      // parks the slot until EVERY sibling drains, so one long execute
+      // next door left `max_concurrent_issues: 2` running as one slot plus
+      // an idle one for the rest of the cycle. The slot claims again after
+      // the settle sleep below, re-gated by `slotShouldStop` and the
+      // pre-claim guards at the top of the loop; the maintenance ladder
+      // runs when the pool next drains.
+      claimSucceeded = outcome === "success";
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       deps.logError(
@@ -1908,6 +1916,16 @@ async function runSlot(
       }
     } finally {
       pool.registry.release(issue.repo);
+    }
+
+    // Settle sleep after a success (Issue #178): the same `sleepInterval`
+    // the serial loop earns between issues, so a slot paces its claims
+    // instead of hot-looping. Taken AFTER the registry hold is released so
+    // a sibling is never locked out of the repository while this slot
+    // idles.
+    if (claimSucceeded) {
+      const settleMs = Math.max(0, config.sleepInterval) * 1000;
+      if (settleMs > 0) await deps.sleep(settleMs);
     }
   }
 }
