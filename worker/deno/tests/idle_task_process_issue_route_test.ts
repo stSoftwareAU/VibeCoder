@@ -370,3 +370,49 @@ Deno.test(
     assertEquals(outcome, { routed: false });
   },
 );
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - forwards the cycle deadline to the claim handler",
+  async () => {
+    // Issue #186: without this the scan's Claude budget never sees the
+    // deadline and a late claim runs a full hour past the cycle.
+    const { logger } = makeLogger();
+    let seenDeadline: number | undefined;
+    const deadline = 1_700_000_000_000;
+
+    await routeIdleTaskInProcessIssue(
+      { ...WRAPPER_INPUT, cycleDeadlineEpochMs: deadline },
+      {
+        logger,
+        handleIdleTaskFn: (opts) => {
+          seenDeadline = opts.cycleDeadlineEpochMs;
+          return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+        },
+        ensureCloneFn: okClone,
+        ghCommandFn: () => Promise.resolve(""),
+      },
+    );
+
+    assertEquals(seenDeadline, deadline);
+  },
+);
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - omits the deadline when the caller has none",
+  async () => {
+    const { logger } = makeLogger();
+    let sawKey = true;
+
+    await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
+      logger,
+      handleIdleTaskFn: (opts) => {
+        sawKey = "cycleDeadlineEpochMs" in opts;
+        return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+      },
+      ensureCloneFn: okClone,
+      ghCommandFn: () => Promise.resolve(""),
+    });
+
+    assertEquals(sawKey, false);
+  },
+);
