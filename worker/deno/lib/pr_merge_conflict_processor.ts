@@ -519,19 +519,23 @@ async function resolveConflict(
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
-    // Issue #211: say how the count was established. A bare
-    // "N commit(s) could not be pushed" left an operator guessing whether the
-    // remote rejected the push or the worker simply could not read the remote.
-    const source = finalise.value.finalUnpushedSource ?? "unknown";
-    const why = finalise.value.finalUnpushedDetail
-      ? `; ${finalise.value.finalUnpushedDetail}`
-      : "";
+    // Issue #211: `detail=5 commit(s) could not be pushed` with no git output
+    // told an operator nothing. Ask git what the remote would say — a dry-run
+    // push has no side effects and names the rejection reason.
+    const dryRun = await git(
+      run,
+      ["push", "--dry-run", "--end-of-options", "origin", branchName],
+      workDir,
+    );
+    const gitDetail = (dryRun.stderr + dryRun.stdout).trim().split("\n")
+      .slice(-3).join(" | ");
     return await failAttempt(
       input,
       processorDeps,
       conflictedFiles,
-      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed ` +
-        `(counted against ${source}${why})`,
+      `${finalise.value.finalUnpushedCount} commit(s) could not be pushed: ${
+        gitDetail || "git reported no output"
+      }`,
       attemptNumber,
     );
   }

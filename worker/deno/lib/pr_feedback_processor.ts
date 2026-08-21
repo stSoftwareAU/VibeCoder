@@ -517,23 +517,23 @@ async function _processFeedbackWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
-      // Issue #211: how the count was established — a `local-fallback`
-      // source means the remote could not be consulted, not that the push
-      // failed.
-      unpushedSource: finaliseResult.value.finalUnpushedSource,
-      unpushedDetail: finaliseResult.value.finalUnpushedDetail,
     });
 
     if (finalUnpushedCount > 0) {
       logger.warn("Local commits remain after push, attempting recovery", {
         unpushed: finalUnpushedCount,
-        unpushedSource: finaliseResult.value.finalUnpushedSource,
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
         input.branchName,
         { cwd: processorDeps.workDir },
       );
-      let retryDetail: string | undefined;
+      // Issue #211: keep the reason the recovery failed — it names the step
+      // (rebase conflict, failed auto-resolution, refused --force-with-lease)
+      // and carries git's stderr. Without it the log said only "push failed"
+      // and the human got "please check the branch status" with no cause.
+      let failureDetail = recoveryResult.ok
+        ? undefined
+        : recoveryResult.error.message;
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
@@ -546,22 +546,20 @@ async function _processFeedbackWithHeartbeat(
           finalUnpushedCount = retryFinalise.value.finalUnpushedCount;
           if (retryFinalise.value.finalUnpushedCount === 0) {
             hasChanges = true;
+          } else {
+            failureDetail =
+              `retry after rebase recovery left ${finalUnpushedCount} commit(s) unpushed`;
           }
         } else {
-          retryDetail = retryFinalise.error.message;
+          failureDetail = retryFinalise.error.message;
         }
       }
       if (finalUnpushedCount > 0) {
-        // Issue #211: the recovery step and git's own stderr, not a bare
-        // "push failed" a human cannot act on.
         logger.error("Push failed after recovery attempt", {
           repo,
           prNumber,
-          unpushed: finalUnpushedCount,
-          recoveryError: recoveryResult.ok
-            ? undefined
-            : recoveryResult.error.message,
-          retryError: retryDetail,
+          recoveryStep: recoveryResult.ok ? "retry-push" : "recovery",
+          detail: failureDetail ?? "no detail reported",
         });
       }
     }

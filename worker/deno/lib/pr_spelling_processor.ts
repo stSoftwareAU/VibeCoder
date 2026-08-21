@@ -385,23 +385,21 @@ async function _processSpellingWithHeartbeat(
       committedNewChanges,
       commitsPushed,
       finalUnpushedCount,
-      // Issue #211: how the count was established — a `local-fallback`
-      // source means the remote could not be consulted, not that the push
-      // failed.
-      unpushedSource: finaliseResult.value.finalUnpushedSource,
-      unpushedDetail: finaliseResult.value.finalUnpushedDetail,
     });
 
     if (finalUnpushedCount > 0) {
       logger.warn("Local commits remain after push, attempting recovery", {
         unpushed: finalUnpushedCount,
-        unpushedSource: finaliseResult.value.finalUnpushedSource,
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
         input.branchName,
         { cwd: processorDeps.workDir },
       );
-      let retryDetail: string | undefined;
+      // Issue #211: keep the reason the recovery failed — it names the step
+      // that failed and carries git's stderr.
+      let failureDetail = recoveryResult.ok
+        ? undefined
+        : recoveryResult.error.message;
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
@@ -415,21 +413,17 @@ async function _processSpellingWithHeartbeat(
           pushSucceeded = true;
           finalUnpushedAfterPush = 0;
         } else {
-          retryDetail = retryFinalise.ok
-            ? `${retryFinalise.value.finalUnpushedCount} commit(s) still unpushed`
+          failureDetail = retryFinalise.ok
+            ? `retry after rebase recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
             : retryFinalise.error.message;
         }
       }
       if (!pushSucceeded) {
-        // Issue #211: name the failing recovery step and carry git's stderr.
         logger.error("Push failed after recovery attempt", {
           repo,
           prNumber,
-          unpushed: finalUnpushedAfterPush,
-          recoveryError: recoveryResult.ok
-            ? undefined
-            : recoveryResult.error.message,
-          retryError: retryDetail,
+          recoveryStep: recoveryResult.ok ? "retry-push" : "recovery",
+          detail: failureDetail ?? "no detail reported",
         });
       }
     }
