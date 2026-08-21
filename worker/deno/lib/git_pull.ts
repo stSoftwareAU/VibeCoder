@@ -468,6 +468,132 @@ export async function syncMilestoneBranchWithDefault(
   };
 }
 
+/**
+ * Bring the checked-out branch to origin's head before it is judged
+ * (Issue #211).
+ *
+ * The branch-update pass runs `git checkout <branch>` in a long-lived
+ * workdir, so it can pick up a **stale local copy** of the branch left by an
+ * earlier pass. Merging the base into that old tree finds conflicts that do
+ * not exist on the branch GitHub is actually merging — which is how a
+ * mergeable PR ended up labelled `merge-conflict` (NEAT-AI-core #557).
+ *
+ * - Local behind or equal to origin → fast-forward to origin's head.
+ * - Local ahead of origin (genuine unpushed work) → refuse, loudly. Those
+ *   commits are never reset away, and "I hold unpushed work" is reported as
+ *   itself rather than mislabelled a base-branch conflict.
+ * - Branch absent from origin → nothing to sync; carry on.
+ *
+ * @param branchName - The PR head branch
+ * @param options - Git command options
+ * @returns Ok with a note on what happened, or a loud error
+ */
+async function alignBranchWithRemoteHead(
+  branchName: string,
+  options: GitCommandOptions = {},
+): Promise<Result<string>> {
+  const fetchResult = await runGitCommand(
+    buildFetchArgs("origin", branchName),
+    options,
+  );
+  if (!fetchResult.ok || fetchResult.value.code !== 0) {
+    const stderr = fetchResult.ok
+      ? fetchResult.value.stderr.trim()
+      : fetchResult.error.message;
+    if (/couldn't find remote ref|no such ref/i.test(stderr)) {
+      return { ok: true, value: `Branch '${branchName}' is not on origin yet` };
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot align '${branchName}' with origin before evaluating it: ${
+          stderr || "git reported no stderr"
+        }`,
+      ),
+    };
+  }
+
+  const remoteHeadResult = await runGitCommand(
+    ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"],
+    options,
+  );
+  const remoteHead = remoteHeadResult.ok && remoteHeadResult.value.code === 0
+    ? remoteHeadResult.value.stdout.trim()
+    : "";
+  if (!remoteHead) {
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot align '${branchName}' with origin: FETCH_HEAD did not resolve`,
+      ),
+    };
+  }
+
+  const aheadResult = await runGitCommand(
+    ["rev-list", "--count", "--end-of-options", `${remoteHead}..HEAD`],
+    options,
+  );
+  const ahead = aheadResult.ok && aheadResult.value.code === 0
+    ? parseInt(aheadResult.value.stdout.trim(), 10) || 0
+    : 0;
+  if (ahead > 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `PR branch '${branchName}' holds ${ahead} unpushed commit(s) locally, ` +
+          `so it cannot be evaluated against its base — origin's head is what ` +
+          `GitHub merges (Issue #211). Push or discard the local commits first.`,
+      ),
+    };
+  }
+
+  const localHeadResult = await runGitCommand(["rev-parse", "HEAD"], options);
+  const localHead = localHeadResult.ok && localHeadResult.value.code === 0
+    ? localHeadResult.value.stdout.trim()
+    : "";
+  if (localHead === remoteHead) {
+    return { ok: true, value: `Branch '${branchName}' already at origin's head` };
+  }
+
+  // Nothing local-only to lose (ahead === 0), but never discard a dirty tree.
+  const statusResult = await runGitCommand(["status", "--porcelain"], options);
+  if (
+    statusResult.ok && statusResult.value.code === 0 &&
+    statusResult.value.stdout.trim().length > 0
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        `PR branch '${branchName}' has uncommitted changes, so it cannot be ` +
+          `brought to origin's head for evaluation (Issue #211)`,
+      ),
+    };
+  }
+
+  const resetResult = await runGitCommand(
+    ["reset", "--hard", "--end-of-options", remoteHead],
+    options,
+  );
+  if (!resetResult.ok || resetResult.value.code !== 0) {
+    const stderr = resetResult.ok
+      ? resetResult.value.stderr.trim()
+      : resetResult.error.message;
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to bring '${branchName}' to origin's head: ${
+          stderr || "git reported no stderr"
+        }`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: `Branch '${branchName}' fast-forwarded to origin's head`,
+  };
+}
+
 /** Error name for a PR branch left untouched because its changes conflict (Issue #4373). */
 export const PR_BRANCH_CONFLICT_ERROR = "PrBranchConflict";
 
@@ -541,6 +667,14 @@ export async function updatePrBranch(
   const aligned = await checkoutPrBranchAtRemoteHead(branchName, options);
   if (!aligned.ok) {
     return { ok: false, error: aligned.error };
+  }
+
+  // Issue #211: judge origin's head, not whatever this workdir happens to
+  // hold. A stale local copy of the branch produces conflicts that do not
+  // exist on the branch GitHub merges.
+  const alignResult = await alignBranchWithRemoteHead(branchName, options);
+  if (!alignResult.ok) {
+    return { ok: false, error: alignResult.error };
   }
 
   // Ensure enough history for range detection on a shallow clone (Issue #1502)

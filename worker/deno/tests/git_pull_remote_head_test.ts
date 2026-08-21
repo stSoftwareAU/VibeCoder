@@ -1,12 +1,12 @@
 /**
- * Tests for evaluating a PR branch against its remote head (Issue #211).
+ * Branch-update conflict detection must judge the **remote** head
+ * (Issue #211).
  *
- * The branch-update pass runs in a long-lived clone. A run that failed to
- * push leaves its commits on the local branch, and nothing ever resets it.
- * The next pass merged the base into that stale branch, hit a conflict that
- * exists only locally, and labelled a mergeable PR `merge-conflict`
- * (NEAT-AI-core #557). The PR is what lives on origin, so that is what the
- * pass must evaluate.
+ * The incident: this host's workdir still held a stale local copy of the PR
+ * branch. The branch-update pass checked that stale branch out, merged the
+ * base into it, hit a conflict that exists only in the old tree, and labelled
+ * a perfectly mergeable PR `merge-conflict` (NEAT-AI-core #557). GitHub was
+ * judging origin's head; the worker was judging a local leftover.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -15,150 +15,175 @@ import { assert, assertEquals } from "@std/assert";
 import { isPrBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 
-const BRANCH = "issue-556-feature";
+const BASE = "main";
+const BRANCH = "issue-211-remote-head";
 
-/** Bare remote + clone, with `main` seeded. */
-async function setupRepos(
-  tmpDir: string,
-): Promise<{ remotePath: string; localPath: string }> {
-  const remotePath = `${tmpDir}/remote.git`;
-  const localPath = `${tmpDir}/local`;
-
-  await Deno.mkdir(remotePath, { recursive: true });
-  await runGitCommand(["init", "--bare"], { cwd: remotePath });
-  await runGitCommand(["symbolic-ref", "HEAD", "refs/heads/main"], {
-    cwd: remotePath,
-  });
-  await runGitCommand(["clone", remotePath, localPath], { cwd: tmpDir });
-  await runGitCommand(["config", "user.email", "test@example.com"], {
-    cwd: localPath,
-  });
-  await runGitCommand(["config", "user.name", "Test User"], { cwd: localPath });
-
-  await Deno.writeTextFile(`${localPath}/README.md`, "# Test Repo\n");
-  await runGitCommand(["add", "README.md"], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "Initial commit"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
-
-  return { remotePath, localPath };
+async function git(args: string[], cwd: string): Promise<string> {
+  const result = await runGitCommand(args, { cwd });
+  if (!result.ok) throw result.error;
+  if (result.value.code !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.value.stderr}`);
+  }
+  return result.value.stdout.trim();
 }
 
-async function headSha(cwd: string): Promise<string> {
-  const result = await runGitCommand(["rev-parse", "HEAD"], { cwd });
-  return result.ok ? result.value.stdout.trim() : "";
+async function write(
+  dir: string,
+  name: string,
+  body: string,
+): Promise<void> {
+  await Deno.writeTextFile(`${dir}/${name}`, body);
+}
+
+interface Fixture {
+  tmpDir: string;
+  /** This host's clone — the one the branch-update pass runs in. */
+  workerPath: string;
+  /** A sibling fleet host's clone of the same remote. */
+  siblingPath: string;
 }
 
 /**
- * Reproduce the incident: the PR branch on origin is mergeable with the base,
- * but the local clone still carries an unpushed commit that collides with the
- * base's change to the same file.
+ * Remote with `main` and a feature branch whose first version conflicts with
+ * a later `main` change. Both clones start at that first version.
  */
-async function seedStaleLocalBranch(localPath: string): Promise<string> {
-  // The PR as it exists on origin: touches only feature.txt.
-  await runGitCommand(["checkout", "-b", BRANCH], { cwd: localPath });
-  await Deno.writeTextFile(`${localPath}/feature.txt`, "feature work\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "PR commit"], { cwd: localPath });
-  await runGitCommand(["push", "-u", "origin", BRANCH], { cwd: localPath });
-  const remoteHead = await headSha(localPath);
+async function setupFixture(): Promise<Fixture> {
+  const tmpDir = await Deno.makeTempDir({ prefix: "pr_branch_remote_head_" });
+  const remotePath = `${tmpDir}/remote.git`;
+  const workerPath = `${tmpDir}/worker`;
+  const siblingPath = `${tmpDir}/sibling`;
 
-  // The base moves on, editing shared.txt.
-  await runGitCommand(["checkout", "main"], { cwd: localPath });
-  await Deno.writeTextFile(`${localPath}/shared.txt`, "base version\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "base change"], { cwd: localPath });
-  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  await Deno.mkdir(remotePath, { recursive: true });
+  await git(["init", "--bare"], remotePath);
+  await git(["symbolic-ref", "HEAD", `refs/heads/${BASE}`], remotePath);
 
-  // A failed run leaves an unpushed commit on the local PR branch that
-  // collides with that base change.
-  await runGitCommand(["checkout", BRANCH], { cwd: localPath });
-  await Deno.writeTextFile(`${localPath}/shared.txt`, "local unpushed\n");
-  await runGitCommand(["add", "."], { cwd: localPath });
-  await runGitCommand(["commit", "-m", "unpushed local commit"], {
-    cwd: localPath,
-  });
+  await git(["clone", remotePath, workerPath], tmpDir);
+  await git(["config", "user.email", "worker@example.com"], workerPath);
+  await git(["config", "user.name", "Worker"], workerPath);
+  await write(workerPath, "shared.txt", "base line\n");
+  await git(["add", "shared.txt"], workerPath);
+  await git(["commit", "-m", "Initial commit"], workerPath);
+  await git(["push", "origin", BASE], workerPath);
 
-  return remoteHead;
+  await git(["checkout", "-b", BRANCH], workerPath);
+  await write(workerPath, "shared.txt", "feature line v1\n");
+  await git(["add", "shared.txt"], workerPath);
+  await git(["commit", "-m", "Feature v1"], workerPath);
+  await git(["push", "-u", "origin", BRANCH], workerPath);
+
+  // The base moves in a way that collides with the feature's v1 tree.
+  await git(["checkout", BASE], workerPath);
+  await write(workerPath, "shared.txt", "base line changed\n");
+  await git(["add", "shared.txt"], workerPath);
+  await git(["commit", "-m", "Base moves"], workerPath);
+  await git(["push", "origin", BASE], workerPath);
+  await git(["checkout", BRANCH], workerPath);
+
+  await git(["clone", remotePath, siblingPath], tmpDir);
+  await git(["config", "user.email", "sibling@example.com"], siblingPath);
+  await git(["config", "user.name", "Sibling"], siblingPath);
+  await git(["checkout", BRANCH], siblingPath);
+
+  return { tmpDir, workerPath, siblingPath };
 }
 
-Deno.test("updatePrBranch - refuses loudly instead of reporting a conflict that exists only on the stale local branch (Issue #211)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "remote_head_update_" });
+Deno.test("updatePrBranch - a sibling's merge on origin clears the conflict the stale local branch still shows (Issue #211)", async () => {
+  const { tmpDir, workerPath, siblingPath } = await setupFixture();
   try {
-    const { localPath } = await setupRepos(tmpDir);
-    await seedStaleLocalBranch(localPath);
-
-    const result = await updatePrBranch(BRANCH, "main", { cwd: localPath });
-
-    assertEquals(result.ok, false, "unpushed local commits must not be judged");
-    if (!result.ok) {
-      // A plain failure, never the conflict error — the conflict error is what
-      // hands the PR to the pass that labels it `merge-conflict`, and the
-      // remote PR is mergeable.
-      assertEquals(
-        isPrBranchConflictError(result.error),
-        false,
-        `must not look like a base conflict: ${result.error.message}`,
-      );
-      assert(
-        result.error.message.includes("1 commit(s)"),
-        `must name the unpushed commits: ${result.error.message}`,
-      );
+    // The sibling host resolves the conflict for real and pushes. origin's
+    // head is now mergeable; this host's local branch is not.
+    await git(["fetch", "origin", BASE], siblingPath);
+    const merge = await runGitCommand(
+      ["merge", `origin/${BASE}`, "--no-edit"],
+      { cwd: siblingPath },
+    );
+    if (!merge.ok || merge.value.code !== 0) {
+      await write(siblingPath, "shared.txt", "base line changed + feature\n");
+      await git(["add", "shared.txt"], siblingPath);
+      await git(["commit", "--no-edit"], siblingPath);
     }
+    await git(["push", "origin", BRANCH], siblingPath);
+
+    // Sanity: this host's local branch is stale and still conflicts.
+    const staleHead = await git(["rev-parse", "HEAD"], workerPath);
+    const remoteHead = await git(
+      ["ls-remote", "origin", `refs/heads/${BRANCH}`],
+      workerPath,
+    );
+    assert(
+      !remoteHead.startsWith(staleHead),
+      "fixture must leave the worker clone behind origin",
+    );
+
+    const result = await updatePrBranch(
+      BRANCH,
+      BASE,
+      { cwd: workerPath },
+      "conflicting",
+    );
+
+    assertEquals(
+      isPrBranchConflictError(result.ok ? null : result.error),
+      false,
+      `a mergeable remote head must not be reported as conflicted: ${
+        result.ok ? "" : result.error.message
+      }`,
+    );
+    assert(
+      result.ok,
+      `expected the update to succeed, got: ${
+        result.ok ? "" : result.error.message
+      }`,
+    );
+
+    // The local branch was brought to origin's head before evaluation.
+    const afterHead = await git(["rev-parse", "HEAD"], workerPath);
+    assert(
+      afterHead !== staleHead,
+      "the stale local head must not survive the update",
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-Deno.test("updatePrBranch - evaluates the sibling's remote head, not the behind local branch (Issue #211)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "remote_head_sibling_" });
+Deno.test("updatePrBranch - refuses to judge a branch holding unpushed commits, rather than calling it conflicted (Issue #211)", async () => {
+  const { tmpDir, workerPath, siblingPath } = await setupFixture();
   try {
-    const { localPath } = await setupRepos(tmpDir);
-    const siblingPath = `${tmpDir}/sibling`;
+    // A sibling pushes, and this host also has a local-only commit: the two
+    // have diverged, so origin's head is not what this tree holds.
+    await write(siblingPath, "sibling.txt", "sibling work\n");
+    await git(["add", "sibling.txt"], siblingPath);
+    await git(["commit", "-m", "Sibling commit"], siblingPath);
+    await git(["push", "origin", BRANCH], siblingPath);
 
-    // The PR as this clone last saw it.
-    await runGitCommand(["checkout", "-b", BRANCH], { cwd: localPath });
-    await Deno.writeTextFile(`${localPath}/feature.txt`, "feature work\n");
-    await runGitCommand(["add", "."], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "PR commit"], { cwd: localPath });
-    await runGitCommand(["push", "-u", "origin", BRANCH], { cwd: localPath });
+    await write(workerPath, "local.txt", "local only\n");
+    await git(["add", "local.txt"], workerPath);
+    await git(["commit", "-m", "Local-only commit"], workerPath);
 
-    // A sibling fleet host pushes to the same PR branch.
-    await runGitCommand(["clone", `${tmpDir}/remote.git`, siblingPath], {
-      cwd: tmpDir,
-    });
-    await runGitCommand(["config", "user.email", "sibling@example.com"], {
-      cwd: siblingPath,
-    });
-    await runGitCommand(["config", "user.name", "Sibling"], {
-      cwd: siblingPath,
-    });
-    await runGitCommand(["checkout", BRANCH], { cwd: siblingPath });
-    await Deno.writeTextFile(`${siblingPath}/feature.txt`, "sibling fix\n");
-    await runGitCommand(["add", "."], { cwd: siblingPath });
-    await runGitCommand(["commit", "-m", "sibling fix"], { cwd: siblingPath });
-    await runGitCommand(["push", "origin", BRANCH], { cwd: siblingPath });
-
-    // The base moves on too, so the branch is genuinely behind.
-    await runGitCommand(["checkout", "main"], { cwd: localPath });
-    await Deno.writeTextFile(`${localPath}/base.txt`, "base change\n");
-    await runGitCommand(["add", "."], { cwd: localPath });
-    await runGitCommand(["commit", "-m", "base change"], { cwd: localPath });
-    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
-    await runGitCommand(["checkout", BRANCH], { cwd: localPath });
-
-    const result = await updatePrBranch(BRANCH, "main", { cwd: localPath });
-
-    assert(result.ok, !result.ok ? result.error.message : "");
-    // The sibling's work rode through the update — the stale local head, which
-    // still held the pre-sibling content, was never what got rebased.
-    assertEquals(
-      await Deno.readTextFile(`${localPath}/feature.txt`),
-      "sibling fix\n",
+    const result = await updatePrBranch(
+      BRANCH,
+      BASE,
+      { cwd: workerPath },
+      "conflicting",
     );
-    // …and the base's change is on the branch, so it really was updated.
+
+    assert(!result.ok, "the update must not claim success");
     assertEquals(
-      await Deno.readTextFile(`${localPath}/base.txt`),
-      "base change\n",
+      isPrBranchConflictError(result.error),
+      false,
+      "unpushed local work is not a base-branch conflict and must not be labelled one",
+    );
+    assert(
+      result.error.message.includes("unpushed"),
+      `the failure must name the real cause, got: ${result.error.message}`,
+    );
+
+    // The local-only commit must survive — never reset away.
+    const log = await git(["log", "--format=%s"], workerPath);
+    assert(
+      log.includes("Local-only commit"),
+      "local-only work must not be discarded",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
