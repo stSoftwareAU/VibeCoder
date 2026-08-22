@@ -1585,7 +1585,12 @@ Deno.test("handleNoChanges - detects already complete issue and closes it (Issue
   const calls = makeStubGhCalls();
   const ctx = makeContext();
   const state = makeState({
-    claudeOutput: "The login fix is already implemented. No changes needed.",
+    // Issue #241: the close path requires cited evidence, so the run names the
+    // commit that landed the fix. What this test asserts — closed, commented,
+    // unassigned — is unchanged.
+    claudeOutput:
+      "The login fix is already implemented in commit `ab12cd3`. No changes " +
+      "needed.",
   });
   const deps = createMockDeps({
     github: {
@@ -2837,7 +2842,9 @@ Deno.test({
             ok: true,
             value: {
               exitCode: 0,
-              output: "The fix is already implemented. No changes needed.",
+              // Issue #241: cited evidence is required to close.
+              output:
+                "The fix is already implemented in PR #100. No changes needed.",
               timedOut: false,
             },
           }),
