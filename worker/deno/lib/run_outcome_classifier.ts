@@ -72,19 +72,82 @@ export const RUN_FAILURE_CLASSES = [
 const OUT_OF_CREDIT_RE =
   /out of credit|credit balance|insufficient (?:balance|credit|funds|quota)|payment required|billing (?:hard )?limit|quota exceeded/i;
 
-/** Memory-pressure evidence beside a kill (Issue #4202). */
+/**
+ * Memory-pressure evidence beside a kill (Issue #4202).
+ *
+ * Whole-message, for the same reason as {@link DISK_FULL_RE} — and gated on
+ * the `killed` category besides, so agent prose alone cannot reach it.
+ */
 const OOM_EVIDENCE_RE =
   /out[- ]of[- ]memory|\boom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory/i;
 
 /** The probe reading the killed branch writes into the diagnostics (Issue #4374). */
 const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
 
-/** Disk exhaustion — the worker can prune, warn or size the volume. */
+/**
+ * Disk exhaustion — the worker can prune, warn or size the volume.
+ *
+ * Deliberately still scanned over the *whole* message, agent output
+ * included, unlike the crash patterns (Issue #249). The asymmetry is not an
+ * oversight: ENOSPC reaching us through the agent's stdout means the run
+ * genuinely hit a full disk, which is real environmental evidence the
+ * worker can act on. A mention of an exception is different in kind — the
+ * agent is describing the user's code, not reporting its own environment.
+ */
 const DISK_FULL_RE = /enospc|no space left on device|disk full|disk is full/i;
 
 /** An unhandled exception / stack trace from the worker itself. */
 const STACK_TRACE_RE =
   /\bat (?:Object|Module|async|file:\/\/)|\n\s+at \S+ \(|unhandled (?:exception|rejection)|typeerror:|referenceerror:/i;
+
+/**
+ * The structural half of {@link STACK_TRACE_RE}: a real stack frame.
+ *
+ * Kept separate because it is the half that survives inside quoted agent
+ * output (Issue #249). A frame naming a function and a `file://` URL is a
+ * crash dump — the Claude CLI itself falling over is a genuine worker-side
+ * failure even though the dump reaches us through the agent's stdout. The
+ * prose half (`unhandled exception`, `TypeError:`) is not: an agent whose
+ * whole job is discussing code says those words constantly.
+ */
+const STACK_FRAME_RE = /\bat (?:Object|Module|async|file:\/\/)|\n\s+at \S+ \(/;
+
+/**
+ * The agent-authored `<details>` block in a detailed failure message —
+ * `failure_message.ts` wraps `lastOutputSnippet` in exactly this shape.
+ *
+ * Non-greedy and anchored on the summary line so it cannot swallow the
+ * sibling "Processes at the kill" block, which *is* worker-authored
+ * evidence.
+ */
+const AGENT_OUTPUT_BLOCK_RE =
+  /<details>\s*\n<summary>Last output from Claude[^<]*<\/summary>[\s\S]*?<\/details>/gi;
+
+/**
+ * Split a failure message into the worker's own words and the agent's.
+ *
+ * `formatDetailedFailureMessage` embeds the tail of Claude's stdout in the
+ * message it hands the classifier. That text is the agent narrating about
+ * the *user's* codebase, and treating it as evidence about the worker is
+ * how Issue #249 happened: a clean deadline stop (exit 143, WIP preserved,
+ * category `timeout`) was filed as a `worker-crash` because Claude had
+ * written "a second failure surfaces as an unhandled rejection" about the
+ * concurrency driver it was fixing in GRQ.
+ *
+ * @param message - The full failure message.
+ * @returns `worker` with the agent block removed, and `agent` holding just
+ *   the removed block(s).
+ */
+export function splitAgentNarration(
+  message: string,
+): { worker: string; agent: string } {
+  const agentParts: string[] = [];
+  const worker = message.replace(AGENT_OUTPUT_BLOCK_RE, (match) => {
+    agentParts.push(match);
+    return "\n";
+  });
+  return { worker, agent: agentParts.join("\n") };
+}
 
 /**
  * Classify a no-PR run failure.
@@ -258,7 +321,13 @@ function crashOr(
   fallback: RunFailureClassification,
   message: string,
 ): RunFailureClassification {
-  if (STACK_TRACE_RE.test(message)) {
+  // Issue #249: crash evidence is read from the worker's own words. The
+  // quoted agent output is excluded from the prose patterns, because an
+  // agent discussing exceptions in the code it is writing is not a worker
+  // crash — that false positive filed this very issue against a run that
+  // had stopped cleanly at its deadline with WIP preserved.
+  const { worker, agent } = splitAgentNarration(message);
+  if (STACK_TRACE_RE.test(worker) || STACK_FRAME_RE.test(agent)) {
     return {
       fixability: "code_fixable",
       failureClass: "worker-crash",
