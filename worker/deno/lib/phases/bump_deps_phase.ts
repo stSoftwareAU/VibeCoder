@@ -26,10 +26,18 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import {
+  BUMP_OUTPUT_TAIL_LINES,
   type BumpDepsDeps,
+  type BumpInfo,
   DEFAULT_BUMP_QUARANTINE_HOURS,
+  DEFAULT_BUMP_SCRIPT_NAME,
   runBumpDeps,
 } from "../bump_deps.ts";
+import {
+  bumpScriptStreakPath,
+  clearBumpScriptStreak,
+  recordBumpScriptRejection,
+} from "../bump_script_failure_streak.ts";
 import {
   auditBumpDiff,
   type BumpAgeDeps,
@@ -289,16 +297,116 @@ function readQuarantineHoursFromEnv(): number {
 }
 
 /**
+ * Log a script rejection with the evidence an operator needs (Issue #207).
+ *
+ * Two lines: the one-line summary with its structured fields, then the
+ * secret-redacted output tail as its own block. Before this, only the exit
+ * status was logged, so a transient registry error and a script broken on
+ * every run looked identical.
+ */
+function logScriptRejection(deps: WorkerDeps, info: BumpInfo): void {
+  const [summary] = (info.rejectionReason ?? "").split("\n");
+  deps.logger.warn("bump-deps: script rejected the bump", {
+    reason: summary ?? "",
+    files: info.files.length,
+  });
+  if (info.outputTail && info.outputTail.length > 0) {
+    deps.logger.warn(
+      `bump-deps: \`${DEFAULT_BUMP_SCRIPT_NAME}\` output tail ` +
+        `(last ${BUMP_OUTPUT_TAIL_LINES} lines):\n${info.outputTail}`,
+    );
+  } else {
+    deps.logger.warn(
+      `bump-deps: \`${DEFAULT_BUMP_SCRIPT_NAME}\` produced no output — ` +
+        `nothing to report beyond the exit status`,
+    );
+  }
+}
+
+/**
+ * Count the rejection against the repo's streak and, at the threshold, file
+ * one tracking issue against that repo (Issue #207). Best-effort: the
+ * decision is logged, never thrown.
+ */
+async function trackScriptRejection(
+  ctx: IssueContext,
+  deps: WorkerDeps,
+  statePath: string,
+  info: BumpInfo,
+): Promise<void> {
+  const [summary] = (info.rejectionReason ?? "").split("\n");
+  const decision = await recordBumpScriptRejection({
+    statePath,
+    report: {
+      repo: ctx.repo,
+      scriptName: DEFAULT_BUMP_SCRIPT_NAME,
+      rejectionReason: summary ?? "",
+      outputTail: info.outputTail ?? "",
+      sourceIssueNumber: ctx.issueNumber,
+    },
+    ghFn: (args: string[]) => deps.github.runGhCommand(args),
+    log: (message: string) => deps.logger.warn(message),
+  });
+
+  switch (decision.action) {
+    case "filed":
+      deps.logger.warn(
+        "bump-deps: filed a tracking issue for a repeatedly failing bump " +
+          "script",
+        {
+          repo: ctx.repo,
+          issue: decision.issueNumber,
+          consecutive: decision.count,
+        },
+      );
+      break;
+    case "already_open":
+    case "already_filed":
+      deps.logger.warn(
+        "bump-deps: bump script still failing — tracking issue already open",
+        {
+          repo: ctx.repo,
+          issue: decision.issueNumber ?? "unknown",
+          consecutive: decision.count,
+        },
+      );
+      break;
+    case "gh_failed":
+      deps.logger.warn(
+        "bump-deps: could not surface the repeatedly failing bump script",
+        { repo: ctx.repo, reason: decision.reason },
+      );
+      break;
+    case "counted":
+      deps.logger.warn("bump-deps: consecutive bump-script rejections", {
+        repo: ctx.repo,
+        consecutive: decision.count,
+      });
+      break;
+    default:
+      assertNever(decision);
+  }
+}
+
+/**
  * Run the per-repo bump-deps script (if present) and record the outcome
  * on `state.bumpInfo` for downstream phases. Always returns
  * `{ status: "continue" }` — bump failures are surfaced via PR comment
  * by the completion phase rather than aborting the worker run.
+ *
+ * `streakStatePath` overrides where the per-repo rejection streak
+ * (Issue #207) is persisted; it defaults to the worker's work directory and
+ * an empty value disables streak tracking entirely (tests, CLI runs with no
+ * work directory configured).
  */
 export async function workOnIssueBumpDeps(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
   bumpDeps: BumpDepsDeps = createBumpDepsRuntimeDeps(deps),
+  streakStatePath: string = ctx.config.workDir
+    ? bumpScriptStreakPath(ctx.config.workDir)
+    : "",
 ): Promise<PhaseResult> {
   const info = await runBumpDeps(
     {
@@ -315,23 +423,34 @@ export async function workOnIssueBumpDeps(
   switch (info.status) {
     case "absent":
       // Backwards compatible — no script means no-op.
+      if (streakStatePath) {
+        await clearBumpScriptStreak(streakStatePath, ctx.repo);
+      }
       break;
     case "noop":
       deps.logger.info("bump-deps: script ran with no changes");
+      if (streakStatePath) {
+        await clearBumpScriptStreak(streakStatePath, ctx.repo);
+      }
       break;
     case "applied":
       deps.logger.info("bump-deps: bump committed", {
         files: info.files.length,
         sha: info.sha,
       });
+      if (streakStatePath) {
+        await clearBumpScriptStreak(streakStatePath, ctx.repo);
+      }
       break;
     case "rejected_by_script":
-      deps.logger.warn("bump-deps: script rejected the bump", {
-        reason: info.rejectionReason,
-        files: info.files.length,
-      });
+      logScriptRejection(deps, info);
+      if (streakStatePath) {
+        await trackScriptRejection(ctx, deps, streakStatePath, info);
+      }
       break;
     case "rejected_by_quarantine":
+      // The script did its job — the embargo rejected what it produced — so
+      // this is not a script-failure streak (Issue #207): leave it untouched.
       deps.logger.warn(
         "bump-deps: bump reverted — a dependency was published inside the " +
           "quarantine window",
