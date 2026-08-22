@@ -74,6 +74,7 @@ import {
   noteAgentAllowlistSnapshot,
 } from "./write_repo_allowlist.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
+import { type ClaimedIssue, claimedIssueGuard } from "./claimed_issue_guard.ts";
 
 /**
  * `gh` target variables the wrapper always clears (Issue #3866).
@@ -130,6 +131,11 @@ export interface GhGuardShimOptions {
   active: boolean;
   /** `owner/repo` slugs the run may write to. */
   allowedRepos: readonly string[];
+  /**
+   * The issue this run claimed (Issue #222). Baked into the wrapper so the
+   * agent's own `gh issue close|reopen|…` on the claimed repo is refused.
+   */
+  claimedIssue?: ClaimedIssue;
   /** Sink for the loud warning when the shim cannot be installed. */
   warn?: (message: string) => void;
   /** Override the guard module path (test seam). */
@@ -217,14 +223,26 @@ export function renderGhShimScript(opts: {
   realGhPath: string;
   active: boolean;
   allowedRepos: readonly string[];
+  /** The run's claimed issue and the lifecycle verbs it permits (#222). */
+  claimedIssue?: ClaimedIssue;
   /** The wrapper's own private directory — where it buffers the verdict. */
   verdictDir: string;
   /** The run's own values for {@link GH_PINNED_ENV_VARS}. */
   pinnedEnv?: Readonly<Record<string, string>>;
 }): string {
+  const claim = opts.claimedIssue;
   const guardArgs = [
     ...(opts.active ? ["--active"] : []),
     ...opts.allowedRepos.flatMap((r) => ["--allow-repo", r]),
+    // Issue #222 — baked in as arguments, like the allowlist, so the agent
+    // cannot switch the claimed-issue guard off with an `unset`.
+    ...(claim
+      ? [
+        "--claimed-issue",
+        `${claim.repo}#${claim.issueNumber}`,
+        ...claim.allowedVerbs.flatMap((v) => ["--allow-issue-verb", v]),
+      ]
+      : []),
   ].map(shellQuote).join(" ");
 
   // Issue #3866: clear what the run never sets, pin what it does. `unset`
@@ -427,6 +445,7 @@ export async function installGhGuardShim(
         realGhPath,
         active: opts.active,
         allowedRepos: opts.allowedRepos,
+        ...(opts.claimedIssue ? { claimedIssue: opts.claimedIssue } : {}),
         verdictDir: dir,
         pinnedEnv: Object.fromEntries(
           GH_PINNED_ENV_VARS.flatMap((name) => {
@@ -491,10 +510,13 @@ export function prepareGhGuardShim(
   warn?: (message: string) => void,
 ): Promise<GhGuardShimOutcome> {
   noteAgentAllowlistSnapshot();
+  const claimedIssue = claimedIssueGuard();
   return installGhGuardShim({
     baseEnv,
     active: isWriteRepoAllowlistActive(),
     allowedRepos: listAllowedWriteRepos(),
+    // Issue #222 — inert unless the run seeded a claim.
+    ...(claimedIssue ? { claimedIssue } : {}),
     ...(warn ? { warn } : {}),
   });
 }

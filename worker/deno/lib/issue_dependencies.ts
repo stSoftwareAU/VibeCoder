@@ -220,37 +220,76 @@ export function hasBackReference(body: string, parentNumber: number): boolean {
   return pattern.test(body);
 }
 
+/** One forward dependency reference, with the repo it names (Issue #222). */
+export interface DependencyReference {
+  /** `owner/repo` when the reference names one; absent for a bare `#N`. */
+  repo?: string;
+  /** The dependency's issue number. */
+  number: number;
+}
+
 /**
- * Extract forward dependency references from an issue body.
+ * Extract forward dependency references, keeping the repo each one names.
  *
  * Detects patterns like:
- * - "Depends on #123"
- * - "Blocked by #123"
- * - "Depends on owner/repo#123" (cross-repo, returns just the number)
+ * - "Depends on #123" → `{ number: 123 }` (same repo)
+ * - "Blocked by #123" → `{ number: 123 }`
+ * - "Depends on owner/repo#123" → `{ repo: "owner/repo", number: 123 }`
  *
- * @param body - The issue body text
- * @returns Array of dependency issue numbers (same-repo only)
+ * Issue #222: the cross-repo form previously matched nothing at all, so an
+ * issue deferred on another repository's issue was never gated. It is now
+ * carried through with its repo, because resolving `owner/repo#123` as if it
+ * were this repo's #123 would gate on an unrelated issue.
+ *
+ * @param body - The issue body text.
+ * @returns References in body order, de-duplicated.
  */
-export function extractDependencyReferences(body: string): number[] {
+export function extractDependencyReferencesDetailed(
+  body: string,
+): DependencyReference[] {
   if (!body) return [];
 
   // Issue #3218: ignore dependency phrases quoted inside code examples — a
   // scan-finding's suggested-fix snippet is documentation, not a dependency.
   const scan = stripCodeSpans(body);
 
-  const issueNumbers: Set<number> = new Set();
-
-  // Match "depends on #N" or "blocked by #N" (case-insensitive)
-  const depPattern = /(?:depends\s+on|blocked\s+by)\s+#(\d+)/gi;
+  const refs: DependencyReference[] = [];
+  const seen = new Set<string>();
+  const depPattern =
+    /(?:depends\s+on|blocked\s+by)\s+([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+)?#(\d+)/gi;
   let match: RegExpExecArray | null;
   while ((match = depPattern.exec(scan)) !== null) {
-    const num = parseInt(match[1]!, 10);
-    if (!isNaN(num)) {
-      issueNumbers.add(num);
-    }
+    const num = parseInt(match[2]!, 10);
+    if (isNaN(num)) continue;
+    const repo = match[1];
+    const key = `${(repo ?? "").toLowerCase()}#${num}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ ...(repo ? { repo } : {}), number: num });
   }
+  return refs;
+}
 
-  return [...issueNumbers].sort((a, b) => a - b);
+/**
+ * Extract same-repo forward dependency references from an issue body.
+ *
+ * Detects patterns like:
+ * - "Depends on #123"
+ * - "Blocked by #123"
+ *
+ * A cross-repo reference (`Depends on owner/repo#123`) names an issue in
+ * another repository and is deliberately **not** returned here — callers that
+ * resolve dependencies across repos use
+ * {@link extractDependencyReferencesDetailed}.
+ *
+ * @param body - The issue body text
+ * @returns Array of dependency issue numbers (same-repo only)
+ */
+export function extractDependencyReferences(body: string): number[] {
+  const numbers = extractDependencyReferencesDetailed(body)
+    .filter((ref) => ref.repo === undefined)
+    .map((ref) => ref.number);
+  return [...new Set(numbers)].sort((a, b) => a - b);
 }
 
 /**

@@ -36,9 +36,17 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { classifyGhMutation } from "./audit_mutation_classifier.ts";
+import {
+  classifyGhMutation,
+  type MutationInfo,
+} from "./audit_mutation_classifier.ts";
 import { normaliseGhArgs } from "./gh_flag_parser.ts";
 import { WORKER_FORBIDDEN_LABEL_LITERALS } from "./worker_label_guard.ts";
+import {
+  classifyIssueLifecycle,
+  ISSUE_LIFECYCLE_VERBS,
+} from "./gh_issue_lifecycle.ts";
+import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 import type { BodyFileReader } from "./gh_body_redaction.ts";
 
 /** The current run's egress state, as passed to the guard child process. */
@@ -47,6 +55,14 @@ export interface GhGuardContext {
   active: boolean;
   /** `owner/repo` slugs the run may write to. */
   allowedRepos: readonly string[];
+  /**
+   * The issue this run claimed, when it seeded one (Issue #222).
+   *
+   * Present → issue-lifecycle verbs (`close`, `reopen`, `delete`, …) are
+   * refused for every issue in the claimed repo unless the verb is on
+   * {@link ClaimedIssue.allowedVerbs}. Absent → inert, exactly as before.
+   */
+  claimedIssue?: ClaimedIssue;
   /**
    * Filesystem reader for a `--input <file>` body (Issue #91). Injected rather
    * than called directly so this module stays pure — it can run in a child
@@ -63,7 +79,8 @@ export type GhGuardMarker =
   | "WRITE_TARGET_UNDETERMINABLE"
   | "WORKER_LABEL_REFUSED"
   | "GH_BODY_UNREADABLE"
-  | "GH_UNKNOWN_COMMAND";
+  | "GH_UNKNOWN_COMMAND"
+  | "ISSUE_LIFECYCLE_REFUSED";
 
 /** The guard's verdict for one `gh` argument vector. */
 export interface GhGuardDecision {
@@ -351,6 +368,65 @@ function unreadableBodyRefusal(verb: string): GhGuardDecision {
   };
 }
 
+/** Case-insensitive `owner/repo` comparison. */
+function sameRepo(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Refuse an issue-lifecycle change in the claimed repo (Issue #222).
+ *
+ * The implementing agent decides what the *code* should be; it does not decide
+ * that an issue is closed, reopened, moved or locked. A run that has seeded a
+ * claim therefore refuses those verbs for every issue in its claimed repo —
+ * not only the claimed issue, because closing a "duplicate" or reopening a
+ * sibling is the same lifecycle call the agent is not making — unless the run
+ * explicitly permits the verb (`allowedVerbs`, `edit` by default so the
+ * `needs-human` escalation the prompts prescribe keeps working).
+ *
+ * A command naming a *different* repo is left to the write-repo allowlist,
+ * which refuses it already. A command naming no repo is `gh`'s cwd form, and
+ * during a coding run the clone is the claimed repo — so it is treated as
+ * naming the claim, the fail-closed direction.
+ */
+function refuseClaimedIssueLifecycle(
+  args: readonly string[],
+  info: MutationInfo,
+  ctx: GhGuardContext,
+): GhGuardDecision | undefined {
+  const claim = ctx.claimedIssue;
+  if (!claim) return undefined;
+
+  const attempt = classifyIssueLifecycle(args, info);
+  if (!attempt) return undefined;
+
+  const allowed = new Set(
+    claim.allowedVerbs.map((v) => v.trim().toLowerCase()),
+  );
+  if (allowed.has(attempt.verb)) return undefined;
+
+  const targetRepo = attempt.repo ?? claim.repo;
+  if (!sameRepo(targetRepo, claim.repo)) return undefined;
+
+  const target = attempt.issueNumber === undefined
+    ? targetRepo
+    : `${targetRepo}#${attempt.issueNumber}`;
+  const isClaim = attempt.issueNumber === claim.issueNumber;
+  return {
+    allowed: false,
+    marker: "ISSUE_LIFECYCLE_REFUSED",
+    reason: `Refused 'gh ${info.verb}' on ${target} from the agent ` +
+      `subprocess — issue lifecycle changes (` +
+      `${ISSUE_LIFECYCLE_VERBS.join(", ")}) on ${claim.repo} are the ` +
+      `worker's or a human's decision, not the implementing agent's` +
+      (isClaim ? ` (this run's claimed issue)` : "") +
+      `. Post your findings as a comment instead: a run that is blocked on ` +
+      `another issue should say so in a section beginning "## Blocked:" and ` +
+      `name the dependency as "Depends on owner/repo#N", and the worker ` +
+      `defers the issue rather than closing it.`,
+  };
+}
+
 /**
  * Decide whether one agent `gh` invocation may proceed.
  *
@@ -376,6 +452,9 @@ export function evaluateGhCommand(
           `caller=agent-subprocess reason=reserved_workflow_label`,
       };
     }
+
+    const lifecycleRefusal = refuseClaimedIssueLifecycle(args, info, ctx);
+    if (lifecycleRefusal) return lifecycleRefusal;
 
     // Issue #11/#90/#91: a REST mutation whose body is supplied by `--input`
     // (or an `@file`-sourced query) is argv-invisible, so `extractLabelValues`
