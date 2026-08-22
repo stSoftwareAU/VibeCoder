@@ -18,12 +18,22 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    # Supply-chain quarantine: never take a release younger than a day, and
-    # give majors a week (Issue #4400; same intent as renovate.json's
-    # minimumReleaseAge).
+    # Supply-chain quarantine: never take a release younger than a day
+    # (Issue #4400; same intent as renovate.json's minimumReleaseAge).
+    #
+    # No semver-major-days here. Dependabot rejects the whole file with
+    # "The property '#/updates/0/cooldown/semver-major-days' is not supported
+    # for the package ecosystem 'github-actions'" — action releases are not
+    # semantically versioned, so the semver-* cooldown keys apply only to
+    # ecosystems that are (bundler below is one). The key had been sitting
+    # here since #4400 making the entire config invalid, which meant neither
+    # ecosystem ran; it only surfaced now because Dependabot revalidates the
+    # file when it changes (Issue #273).
+    #
+    # nosemgrep rationale: see the bundler entry below.
     cooldown:
+      # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
       default-days: 1
-      semver-major-days: 7
     commit-message:
       prefix: "chore(actions)"
     labels:
