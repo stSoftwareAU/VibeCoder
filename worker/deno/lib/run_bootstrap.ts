@@ -7,12 +7,13 @@
  * default branch, and the periodic software-update check. Each individual step
  * already had a Deno implementation — the bash was only orchestration glue.
  *
- * This module moves that glue into Deno. {@link runBootstrap} performs the five
+ * This module moves that glue into Deno. {@link runBootstrap} performs the
  * prelude steps **in order** inside the Deno process, establishing the PATH,
- * `VIBE_RUN_ID`, and worker log-file path in-process (so the software-update
- * step and any future in-process main loop inherit them) rather than relying on
- * bash exports. The resolved values are returned so the calling shell can still
- * export them for the remaining shell steps during the incremental migration.
+ * `VIBE_RUN_ID`, the side-repo clone arguments (Issue #243) and the worker
+ * log-file path in-process (so the software-update step and any future
+ * in-process main loop inherit them) rather than relying on bash exports. The
+ * resolved values are returned so the calling shell can still export them for
+ * the remaining shell steps during the incremental migration.
  *
  * Fail-loud (Issue #3234): a failed git reset returns `ok: false` and the
  * software-update step is skipped, exactly mirroring the old bash path where a
@@ -29,6 +30,10 @@ import {
   type SoftwareUpdateOptions,
 } from "./software_updates.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import {
+  resolveSideRepoCloneArgs,
+  SIDE_REPO_CLONE_ARGS_ENV,
+} from "./side_repo_clone_args.ts";
 import { resolveLocalDefaultBranch } from "./git_push.ts";
 import { createLogger } from "./logger.ts";
 import { spawnGh } from "./gh_spawn.ts";
@@ -124,6 +129,7 @@ export interface BootstrapEscalationContext {
 export const PRELUDE_STEPS = [
   "path",
   "run-id",
+  "side-repo-clone-args",
   "log-init",
   "git-reset",
   "software-update",
@@ -138,6 +144,11 @@ export interface BootstrapEnv {
   PATH: string;
   /** Canonical run id for this worker invocation. */
   VIBE_RUN_ID: string;
+  /**
+   * `git clone` arguments every gate and agent uses for side/data repos it
+   * pulls in as `../<name>` (Issue #243) — blobless by default.
+   */
+  VIBE_SIDE_REPO_CLONE_ARGS: string;
   /** Per-PID worker log file path. */
   WORKER_LOG_FILE: string;
   /** Alias of {@link WORKER_LOG_FILE} exported as LOG_FILE for the loop. */
@@ -222,6 +233,8 @@ export interface BootstrapDeps {
   checkUpdates(options: SoftwareUpdateOptions | undefined): Promise<void>;
   /** Establish an environment variable in-process. */
   setEnv(name: string, value: string): void;
+  /** Read an environment variable (`undefined` when unset). */
+  readEnv?(name: string): string | undefined;
   /**
    * Describe the checkout for collision diagnosis (Issue #4204). Best-effort:
    * `null` when the state cannot be read — diagnosis is enrichment, never a
@@ -580,7 +593,17 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
         // Permission denied — value still returns to the caller.
       }
     },
+    readEnv: safeEnvGet,
   };
+}
+
+/** Read an environment variable; a permission denial reads as unset. */
+function safeEnvGet(name: string): string | undefined {
+  try {
+    return Deno.env.get(name);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -609,6 +632,7 @@ export async function runBootstrap(
   const env: BootstrapEnv = {
     PATH: options.currentPath,
     VIBE_RUN_ID: "",
+    VIBE_SIDE_REPO_CLONE_ARGS: "",
     WORKER_LOG_FILE: "",
     LOG_FILE: "",
   };
@@ -632,6 +656,22 @@ export async function runBootstrap(
   await deps.appendRunCoreLog(
     options.logDir,
     `VIBE_RUN_ID=${runId || "unset"}`,
+  );
+
+  // 2b) Side-repo clone arguments (Issue #243) — established here so every
+  //     gate and agent this run spawns inherits them and a re-fetched tier-2
+  //     data repo costs its working tree, not its whole history.
+  stepsRun.push("side-repo-clone-args");
+  const cloneArgs = resolveSideRepoCloneArgs(deps.readEnv ?? safeEnvGet);
+  deps.setEnv(SIDE_REPO_CLONE_ARGS_ENV, cloneArgs.value);
+  env.VIBE_SIDE_REPO_CLONE_ARGS = cloneArgs.value;
+  await deps.appendRunCoreLog(
+    options.logDir,
+    cloneArgs.source === "rejected"
+      ? `${SIDE_REPO_CLONE_ARGS_ENV} override refused: ${cloneArgs.reason}`
+      : `${SIDE_REPO_CLONE_ARGS_ENV}=${
+        cloneArgs.value || "<none>"
+      } (${cloneArgs.source})`,
   );
 
   // 3) Worker log initialisation — per-PID log file plus latest symlink.
@@ -794,6 +834,7 @@ export function toShellExports(env: BootstrapEnv): string {
   return [
     `export PATH=${quote(env.PATH)}`,
     `export VIBE_RUN_ID=${quote(env.VIBE_RUN_ID)}`,
+    `export VIBE_SIDE_REPO_CLONE_ARGS=${quote(env.VIBE_SIDE_REPO_CLONE_ARGS)}`,
     `export WORKER_LOG_FILE=${quote(env.WORKER_LOG_FILE)}`,
     `export LOG_FILE=${quote(env.LOG_FILE)}`,
   ].join("\n");

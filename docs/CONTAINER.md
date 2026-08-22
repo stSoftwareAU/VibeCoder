@@ -532,6 +532,57 @@ Both paths log the split before anything goes, e.g.
 `work volume: monitored 2.1 GB in 15 repos; side/data 15.2 GB in 8 dirs;
 removed 2 (11.0 GB, disk-low)`.
 
+### Side/data repo clones are blobless (Issue #243)
+
+Reclaiming a tier-2 clone only helps if re-fetching it is cheap, and it was
+not: `GRQ-shareprices2026Q2` is 7.3 GB with an 832 MB `.git` of daily data
+commits, so every reclaim bought disk back at the price of a full
+re-download on the next gate run — on every fleet host. The worker therefore
+exports **`VIBE_SIDE_REPO_CLONE_ARGS`** (default `--filter=blob:none`) in the
+bootstrap prelude, so every gate and agent it spawns inherits it:
+
+| Value                            | Effect                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| unset (the default)              | `--filter=blob:none` — a **blobless partial clone**                       |
+| any `git clone` options          | Used verbatim (e.g. `--filter=tree:0`, `--filter=blob:limit=1m --no-tags`) |
+| empty string                     | No extra arguments — the documented way back to a full clone               |
+
+A blobless clone keeps the **whole commit history**, so `git log`, `git
+blame` and pulls all behave; only file contents are fetched lazily, which for
+a data repo checked out at one revision is roughly its working tree rather
+than every blob ever committed. A `--depth` shallow clone is smaller still
+but breaks history-based tooling, which is why blobless — not shallow — is
+the fleet default.
+
+A monitored repository adopts it in the script that clones the sibling:
+
+```bash
+# git clone ${VIBE_SIDE_REPO_CLONE_ARGS:-} — unset means a plain clone, so the
+# script still works outside the worker.
+CLONE_ARGS=(${VIBE_SIDE_REPO_CLONE_ARGS:-})
+git clone ${CLONE_ARGS[@]+"${CLONE_ARGS[@]}"} "git@github.com:org/${REPO}.git"
+```
+
+Two boundaries hold:
+
+- **New clones only.** A partial clone already on disk is left exactly as it
+  is — nothing re-clones a checkout to shrink it, because that costs the very
+  download the filter exists to avoid.
+- **An override is validated, never mangled.** The value is word-split
+  unquoted by adopting scripts, so a token that is not a plain `git clone`
+  option (shell metacharacters, a bare word) is refused loudly in
+  `run_core.log` and the blobless default stands.
+
+```mermaid
+flowchart LR
+    R["disk-low reclaim<br/>removes GRQ-shareprices2026Q2"] --> G["next gate run<br/>re-clones the sibling"]
+    G --> F{"VIBE_SIDE_REPO_CLONE_ARGS"}
+    F -->|"--filter=blob:none<br/>(default)"| B["≈ working tree<br/>history intact, blobs lazy"]
+    F -->|"empty override"| A["full clone<br/>≈ 7 GB"]
+    style B fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style A fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
 ## Standing totals at cycle start (Issue #244)
 
 Those lines say what was *removed*. Every disk problem on GRQ-23 was

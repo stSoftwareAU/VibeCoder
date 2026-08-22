@@ -1,8 +1,9 @@
 /**
  * Tests for run_bootstrap.ts — the worker bootstrap prelude (Issue #3501).
  *
- * Covers the canonical prelude order (PATH → run-id → log init → git reset →
- * software-update), that PATH / VIBE_RUN_ID / log-file path are established
+ * Covers the canonical prelude order (PATH → run-id → side-repo clone args →
+ * log init → git reset → software-update), that PATH / VIBE_RUN_ID /
+ * `VIBE_SIDE_REPO_CLONE_ARGS` (Issue #243) / log-file path are established
  * in-process, fail-loud git-reset handling, the start-of-run compression of
  * prior worker logs (Issue #4027), and the shell-export rendering.
  *
@@ -162,6 +163,55 @@ Deno.test("runBootstrap - establishes PATH, VIBE_RUN_ID, log path in-process", a
   assertEquals(result.env.VIBE_RUN_ID, "vibe-test-abc123");
   assertEquals(result.env.WORKER_LOG_FILE, "/tmp/logs/worker-4242.log");
   assertEquals(result.env.LOG_FILE, "/tmp/logs/worker-4242.log");
+});
+
+Deno.test("runBootstrap - exports the blobless side-repo clone arguments (Issue #243)", async () => {
+  const order: string[] = [];
+  const env: Record<string, string> = {};
+  const result = await runBootstrap(
+    baseOptions(),
+    recordingDeps(order, env, { readEnv: (_name) => undefined }),
+  );
+
+  assertEquals(env["VIBE_SIDE_REPO_CLONE_ARGS"], "--filter=blob:none");
+  assertEquals(result.env.VIBE_SIDE_REPO_CLONE_ARGS, "--filter=blob:none");
+});
+
+Deno.test("runBootstrap - an operator override of the clone arguments wins verbatim", async () => {
+  const order: string[] = [];
+  const env: Record<string, string> = {};
+  const result = await runBootstrap(
+    baseOptions(),
+    recordingDeps(order, env, {
+      readEnv: (name) =>
+        name === "VIBE_SIDE_REPO_CLONE_ARGS" ? "--filter=tree:0" : undefined,
+    }),
+  );
+
+  assertEquals(env["VIBE_SIDE_REPO_CLONE_ARGS"], "--filter=tree:0");
+  assertEquals(result.env.VIBE_SIDE_REPO_CLONE_ARGS, "--filter=tree:0");
+});
+
+Deno.test("runBootstrap - an unsafe clone-argument override is refused loudly", async () => {
+  const order: string[] = [];
+  const env: Record<string, string> = {};
+  await runBootstrap(
+    baseOptions(),
+    recordingDeps(order, env, {
+      readEnv: (name) =>
+        name === "VIBE_SIDE_REPO_CLONE_ARGS"
+          ? "--filter=blob:none && id"
+          : undefined,
+    }),
+  );
+
+  // The default stands and the refusal is on the record — never silent.
+  assertEquals(env["VIBE_SIDE_REPO_CLONE_ARGS"], "--filter=blob:none");
+  assert(
+    order.some((entry) =>
+      entry.startsWith("log:VIBE_SIDE_REPO_CLONE_ARGS override refused")
+    ),
+  );
 });
 
 Deno.test("runBootstrap - PATH is bootstrapped before run-id and update check", async () => {
@@ -530,12 +580,18 @@ Deno.test("toShellExports - renders eval-safe export lines", () => {
   const exports = toShellExports({
     PATH: "/opt/bin:/usr/bin",
     VIBE_RUN_ID: "vibe-xyz",
+    VIBE_SIDE_REPO_CLONE_ARGS: "--filter=blob:none",
     WORKER_LOG_FILE: "/home/worker/logs/worker-9.log",
     LOG_FILE: "/home/worker/logs/worker-9.log",
   });
 
   assertStringIncludes(exports, "export PATH='/opt/bin:/usr/bin'");
   assertStringIncludes(exports, "export VIBE_RUN_ID='vibe-xyz'");
+  // Issue #243 — the gates a shell step launches inherit the clone arguments.
+  assertStringIncludes(
+    exports,
+    "export VIBE_SIDE_REPO_CLONE_ARGS='--filter=blob:none'",
+  );
   assertStringIncludes(
     exports,
     "export WORKER_LOG_FILE='/home/worker/logs/worker-9.log'",
@@ -550,6 +606,7 @@ Deno.test("toShellExports - escapes embedded single quotes", () => {
   const exports = toShellExports({
     PATH: "/opt/o'brien/bin",
     VIBE_RUN_ID: "vibe-1",
+    VIBE_SIDE_REPO_CLONE_ARGS: "--filter=blob:none",
     WORKER_LOG_FILE: "/logs/w.log",
     LOG_FILE: "/logs/w.log",
   });
