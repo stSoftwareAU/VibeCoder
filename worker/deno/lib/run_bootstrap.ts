@@ -593,15 +593,17 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
         // Permission denied — value still returns to the caller.
       }
     },
-    readEnv: (name) => {
-      try {
-        return Deno.env.get(name);
-      } catch {
-        // Permission denied — read as unset so the default applies.
-        return undefined;
-      }
-    },
+    readEnv: safeEnvGet,
   };
+}
+
+/** Read an environment variable; a permission denial reads as unset. */
+function safeEnvGet(name: string): string | undefined {
+  try {
+    return Deno.env.get(name);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -660,9 +662,7 @@ export async function runBootstrap(
   //     gate and agent this run spawns inherits them and a re-fetched tier-2
   //     data repo costs its working tree, not its whole history.
   stepsRun.push("side-repo-clone-args");
-  const cloneArgs = resolveSideRepoCloneArgs(
-    deps.readEnv ?? ((name) => Deno.env.get(name)),
-  );
+  const cloneArgs = resolveSideRepoCloneArgs(deps.readEnv ?? safeEnvGet);
   deps.setEnv(SIDE_REPO_CLONE_ARGS_ENV, cloneArgs.value);
   env.VIBE_SIDE_REPO_CLONE_ARGS = cloneArgs.value;
   await deps.appendRunCoreLog(

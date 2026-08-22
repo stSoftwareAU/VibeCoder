@@ -107,7 +107,10 @@ export function resolveSideRepoCloneArgs(
  *
  * For the worker's own on-demand clone of a tier-2 repository: the same value
  * the gates receive, split on whitespace so it is passed as arguments rather
- * than through a shell.
+ * than through a shell. Today every tier-2 data repo is re-fetched by the
+ * consuming repo's own script (`work_volume_tiers.ts` documents why removal is
+ * safe), so this is the seam a worker-side re-clone uses rather than inventing
+ * a second answer to "how do we clone a side repo".
  *
  * @param env - Environment reader.
  * @returns Zero or more `git clone` arguments.
