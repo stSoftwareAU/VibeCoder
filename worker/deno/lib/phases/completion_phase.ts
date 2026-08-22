@@ -36,6 +36,7 @@ import {
   findScreenshotReferences,
 } from "../pr_evidence.ts";
 import { resolveImagePaths } from "../image_path_resolver.ts";
+import { decideCompletionPr, type LinkedPr } from "../pr_run_provenance.ts";
 import {
   ensureIssueClosedIfPrMerged,
   unassignAfterPrCreated,
@@ -217,12 +218,16 @@ export async function recoverAndFinaliseExistingPr(
   // recovery behaviour.
   if (prNumber > 0) {
     try {
+      // Issue #174: the branch is the provenance proof. Without it the
+      // recovery path would close the issue against whichever merged PR the
+      // linker happened to return.
       const closeResult = await ensureIssueClosedIfPrMerged(
         repo,
         issueNumber,
         prNumber,
         githubUser,
         { ghCommandFn: deps.github.runGhCommand, logger },
+        state.branchName,
       );
       if (!closeResult.ok) {
         logger.warn(
@@ -538,6 +543,11 @@ async function completionBody(
   // fetch only when the remote-tracking ref is absent). `baseBranch` (the bare
   // name) stays correct for the milestone footer and `gh pr create --base`,
   // which GitHub resolves server-side.
+  // Issue #174: the count is read again at the PR-linking decision below,
+  // where it is what separates "a merged PR completes this issue" from
+  // "a merged PR merely mentions it while our commits sit unpublished".
+  // `null` means the guard could not run — never silently zero.
+  let branchCommitsAhead: number | null = null;
   const comparableBase = await resolveComparableBaseRef(
     deps.git.runGitCommand,
     baseBranch,
@@ -577,6 +587,7 @@ async function completionBody(
     }
     if (aheadCountResult.ok && aheadCountResult.value.code === 0) {
       const aheadCount = parseInt(aheadCountResult.value.stdout.trim(), 10);
+      if (Number.isFinite(aheadCount)) branchCommitsAhead = aheadCount;
       if (Number.isFinite(aheadCount) && aheadCount > 0) {
         const halfDone = await detectHalfDoneWipBranch(
           state,
@@ -904,53 +915,77 @@ async function completionBody(
     await clearSecurityFixGateBlock(gateStateDir, repo, issueNumber);
   }
 
-  // Issue #869: Pre-check for existing PR by issue number
-  const existingPrByIssue = await deps.pr.findExistingPrForIssue(
-    repo,
-    issueNumber,
-  );
-  if (existingPrByIssue.ok) {
-    const existingPrUrl = existingPrByIssue.value;
-    logger.info(
-      "IDEMPOTENT: PR already exists for issue number, skipping creation",
-      { prUrl: existingPrUrl },
-    );
-    return await recoverAndFinaliseExistingPr(
-      existingPrUrl,
-      ctx,
-      state,
-      prBody,
-      deps,
-    );
-  }
-
-  // Issue #623: Pre-check for existing PR by branch name
-  let existingPrByBranch = await deps.pr.findExistingPrForBranch(
+  // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),
+  // and Issue #174, which reordered them.
+  //
+  // The old order asked "is there any PR for this issue?" first, and a
+  // merged PR answered yes. On VibeCoder#42 that was a human's partial PR,
+  // merged mid-run: the worker logged `IDEMPOTENT: PR already exists`,
+  // closed the issue against #173 and released three unpublished commits.
+  // A merged or closed PR is never the PR for commits this run just pushed,
+  // so the branch is consulted first and the decision is made explicitly.
+  const openPrForBranch = await deps.pr.findExistingPrForBranch(
     repo,
     state.branchName,
   );
-
-  // Issue #872: Defence-in-depth — re-check by issue number
-  if (!existingPrByBranch.ok) {
-    const recheck = await deps.pr.findExistingPrForIssue(repo, issueNumber);
-    if (recheck.ok) {
-      existingPrByBranch = recheck;
-    }
+  let prForIssueResult = await deps.pr.findExistingPrForIssue(
+    repo,
+    issueNumber,
+  );
+  // Issue #872: defence in depth. A transient miss on both lookups must not
+  // send the run down the creation path when a PR really does exist, so the
+  // issue-number lookup gets one retry. Reordering for #174 must not cost
+  // this — it is the guard against a duplicate PR, not against lost work.
+  if (!openPrForBranch.ok && !prForIssueResult.ok) {
+    prForIssueResult = await deps.pr.findExistingPrForIssue(repo, issueNumber);
   }
 
-  if (existingPrByBranch.ok) {
-    const existingPrUrl = existingPrByBranch.value;
-    logger.info("IDEMPOTENT: PR already exists for branch, skipping creation", {
-      prUrl: existingPrUrl,
-    });
+  let prForIssue: LinkedPr | null = null;
+  if (prForIssueResult.ok) {
+    const url = prForIssueResult.value;
+    const numMatch = url.match(/\/pull\/(\d+)/);
+    const num = numMatch ? parseInt(numMatch[1]!, 10) : 0;
+    const rawState = (await lookupPrState(repo, num, deps))?.toUpperCase();
+    // An unreadable state is treated as OPEN: that is the pre-#174
+    // behaviour (recover it), and the close is guarded separately by
+    // provenance, so a `gh` hiccup cannot turn into a lost branch.
+    prForIssue = {
+      url,
+      state: rawState === "MERGED" || rawState === "CLOSED" ? rawState : "OPEN",
+    };
+  }
+
+  const linkDecision = decideCompletionPr({
+    openPrForBranch: openPrForBranch.ok ? openPrForBranch.value : null,
+    branchCommitsAhead,
+    prForIssue,
+  });
+
+  if (linkDecision.kind === "recover") {
+    logger.info(
+      "IDEMPOTENT: recovering the PR for this run, skipping creation",
+      {
+        prUrl: linkDecision.prUrl,
+        branch: state.branchName,
+        why: linkDecision.why,
+      },
+    );
     return await recoverAndFinaliseExistingPr(
-      existingPrUrl,
+      linkDecision.prUrl,
       ctx,
       state,
       prBody,
       deps,
     );
   }
+
+  // Opening a PR for this branch even though something else references the
+  // issue is the Issue #174 behaviour, so say why at INFO — the silence is
+  // what made the original loss invisible.
+  logger.info("Opening a PR for this run's branch", {
+    branch: state.branchName,
+    why: linkDecision.why,
+  });
 
   // Create PR via gh CLI
   const createPrArgs = [

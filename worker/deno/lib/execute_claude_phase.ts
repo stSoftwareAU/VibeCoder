@@ -296,6 +296,8 @@ export interface ExecuteClaudePhaseDeps {
     issueNumber: number,
     prNumber: number,
     githubUser: string,
+    /** Branch this run worked — provenance for the close (Issue #174). */
+    runBranch?: string,
   ) => Promise<Result<unknown, Error>>;
   /** Run a git command and return stdout. */
   runGitCommand: (args: string[]) => Promise<Result<string>>;
@@ -547,11 +549,15 @@ export async function attemptPrSelfHealing(
       deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
     });
 
+    // Issue #174: this PR came from `findExistingPrForBranch`, so its head is
+    // this run's branch by construction — naming it makes the provenance
+    // check pass here and fail loudly if that ever stops being true.
     await deps.ensureIssueClosedIfPrMerged(
       repo,
       issueNumber,
       prNumber,
       githubUser,
+      branchName,
     ).catch(() => {
       deps.log("SELF-HEALING: ensure issue closed failed (non-fatal)");
     });
@@ -629,6 +635,7 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
       issueNumber,
       prNumber,
       githubUser,
+      runBranch,
     ) => {
       // Issue #3703: the issue-close path spawns via the shared chokepoint.
       const defaultGhCommand = (args: string[]): Promise<string> =>
@@ -643,6 +650,7 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
         prNumber,
         githubUser,
         lifecycleDeps,
+        runBranch,
       );
     },
     // Issue #268: the shared timed runner journals mutations (reset/push)
