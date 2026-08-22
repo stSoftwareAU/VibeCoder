@@ -171,6 +171,58 @@ if [[ -n "${HOME:-}" ]]; then
   fi
 fi
 
+# --- Deployer-supplied build-time tools: apply PATH/env (Issue #74) ---------
+# install-tools.sh (#70) records the resolved tool locations in
+# ${VIBE_TOOLS_PREFIX}/environment: one `PATH=<dir>` line per tool bin
+# directory and one `<KEY>=<value>` line per env var (e.g. JAVA_HOME). The
+# image bakes a fixed PATH deliberately (no host-specific guessing), and Docker
+# does not interpolate a per-deployment set into `ENV PATH=`, so the selection
+# is applied here at container start instead — before the worker and the agent
+# it spawns inherit the environment.
+#
+# The file is deployer-derived DATA (from the verified .config.json), never
+# shell: each line is parsed as KEY=value; it is never sourced or eval'd, and a
+# malformed line aborts loudly rather than executing. Absent file → no change,
+# so the default image's PATH is byte-identical to today's.
+TOOLS_PREFIX="${VIBE_TOOLS_PREFIX:-/opt/vibe-tools}"
+TOOLS_ENV_FILE="${TOOLS_PREFIX}/environment"
+if [[ -f "${TOOLS_ENV_FILE}" ]]; then
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Ignore blank lines and comments.
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    if [[ "${line}" != *"="* ]]; then
+      echo "Error: malformed line in ${TOOLS_ENV_FILE} (no '='): ${line}" >&2
+      exit 1
+    fi
+    key="${line%%=*}"
+    value="${line#*=}"
+    if [[ ! "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      echo "Error: malformed key in ${TOOLS_ENV_FILE}: ${line}" >&2
+      exit 1
+    fi
+    if [[ "${key}" == "PATH" ]]; then
+      # Prepend the recorded bin directory to PATH.
+      PATH="${value}:${PATH}"
+      export PATH
+    else
+      export "${key}=${value}"
+    fi
+  done <"${TOOLS_ENV_FILE}"
+
+  # Stamp the carried tool set so a running container can report it (mirrors
+  # VIBE_IMAGE_AGENT_PROVIDERS, container/Containerfile). The installed tool
+  # ids are the sub-directories of the prefix.
+  applied_tools=""
+  for tool_dir in "${TOOLS_PREFIX}"/*/; do
+    [[ -d "${tool_dir}" ]] || continue
+    # Pure-bash basename (the entrypoint tests run with a minimal PATH).
+    tool_id="${tool_dir%/}"
+    tool_id="${tool_id##*/}"
+    applied_tools="${applied_tools:+${applied_tools},}${tool_id}"
+  done
+  export VIBE_IMAGE_CONTAINER_TOOLS="${applied_tools}"
+fi
+
 # The image is the agent CLI's update mechanism too (Issue #4248): the CLI
 # ships a self-updater that RESTARTS (kills) the running process when an
 # update lands, and the image pins an older CLI than current — so every
