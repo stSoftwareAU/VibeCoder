@@ -96,6 +96,8 @@ import {
   readSecurityFixGateBlock,
   resolveSecurityGateStateDir,
 } from "./security_fix_gate_feedback.ts";
+import { buildFetchArgs } from "./git_ref_args.ts";
+import { runGitCommandChecked } from "./git_timeout.ts";
 
 // =============================================================================
 // Types
@@ -643,29 +645,9 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
         lifecycleDeps,
       );
     },
-    runGitCommand: async (args: string[]) => {
-      try {
-        const command = new Deno.Command("git", {
-          args,
-          stdout: "piped",
-          stderr: "piped",
-        });
-        const output = await command.output();
-        const stdout = new TextDecoder().decode(output.stdout).trim();
-        if (!output.success) {
-          return {
-            ok: false,
-            error: new Error(new TextDecoder().decode(output.stderr).trim()),
-          };
-        }
-        return { ok: true, value: stdout };
-      } catch (err: unknown) {
-        return {
-          ok: false,
-          error: new Error(err instanceof Error ? err.message : String(err)),
-        };
-      }
-    },
+    // Issue #268: the shared timed runner journals mutations (reset/push)
+    // and applies the default git timeout. Tests inject their own double.
+    runGitCommand: (args: string[]) => runGitCommandChecked(args),
     recordHeartbeat: async (_workDir, _repo, _issueNumber) => ({
       ok: true,
       value: undefined,
@@ -1374,12 +1356,27 @@ export async function runExecuteClaudePhase(
       };
     }
 
-    // Check remote branch for commits from a prior attempt (Issue #585)
-    const fetchResult = await deps.runGitCommand([
-      "fetch",
-      "origin",
-      branchName,
-    ]);
+    // Check remote branch for commits from a prior attempt (Issue #585).
+    // `branchName` is an issue/PR identifier — a dash-leading value is the
+    // Issue #12 remote-command class (`git fetch origin --upload-pack=…`).
+    let fetchArgs: string[];
+    try {
+      fetchArgs = buildFetchArgs("origin", branchName);
+    } catch (err: unknown) {
+      return {
+        action: "failure",
+        failureType: "execution_error",
+        failureMessage: err instanceof Error ? err.message : String(err),
+        elapsedSeconds,
+        promptVersions: {
+          issue: issueVersion,
+          codingGuidelines: guidelinesVersion,
+        },
+        promptSha,
+        promptCacheHit,
+      };
+    }
+    const fetchResult = await deps.runGitCommand(fetchArgs);
     if (fetchResult.ok) {
       // Ensure enough history for the commit-range log on a shallow clone (Issue #1502)
       await ensureHistoryDepth([baseBranch, `origin/${branchName}`]);
@@ -1393,7 +1390,12 @@ export async function runExecuteClaudePhase(
           `SELF-HEALING: Found ${remoteCommitCount} commit(s) on remote branch from prior attempt — ` +
             `resetting to remote (Issue #585)`,
         );
-        await deps.runGitCommand(["reset", "--hard", `origin/${branchName}`]);
+        await deps.runGitCommand([
+          "reset",
+          "--hard",
+          "--end-of-options",
+          `origin/${branchName}`,
+        ]);
         return {
           action: "remote_self_healed",
           hasUncommittedChanges: false,
