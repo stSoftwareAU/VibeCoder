@@ -45,19 +45,26 @@
  *   `// security-scan-ignore: SEC-<id> — author=<login> expires=<YYYY-MM-DD> <reason>`
  *
  * A marker missing any of author / expiry / reason, carrying a malformed
- * or past expiry, or naming an author outside the configured allowlist,
+ * or past expiry, naming an author outside the configured allowlist, or
+ * whose `author=` does not match a verified commit identity (Issue #269),
  * still **parses** — it is recorded and reported — but never suppresses
  * anything ({@link isSuppressed} honours only `valid` records). The
  * allowlist fails closed (Issue #3941): with no allowlist configured at
  * all — neither on the policy nor via
  * {@link setSuppressionAuthorAllowlist} — every marker is rejected,
- * because an unverifiable `author=` field is no attribution. Every
+ * because an unverifiable `author=` field is no attribution. The
+ * commit-identity bind also fails closed (Issue #269): with no verified
+ * logins — neither on the policy nor via
+ * {@link setSuppressionCommitAuthors} — every marker is rejected,
+ * because a self-asserted `author=` is not a provenance check. Every
  * parsed marker also lands in a process-scoped registry so each scan run
  * can report which waivers are active ({@link renderSuppressionSummary}).
  *
  * Pure functions apart from that registry. Uses Australian English
  * throughout.
  */
+
+import { normaliseLogin } from "./identity_guard.ts";
 
 export type SupportedLanguage =
   | "ts"
@@ -107,6 +114,27 @@ export interface SuppressionPolicy {
    * fails closed (Issue #3941).
    */
   allowedAuthors?: readonly string[];
+  /**
+   * GitHub logins taken from a verified commit identity (Issue #269).
+   *
+   * `author=` is self-asserted comment text; it is honoured only when it
+   * also matches one of these logins, case-insensitively via
+   * {@link normaliseLogin}. Callers populate the list from `git blame` of
+   * the marker line (preferred) or, when blaming every scanned file is too
+   * expensive, from the HEAD commit author / the authors of commits that
+   * touch the file on this PR or branch. When absent or empty the
+   * process-wide list configured via {@link setSuppressionCommitAuthors}
+   * applies instead; when neither names any login, every marker is
+   * rejected — an unverified `author=` is not a provenance check.
+   */
+  commitAuthors?: readonly string[];
+  /**
+   * Per-line git author logins from `git blame` of the file (Issue #269).
+   * When present, the marker's `author=` must match the login blamed on
+   * that line; a missing entry fails closed. Preferred over
+   * {@link commitAuthors} when the caller has already blamed the file.
+   */
+  lineAuthors?: Readonly<Record<number, string>>;
   /** Source file recorded on each record (and in the run report). */
   file?: string;
 }
@@ -272,6 +300,55 @@ export function _resetSuppressionAuthorAllowlist(): void {
   configuredAuthorAllowlist = [];
 }
 
+/**
+ * Process-wide verified commit identities for `author=` binding
+ * (Issue #269).
+ *
+ * Set once per scan from blame / HEAD / file-touching commit authors so
+ * every call path — including the deep pure helpers that never see a
+ * checkout — enforces the same provenance check. A per-call
+ * `SuppressionPolicy.commitAuthors` overrides it.
+ */
+let configuredCommitAuthors: readonly string[] = [];
+
+/** Configure the process-wide verified commit-author list (Issue #269). */
+export function setSuppressionCommitAuthors(
+  authors: readonly string[],
+): void {
+  configuredCommitAuthors = [...authors];
+}
+
+/** Clear the configured commit-author list. Test-only helper. */
+export function _resetSuppressionCommitAuthors(): void {
+  configuredCommitAuthors = [];
+}
+
+/**
+ * Derive a GitHub login from a git author name and email (Issue #269).
+ *
+ * Prefers the login in a `users.noreply.github.com` address
+ * (`login@…` or `id+login@…`). Otherwise, when the author name is itself
+ * a legal GitHub login, that name is normalised with
+ * {@link normaliseLogin}. Returns `null` when neither yields an identity
+ * — callers must fail closed rather than treat an unverified `author=`
+ * as authorised.
+ */
+export function loginFromGitIdentity(
+  name: string,
+  email = "",
+): string | null {
+  const mail = email.trim().toLowerCase();
+  const noreply = /^(?:\d+\+)?([a-z0-9][a-z0-9-]*)@users\.noreply\.github\.com$/
+    .exec(mail);
+  if (noreply?.[1]) return noreply[1];
+
+  const trimmed = name.trim();
+  if (/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(trimmed)) {
+    return normaliseLogin(trimmed);
+  }
+  return null;
+}
+
 /** Split the marker trailer into its `author`, `expiry` and reason parts. */
 function parseTrailer(
   trailer: string,
@@ -298,6 +375,7 @@ function parseTrailer(
 function rejectionReason(
   parts: { author?: string; expiry?: string; reason: string },
   policy: SuppressionPolicy,
+  line: number,
 ): string | null {
   if (!parts.author) {
     return "missing author — add `author=<github-login>`";
@@ -312,9 +390,17 @@ function rejectionReason(
     return "no suppression author allowlist is configured — the author " +
       "cannot be verified, so the marker is rejected";
   }
-  if (!allowed.some((a) => a.toLowerCase() === parts.author?.toLowerCase())) {
+  if (
+    !allowed.some((a) => normaliseLogin(a) === normaliseLogin(parts.author!))
+  ) {
     return `author ${parts.author} is not authorised to suppress findings`;
   }
+  // Issue #269: allowlist membership is not provenance. `author=` must
+  // also match a verified commit identity — the blamed line, or the
+  // caller-supplied HEAD / file-touching authors. No identity means
+  // the field is still self-asserted comment text: fail closed.
+  const identityRejected = commitIdentityRejection(parts.author, policy, line);
+  if (identityRejected) return identityRejected;
   if (!parts.expiry) {
     return "missing expiry — add `expires=<YYYY-MM-DD>`";
   }
@@ -326,6 +412,44 @@ function rejectionReason(
   }
   if (parts.reason.length === 0) {
     return "missing reason — explain why the finding is being waived";
+  }
+  return null;
+}
+
+/**
+ * Bind `author=` to a verified commit identity (Issue #269).
+ *
+ * Prefer per-line blame ({@link SuppressionPolicy.lineAuthors}) when the
+ * caller has it. Otherwise require `author=` to match the caller-supplied
+ * or process-wide commit-author list (HEAD / file-touching authors — the
+ * cheaper alternative when blaming every scanned file is too expensive).
+ * An empty list fails closed.
+ */
+function commitIdentityRejection(
+  author: string,
+  policy: SuppressionPolicy,
+  line: number,
+): string | null {
+  if (policy.lineAuthors) {
+    const blamed = policy.lineAuthors[line];
+    if (!blamed) {
+      return "commit identity for this line could not be determined — " +
+        "the marker is rejected";
+    }
+    if (normaliseLogin(blamed) !== normaliseLogin(author)) {
+      return `author ${author} does not match the commit identity`;
+    }
+    return null;
+  }
+  const verified = policy.commitAuthors && policy.commitAuthors.length > 0
+    ? policy.commitAuthors
+    : configuredCommitAuthors;
+  if (verified.length === 0) {
+    return "no verified commit identity is configured — the author " +
+      "cannot be bound to a commit, so the marker is rejected";
+  }
+  if (!verified.some((a) => normaliseLogin(a) === normaliseLogin(author))) {
+    return `author ${author} does not match the commit identity`;
   }
   return null;
 }
@@ -447,7 +571,7 @@ export function findSuppressions(
     });
     if (hit) {
       const parts = parseTrailer(hit.reason);
-      const rejected = rejectionReason(parts, policy);
+      const rejected = rejectionReason(parts, policy, lineNumber);
       const record: SuppressionRecord = {
         id: hit.id,
         line: lineNumber,

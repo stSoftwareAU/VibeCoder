@@ -23,9 +23,11 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   _resetSuppressionAuthorAllowlist,
+  _resetSuppressionCommitAuthors,
   findSuppressions,
   MAX_SUPPRESSION_LINE_CHARS,
   setSuppressionAuthorAllowlist,
+  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 
 /**
@@ -97,7 +99,9 @@ Deno.test("findSuppressions - a whole hostile lockfile of long lines is linear (
 
 Deno.test("findSuppressions - a line longer than MAX_SUPPRESSION_LINE_CHARS is skipped whole (Issue #3942)", () => {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
+  setSuppressionCommitAuthors(["nigel"]);
   try {
     const marker =
       "/* orphan-deps-ignore: BP-aaaaaaaaaaaa — author=nigel expires=2099-12-31 finished lib */";
@@ -117,6 +121,7 @@ Deno.test("findSuppressions - a line longer than MAX_SUPPRESSION_LINE_CHARS is s
     assertEquals(findSuppressions(padding + marker, "ts"), []);
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
   }
 });
 

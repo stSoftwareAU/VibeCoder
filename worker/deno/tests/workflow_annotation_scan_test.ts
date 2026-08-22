@@ -23,7 +23,9 @@
 
 import {
   _resetSuppressionAuthorAllowlist as _clearSuppressionAllowlist,
+  _resetSuppressionCommitAuthors as _clearSuppressionCommitAuthors,
   setSuppressionAuthorAllowlist as _setSuppressionAllowlist,
+  setSuppressionCommitAuthors as _setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 
@@ -197,6 +199,7 @@ Deno.test("fileAnnotationClasses skips a class suppressed in the workflow file",
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
   try {
     const gh = makeGh();
     const cls = annotationClass({ classId: "BP-suppressed00" });
@@ -216,6 +219,7 @@ Deno.test("fileAnnotationClasses skips a class suppressed in the workflow file",
     assertEquals(gh.calls.filter((c) => c.args[1] === "create").length, 0);
   } finally {
     _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
   }
 });
 
@@ -223,6 +227,7 @@ Deno.test("isAnnotationClassSuppressed honours a file-level ignore marker", () =
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
   try {
     const cls = annotationClass({ classId: "BP-marker000000" });
     assert(
@@ -236,6 +241,7 @@ Deno.test("isAnnotationClassSuppressed honours a file-level ignore marker", () =
     );
   } finally {
     _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
   }
 });
 
