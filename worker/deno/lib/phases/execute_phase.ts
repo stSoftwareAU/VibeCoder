@@ -20,6 +20,8 @@ import {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { getLatestVersion } from "../prompt_manager.ts";
+import { LABEL_DEFAULTS } from "../config_defaults.ts";
+import { detectScreenshotRequired } from "../execute_claude_phase.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -255,6 +257,27 @@ async function executeClaudeBody(
   const qualityInstructions = buildQualityInstructions(config.repoConfig, repo);
   const customInstructions = getCustomInstructions(config.repoConfig, repo);
 
+  // Browser/network capability is granted on need, not by default
+  // (Issue #192). This is the main-loop path that hands the agent a `cwd`,
+  // so before the gate it wired the Playwright MCP server — outbound HTTP
+  // through a full browser context — into every issue the fleet worked.
+  // Now only an issue that must produce screenshot evidence gets it: the
+  // `needs-screenshot` label, or a repo configured with
+  // `requiresScreenshots`. A backend issue's agent has no browser tool for
+  // a prompt injection to steer at an internal or attacker-controlled host.
+  const screenshotRequired = detectScreenshotRequired(
+    ctx.issueLabels.join(","),
+    LABEL_DEFAULTS.needsScreenshotLabel,
+    config.repoConfig,
+    repo,
+  );
+  if (screenshotRequired) {
+    logger.info(
+      "Screenshot evidence required — wiring the Playwright MCP browser for " +
+        "this run (Issue #192)",
+    );
+  }
+
   const promptResult = await deps.infrastructure.buildPrompt({
     repo,
     issueNumber: String(issueNumber),
@@ -461,6 +484,8 @@ async function executeClaudeBody(
         killAfterSeconds: config.claudeKillAfter,
         model: config.claudeModel || undefined,
         cwd: state.repoPath,
+        // Opt-in browser (Issue #192) — see `screenshotRequired` above.
+        mcpConfig: screenshotRequired,
         logger,
         sessionResumeState: state.sessionResumeState,
         // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
