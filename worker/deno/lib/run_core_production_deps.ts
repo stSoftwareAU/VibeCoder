@@ -155,6 +155,10 @@ import {
   loadState as loadCooldownState,
   recordIssueCooldown as cooldownRecordFn,
 } from "./cooldown_state.ts";
+// Adaptive claim floor (Issue #245): the evidence lookup and the key the
+// per-cycle deferral set is written with.
+import { fetchIssueClaimEvidence } from "./claim_evidence_lookup.ts";
+import { issueClaimKey } from "./claim_runway_evidence.ts";
 import {
   type CircuitBreakerConfig,
   getSleepInterval as circuitBreakerGetSleep,
@@ -2069,6 +2073,7 @@ export async function createProductionRunCoreDeps(
 
     async findNextIssue(options?: {
       excludeRepos?: ReadonlySet<string>;
+      excludeIssues?: ReadonlySet<string>;
       onScanSummary?: (summary: DiagnosticSummary) => void;
     }) {
       // Load cooldown state once before scanning (synchronous check per issue)
@@ -2089,9 +2094,15 @@ export async function createProductionRunCoreDeps(
         // cached issue list has a 600 s TTL, so without the second term an
         // issue this run just finished — or closed — is re-offered seconds
         // later by the very same stale list.
+        // Issue #245: an issue this cycle deferred for the adaptive claim
+        // floor is skipped by the same per-issue filter, so the scan ranks
+        // the next candidate instead of re-offering the one that cannot fit
+        // the runway left. The worker log states the real reason; the
+        // finder's own counts tally it with the cooldown skips.
         isIssueInCooldown: (repo, num) =>
           cooldownSet.has(`${repo}|${num}`) ||
-          processedIssues.has(repo, num),
+          processedIssues.has(repo, num) ||
+          options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
         // Repositories held by sibling slots (Issue #4176): skipped so no
         // two slots share a clone.
         ...(options?.excludeRepos
@@ -2218,6 +2229,23 @@ export async function createProductionRunCoreDeps(
     fullExecuteBudgetSeconds: config.claimRequireFullExecuteBudget
       ? config.claudeTimeout
       : undefined,
+
+    // Adaptive claim floor (Issue #245): the configured execute budget is
+    // always supplied here — unlike the opt-in gate above — because the
+    // adaptive floor applies it only to an issue that already carries
+    // evidence of being a long job.
+    executeBudgetSeconds: config.claudeTimeout,
+
+    // The evidence that floor reads: one `gh issue view` per candidate,
+    // trusting only fleet-authored comments (Issue #245).
+    gatherIssueClaimEvidence: (issue: DiscoveredIssue) =>
+      fetchIssueClaimEvidence({
+        repo: issue.repo,
+        issueNumber: issue.issueNumber,
+        ghCommandFn: runGhCommand,
+        fleetAuthors,
+        longJobLabels: config.claimLongJobLabels,
+      }),
 
     // Slot-aware sweep (Issue #4178): only heartbeats no live slot owns are
     // stopped, so a sibling slot's healthy heartbeat is never mistaken for
