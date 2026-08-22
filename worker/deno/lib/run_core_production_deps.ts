@@ -199,6 +199,11 @@ import {
 } from "./resume_state_store.ts";
 import { type FleetAuthorSetInput } from "./fleet_authors.ts";
 import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
+import {
+  formatDerivedAuthorsFoldSummary,
+  intersectDerivedAuthors,
+  resolveDerivedAuthors,
+} from "./derived_authors.ts";
 import { getMachineId } from "./machine_id.ts";
 
 // Fault tolerance observability (Issue #1173)
@@ -270,6 +275,14 @@ export interface ProductionDepsOptions {
   logger?: Logger;
   /** Optional config override. */
   config?: WorkerConfig;
+  /**
+   * Override the derived-author resolver (Issue #256). Production leaves
+   * this unset and gets {@link resolveDerivedAuthors}, which shells out to
+   * `gh`. Tests inject a stub: the no-fallback rule is the security
+   * guarantee of this sub-issue, and a test that proved it by letting a
+   * real `gh` call fail would prove nothing on a host where `gh` works.
+   */
+  resolveTrustedAuthors?: typeof resolveDerivedAuthors;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,15 +448,27 @@ export async function createProductionRunCoreDeps(
   // static config arrays, so observable behaviour is unchanged; the
   // derived fleet-author sets are recomputed on every apply so they
   // cannot drift from the raw arrays (#4023/#4079).
+  //
+  // Issue #256: under `author_source: "github"` the seed is **empty**, not
+  // the local arrays. The construction-time seed is live until the first
+  // refresh lands, so seeding it from `allowed_authors` would make a
+  // populated local list genuinely trusted for that window — the exact thing
+  // the derived source is supposed to make impossible. Trust starts closed
+  // and is opened only by a successful resolve; if the first resolve fails,
+  // the skip-cycle gate stands the cycle down with nobody trusted, which is
+  // the correct end state rather than a stale-list fallback.
+  const trustSeed = config.authorSource === "github"
+    ? { allowedAuthors: [], authorisedCommenters: [] }
+    : {
+      allowedAuthors: config.allowedAuthors ?? [],
+      authorisedCommenters: config.authorisedCommenters ?? [],
+    };
   const trustHolder = createTrustSnapshotHolder(
     {
       githubUser,
       fleetPrAuthors: config.fleetPrAuthors ?? [],
     },
-    {
-      allowedAuthors: config.allowedAuthors ?? [],
-      authorisedCommenters: config.authorisedCommenters ?? [],
-    },
+    trustSeed,
   );
   // Issue #3164: only heartbeat/claim markers posted by a fleet account
   // suppress stale-assignment recovery. Resolve the same fleet-author union
@@ -509,10 +534,11 @@ export async function createProductionRunCoreDeps(
     setSuppressionAuthorAllowlist(snap.allowedAuthors);
   }
 
-  applyTrustSnapshot({
-    allowedAuthors: config.allowedAuthors ?? [],
-    authorisedCommenters: config.authorisedCommenters ?? [],
-  });
+  // Issue #256: identifies the cycle for the resolver's per-cycle cache, so
+  // repeated reads inside one cycle cost no further `gh` calls.
+  let trustRefreshCycle = 0;
+
+  applyTrustSnapshot(trustSeed);
 
   // Bind default marker options so every recordHeartbeat/clearHeartbeat call
   // from the processors automatically publishes and maintains the GitHub
@@ -2595,17 +2621,64 @@ export async function createProductionRunCoreDeps(
       resetRepoAccessLogState();
     },
 
-    // Issue #253: per-cycle trusted-author refresh. Still sourced from
-    // static config, so the snapshot's contents never change between
-    // cycles and a full run's observable behaviour is unchanged. The
-    // hook recomputes the derived fleet-author sets on every call so a
-    // later source flip cannot leave a stale `fleetPrAuthorInput`.
-    refreshTrustedAuthors: () => {
-      applyTrustSnapshot({
-        allowedAuthors: config.allowedAuthors ?? [],
-        authorisedCommenters: config.authorisedCommenters ?? [],
-      });
-      return Promise.resolve({ ok: true as const });
+    // Issue #256: the per-cycle trusted-author refresh, now source-aware.
+    //
+    // `author_source: "config"` keeps the static arrays — unchanged, and
+    // still the default, so no host flips trust models by upgrading.
+    //
+    // `"github"` resolves write/maintain/admin collaborators minus
+    // exclusions (Issue #254) and folds them to the fleet-wide set. Three
+    // rules, all of them the parent issue's:
+    //
+    //  1. A resolve failure returns `{ ok: false }`. It never falls back to
+    //     the local arrays, even when those arrays are populated — the
+    //     skip-cycle gate in run_core then stands the cycle down. A
+    //     fallback would mean a GitHub outage silently restores whatever
+    //     stale list sits in `.config.json`, which is the failure mode the
+    //     whole sub-issue exists to prevent.
+    //  2. The fold is an intersection, not a union: write access on one
+    //     monitored repo must not confer trust on another.
+    //  3. `applyTrustSnapshot` is the only way in, so the comment-trust
+    //     path, the fleet-PR guards, the heartbeat marker allowlist and
+    //     the suppression allowlist all move together or not at all.
+    refreshTrustedAuthors: async () => {
+      if (config.authorSource !== "github") {
+        applyTrustSnapshot({
+          allowedAuthors: config.allowedAuthors ?? [],
+          authorisedCommenters: config.authorisedCommenters ?? [],
+        });
+        return { ok: true as const };
+      }
+
+      trustRefreshCycle++;
+      const resolve = options.resolveTrustedAuthors ?? resolveDerivedAuthors;
+      const resolved = await resolve(
+        {
+          repos: config.repos ?? [],
+          serviceAccounts: config.serviceAccounts ?? [],
+          githubUser,
+          exclusionTeamSlug: config.exclusionTeam,
+        },
+        {
+          cycleId: trustRefreshCycle,
+          log: (message: string) => logger.info(message),
+        },
+      );
+
+      if (!resolved.ok) {
+        return {
+          ok: false as const,
+          reason:
+            `author_source=github: could not resolve trusted authors from ` +
+            `${resolved.failedSource}: ${resolved.reason} — refusing to fall ` +
+            `back to the local allowed_authors arrays`,
+        };
+      }
+
+      const folded = intersectDerivedAuthors(resolved.byRepo);
+      logger.info(formatDerivedAuthorsFoldSummary(resolved.byRepo, folded));
+      applyTrustSnapshot(folded);
+      return { ok: true as const };
     },
 
     // Issue #1935: per-iteration private-repo-6 heartbeat. The end-of-run
