@@ -1,3 +1,14 @@
+<!--
+  GitHub Pages cannot set response headers, so this meta CSP is the only
+  delivery path (Issue #271). It is the backstop if securityLevel: 'strict'
+  or the Mermaid SRI hash regress. 'unsafe-inline' is required for the
+  theme <style> and the inline Mermaid init <script> below; the rest stays
+  tight (default-src 'none', script-src limited to that blob plus the
+  pinned jsDelivr origin — SRI on the <script> tag is still the integrity
+  check).
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'">
 <!-- Full-width, dark theme, modern typography, Mermaid (Issue #611) -->
 <style>
   html { font-size: 16px; }

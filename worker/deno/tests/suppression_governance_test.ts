@@ -11,19 +11,27 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   _resetSuppressionAuthorAllowlist,
+  _resetSuppressionCommitAuthors,
   findSuppressions,
   isSuppressed,
   recordedSuppressions,
   renderSuppressionSummary,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
+  setSuppressionCommitAuthors,
   type SuppressionPolicy,
 } from "../lib/suppression_comments.ts";
 
 const TODAY = "2026-08-02";
 // Issue #3941: the author allowlist fails closed, so the baseline policy
 // used across these tests names the authorised author explicitly.
-const POLICY: SuppressionPolicy = { today: TODAY, allowedAuthors: ["nigel"] };
+// Issue #269: `author=` must also match a verified commit identity —
+// these fixtures commit as `nigel`, so the binding matches.
+const POLICY: SuppressionPolicy = {
+  today: TODAY,
+  allowedAuthors: ["nigel"],
+  commitAuthors: ["nigel"],
+};
 
 /** A fully-governed marker for `SEC-abc123` on the line given. */
 function governed(id = "SEC-abc123"): string {
@@ -121,6 +129,7 @@ Deno.test("suppression governance - an author on the allowlist suppresses", () =
   const records = findSuppressions(governed(), "ts", {
     today: TODAY,
     allowedAuthors: ["Nigel", "bob"],
+    commitAuthors: ["nigel"],
   });
   assertEquals(
     records[0]?.valid,
@@ -226,8 +235,10 @@ Deno.test("suppression governance - an unconfigured author allowlist fails close
 
 Deno.test("suppression governance - the configured allowlist authorises suppressions (Issue #3941)", () => {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   try {
     setSuppressionAuthorAllowlist(["Nigel"]);
+    setSuppressionCommitAuthors(["nigel"]);
     const records = findSuppressions(governed(), "ts", { today: TODAY });
     assertEquals(
       records[0]?.valid,
@@ -237,6 +248,7 @@ Deno.test("suppression governance - the configured allowlist authorises suppress
     assertEquals(isSuppressed("SEC-abc123", records, 1), true);
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
   }
 });
 
@@ -255,8 +267,10 @@ Deno.test("suppression governance - the configured allowlist rejects unlisted au
 
 Deno.test("suppression governance - a policy allowlist overrides the configured one (Issue #3941)", () => {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   try {
     setSuppressionAuthorAllowlist(["nigel"]);
+    setSuppressionCommitAuthors(["nigel"]);
     const records = findSuppressions(governed(), "ts", {
       today: TODAY,
       allowedAuthors: ["alice"],
@@ -264,5 +278,84 @@ Deno.test("suppression governance - a policy allowlist overrides the configured 
     assertEquals(records[0]?.valid, false, "the explicit policy wins");
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #269 — author= must bind to a verified commit identity
+// ---------------------------------------------------------------------------
+
+Deno.test("suppression governance - an allowlisted author= that does not match the commit identity never suppresses (Issue #269)", () => {
+  // A fork PR can write `author=nigel` (allowlisted) while the committing
+  // identity is the attacker's login. The marker must not suppress.
+  const records = findSuppressions(governed(), "ts", {
+    today: TODAY,
+    allowedAuthors: ["nigel"],
+    commitAuthors: ["mallory"],
+  });
+  assertEquals(records[0]?.valid, false);
+  assertStringIncludes(records[0]?.invalidReason ?? "", "commit");
+  assertEquals(isSuppressed("SEC-abc123", records, 1), false);
+});
+
+Deno.test("suppression governance - an allowlisted author= that matches the commit identity still suppresses (Issue #269)", () => {
+  const records = findSuppressions(governed(), "ts", {
+    today: TODAY,
+    allowedAuthors: ["Nigel"],
+    commitAuthors: ["NIGEL"],
+  });
+  assertEquals(
+    records[0]?.valid,
+    true,
+    "commit-identity matching uses the same case-insensitive login normalisation",
+  );
+  assertEquals(isSuppressed("SEC-abc123", records, 1), true);
+});
+
+Deno.test("suppression governance - a missing commit identity fails closed (Issue #269)", () => {
+  _resetSuppressionCommitAuthors();
+  try {
+    // Allowlisted and fully governed — but no verified commit identity,
+    // so author= is still self-asserted comment text.
+    const records = findSuppressions(governed(), "ts", {
+      today: TODAY,
+      allowedAuthors: ["nigel"],
+    });
+    assertEquals(records[0]?.valid, false);
+    assertStringIncludes(records[0]?.invalidReason ?? "", "commit");
+    assertEquals(isSuppressed("SEC-abc123", records, 1), false);
+  } finally {
+    _resetSuppressionCommitAuthors();
+  }
+});
+
+Deno.test("suppression governance - the configured commit authors bind author= (Issue #269)", () => {
+  _resetSuppressionCommitAuthors();
+  try {
+    setSuppressionCommitAuthors(["Nigel"]);
+    const records = findSuppressions(governed(), "ts", {
+      today: TODAY,
+      allowedAuthors: ["nigel"],
+    });
+    assertEquals(records[0]?.valid, true);
+    assertEquals(isSuppressed("SEC-abc123", records, 1), true);
+  } finally {
+    _resetSuppressionCommitAuthors();
+  }
+});
+
+Deno.test("suppression governance - a policy commit-author list overrides the configured one (Issue #269)", () => {
+  _resetSuppressionCommitAuthors();
+  try {
+    setSuppressionCommitAuthors(["nigel"]);
+    const records = findSuppressions(governed(), "ts", {
+      today: TODAY,
+      allowedAuthors: ["nigel"],
+      commitAuthors: ["alice"],
+    });
+    assertEquals(records[0]?.valid, false, "the explicit policy wins");
+  } finally {
+    _resetSuppressionCommitAuthors();
   }
 });

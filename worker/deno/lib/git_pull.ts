@@ -23,6 +23,7 @@ import {
   buildCheckoutArgs,
   buildCheckoutNewBranchArgs,
   buildFetchArgs,
+  buildPushArgs,
   buildRebaseArgs,
 } from "./git_ref_args.ts";
 import { syncBranchToRemoteHead } from "./git_branch_sync.ts";
@@ -724,8 +725,11 @@ async function forcePushFeatureBranch(
     };
   }
 
+  // Issue #275: through the sanctioned builder, so the branch name is
+  // validated and sits behind `--end-of-options`, and the lease flag stays
+  // ahead of the separator where git still reads it as a flag.
   const pushResult = await runGitCommand(
-    ["push", "origin", branchName, "--force-with-lease"],
+    buildPushArgs("origin", branchName, { forceWithLease: true }),
     options,
   );
 

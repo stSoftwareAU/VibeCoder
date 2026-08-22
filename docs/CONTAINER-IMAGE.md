@@ -80,10 +80,20 @@ not a free choice: it is exactly the version `@playwright/mcp` depends on,
 because Playwright resolves browsers as `chromium-<revision>` and each
 release pins its own revision; the gate fails when the pin drifts from
 `PLAYWRIGHT_INSTALLER_VERSION` in `worker/deno/setup/screenshot.ts`.
-`--with-deps` apt-installs the system-library and font set Playwright itself
-declares, and because Playwright only warns when it does not recognise a
-distribution, the build then launches the browser and renders a page: a
-missing library fails the build rather than the first screenshot.
+The Chromium zip is a second artefact (Issue #274): Playwright 1.61 on
+Debian Trixie fetches Chrome for Testing on amd64 and its own chromium
+build on arm64. Those zips are downloaded, SHA-256 verified against
+`chromium_amd64` / `chromium_arm64` in `container/tools.json`, and extracted
+into `chromium-<revision>` *before* `playwright-core install --with-deps
+chromium` runs, so the installer sees `INSTALLATION_COMPLETE` and does not
+re-fetch the blob. `--with-deps` still apt-installs the system-library and
+font set Playwright itself declares. Those Debian packages stay unpinned:
+the list is large, security updates move the versions, and pinning them
+would break the next point release. Residual risk is Debian's signed apt
+repos on the digest-pinned trixie base. Because Playwright only warns when
+it does not recognise a distribution, the build then launches the browser
+and renders a page: a missing library fails the build rather than the first
+screenshot.
 
 ## Pre-warmed Deno cache
 

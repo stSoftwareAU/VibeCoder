@@ -10,10 +10,23 @@
  * which validate the ref and insert `--end-of-options`.
  *
  * This scanner flags any array literal beginning with one of the guarded
- * git verbs — `fetch`, `pull`, `checkout`, `rebase` — passed to a
+ * git verbs — `fetch`, `pull`, `push`, `checkout`, `rebase` — passed to a
  * `runGitCommand`/`Deno.Command("git", …)` call, so a new inline call site
  * cannot reintroduce the vulnerability without failing the gate. `git_ref_args.ts`
  * itself (which constructs these arrays as the sanctioned output) is allowlisted.
+ *
+ * The pattern is applied both per-line and to the comment-stripped file as a
+ * whole (Issue #268): a multi-line `["fetch", "origin", branchName]` literal
+ * evades a line-local scan because no single line holds the verb and the
+ * attacker-controlled identifier.
+ *
+ * `push` and `rebase` join the guarded set in Issue #275. `push` was excluded
+ * outright, which is how #267's unguarded `pr_ci_nudge` push of a
+ * GitHub-controlled PR head branch reached main looking clean to the gate —
+ * `git push origin -–evil-branch` is the same CWE-88 shape as a fetch, and
+ * `buildPushArgs` has existed all along. `rebase` was already named in this
+ * contract and in `buildRebaseArgs` but was missing from the pattern, so the
+ * documentation promised a gate that was not there.
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
@@ -40,25 +53,49 @@ export const GIT_REF_ARGV_ALLOWLIST: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
- * Matches an array literal whose first element is a guarded git verb, e.g.
- * `["fetch", "origin", branchName]` or `["checkout", branchName]`. The
- * `--end-of-options` the builders emit sits *after* the verb, so a
- * builder-shaped array (`["fetch", "--end-of-options", …]`) does not match
- * because the verb is immediately followed by the separator, which we exclude.
+ * Matches a whole array literal whose first element is a guarded git verb,
+ * e.g. `["fetch", "origin", branchName]` or `["push", "-u", …, branchName]`.
+ *
+ * Matching the *whole* array and then applying two predicates to its text
+ * (Issue #275) replaced a single clever regex that tried to express "not
+ * builder-shaped" as a lookahead. The lookahead could only check the slot
+ * immediately after the verb, and the lease form
+ * `["push", `--force-with-lease=${branchName}:${sha}`, "--end-of-options",
+ * remote, branchName]` defeated it twice over: a flag sits between the verb
+ * and the separator, and the branch name is interpolated into that flag
+ * ahead of it. Two predicates over the array text say plainly what the gate
+ * means, and `[^\]]` spans newlines so a multi-line literal (Issue #268) is
+ * caught by the same expression.
  */
 export const GIT_REF_ARGV_PATTERN = new RegExp(
-  // an array literal opening with a guarded verb …
-  "\\[\\s*[\"'`](?:fetch|pull|checkout)[\"'`]\\s*,\\s*" +
-    // … not already the builder-shaped `--end-of-options` form …
-    "(?![\"'`]--end-of-options[\"'`])" +
-    // … whose remaining tokens include an attacker-controlled PR head
-    // branch identifier (branchName / headBranch / headRefName, any
-    // object path). Safe internal refs (defaultBranch, baseBranch,
-    // milestoneBranch, remotes, `--abort`, `--`) are deliberately excluded
-    // — this gate is CWE-88 (a dash-leading PR head branch), not a blanket
-    // ban on positional refs.
-    "[^\\]]*\\b(?:head(?:Ref)?[Bb]ranch|branchName|headRefName)\\b",
+  "\\[\\s*[\"'`](?:fetch|pull|push|checkout|rebase)[\"'`][^\\]]*\\]",
+  "g",
 );
+
+/**
+ * An attacker-controlled PR head branch identifier, in any object path.
+ *
+ * Safe internal refs (defaultBranch, baseBranch, milestoneBranch, remotes,
+ * `--abort`, `--`) are deliberately excluded — this gate is CWE-88 (a
+ * dash-leading PR head branch reaching git as a positional), not a blanket
+ * ban on positional refs.
+ */
+export const GIT_REF_ARGV_UNTRUSTED_IDENTIFIER =
+  /\b(?:head(?:Ref)?[Bb]ranch|branchName|headRefName)\b/;
+
+/**
+ * Whether one array-literal's text is an unguarded guarded-verb call.
+ *
+ * `--end-of-options` anywhere in the array means the author routed through
+ * the builders in `git_ref_args.ts`, which validate the ref and place the
+ * separator before the first positional. Everything after that separator is
+ * a positional to git, so its presence is what makes the array safe —
+ * wherever in the array it sits.
+ */
+export function isUnguardedGitRefArgv(arrayText: string): boolean {
+  if (arrayText.includes("--end-of-options")) return false;
+  return GIT_REF_ARGV_UNTRUSTED_IDENTIFIER.test(arrayText);
+}
 
 /** Strip block comments to spaces, preserving line numbers. */
 function stripBlockComments(source: string): string {
@@ -73,15 +110,29 @@ export function scanContentForGitRefArgv(
   content: string,
   repoRelPath: string,
 ): GitRefArgvViolation[] {
-  const lines = stripBlockComments(content).split("\n");
+  const stripped = stripBlockComments(content);
+  const lines = stripped.split("\n");
   const violations: GitRefArgvViolation[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i] ?? "";
-    const code = rawLine.replace(/\/\/.*$/, "");
-    if (GIT_REF_ARGV_PATTERN.test(code)) {
-      violations.push({ file: repoRelPath, line: i + 1, text: rawLine.trim() });
-    }
+  const seenLines = new Set<number>();
+
+  const addViolation = (line: number, text: string) => {
+    if (seenLines.has(line)) return;
+    seenLines.add(line);
+    violations.push({ file: repoRelPath, line, text: text.trim() });
+  };
+
+  // One pass over the comment-stripped file. `[^\]]` spans newlines, so a
+  // multi-line literal (Issue #268) is found by the same expression as a
+  // single-line one — no separate line-local scan is needed.
+  const withoutLineComments = stripped.replace(/\/\/.*$/gm, "");
+  const globalPattern = new RegExp(GIT_REF_ARGV_PATTERN.source, "g");
+  for (const match of withoutLineComments.matchAll(globalPattern)) {
+    if (!isUnguardedGitRefArgv(match[0])) continue;
+    const index = match.index ?? 0;
+    const line = withoutLineComments.slice(0, index).split("\n").length;
+    addViolation(line, lines[line - 1] ?? match[0]);
   }
+
   return violations;
 }
 

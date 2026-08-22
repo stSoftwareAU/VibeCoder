@@ -1175,7 +1175,11 @@ function browserManifestText(): string {
     name: "playwright-core",
     version: "1.61.0-alpha-1778188671000",
     versionArg: "PLAYWRIGHT_VERSION",
-    sha256: { noarch: SHA_AMD64 },
+    sha256: {
+      noarch: SHA_AMD64,
+      chromium_amd64: SHA_AMD64,
+      chromium_arm64: SHA_ARM64,
+    },
     browsersPath: BROWSERS_PATH,
   });
   return JSON.stringify(raw);
@@ -1186,6 +1190,7 @@ const BROWSER_CONTAINERFILE = [
   `ENV PLAYWRIGHT_BROWSERS_PATH="${BROWSERS_PATH}"`,
   "RUN set -eu; \\",
   '    npm install -g --ignore-scripts "${tarball}"; \\',
+  '    echo "${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}  /tmp/chromium.zip" | sha256sum -c -; \\',
   "    playwright-core install --with-deps chromium chromium-headless-shell; \\",
   '    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"',
 ].join("\n");
@@ -1267,6 +1272,37 @@ Deno.test("findBrowserInstallViolations - ignores a commented-out install", () =
   assert(violations.some((v) => v.includes("download a browser mid-run")));
 });
 
+Deno.test("findBrowserInstallViolations - reports a playwright-core pin without Chromium checksums (Issue #274)", () => {
+  const raw = JSON.parse(browserManifestText()) as {
+    tools: Array<{ name: string; sha256: Record<string, string> }>;
+  };
+  const pin = raw.tools.find((t) => t.name === "playwright-core")!;
+  delete pin.sha256.chromium_amd64;
+  delete pin.sha256.chromium_arm64;
+
+  const violations = findBrowserInstallViolations(
+    BROWSER_CONTAINERFILE,
+    parseContainerManifest(JSON.stringify(raw)),
+    BROWSERS_PATH,
+  );
+  assert(violations.some((v) => v.includes("chromium_amd64")));
+  assert(violations.some((v) => v.includes("chromium_arm64")));
+});
+
+Deno.test("findBrowserInstallViolations - reports a bake that never verifies the Chromium checksum (Issue #274)", () => {
+  const manifest = parseContainerManifest(browserManifestText());
+  const unverified = BROWSER_CONTAINERFILE.split("\n")
+    .filter((line) => !line.includes("PLAYWRIGHT_SHA256_CHROMIUM"))
+    .join("\n");
+
+  const violations = findBrowserInstallViolations(
+    unverified,
+    manifest,
+    BROWSERS_PATH,
+  );
+  assert(violations.some((v) => v.includes("PLAYWRIGHT_SHA256_CHROMIUM")));
+});
+
 Deno.test("container/ - the committed image bakes Playwright's headless Chromium", async () => {
   const manifest = parseContainerManifest(
     await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
@@ -1297,6 +1333,11 @@ Deno.test("container/ - the baked browser matches the version the MCP server use
   // pins its own revision, so a near-miss version bakes a browser the MCP
   // server ignores and then downloads the right one mid-run.
   assertEquals(pinned.version, PLAYWRIGHT_INSTALLER_VERSION);
+
+  // Issue #274: the Chromium zip is a second artefact — the noarch tarball
+  // checksum does not cover it.
+  assertEquals(pinned.sha256.chromium_amd64?.length, 64);
+  assertEquals(pinned.sha256.chromium_arm64?.length, 64);
 
   // The path the image bakes is the one screenshot.ts resolves.
   const browsersPath = (JSON.parse(raw).tools as Array<Record<string, unknown>>)

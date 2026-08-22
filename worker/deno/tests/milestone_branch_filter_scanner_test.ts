@@ -9,7 +9,9 @@
 
 import {
   _resetSuppressionAuthorAllowlist as _clearSuppressionAllowlist,
+  _resetSuppressionCommitAuthors as _clearSuppressionCommitAuthors,
   setSuppressionAuthorAllowlist as _setSuppressionAllowlist,
+  setSuppressionCommitAuthors as _setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import { assert, assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
@@ -213,6 +215,7 @@ Deno.test("scanMilestoneBranchFilters - in-source suppression marker drops the f
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
   try {
     const raw = `name: Validate
   on:
@@ -224,6 +227,7 @@ Deno.test("scanMilestoneBranchFilters - in-source suppression marker drops the f
     assertEquals(scanMilestoneBranchFilters(files).length, 0);
   } finally {
     _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
   }
 });
 

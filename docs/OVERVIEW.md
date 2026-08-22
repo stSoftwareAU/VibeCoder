@@ -425,16 +425,17 @@ threat model, defence-in-depth, and resolved issues.
 **Important for managers:** Making the _code_ public does **not** give bad
 actors in other countries (or anywhere else) a way to run code on _your_
 machines behind _your_ firewall. Your deployment is protected by design: only
-your config (allowed_authors, AUTHORIZED_COMMENTERS) and your token, on your
-machine, can trigger work. See
+your config, your token, and — when `author_source` is `"github"` — who
+holds write access on a repo you monitor, can trigger work. See
 [SECURITY.md § For managers: public code vs your deployment](../SECURITY.md#for-managers-public-code-vs-your-deployment)
 for the full explanation. The points below are about other risks (e.g.
 trusted-author compromise), not "remote attackers reaching your worker."
 
-- **Trusted-author compromise:** If an allowed author's account or machine is
+- **Trusted-author compromise:** If a trusted author's account or machine is
   compromised, an attacker could create issues that trigger arbitrary code
-  execution on the worker. Mitigations: restrict who is in `allowed_authors`,
-  use tokens scoped to specific repos, and monitor activity.
+  execution on the worker. Mitigations: restrict the trusted-author set
+  (`allowed_authors` under `"config"`, or repository write access under
+  `"github"`), use tokens scoped to specific repos, and monitor activity.
 - **Prompt injection:** Issue bodies and PR comments are passed to Claude; a
   malicious trusted author could try to steer Claude toward unsafe actions. We
   log suspicious patterns and use clear delimiters for untrusted content; we

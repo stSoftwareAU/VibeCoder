@@ -8,7 +8,9 @@
 
 import {
   _resetSuppressionAuthorAllowlist as _clearSuppressionAllowlist,
+  _resetSuppressionCommitAuthors as _clearSuppressionCommitAuthors,
   setSuppressionAuthorAllowlist as _setSuppressionAllowlist,
+  setSuppressionCommitAuthors as _setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import { assert, assertEquals } from "@std/assert";
 import {
@@ -169,6 +171,7 @@ Deno.test("isFindingSuppressed - true for a matching best-practice-ignore marker
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
   try {
     const id = await makeStableId([
       "github-actions-audit",
@@ -183,6 +186,7 @@ Deno.test("isFindingSuppressed - true for a matching best-practice-ignore marker
     assert(isFindingSuppressed(text, 2, id));
   } finally {
     _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
   }
 });
 
@@ -190,6 +194,7 @@ Deno.test("isFindingSuppressed - true on the same line", async () => {
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
   try {
     const id = await makeStableId([
       "github-actions-audit",
@@ -201,6 +206,7 @@ Deno.test("isFindingSuppressed - true on the same line", async () => {
     assert(isFindingSuppressed(text, 1, id));
   } finally {
     _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
   }
 });
 

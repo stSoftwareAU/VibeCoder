@@ -160,6 +160,7 @@ import { analyseFailedOnceCommand } from "./commands/analyse_failed_once.ts";
 import { auditHeartbeatRecoveriesCommand } from "./commands/audit_heartbeat_recoveries.ts";
 import { checkPagesLiquidCommand } from "./commands/check_pages_liquid.ts";
 import { checkMermaidCommand } from "./commands/check_mermaid.ts";
+import { checkMermaidBuiltOutputCommand } from "./commands/check_mermaid_built_output.ts";
 import { checkMarkdownlintCommand } from "./commands/check_markdownlint.ts";
 import { notifyAuditFailureCommand } from "./commands/notify_audit_failure.ts";
 import { purgeStaleWorkflowIssuesCommand } from "./commands/purge_stale_workflow_issues.ts";
@@ -348,6 +349,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(auditHeartbeatRecoveriesCommand);
   registry.register(checkPagesLiquidCommand);
   registry.register(checkMermaidCommand);
+  registry.register(checkMermaidBuiltOutputCommand);
   registry.register(notifyAuditFailureCommand);
   registry.register(checkMarkdownlintCommand);
   registry.register(purgeStaleWorkflowIssuesCommand);
@@ -558,6 +560,7 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "analyse-failed-once",
       "check-pages-liquid",
       "check-mermaid",
+      "check-mermaid-built-output",
       "check-markdownlint",
       "notify-audit-failure",
       "diagnose",
@@ -662,6 +665,7 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "analyse-failed-once",
       "check-pages-liquid",
       "check-mermaid",
+      "check-mermaid-built-output",
       "check-markdownlint",
       "notify-audit-failure",
       "diagnose",
