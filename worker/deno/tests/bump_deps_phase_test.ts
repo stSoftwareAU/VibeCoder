@@ -27,6 +27,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { BumpDepsDeps } from "../lib/bump_deps.ts";
 import { type BumpAgeDeps, emptyBumpAgeAudit } from "../lib/bump_age_audit.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { loadBumpScriptStreaks } from "../lib/bump_script_failure_streak.ts";
 import type { WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { Result } from "../types.ts";
@@ -597,5 +598,230 @@ Deno.test(
   async () => {
     assertEquals(await quarantineHoursFor("1"), "1");
     assertEquals(await quarantineHoursFor("168"), "168");
+  },
+);
+
+// =============================================================================
+// Rejection diagnostics + streak escalation (Issue #207)
+//
+// The rejection used to log only the exit status, so a permanently broken
+// `bump-deps.sh` was undiagnosable and silently disabled bumps for its repo.
+// =============================================================================
+
+/** Capture the phase's WARNING lines (message + rendered context). */
+function makeLoggingDeps(
+  warnings: string[],
+  ghFn?: (args: string[]) => Promise<string>,
+) {
+  return createMockDeps({
+    logger: {
+      warn: (message: string, context?: Record<string, unknown>) => {
+        warnings.push(
+          context
+            ? `${message} ${
+              Object.entries(context).map(([k, v]) => `${k}=${v}`).join(" ")
+            }`
+            : message,
+        );
+      },
+    },
+    ...(ghFn ? { github: { runGhCommand: ghFn } } : {}),
+  });
+}
+
+function rejectingBumpDeps(output: string, exitCode = 1): BumpDepsDeps {
+  return makeBumpDeps({
+    runScript: () => Promise.resolve({ exitCode, output }),
+    getModifiedFiles: () => Promise.resolve(["deno.lock"]),
+  });
+}
+
+Deno.test(
+  "workOnIssueBumpDeps - logs the script's output tail on rejection",
+  async () => {
+    const warnings: string[] = [];
+    await workOnIssueBumpDeps(
+      makeContext(),
+      makeState(),
+      makeLoggingDeps(warnings),
+      rejectingBumpDeps("deno outdated: failed\nERROR: deno is required\n"),
+      "", // streak tracking disabled
+    );
+
+    const joined = warnings.join("\n");
+    assertStringIncludes(joined, "script rejected the bump");
+    assertStringIncludes(joined, "ERROR: deno is required");
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - redacts secrets in the logged output tail",
+  async () => {
+    const warnings: string[] = [];
+    await workOnIssueBumpDeps(
+      makeContext(),
+      makeState(),
+      makeLoggingDeps(warnings),
+      rejectingBumpDeps(`fatal: https://x:ghp_${"a".repeat(36)}@github.com`),
+      "",
+    );
+
+    const joined = warnings.join("\n");
+    assertStringIncludes(joined, "***REDACTED***");
+    assertEquals(joined.includes("ghp_"), false);
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - says so when a rejecting script printed nothing",
+  async () => {
+    const warnings: string[] = [];
+    await workOnIssueBumpDeps(
+      makeContext(),
+      makeState(),
+      makeLoggingDeps(warnings),
+      rejectingBumpDeps(""),
+      "",
+    );
+    assertStringIncludes(warnings.join("\n"), "produced no output");
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - files one issue after three consecutive rejections",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "bump-phase-streak-" });
+    try {
+      const statePath = `${dir}/bump_script_failures.json`;
+      const ghCalls: string[][] = [];
+      const ghFn = (args: string[]): Promise<string> => {
+        ghCalls.push(args);
+        return Promise.resolve(
+          args[1] === "create"
+            ? "https://github.com/org/repo/issues/77\n"
+            : "[]",
+        );
+      };
+      const warnings: string[] = [];
+
+      for (let run = 1; run <= 3; run++) {
+        await workOnIssueBumpDeps(
+          makeContext(),
+          makeState(),
+          makeLoggingDeps(warnings, ghFn),
+          rejectingBumpDeps("ERROR: deno is required"),
+          statePath,
+        );
+      }
+
+      const creates = ghCalls.filter((args) => args[1] === "create");
+      assertEquals(creates.length, 1, "exactly one issue for the streak");
+      const create = creates[0]!;
+      assertEquals(create[create.indexOf("--repo") + 1], "org/repo");
+      assertStringIncludes(
+        create[create.indexOf("--body") + 1] ?? "",
+        "ERROR: deno is required",
+      );
+      assertStringIncludes(warnings.join("\n"), "filed a tracking issue");
+
+      // A fourth rejection must not file again.
+      await workOnIssueBumpDeps(
+        makeContext(),
+        makeState(),
+        makeLoggingDeps(warnings, ghFn),
+        rejectingBumpDeps("ERROR: deno is required"),
+        statePath,
+      );
+      assertEquals(ghCalls.filter((args) => args[1] === "create").length, 1);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - a clean run clears the rejection streak",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "bump-phase-streak-" });
+    try {
+      const statePath = `${dir}/bump_script_failures.json`;
+      const ghCalls: string[][] = [];
+      const ghFn = (args: string[]): Promise<string> => {
+        ghCalls.push(args);
+        return Promise.resolve(args[1] === "create" ? "issues/77" : "[]");
+      };
+      const warnings: string[] = [];
+
+      for (let run = 1; run <= 2; run++) {
+        await workOnIssueBumpDeps(
+          makeContext(),
+          makeState(),
+          makeLoggingDeps(warnings, ghFn),
+          rejectingBumpDeps("transient registry error"),
+          statePath,
+        );
+      }
+
+      // Clean run — script exits 0 with no changes.
+      await workOnIssueBumpDeps(
+        makeContext(),
+        makeState(),
+        makeLoggingDeps(warnings, ghFn),
+        makeBumpDeps(),
+        statePath,
+      );
+      assertEquals(await loadBumpScriptStreaks(statePath), {});
+
+      // The next rejection starts a fresh streak — no issue filed.
+      await workOnIssueBumpDeps(
+        makeContext(),
+        makeState(),
+        makeLoggingDeps(warnings, ghFn),
+        rejectingBumpDeps("transient registry error"),
+        statePath,
+      );
+      assertEquals(
+        ghCalls.filter((args) => args[1] === "create").length,
+        0,
+        "a recovered script must not be reported as chronically broken",
+      );
+      assertEquals(
+        (await loadBumpScriptStreaks(statePath))["org/repo"]?.count,
+        1,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - a quarantine rejection is not a script-failure streak",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "bump-phase-streak-" });
+    try {
+      const statePath = `${dir}/bump_script_failures.json`;
+      await workOnIssueBumpDeps(
+        makeContext(),
+        makeState(),
+        createMockDeps(),
+        makeBumpDeps({
+          getModifiedFiles: () => Promise.resolve(["deno.json"]),
+          auditBumpedVersions: () =>
+            Promise.resolve({
+              verdicts: [],
+              blocked: [],
+              indeterminate: [],
+              unverifiable: [],
+              ok: false,
+              reason: "chalk@5.6.2 is only 1.0h old (< 24h quarantine).",
+            }),
+        }),
+        statePath,
+      );
+      assertEquals(await loadBumpScriptStreaks(statePath), {});
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   },
 );

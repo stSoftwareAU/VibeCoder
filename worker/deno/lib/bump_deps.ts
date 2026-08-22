@@ -33,6 +33,8 @@
 
 import type { Result } from "../types.ts";
 import type { BumpAgeAuditResult } from "./bump_age_audit.ts";
+import { truncateLogTail } from "./log_tail.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 // =============================================================================
 // Types
@@ -76,6 +78,13 @@ export interface BumpInfo {
   beforeBumpSha?: string;
   /** Human-readable rejection reason, suitable for a PR comment. */
   rejectionReason?: string;
+  /**
+   * Secret-redacted tail of the script's output (Issue #207). Set on a
+   * script rejection so the phase can put the failure in the worker log —
+   * `output` alone was captured and never surfaced, which made a
+   * permanently broken `bump-deps.sh` undiagnosable.
+   */
+  outputTail?: string;
 }
 
 /** Parameters for `runBumpDeps`. */
@@ -157,6 +166,52 @@ export const DEFAULT_BUMP_SCRIPT_NAME = "bump-deps.sh";
 
 /** Default quarantine window in hours. */
 export const DEFAULT_BUMP_QUARANTINE_HOURS = 24;
+
+/** Lines of script output kept in the rejection tail (Issue #207). */
+export const BUMP_OUTPUT_TAIL_LINES = 20;
+
+/** Byte ceiling on that tail, so one runaway line cannot flood the log. */
+export const BUMP_OUTPUT_TAIL_BYTES = 2048;
+
+/**
+ * Build the secret-redacted tail of a bump script's combined output
+ * (Issue #207).
+ *
+ * Redaction runs over the **whole** text before truncation — the
+ * redact-before-truncate standard in SECURITY.md — so a secret straddling
+ * the cut cannot survive in the kept tail.
+ *
+ * @param output - Combined stdout+stderr captured from the script.
+ * @param opts - Line and byte ceilings; both default to the constants above.
+ * @returns The tail, or `""` when the script produced no output.
+ */
+export function formatBumpOutputTail(
+  output: string,
+  opts: { maxLines?: number; maxBytes?: number } = {},
+): string {
+  const maxLines = opts.maxLines ?? BUMP_OUTPUT_TAIL_LINES;
+  const maxBytes = opts.maxBytes ?? BUMP_OUTPUT_TAIL_BYTES;
+  const redacted = redactSecrets(output ?? "").trimEnd();
+  if (redacted.length === 0) return "";
+  const tail = redacted.split("\n").slice(-maxLines).join("\n");
+  return truncateLogTail(tail, maxBytes);
+}
+
+/**
+ * Rejection reason for a script that exited non-zero, carrying the output
+ * tail so the log and the PR comment both say *why* (Issue #207).
+ */
+function buildScriptRejectionReason(
+  scriptName: string,
+  exitCode: number,
+  outputTail: string,
+): string {
+  const summary =
+    `\`${scriptName}\` exited with status ${exitCode} — bump reverted.`;
+  return outputTail.length > 0
+    ? `${summary}\nLast ${BUMP_OUTPUT_TAIL_LINES} lines of its output:\n${outputTail}`
+    : `${summary} The script produced no output.`;
+}
 
 /** Build the bump commit message, optionally referencing an issue. */
 export function buildBumpCommitMessage(issueNumber?: number): string {
@@ -250,12 +305,17 @@ export async function runBumpDeps(
     if (files.length > 0) {
       await deps.revertWorkingTree(params.repoPath, files);
     }
+    const outputTail = formatBumpOutputTail(output);
     return {
       status: "rejected_by_script",
       files,
       output,
-      rejectionReason:
-        `\`${scriptName}\` exited with status ${exitCode} — bump reverted.`,
+      outputTail,
+      rejectionReason: buildScriptRejectionReason(
+        scriptName,
+        exitCode,
+        outputTail,
+      ),
     };
   }
 
@@ -289,6 +349,9 @@ export async function runBumpDeps(
       status: "rejected_by_script",
       files,
       output: `${output}\n\nCould not commit bump: ${commit.error.message}`,
+      outputTail: formatBumpOutputTail(
+        `${output}\n\nCould not commit bump: ${commit.error.message}`,
+      ),
       rejectionReason:
         `Could not commit bump produced by \`${scriptName}\`: ${commit.error.message}`,
     };
