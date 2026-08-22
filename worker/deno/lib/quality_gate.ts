@@ -37,6 +37,7 @@ import {
 import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
 import { runPagesLiquidCheck } from "./pages_liquid_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
+import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runDocsPromptVersionCheck } from "./docs_prompt_version_check.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
@@ -855,6 +856,26 @@ async function runMermaidQualityCheck(
 }
 
 /**
+ * Run the built-output Mermaid check (Issue #272).
+ *
+ * The `mermaid` check above validates Mermaid *blocks* in Markdown; the
+ * security-level and CDN-integrity tests validate the *source* include. This
+ * validates the HTML that actually ships. SKIPPED locally, where no Jekyll
+ * build exists — strict mode promotes that to FAILED, and `pages.yml` runs it
+ * against a real `_site` right after the build.
+ */
+async function runMermaidBuiltOutputQualityCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const result = await checkBuiltMermaidOutput(`${config.scriptDir}/_site`);
+  return {
+    name: "mermaid built output",
+    status: result.status,
+    output: result.output,
+  };
+}
+
+/**
  * Run the markdownlint quality check (Issue #1685).
  *
  * Drives `markdownlint-cli2` against the published Markdown set
@@ -1259,6 +1280,12 @@ export async function runQualityGate(
   // Mermaid (Issue #1683) — validates every Mermaid block in every .md
   // file in the repo. No external toolchain required.
   mainChecks.push(() => runMermaidQualityCheck(config));
+
+  // Mermaid built output (Issue #272) — asserts securityLevel and the CDN
+  // SRI hash in the built `_site` HTML, not just the source include. Skipped
+  // when there is no local Jekyll build; `pages.yml` runs the same check
+  // against the real artifact.
+  mainChecks.push(() => runMermaidBuiltOutputQualityCheck(config));
 
   // Markdownlint (Issue #1685) — drives markdownlint-cli2 against the
   // published Markdown set to catch structural defects (broken tables,

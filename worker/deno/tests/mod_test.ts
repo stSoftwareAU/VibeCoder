@@ -185,7 +185,8 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #227 added `container-store-prune` (count 136 → 137).
   // Issue #228 added `work-volume-prune` (count 137 → 138).
   // Issue #4 removed `seatbelt-profile` — containment is mandatory (137 → 136).
-  assertEquals(commands.length, 138);
+  // Issue #272 added `check-mermaid-built-output` (138 → 139).
+  assertEquals(commands.length, 139);
   assertEquals(commands.includes("security-tree-sweep"), true);
   assertEquals(commands.includes("green-gate-report"), true);
   assertEquals(commands.includes("security-tabletop"), true);
