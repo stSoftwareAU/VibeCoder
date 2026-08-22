@@ -97,6 +97,28 @@ export const runCoreCommand: Command = {
       // the logs, and fail loud on an incomplete fleet configuration that
       // would blind the open-PR duplicate guard to a sibling's PRs.
       console.log(formatBuildBanner(resolveWorkerBuildInfo()));
+      // Issue #256: state the trust model this run used, next to the build
+      // banner. Reading a worker log later, "who did this host trust?" must
+      // be answerable from the log alone — the answer changes what every
+      // claim, comment classification and PR guard decision meant.
+      const activeAuthorSource = _config.authorSource ?? "config";
+      if (activeAuthorSource === "github") {
+        console.log(
+          `[trust-source] author_source=github — trusted authors are ` +
+            `resolved each cycle from write/maintain/admin collaborators of ` +
+            `the ${(_config.repos ?? []).length} monitored repo(s), minus ` +
+            `exclusions; the local allowed_authors/authorized_commenters ` +
+            `arrays are ignored, and a resolve failure skips the cycle ` +
+            `rather than falling back to them.`,
+        );
+      } else {
+        console.log(
+          `[trust-source] author_source=config — trusted authors are the ` +
+            `static .config.json arrays (${_config.allowedAuthors.length} ` +
+            `allowed_authors).`,
+        );
+      }
+
       const fleetValidation = validateFleetConfig({
         githubUser,
         allowedAuthors: _config.allowedAuthors,
@@ -104,6 +126,9 @@ export const runCoreCommand: Command = {
         // Issue #209: siblings listed only under `service_accounts` are
         // fleet accounts too — the effective set the log names must say so.
         serviceAccounts: _config.serviceAccounts ?? [],
+        // Issue #256: suppresses the empty-allowed_authors warning, which is
+        // the healthy state under the derived source.
+        authorSource: activeAuthorSource,
       });
       for (const line of formatFleetConfigValidation(fleetValidation)) {
         if (fleetValidation.level === "ok") {

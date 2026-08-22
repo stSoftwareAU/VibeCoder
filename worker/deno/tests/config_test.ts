@@ -4,7 +4,12 @@
  * Following TDD: These tests are written first to define expected behaviour.
  */
 
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   getEnvArrayOrDefault,
   getEnvNumberOrDefault,
@@ -637,6 +642,212 @@ Deno.test("config - validateConfig accepts multiple allowed authors", () => {
 
   // Should not throw
   validateConfig(config);
+});
+
+// =============================================================================
+// GitHub-derived allowlists — author_source + exclusion_team (Issue #252)
+// =============================================================================
+
+function captureConsoleWarn(fn: () => void): string[] {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => String(arg)).join(" "));
+  };
+  try {
+    fn();
+  } finally {
+    console.warn = original;
+  }
+  return warnings;
+}
+
+Deno.test("config - validateConfig throws when allowedAuthors is empty under author_source config (Issue #252)", () => {
+  const config: WorkerConfig = buildDefaultWorkerConfig({
+    allowedAuthors: [],
+    allowedAuthor: "",
+    authorSource: "config",
+    prReviewer: "reviewer",
+    repos: ["org/repo"],
+    issueLabels: ["claude"],
+    workDir: "/tmp/work",
+  });
+
+  assertThrows(
+    () => validateConfig(config),
+    Error,
+    "allowed_authors is required",
+  );
+});
+
+Deno.test("config - validateConfig allows empty allowedAuthors under author_source github (Issue #252)", () => {
+  const config: WorkerConfig = buildDefaultWorkerConfig({
+    allowedAuthors: [],
+    allowedAuthor: "",
+    authorSource: "github",
+    prReviewer: "reviewer",
+    repos: ["org/repo"],
+    issueLabels: ["claude"],
+    authorisedCommenters: [],
+    workDir: "/tmp/work",
+  });
+
+  validateConfig(config);
+});
+
+Deno.test("config - validateConfig warns about ignored local allowlists under author_source github (Issue #252)", () => {
+  const config: WorkerConfig = buildDefaultWorkerConfig({
+    allowedAuthors: ["alice", "bob"],
+    allowedAuthor: "alice",
+    authorSource: "github",
+    prReviewer: "reviewer",
+    repos: ["org/repo"],
+    issueLabels: ["claude"],
+    authorisedCommenters: ["carol"],
+    workDir: "/tmp/work",
+  });
+
+  const warnings = captureConsoleWarn(() => validateConfig(config));
+  assertEquals(warnings.length > 0, true, "expected a deprecation warning");
+  const combined = warnings.join("\n");
+  assertStringIncludes(combined, "alice");
+  assertStringIncludes(combined, "bob");
+  assertStringIncludes(combined, "carol");
+});
+
+Deno.test("config - validateConfig throws on a malformed exclusion_team (Issue #252)", () => {
+  const config: WorkerConfig = buildDefaultWorkerConfig({
+    allowedAuthors: ["testuser"],
+    allowedAuthor: "testuser",
+    prReviewer: "reviewer",
+    repos: ["org/repo"],
+    issueLabels: ["claude"],
+    exclusionTeam: "vibe-workers",
+    workDir: "/tmp/work",
+  });
+
+  assertThrows(
+    () => validateConfig(config),
+    Error,
+    "exclusion_team",
+  );
+});
+
+Deno.test("config - validateConfig accepts an org/slug exclusion_team (Issue #252)", () => {
+  const config: WorkerConfig = buildDefaultWorkerConfig({
+    allowedAuthors: ["testuser"],
+    allowedAuthor: "testuser",
+    prReviewer: "reviewer",
+    repos: ["org/repo"],
+    issueLabels: ["claude"],
+    exclusionTeam: "stSoftwareAU/vibe-workers",
+    workDir: "/tmp/work",
+  });
+
+  validateConfig(config);
+});
+
+Deno.test("config - absent author_source matches today's validateConfig behaviour (Issue #252)", () => {
+  const emptyAuthors: WorkerConfig = buildDefaultWorkerConfig({
+    allowedAuthors: [],
+    allowedAuthor: "",
+    prReviewer: "reviewer",
+    repos: ["org/repo"],
+    issueLabels: ["claude"],
+    workDir: "/tmp/work",
+  });
+
+  assertThrows(
+    () => validateConfig(emptyAuthors),
+    Error,
+    "allowed_authors is required",
+  );
+
+  const populated: WorkerConfig = buildDefaultWorkerConfig({
+    allowedAuthors: ["testuser"],
+    allowedAuthor: "testuser",
+    prReviewer: "reviewer",
+    repos: ["org/repo"],
+    issueLabels: ["claude"],
+    workDir: "/tmp/work",
+  });
+
+  const warnings = captureConsoleWarn(() => validateConfig(populated));
+  assertEquals(warnings, []);
+});
+
+Deno.test("config - loadConfig defaults author_source to config when absent (Issue #252)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.authorSource, "config");
+    assertEquals(config.exclusionTeam, undefined);
+  });
+});
+
+Deno.test("config - loadConfig loads author_source and exclusion_team (Issue #252)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: [],
+    repos: ["org/repo"],
+    author_source: "github",
+    exclusion_team: "stSoftwareAU/vibe-workers",
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath, { validate: true });
+    assertEquals(config.authorSource, "github");
+    assertEquals(config.exclusionTeam, "stSoftwareAU/vibe-workers");
+    assertEquals(config.allowedAuthors, []);
+  });
+});
+
+Deno.test("config - loadConfig throws on a malformed exclusion_team (Issue #252)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    exclusion_team: "vibe-workers",
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "exclusion_team",
+    );
+  });
+});
+
+Deno.test("config - loadConfig with author_source github warns about ignored local logins (Issue #252)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["alice"],
+    authorized_commenters: ["bob"],
+    repos: ["org/repo"],
+    author_source: "github",
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const warnings = await (async () => {
+      const captured: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => {
+        captured.push(args.map((arg) => String(arg)).join(" "));
+      };
+      try {
+        await loadConfig(configPath, { validate: true });
+      } finally {
+        console.warn = original;
+      }
+      return captured;
+    })();
+
+    const combined = warnings.join("\n");
+    assertStringIncludes(combined, "alice");
+    assertStringIncludes(combined, "bob");
+  });
 });
 
 // =============================================================================

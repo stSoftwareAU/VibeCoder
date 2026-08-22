@@ -21,6 +21,8 @@ Deno.test("config_unknown_keys - KNOWN_CONFIG_KEYS includes core fields", () => 
     "pr_reviewers",
     "repos",
     "authorized_commenters",
+    "author_source",
+    "exclusion_team",
     "repo_config",
     "claude_model",
     "phase_model_overrides",
@@ -116,6 +118,17 @@ Deno.test("config_unknown_keys - detectUnknownConfigKeys returns empty for valid
     allowed_authors: ["user1"],
     repos: ["org/repo"],
     claude_timeout: 7200,
+  };
+  const warnings = detectUnknownConfigKeys(data);
+  assertEquals(warnings.length, 0);
+});
+
+Deno.test("config_unknown_keys - detectUnknownConfigKeys accepts author_source and exclusion_team (Issue #252)", () => {
+  const data = {
+    allowed_authors: ["user1"],
+    repos: ["org/repo"],
+    author_source: "github",
+    exclusion_team: "stSoftwareAU/vibe-workers",
   };
   const warnings = detectUnknownConfigKeys(data);
   assertEquals(warnings.length, 0);

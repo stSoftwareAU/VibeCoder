@@ -9,6 +9,8 @@
  */
 
 import type { ConfigFile, WorkerConfig } from "../types.ts";
+import { EXCLUSION_TEAM_PATTERN } from "./validation.ts";
+import { isBotLogin } from "./trust_exclusions.ts";
 
 /**
  * Validation result with structured errors and warnings.
@@ -107,18 +109,6 @@ const GENERIC_NAMES = [
 const TRUSTED_REVIEW_BOTS_WARN_THRESHOLD = 20;
 
 /**
- * Allowlist of known bot-shaped names that do NOT carry the `[bot]`
- * suffix. Entries here are accepted in `trusted_review_bots` without
- * warning even though they don't look like a GitHub App bot account
- * (Issue #1856).
- */
-const KNOWN_NON_SUFFIX_BOTS: ReadonlySet<string> = new Set([
-  "dependabot",
-  "renovate",
-  "github-actions",
-]);
-
-/**
  * Warn about a `trusted_review_bots` configuration that is suspiciously
  * large or contains entries that don't look like bot accounts.
  *
@@ -136,9 +126,7 @@ export function warnTrustedReviewBots(bots: string[]): string[] {
 
   for (const bot of bots) {
     if (!bot) continue;
-    const looksLikeBot = bot.endsWith("[bot]") ||
-      KNOWN_NON_SUFFIX_BOTS.has(bot.toLowerCase());
-    if (!looksLikeBot) {
+    if (!isBotLogin(bot)) {
       warnings.push(
         `TRUSTED_REVIEW_BOTS entry '${bot}' does not look like a bot account ` +
           "(no '[bot]' suffix and not in the known-bot allowlist). " +
@@ -160,10 +148,27 @@ export function warnTrustedReviewBots(bots: string[]): string[] {
 export function validateRequiredFields(config: WorkerConfig): string[] {
   const errors: string[] = [];
 
-  if (config.allowedAuthors.length === 0 && !config.allowedAuthor) {
+  if (
+    config.authorSource !== "github" &&
+    config.allowedAuthors.length === 0 && !config.allowedAuthor
+  ) {
     errors.push(
       "ALLOWED_AUTHORS is not set or contains no authors. " +
         "Configure 'allowed_authors' array or 'allowed_author' string in .config.json",
+    );
+  }
+
+  // Issue #252: exclusion_team is schema-ready ahead of GitHub-allowlist
+  // wiring. Validate the loaded WorkerConfig field here (not only the raw
+  // JSON key in config.ts) so unused_config_fields_test sees a real consumer
+  // outside config plumbing — same pattern as authorSource above.
+  if (
+    config.exclusionTeam !== undefined &&
+    !EXCLUSION_TEAM_PATTERN.test(config.exclusionTeam)
+  ) {
+    errors.push(
+      `Invalid exclusion_team '${config.exclusionTeam}'. ` +
+        "Expected org/slug (e.g. stSoftwareAU/vibe-workers).",
     );
   }
 
