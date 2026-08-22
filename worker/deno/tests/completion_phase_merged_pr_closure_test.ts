@@ -19,10 +19,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   answerLandingCalls,
   MERGED_PR_VIEW,
+  mergedPrViewFor,
 } from "./fixtures/merge_landing_stub.ts";
 import { recoverAndFinaliseExistingPr } from "../lib/phases/completion_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -74,6 +75,8 @@ function makeGh(handlers: {
   prState: "MERGED" | "OPEN" | "CLOSED";
   issueState: "OPEN" | "CLOSED";
   issueMilestone?: { title: string } | null;
+  /** Head of the merged PR — whose PR it is (Issue #174). */
+  prHeadRefName?: string;
 }): {
   runGhCommand: (args: string[]) => Promise<string>;
   calls: string[][];
@@ -88,7 +91,9 @@ function makeGh(handlers: {
       return Promise.resolve(
         JSON.stringify(
           handlers.prState === "MERGED"
-            ? MERGED_PR_VIEW
+            ? (handlers.prHeadRefName
+              ? mergedPrViewFor(handlers.prHeadRefName)
+              : MERGED_PR_VIEW)
             : { state: handlers.prState },
         ),
       );
@@ -266,5 +271,79 @@ Deno.test(
       gh.calls.some((a) => a[0] === "issue" && a[1] === "close"),
       false,
     );
+  },
+);
+
+// ===========================================================================
+// Issue #174 — a merged PR that is not this run's must not close the issue
+// ===========================================================================
+
+Deno.test(
+  "recoverAndFinaliseExistingPr #174 - a merged PR on someone else's branch leaves the issue open and comments",
+  async () => {
+    // The VibeCoder#42 shape: the run worked `issue-11-already-merged-work`,
+    // and the merged PR the linker returned belongs to a different branch on
+    // the same issue. Closing here is what stranded three commits.
+    const ctx = makeContext();
+    const state = makeState();
+
+    const gh = makeGh({
+      prState: "MERGED",
+      issueState: "OPEN",
+      prHeadRefName: "issue-11-someone-elses-partial-fix",
+    });
+
+    const result = await recoverAndFinaliseExistingPr(
+      "https://github.com/org/repo/pull/27",
+      ctx,
+      state,
+      "## Summary\n\nCloses #11.\n",
+      createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
+    );
+
+    assertEquals(result, { status: "continue" });
+
+    const closeCall = gh.calls.find(
+      (a) => a[0] === "issue" && a[1] === "close",
+    );
+    assertEquals(closeCall, undefined, "the issue must be left open");
+
+    // And the worker says why, naming its branch so a human can find the work.
+    const comment = gh.calls.find(
+      (a) => a[0] === "issue" && a[1] === "comment",
+    );
+    assert(comment !== undefined, "a comment must explain the refusal");
+    const body = comment![comment!.indexOf("--body") + 1] ?? "";
+    assertStringIncludes(body, "issue-11-already-merged-work");
+    assertStringIncludes(body, "#27");
+  },
+);
+
+Deno.test(
+  "recoverAndFinaliseExistingPr #174 - a merged PR on this run's own branch still closes the issue",
+  async () => {
+    // The Issue #1559 case must keep working: when the merged PR is ours,
+    // closing is right and the re-pickup loop stays fixed.
+    const ctx = makeContext();
+    const state = makeState();
+
+    const gh = makeGh({
+      prState: "MERGED",
+      issueState: "OPEN",
+      prHeadRefName: state.branchName,
+    });
+
+    await recoverAndFinaliseExistingPr(
+      "https://github.com/org/repo/pull/27",
+      ctx,
+      state,
+      "## Summary\n\nCloses #11.\n",
+      createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
+    );
+
+    const closeCall = gh.calls.find(
+      (a) => a[0] === "issue" && a[1] === "close",
+    );
+    assertEquals(closeCall?.[2], "11");
   },
 );

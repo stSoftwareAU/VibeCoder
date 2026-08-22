@@ -27,6 +27,10 @@ import type {
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { ensureIssueClosedIfPrMerged } from "../issue_lifecycle.ts";
 import { repairOrphanedMilestoneMerge } from "../orphaned_rollup.ts";
+import {
+  describeStrandedBranches,
+  findStrandedIssueBranches,
+} from "../stranded_issue_branch.ts";
 
 /** Reason string for the early-exit result — stable identifier used by the orchestrator. */
 export const MERGED_PR_PRECHECK_EARLY_EXIT_REASON = "pr_already_merged";
@@ -117,6 +121,38 @@ export async function workOnIssueMergedPrPrecheck(
   }
 
   if (prState !== "MERGED") {
+    return { status: "continue" };
+  }
+
+  // Issue #174: before closing on someone's merged PR, check whether this
+  // issue has a pushed branch holding commits nobody has published. The
+  // linker matches any PR referencing the issue, so a human's partial PR —
+  // merged mid-run on VibeCoder#42 — closed an issue whose real work sat on
+  // `issue-42-primary-graphql-quota-…`. And because this pre-check runs on
+  // every claim, re-opening the issue by hand got it closed again next time.
+  //
+  // Only on the close path, so the extra API calls never land on a normal
+  // claim.
+  const stranded = await findStrandedIssueBranches({
+    repo,
+    issueNumber,
+    ghFn: deps.github.runGhCommand,
+    warn: (message) => logger.warn(message),
+  });
+  if (stranded.length > 0) {
+    logger.warn(
+      "Merged PR pre-check: NOT closing — this issue has unpublished work " +
+        "on a pushed branch (Issue #174)",
+      {
+        repo,
+        issueNumber,
+        prNumber,
+        prUrl,
+        stranded: describeStrandedBranches(stranded),
+      },
+    );
+    // Continue rather than early-exit: the run resumes that branch
+    // (Issue #220) and completion raises the PR for it.
     return { status: "continue" };
   }
 

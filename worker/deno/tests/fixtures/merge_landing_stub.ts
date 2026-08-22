@@ -10,7 +10,19 @@ export const MERGED_PR_VIEW = {
   state: "MERGED",
   mergeCommit: { oid: "abc123" },
   baseRefName: "Develop",
+  /**
+   * Issue #174: the close path now proves whose PR this is by comparing the
+   * head against the run's branch. A fixture with no head is a PR of unknown
+   * provenance, which must never authorise a close — so tests that expect a
+   * close have to say the head is theirs. {@link mergedPrViewFor} builds that.
+   */
+  headRefName: "issue-11-already-merged-work",
 };
+
+/** A merged-PR view whose head is `headRefName` (Issue #174). */
+export function mergedPrViewFor(headRefName: string) {
+  return { ...MERGED_PR_VIEW, headRefName };
+}
 
 /**
  * Answer the landing-check calls, or return null when `args` is not one of

@@ -23,6 +23,10 @@ import {
 import { postMilestoneProgressComment } from "./milestone_progress.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
+import {
+  foreignMergedPrComment,
+  mergedPrCompletesThisRun,
+} from "./pr_run_provenance.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -224,11 +228,19 @@ export async function ensureIssueClosedIfPrMerged(
   prNumber: number,
   githubUser: string,
   deps: LifecycleDeps,
+  /**
+   * The branch this run worked (Issue #174). When given, the merged PR must
+   * have it as its head or the issue is left open with a comment: whether a
+   * sibling's merged PR completes an issue is its author's call, not the
+   * worker's. Omitted by callers that have no branch yet — they guard
+   * separately.
+   */
+  runBranch?: string,
 ): Promise<Result<CloseIfMergedResult>> {
   const { ghCommandFn, logger } = deps;
 
   try {
-    // Check PR state
+    // Check PR state, and the head ref that proves whose PR it is.
     const prOutput = await ghCommandFn([
       "pr",
       "view",
@@ -236,9 +248,58 @@ export async function ensureIssueClosedIfPrMerged(
       "--repo",
       repo,
       "--json",
-      "state",
+      "state,headRefName",
     ]);
-    const prState = JSON.parse(prOutput) as { state: string };
+    const prState = JSON.parse(prOutput) as {
+      state: string;
+      headRefName?: string;
+    };
+
+    // Issue #174: provenance before closure. On VibeCoder#42 a human's
+    // partial PR merged mid-run and the worker closed the issue against it,
+    // stranding three commits. Both PRs had an `issue-42-*` head and the same
+    // author, so only the exact branch separates them.
+    if (
+      prState.state === "MERGED" && runBranch !== undefined &&
+      !mergedPrCompletesThisRun(prState.headRefName, runBranch)
+    ) {
+      logger.warn(
+        "Refusing to close the issue: the merged PR is not this run's " +
+          "(Issue #174)",
+        {
+          repo,
+          issueNumber,
+          prNumber,
+          prHead: prState.headRefName ?? "(unknown)",
+          runBranch,
+        },
+      );
+      try {
+        await ghCommandFn([
+          "issue",
+          "comment",
+          String(issueNumber),
+          "--repo",
+          repo,
+          "--body",
+          foreignMergedPrComment(prNumber, runBranch),
+        ]);
+      } catch (err) {
+        logger.warn(
+          "Could not comment about the foreign merged PR (non-fatal)",
+          { error: err instanceof Error ? err.message : String(err) },
+        );
+      }
+      return {
+        ok: true,
+        value: {
+          closed: false,
+          reason: `PR #${prNumber} is merged but its head ` +
+            `'${prState.headRefName ?? "unknown"}' is not this run's branch ` +
+            `'${runBranch}' — left open for the issue author (Issue #174)`,
+        },
+      };
+    }
 
     if (prState.state !== "MERGED") {
       return {
