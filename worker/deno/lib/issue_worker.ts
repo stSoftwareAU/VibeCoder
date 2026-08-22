@@ -26,6 +26,7 @@ import {
   deriveRunOutcome,
   expectedNoPrOutcome,
   type RunOutcome,
+  withRunOutcomeNotes,
 } from "./run_outcome.ts";
 import { deleteResumeState } from "./resume_state_store.ts";
 import {
@@ -47,7 +48,10 @@ import {
   LEGACY_IN_REPO_CONFIG_WARNING,
 } from "./legacy_in_repo_config_warning.ts";
 import { saveSession } from "./session_manager.ts";
-import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
+import {
+  describeUnresolvedFollowUp,
+  stripReservedLabelsFromModelFollowUp,
+} from "./escape_hatch_label_strip.ts";
 import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
@@ -141,23 +145,30 @@ export async function workOnIssue(
     // the PR the completion phase raised or recovered, or the diagnosed
     // failure, or a deliberate no-PR. Derived once, here, from the result
     // every terminal return produced — no per-return plumbing to forget.
-    outcome = result.outcome ?? deriveRunOutcome({
-      success: result.success,
-      phase: result.phase,
-      reason: result.reason,
-      timings: result.timings,
-      prUrl: state.prUrl,
-      prNumber: state.prNumber,
-      elapsedSeconds: (Date.now() - startedAtMs) / 1000,
-    });
+    outcome = withRunOutcomeNotes(
+      result.outcome ?? deriveRunOutcome({
+        success: result.success,
+        phase: result.phase,
+        reason: result.reason,
+        timings: result.timings,
+        prUrl: state.prUrl,
+        prNumber: state.prNumber,
+        elapsedSeconds: (Date.now() - startedAtMs) / 1000,
+      }),
+      // Facts the run wants stated whatever it achieved (Issue #210).
+      state.releaseNotes ?? [],
+    );
     return { ...result, outcome };
   } catch (err) {
-    outcome = deriveRunOutcome({
-      success: false,
-      phase: "unknown",
-      reason: err instanceof Error ? err.message : String(err),
-      elapsedSeconds: (Date.now() - startedAtMs) / 1000,
-    });
+    outcome = withRunOutcomeNotes(
+      deriveRunOutcome({
+        success: false,
+        phase: "unknown",
+        reason: err instanceof Error ? err.message : String(err),
+        elapsedSeconds: (Date.now() - startedAtMs) / 1000,
+      }),
+      state.releaseNotes ?? [],
+    );
     throw err;
   } finally {
     // The heartbeat's final clear carries the outcome (Issue #4330), so the
@@ -575,6 +586,17 @@ async function workOnIssueCore(
             error: stripResult.error.message,
           },
         );
+      } else {
+        // Issue #210: the agent named a follow-up that does not exist, so no
+        // follow-up was filed. The strip already logged one WARNING; state it
+        // on the claim-release comment too, or the agent's mistake is visible
+        // only in this host's log.
+        for (const ref of stripResult.value.unresolved) {
+          state.releaseNotes = [
+            ...(state.releaseNotes ?? []),
+            describeUnresolvedFollowUp(ref, ctx.repo),
+          ];
+        }
       }
       return { status: "continue" };
     });

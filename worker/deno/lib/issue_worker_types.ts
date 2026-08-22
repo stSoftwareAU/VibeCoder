@@ -136,6 +136,13 @@ export interface PhaseState {
    */
   prUrl?: string;
   prNumber?: number;
+  /**
+   * Short facts to state on the claim-release comment (Issue #210) —
+   * currently a follow-up reference the agent named that does not exist.
+   * Attached to whatever outcome the run produced, so a human sees the
+   * mistake even on a run that raised a PR.
+   */
+  releaseNotes?: string[];
 }
 
 /**
