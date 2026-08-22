@@ -18,6 +18,7 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import { type IssueContext, workOnIssue } from "../lib/issue_worker.ts";
+import type { WorkOnIssueResult } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
@@ -60,6 +61,11 @@ interface StripCapture {
   removed: Array<{ repo: string; issue: number; label: string }>;
   /** Labels each issue carries, keyed by `"repo#number"`. */
   labels: Record<string, string[]>;
+  /**
+   * Issues that do not exist, keyed by `"repo#number"` (Issue #210): reading
+   * one fails with the GraphQL wording `gh` returns for a bogus number.
+   */
+  missing?: string[];
 }
 
 /**
@@ -70,6 +76,15 @@ interface StripCapture {
 function makeStripClient(capture: StripCapture): GitHubClient {
   return {
     getIssue(repo: string, issueNumber: number): Promise<GitHubIssue> {
+      if ((capture.missing ?? []).includes(`${repo}#${issueNumber}`)) {
+        return Promise.reject(
+          new Error(
+            "gh command failed (exit 1): GraphQL: Could not resolve to an " +
+              `issue or pull request with the number of ${issueNumber}. ` +
+              "(repository.issue)",
+          ),
+        );
+      }
       return Promise.resolve({
         number: issueNumber,
         title: "follow-up",
@@ -237,8 +252,13 @@ function makeContext(overrides?: Partial<IssueContext>): IssueContext {
 async function runIssueWork(
   claudeOutput: string,
   labels: Record<string, string[]>,
-): Promise<StripCapture> {
-  const capture: StripCapture = { removed: [], labels };
+  options: { missing?: string[]; logger?: Partial<Logger> } = {},
+): Promise<{ capture: StripCapture; result: WorkOnIssueResult }> {
+  const capture: StripCapture = {
+    removed: [],
+    labels,
+    ...(options.missing ? { missing: options.missing } : {}),
+  };
 
   const deps = createMockDeps({
     claude: {
@@ -271,11 +291,12 @@ async function runIssueWork(
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("No PR found") }),
     },
+    ...(options.logger ? { logger: options.logger } : {}),
   });
 
   const result = await workOnIssue(makeContext(), deps);
   assert(result.success, `issue work should succeed, got: ${result.reason}`);
-  return capture;
+  return { capture, result };
 }
 
 Deno.test({
@@ -284,7 +305,7 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const capture = await runIssueWork(
+    const { capture } = await runIssueWork(
       "The root cause is broader than this issue, so this is out of scope. " +
         "I opened follow-up issue org/repo#808 with the analysis.",
       { "org/repo#808": [RESERVED, "enhancement"] },
@@ -304,11 +325,57 @@ Deno.test({
     // Claude's summary names the issue under work (#42) alongside hand-off
     // wording. The run must not remove the human-applied `top-priority` that
     // queued that issue.
-    const capture = await runIssueWork(
+    const { capture } = await runIssueWork(
       "Handed off the remaining scope; see the follow-up issue noted in #42.",
       { "org/repo#42": [RESERVED] },
     );
 
     assertEquals(capture.removed, []);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// A follow-up reference that does not exist (Issue #210)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "workOnIssue - a follow-up reference that does not resolve is stated on the release comment, with no ERROR (Issue #210)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // The shape that burned NEAT-AI-Lamarck#187: the hand-off names #3952,
+    // a number from another repo's series that does not exist here.
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const { capture, result } = await runIssueWork(
+      "This is out of scope for this run — see follow-up issue #3952.",
+      {},
+      {
+        missing: ["org/repo#3952"],
+        logger: {
+          error: (msg: string) => errors.push(msg),
+          warn: (msg: string) => warnings.push(msg),
+        },
+      },
+    );
+
+    // Nothing was mutated and nothing failed loud about an issue that cannot
+    // exist — the reported ERROR is gone.
+    assertEquals(capture.removed, []);
+    assertEquals(
+      errors.filter((e) => e.includes("Reserved-label strip")),
+      [],
+    );
+    assertEquals(
+      warnings.filter((w) => w.includes("Retrying reserved-label strip")),
+      [],
+      "a bogus reference must not be retried",
+    );
+    // …and the real outcome reaches the human on the claim-release comment.
+    assertEquals(
+      result.outcome?.notes,
+      ["follow-up reference #3952 not found in this repo"],
+    );
   },
 });

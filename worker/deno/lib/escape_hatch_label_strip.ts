@@ -45,12 +45,24 @@
  * before any `removeLabel` mutation. The bare `#NNN` form is always pinned to
  * `currentRepo` and is unaffected.
  *
+ * **A bogus number is skipped, not retried (Issue #210).** The reference is
+ * model-authored free text, so the *number* can be wrong as well as the repo —
+ * NEAT-AI-Lamarck#187 handed off naming `#3952`, a number from another repo's
+ * series that does not exist there. The shared strip validates the ref with
+ * the single label read it already performs before any mutation: a
+ * definitively-absent issue comes back as `summary.unresolved` after one
+ * WARNING, so this path never retries it and no caller raises an ERROR about
+ * an issue that cannot exist. {@link describeUnresolvedFollowUp} turns that
+ * ref into the line the claim-release comment states, so the agent's mistake
+ * is visible off the host's log.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import {
   emptyStripSummary,
+  type IssueRef,
   type ReservedLabelStripError,
   type ReservedLabelStripSummary,
   stripReservedLabelsFromIssues,
@@ -116,6 +128,22 @@ export function parseFollowUpIssueRef(
   }
 
   return undefined;
+}
+
+/**
+ * The claim-release wording for a follow-up reference that does not exist
+ * (Issue #210) — the line a human reads to see the agent's mistake.
+ *
+ * @param ref - The reference that did not resolve.
+ * @param currentRepo - Repository the run was working on.
+ */
+export function describeUnresolvedFollowUp(
+  ref: IssueRef,
+  currentRepo: string,
+): string {
+  return ref.repo.toLowerCase() === currentRepo.toLowerCase()
+    ? `follow-up reference #${ref.number} not found in this repo`
+    : `follow-up reference ${ref.repo}#${ref.number} not found in ${ref.repo}`;
 }
 
 /**
