@@ -250,6 +250,10 @@ import {
 import { enableAutoMerge } from "./pr_auto_merge.ts";
 import { closeIssuesForMergedPrs as prIssueCloseForMerged } from "./pr_issue_linking.ts";
 import { HostDiskMonitor } from "./host_disk.ts";
+import {
+  reclaimWorkVolumeTiers,
+  summariseWorkVolumeTiers,
+} from "./work_volume_tiers.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
 
 // FLEET health
@@ -2069,6 +2073,37 @@ export async function createProductionRunCoreDeps(
     inFlightRepos,
     slotCeiling,
     checkHostDisk: () => hostDisk.check(),
+    // Issue #242: before the disk gate stops this cycle claiming, drop the
+    // work root's disposable tier — the sibling/data clones a gate pulled
+    // in — largest first, then re-read the disk so a host that healed
+    // claims normally.
+    reclaimDiskSpace: async () => {
+      if (config.repos.length === 0) {
+        // Without a monitored list every clone would read as disposable —
+        // fail loud rather than reclaim the wrong tier.
+        return {
+          bytesReclaimed: 0,
+          detail:
+            "no monitored repositories — refusing to tier the work root (Issue #242)",
+          healed: false,
+        };
+      }
+      const result = await reclaimWorkVolumeTiers({
+        workDir,
+        monitoredRepos: config.repos,
+        mode: "disk-low",
+        bytesNeeded: hostDisk.shortfallBytes,
+        log: (message: string) => logger.info(message),
+      });
+      const after = await hostDisk.check({ force: true });
+      return {
+        bytesReclaimed: result.bytesReclaimed,
+        detail: `${
+          summariseWorkVolumeTiers(result)
+        } — host disk now ${after.level}: ${after.detail}`,
+        healed: after.level !== "low",
+      };
+    },
     checkWorkVolumeFault: () => {
       const fault = workVolumeFault();
       return fault === null

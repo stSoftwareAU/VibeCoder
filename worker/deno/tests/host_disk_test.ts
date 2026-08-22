@@ -185,3 +185,55 @@ Deno.test("HostDiskMonitor - probes on a bounded cadence", async () => {
   await m.check();
   assertEquals(probes, 1);
 });
+
+// --- Reclaim support (Issue #242) ------------------------------------------
+
+Deno.test("HostDiskMonitor - shortfallBytes says how much the reclaim must free", async () => {
+  const { m } = monitor({
+    readings: [{
+      availableBytes: 30 * GIB,
+      usedBytes: 70 * GIB,
+      totalBytes: 100 * GIB,
+    }],
+  });
+  // Nothing probed yet — nothing to reclaim against.
+  assertEquals(m.shortfallBytes, 0);
+  const status = await m.check();
+  assertEquals(status.level, "ok");
+  assertEquals(m.shortfallBytes, 0, "an ok host asks for nothing");
+
+  const low = monitor({
+    readings: [{
+      availableBytes: 5 * GIB,
+      usedBytes: 95 * GIB,
+      totalBytes: 100 * GIB,
+    }],
+  });
+  await low.m.check();
+  // Floor is max(20 GB, 10% of 100 GB) = 20 GB; 5 GB free is 15 GB short.
+  assertEquals(low.m.shortfallBytes, 15 * GIB);
+});
+
+Deno.test("HostDiskMonitor - a forced check re-reads inside the cadence", async () => {
+  let probes = 0;
+  const readings = [
+    { availableBytes: 5 * GIB, usedBytes: 95 * GIB, totalBytes: 100 * GIB },
+    { availableBytes: 40 * GIB, usedBytes: 60 * GIB, totalBytes: 100 * GIB },
+  ];
+  const m = new HostDiskMonitor({
+    workDir: "/work",
+    env: () => undefined,
+    probe: () => {
+      const reading = readings[Math.min(probes, readings.length - 1)]!;
+      probes++;
+      return Promise.resolve(reading);
+    },
+    now: () => 0,
+    sampleIntervalMs: 60_000,
+  });
+  assertEquals((await m.check()).level, "low");
+  // The cadence would hold the stale reading; the reclaim's re-read must not.
+  assertEquals((await m.check()).level, "low");
+  assertEquals((await m.check({ force: true })).level, "ok");
+  assertEquals(probes, 2);
+});

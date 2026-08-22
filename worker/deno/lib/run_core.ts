@@ -645,6 +645,19 @@ export interface RunCoreDeps {
     { level: "ok" | "low" | "unknown"; detail: string }
   >;
   /**
+   * Reclaim disposable work-volume space (Issue #242). Called once per
+   * cycle when {@link RunCoreDeps.checkHostDisk} reports `low`, *before*
+   * the cycle stops claiming: the work root's second tier — the sibling
+   * data clones a gate pulled in as `../<name>` — is removed largest
+   * first, so a host merely short of room heals itself instead of idling
+   * for a cycle. `healed` is the post-reclaim disk reading: true only when
+   * the host is no longer `low`. Optional; production wires it to the
+   * two-tier reclaim.
+   */
+  reclaimDiskSpace?: () => Promise<
+    { bytesReclaimed: number; detail: string; healed: boolean }
+  >;
+  /**
    * Work-volume I/O fault (Issue #229): set once a git call surfaced a
    * filesystem-level error ("Structure needs cleaning", EIO, read-only).
    * Consulted next to the host-disk status: a faulted volume claims
@@ -2758,12 +2771,37 @@ export async function runCoreLoop(
           if (deps.checkHostDisk) {
             const disk = await deps.checkHostDisk();
             if (disk.level === "low") {
-              skipScanForHostDisk = true;
-              if (!hostDiskLowReported) {
-                hostDiskLowReported = true;
-                deps.logError(
-                  `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues this cycle; maintenance continues (Issue #226).`,
-                );
+              // Reclaim before the gate trips (Issue #242): the work
+              // root's disposable tier goes largest-first, and only a
+              // host still short after that stops claiming.
+              let healed = false;
+              if (deps.reclaimDiskSpace) {
+                try {
+                  const reclaim = await deps.reclaimDiskSpace();
+                  healed = reclaim.healed;
+                  deps.log(
+                    `[HOST_DISK_LOW] reclaimed ${reclaim.bytesReclaimed} bytes of disposable work-volume space — ${reclaim.detail} (Issue #242)`,
+                  );
+                } catch (err) {
+                  // A reclaim that fails must be loud, never silent: the
+                  // gate below still stops the cycle claiming.
+                  deps.logError(
+                    `[HOST_DISK_LOW] disposable-space reclaim failed (continuing to the disk gate): ${
+                      err instanceof Error ? err.message : String(err)
+                    }`,
+                  );
+                }
+              }
+              if (healed) {
+                hostDiskLowReported = false;
+              } else {
+                skipScanForHostDisk = true;
+                if (!hostDiskLowReported) {
+                  hostDiskLowReported = true;
+                  deps.logError(
+                    `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues this cycle; maintenance continues (Issue #226).`,
+                  );
+                }
               }
             }
           }
