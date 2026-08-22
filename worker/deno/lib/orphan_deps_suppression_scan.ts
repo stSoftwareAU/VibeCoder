@@ -24,6 +24,7 @@ import {
   type OrphanDepsManifestText,
   type OrphanDepsSuppression,
 } from "./orphan_deps_finding_id.ts";
+import { blameFileLineLogins } from "./suppression_identity.ts";
 
 /** One entry of the manifest inventory surface. */
 export interface OrphanDepsManifest {
@@ -137,6 +138,15 @@ export interface SuppressionScanDeps {
    * so a bounded scan is never silent. Defaults to `console.warn`.
    */
   logFn?: (message: string) => void;
+  /**
+   * Blame `file` under `workDir` and return a line → login map
+   * (Issue #269). Defaults to {@link blameFileLineLogins}. Tests inject
+   * a stub so they do not need a real git checkout.
+   */
+  blameFileFn?: (
+    workDir: string,
+    file: string,
+  ) => Promise<Readonly<Record<number, string>>>;
 }
 
 /**
@@ -157,8 +167,15 @@ export async function collectInSourceSuppressions(
     ((path) => Deno.readTextFile(path));
   // Loud by default (Issue #3234): a cap that drops text must never be silent.
   const logFn = deps.logFn ?? ((message: string) => console.warn(message));
+  const blameFileFn = deps.blameFileFn ??
+    ((dir, file) => blameFileLineLogins(dir, file));
 
   const manifests: OrphanDepsManifestText[] = [];
+  // Issue #269: bind each manifest's markers to the blamed author of
+  // that line. Per-file blame is cheap — the inventory is a handful of
+  // commentable manifests — and closes the `author=<allowlisted>`
+  // forgery a fork can plant in comment text.
+  const lineAuthorsByFile = new Map<string, Readonly<Record<number, string>>>();
   for (const manifest of ORPHAN_DEPS_MANIFESTS) {
     if (manifest.grammar === "none") continue;
     try {
@@ -173,11 +190,28 @@ export async function collectInSourceSuppressions(
         ),
         grammar: manifest.grammar,
       });
+      const blamed = await blameFileFn(workDir, manifest.name);
+      if (Object.keys(blamed).length > 0) {
+        lineAuthorsByFile.set(manifest.name, blamed);
+      }
     } catch {
       // Missing or unreadable manifest — skip it.
     }
   }
-  return collectOrphanDepsSuppressions(manifests);
+  // When blame yielded nothing (tests with a stubbed reader, or a
+  // checkout git cannot see) the process-wide commit-author list still
+  // applies; an empty bind fails closed in the parser.
+  const collected: OrphanDepsSuppression[] = [];
+  for (const manifest of manifests) {
+    const lineAuthors = lineAuthorsByFile.get(manifest.file);
+    collected.push(
+      ...collectOrphanDepsSuppressions(
+        [manifest],
+        lineAuthors ? { lineAuthors } : {},
+      ),
+    );
+  }
+  return collected;
 }
 
 /**
