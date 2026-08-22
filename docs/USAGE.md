@@ -146,9 +146,12 @@ To have the worker work on an issue **not** created by an allowed author:
 2. Add the `work-on` label (configurable via `work_on_label` in `.config.json`)
 3. Leave it unassigned
 
-> **🔒 Security:** Only an allowed author (configured in `allowed_authors`) can
-> add the `work-on` label to trigger work. The worker verifies who added the
+> **🔒 Security:** Only a trusted author can add the `work-on` label to
+> trigger work. Under `author_source: "config"` that is
+> `allowed_authors`; under `"github"` it is each monitored repo's write
+> collaborators minus exclusions. The worker verifies who added the
 > label via the GitHub timeline API (Application Programming Interface).
+> See [Author source](CONFIGURATION.md#author-source).
 
 ## 🔓 Ignoring Open PRs (Working Despite Pending PRs)
 

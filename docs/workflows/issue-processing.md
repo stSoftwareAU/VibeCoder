@@ -43,7 +43,7 @@ flowchart TD
 
 ## 📏 Preconditions / invariants
 
-- Configuration is valid; repos are in allowlist; allowed authors and labels are set.
+- Configuration is valid; repos are in allowlist; the trusted-author set and labels are set (`allowed_authors` under `author_source: "config"`, or GitHub-derived collaborators minus exclusions under `"github"`).
 - The worker has not already chosen a higher-priority work item in this loop iteration.
 - **Label priority:** A four-tier order — `top-priority` → `work-on` → `low-priority` → `idle-task`. A lower tier is only considered when the higher tier yields **no eligible candidate in any scanned repo**. If a configured-label search fails (API error), the worker waits for the API to recover rather than falling back to `work-on` or `low-priority` — this prevents accidentally processing a lower-priority issue when higher-priority ones may exist but were invisible due to API errors. Among candidates of the same tier, the worker selects the **globally oldest** by creation date across all configured repos (after filtering and milestone-aware open-PR blocking). See [Issue selection priority](#-issue-selection-priority) for the full rules. Claim happens **before** any work.
 
@@ -240,10 +240,13 @@ flowchart TD
 
 ### Configuration requirement — every host must list all fleet accounts
 
-The guards are only as good as the fleet configuration that feeds them. **Every
-host's `allowed_authors` must list every fleet account** (plus its own
-`github_user`). A sibling that appears only in `fleet_pr_authors` is still
-covered by the union, but the divergence is a configuration smell:
+The guards are only as good as the fleet configuration that feeds them. Under
+`author_source: "config"`, **every host's `allowed_authors` must list every
+fleet account** (plus its own `github_user`). Under `"github"` those fleet
+logins are write collaborators — and then excluded via `service_accounts`,
+so they cannot instruct the worker. A sibling that appears only in
+`fleet_pr_authors` is still covered by the union, but the divergence is a
+configuration smell:
 [`validateFleetConfig`](../../worker/deno/lib/fleet_config_validation.ts) runs at
 startup and in `diagnose-repo`, emitting a `[fleet-config] WARNING` for a
 `fleet_pr_authors` sibling missing from `allowed_authors` and a
@@ -262,9 +265,35 @@ multi-account fleet operation is retained. A **closed-unmerged** PR needs
 no human action: it expires with the cooldown window and the retry path
 (branch reuse) takes over automatically.
 
+## Per-cycle trusted-author refresh
+
+Every scan cycle begins by refreshing the trusted-author snapshot
+(`refreshTrustedAuthors` in
+[`run_core.ts`](../../worker/deno/lib/run_core.ts)). Under
+`author_source: "config"` that is a re-read of the local arrays. Under
+`"github"` it is one paginated `gh api` collaborator list per monitored
+repo, plus one team-members call when `exclusion_team` is set.
+
+That per-tick collaborator fetch is an intentional exception to the
+standing rate-limit warning in
+[`collaborator_precheck.ts`](../../worker/deno/setup/collaborator_precheck.ts)
+(lines 11–19). The setup-time precheck must never run inside the main
+loop (~400 `gh` calls per tick already); derived trust *does* run there,
+because a stale allowlist would keep a revoked collaborator trusted for
+the rest of the run. The added cost is one paginated call per monitored
+repo per cycle (and one team call when `exclusion_team` is set). See
+[CONFIGURATION.md — Per-cycle refresh and `gh` cost](../CONFIGURATION.md#per-cycle-refresh-and-gh-cost).
+
+A failed refresh is **fail-closed**: the cycle logs `[TRUST_REFRESH]`,
+marks the host unhealthy, and skips claiming and every other
+trust-dependent pass. A 403 (missing collaborator-read or `read:org`)
+is the searchable symptom — the worker does not become silently
+permissive. See
+[Setup — Token scopes for derived trust](../SETUP.md#token-scopes-for-derived-trust).
+
 ## ✅ Happy path
 
-1. **Select issue** — Scan configured repos for eligible issues (scan order is randomised by default via `shuffle_repos` for fairness — see below); apply filters (labels, authors, blocking labels, dependencies, open PRs (Pull Requests), one-issue-per-milestone —); choose the globally oldest by `createdAt` across all repos.
+1. **Select issue** — After the trusted-author refresh, scan configured repos for eligible issues (scan order is randomised by default via `shuffle_repos` for fairness — see below); apply filters (labels, authors, blocking labels, dependencies, open PRs (Pull Requests), one-issue-per-milestone —); choose the globally oldest by `createdAt` across all repos.
 2. **Claim issue** — Assign self to the issue; brief pause; re-read assignees; if contested, use alphabetical tie-break; losers unassign themselves.
 3. **Setup repo** — Clone or update target repo; reset worker repo to `origin/Develop`; create or sync feature branch from default or `milestone/<name>`.
 4. **Quality baseline** — Run `./quality.sh` on the clean repo (if it exists) to establish a baseline of any pre-existing quality failures. This baseline is threaded through to failure comments so reviewers can distinguish pre-existing issues from worker-introduced regressions. Non-blocking: work continues regardless of baseline result.
