@@ -98,4 +98,25 @@ and `run_entrypoint_test.ts` were extended with the new field (no test removed
 or disabled).
 
 Cross-repo — `worker/shared/test_model_fetch_partial_clone.sh` (GRQ) gains two
-behavioural cases, shown above.
+behavioural cases, shown above; `test_model_fetch_promisor_reclone.sh` still
+passes 22/22 against the changed re-clone helper.
+
+### Quality gate
+
+`./quality.sh` passes every check except `deno tests`, which reports 10
+failures in `fleet_health_test.ts`, `host_workdir_guard_test.ts`,
+`optional_feature_env_test.ts` and `setup_workdir_reminder_test.ts`. Those are
+environmental and unrelated to this change — the run happens inside the worker
+container, where `FLEET_HEALTH_REPO`, `WORK_DIR` and
+`VIBE_IMAGE_AGENT_PROVIDERS` are set in the ambient environment and those tests
+assert the unset-host defaults:
+
+```text
+$ env -u FLEET_HEALTH_REPO -u WORK_DIR -u VIBE_IMAGE_AGENT_PROVIDERS \
+    deno test --allow-all tests/fleet_health_test.ts \
+    tests/optional_feature_env_test.ts tests/setup_workdir_reminder_test.ts \
+    tests/host_workdir_guard_test.ts
+ok | 73 passed | 0 failed (1s)
+```
+
+No file in this change is imported by any of them.
