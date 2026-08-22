@@ -528,6 +528,59 @@ Both paths log the split before anything goes, e.g.
 `work volume: monitored 2.1 GB in 15 repos; side/data 15.2 GB in 8 dirs;
 removed 2 (11.0 GB, disk-low)`.
 
+## Standing totals at cycle start (Issue #244)
+
+Those lines say what was *removed*. Every disk problem on GRQ-23 was
+invisible until the host hit 95 % because nothing said what the volume still
+*held*: the launcher's `container-store:` line was the only per-launch
+signal, and the host-disk monitor reports free space, not where it went. The
+worker therefore logs the standing totals by category at cycle start, beside
+the `Concurrency:` line, and again in the `work-volume-prune` housekeeping
+summary:
+
+```text
+Work volume: total 18.4 GB — monitored repos 2.1 GB (15) · side/data clones
+15.2 GB (8: GRQ-shareprices2026Q2 7.3, GRQ-listing 3.9, GRQ-companyreports
+2.1, …) · build artefacts 6.3 GB (4 target dirs: GRQ-23/target 3.1, …) ·
+caches 0.6 GB · other 0.2 GB
+```
+
+- The four **disjoint** buckets — monitored repos, side/data clones, worker
+  caches (`.deno-cache`, `.vibe-cache`, `.gh-*-cache`, `.claude-*`) and
+  other (reserved names, remaining state directories and the state files in
+  the work root) — sum to the total.
+- **Build artefacts are a cross-cut, not a fifth bucket.** A `target/` dir
+  (the same discovery `work-volume-prune` uses) lives *inside* a clone, so
+  its bytes are already counted there; naming it says which clone the space
+  is in.
+- The top three side/data clones and artefact dirs are **named inline**, so
+  the log line alone says where the space went.
+- The walk is **depth-1 and bounded**: one `du -sk` per top-level directory
+  under a single 120 s budget. Over budget it stops and the line says how
+  many directories it measured and how many it skipped — an incomplete total
+  is reported as a floor, never as a clean reading. A directory `du` could
+  not size is named as `unmeasured (counted as 0)` — the filesystem's own
+  root-only `lost+found` lands here, so a permanent permission denial never
+  drowns out a real fault; a work root that cannot be read **at all** is
+  reported as an error on the same line rather than as an empty volume.
+- `work-volume-prune` prints the breakdown **before** its sweep, and again
+  **after** when it actually removed something, so a reclamation's
+  before/after is visible. An idle prune pays for one walk, not two.
+
+Without a monitored list the totals are **refused**, not guessed — every
+clone would otherwise read as side/data — and the line says so.
+
+```mermaid
+flowchart LR
+    C["cycle start<br/>(Concurrency: line)"] --> W["depth-1 du walk<br/>(120 s budget)"]
+    P["work-volume-prune"] --> W
+    W --> B{"monitored list<br/>configured?"}
+    B -->|no| R["refused — totals skipped"]
+    B -->|yes| T["Work volume: total … —<br/>monitored · side/data · artefacts ·<br/>caches · other"]
+    style T fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
 ## The launcher — `run.sh` is the containment boundary
 
 `run.sh` is a thin, trusted, host-side launcher. It asks the

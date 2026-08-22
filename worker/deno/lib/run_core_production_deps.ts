@@ -257,6 +257,7 @@ import {
   summariseWorkVolumeTiers,
 } from "./work_volume_tiers.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
+import { reportWorkVolumeUsage } from "./work_volume_usage.ts";
 
 // FLEET health
 import {
@@ -2174,6 +2175,12 @@ export async function createProductionRunCoreDeps(
         healed: after.level !== "low",
       };
     },
+    // Issue #244: what the volume is holding right now, one depth-1 `du`
+    // walk per top-level directory under a single 120 s budget. Logged at
+    // cycle start next to `Concurrency:` so growth is visible in the worker
+    // log before the disk gate trips.
+    reportWorkVolumeUsage: () =>
+      reportWorkVolumeUsage({ workDir, monitoredRepos: config.repos }),
     checkWorkVolumeFault: () => {
       const fault = workVolumeFault();
       return fault === null
