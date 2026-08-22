@@ -188,7 +188,7 @@ Deno.test("scanWorkVolumeUsage - build artefacts are named per clone and not dou
   }
 });
 
-Deno.test("scanWorkVolumeUsage - a du that cannot measure a directory is recorded, never silently zeroed as clean", async () => {
+Deno.test("scanWorkVolumeUsage - a directory du cannot size is named, never silently zeroed as clean", async () => {
   const tmp = await makeWorkRoot();
   try {
     const usage = await scanWorkVolumeUsage({
@@ -200,10 +200,13 @@ Deno.test("scanWorkVolumeUsage - a du that cannot measure a directory is recorde
           : sizeByBasename(path),
       findArtefacts: () => Promise.resolve([]),
     });
-    assertEquals(usage.errors, ["could not measure GRQ-listing"]);
+    // A permission-denied `du` is its own note, not an error: the
+    // filesystem's root-only `lost+found` must not drown out a real fault.
+    assertEquals(usage.unmeasured, ["GRQ-listing"]);
+    assertEquals(usage.errors, []);
     assertStringIncludes(
       formatWorkVolumeUsage(usage),
-      "errors: could not measure GRQ-listing",
+      "unmeasured (counted as 0): GRQ-listing",
     );
   } finally {
     await Deno.remove(tmp, { recursive: true });
@@ -282,6 +285,7 @@ function usageFixture(): WorkVolumeUsage {
     skipped: 0,
     truncated: false,
     budgetMs: 120_000,
+    unmeasured: [],
     errors: [],
   };
 }
@@ -309,6 +313,7 @@ Deno.test("formatWorkVolumeUsage - an empty volume reads cleanly and takes the c
     skipped: 0,
     truncated: false,
     budgetMs: 120_000,
+    unmeasured: [],
     errors: [],
   };
   assertEquals(

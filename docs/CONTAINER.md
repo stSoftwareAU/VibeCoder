@@ -554,8 +554,10 @@ caches 0.6 GB · other 0.2 GB
   under a single 120 s budget. Over budget it stops and the line says how
   many directories it measured and how many it skipped — an incomplete total
   is reported as a floor, never as a clean reading. A directory `du` could
-  not measure, and a work root that cannot be read at all, are reported in
-  the same line rather than counted as 0 bytes of healthy space.
+  not size is named as `unmeasured (counted as 0)` — the filesystem's own
+  root-only `lost+found` lands here, so a permanent permission denial never
+  drowns out a real fault; a work root that cannot be read **at all** is
+  reported as an error on the same line rather than as an empty volume.
 - `work-volume-prune` prints the breakdown **before** its sweep, and again
   **after** when it actually removed something, so a reclamation's
   before/after is visible. An idle prune pays for one walk, not two.

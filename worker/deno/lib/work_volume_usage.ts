@@ -106,7 +106,14 @@ export interface WorkVolumeUsage {
   truncated: boolean;
   /** Budget the walk was given, in milliseconds. */
   budgetMs: number;
-  /** Non-fatal problems (an unreadable directory, a `du` that failed). */
+  /**
+   * Directories `du` could not size — counted as 0 bytes, so the total is a
+   * floor. Named in the line rather than folded into {@link errors}: the
+   * filesystem's own `lost+found` is root-only on every host, and a
+   * permanent permission denial there must not drown out a real fault.
+   */
+  unmeasured: string[];
+  /** Structural faults — a work root that could not be read at all. */
   errors: string[];
 }
 
@@ -172,6 +179,7 @@ function emptyUsage(budgetMs: number): WorkVolumeUsage {
     skipped: 0,
     truncated: false,
     budgetMs,
+    unmeasured: [],
     errors: [],
   };
 }
@@ -263,9 +271,7 @@ export async function scanWorkVolumeUsage(
       continue;
     }
     const measuredBytes = await sizeOf(path);
-    if (measuredBytes === null) {
-      usage.errors.push(`could not measure ${entry.name}`);
-    }
+    if (measuredBytes === null) usage.unmeasured.push(entry.name);
     const bytes = measuredBytes ?? 0;
     const category = categoriseWorkVolumeEntry(entry.name, monitored);
     record(bucketFor(usage, category), entry.name, bytes);
@@ -356,6 +362,9 @@ export function formatWorkVolumeUsage(
     line += ` — walk stopped at the ${
       Math.round(usage.budgetMs / 1000)
     }s budget (${usage.measured} dir(s) measured, ${usage.skipped} skipped; totals are a floor)`;
+  }
+  if (usage.unmeasured.length > 0) {
+    line += ` — unmeasured (counted as 0): ${usage.unmeasured.join(", ")}`;
   }
   if (usage.errors.length > 0) {
     line += ` — errors: ${usage.errors.join("; ")}`;
