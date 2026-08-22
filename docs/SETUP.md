@@ -22,6 +22,7 @@ There are two supported routes, and they produce the same end state:
 - [Platform differences in the automated setup](#platform-differences-in-the-automated-setup)
 - [Manual setup: prerequisites](#manual-setup-prerequisites)
 - [Manual setup: credentials](#manual-setup-credentials)
+- [Token scopes for derived trust](#token-scopes-for-derived-trust)
 - [Manual setup: writing `.config.json`](#manual-setup-writing-configjson)
 - [Manual setup: repo sync steps and verification](#manual-setup-repo-sync-steps-and-verification)
 
@@ -564,6 +565,40 @@ container is started with no token variables passed through (see
 Second, the preflight reports every problem it finds in one pass, so fix the
 whole list before re-running rather than one failure at a time.
 
+## Token scopes for derived trust
+
+The token in `gh/hosts.yml` must be able to **read collaborators** on every
+monitored repository. That is already implied by write access to those
+repos (the worker clones, pushes, and assigns issues), but it becomes a
+**trust-resolution** dependency the moment `.config.json` sets
+`author_source` to `"github"`. Listing collaborators is
+`GET /repos/<owner>/<repo>/collaborators`; a token that can push but
+cannot read the collaborator list is mis-scoped for derived trust.
+
+When `exclusion_team` is set, the token also needs the **`read:org`**
+scope (classic) / Organisation members read (fine-grained). The worker
+calls `GET /orgs/<org>/teams/<slug>/members` once per cycle; without
+`read:org` that call returns **403**.
+
+A missing scope is **fail-closed and loud**, never silently permissive:
+
+| Symptom | What it means | What the worker does |
+| ------- | ------------- | -------------------- |
+| `[TRUST_REFRESH] … collaborator fetch 403` (or `HTTP 403`) | The token cannot list collaborators on a monitored repo — usually a missing repository-administration / collaborator-read grant. | The cycle is **skipped**. No issue is claimed, no PR is maintained, no local `allowed_authors` leftover is consulted. |
+| `[TRUST_REFRESH] … Team fetch 403 … token is missing read:org` | `exclusion_team` is set and the token lacks `read:org`. | Same skip. The worker will not derive an allowlist with team exclusion silently off. |
+
+Search the worker log for `[TRUST_REFRESH]` or `403` if a host that just
+flipped `author_source` to `"github"` appears idle. The host is marked
+unhealthy for that cycle so the fleet report cannot claim otherwise.
+Restoring the scope (or unsetting `exclusion_team` if the team fetch is
+the failure) is the fix; there is no config flag that says "proceed
+without exclusions".
+
+The rest of the token — `repo` (or the fine-grained equivalent) plus
+`workflow` if the worker must edit GitHub Actions files — is unchanged.
+See [SECURITY.md — Token Security](../SECURITY.md#-token-security) and
+[CONFIGURATION.md — Author source](CONFIGURATION.md#author-source).
+
 ## Manual setup: writing `.config.json`
 
 `.config.json` lives in the root of the VibeCoder checkout — every script
@@ -596,8 +631,12 @@ PRs, what it monitors, and how it authenticates:
 }
 ```
 
-- `allowed_authors` — GitHub logins whose issues and labels the worker acts
-  on; see [Multiple Allowed Authors](CONFIGURATION.md#multiple-allowed-authors).
+- `allowed_authors` — under the default `author_source: "config"`, GitHub
+  logins whose issues and labels the worker acts on. Not the sole source
+  of author trust: set `author_source` to `"github"` to derive that set
+  from write collaborators instead. See
+  [Author source](CONFIGURATION.md#author-source) and
+  [Multiple Allowed Authors](CONFIGURATION.md#multiple-allowed-authors).
 - `pr_reviewers` — logins requested as reviewers on every PR the worker
   raises; see [Multiple PR Reviewers](CONFIGURATION.md#multiple-pr-reviewers).
 - `repos` — the monitored repository list, `owner/name` per entry; see
@@ -641,9 +680,16 @@ explained beneath the block, never inside it.
   [Service Account Authentication](CONFIGURATION.md#service-account-authentication-ssh--gh-auth)
   and
   [Service accounts are fleet PR authors too](CONFIGURATION.md#service-accounts-are-fleet-pr-authors-too).
-- `authorized_commenters` — logins whose issue comments the worker trusts.
-  Note the key itself is spelt `authorized_commenters`; see
-  [Authorised Commenters](CONFIGURATION.md#authorised-commenters).
+- `authorized_commenters` — under `author_source: "config"`, logins whose
+  comments the worker trusts. Note the key itself is spelt
+  `authorized_commenters`. Under `"github"` a leftover entry is parsed
+  but ignored for trust. See
+  [Authorised Commenters](CONFIGURATION.md#authorised-commenters) and
+  [Author source](CONFIGURATION.md#author-source).
+- `author_source` / `exclusion_team` — omit both to keep local arrays.
+  `"github"` needs collaborator read on every monitored repo, and
+  `read:org` when `exclusion_team` is set; a 403 skips the cycle. See
+  [Token scopes for derived trust](#token-scopes-for-derived-trust).
 - `claude_model`, `claude_timeout`, `sleep_interval` — operational overrides.
   Write them only when they must differ from the defaults; the file holds
   overrides, not a snapshot. Values and defaults are in
