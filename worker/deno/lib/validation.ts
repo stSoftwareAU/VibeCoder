@@ -105,6 +105,8 @@ export interface ConfigFileJson {
   claude_timeout?: number;
   min_claim_runway_seconds?: number;
   claim_require_full_execute_budget?: boolean;
+  /** Labels marking an issue as a long job (Issue #245). */
+  claim_long_job_labels?: string[];
   claude_kill_after?: number;
   max_clarification_rounds?: number;
   sleep_interval?: number;
@@ -578,6 +580,8 @@ export function validateConfigFileJson(
     "authorized_commenters",
     "trusted_review_bots",
     "agent_providers",
+    // Long-job labels for the adaptive claim floor (Issue #245).
+    "claim_long_job_labels",
   ] as const;
 
   for (const field of arrayFields) {

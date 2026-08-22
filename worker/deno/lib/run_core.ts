@@ -68,6 +68,11 @@ import {
 } from "./monitored_repo_access.ts";
 import { resolveClaimRunwayFloor } from "./claim_runway.ts";
 import {
+  decideAdaptiveClaim,
+  type IssueClaimEvidence,
+  issueClaimKey,
+} from "./claim_runway_evidence.ts";
+import {
   type DiagnosticSummary,
   formatScanSummary,
 } from "./issue_finder_logger.ts";
@@ -451,6 +456,13 @@ export interface RunCoreDeps {
   findNextIssue: (
     options?: {
       excludeRepos?: ReadonlySet<string>;
+      /**
+       * Issues this cycle has already deferred for the adaptive claim floor
+       * (Issue #245), keyed `owner/repo#number`. Skipped so the scan offers
+       * the next candidate instead of the same doomed one; the set is
+       * cycle-scoped because the runway it was judged against only shrinks.
+       */
+      excludeIssues?: ReadonlySet<string>;
       onScanSummary?: (summary: DiagnosticSummary) => void;
     },
   ) => Promise<Result<DiscoveredIssue | null>>;
@@ -567,6 +579,24 @@ export interface RunCoreDeps {
    * Optional: absent keeps the plain #4304 floor.
    */
   fullExecuteBudgetSeconds?: number;
+
+  /**
+   * The configured execute budget (`config.claudeTimeout`), always supplied
+   * — unlike `fullExecuteBudgetSeconds`, which production sets only under
+   * the #47 opt-in. Sizes the adaptive floor an issue with evidence of a
+   * long job must clear (Issue #245). Optional: absent disables that floor.
+   */
+  executeBudgetSeconds?: number;
+
+  /**
+   * Claim-time evidence for the adaptive floor (Issue #245): preserved WIP,
+   * a prior `timeout` in `execute`, or a long-job size label. Optional —
+   * absent means no issue is ever deferred and the plain floor alone
+   * decides, exactly as before #245.
+   */
+  gatherIssueClaimEvidence?: (
+    issue: DiscoveredIssue,
+  ) => Promise<{ evidence: IssueClaimEvidence; lookupError?: string }>;
 
   /**
    * How long a shutdown (SIGTERM / SIGINT) waits for in-flight slots to
@@ -1386,6 +1416,70 @@ function noteIssueProcessed(
 }
 
 /**
+ * How many times in a row a scan may re-offer an issue this cycle already
+ * deferred (Issue #245) before the loop stops looking.
+ *
+ * One re-offer is ordinary: two slots can judge the same candidate at once,
+ * and the loser sees the winner's deferral a moment later. A scan that keeps
+ * serving it is a wiring fault — the exclusion set is not reaching the finder
+ * — and claiming it would repeat the same doomed decision forever, so the
+ * loop says so and stops rather than spinning silently.
+ */
+const MAX_DEFERRED_REOFFERS = 3;
+
+/**
+ * Adaptive claim floor (Issue #245): should this candidate be left for a
+ * cycle that can host a real execute?
+ *
+ * The plain floor (#4304/#47) knows nothing about the issue; this one reads
+ * what the issue already carries — preserved WIP, a prior `timeout` in
+ * `execute`, a long-job size label — and refuses a slice that such an issue
+ * cannot finish. Deferring records the issue so the next scan offers a
+ * *different* candidate (the #219 rule: never park the slot), and logs the
+ * reason once, the first and only time the issue is deferred this cycle.
+ *
+ * Returns false — claim as before — whenever the gate cannot decide: no
+ * evidence lookup wired, no execute budget known, or a lookup that failed
+ * (which is logged as an error, never swallowed).
+ */
+async function deferClaimForAdaptiveFloor(
+  deps: RunCoreDeps,
+  config: RunCoreConfig,
+  issue: DiscoveredIssue,
+  endTime: number,
+  deferredClaims: Set<string>,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const budgetSeconds = deps.executeBudgetSeconds ?? 0;
+  if (!deps.gatherIssueClaimEvidence || budgetSeconds <= 0) return false;
+
+  const { evidence, lookupError } = await deps.gatherIssueClaimEvidence(issue);
+  if (lookupError !== undefined) {
+    deps.logError(
+      `Claim-evidence lookup failed for ${issue.repo}#${issue.issueNumber}: ` +
+        `${lookupError} — claiming on the plain runway floor alone ` +
+        `(Issue #245).`,
+    );
+    return false;
+  }
+
+  const decision = decideAdaptiveClaim({
+    evidence,
+    remainingRunwaySeconds: Math.max(
+      0,
+      Math.round((endTime - deps.now()) / 1000),
+    ),
+    fullExecuteBudgetSeconds: budgetSeconds,
+    cycleSeconds: config.runDurationSeconds,
+  });
+  if (decision.claim) return false;
+
+  deferredClaims.add(issueClaimKey(issue.repo, issue.issueNumber));
+  log(`${issue.repo}#${issue.issueNumber} ${decision.reason}`);
+  return true;
+}
+
+/**
  * Priority 2 issue-scanning inner loop.
  *
  * Issue #3648: the loop used to take `_config` (unused) and had no view of the
@@ -1451,6 +1545,11 @@ async function runIssueScanLoop(
   if (runwayFloor.exceptionReason) {
     deps.log(`Claim-runway floor: ${runwayFloor.exceptionReason}`);
   }
+  // Issues this cycle deferred for the adaptive floor (Issue #245), so the
+  // next scan offers a different candidate rather than the same one.
+  const deferredClaims = new Set<string>();
+  /** Consecutive scans that re-offered an already-deferred issue. */
+  let reofferedDeferred = 0;
 
   while (true) {
     // Deadline gate (Issue #3648): never claim another billed issue run once
@@ -1488,7 +1587,9 @@ async function runIssueScanLoop(
     iteration++;
 
     // Find next issue
-    const findResult = await deps.findNextIssue();
+    const findResult = await deps.findNextIssue({
+      excludeIssues: deferredClaims,
+    });
     if (!findResult.ok) {
       // Rate limit or error during find
       deps.logError(`Issue scanning error: ${findResult.error.message}`);
@@ -1499,6 +1600,37 @@ async function runIssueScanLoop(
     if (issue === null) {
       // No more issues
       break;
+    }
+
+    // Adaptive claim floor (Issue #245): an issue already known to be a long
+    // job is left for a cycle that can host a real execute, and the scan
+    // moves on to the next candidate rather than parking the loop.
+    if (deferredClaims.has(issueClaimKey(issue.repo, issue.issueNumber))) {
+      reofferedDeferred++;
+      if (reofferedDeferred > MAX_DEFERRED_REOFFERS) {
+        deps.logError(
+          `Issue scan loop stopping: the scan re-offered deferred issue ` +
+            `${issue.repo}#${issue.issueNumber} ${reofferedDeferred} times, ` +
+            `so the adaptive claim floor (Issue #245) cannot advance to ` +
+            `another candidate.`,
+        );
+        break;
+      }
+      await deps.sleep(Math.max(1, config.sleepInterval) * 1000);
+      continue;
+    }
+    reofferedDeferred = 0;
+    if (
+      await deferClaimForAdaptiveFloor(
+        deps,
+        config,
+        issue,
+        endTime,
+        deferredClaims,
+        (message) => deps.log(message),
+      )
+    ) {
+      continue;
     }
 
     // Issue #3138: stamp the worker build on the claim-time log line so an
@@ -2021,6 +2153,13 @@ interface SlotPoolState {
   /** Effective claim-runway floor for this cycle (Issues #4304, #47). */
   claimFloorSeconds: number;
   /**
+   * Issues deferred this cycle by the adaptive floor (Issue #245), keyed
+   * `owner/repo#number`. Pool-wide: an issue one slot judged too big for the
+   * runway left is too big for its siblings too, and sharing the set keeps
+   * the skip logged once per cycle rather than once per slot.
+   */
+  deferredClaims: Set<string>;
+  /**
    * The primary rate-limit error a slot hit mid-run (Issue #4180). The pool
    * drains, then re-throws it so the cycle's existing pause-until-reset
    * path runs exactly as it does for the serial loop.
@@ -2096,6 +2235,7 @@ async function runIssueScanPool(
     spendCeilingReached: false,
     shouldShutdown,
     claimFloorSeconds: poolRunwayFloor.floorSeconds,
+    deferredClaims: new Set<string>(),
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
   // #4179): under pressure the pool STARTS fewer slots; it never cancels
@@ -2233,6 +2373,8 @@ async function runSlot(
   // one second, so a misconfigured `sleepInterval: 0` cannot turn the
   // re-scan into a hot loop against the GitHub API.
   const rescanMs = Math.max(1, config.sleepInterval) * 1000;
+  /** Consecutive scans that re-offered an issue the pool already deferred. */
+  let reofferedDeferred = 0;
   while (true) {
     const stop = await slotShouldStop(deps, endTime, pool);
     if (stop) {
@@ -2280,6 +2422,8 @@ async function runSlot(
     let scanSummary: DiagnosticSummary | undefined;
     const findResult = await deps.findNextIssue({
       excludeRepos: pool.registry.heldRepos(),
+      // Issues this cycle already deferred for the adaptive floor (#245).
+      excludeIssues: pool.deferredClaims,
       onScanSummary: (summary) => {
         scanSummary = summary;
       },
@@ -2318,6 +2462,39 @@ async function runSlot(
         }s while ${siblings} sibling slot(s) work (Issue #219).`,
       );
       await deps.sleep(rescanMs);
+      await yieldToEventLoop();
+      continue;
+    }
+
+    // Adaptive claim floor (Issue #245): an issue with evidence that it is
+    // not a short job needs a runway that can host a real execute. Deferred
+    // rather than claimed, the slot looks for another candidate (#219).
+    if (pool.deferredClaims.has(issueClaimKey(issue.repo, issue.issueNumber))) {
+      reofferedDeferred++;
+      if (reofferedDeferred > MAX_DEFERRED_REOFFERS) {
+        deps.logError(
+          `[${slotId}] stop reason=deferred-reoffered — the scan re-offered ` +
+            `deferred issue ${issue.repo}#${issue.issueNumber} ` +
+            `${reofferedDeferred} times, so the adaptive claim floor ` +
+            `(Issue #245) cannot advance to another candidate.`,
+        );
+        return;
+      }
+      await deps.sleep(rescanMs);
+      await yieldToEventLoop();
+      continue;
+    }
+    reofferedDeferred = 0;
+    if (
+      await deferClaimForAdaptiveFloor(
+        deps,
+        config,
+        issue,
+        endTime,
+        pool.deferredClaims,
+        log,
+      )
+    ) {
       await yieldToEventLoop();
       continue;
     }

@@ -189,6 +189,14 @@ export interface WorkerConfig {
    */
   claimRequireFullExecuteBudget: boolean;
   /**
+   * Labels marking an issue as a long job for the adaptive claim floor
+   * (`.config.json` `claim_long_job_labels`, Issue #245). An issue carrying
+   * one is claimed only with a runway that can host a real execute, the same
+   * as an issue with preserved WIP or a prior `timeout` in `execute`.
+   * Optional: absent uses `DEFAULT_LONG_JOB_LABELS`.
+   */
+  claimLongJobLabels?: string[];
+  /**
    * Extend the issue-work hard deadline while the run is demonstrably
    * progressing (Issue #4296, part of #4290; default: false).
    *
@@ -881,6 +889,8 @@ export interface ConfigFile {
   claude_timeout?: number;
   min_claim_runway_seconds?: number;
   claim_require_full_execute_budget?: boolean;
+  /** Labels marking an issue as a long job (Issue #245) */
+  claim_long_job_labels?: string[];
   /** Extend the issue-work deadline while progress holds (Issue #4296) */
   progress_extension_enabled?: boolean;
   /** Seconds each progress grant adds to the deadline (Issue #4296) */
