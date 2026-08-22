@@ -9,7 +9,9 @@
 
 import {
   _resetSuppressionAuthorAllowlist as _clearSuppressionAllowlist,
+  _resetSuppressionCommitAuthors as _clearSuppressionCommitAuthors,
   setSuppressionAuthorAllowlist as _setSuppressionAllowlist,
+  setSuppressionCommitAuthors as _setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import { assert, assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
@@ -271,6 +273,7 @@ Deno.test("scanWorkflowTriggers - in-source best-practice-ignore marker drops th
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
   try {
     const files = [
       wf(
@@ -281,6 +284,7 @@ Deno.test("scanWorkflowTriggers - in-source best-practice-ignore marker drops th
     assertEquals(scanWorkflowTriggers(files, { defaultBranch: "main" }), []);
   } finally {
     _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
   }
 });
 

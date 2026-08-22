@@ -174,17 +174,21 @@ Deno.test("refreshTrustedAuthors - a resolver failure never falls back to popula
  * Observe the applied snapshot from outside the closure.
  *
  * `applyTrustSnapshot` pushes the trusted set into
- * `setSuppressionAuthorAllowlist`, and `findSuppressions` with an empty
- * policy checks a marker's `author=` against exactly that process-wide
- * allowlist. So a marker that is honoured names a login the snapshot
- * trusts, and one rejected as "not authorised" names a login it does not.
- * That gives a real assertion on snapshot *contents* rather than on the
- * refresh's return value.
+ * `setSuppressionAuthorAllowlist`, and `findSuppressions` checks a
+ * marker's `author=` against exactly that process-wide allowlist. So a
+ * marker that is honoured names a login the snapshot trusts, and one
+ * rejected as "not authorised" names a login it does not. That gives a
+ * real assertion on snapshot *contents* rather than on the refresh's
+ * return value.
+ *
+ * The probed login is supplied as the policy's verified commit identity
+ * (Issue #269) so that orthogonal gate never decides the outcome — the
+ * trust snapshot stays the only variable under test.
  */
 function suppressionHonoured(author: string): boolean {
   const marker =
     `// orphan-deps-ignore: BP-abcdef — author=${author} expires=2999-01-01 x`;
-  const [record] = findSuppressions(marker, "ts");
+  const [record] = findSuppressions(marker, "ts", { commitAuthors: [author] });
   return record !== undefined && record.valid === true;
 }
 

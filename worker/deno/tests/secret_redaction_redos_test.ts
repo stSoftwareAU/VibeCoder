@@ -190,6 +190,31 @@ Deno.test("redactSecrets - URL credentials are still masked after the anchoring 
   );
 });
 
+Deno.test("redactSecrets - a 500 kB near-miss PEM-body run is linear (Issue #196)", () => {
+  // Adversarial shape for the generalised pem-body rule: many consecutive
+  // base64 lines one character short of the width floor, so every line is a
+  // candidate start that must fail fast rather than backtracking across the
+  // rest of the blob. Pre-fix the 64-character rule ignored this input;
+  // a widened, unbounded `{40,}` quantifier would not.
+  const unit = "A".repeat(39) + "\n";
+  const hostile = unit.repeat(Math.floor(500_000 / unit.length));
+  let out = "";
+  const took = elapsedMs(() => {
+    out = redactSecrets(hostile);
+  });
+  assertEquals(
+    out,
+    hostile,
+    "near-miss PEM-body text must pass through unchanged",
+  );
+  assert(
+    took < BUDGET_MS,
+    `PEM-body near-miss run took ${
+      took.toFixed(0)
+    } ms (budget ${BUDGET_MS} ms)`,
+  );
+});
+
 Deno.test("redactSecrets - secret CLI flags are still masked after the bound (Issue #3942)", () => {
   assertEquals(
     redactSecrets("pr-manager --imgbb-api-key 0123abcd4567 --verbose"),

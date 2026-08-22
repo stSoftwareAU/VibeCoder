@@ -19,7 +19,7 @@ import {
   verifyAllChains,
   verifyChain,
 } from "../lib/audit_journal.ts";
-import { anchorPath } from "../lib/audit_anchor.ts";
+import { anchorPath, rosterPath } from "../lib/audit_anchor.ts";
 
 /** Build a fresh isolated journal location for a test. */
 async function freshOpts(): Promise<
@@ -287,6 +287,36 @@ Deno.test("audit_journal - verifyAllChains still treats an absent directory with
   if (!swept.ok) return;
   assertEquals(swept.value.checked, 0);
   assertEquals(swept.value.broken, []);
+});
+
+Deno.test("audit_journal - verifyAllChains reports complete erasure of the audit directory and roster (Issue #270)", async () => {
+  const opts = await freshOpts();
+  const result = await recordMutation(
+    { runId: "r", verb: "git-push", outcome: "success" },
+    opts,
+  );
+  assert(result.ok);
+
+  // The hole #3949 left open: delete the journal directory AND the roster
+  // together. Without a third witness this reads as a clean empty sweep.
+  await Deno.remove(opts.baseDir, { recursive: true });
+  await Deno.remove(rosterPath(opts.baseDir));
+  _resetAuditCaches();
+
+  const swept = await verifyAllChains(opts.baseDir);
+  assert(swept.ok);
+  if (!swept.ok) return;
+  assert(
+    swept.value.broken.length >= 1,
+    "deleting the audit directory and roster together must not verify as a clean, empty sweep",
+  );
+  assert(
+    (swept.value.broken[0]?.reason ?? "").includes("erasure") ||
+      (swept.value.broken[0]?.reason ?? "").includes("roster"),
+    `reason should name the complete erasure, got: ${
+      swept.value.broken[0]?.reason
+    }`,
+  );
 });
 
 Deno.test("audit_journal - verifyChain flags entries appended past the anchor (Issue #3949)", async () => {

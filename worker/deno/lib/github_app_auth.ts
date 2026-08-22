@@ -15,6 +15,12 @@ import { fetchWithTimeout } from "./subprocess_timeout.ts";
 /** Timeout for GitHub API fetch calls: 30 seconds. */
 const GITHUB_API_TIMEOUT_MS = 30_000;
 
+/** Max characters of a token-exchange error body kept in the thrown message. */
+const TOKEN_EXCHANGE_ERROR_BODY_LIMIT = 400;
+
+/** Marker appended when a token-exchange error body is truncated. */
+const TOKEN_EXCHANGE_ERROR_BODY_ELISION = "…[truncated]";
+
 /** Function signature for fetch — injectable for testing. */
 export type FetchFn = (
   url: string | URL,
@@ -131,7 +137,8 @@ export async function getInstallationToken(
   if (response.status !== 201) {
     const body = await response.text();
     throw new Error(
-      `GitHub API returned ${response.status} exchanging JWT for installation token: ${body}`,
+      `GitHub API returned ${response.status} exchanging JWT for installation token: ` +
+        summariseTokenExchangeErrorBody(body),
     );
   }
 
@@ -322,6 +329,45 @@ export async function getGhTokenForSubprocess(
 // =============================================================================
 // Internal Helpers
 // =============================================================================
+
+/**
+ * Summarise a GitHub token-exchange error body for interpolation into a
+ * thrown Error (Issue #197).
+ *
+ * Prefer the structured `message` field when the body is JSON and that
+ * field is a string; otherwise fall back to a truncated raw snippet.
+ * Never throws — a parse failure must not mask the original HTTP status.
+ */
+function summariseTokenExchangeErrorBody(body: string): string {
+  const trimmed = body.trim();
+  if (trimmed !== "") {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        "message" in parsed &&
+        typeof (parsed as { message: unknown }).message === "string"
+      ) {
+        return truncateTokenExchangeErrorBody(
+          (parsed as { message: string }).message,
+        );
+      }
+    } catch {
+      // Non-JSON body — fall through to the truncated raw text.
+    }
+  }
+  return truncateTokenExchangeErrorBody(body);
+}
+
+/** Truncate an error-body snippet and mark the elision explicitly. */
+function truncateTokenExchangeErrorBody(text: string): string {
+  if (text.length <= TOKEN_EXCHANGE_ERROR_BODY_LIMIT) {
+    return text;
+  }
+  return text.slice(0, TOKEN_EXCHANGE_ERROR_BODY_LIMIT) +
+    TOKEN_EXCHANGE_ERROR_BODY_ELISION;
+}
 
 /**
  * Import a PEM-encoded RSA private key as a CryptoKey for RS256 signing.

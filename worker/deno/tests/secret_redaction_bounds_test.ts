@@ -101,6 +101,31 @@ Deno.test("redactSecrets - near-miss provider prefixes do not stall the new rule
   );
 });
 
+Deno.test("redactSecrets - a 500 kB near-miss PEM-body blob stays bounded (Issue #196)", () => {
+  // Same shape as the ReDoS test: just-under-floor base64 lines. A
+  // catastrophic-backtracking regression hangs rather than failing a
+  // correctness assertion, so the timing bound is the detector.
+  const unit = "B".repeat(39) + "\n";
+  const hostile = unit.repeat(Math.floor(500_000 / unit.length));
+  const out = assertBounded("500 kB PEM-body near-miss", hostile, 2000);
+  assertEquals(
+    out,
+    hostile,
+    "near-miss PEM-body text must pass through unchanged",
+  );
+});
+
+Deno.test("redactSecrets - a 500 kB ragged long-line blob stays bounded (Issue #196)", () => {
+  // Lines long enough to enter the pem-body candidate class but never
+  // uniform, so a greedy run-match plus a failed uniformity check must
+  // still finish in linear time.
+  const unit = "A".repeat(40) + "\n" + "B".repeat(41) + "\n" + "C".repeat(42) +
+    "\n";
+  const hostile = unit.repeat(Math.floor(500_000 / unit.length));
+  const out = assertBounded("500 kB ragged PEM-body near-miss", hostile, 2000);
+  assertEquals(out, hostile);
+});
+
 Deno.test("redactSecrets - url-userinfo still masks the credential for real schemes", () => {
   const cases: [string, string][] = [
     ["https://user:pw123@github.com/o/r.git", "https://user:"],

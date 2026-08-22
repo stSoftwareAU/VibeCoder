@@ -125,10 +125,26 @@ export function sanitiseDelimiterPatterns(content: string): string {
   // over, and the 512-character cap keeps a stray `<<` from pairing with a `>>`
   // far down the document and mangling everything between them — a genuine
   // marker is an order of magnitude shorter than that.
+  //
+  // A third pass then anchors on marker *shape* rather than an unbounded gap
+  // (Issue #194). Its inner class is only the characters a real marker can
+  // contain (`[A-Za-z0-9_\-. \t\r\n]`), which excludes almost everything prose
+  // uses (commas, quotes, slashes, `!`). The inner must start with a marker
+  // character or a newline — not a space — so a stray `<<` followed by prose
+  // (`<< b\n…>>`) cannot pair. Because that class cannot swallow punctuated
+  // document text, the pass can be unbounded — so a newline-split marker
+  // padded past the 512-character cap is still rewritten — without reopening
+  // the stray-`<<`-pairing hazard the cap exists to prevent. The class is
+  // also disjoint from `<` and `>`, so there is no ambiguity to backtrack
+  // over (ReDoS).
   const inert = (_m: string, open: string, inner: string, close: string) =>
     "＜".repeat(open.length) + inner + "＞".repeat(close.length);
   result = result.replace(/(<{2,})([^<>\n]*)(>{2,})/g, inert);
   result = result.replace(/(<{2,})([^<>]{0,512}?)(>{2,})/g, inert);
+  result = result.replace(
+    /(<{2,})([A-Za-z0-9_\-.\r\n][A-Za-z0-9_\-. \t\r\n]*)(>{2,})/g,
+    inert,
+  );
 
   // Replace triple-dash boundary patterns. The CONTENT rules use [\s\S] rather
   // than `.` so a marker split across a newline (---BEGIN FAKE\nCONTENT---) is
