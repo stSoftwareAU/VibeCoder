@@ -1745,6 +1745,31 @@ follow-up question prompts. The `prepareQuestionComments`
 function trims prior bot answers to avoid context bloat when the same issue
 receives multiple follow-up questions.
 
+This path runs precisely when **no trust configuration exists**, so it cannot
+establish any author as trusted. It therefore delegates per-comment handling to
+`comment_trust_filter.ts`'s `annotateCommentsWithTrust` with empty trust lists
+(Issue #190): every author classifies `UNTRUSTED`, every body goes through
+suspicious-pattern detection and delimiter sanitisation, and each detection
+raises a `[SECURITY]` audit event. `prepareQuestionCommentsWithAudit` returns
+those events alongside the formatted blob so callers log them; the
+`prepareQuestionComments` wrapper returns the blob alone. Audit events are
+collected *before* the total-character cap, so a security signal is never
+dropped with the text that triggered it.
+
+```mermaid
+flowchart TD
+    J["Raw issue JSON"] --> C{"Trust config<br/>present?"}
+    C -->|yes| T["prepareTrustAnnotatedComments"]
+    C -->|no| L["prepareQuestionCommentsWithAudit"]
+    T --> A["annotateCommentsWithTrust"]
+    L -->|empty trust lists| A
+    A --> D["classify author +<br/>detectSuspiciousPatterns +<br/>sanitiseDelimiterPatterns"]
+    D --> S["[SECURITY] audit events → logger"]
+    D --> F["Formatted comments → prompt"]
+    style A fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
 ### 🔍 Question clarification
 
 The question clarification module (migrated to Deno TypeScript,

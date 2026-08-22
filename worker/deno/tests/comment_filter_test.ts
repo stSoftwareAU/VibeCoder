@@ -32,8 +32,10 @@ Deno.test("comment filter - preserves user comments in full", () => {
   const result = prepareQuestionComments(json);
   assertStringIncludes(result, "Can you explain how this works?");
   assertStringIncludes(result, "I need more details about X.");
-  assertStringIncludes(result, "[user1]");
-  assertStringIncludes(result, "[user2]");
+  // Issue #190: with no trust configuration no author can be established as
+  // trusted, so every comment now carries an explicit UNTRUSTED label.
+  assertStringIncludes(result, "[UNTRUSTED - user1]");
+  assertStringIncludes(result, "[UNTRUSTED - user2]");
 });
 
 // --- Bot answer truncation ---
