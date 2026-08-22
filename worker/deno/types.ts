@@ -153,6 +153,22 @@ export interface WorkerConfig {
   /** Timeout in seconds for Claude CLI (default: 3600 = 1 hour, Issue #1824) */
   claudeTimeout: number;
   /**
+   * Seconds of cycle runway a new implementation claim must have
+   * (`.config.json` `min_claim_runway_seconds`, Issue #289). `0` disables the
+   * floor. Environment variable `MIN_CLAIM_RUNWAY_SECONDS` is the fallback
+   * when the key is absent — it does not cross the container boundary, so
+   * only a native run can set it. See `lib/claim_runway.ts`.
+   */
+  minClaimRunwaySeconds: number;
+  /**
+   * Refuse a claim whose remaining runway cannot fit a full `claudeTimeout`
+   * execute (`.config.json` `claim_require_full_execute_budget`, Issue #289).
+   * Off by default. Environment variable
+   * `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1` is the fallback when the key is
+   * absent, with the same container caveat as above.
+   */
+  claimRequireFullExecuteBudget: boolean;
+  /**
    * Extend the issue-work hard deadline while the run is demonstrably
    * progressing (Issue #4296, part of #4290; default: false).
    *
@@ -833,6 +849,8 @@ export interface ConfigFile {
   best_planning_model?: string;
   /** Operational settings (Issue #277) — only overrides stored */
   claude_timeout?: number;
+  min_claim_runway_seconds?: number;
+  claim_require_full_execute_budget?: boolean;
   /** Extend the issue-work deadline while progress holds (Issue #4296) */
   progress_extension_enabled?: boolean;
   /** Seconds each progress grant adds to the deadline (Issue #4296) */
