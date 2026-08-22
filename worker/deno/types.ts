@@ -17,6 +17,14 @@ import type { RunMode } from "./lib/run_mode.ts";
 export type VerbosityLevel = "minimal" | "concise" | "standard" | "verbose";
 
 /**
+ * Where trusted-author / authorised-commenter allowlists come from
+ * (Issue #252). `"config"` uses the local `.config.json` arrays (the
+ * historical default). `"github"` will derive them from collaborators in
+ * a later wiring sub-issue; this schema lands the selector only.
+ */
+export type AuthorSource = "github" | "config";
+
+/**
  * Worker configuration loaded from .config.json.
  */
 export interface WorkerConfig {
@@ -39,6 +47,18 @@ export interface WorkerConfig {
   issueLabels: string[];
   /** GitHub users authorised to trigger PR feedback fixes */
   authorisedCommenters: string[];
+  /**
+   * Source of the trusted-author / authorised-commenter allowlists
+   * (Issue #252). Defaults to `"config"` so existing hosts keep today's
+   * behaviour. `"github"` makes the local arrays optional and deprecated.
+   */
+  authorSource: AuthorSource;
+  /**
+   * Org team whose members are excluded from GitHub-derived allowlists
+   * (Issue #252). `org/slug` (e.g. `stSoftwareAU/vibe-workers`).
+   * Absent means team exclusion is off.
+   */
+  exclusionTeam?: string;
   /**
    * Allowlist of GitHub service-account logins the worker is permitted to
    * operate as (Issue #3528). The identity guard fails loud at startup and
@@ -779,6 +799,16 @@ export interface ConfigFile {
   pr_reviewers?: string[];
   repos?: string[];
   authorized_commenters?: string[];
+  /**
+   * `"github"` derives allowlists from collaborators; `"config"` uses the
+   * local arrays. Default `"config"` (Issue #252).
+   */
+  author_source?: AuthorSource;
+  /**
+   * Org team excluded from GitHub-derived allowlists, `org/slug`
+   * (Issue #252). Absent means team exclusion is off.
+   */
+  exclusion_team?: string;
   /**
    * Allowlist of GitHub service-account logins the worker may operate as
    * (Issue #3528). Drives the fail-loud identity guard.

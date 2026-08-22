@@ -581,6 +581,62 @@ Deno.test("validation - validateConfigFileJson accepts planning_label string fie
   }
 });
 
+Deno.test("validation - validateConfigFileJson accepts author_source github and config (Issue #252)", () => {
+  for (const author_source of ["github", "config"]) {
+    const result = validateConfigFileJson({ author_source });
+    assertEquals(
+      result.ok,
+      true,
+      `expected author_source ${author_source} accepted`,
+    );
+    if (result.ok) {
+      assertEquals(result.value.author_source, author_source);
+    }
+  }
+});
+
+Deno.test("validation - validateConfigFileJson rejects unknown author_source (Issue #252)", () => {
+  const result = validateConfigFileJson({ author_source: "collaborators" });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.field, "author_source");
+  }
+});
+
+Deno.test("validation - validateConfigFileJson rejects non-string author_source (Issue #252)", () => {
+  const result = validateConfigFileJson({ author_source: 1 });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.field, "author_source");
+  }
+});
+
+Deno.test("validation - validateConfigFileJson accepts org/slug exclusion_team (Issue #252)", () => {
+  const result = validateConfigFileJson({
+    exclusion_team: "stSoftwareAU/vibe-workers",
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.exclusion_team, "stSoftwareAU/vibe-workers");
+  }
+});
+
+Deno.test("validation - validateConfigFileJson rejects a bare exclusion_team slug (Issue #252)", () => {
+  const result = validateConfigFileJson({ exclusion_team: "vibe-workers" });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.field, "exclusion_team");
+  }
+});
+
+Deno.test("validation - validateConfigFileJson rejects a non-string exclusion_team (Issue #252)", () => {
+  const result = validateConfigFileJson({ exclusion_team: ["org/team"] });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.field, "exclusion_team");
+  }
+});
+
 // =============================================================================
 // Issue #1532 — shared gh CLI validators
 // =============================================================================
