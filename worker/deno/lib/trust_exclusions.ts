@@ -130,7 +130,10 @@ function errorResult(
   message: string,
   status?: number,
 ): TeamMemberSet {
-  return { ok: false, error: { reason, message, ...(status ? { status } : {}) } };
+  return {
+    ok: false,
+    error: { reason, message, ...(status ? { status } : {}) },
+  };
 }
 
 /**
@@ -185,7 +188,9 @@ function parseTeamMembers(raw: string): Set<string> {
     }
     const login = (entry as { login?: unknown }).login;
     if (typeof login !== "string" || normaliseLogin(login).length === 0) {
-      throw new TeamMembersParseError("invalid-login:team member missing login");
+      throw new TeamMembersParseError(
+        "invalid-login:team member missing login",
+      );
     }
     const normalised = normaliseLogin(login);
     if (!USERNAME_PATTERN.test(normalised) && !USERNAME_PATTERN.test(login)) {
@@ -262,7 +267,10 @@ export async function fetchTeamMembers(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.startsWith("invalid-login:")) {
-      return errorResult("invalid-login", message.slice("invalid-login:".length));
+      return errorResult(
+        "invalid-login",
+        message.slice("invalid-login:".length),
+      );
     }
     if (message.startsWith("malformed-json:")) {
       return errorResult(
