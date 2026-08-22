@@ -9,6 +9,7 @@
  */
 
 import type { ConfigFile, WorkerConfig } from "../types.ts";
+import { isBotLogin } from "./trust_exclusions.ts";
 
 /**
  * Validation result with structured errors and warnings.
@@ -107,18 +108,6 @@ const GENERIC_NAMES = [
 const TRUSTED_REVIEW_BOTS_WARN_THRESHOLD = 20;
 
 /**
- * Allowlist of known bot-shaped names that do NOT carry the `[bot]`
- * suffix. Entries here are accepted in `trusted_review_bots` without
- * warning even though they don't look like a GitHub App bot account
- * (Issue #1856).
- */
-const KNOWN_NON_SUFFIX_BOTS: ReadonlySet<string> = new Set([
-  "dependabot",
-  "renovate",
-  "github-actions",
-]);
-
-/**
  * Warn about a `trusted_review_bots` configuration that is suspiciously
  * large or contains entries that don't look like bot accounts.
  *
@@ -136,9 +125,7 @@ export function warnTrustedReviewBots(bots: string[]): string[] {
 
   for (const bot of bots) {
     if (!bot) continue;
-    const looksLikeBot = bot.endsWith("[bot]") ||
-      KNOWN_NON_SUFFIX_BOTS.has(bot.toLowerCase());
-    if (!looksLikeBot) {
+    if (!isBotLogin(bot)) {
       warnings.push(
         `TRUSTED_REVIEW_BOTS entry '${bot}' does not look like a bot account ` +
           "(no '[bot]' suffix and not in the known-bot allowlist). " +
