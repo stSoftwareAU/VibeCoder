@@ -169,11 +169,18 @@ flowchart TD
 - **The secrets denylist is unchanged.** `--deny-env` still hides the worker's
   tokens and keys from the MCP process, and the npm registry age
   gate still guards the pinned specifiers.
-- **The server is handed to the agent on every run.** The
-  worker generates this configuration per clone into
-  `${WORK_DIR}/.vibe-cache/mcp/` and passes it as `--mcp-config` on each
-  Claude invocation — it does not depend on a `.mcp.json` in a directory the
-  agent never runs from. The server is told `--browser chromium` (its
+- **The server is handed to the agent only on a run that needs a browser**
+  (Issue #192). Browser and outbound-network capability is granted on an
+  explicit need signal — `RunClaudeOptions.mcpConfig: true` — not by the mere
+  presence of a working directory, so a prompt-injected agent working a
+  backend issue has no browser tool to be steered into. Issue work sets the
+  signal from the same `screenshotRequired` detection that injects the
+  screenshot instructions (the `needs-screenshot` label or a repo configured
+  with `requiresScreenshots`); planning, PR feedback and grill-me runs get no
+  browser. When the signal is set the worker generates this configuration per
+  clone into `${WORK_DIR}/.vibe-cache/mcp/` and passes it as `--mcp-config` on
+  that Claude invocation — it does not depend on a `.mcp.json` in a directory
+  the agent never runs from. The server is told `--browser chromium` (its
   default `chrome` channel is Google Chrome, which the image does not ship),
   and its `--output-dir` is scratch beside the browser profile
   (`/tmp/vibe-playwright-output`) because every `browser_navigate` writes an
