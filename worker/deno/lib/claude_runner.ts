@@ -404,8 +404,15 @@ export interface RunClaudeOptions {
   /** Disallowed tools (default: ["EnterPlanMode", "ExitPlanMode"]). */
   disallowedTools?: string[];
   /**
-   * Hand the agent the Playwright MCP server for this run (Issue #4355).
-   * Default true whenever `cwd` is set; `false` opts a caller out.
+   * Hand the agent the Playwright MCP server for this run (Issue #4355),
+   * narrowed to an explicit need signal by Issue #192.
+   *
+   * Opt-in: the browser — outbound HTTP through a full browser context — is
+   * wired only when the caller sets this `true` *and* a `cwd` (the clone the
+   * server is configured against) is set. Every other run gets no browser
+   * tool, so a prompt-injected agent working a backend issue cannot reach
+   * arbitrary or internal hosts through it. Absent or `false` means no
+   * browser.
    */
   mcpConfig?: boolean;
   /**
@@ -747,14 +754,16 @@ export async function runClaudeWithTimeout(
   // arguments or child environment mid-run.
   const provider = selectAgentProvider(options.agentProvider);
   // The Playwright MCP server for this run (Issue #4355): written per clone
-  // to the worker cache and passed as --mcp-config. Best-effort — absent on
-  // failure, and never when the caller opts out (mcpConfig: false).
-  const mcpConfigPath = options.mcpConfig === false || !cwd
-    ? undefined
-    : await ensureAgentMcpConfig({
+  // to the worker cache and passed as --mcp-config. Wired only when the
+  // caller declares the browser needed (Issue #192) — a cwd alone no longer
+  // grants outbound browser/network capability to a run that has no use for
+  // it. Best-effort even then: absent on failure.
+  const mcpConfigPath = options.mcpConfig === true && cwd
+    ? await ensureAgentMcpConfig({
       cwd,
       log: (message) => logger?.warn?.(message),
-    });
+    })
+    : undefined;
   // The prompt travels on stdin when the provider can read it there
   // (Issue #4385): Linux caps one argv element at 128 KiB, and a grill-me
   // round or a long issue thread exceeds that — "Argument list too long"

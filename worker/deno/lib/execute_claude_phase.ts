@@ -1089,6 +1089,11 @@ export async function runExecuteClaudePhase(
         // Per-invocation provider selection (Issue #4109); undefined keeps the
         // active provider, exactly as before.
         agentProvider: options.agentProvider,
+        // Browser/network capability is granted on need, not by default
+        // (Issue #192): only an issue that must produce screenshot evidence
+        // gets the Playwright MCP server. A backend issue's agent has no
+        // browser tool to be steered into by prompt injection.
+        mcpConfig: screenshotRequired,
         // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
         ...(options.progressExtension
           ? { progressExtension: options.progressExtension }

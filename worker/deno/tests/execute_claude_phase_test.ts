@@ -637,6 +637,49 @@ Deno.test("runExecuteClaudePhase - screenshot label triggers screenshot instruct
   assertEquals(promptOptions?.screenshotRequired, true);
 });
 
+Deno.test("runExecuteClaudePhase - the browser MCP server is requested only when the issue needs a screenshot (Issue #192)", async () => {
+  const captured: Array<boolean | undefined> = [];
+  const captureRun: Partial<ExecuteClaudePhaseDeps> = {
+    runClaudeWithRetry: async (options) => {
+      captured.push(options.mcpConfig);
+      return {
+        ok: true,
+        value: { exitCode: 0, output: "Done.", timedOut: false },
+      };
+    },
+  };
+
+  // A plain backend issue must not be handed browser/network capability.
+  await runExecuteClaudePhase(
+    createTestOptions({ issueLabels: "enhancement,work-on" }),
+    createMockDeps(captureRun),
+  );
+  assertEquals(captured[0], false);
+
+  // A needs-screenshot issue declares the need, so the browser is wired.
+  await runExecuteClaudePhase(
+    createTestOptions({ issueLabels: "enhancement,needs-screenshot" }),
+    createMockDeps(captureRun),
+  );
+  assertEquals(captured[1], true);
+
+  // A repo configured to require screenshots is the same need signal.
+  await runExecuteClaudePhase(
+    createTestOptions({
+      repo: "owner/ui-repo",
+      issueLabels: "enhancement",
+      repoConfigs: {
+        "owner/ui-repo": { requiresScreenshots: true } as Record<
+          string,
+          unknown
+        >,
+      } as unknown as Record<string, import("../types.ts").RepoConfig>,
+    }),
+    createMockDeps(captureRun),
+  );
+  assertEquals(captured[2], true);
+});
+
 Deno.test("runExecuteClaudePhase - heartbeat started and stopped", async () => {
   let heartbeatRecorded = false;
   let heartbeatCleared = false;

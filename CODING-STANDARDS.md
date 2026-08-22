@@ -257,7 +257,9 @@ proactively:
   access). Prefer `gh` over web scraping or raw API calls.
 - **Playwright MCP (headless browser)** — for browser automation: navigating
   URLs, inspecting pages, taking screenshots (save to `docs/evidence/`), and
-  interacting with web interfaces.
+  interacting with web interfaces. Wired into a run only when that run needs a
+  browser — a `needs-screenshot` issue, or a repo configured with
+  `requiresScreenshots` (Issue #192); a backend run is given no browser tool.
 
 ## Prompt Engineering Guidance
 
