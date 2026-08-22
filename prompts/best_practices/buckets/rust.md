@@ -109,6 +109,7 @@ about code that is not in the tree.
 | `has_async` | `async fn`, `.await`, `tokio`, `futures` |
 | `has_packed_repr` | `#[repr(packed)]` |
 | `has_fs_io` | `std::fs`, `Path`/`PathBuf` joins, `File::open` / `File::create` |
+| `has_transparent_repr` | `#[repr(transparent)]` on a struct or newtype |
 
 **FFI checks are boundary-scoped, never repo-wide.** Apply the FFI
 cluster only to the functions that actually cross the boundary —
@@ -341,3 +342,80 @@ finding per key.
 Profile-guided optimisation (`-Cprofile-generate` / `-Cprofile-use`)
 is the next lever after these three, and is a per-repo opt-in — do
 not file a missing-PGO finding.
+
+## Toolchain 1.96–1.98 learnings
+
+The fleet pins a concrete Rust channel and moves it in steps, so a
+crate can meet three releases' worth of new lints at once. These
+checks cover what changed across 1.96, 1.97 and 1.98 that alters what
+a reviewer should *look for* — not release trivia.
+
+Two of the three are about lints that are **deny-by-default or
+warn-by-default**. Under a `-D warnings` gate those fail the build with
+no code change, which is the whole reason a toolchain bump is a
+reviewable event rather than a one-line diff.
+
+**Static evidence only**, as everywhere in this bucket: each check
+below names a grep-able pattern. Where confirming a candidate needs a
+compiler, say so in the suggested fix and let the human confirm —
+the same discipline the `## Dead dependencies` section uses for
+`cargo-udeps`. Link to the
+[Rust reference](https://doc.rust-lang.org/reference/) and the
+[standard library docs](https://doc.rust-lang.org/std/) rather than
+restating them.
+
+### Checks
+
+28. **Runtime symbol definitions.** Gate: `has_ffi`. Rust 1.98 made
+    `invalid_runtime_symbol_definitions` **deny-by-default** and added
+    `suspicious_runtime_symbol_definitions` and `c_void_returns` as
+    warnings. Flag a `#[no_mangle]` / `#[unsafe(no_mangle)]` or
+    `extern "C"` definition whose symbol name collides with a `core`
+    runtime symbol — `memcpy`, `memmove`, `memset`, `memcmp`, `bcmp`,
+    `strlen` — because the compiler now refuses it rather than
+    quietly letting a crate replace the runtime out from under
+    `core`. Flag separately a foreign-ABI function returning
+    `core::ffi::c_void` (or `libc::c_void`) **by value**: `c_void` is
+    not an inhabited value type, so the signature never described
+    something callable. Both are boundary-scoped like every FFI check
+    here — a safe internal helper is not in scope merely because the
+    crate links a C library.
+29. **`#[repr(transparent)]` after the 1.98 tightening.** Gate:
+    `has_transparent_repr`. `repr(transparent)` requires at most one
+    field with a non-trivial size or alignment; 1.98 narrowed what
+    counts as trivial. A field whose type is `#[repr(C)]`, has
+    private fields, or is `#[non_exhaustive]` is **no longer**
+    disregarded. Flag a `#[repr(transparent)]` type carrying more
+    than one field where any additional field is one of those three —
+    it compiled before and does not now, and the fix is a decision
+    (drop the field, drop the attribute, or make the wrapper genuinely
+    single-field) rather than a rename. A zero-sized marker such as
+    `PhantomData<T>` is still trivial and is not a finding. Confirming
+    a private-field case can need the defining crate, so where the
+    type comes from a dependency, say so in the suggested fix and let
+    the human confirm.
+30. **Standard-library supersessions (1.96–1.98).** Always applies.
+    Flag a hand-rolled implementation of something these releases
+    stabilised, citing the site and naming the replacement:
+    offset arithmetic to locate a subslice within its parent, where
+    `str::substr_range` / `[T]::subslice_range` now answer directly
+    (1.98); a paired `strip_prefix` and `strip_suffix` doing one
+    logical strip, now `strip_circumfix` (1.98); a manual UTF-16
+    decode loop, now `String::from_utf16le` / `from_utf16be` and their
+    lossy variants (1.98); bit-width or highest-set-bit computed from
+    `leading_zeros`, now `bit_width`, `highest_one` and
+    `isolate_highest_one` on the integer primitives and
+    `NonZero<{integer}>` (1.97); and, in tests, a `match` whose only
+    purpose is to panic on the non-matching arm, now `assert_matches!`
+    (1.96). Also flag use of the `std::char` free functions and
+    constants deprecated in 1.97 — the associated items on `char`
+    replace them. These are `severity:low` hygiene findings: the old
+    code is correct, it is simply no longer the shortest correct
+    thing. Do not file one per call site — one finding per file,
+    listing the sites.
+
+`pin!` no longer permits deref coercions (1.97) and symbol mangling
+defaults to the v0 scheme (1.97). Neither is a review check: the first
+is a soundness fix the compiler enforces, and the second affects
+debuggers and profilers rather than source. They are noted here so a
+future reader does not re-derive them as candidates.
