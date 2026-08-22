@@ -13,6 +13,26 @@ This changelog is a human-readable digest grouped by version.
 
 ### Changed
 
+- **Blocked on a dependency is now a deferral, not a closure (Issue #222).**
+  A `work-on` run that produced no code changes had two endings — "already
+  complete" (close) and "analysis-only" (`needs-human`). A run that correctly
+  found the work blocked on another issue had none, so
+  NEAT-AI-Backpropagation#94's evidenced "## Blocked: `creature_validate` …"
+  answer was described as "analysis-only / recommendation-only", escalated to a
+  human, and closed as `not planned` by the implementing agent itself. Output
+  that opens a `Blocked` / `Depends on` section naming another issue is now
+  **deferred**: the issue stays open with its discovery label, `Depends on
+  owner/repo#N` is recorded in its body (the `blocked` label is the fallback),
+  the claim is released as `deferred: depends on owner/repo#N`, and the
+  dependency gate skips the issue until that dependency closes. The same run
+  reporting the same dependency twice hands off to a human instead of looping.
+  Two supporting changes make it hold: the dependency gate now resolves a
+  cross-repo `Depends on owner/repo#N` against its own repo (that form
+  previously matched nothing), and the agent-side `gh` guard refuses
+  `gh issue close|reopen|edit|delete|transfer|lock|unlock|pin|unpin` — and the
+  REST spellings — on the claimed repo with
+  `[SECURITY] [ISSUE_LIFECYCLE_REFUSED]`, permitting `edit` only so the
+  `needs-human` escalation keeps working.
 - **Retitling an issue no longer orphans its WIP branch (Issue #220).**
   Resume-on-reclaim keyed on the title-derived branch name, so when #211 was
   retitled between two claims the second claim built a different slug, never

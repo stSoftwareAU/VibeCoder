@@ -1641,8 +1641,12 @@ type-safe dependency analysis:
 
 - **`extractSubIssueReferences(body, repo?)`** — extracts task list items and
   "Parent of #N" patterns.
-- **`extractDependencyReferences(body)`** — extracts `Depends on #N` and
-  `Blocked by #N` patterns.
+- **`extractDependencyReferences(body)`** — extracts same-repo `Depends on #N`
+  and `Blocked by #N` patterns as plain numbers.
+- **`extractDependencyReferencesDetailed(body)`** — the same patterns keeping
+  the repo each reference names, so a cross-repo `Depends on owner/repo#N` is
+  resolved against **its own** repo rather than as this repo's `#N`. This is the
+  form a deferred (blocked) issue records; `isDependencyBlocked` reads it.
 - **`checkParentBlocked()`** — checks if a parent issue is blocked by open
   children. Fails closed (treats unreachable children as open for safety).
 - **`buildDependencyGraph()`** — constructs a full graph of forward dependencies

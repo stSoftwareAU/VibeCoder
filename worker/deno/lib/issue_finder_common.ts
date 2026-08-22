@@ -22,7 +22,7 @@ import type { SelectionOptions } from "./issue_priority.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
 import {
   checkParentBlocked,
-  extractDependencyReferences,
+  extractDependencyReferencesDetailed,
   normaliseIssueState,
 } from "./issue_dependencies.ts";
 import type {
@@ -153,31 +153,40 @@ export function isRateLimitError(err: unknown): boolean {
  * share one in-flight request.
  */
 export function memoiseIssueFetcher(fetcher: IssueFetcher): IssueFetcher {
-  const bodyCache = new Map<number, Promise<string>>();
-  const subCache = new Map<number, Promise<number[]>>();
-  const stateCache = new Map<number, Promise<IssueState>>();
+  const bodyCache = new Map<string, Promise<string>>();
+  const subCache = new Map<string, Promise<number[]>>();
+  const stateCache = new Map<string, Promise<IssueState>>();
+  // Issue #222: keyed by repo AND number. A cross-repo dependency
+  // (`Depends on owner/repo#560`) is now resolved against its own repo, so a
+  // number-only key would serve another repository's #560 from this repo's
+  // entry.
+  const key = (repo: string, issueNumber: number) =>
+    `${repo.trim().toLowerCase()}#${issueNumber}`;
   return {
     getIssueState(repo: string, issueNumber: number) {
-      let p = stateCache.get(issueNumber);
+      const k = key(repo, issueNumber);
+      let p = stateCache.get(k);
       if (!p) {
         p = fetcher.getIssueState(repo, issueNumber);
-        stateCache.set(issueNumber, p);
+        stateCache.set(k, p);
       }
       return p;
     },
     getSubIssues(repo: string, issueNumber: number) {
-      let p = subCache.get(issueNumber);
+      const k = key(repo, issueNumber);
+      let p = subCache.get(k);
       if (!p) {
         p = fetcher.getSubIssues(repo, issueNumber);
-        subCache.set(issueNumber, p);
+        subCache.set(k, p);
       }
       return p;
     },
     getIssueBody(repo: string, issueNumber: number) {
-      let p = bodyCache.get(issueNumber);
+      const k = key(repo, issueNumber);
+      let p = bodyCache.get(k);
       if (!p) {
         p = fetcher.getIssueBody(repo, issueNumber);
-        bodyCache.set(issueNumber, p);
+        bodyCache.set(k, p);
       }
       return p;
     },
@@ -294,16 +303,22 @@ export async function isDependencyBlocked(
       return true;
     }
 
-    // Check forward dependencies
+    // Check forward dependencies. Issue #222: a cross-repo reference
+    // (`Depends on owner/repo#N`) is resolved against *its own* repo — the
+    // form the blocked-run deferral writes — while a bare `#N` stays this
+    // repo's issue and keeps using the cached open-state map.
     const body = await fetcher.getIssueBody(repo, issueNumber);
-    const deps = extractDependencyReferences(body);
+    const deps = extractDependencyReferencesDetailed(body);
     for (const dep of deps) {
+      const depRepo = dep.repo ?? repo;
+      const isSameRepo = depRepo.trim().toLowerCase() === repo.trim()
+        .toLowerCase();
       // Map hit → still open; immediate block.
-      if (openStateMap?.has(dep)) {
+      if (isSameRepo && openStateMap?.has(dep.number)) {
         return true;
       }
       try {
-        const depState = await fetcher.getIssueState(repo, dep);
+        const depState = await fetcher.getIssueState(depRepo, dep.number);
         if (depState.state === "OPEN") return true;
       } catch {
         // If we can't check, assume blocked (fail safe)

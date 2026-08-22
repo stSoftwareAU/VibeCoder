@@ -1990,6 +1990,65 @@ re-runs the same issue indefinitely.
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
 Analysis-only / no-PR hand-off for the operator detail.
 
+### Blocked on a dependency is a deferral, not a closure
+
+A `work-on` run that produces no code changes has three possible endings, not
+two. "Already complete" closes the issue; "analysis-only" hands it to a human.
+The third — the run read the code and found the work genuinely blocked on
+another issue — had no ending at all, so it fell through to the analysis-only
+branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
+"## Blocked: `creature_validate` …" answer was described as
+"analysis-only / recommendation-only", escalated to `needs-human`, and closed as
+`not planned` by the implementing agent itself.
+
+A blocked run is now **deferred**:
+
+- the issue stays **open** and keeps its discovery label — no `needs-human`, so
+  `stripDiscoveryLabelsOnEscalation` never fires;
+- `Depends on owner/repo#N` is recorded in the body — the exact form
+  `isDependencyBlocked` reads — so the dependency gate skips the issue on every
+  scan until that dependency closes (the `blocked` label is the fallback when
+  the body cannot be edited);
+- the claim is released with the outcome `deferred: depends on owner/repo#N`,
+  which the release comment states.
+
+Detection needs **both** signals, so a passing mention of the word never defers
+an issue: a line opening a `Blocked` / `Depends on` section, **and** an issue
+reference in that section naming something other than the issue being worked.
+References quoted inside code fences are ignored, matching
+`extractDependencyReferences`.
+
+**A deferral is never repeated silently.** The deferral comment carries a hidden
+marker naming the dependency, and a run that reports the *same* dependency again
+does not defer a second time — the gate plainly did not hold (the dependency
+closed and the work is still reported blocked, or the record was lost), and
+re-deferring would spend a full agent run on every scan. The repeat falls
+through to the analysis-only hand-off, so a human sees it; it is still never
+closed.
+
+Two supporting changes make the deferral hold. The dependency gate now resolves
+a **cross-repo** `Depends on owner/repo#N` against its own repo — previously
+that form matched nothing at all, so a cross-repo deferral was re-claimed
+immediately — and the agent can no longer decide the issue's fate itself: the
+`gh` guard refuses issue-lifecycle verbs on the claimed repo (see
+[`SECURITY.md` → Agent-Subprocess `gh` Guard](SECURITY.md#6a-agent-subprocess-gh-guard)).
+
+```mermaid
+flowchart TD
+    N["Run made no code changes"] --> B{"Output opens a<br/>Blocked / Depends on<br/>section naming an issue?"}
+    B -- yes --> D["Defer: issue open, discovery label kept,<br/>Depends on owner/repo#N recorded,<br/>claim released 'deferred: depends on …'"]
+    D --> G["Dependency gate skips it<br/>until the dependency closes"]
+    B -- no --> C{"Says already complete?"}
+    C -- yes --> X["Close as complete"]
+    C -- no --> A["Analysis-only hand-off<br/>(needs-human)"]
+```
+
+**Implementation:** [`blocked_outcome.ts`](worker/deno/lib/blocked_outcome.ts)
+(detection) and [`blocked_deferral.ts`](worker/deno/lib/blocked_deferral.ts)
+(the GitHub side), wired into
+[`phases/handle_no_changes_phase.ts`](worker/deno/lib/phases/handle_no_changes_phase.ts)
+ahead of both existing endings.
+
 ### A refused pre-check is a bounce, never a success
 
 The merged-PR pre-check refuses to close an issue whose PR merged but whose
