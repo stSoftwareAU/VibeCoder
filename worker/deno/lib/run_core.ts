@@ -54,6 +54,10 @@ import {
   runInSlotContext,
 } from "./slot_context.ts";
 import {
+  createWriteRepoAllowlistContext,
+  withWriteRepoAllowlistContext,
+} from "./write_repo_allowlist.ts";
+import {
   getInaccessibleRepos,
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
@@ -1975,30 +1979,48 @@ async function runSlot(
     /** Set by a successful claim so the settle sleep runs holding no repo. */
     let claimSucceeded = false;
     try {
+      // Every claim gets its OWN write-repo allowlist (Issue #183). The
+      // per-slot context exists (#4175) but nothing wired it up here, so
+      // both slots fell through to the process-wide default context:
+      // `seedWriteRepoAllowlist` clears `allowed` on every claim, so the
+      // slot that claimed second clobbered its sibling's allowlist and the
+      // loser's agent shim was baked with the wrong repo — every GitHub
+      // write from that agent was refused, including writes to its own
+      // claim repo and its `needs-human` escalation.
+      //
+      // Per CLAIM, not per slot: each claim seeds and resets its own
+      // allowlist, so a fresh context per claim keeps a heartbeat pin
+      // (Issue #3760) scoped to the claim that took it.
+      //
       // Every line written on behalf of this claim — the pool's own, the
       // issue phases, the agent's progress heartbeats — is attributed to
       // `[sN repo#issue]` (Issue #4181).
-      const outcome = await runInSlotContext(
-        {
-          slotId,
-          repo: issue.repo,
-          issueNumber: issue.issueNumber,
-          // The run publishes the deadline it is working to (Issue #4297),
-          // including every progress extension, so the shutdown drain sees a
-          // legitimately extended run as in-flight rather than as a hang.
-          onRunDeadline: (deadline) => {
-            pool.registry.noteRunDeadline(issue.repo, deadline);
-          },
-        },
+      const outcome = await withWriteRepoAllowlistContext(
+        createWriteRepoAllowlistContext(),
         () =>
-          runSlotIssue(
-            slotId,
-            issue,
-            config,
-            deps,
-            tracker,
-            endTime,
-            pool,
+          runInSlotContext(
+            {
+              slotId,
+              repo: issue.repo,
+              issueNumber: issue.issueNumber,
+              // The run publishes the deadline it is working to (Issue
+              // #4297), including every progress extension, so the shutdown
+              // drain sees a legitimately extended run as in-flight rather
+              // than as a hang.
+              onRunDeadline: (deadline) => {
+                pool.registry.noteRunDeadline(issue.repo, deadline);
+              },
+            },
+            () =>
+              runSlotIssue(
+                slotId,
+                issue,
+                config,
+                deps,
+                tracker,
+                endTime,
+                pool,
+              ),
           ),
       );
       if (outcome === "exit") {
