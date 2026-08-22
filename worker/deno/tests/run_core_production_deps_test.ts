@@ -177,7 +177,20 @@ Deno.test("createProductionRunCoreDeps - all deps methods are functions", async 
   assertEquals(typeof deps.touchPidFile, "function");
   assertEquals(typeof deps.sleep, "function");
   assertEquals(typeof deps.now, "function");
+
+  // Issue #253: per-cycle trusted-author refresh is wired in production.
+  assertEquals(typeof deps.refreshTrustedAuthors, "function");
 });
+
+Deno.test(
+  "createProductionRunCoreDeps - static trust refresh succeeds and does not throw",
+  async () => {
+    const options = createTestOptions();
+    const { deps } = await createProductionRunCoreDeps(options);
+    const outcome = await deps.refreshTrustedAuthors!();
+    assertEquals(outcome.ok, true);
+  },
+);
 
 Deno.test("createProductionRunCoreDeps - config has sensible defaults", async () => {
   const options = createTestOptions();
