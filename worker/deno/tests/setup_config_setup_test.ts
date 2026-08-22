@@ -147,6 +147,24 @@ Deno.test("buildOverridesOnly - includes authorized_commenters when present", ()
   assertEquals(result.authorized_commenters, ["user1", "github-copilot[bot]"]);
 });
 
+Deno.test("buildOverridesOnly - includes author_source and exclusion_team when present (Issue #252)", () => {
+  const config: SetupConfig = {
+    author_source: "github",
+    exclusion_team: "stSoftwareAU/vibe-workers",
+  };
+  const result = buildOverridesOnly(config);
+  assertEquals(result.author_source, "github");
+  assertEquals(result.exclusion_team, "stSoftwareAU/vibe-workers");
+});
+
+Deno.test("buildOverridesOnly - omits default author_source config (Issue #252)", () => {
+  const config: SetupConfig = {
+    author_source: "config",
+  };
+  const result = buildOverridesOnly(config);
+  assertEquals(result.author_source, undefined);
+});
+
 Deno.test("buildOverridesOnly - includes claude_model when present", () => {
   const config: SetupConfig = {
     claude_model: "claude-sonnet-4-7",

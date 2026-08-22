@@ -9,8 +9,16 @@
  * Use setup.sh to configure via .config.json.
  */
 
-import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
-import { validateConfigFileJson } from "./validation.ts";
+import type {
+  AuthorSource,
+  ConfigFile,
+  RepoConfig,
+  WorkerConfig,
+} from "../types.ts";
+import {
+  EXCLUSION_TEAM_PATTERN,
+  validateConfigFileJson,
+} from "./validation.ts";
 import {
   resolveAgentProviderId,
   resolveEnabledAgentProviderIds,
@@ -280,6 +288,12 @@ export async function loadConfig(
 
   const authorisedCommenters = file.authorized_commenters ??
     (allowedAuthor ? [allowedAuthor] : []);
+
+  // Issue #252: local arrays remain the default source. `"github"` is
+  // accepted here so the later wiring sub-issue can flip behaviour without
+  // another schema change. Absent matches today's `"config"` path.
+  const authorSource: AuthorSource = file.author_source ?? "config";
+  const exclusionTeam = file.exclusion_team;
 
   // Issue #3528: allowlist of service-account logins the identity guard
   // validates the resolved `gh` login against. Empty leaves the guard
@@ -645,6 +659,8 @@ export async function loadConfig(
     repos,
     issueLabels,
     authorisedCommenters,
+    authorSource,
+    exclusionTeam,
     serviceAccounts,
     ghConfigDir,
     sshKeyPath,
@@ -784,12 +800,29 @@ function validatePreFlightConfigs(
  * @throws Error if required fields are missing or invalid
  */
 export function validateConfig(config: WorkerConfig): void {
-  // Check required fields (Issue #137 - now checking allowedAuthors array)
-  if (config.allowedAuthors.length === 0) {
+  // Check required fields (Issue #137 - now checking allowedAuthors array).
+  // Issue #252: under author_source "github" the local arrays are optional
+  // (and ignored) — an empty list must not throw, or every existing host
+  // would be stranded the moment they flip the source.
+  const authorSource = config.authorSource ?? "config";
+  if (authorSource !== "github" && config.allowedAuthors.length === 0) {
     throw new Error(
       "Configuration error: allowed_authors is required. " +
         "Set via .config.json (run setup.sh to configure).",
     );
+  }
+
+  if (authorSource === "github") {
+    warnIgnoredLocalAllowlists(config);
+  }
+
+  if (config.exclusionTeam !== undefined) {
+    if (!EXCLUSION_TEAM_PATTERN.test(config.exclusionTeam)) {
+      throw new Error(
+        `Configuration error: Invalid exclusion_team "${config.exclusionTeam}". ` +
+          "Expected org/slug (e.g. stSoftwareAU/vibe-workers).",
+      );
+    }
   }
 
   if (config.repos.length === 0) {
@@ -828,6 +861,33 @@ export function validateConfig(config: WorkerConfig): void {
       );
     }
   }
+}
+
+/**
+ * Warn when local trust arrays are still populated under `author_source:
+ * "github"` (Issue #252). The GitHub-derived lists fully replace the local
+ * arrays, so a leftover login must never be mistaken for a grant of trust.
+ */
+function warnIgnoredLocalAllowlists(config: WorkerConfig): void {
+  const ignoredAuthors = config.allowedAuthors;
+  const ignoredCommenters = config.authorisedCommenters;
+  if (ignoredAuthors.length === 0 && ignoredCommenters.length === 0) {
+    return;
+  }
+
+  const parts: string[] = [];
+  if (ignoredAuthors.length > 0) {
+    parts.push(`allowed_authors: ${ignoredAuthors.join(", ")}`);
+  }
+  if (ignoredCommenters.length > 0) {
+    parts.push(`authorized_commenters: ${ignoredCommenters.join(", ")}`);
+  }
+
+  console.warn(
+    `⚠️  DEPRECATION: author_source is "github", so local allowlist ` +
+      `entries are ignored and do not grant trust (${parts.join("; ")}). ` +
+      `Remove them from .config.json or set author_source to "config".`,
+  );
 }
 
 /**

@@ -13,6 +13,16 @@ import {
 } from "./run_mode.ts";
 
 /**
+ * GitHub org team slug in `org/slug` form (Issue #252).
+ *
+ * Each segment starts with an alphanumeric and may contain hyphens.
+ * A bare slug, extra path segments, or whitespace is unparseable — a typo
+ * that silently disabled team exclusion is the failure mode this rejects.
+ */
+export const EXCLUSION_TEAM_PATTERN =
+  /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+
+/**
  * Validation error with the field that failed and a human-readable message.
  */
 export interface ValidationError {
@@ -67,6 +77,10 @@ export interface ConfigFileJson {
   pr_reviewers?: string[];
   repos?: string[];
   authorized_commenters?: string[];
+  /** `"github"` | `"config"` — default `"config"` (Issue #252). */
+  author_source?: string;
+  /** Org team slug `org/slug` excluded from GitHub-derived allowlists. */
+  exclusion_team?: string;
   /** Bot accounts whose PR review comments are auto-trusted (Issue #1856) */
   trusted_review_bots?: string[];
   // Issue #1834: `issue_labels`, `work_on_label`, and `low_priority_label`
@@ -492,6 +506,8 @@ export function validateConfigFileJson(
     "github_app_installation_id",
     "github_app_private_key_path",
     "verbosity",
+    "author_source",
+    "exclusion_team",
   ] as const;
 
   for (const field of stringFields) {
@@ -519,6 +535,35 @@ export function validateConfigFileJson(
       RUN_MODE_CONFIG_KEY,
       `Expected one of ${RUN_MODES.join(", ")}, got ${JSON.stringify(raw)}`,
     );
+  }
+
+  // author_source accepts only github | config (Issue #252). A typo must
+  // fail here rather than be coerced to the default — that would silently
+  // keep a host on local arrays when the operator asked for GitHub.
+  if (data.author_source !== undefined) {
+    if (
+      data.author_source !== "github" && data.author_source !== "config"
+    ) {
+      return fail(
+        "author_source",
+        `Expected "github" or "config", got ${
+          JSON.stringify(data.author_source)
+        }`,
+      );
+    }
+  }
+
+  // exclusion_team must be org/slug when present (Issue #252). A typo that
+  // silently disables team exclusion is the failure mode this rejects.
+  if (data.exclusion_team !== undefined) {
+    if (!EXCLUSION_TEAM_PATTERN.test(data.exclusion_team as string)) {
+      return fail(
+        "exclusion_team",
+        `Expected org/slug (e.g. stSoftwareAU/vibe-workers), got ${
+          JSON.stringify(data.exclusion_team)
+        }`,
+      );
+    }
   }
 
   // Optional string array fields

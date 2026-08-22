@@ -34,6 +34,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "pr_reviewers",
   "repos",
   "authorized_commenters",
+  "author_source",
+  "exclusion_team",
   "service_accounts",
   "trusted_review_bots",
   "fleet_pr_authors",

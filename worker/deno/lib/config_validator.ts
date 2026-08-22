@@ -147,7 +147,10 @@ export function warnTrustedReviewBots(bots: string[]): string[] {
 export function validateRequiredFields(config: WorkerConfig): string[] {
   const errors: string[] = [];
 
-  if (config.allowedAuthors.length === 0 && !config.allowedAuthor) {
+  if (
+    config.authorSource !== "github" &&
+    config.allowedAuthors.length === 0 && !config.allowedAuthor
+  ) {
     errors.push(
       "ALLOWED_AUTHORS is not set or contains no authors. " +
         "Configure 'allowed_authors' array or 'allowed_author' string in .config.json",

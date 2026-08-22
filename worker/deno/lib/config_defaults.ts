@@ -990,6 +990,9 @@ export function buildDefaultWorkerConfig(
     // low-priority labels have dedicated, author-checked collectors.
     issueLabels: [LABEL_DEFAULTS.topPriorityLabel],
     authorisedCommenters: [],
+    // Issue #252: local arrays remain the default source so this schema
+    // change is behaviour-neutral until the GitHub-derived wiring lands.
+    authorSource: "config",
     // Issue #3528: identity-guard allowlist. Empty by default — the guard
     // warns loudly that it is inactive until operators configure it.
     serviceAccounts: [],
