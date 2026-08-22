@@ -38,6 +38,8 @@ import { sessionSweepCommand } from "../commands/session_sweep.ts";
 import { denoCacheGuardCommand } from "../commands/deno_cache_guard.ts";
 import { branchCleanupCommand } from "../commands/branch_cleanup.ts";
 import { workVolumePruneCommand } from "../commands/work_volume_prune.ts";
+import { workVolumeTiersCommand } from "../commands/work_volume_tiers.ts";
+import { DEFAULT_SIDE_REPO_MAX_AGE_DAYS } from "./work_volume_tiers.ts";
 import { workerLogCleanupCommand } from "../commands/worker_log_cleanup.ts";
 import {
   DEFAULT_HARD_CAP_COUNT,
@@ -71,6 +73,7 @@ export const HOUSEKEEPING_STEP_IDS = [
   "session-sweep",
   "deno-cache-guard",
   "work-volume-prune",
+  "work-volume-tiers",
   "branch-cleanup-orphaned",
   "branch-cleanup-stale",
 ] as const;
@@ -311,6 +314,22 @@ export function buildHousekeepingSteps(
       },
     },
     {
+      // Issue #242: the work root's second tier — sibling/data clones a
+      // gate pulled in as `../<name>`. Monitored repos persist; these age
+      // out after three idle days (a nightly gate's data repo stays warm)
+      // and the scan logs the size of both tiers either way.
+      id: "work-volume-tiers",
+      command: "work-volume-tiers",
+      args: {
+        "work-dir": options.workDir,
+        "mode": "age",
+        "max-age-days": envInt(
+          "WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS",
+          DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
+        ),
+      },
+    },
+    {
       id: "branch-cleanup-orphaned",
       command: "branch-cleanup",
       args: {
@@ -342,6 +361,7 @@ const HOUSEKEEPING_COMMANDS = {
   "deno-cache-guard": denoCacheGuardCommand,
   "branch-cleanup": branchCleanupCommand,
   "work-volume-prune": workVolumePruneCommand,
+  "work-volume-tiers": workVolumeTiersCommand,
 } as const;
 
 /** Build the production dependency set for {@link runStartupHousekeeping}. */

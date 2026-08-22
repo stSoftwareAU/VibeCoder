@@ -255,10 +255,35 @@ export class HostDiskMonitor {
     return this.lastStatus;
   }
 
-  /** Probe if the cadence allows, then return the current status. */
-  async check(): Promise<HostDiskStatus> {
+  /**
+   * Bytes the host must get back to clear the low floor, from the last
+   * status. Zero when the reading is `ok` or unknown — the reclaim
+   * (Issue #242) sizes itself from this.
+   */
+  get shortfallBytes(): number {
+    const status = this.lastStatus;
+    if (
+      status.level !== "low" || status.availableBytes === undefined ||
+      status.totalBytes === undefined
+    ) {
+      return 0;
+    }
+    return Math.max(
+      0,
+      lowFloorBytes(status.totalBytes, this.floors) - status.availableBytes,
+    );
+  }
+
+  /**
+   * Probe if the cadence allows, then return the current status.
+   *
+   * `force` skips the cadence — the re-read after a reclaim (Issue #242)
+   * must see the freed space, not the reading that triggered it.
+   */
+  async check(options: { force?: boolean } = {}): Promise<HostDiskStatus> {
     const t = this.now();
     if (
+      options.force !== true &&
       this.lastSampleAt !== undefined &&
       t - this.lastSampleAt < this.sampleIntervalMs
     ) {
