@@ -148,6 +148,13 @@ export class WriteTargetUndeterminableError extends Error {
  * `AsyncLocalStorage`, so the ~20 call sites and the `spawnGh` chokepoint
  * keep their signatures. Outside any slot scope the process-wide default
  * context is used, which is exactly today's single-slot behaviour.
+ *
+ * The production wrap site is the slot pool (`run_core.ts`), which gives
+ * **every claim** a fresh context (Issue #183). Until it did, nothing called
+ * the wrapper: both slots resolved to `defaultContext`, the second claim's
+ * seed clobbered the first's allowlist, and the losing slot's agent shim was
+ * baked with its sibling's repo — the exact failure this context object
+ * exists to prevent.
  */
 export interface WriteRepoAllowlistContext {
   /** Whether enforcement is active for the current run. */
