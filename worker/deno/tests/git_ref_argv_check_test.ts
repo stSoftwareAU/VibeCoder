@@ -54,10 +54,82 @@ Deno.test("scanner - non-ref git verbs are ignored", () => {
     const line of [
       'runGitCommand(["rev-list", "--count", `HEAD..${base}`], opts);',
       'runGitCommand(["status", "--porcelain"], opts);',
-      'runGitCommand(["push", "origin", branchName], opts);',
+      'runGitCommand(["remote", "set-url", "origin", url], opts);',
     ]
   ) {
     assertEquals(scanContentForGitRefArgv(line, "x.ts"), []);
+  }
+});
+
+// ===========================================================================
+// Issue #275 — push and rebase join the guarded verbs
+// ===========================================================================
+
+Deno.test("scanner - flags an unguarded push of a PR head branch (Issues #267, #275)", () => {
+  // The #267 shape: pr_ci_nudge pushed a GitHub-controlled PR head branch as
+  // a bare positional. The gate called it clean because `push` was excluded
+  // outright, which is how it reached main.
+  const violations = scanContentForGitRefArgv(
+    'await runGitCommand(["push", "origin", headRefName], opts);',
+    "worker/deno/lib/pr_ci_nudge.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 1);
+});
+
+Deno.test("scanner - flags a multi-line push argv (Issues #267, #268, #275)", () => {
+  // The #268 evasion applied to a push: no single line holds both the verb
+  // and the attacker-controlled identifier, so a line-local scan sees nothing.
+  const violations = scanContentForGitRefArgv(
+    `await runGitCommand([
+      "push",
+      "origin",
+      branchName,
+    ], options);`,
+    "worker/deno/lib/x.ts",
+  );
+  assertEquals(violations.length, 1);
+});
+
+Deno.test("scanner - flags an unguarded rebase onto a PR head branch (Issue #275)", () => {
+  // `rebase` was named in the module contract and in buildRebaseArgs but was
+  // missing from the pattern, so the documentation promised a gate that was
+  // not there.
+  assertEquals(
+    scanContentForGitRefArgv(
+      'runGitCommand(["rebase", headBranch], opts);',
+      "x.ts",
+    ).length,
+    1,
+  );
+});
+
+Deno.test("scanner - a builder-shaped push with a flag before the separator is clean (Issue #275)", () => {
+  // buildPushArgs emits `["push", "-u", "--end-of-options", remote, branch]`
+  // and the lease form puts `--force-with-lease=…` in the same position. A
+  // lookahead for the separator in the very next slot would have called both
+  // of those safe arrays a violation.
+  for (
+    const line of [
+      'return ["push", "--end-of-options", remote, branchName];',
+      'return ["push", "-u", "--end-of-options", remote, branchName];',
+      'return ["push", `--force-with-lease=${branchName}:${sha}`, "--end-of-options", remote, branchName];',
+      'return ["rebase", "--end-of-options", branchName];',
+    ]
+  ) {
+    assertEquals(scanContentForGitRefArgv(line, "x.ts"), [], line);
+  }
+});
+
+Deno.test("scanner - safe internal refs stay out of scope for push and rebase (Issue #275)", () => {
+  for (
+    const line of [
+      'runGitCommand(["push", "origin", defaultBranch], opts);',
+      'runGitCommand(["rebase", baseBranch], opts);',
+      'runGitCommand(["push", "origin", milestoneBranch], opts);',
+    ]
+  ) {
+    assertEquals(scanContentForGitRefArgv(line, "x.ts"), [], line);
   }
 });
 

@@ -9,6 +9,8 @@
  * pinning the lease to that SHA restores the guard.
  */
 
+import { buildPushArgs } from "./git_ref_args.ts";
+
 /**
  * Build the argv for a lease-protected force push.
  *
@@ -19,14 +21,20 @@
  *   tracking ref may legitimately not exist yet, and git then leases on the
  *   remote branch being absent, which is still a meaningful guard.
  * @returns The git argument array, e.g.
- *   `["push", "origin", "feature", "--force-with-lease=feature:<sha>"]`.
+ *   `["push", "--force-with-lease=feature:<sha>", "--end-of-options",
+ *   "origin", "feature"]`.
  */
 export function buildForceWithLeaseArgs(
   branchName: string,
   baselineSha: string | null,
 ): string[] {
   const lease = baselineSha === null
-    ? "--force-with-lease"
+    ? true as const
     : `--force-with-lease=${branchName}:${baselineSha}`;
-  return ["push", "origin", branchName, lease];
+  // Issue #275: routed through the sanctioned builder so the branch name is
+  // validated and reaches git behind `--end-of-options`. It was a bare
+  // positional, so a dash-leading PR head branch was parsed as an option —
+  // the CWE-88 shape the ref-argv gate exists to catch, on the one code path
+  // that force-pushes.
+  return buildPushArgs("origin", branchName, { forceWithLease: lease });
 }
