@@ -762,6 +762,7 @@ unless explicitly overridden.
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
 | Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of cycle runway a new implementation claim must have; `0` disables the floor. A claim taken below it would run deadline-bound, be killed at the cycle deadline, and rely on WIP preservation to carry its progress into the next run (Issue #289). |
 | Require a full execute budget | `claim_require_full_execute_budget` | `false` | When `true`, a claim is refused once the remaining runway cannot fit a full `claude_timeout` execute — the floor is raised to that budget and the cycle tail goes to cheap maintenance. Only takes effect where the cycle is longer than `claude_timeout`; where it is not, every execute is deadline-bound by design and the plain floor stands, logged once as a documented exception (Issue #289). |
+| Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 
 > **`MIN_CLAIM_RUNWAY_SECONDS` and `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET` are
 > fallbacks for a native run only.** `container_launch.ts` forwards just the
@@ -786,6 +787,39 @@ unless explicitly overridden.
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red — or with an unanswered authorised comment — before the watchdog escalates it with `needs-human`. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+
+### 🧭 Adaptive claim floor
+
+`min_claim_runway_seconds` is the same floor for every issue, which is right
+for a fresh one-file fix and wrong for an issue already known to be a long job.
+VibeCoder#222 (a 21-file change) was claimed with 933 s of cycle runway left:
+a near-certain timeout the moment it was taken, costing a claim cycle and a
+whole billed run that produced nothing the next attempt did not redo.
+
+So the floor adapts to what the issue already carries (Issue #245). Evidence
+is any one of: preserved WIP on the issue branch, a previous attempt whose
+recorded outcome was `timeout` in `execute`, or a label from
+`claim_long_job_labels`. It is read once per candidate from the issue's labels
+and the fleet's own release comments — comments from other authors are ignored,
+so a marker cannot be forged to keep an issue from being claimed.
+
+```mermaid
+flowchart TD
+    A[Scan offers a candidate] --> B{Evidence it is<br/>not a short job?}
+    B -- no --> C[Claim — the plain floor decides]
+    B -- yes --> D{Runway ≥ 75% of<br/>min claude_timeout, cycle?}
+    D -- yes --> C
+    D -- no --> E[Defer: log once, skip this cycle]
+    E --> F[Scan the next candidate]
+```
+
+An issue with evidence needs three quarters of the best execute budget the
+host can offer — `claude_timeout`, or the cycle's own equivalent where the
+cycle can never fit that budget (the documented #47 exception). Requiring the
+whole budget would leave such a host claiming nothing at all; three quarters
+refuses the doomed slice (933 s of 3600 s) while leaving the runs that made
+progress on #222 — 56 min and 49 min — untouched. A deferral never parks the
+slot: it is logged once per cycle and the scan moves to the next candidate.
 
 ### ⏱️ How timeouts interact
 

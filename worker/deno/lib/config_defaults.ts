@@ -14,6 +14,7 @@
 import type { WorkerConfig } from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
+import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { DEFAULT_CADENCE_POLICY } from "./idle_task_cadence.ts";
 import { DEFAULT_RUN_MODE } from "./run_mode.ts";
 import { cloneCadencePolicy } from "./idle_task_cadence_config.ts";
@@ -1042,6 +1043,8 @@ export function buildDefaultWorkerConfig(
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
     claimRequireFullExecuteBudget:
       OPERATIONAL_DEFAULTS.claimRequireFullExecuteBudget,
+    // Adaptive claim floor (Issue #245): the labels that mark a long job.
+    claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
     progressExtensionEnabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,
     progressExtensionGrantSeconds:
       OPERATIONAL_DEFAULTS.progressExtensionGrantSeconds,

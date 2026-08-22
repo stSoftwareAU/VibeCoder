@@ -25,6 +25,7 @@ import {
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
 } from "./agent_provider.ts";
+import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
@@ -448,6 +449,10 @@ export async function loadConfig(
       (Deno.env.get("CLAIM_REQUIRE_FULL_EXECUTE_BUDGET") === "1"
         ? true
         : OPERATIONAL_DEFAULTS.claimRequireFullExecuteBudget);
+  // Adaptive claim floor (Issue #245): labels that mark an issue as a long
+  // job, alongside the preserved-WIP and prior-execute-timeout evidence.
+  const claimLongJobLabels = file.claim_long_job_labels ??
+    [...DEFAULT_LONG_JOB_LABELS];
   // Re-armable issue-work deadline (Issue #4296, part of #4290). Off by
   // default; only issue work consults it. Non-positive tunables are rejected
   // loudly rather than silently disabling or extending forever (#3234).
@@ -729,6 +734,7 @@ export async function loadConfig(
     claudeTimeout,
     minClaimRunwaySeconds,
     claimRequireFullExecuteBudget,
+    claimLongJobLabels,
     progressExtensionEnabled,
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,
