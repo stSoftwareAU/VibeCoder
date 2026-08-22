@@ -231,7 +231,7 @@ changed definition is a different image and nobody has to remember to bump a
 version by hand:
 
 ```bash
-deno run --allow-read worker/deno/mod.ts container-image-hash
+deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash
 # vibe-coder:941c9bfe80fa
 ```
 
@@ -244,12 +244,30 @@ it would invalidate the image on every commit:
 | `container/Containerfile` | The build instructions themselves            |
 | `container/entrypoint.sh` | Baked into the image at `/usr/local/bin`     |
 | `container/tools.json`    | The pinned versions the build must agree with |
+| `container/install-*.sh`  | The provider and tool installers the build runs |
 | `container/providers/*.sh` | The coding-agent provider layer the build installs |
+| `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
+| `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
+
+The last one is not a committed file. `container_tools` is the deployment's own
+selection (see
+[Deployer-supplied build-time tools](CONTAINER-IMAGE.md#deployer-supplied-build-time-tools)),
+and the
+build bakes it into the image, so two hosts that select different tool sets
+must get different tags — otherwise one host's cached `vibe-coder:<hash>`
+silently satisfies the other's requirement and the tool is quietly missing. It
+is mixed in as a canonical, key-sorted serialisation of the **validated** spec,
+so re-ordering keys in `.config.json` does not churn the tag while any change
+of id, version, URL or checksum does. A deployment that selects no tools gets
+exactly the tag it got before the selection existed, so no existing host
+rebuilds. A malformed spec exits non-zero naming the offending field rather
+than falling back to a tools-free tag.
 
 ```mermaid
 flowchart LR
-    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
+    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
+    C["container_tools<br/>(.config.json)"] --> H
     W["docs/, worker/ sources,<br/>cloned repos"] -.ignored.-> H
     H --> R["vibe-coder:&lt;short hash&gt;"]
     R --> D{"image present<br/>locally?"}
@@ -881,6 +899,206 @@ The image tag follows the set, so the new provider produces a new
 `vibe-coder:<hash>` rather than reusing a tag whose contents differ. A trio in
 `quorum_planners` / `quorum_judge` can then name it — see
 Quorum.
+
+## Deployer-supplied build-time tools
+
+The image carries the toolchains above because *this* fleet's monitored
+repositories need them. A deployment whose repositories need something else —
+Java and Maven are the first expected use — declares it as a top-level
+`container_tools` array in `.config.json`, and the build bakes it in. The
+default is an empty selection: the fleet image installs nothing extra, so a
+deployment that wants nothing pays nothing.
+
+Each entry is a **declarative archive install** — download, verify the declared
+SHA-256, extract, expose `bin` directories on PATH, set `env`. There are no
+install commands, no package-manager entries and no installer scripts, so a
+selection cannot run arbitrary code in the build. The whole set is validated
+before anything is downloaded, in two places: `parseContainerTools()`
+([`container_tools_config.ts`](../worker/deno/lib/container_tools_config.ts))
+rejects a malformed spec at config load, and
+[`container/install-tools.sh`](../container/install-tools.sh) re-validates the
+set it is handed, so a bad entry never leaves a half-installed image behind.
+
+### The spec
+
+| Field | Required | Meaning |
+| ---------------- | ---------------------- | ------------------------------------------------------------------------------------------------- |
+| `id` | yes | Lower-case letters, digits and hyphens, starting with a letter — the same rule as a provider id. Unique within the array, and the directory name under the install prefix. |
+| `version` | yes | The pinned version, for the reader. Nothing resolves it: the URL and digest are what the build uses. |
+| `url` | yes | Download per architecture — `amd64`, `arm64` and/or `noarch`. `https:` only. The extension decides the extractor: `.tar.gz`/`.tgz`, `.tar.xz` or `.zip`; anything else aborts rather than guessing. |
+| `sha256` | yes | 64 hex characters per architecture. **Mandatory** — a `url` without a matching `sha256` (or the reverse) is rejected, because that would be an unverified download. |
+| `stripComponents` | no (default `0`) | Leading path components dropped on extraction, as `tar --strip-components`. Most distributions ship one top-level directory, so `1` is usual. |
+| `bin` | no (default none) | Directories, **relative to the install prefix**, prepended to PATH. `""` is the prefix root. |
+| `env` | no (default none) | Environment variables set at container start, each value **relative to the install prefix**. `""` is the prefix root — that is how `JAVA_HOME` is expressed. |
+
+A deployment that builds for one architecture may supply only that
+architecture; the build resolves its own `amd64`/`arm64` and falls back to
+`noarch`, and a tool with neither aborts the build naming the id.
+
+**The install prefix is fixed at `/opt/vibe-tools/<id>`**, and every `bin` and
+`env` value is relative to it. An absolute path, a `~`, or a `..` that walks
+above the prefix is refused at validation, so no selection can aim PATH or
+`JAVA_HOME` at an arbitrary host path — the worst a malformed spec can do is
+fail the build.
+
+At container start `container/entrypoint.sh` reads the
+`/opt/vibe-tools/environment` hand-off the installer wrote, prepends each
+recorded `bin` directory to PATH, exports each `env` value, and stamps the
+applied ids into `VIBE_IMAGE_CONTAINER_TOOLS`. Those lines are parsed as
+`KEY=value` data — never sourced, never `eval`'d — and a malformed line aborts
+the container rather than executing.
+
+```mermaid
+flowchart LR
+    C[".config.json<br/>container_tools"] --> V["parseContainerTools()<br/>validate + confine"]
+    V -->|malformed| X["❌ fails at config load"]
+    V --> A["ARG VIBE_CONTAINER_TOOLS"]
+    A --> I["container/install-tools.sh"]
+    I -->|download → verify SHA-256| P["/opt/vibe-tools/&lt;id&gt;"]
+    I -->|digest mismatch| X2["❌ build aborts"]
+    P --> E["/opt/vibe-tools/environment"]
+    E --> R["entrypoint.sh:<br/>PATH + JAVA_HOME"]
+    style X fill:#c9184a,stroke:#800f2f,color:#fff
+    style X2 fill:#c9184a,stroke:#800f2f,color:#fff
+    style R fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+### A worked example — Java and Maven
+
+Eclipse Temurin 25 (both architectures) and Apache Maven 3.9 (one
+architecture-independent archive):
+
+```json
+{
+  "container_tools": [
+    {
+      "id": "java",
+      "version": "25.0.4+7",
+      "url": {
+        "amd64": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_x64_linux_hotspot_25.0.4_7.tar.gz",
+        "arm64": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.4_7.tar.gz"
+      },
+      "sha256": {
+        "amd64": "e58fcdcd637b25c03ca84cbbcefc70d11efb8f4b4cbd05decc9f661769d77f94",
+        "arm64": "621f7196f0b682fb557da58bec89bd7dfe5419811fe1c0ba75c9cc8432f084c7"
+      },
+      "stripComponents": 1,
+      "bin": ["bin"],
+      "env": { "JAVA_HOME": "" }
+    },
+    {
+      "id": "maven",
+      "version": "3.9.16",
+      "url": {
+        "noarch": "https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz"
+      },
+      "sha256": {
+        "noarch": "80ffca22aed9e8b9713a232f3394fd81d7f20322df75efdb2b047dbd3e3a23bb"
+      },
+      "stripComponents": 1,
+      "bin": ["bin"],
+      "env": { "MAVEN_HOME": "" }
+    }
+  ]
+}
+```
+
+Maven finds its JDK through `JAVA_HOME`, which the `java` entry sets, so the
+order matters only for readability — both are applied before the worker starts.
+Inside a container built from that selection:
+
+```text
+$ echo "$JAVA_HOME"
+/opt/vibe-tools/java
+$ java -version
+openjdk version "25.0.4" 2026-07-21 LTS
+OpenJDK Runtime Environment Temurin-25.0.4+7 (build 25.0.4+7-LTS)
+$ mvn -version
+Apache Maven 3.9.16 (2bdd9fddda4b155ebf8000e807eb73fd829a51d5)
+Maven home: /opt/vibe-tools/maven
+Java version: 25.0.4, vendor: Eclipse Adoptium, runtime: /opt/vibe-tools/java
+```
+
+The pins are the deployment's, not the fleet's: they are deliberately *not* in
+[`container/tools.json`](../container/tools.json), which pins what every image
+carries. Keep the version current the way you would any other dependency, and
+observe the 24-hour quarantine in
+[Coding Standards](../CODING-STANDARDS.md) — do not pin a release published in
+the last day.
+
+### Finding a published checksum for a new tool
+
+The digest must come from the **upstream project's own published checksum**,
+fetched over HTTPS — never from the copy you just downloaded, which would
+verify the bytes against themselves.
+
+- **Adoptium** publishes a SHA-256 per binary. The release page lists it, and
+  the API returns it directly:
+
+  ```bash
+  curl -sS "https://api.adoptium.net/v3/assets/latest/25/hotspot?os=linux&image_type=jdk&vendor=eclipse" |
+    jq -r '.[] | [.binary.architecture, .binary.package.link, .binary.package.checksum] | @tsv'
+  ```
+
+- **Apache** publishes a `.sha512` beside each artefact — not a SHA-256. Verify
+  the download against the published SHA-512 first, then record the SHA-256 of
+  the file you just verified:
+
+  ```bash
+  curl -fsSLO https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz
+  published="$(curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz.sha512)"
+  echo "${published}  apache-maven-3.9.16-bin.tar.gz" | sha512sum -c -
+  sha256sum apache-maven-3.9.16-bin.tar.gz
+  ```
+
+  The `sha512sum -c` must print `OK` before the `sha256sum` output is worth
+  anything: unverified bytes produce a digest that pins exactly the artefact an
+  attacker served you.
+
+- Prefer a **permanent** URL over a mirror that moves. `archive.apache.org`
+  keeps every release; `dlcdn.apache.org` serves only current ones, so a pin
+  against it starts 404-ing when the version ages out.
+
+### When a checksum stops matching
+
+An upstream sometimes re-publishes an archive under the same URL — a respin, a
+rebuilt tarball, a mirror serving different bytes. The build then fails at the
+verify step, naming the tool:
+
+```text
+install-tools: tool "java": SHA-256 mismatch — refusing to install.
+```
+
+**That failure is the mechanism working, not a bug in it.** Nothing is
+extracted, no image is produced, and the run stops before an unverified archive
+reaches the image.
+
+The fix is to update `.config.json` — **never** to relax verification. There is
+no flag to skip the digest, and adding one would remove the only thing standing
+between a compromised mirror and a container that runs your repositories'
+builds. Instead:
+
+1. Fetch the upstream's currently published checksum (above) and compare it
+   with the digest in `.config.json`. If upstream's own published value has
+   changed too, the artefact was legitimately re-published.
+2. Read the upstream's release notes for that respin before you accept it. A
+   changed artefact with **no** upstream announcement is a supply-chain event —
+   treat it as one, and do not pin it.
+3. Prefer pinning the **new version** at its own URL over accepting new bytes at
+   an old one, so the change is visible in the diff.
+4. Update the `sha256` (and `url`/`version`) in `.config.json` and rebuild.
+   Observe the same 24-hour quarantine any other external dependency gets.
+
+### Changing the selection needs a rebuild
+
+The image tag is the hash of the container definition, and
+`container/install-tools.sh` is one of its enumerated inputs — editing the
+installer produces a new `vibe-coder:<hash>`. The **selection**, though, travels
+as the `VIBE_CONTAINER_TOOLS` build argument out of `.config.json`, not as a
+committed file, so editing `container_tools` alone does not yet change the tag;
+folding it into the hash is Issue #73. Until it lands, force the rebuild after
+a selection change — see
+[Deployment](DEPLOYMENT.md#-changing-container_tools-forces-an-image-rebuild).
 
 ## Building and running locally
 

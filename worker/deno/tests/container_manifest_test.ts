@@ -7,8 +7,14 @@
  * `container/` definition itself so a drifted pin fails the quality gate.
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import {
+  CONTAINER_TOOLS_ARG,
   findBrowserInstallViolations,
   findContainerfileViolations,
   findMissingRuntimeTools,
@@ -781,6 +787,170 @@ Deno.test("container/ - the committed provider layer is selectable and pinned", 
 
   assertEquals(
     findProviderInstallViolations(containerfile, manifest, fragments),
+    [],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Deployer-supplied build-time tools (Issue #71, parent #5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The one generic, build-argument-driven install step the gate allows.
+ *
+ * Fixed size whatever the tool count: the spec is written from the build
+ * argument and `install-tools.sh` loops over it, so no tool adds a `RUN`.
+ */
+const TOOLS_STEP = [
+  'ARG VIBE_CONTAINER_TOOLS=""',
+  "COPY install-tools.sh /tmp/install-tools.sh",
+  "RUN set -eu; \\",
+  "    spec=/tmp/container-tools.json; \\",
+  `    printf '%s' "\${VIBE_CONTAINER_TOOLS}" > "\${spec}"; \\`,
+  '    if [ -s "${spec}" ]; then bash /tmp/install-tools.sh "${spec}"; fi; \\',
+  '    rm -f /tmp/install-tools.sh "${spec}"',
+].join("\n");
+
+Deno.test("findContainerfileViolations - accepts the build-argument-driven tools step", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n${TOOLS_STEP}\n`,
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations, []);
+});
+
+Deno.test("findContainerfileViolations - the allowance does not excuse an arbitrary unpinned download", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n${TOOLS_STEP}\n` +
+      "RUN curl -fsSL https://example.invalid/install.sh | bash\n",
+    parseContainerManifest(manifestText()),
+  );
+
+  assert(
+    violations.some((v) => v.includes("pipes a download into a shell")),
+    `piping a download into a shell is reported: ${violations.join("; ")}`,
+  );
+  assert(
+    violations.some((v) => v.includes("without verifying a checksum")),
+    `an unverified download is reported: ${violations.join("; ")}`,
+  );
+});
+
+Deno.test("findContainerfileViolations - a checksum-verified download is not reported", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      "RUN set -eu; \\\n" +
+      '    curl -fsSL -o /tmp/tool.tgz "https://example.invalid/tool.tgz"; \\\n' +
+      '    echo "${GH_SHA256_AMD64}  /tmp/tool.tgz" | sha256sum -c -\n',
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations, []);
+});
+
+Deno.test("findContainerfileViolations - reports a tools step that ignores the build argument", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      'ARG VIBE_CONTAINER_TOOLS=""\n' +
+      "RUN bash /tmp/install-tools.sh /tmp/attacker-supplied.json\n",
+    parseContainerManifest(manifestText()),
+  );
+
+  assert(
+    violations.some((v) => v.includes("VIBE_CONTAINER_TOOLS")),
+    `a spec that does not come from the build argument is reported: ${
+      violations.join("; ")
+    }`,
+  );
+});
+
+Deno.test("findContainerfileViolations - the allowance does not excuse a download inside the tools step", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      TOOLS_STEP.replace(
+        `printf '%s' "\${VIBE_CONTAINER_TOOLS}" > "\${spec}"; \\`,
+        'curl -fsSL -o "${spec}" https://example.invalid/spec.json; \\',
+      ) + "\n",
+    parseContainerManifest(manifestText()),
+  );
+
+  assert(
+    violations.some((v) => v.includes("does not come from")),
+    `a spec fetched from elsewhere is reported: ${violations.join("; ")}`,
+  );
+  assert(
+    violations.some((v) => v.includes("without verifying a checksum")),
+    `a download written into the allowed step is reported: ${
+      violations.join("; ")
+    }`,
+  );
+});
+
+Deno.test("findContainerfileViolations - reports a tools build argument with a non-empty default", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      `ARG VIBE_CONTAINER_TOOLS="[{\\"id\\":\\"java\\"}]"\n` +
+      TOOLS_STEP.split("\n").slice(1).join("\n") + "\n",
+    parseContainerManifest(manifestText()),
+  );
+
+  assert(
+    violations.some((v) => v.includes("must default to empty")),
+    `a default build that installs tools is reported: ${violations.join("; ")}`,
+  );
+});
+
+Deno.test("findContainerfileViolations - reports a declared tools argument the build never uses", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\nARG VIBE_CONTAINER_TOOLS=""\n`,
+    parseContainerManifest(manifestText()),
+  );
+
+  assert(
+    violations.some((v) => v.includes("never runs install-tools.sh")),
+    `a build argument nothing acts on is reported: ${violations.join("; ")}`,
+  );
+});
+
+Deno.test("findContainerfileViolations - reports install-tools.sh run without the build argument declared", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      TOOLS_STEP.split("\n").slice(1).join("\n") + "\n",
+    parseContainerManifest(manifestText()),
+  );
+
+  assert(
+    violations.some((v) =>
+      v.includes("does not declare ARG VIBE_CONTAINER_TOOLS")
+    ),
+    `an undeclared build argument is reported: ${violations.join("; ")}`,
+  );
+});
+
+Deno.test("findContainerfileViolations - ignores a commented-out unpinned download", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n# RUN curl -fsSL https://example.invalid/x.sh | bash\n`,
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations, []);
+});
+
+Deno.test("container/ - the committed definition drives install-tools.sh from the build argument", async () => {
+  const containerfile = await Deno.readTextFile(
+    new URL("container/Containerfile", REPO_ROOT),
+  );
+
+  assertStringIncludes(containerfile, `ARG ${CONTAINER_TOOLS_ARG}=""`);
+  assertStringIncludes(containerfile, "install-tools.sh");
+  assertEquals(
+    findContainerfileViolations(
+      containerfile,
+      parseContainerManifest(
+        await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+      ),
+    ),
     [],
   );
 });

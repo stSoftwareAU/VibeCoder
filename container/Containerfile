@@ -282,6 +282,25 @@ RUN set -eu; s=/opt/deno-seed-src; m="npm:@playwright/mcp@${PLAYWRIGHT_MCP_VERSI
     deno run --cached-only --allow-all "$m" --version; \
     chmod -R a+rX "${VIBE_DENO_SEED_DIR}"
 
+# ---------------------------------------------------------------------------
+# Deployer-supplied build-time tools (Issue #71, parent #5). VIBE_CONTAINER_TOOLS
+# carries the validated .config.json `container_tools` array; install-tools.sh
+# loops over it, so this block is one fixed-size step whatever the tool count.
+# Last of the install steps — the selection is deployment-specific, so changing
+# it rebuilds nothing above. Empty (the fleet default) writes an empty spec,
+# runs nothing and leaves nothing behind: today's image, byte for byte.
+# RUN does not take the builder's variable substitution — the shell expands the
+# argument from its environment, so spec content is never re-parsed as code.
+ARG VIBE_CONTAINER_TOOLS=""
+
+COPY install-tools.sh /tmp/install-tools.sh
+
+RUN set -eu; \
+    spec=/tmp/container-tools.json; \
+    printf '%s' "${VIBE_CONTAINER_TOOLS}" > "${spec}"; \
+    if [ -s "${spec}" ]; then bash /tmp/install-tools.sh "${spec}"; fi; \
+    rm -f /tmp/install-tools.sh "${spec}"
+
 COPY entrypoint.sh /usr/local/bin/vibe-entrypoint
 RUN chmod 0755 /usr/local/bin/vibe-entrypoint
 

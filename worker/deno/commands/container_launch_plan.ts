@@ -48,6 +48,7 @@ import {
   ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
   enabledAgentProviders,
 } from "../lib/agent_provider.ts";
+import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
 
 /** What the command reports alongside the rendered plan. */
 export interface ContainerLaunchPlanResult {
@@ -152,7 +153,7 @@ export async function buildLaunchPlanForCommand(
     strippedContainerfile?: string;
   } = {},
 ): Promise<ContainerLaunchPlan> {
-  const [descriptor, image, manifestText] = await Promise.all([
+  const [descriptor, manifestText] = await Promise.all([
     // The launch path opts into the service self-heal (Issue #4253): a
     // stopped apiserver kept host-25 dark ~5 h across 21 launcher runs when
     // one bounded `container system start` would have fixed it. Progress
@@ -162,7 +163,6 @@ export async function buildLaunchPlanForCommand(
       log: (message) => console.error(message),
       emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
     }),
-    resolveContainerImageReference(baseDir),
     Deno.readTextFile(`${baseDir}/container/tools.json`),
   ]);
 
@@ -180,6 +180,22 @@ export async function buildLaunchPlanForCommand(
     "Run ./setup.sh to create it, or set CONFIG_PATH.",
   );
   const selection = await readAgentProviderSelection(hostPaths.configFile);
+
+  // The launcher runs on the host, before the worker loads its configuration,
+  // so the tool selection is read here (Issue #72). Validation is fail-loud at
+  // plan time (#69): a malformed spec stops the launch rather than reaching the
+  // image build. The deployer's own spec is carried verbatim (compact), never a
+  // re-serialised normalisation, so install-tools.sh (#70) parses exactly what
+  // was written.
+  const { tools, specJson: containerToolsSpecJson } =
+    await readContainerToolsSelection(hostPaths.configFile);
+
+  // The selected tools are baked into the image, so they are part of its
+  // identity (Issue #73) — the plan must name the tag the build produces, not
+  // a tools-free one another deployment's cache would satisfy.
+  const image = await resolveContainerImageReference(baseDir, {
+    containerTools: tools,
+  });
 
   // Stage the configuration into its own directory for the read-only mount.
   // Apple container cannot mount a single file (a file mount silently
@@ -279,6 +295,7 @@ export async function buildLaunchPlanForCommand(
     watchdogSeconds,
     hostPaths,
     agentProviders: enabledAgentProviders(selection),
+    ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),
     resources,
