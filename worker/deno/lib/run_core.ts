@@ -1840,6 +1840,12 @@ async function executePriorityHandler(
  * share the single `${WORK_DIR}/<repo>` clone, and `setupRepo` opens with
  * `reset --hard` + `clean -fd`.
  *
+ * A shutdown bounds the lane exactly as it bounds the pool's drain: no new
+ * pass starts once SIGTERM has landed, and a pass still running
+ * `slotDrainGraceSeconds` after it is abandoned — its agent terminated —
+ * rather than keeping the cycle's final await pending for the rest of the
+ * hour.
+ *
  * Never throws. A primary rate limit is returned so the caller can re-throw
  * it once the pool has drained too, exactly as the pool's own is.
  */
@@ -1850,6 +1856,7 @@ async function runMaintenanceLane(
   tracker: WorkProgressTracker,
   endTime: number,
   registry: InFlightRepoRegistry,
+  shouldShutdown: () => boolean,
 ): Promise<{ rateLimitError?: Error }> {
   const prefix = `[${MAINTENANCE_LANE_SLOT_ID}] `;
   const broker: MaintenanceLaneBroker = {
@@ -1868,6 +1875,15 @@ async function runMaintenanceLane(
   );
   return await runInMaintenanceLane(broker, async () => {
     for (const handler of handlers) {
+      // A shutdown stops the lane taking on more work, just as it stops a
+      // slot claiming another issue.
+      if (shouldShutdown()) {
+        deps.log(
+          `${prefix}stop reason=shutdown — ${handler.name} and any pass ` +
+            `after it defer to the next run.`,
+        );
+        break;
+      }
       // The lane never starts a pass past the cycle deadline: an
       // agent-backed watchdog budget is `endTime - now` plus a grace, so a
       // pass started late would run on borrowed time the drain must wait for.
@@ -1878,7 +1894,7 @@ async function runMaintenanceLane(
         );
         break;
       }
-      const outcome = await executePriorityHandler(
+      const dispatch = executePriorityHandler(
         handler,
         config,
         deps,
@@ -1886,6 +1902,23 @@ async function runMaintenanceLane(
         endTime,
         prefix,
       );
+      const bounded = await raceShutdownGrace(dispatch, deps, shouldShutdown);
+      if (bounded.outcome === "abandoned") {
+        // Loud, not silent: the pass is unfinished and its agent is killed.
+        deps.logError(
+          `${prefix}stop reason=shutdown — drain grace elapsed while ` +
+            `${handler.name} was still running; abandoning the pass and ` +
+            `terminating its agent. The PR is picked up again next run.`,
+        );
+        if (deps.terminateActiveAgentRuns) {
+          await deps.terminateActiveAgentRuns(
+            `maintenance lane pass ${handler.name} abandoned at shutdown`,
+            { keepTerminating: true },
+          ).catch(() => {});
+        }
+        break;
+      }
+      const outcome = bounded.value;
       if (outcome.kind === "rate-limit-error") {
         return { rateLimitError: outcome.error };
       }
@@ -1893,6 +1926,49 @@ async function runMaintenanceLane(
     }
     return {};
   });
+}
+
+/**
+ * Await `pass`, abandoning it once a shutdown request has outlived
+ * `slotDrainGraceSeconds` (Issue #213).
+ *
+ * Mirrors `drainSlots`: the shutdown flag is polled on a short **real** timer
+ * (the injected `sleep` is a fake clock in tests) while the grace itself is
+ * measured on the injected clock, so a signal arriving mid-pass starts the
+ * bounded grace from that moment.
+ */
+async function raceShutdownGrace<T>(
+  pass: Promise<T>,
+  deps: RunCoreDeps,
+  shouldShutdown: () => boolean,
+): Promise<{ outcome: "completed"; value: T } | { outcome: "abandoned" }> {
+  const graceMs = Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const completed = pass.then((value) => ({
+    outcome: "completed" as const,
+    value,
+  }));
+  const watch = (async () => {
+    let shutdownAt: number | undefined;
+    while (!settled) {
+      if (shouldShutdown()) {
+        const now = deps.now();
+        if (shutdownAt === undefined) shutdownAt = now;
+        if (now - shutdownAt >= graceMs) {
+          return { outcome: "abandoned" as const };
+        }
+      }
+      await new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 50);
+      });
+    }
+    return { outcome: "abandoned" as const };
+  })();
+  const result = await Promise.race([completed, watch]);
+  settled = true;
+  if (timer !== undefined) clearTimeout(timer);
+  return result;
 }
 
 interface SlotPoolState {
@@ -3308,6 +3384,7 @@ export async function runCoreLoop(
               tracker,
               endTime,
               laneRegistry,
+              () => shutdownRequested,
             )
             : Promise.resolve({} as { rateLimitError?: Error });
           // `allSettled`, not `all`: a primary rate limit thrown by the scan

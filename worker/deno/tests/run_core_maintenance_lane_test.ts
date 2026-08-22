@@ -392,3 +392,76 @@ Deno.test("maintenance lane - the lane is disabled and reported when no registry
     }`,
   );
 });
+
+Deno.test("maintenance lane - a shutdown grace elapsing mid-pass abandons the lane rather than holding the exit (Issue #213)", async () => {
+  // The pool bounds a SIGTERM with `slot_drain_grace_seconds`. The lane runs
+  // beside it, so it must honour the same bound: without it a 30-minute CI-fix
+  // agent would keep the cycle's final await pending long after every slot had
+  // drained, turning a shutdown into an hour-long exit.
+  const errors: string[] = [];
+  const signals: Record<string, () => void> = {};
+  const terminated: string[] = [];
+  let releaseHungPass: () => void = () => {};
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+
+  const deps = createMockDeps({
+    now: () => now,
+    logError: (m: string) => errors.push(m),
+    // Grace 0: the first observation of the shutdown is already past it.
+    slotDrainGraceSeconds: 0,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    addSignalListener: (signal: string, handler: () => void) => {
+      signals[signal] = handler;
+    },
+    terminateActiveAgentRuns: (reason: string) => {
+      terminated.push(reason);
+      return Promise.resolve();
+    },
+    inFlightRepos: new InFlightRepoRegistry(),
+    // The CI-fix agent never returns on its own — only the shutdown bound
+    // can end this cycle.
+    findAndProcessCiFailure: () =>
+      new Promise((resolve) => {
+        releaseHungPass = () =>
+          resolve({ ok: true, value: { processed: false } });
+      }),
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: async () => {
+      await afterTicks(2);
+      signals["SIGTERM"]?.();
+      now += config.runDurationSeconds * 1000;
+      return { ok: true, value: { success: true } };
+    },
+  });
+
+  const finished = await Promise.race([
+    runCoreLoop({ ...config, maxConcurrentIssues: 2 }, deps).then(() =>
+      "finished" as const
+    ),
+    new Promise<"still-waiting">((r) =>
+      setTimeout(() => r("still-waiting"), 3000)
+    ),
+  ]);
+  releaseHungPass(); // let the abandoned promise settle so nothing dangles
+  await afterTicks(2);
+
+  assertEquals(
+    finished,
+    "finished",
+    "the cycle must not wait on an abandoned maintenance pass at shutdown",
+  );
+  assert(
+    errors.some((e) => e.includes("stop reason=shutdown")),
+    `the abandonment must be reported; errors were ${errors.join(" | ")}`,
+  );
+  assert(
+    terminated.some((r) => r.includes("CI Fix")),
+    `the abandoned pass's agent must be terminated; got ${
+      terminated.join(" | ")
+    }`,
+  );
+});
