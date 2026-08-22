@@ -74,9 +74,9 @@ jobs:
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      # denoland/setup-deno@v2.0.4
+      # denoland/setup-deno@v2.0.5
       - if: steps.detect-deno.outputs.present == 'true'
-        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with:
           # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
           # truth (.deno-version, tied to the container image's Deno by test), never a
