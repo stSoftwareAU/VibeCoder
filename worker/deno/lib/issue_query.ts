@@ -10,6 +10,7 @@
  */
 
 import { runGhCommand } from "./github.ts";
+import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
 // git_branch.ts so PR-blocking uses the same branch name the feature PR
 // actually targets (50-char slug cap + trailing-hyphen strip).
@@ -2195,13 +2196,13 @@ export async function fetchRecentlyClosedPRsForFleet(
 /**
  * Check if an issue is blocked by a recently-closed PR (Issue #1427).
  *
- * Matches the issue number in the PR title using common patterns:
- * - "(#N)" — standard issue reference
- * - "Issue #N" — alternative format
- * - "#N" at end of title
- *
- * Uses word-boundary matching to avoid partial number matches
- * (e.g., issue #42 must not match PR title containing #421).
+ * Issue #319: this used to test the title for a bare `#N` with a `RegExp`
+ * built from the issue number, which knows nothing about *which* issue a PR
+ * was for. PR #212 — "…stservice's open PR #188 did not block VibeCoderST
+ * claiming NEAT-AI-Lamarck#187 … (Issue #209)" — was a PR for issue #209, yet
+ * it blocked #178, #184, #187, #188 and #209 alike. Because a **merged** PR
+ * stays in this set permanently (Issue #3151), those issues were stranded for
+ * good, under a skip reason that reads as a passing "cooldown".
  *
  * @param closedPRs - Array of recently-closed PRs
  * @param issueNumber - The issue number to check
@@ -2212,10 +2213,8 @@ export function isBlockedByRecentlyClosedPR(
   issueNumber: number,
 ): ClosedPR | null {
   if (closedPRs.length === 0) return null;
-
-  const issueStr = String(issueNumber);
-  // Match #N followed by non-digit or end-of-string, or (#N)
-  const pattern = new RegExp(`#${issueStr}(?:[^0-9]|$)|\\(#${issueStr}\\)`);
-
-  return closedPRs.find((pr) => pattern.test(pr.title)) ?? null;
+  return closedPRs.find((pr) =>
+    prTitleReferencesIssue(pr.title, issueNumber)
+  ) ??
+    null;
 }

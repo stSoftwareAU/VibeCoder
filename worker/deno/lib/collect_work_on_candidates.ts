@@ -443,11 +443,18 @@ export async function collectWorkOnCandidates(
           fleetWorkerLogins,
         );
       if (closedPR && !reopened) {
+        // Issue #319: a merged PR blocks permanently (Issue #3151) — calling
+        // that a "cooldown" reads as self-healing and sent the diagnosis of
+        // #187/#188 down the wrong path for a day. Name which it is, and say
+        // what clears it.
         diag?.logIssueSkipped(
           repo,
           issue.number,
-          "closed-pr-cooldown",
-          `PR #${closedPR.number} closed at ${closedPR.closedAt}`,
+          closedPR.merged ? "merged-pr-permanent" : "closed-pr-cooldown",
+          closedPR.merged
+            ? `PR #${closedPR.number} merged at ${closedPR.closedAt} — ` +
+              `permanent until a trusted re-label dated after the merge`
+            : `PR #${closedPR.number} closed at ${closedPR.closedAt}`,
         );
         continue;
       }
