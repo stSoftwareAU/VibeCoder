@@ -26,13 +26,17 @@ import {
   resetCounters,
 } from "./fault_tolerance_counters.ts";
 import {
-  enterPriority,
-  exitPriority,
   formatGhCallsByPrioritySummary,
   formatGhCallSummary,
   formatGraphQLSummary,
   resetGhCallMetrics,
+  withPriorityContext,
 } from "./gh_call_metrics.ts";
+import {
+  MAINTENANCE_LANE_SLOT_ID,
+  type MaintenanceLaneBroker,
+  runInMaintenanceLane,
+} from "./maintenance_lane.ts";
 import {
   formatCycleTimingsSummary,
   recordStepDuration,
@@ -172,7 +176,30 @@ export interface PriorityHandler {
    * keeps the Issue #4369 cycle-deadline bound unchanged.
    */
   agentFloorMs?: number;
+  /**
+   * Run this handler in the **maintenance lane**, concurrently with the
+   * Priority-2 issue-scan pool, rather than serially ahead of it (Issue
+   * #213). A CI fix with a 30-minute agent budget used to hold every issue
+   * slot idle for half the cycle; in the lane it competes for wall-clock
+   * with issue work instead of pre-empting it.
+   *
+   * Only for handlers whose wiring takes an `acquireMaintenanceRepoLease()`
+   * before it touches `${WORK_DIR}/<repo>` — without the lease a pass and a
+   * slot can write the same working tree. Handlers without the flag keep
+   * running serially, exactly as before, and so does every handler when the
+   * pool is off (`max_concurrent_issues: 1`).
+   */
+  maintenanceLane?: boolean;
 }
+
+/** What one dispatched priority handler did. */
+type PriorityDispatchOutcome =
+  /** Ran to completion (or was abandoned by the watchdog). */
+  | { kind: "completed" }
+  /** The handler reported a rate limit: stop dispatching this cycle. */
+  | { kind: "rate-limited" }
+  /** A primary rate limit was thrown: the caller owns the pause. */
+  | { kind: "rate-limit-error"; error: Error };
 
 /** Discovered issue for processing. */
 export interface DiscoveredIssue {
@@ -1015,18 +1042,21 @@ export function buildPriorityDispatchTable(
       priority: 1,
       name: "PR Feedback",
       agentBacked: true,
+      maintenanceLane: true,
       execute: deps.findAndProcessPrFeedback,
     },
     {
       priority: 1.5,
       name: "Spelling Fix",
       agentBacked: true,
+      maintenanceLane: true,
       execute: deps.findAndProcessSpellingFailure,
     },
     {
       priority: 1.55,
       name: "CI Fix",
       agentBacked: true,
+      maintenanceLane: true,
       execute: deps.findAndProcessCiFailure,
     },
     {
@@ -1049,6 +1079,7 @@ export function buildPriorityDispatchTable(
       priority: 1.61,
       name: "Resolve PR Merge Conflicts",
       agentBacked: true,
+      maintenanceLane: true,
       execute: () =>
         deps.findAndProcessMergeConflict?.() ??
           Promise.resolve({
@@ -1681,6 +1712,286 @@ export function handlerHardTimeoutMs(
   return Math.max(flat, agentFloorMs, endTime - now + AGENT_HANDLER_GRACE_MS);
 }
 
+/**
+ * Dispatch one Priority-1.x handler: watchdog, `gh`-call attribution, wall
+ * time, and error classification.
+ *
+ * Extracted by Issue #213 so the serial ladder and the concurrent
+ * maintenance lane run a handler in exactly the same way — a lane that
+ * dropped the watchdog, the telemetry or the rate-limit classification would
+ * be a second, quietly divergent dispatcher.
+ *
+ * Never throws: a primary rate limit comes back as `rate-limit-error` so the
+ * caller decides whether to re-throw (serial) or carry it out of the lane.
+ *
+ * @param handler - The dispatch-table entry to run.
+ * @param config - Run configuration (watchdog budgets).
+ * @param deps - Injected dependencies.
+ * @param tracker - Work progress tracker; a processed handler flips it.
+ * @param endTime - Epoch-millisecond deadline for the current cycle.
+ * @param logPrefix - Prepended to this handler's own log lines, e.g. `[m1] `.
+ */
+async function executePriorityHandler(
+  handler: PriorityHandler,
+  config: RunCoreConfig,
+  deps: RunCoreDeps,
+  tracker: WorkProgressTracker,
+  endTime: number,
+  logPrefix = "",
+): Promise<PriorityDispatchOutcome> {
+  const handlerStartMs = deps.now();
+  // Issue #1845: attribute this handler's `gh` calls to it. Async-scoped
+  // (Issue #213) so the lane and the pool do not cross-credit each other.
+  return await withPriorityContext(handler.name, async () => {
+    try {
+      deps.log(`${logPrefix}Priority ${handler.priority}: ${handler.name}`);
+      // Issue #2473: bound the handler with a watchdog so a hung
+      // `gh`/network call cannot freeze the whole dispatch loop. On a
+      // hard timeout the loop logs a `[watchdog]` line and proceeds to
+      // the next priority instead of awaiting forever. A rejection
+      // (e.g. a primary rate-limit error) propagates unchanged to the
+      // catch below, preserving the existing re-throw.
+      // Agent-backed handlers (Issue #4369) are bounded by the cycle
+      // deadline plus a grace, not the flat handler timeout: a CI-fix
+      // or planning agent legitimately runs 10–60 min, and abandoning
+      // it at 600 s left it running detached (observed live: it was
+      // then SIGTERMed at run end, misread as a rate limit, and
+      // relaunched after "Run complete").
+      // Issue #62: a handler that keeps working after its agent
+      // returns (planning's Failure-Detection gate and self-repair)
+      // also carries a floor, so its budget is never smaller than the
+      // agent timeout it wraps plus that tail's allowance.
+      const dispatchNowMs = deps.now();
+      const hardTimeoutMs = handlerHardTimeoutMs(
+        config.handlerTimeoutSeconds,
+        handler.agentBacked === true,
+        endTime,
+        dispatchNowMs,
+        handler.agentFloorMs,
+      );
+      // Issue #58: hand the handler the instant the watchdog will
+      // abandon it, derived from the very budget armed below so the
+      // two cannot drift. A handler doing bounded post-work (the
+      // Failure-Detection self-repair) stops cleanly and defers what it
+      // cannot finish instead of being killed mid-way.
+      const handlerDeadlineEpochMs = dispatchNowMs + hardTimeoutMs;
+      const watch = await runWithWatchdog(
+        () => handler.execute({ deadlineEpochMs: handlerDeadlineEpochMs }),
+        {
+          hardTimeoutMs,
+          softTimeoutMs: config.handlerSoftTimeoutSeconds * 1000,
+          now: deps.now,
+          delay: deps.watchdogDelay ??
+            ((ms) => new Promise((r) => setTimeout(r, ms))),
+          onTimeout: () => {
+            deps.logError(
+              `${logPrefix}[watchdog] Priority ${handler.priority} (${handler.name}) ` +
+                `exceeded hard timeout ${Math.round(hardTimeoutMs / 1000)}s ` +
+                `— abandoning handler and continuing to next priority`,
+            );
+            // Nothing runs detached (Issue #4369): the agent the
+            // abandoned handler spawned is terminated, and its retry
+            // loop will not relaunch it.
+            if (deps.terminateActiveAgentRuns) {
+              // Issue #55: a handler abandonment is transient — clear
+              // the terminating flag once its agents are dead so the
+              // next priority can still launch its own agent.
+              deps.terminateActiveAgentRuns(
+                `handler ${handler.name} abandoned by the watchdog`,
+                { keepTerminating: false },
+              ).catch(() => {});
+            }
+          },
+          onSoftWarning: (durationMs) =>
+            deps.log(
+              `${logPrefix}[watchdog] Priority ${handler.priority} (${handler.name}) ` +
+                `slow: completed in ${Math.round(durationMs / 1000)}s ` +
+                `(soft threshold ${config.handlerSoftTimeoutSeconds}s)`,
+            ),
+        },
+      );
+      if (watch.outcome === "timedout") {
+        // Skip this handler this cycle; the caller advances to the next.
+        return { kind: "completed" };
+      }
+      const result = watch.value!;
+      if (result.ok && result.value) {
+        const handlerResult = result.value as PriorityHandlerResult;
+        if (handlerResult.processed) {
+          tracker.scanHadSuccess = true;
+        }
+        if (handlerResult.rateLimited) {
+          deps.log(`${logPrefix}Rate limit detected during ${handler.name}`);
+          return { kind: "rate-limited" };
+        }
+      }
+      return { kind: "completed" };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Issue #1921: a thrown primary rate-limit error must
+      // short-circuit the priority dispatch loop. Handed back so the
+      // caller's rate-limit path owns the pause logic — without this,
+      // each subsequent priority retries `gh` against an exhausted
+      // quota and emits a noisy ERROR line per priority.
+      if (isPrimaryRateLimitMessage(message)) {
+        return {
+          kind: "rate-limit-error",
+          error: err instanceof Error ? err : new Error(message),
+        };
+      }
+      deps.logError(
+        `${logPrefix}Error in priority ${handler.priority} (${handler.name}): ${message}`,
+      );
+      return { kind: "completed" };
+    } finally {
+      // Issue #4299: wall time per priority, whatever the outcome.
+      recordStepDuration(handler.name, deps.now() - handlerStartMs);
+    }
+  });
+}
+
+/**
+ * Run the deferred agent-backed maintenance passes beside the issue-scan
+ * pool (Issue #213).
+ *
+ * One pass at a time — the lane is a single extra agent alongside the N
+ * issue slots, not another pool — and every pass leases the repository it
+ * selects from `registry`, the pool's own in-flight registry. That lease is
+ * what makes the concurrency safe: a slot and a maintenance pass otherwise
+ * share the single `${WORK_DIR}/<repo>` clone, and `setupRepo` opens with
+ * `reset --hard` + `clean -fd`.
+ *
+ * A shutdown bounds the lane exactly as it bounds the pool's drain: no new
+ * pass starts once SIGTERM has landed, and a pass still running
+ * `slotDrainGraceSeconds` after it is abandoned — its agent terminated —
+ * rather than keeping the cycle's final await pending for the rest of the
+ * hour.
+ *
+ * Never throws. A primary rate limit is returned so the caller can re-throw
+ * it once the pool has drained too, exactly as the pool's own is.
+ */
+async function runMaintenanceLane(
+  handlers: readonly PriorityHandler[],
+  config: RunCoreConfig,
+  deps: RunCoreDeps,
+  tracker: WorkProgressTracker,
+  endTime: number,
+  registry: InFlightRepoRegistry,
+  shouldShutdown: () => boolean,
+): Promise<{ rateLimitError?: Error }> {
+  const prefix = `[${MAINTENANCE_LANE_SLOT_ID}] `;
+  const broker: MaintenanceLaneBroker = {
+    // `maintenance: true` so nothing downstream mistakes the lane's hold for
+    // a claimed issue — `ref` is a PR number, not an issue number.
+    tryAcquire: (repo, ref) =>
+      registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
+        maintenance: true,
+      }),
+    release: (repo) => registry.release(repo),
+  };
+  deps.log(
+    `${prefix}Maintenance lane: ${handlers.length} agent-backed pass(es) ` +
+      `(${handlers.map((h) => h.name).join(", ")}) running beside the ` +
+      `issue scan pool (Issue #213)`,
+  );
+  return await runInMaintenanceLane(broker, async () => {
+    for (const handler of handlers) {
+      // A shutdown stops the lane taking on more work, just as it stops a
+      // slot claiming another issue.
+      if (shouldShutdown()) {
+        deps.log(
+          `${prefix}stop reason=shutdown — ${handler.name} and any pass ` +
+            `after it defer to the next run.`,
+        );
+        break;
+      }
+      // The lane never starts a pass past the cycle deadline: an
+      // agent-backed watchdog budget is `endTime - now` plus a grace, so a
+      // pass started late would run on borrowed time the drain must wait for.
+      if (deps.now() >= endTime) {
+        deps.log(
+          `${prefix}stop reason=deadline — cycle deadline reached; ` +
+            `${handler.name} and any pass after it defer to the next cycle.`,
+        );
+        break;
+      }
+      const dispatch = executePriorityHandler(
+        handler,
+        config,
+        deps,
+        tracker,
+        endTime,
+        prefix,
+      );
+      const bounded = await raceShutdownGrace(dispatch, deps, shouldShutdown);
+      if (bounded.outcome === "abandoned") {
+        // Loud, not silent: the pass is unfinished and its agent is killed.
+        deps.logError(
+          `${prefix}stop reason=shutdown — drain grace elapsed while ` +
+            `${handler.name} was still running; abandoning the pass and ` +
+            `terminating its agent. The PR is picked up again next run.`,
+        );
+        if (deps.terminateActiveAgentRuns) {
+          await deps.terminateActiveAgentRuns(
+            `maintenance lane pass ${handler.name} abandoned at shutdown`,
+            { keepTerminating: true },
+          ).catch(() => {});
+        }
+        break;
+      }
+      const outcome = bounded.value;
+      if (outcome.kind === "rate-limit-error") {
+        return { rateLimitError: outcome.error };
+      }
+      if (outcome.kind === "rate-limited") break;
+    }
+    return {};
+  });
+}
+
+/**
+ * Await `pass`, abandoning it once a shutdown request has outlived
+ * `slotDrainGraceSeconds` (Issue #213).
+ *
+ * Mirrors `drainSlots`: the shutdown flag is polled on a short **real** timer
+ * (the injected `sleep` is a fake clock in tests) while the grace itself is
+ * measured on the injected clock, so a signal arriving mid-pass starts the
+ * bounded grace from that moment.
+ */
+async function raceShutdownGrace<T>(
+  pass: Promise<T>,
+  deps: RunCoreDeps,
+  shouldShutdown: () => boolean,
+): Promise<{ outcome: "completed"; value: T } | { outcome: "abandoned" }> {
+  const graceMs = Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const completed = pass.then((value) => ({
+    outcome: "completed" as const,
+    value,
+  }));
+  const watch = (async () => {
+    let shutdownAt: number | undefined;
+    while (!settled) {
+      if (shouldShutdown()) {
+        const now = deps.now();
+        if (shutdownAt === undefined) shutdownAt = now;
+        if (now - shutdownAt >= graceMs) {
+          return { outcome: "abandoned" as const };
+        }
+      }
+      await new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 50);
+      });
+    }
+    return { outcome: "abandoned" as const };
+  })();
+  const result = await Promise.race([completed, watch]);
+  settled = true;
+  if (timer !== undefined) clearTimeout(timer);
+  return result;
+}
+
 interface SlotPoolState {
   /** Consecutive failures across the whole pool (drives the back-off). */
   consecutiveFailures: number;
@@ -1846,7 +2157,9 @@ async function drainSlots(
           // Name every in-flight run with the deadline it is working to
           // (Issue #4297): a progress-extended run is drained like any
           // other, and the operator can see why it is still running.
-          const live = pool.registry.holds();
+          // Slot holds only (Issue #213) — the drain waits on slots; the
+          // maintenance lane is awaited by the cycle, not by this grace.
+          const live = pool.registry.slotHolds();
           deps.log(
             `Shutdown requested — draining ${live.length} in-flight slot(s), grace ${
               graceMs / 1000
@@ -1868,7 +2181,9 @@ async function drainSlots(
   settled = true;
   if (timer !== undefined) clearTimeout(timer);
   if (outcome === "grace-elapsed") {
-    const abandoned = pool.registry.holds();
+    // Slot holds only (Issue #213): the maintenance lane's hold is a PR, not
+    // a claim to release, and the lane frees its own lease in a `finally`.
+    const abandoned = pool.registry.slotHolds();
     deps.logError(
       `Shutdown grace elapsed with ${abandoned.length} slot(s) still running — ` +
         `releasing their claims and abandoning the runs: ${
@@ -1976,7 +2291,10 @@ async function runSlot(
       const detail = scanSummary
         ? formatScanSummary(scanSummary)
         : "scan summary unavailable";
-      const siblings = pool.registry.holds()
+      // Sibling *slots* only (Issue #213): a maintenance pass running beside
+      // the pool is not a reason for an idle slot to keep re-scanning for an
+      // hour, so it does not count.
+      const siblings = pool.registry.slotHolds()
         .filter((h) => h.slotId !== slotId).length;
       if (siblings === 0) {
         log(
@@ -3007,11 +3325,38 @@ export async function runCoreLoop(
             }
           }
 
-          // --- Priority dispatch (1 through 1.85) ---
+          // --- Priority dispatch (1 through 1.9) ---
           // Issue #2776: these Priority 1.x handlers maintain in-flight work
           // and are deliberately not `nice`-gated — `nice` only tiers new-work
           // selection in the Priority 2 scan below. See
           // `buildPriorityDispatchTable` for the full rationale.
+          //
+          // Issue #213: the agent-backed passes flagged `maintenanceLane` are
+          // deferred out of this serial ladder and run beside the Priority-2
+          // pool instead. Serially they held every issue slot idle for as long
+          // as their agent ran — a CI fix with a 30-minute budget cost half a
+          // cycle of two-slot concurrency before the pool even started. The
+          // cheap non-agent passes stay here: they are `gh` calls measured in
+          // seconds, and running them first keeps the pool's first scan
+          // working from freshly-updated branch and merge state.
+          //
+          // The lane needs the pool's own in-flight registry to lease
+          // repositories against; without it (a test wiring that omits
+          // `inFlightRepos`) every pass stays serial rather than racing the
+          // slots for a shared clone.
+          const laneRegistry = deps.inFlightRepos;
+          const laneEnabled = config.maxConcurrentIssues > 1 &&
+            laneRegistry !== undefined;
+          if (config.maxConcurrentIssues > 1 && laneRegistry === undefined) {
+            deps.logError(
+              "[maintenance-lane] no in-flight repo registry wired — " +
+                "agent-backed maintenance runs serially ahead of the pool " +
+                "and will idle the slots (Issue #213).",
+            );
+          }
+          /** Lane passes deferred out of the ladder, in priority order. */
+          const deferredLanePasses: PriorityHandler[] = [];
+
           for (const handler of priorityTable) {
             if (handler.priority >= 2) break; // Priority 2 handled separately
 
@@ -3023,149 +3368,103 @@ export async function runCoreLoop(
               continue;
             }
 
+            if (laneEnabled && handler.maintenanceLane === true) {
+              deferredLanePasses.push(handler);
+              continue;
+            }
+
             // Issue #2427: persist the cursor as we enter each priority so a
             // mid-cycle rate-limit pause records the priority in flight.
             await saveCursor(handler.priority);
 
-            // Issue #1845: wrap each priority in a context so subsequent
-            // `gh` calls attribute to it for the per-priority breakdown.
-            enterPriority(handler.name);
-            const handlerStartMs = deps.now();
-            try {
-              deps.log(`Priority ${handler.priority}: ${handler.name}`);
-              // Issue #2473: bound the handler with a watchdog so a hung
-              // `gh`/network call cannot freeze the whole dispatch loop. On a
-              // hard timeout the loop logs a `[watchdog]` line and proceeds to
-              // the next priority instead of awaiting forever. A rejection
-              // (e.g. a primary rate-limit error) propagates unchanged to the
-              // catch below, preserving the existing re-throw.
-              // Agent-backed handlers (Issue #4369) are bounded by the cycle
-              // deadline plus a grace, not the flat handler timeout: a CI-fix
-              // or planning agent legitimately runs 10–60 min, and abandoning
-              // it at 600 s left it running detached (observed live: it was
-              // then SIGTERMed at run end, misread as a rate limit, and
-              // relaunched after "Run complete").
-              // Issue #62: a handler that keeps working after its agent
-              // returns (planning's Failure-Detection gate and self-repair)
-              // also carries a floor, so its budget is never smaller than the
-              // agent timeout it wraps plus that tail's allowance.
-              const dispatchNowMs = deps.now();
-              const hardTimeoutMs = handlerHardTimeoutMs(
-                config.handlerTimeoutSeconds,
-                handler.agentBacked === true,
-                endTime,
-                dispatchNowMs,
-                handler.agentFloorMs,
-              );
-              // Issue #58: hand the handler the instant the watchdog will
-              // abandon it, derived from the very budget armed below so the
-              // two cannot drift. A handler doing bounded post-work (the
-              // Failure-Detection self-repair) stops cleanly and defers what it
-              // cannot finish instead of being killed mid-way.
-              const handlerDeadlineEpochMs = dispatchNowMs + hardTimeoutMs;
-              const watch = await runWithWatchdog(
-                () =>
-                  handler.execute({ deadlineEpochMs: handlerDeadlineEpochMs }),
-                {
-                  hardTimeoutMs,
-                  softTimeoutMs: config.handlerSoftTimeoutSeconds * 1000,
-                  now: deps.now,
-                  delay: deps.watchdogDelay ??
-                    ((ms) => new Promise((r) => setTimeout(r, ms))),
-                  onTimeout: () => {
-                    deps.logError(
-                      `[watchdog] Priority ${handler.priority} (${handler.name}) ` +
-                        `exceeded hard timeout ${
-                          Math.round(hardTimeoutMs / 1000)
-                        }s ` +
-                        `— abandoning handler and continuing to next priority`,
-                    );
-                    // Nothing runs detached (Issue #4369): the agent the
-                    // abandoned handler spawned is terminated, and its retry
-                    // loop will not relaunch it.
-                    if (deps.terminateActiveAgentRuns) {
-                      // Issue #55: a handler abandonment is transient — clear
-                      // the terminating flag once its agents are dead so the
-                      // next priority can still launch its own agent.
-                      deps.terminateActiveAgentRuns(
-                        `handler ${handler.name} abandoned by the watchdog`,
-                        { keepTerminating: false },
-                      ).catch(() => {});
-                    }
-                  },
-                  onSoftWarning: (durationMs) =>
-                    deps.log(
-                      `[watchdog] Priority ${handler.priority} (${handler.name}) ` +
-                        `slow: completed in ${
-                          Math.round(durationMs / 1000)
-                        }s ` +
-                        `(soft threshold ${config.handlerSoftTimeoutSeconds}s)`,
-                    ),
-                },
-              );
-              if (watch.outcome === "timedout") {
-                // Skip this handler this cycle; the `finally` exits the
-                // priority context and the loop advances to the next priority.
-                continue;
-              }
-              const result = watch.value!;
-              if (result.ok && result.value) {
-                const handlerResult = result.value as PriorityHandlerResult;
-                if (handlerResult.processed) {
-                  tracker.scanHadSuccess = true;
-                }
-                if (handlerResult.rateLimited) {
-                  deps.log(`Rate limit detected during ${handler.name}`);
-                  break; // Stop processing further priorities this cycle
-                }
-              }
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              // Issue #1921: a thrown primary rate-limit error must
-              // short-circuit the priority dispatch loop. Re-throw so the
-              // outer rate-limit catch owns the pause logic — without this,
-              // each subsequent priority retries `gh` against an exhausted
-              // quota and emits a noisy ERROR line per priority.
-              if (isPrimaryRateLimitMessage(message)) {
-                throw err;
-              }
-              deps.logError(
-                `Error in priority ${handler.priority} (${handler.name}): ${message}`,
-              );
-            } finally {
-              // Issue #4299: wall time per priority, whatever the outcome.
-              recordStepDuration(handler.name, deps.now() - handlerStartMs);
-              exitPriority();
+            const dispatched = await executePriorityHandler(
+              handler,
+              config,
+              deps,
+              tracker,
+              endTime,
+            );
+            if (dispatched.kind === "rate-limit-error") {
+              // Issue #1921: hand a thrown primary rate limit to the outer
+              // catch, which owns the pause-until-reset logic.
+              throw dispatched.error;
+            }
+            if (dispatched.kind === "rate-limited") {
+              break; // Stop processing further priorities this cycle
             }
           }
 
           // --- Priority 2: Issue scanning inner loop ---
           // Issue #2427: persist the cursor at Priority 2 so a rate limit
-          // during issue scanning records that scanning was in flight.
+          // during issue scanning records that scanning was in flight. The
+          // maintenance lane deliberately does NOT move the cursor: it runs
+          // beside Priority 2, and recording 1.55 while scanning is in flight
+          // would send a rate-limit resume backwards through the ladder.
           await saveCursor(2);
-          // Wrapped so any `gh` calls inside `findNextIssue` /
-          // `processIssue` attribute to "Issue Scanning" (Issue #1845).
-          enterPriority("Issue Scanning");
           const scanStartMs = deps.now();
-          let scanResult: {
-            exitOuterLoop: boolean;
-            spendCeilingReached?: boolean;
-            hostDiskLow?: boolean;
-            workVolumeFaulted?: boolean;
-          };
-          try {
-            scanResult = skipScanForHostDisk
-              ? { exitOuterLoop: false }
-              : await runIssueScanLoop(
-                config,
-                deps,
-                tracker,
-                endTime,
-                () => shutdownRequested,
-              );
-          } finally {
-            recordStepDuration("Issue Scanning", deps.now() - scanStartMs);
-            exitPriority();
+          // Wrapped so any `gh` calls inside `findNextIssue` /
+          // `processIssue` attribute to "Issue Scanning" (Issue #1845),
+          // async-scoped (Issue #213) so the lane running beside it keeps
+          // its own attribution.
+          const scanTask = (async () => {
+            try {
+              return skipScanForHostDisk
+                ? { exitOuterLoop: false }
+                : await withPriorityContext(
+                  "Issue Scanning",
+                  () =>
+                    runIssueScanLoop(
+                      config,
+                      deps,
+                      tracker,
+                      endTime,
+                      () => shutdownRequested,
+                    ),
+                );
+            } finally {
+              recordStepDuration("Issue Scanning", deps.now() - scanStartMs);
+            }
+          })();
+          // Issue #213: the deferred agent-backed passes run here, beside the
+          // pool, each leasing its repository from the pool's own registry.
+          const laneTask = deferredLanePasses.length > 0 && laneRegistry
+            ? runMaintenanceLane(
+              deferredLanePasses,
+              config,
+              deps,
+              tracker,
+              endTime,
+              laneRegistry,
+              () => shutdownRequested,
+            )
+            : Promise.resolve({} as { rateLimitError?: Error });
+          // `allSettled`, not `all`: a primary rate limit thrown by the scan
+          // must not abandon a maintenance agent mid-run. Both lanes finish,
+          // then the error is surfaced on the same pause-until-reset path.
+          const [scanSettled, laneSettled] = await Promise.allSettled([
+            scanTask,
+            laneTask,
+          ]);
+          // The lane is designed never to throw; if it ever does, say so
+          // loudly rather than letting a settled-but-rejected promise pass
+          // for a clean maintenance pass.
+          if (laneSettled.status === "rejected") {
+            const reason = laneSettled.reason;
+            deps.logError(
+              `[${MAINTENANCE_LANE_SLOT_ID}] maintenance lane threw: ${
+                reason instanceof Error ? reason.message : String(reason)
+              }`,
+            );
+          }
+          if (scanSettled.status === "rejected") {
+            throw scanSettled.reason;
+          }
+          const scanResult = scanSettled.value;
+          if (
+            laneSettled.status === "fulfilled" &&
+            laneSettled.value.rateLimitError
+          ) {
+            throw laneSettled.value.rateLimitError;
           }
           if (scanResult.exitOuterLoop) {
             exitedOnFailures = true;

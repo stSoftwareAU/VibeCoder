@@ -716,13 +716,13 @@ unless explicitly overridden.
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between working-tree samples while a run is inside its budget, so a stalled checkout is noticed within a check interval rather than a whole grant. Must be positive. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
 | Sleep interval                 | `sleep_interval`                 | `30`       | Seconds between scans                                                                                                                                                                                |
-| Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). |
+| Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
 | Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
 | Refinement timeout             | `refinement_timeout`             | `300`      | Timeout for issue refinement (5 minutes)                                                                                                                                                             |
 | Refinement kill-after          | `refinement_kill_after`          | `10`       | Grace period after refinement timeout                                                                                                                                                                |
 | Planning timeout | `planning_timeout` | `1800` | Safety-net ceiling for planning mode (30 minutes) — planning produces sub-issues, so it should be quick |
-| PR feedback timeout | `pr_feedback_timeout` | `1800` | Timeout for the PR feedback phase (30 minutes). Distinct from `claude_timeout` so reactive phases do not inherit the issue-work budget. |
-| CI fix timeout | `ci_fix_timeout` | `1800` | Timeout for the CI (Continuous Integration) fix phase (30 minutes). Distinct from `claude_timeout` for the same reason as `pr_feedback_timeout`. |
+| PR feedback timeout | `pr_feedback_timeout` | `1800` | Timeout for the PR feedback phase (30 minutes). Distinct from `claude_timeout` so reactive phases do not inherit the issue-work budget. Both the run loop and the single-shot `pr-feedback` command pass this key (Issue #213 — the run loop used to pass `claude_timeout`). Left unset while `claude_timeout` is set explicitly, it inherits that value for back-compat; set it explicitly to pin the reactive budget. |
+| CI fix timeout | `ci_fix_timeout` | `1800` | Timeout for the CI (Continuous Integration) fix phase (30 minutes). Distinct from `claude_timeout` for the same reason as `pr_feedback_timeout`, and with the same back-compat inheritance — a host with `claude_timeout: 3600` and no `ci_fix_timeout` is why a CI fix logged a 3600 s budget against a documented 1800. |
 | Planning kill-after            | `planning_kill_after`            | `10`       | Grace period after planning timeout                                                                                                                                                                  |
 | Question timeout               | `question_timeout`               | `600`      | Timeout for question answering (10 minutes)                                                                                                                                                          |
 | Question kill-after            | `question_kill_after`            | `10`       | Grace period after question timeout                                                                                                                                                                  |
@@ -819,6 +819,15 @@ The reactive phases do not inherit the issue-work budget: `pr_feedback_timeout`
 and `ci_fix_timeout` cap at 1800s (30 minutes), `planning_timeout` at 1800s, and
 a grill-me round at `grill_me_timeout` (3600s). Each has its own
 `*_kill_after` grace period.
+
+One exception, and it is the reason a live CI fix logged `3600s` against a
+documented `1800`: a reactive key left unset **while `claude_timeout` is set
+explicitly in the config file** inherits `claude_timeout` for back-compat
+(Issue #1824). Set `pr_feedback_timeout` / `ci_fix_timeout` explicitly whenever
+you raise `claude_timeout`, or the reactive phases follow it up. Separately,
+the run loop itself used to hand the reactive processors `claude_timeout`
+regardless of these keys — fixed in Issue #213, so the run loop and the
+single-shot commands now resolve the same budget.
 
 ```
 Timeline: 0 ─────────────────────────────── claude_timeout (1h) ─── SIGTERM

@@ -741,6 +741,14 @@ flowchart TD
     style P29 fill:#909090,stroke:,color:#fff
 ```
 
+The ladder is serial, with one exception: when `max_concurrent_issues` is above
+`1`, the four agent-backed PR passes (Priority 1, 1.5, 1.55 and 1.61) run in a
+**maintenance lane** beside the Priority-2 pool instead of ahead of it, each
+leasing its repository from the pool's in-flight registry so no slot and no pass
+ever write the same clone. A 30-minute CI fix therefore runs concurrently with
+issue work rather than idling every slot until it finishes. See
+[Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
+
 The worker selects the **globally oldest** eligible issue across all configured
 repos (after filtering and open-PR blocking). Within priority 2 the canonical
 configured-label tier is `top-priority` followed by `work-on`. The

@@ -38,6 +38,17 @@ export interface InFlightHold {
    * original hour as in-flight rather than as a hang.
    */
   runDeadline?: RunDeadlineState;
+  /**
+   * Taken by the maintenance lane rather than by an issue slot (Issue #213).
+   *
+   * The lane holds a repository so no slot writes the clone its CI fix /
+   * PR-feedback / merge-conflict agent is working in, but it is servicing a
+   * **PR**, not a claimed issue: `issueNumber` is that PR's number. Anything
+   * that treats a hold as an issue claim — the heartbeat sweep's live-slot
+   * set, the shutdown drain's claim release — must skip it, or it would
+   * unassign a PR number as though it were an issue.
+   */
+  maintenance?: boolean;
 }
 
 /** In-process registry of held repositories. */
@@ -54,13 +65,19 @@ export class InFlightRepoRegistry {
    * repository; false when another slot already holds it. Synchronous, so
    * two racing slots cannot both win.
    */
-  tryAcquire(repo: string, issueNumber: number, slotId: string): boolean {
+  tryAcquire(
+    repo: string,
+    issueNumber: number,
+    slotId: string,
+    options?: { maintenance?: boolean },
+  ): boolean {
     if (this.#held.has(repo)) return false;
     this.#held.set(repo, {
       repo,
       issueNumber,
       slotId,
       sinceMs: this.#now(),
+      ...(options?.maintenance === true ? { maintenance: true } : {}),
     });
     return true;
   }
@@ -97,17 +114,23 @@ export class InFlightRepoRegistry {
   }
 
   /** The `(repo, issue)` pairs currently held — the live-slot set the
-   * heartbeat sweep must not touch (Issue #4178). */
+   * heartbeat sweep must not touch (Issue #4178). Maintenance-lane holds
+   * are excluded (Issue #213): their number is a PR, not a claimed issue. */
   heldIssues(): ReadonlyArray<{ repo: string; issueNumber: number }> {
-    return [...this.#held.values()].map(({ repo, issueNumber }) => ({
-      repo,
-      issueNumber,
-    }));
+    return [...this.#held.values()]
+      .filter((hold) => hold.maintenance !== true)
+      .map(({ repo, issueNumber }) => ({ repo, issueNumber }));
   }
 
   /** Every hold, for status rendering (Issue #4181). */
   holds(): ReadonlyArray<InFlightHold> {
     return [...this.#held.values()];
+  }
+
+  /** Only the holds an issue slot took (Issue #213) — the set the drain
+   * releases claims for, and the set a slot counts as its siblings. */
+  slotHolds(): ReadonlyArray<InFlightHold> {
+    return [...this.#held.values()].filter((hold) => hold.maintenance !== true);
   }
 
   /** Number of repositories held. */
