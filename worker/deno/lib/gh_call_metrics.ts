@@ -13,6 +13,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 /**
  * Snapshot of the metrics at a point in time.
  */
@@ -120,6 +122,37 @@ export async function withPriority<T>(
   } finally {
     exitPriority();
   }
+}
+
+/**
+ * Async-scoped priority attribution (Issue #213).
+ *
+ * The `enterPriority`/`exitPriority` stack above is process-wide, which is
+ * exact only while priorities run strictly one after another. Once the
+ * maintenance lane runs beside the Priority-2 pool, two priorities are in
+ * flight at once and a shared stack credits each one's `gh` calls to
+ * whichever pushed last. This storage binds the priority to the async chain
+ * that entered it instead, so concurrent lanes attribute independently.
+ *
+ * The explicit stack still wins when one is active, so a nested
+ * `enterPriority()` inside a handler keeps its innermost-wins semantics.
+ */
+const priorityStorage = new AsyncLocalStorage<string>();
+
+/**
+ * Run `fn` with its `gh` calls attributed to `name`, for the whole async
+ * chain and for nothing running beside it (Issue #213).
+ */
+export function withPriorityContext<T>(
+  name: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return priorityStorage.run(normalisePriorityName(name), fn);
+}
+
+/** The priority the current async chain runs under, if any (Issue #213). */
+export function currentPriorityContext(): string | undefined {
+  return priorityStorage.getStore();
 }
 
 /**
@@ -242,7 +275,11 @@ export function recordGhCall(args: readonly string[]): void {
   state.bySubCommand.set(bucket, (state.bySubCommand.get(bucket) ?? 0) + 1);
 
   // Issue #1845: attribute to the innermost priority context, if any.
-  const top = state.priorityStack[state.priorityStack.length - 1];
+  // Issue #213: an explicit stack entry still wins (innermost-wins for a
+  // nested `enterPriority` inside a handler); otherwise the async-scoped
+  // context attributes the call, so concurrent lanes do not cross-credit.
+  const top = state.priorityStack[state.priorityStack.length - 1] ??
+    priorityStorage.getStore();
   if (top) {
     state.byPriority.set(top, (state.byPriority.get(top) ?? 0) + 1);
   }

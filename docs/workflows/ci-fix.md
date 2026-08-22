@@ -114,7 +114,7 @@ The worker tracks retries per check run ID using state files in the CI check sta
 
 ## ⏱️ Timeout handling
 
-The CI-fix phase is capped by its own `ci_fix_timeout` (`1800`s / 30 minutes) — **not** by the issue-work `claude_timeout` — and the no-output watchdog typically kills a stuck process well before that ceiling. The authoritative defaults and the interaction between the two live in [CONFIGURATION.md](../CONFIGURATION.md#how-timeouts-interact); this page deliberately does not restate them.
+The CI-fix phase is capped by its own `ci_fix_timeout` (`1800`s / 30 minutes) — **not** by the issue-work `claude_timeout` — and the no-output watchdog typically kills a stuck process well before that ceiling. Both the run loop and the single-shot `pr-ci` command resolve that key (Issue #213 fixed the run loop, which passed `claude_timeout`); an unset `ci_fix_timeout` still inherits an explicitly-configured `claude_timeout` for back-compat. The authoritative defaults and the interaction between the two live in [CONFIGURATION.md](../CONFIGURATION.md#how-timeouts-interact); this page deliberately does not restate them.
 
 On timeout (exit code 124 or 137), the worker posts a PR comment with the last 100 lines of Claude output for diagnostic purposes.
 

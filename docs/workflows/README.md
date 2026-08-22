@@ -63,7 +63,11 @@ the Failure-Detection repair resume (1.81), questions (1.85), stale-workflow
 detection (1.9), and finally new issues (2,
 oldest first across all repos). The table below is the canonical ladder; the
 dispatch table in `worker/deno/lib/run_core.ts` is the source of truth and a
-test keeps the two in step. One work item per iteration, then sleep and repeat. All
+test keeps the two in step. With `max_concurrent_issues` above `1` the four
+agent-backed PR passes (1, 1.5, 1.55, 1.61) run in a
+[maintenance lane](#-maintenance-lane-agent-backed-pr-passes-beside-the-pool)
+beside the issue pool rather than ahead of it, so a long CI fix no longer idles
+the slots. One work item per iteration, then sleep and repeat. All
 interaction is via GitHub — no local UI (User Interface). When the same item
 fails repeatedly, the process exits so the next cron run gets fresh code.
 
@@ -205,6 +209,72 @@ flowchart TD
 | 2.5 | Low-priority backlog | `low-priority` label — only consulted when no eligible higher-tier candidate exists in any scanned repo |
 | 2.9 | Idle-task framework | `idle-task` label — strictly below low-priority; the only label the Vibe Coder may self-apply |
 | Idle     | Security scan                                         | Fired after a full cycle ends with no claimable work in any monitored repo. See [Security Scans — Operator Manual](../SECURITY-SCAN.md). |
+
+## 🛠️ Maintenance lane (agent-backed PR passes beside the pool)
+
+The ladder above is a **serial** order, and that used to include the passes that
+launch a full Claude agent against an open PR. One CI fix with a 30-minute
+budget therefore held every issue slot idle before the Priority-2 pool had even
+started — the slots that exist to run work concurrently sat doing nothing for up
+to half the cycle.
+
+With `max_concurrent_issues` above `1`, the four agent-backed PR passes — PR
+feedback (1), spelling (1.5), CI fix (1.55) and merge-conflict resolution (1.61)
+— are deferred out of the serial ladder and run in a **maintenance lane**
+alongside the pool instead. The lane is a single extra agent, not a second pool:
+one pass at a time, in priority order. The cheap `gh`-only passes (branch
+updates, auto-merge, issue closure, milestone sync, …) stay serial — they are
+measured in seconds, and running them first gives the pool's first scan
+freshly-updated branch and merge state.
+
+```mermaid
+flowchart LR
+  Start["Run start"] --> Serial["Serial ladder<br/>cheap gh-only passes"]
+  Serial --> Fork["Priority 2 begins"]
+  Fork --> Pool["Issue scan pool<br/>slot 1 … slot N"]
+  Fork --> Lane["Maintenance lane (m1)<br/>PR feedback → spelling → CI fix → merge conflict"]
+  Pool --> Registry[["In-flight repo registry<br/>one writer per clone"]]
+  Lane --> Registry
+  Registry --> Join["Cycle ends when both finish"]
+  style Serial fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Pool fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Lane fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Registry fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Join fill:#707070,stroke:,color:#fff
+```
+
+What makes the concurrency safe is the **repository lease**. Every flow — a
+slot's issue run and a maintenance pass alike — checks out into the single
+per-repo clone `${WORK_DIR}/<repo>`, and repo setup opens with `reset --hard`
+plus `clean -fd`, so two writers in one working tree would destroy each other's
+work. Each pass therefore leases its repository from the pool's own in-flight
+registry before it touches the clone:
+
+- a repository a slot already holds is refused, and the pass defers to the next
+  cycle (`Deferring CI fix: an issue slot holds the repository`);
+- a repository the lane holds is in the pool's exclusion set, so no slot claims
+  an issue there while the pass runs.
+
+The lane logs under an `[m1]` prefix and appears in the status line as
+`m1 owner/repo#<pr>` — that number is a **PR**, not a claimed issue, so the
+heartbeat sweep and the shutdown drain both skip it. A shutdown bounds the lane
+exactly as it bounds the pool: no new pass starts once SIGTERM lands, and a pass
+still running after `slot_drain_grace_seconds` is abandoned with its agent
+terminated rather than holding the exit open.
+
+Agent passes that run from the work-dir root rather than a repo clone —
+refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80), questions
+(1.85) — stay serial. They take no repository lease, so there is nothing to
+exclude a slot from, and a laned planning run could hand a freshly-labelled
+issue to a slot it is still working on.
+
+At `max_concurrent_issues: 1` there is no pool to run beside, so every pass
+stays in the serial ladder and behaviour is unchanged.
+
+One consequence for reading telemetry: the `cycle-timings` line reports each
+step's own wall time, and the lane's steps now overlap `Issue Scanning`. The
+per-step figures therefore sum to **more** than `total=` on a busy cycle — that
+overlap is the fix working, not double counting.
 
 ## 📏 Shared invariants
 
