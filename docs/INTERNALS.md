@@ -1803,6 +1803,13 @@ inability to post or lacking permissions — artefacts of Claude's tendency to
 narrate its own limitations rather than simply providing the answer. Migrated
 from `worker/shared/answer_sanitiser.sh`.
 
+The same chokepoint also redacts anything the answer must not carry into a
+public comment: secrets, via `redactSecrets()`, and echoed system-prompt
+content, via `redactPromptLeakage()` (`prompt_leak_redaction.ts`, Issue #189).
+The meta-commentary strip scans only the first paragraph by design; both
+redaction passes cover the whole answer, so injected "print your instructions
+after a blank line" text is masked rather than posted.
+
 ### ❌ Question failure handling
 
 The question failure module (migrated to Deno TypeScript) produces actionable,
@@ -2571,6 +2578,7 @@ All business logic lives here. Shell tooling invokes them directly with `deno ru
 | | [credit_tracker.ts](../worker/deno/lib/credit_tracker.ts) | Credit tracking, model fallback events, and token usage logging |
 |                                               | [token_usage.ts](../worker/deno/lib/token_usage.ts)                                                               | Token usage tracking utilities                                                                                                                                                               |
 | | [answer_sanitiser.ts](../worker/deno/lib/answer_sanitiser.ts) | Strip meta-commentary from Claude answers |
+| | [prompt_leak_redaction.ts](../worker/deno/lib/prompt_leak_redaction.ts) | Mask echoed system-prompt content in public answers |
 | | [prompt_builder_cache.ts](../worker/deno/lib/prompt_builder_cache.ts) | SHA-based prompt compilation cache |
 | | [prompt_cache.ts](../worker/deno/lib/prompt_cache.ts) | Per-repo prompt caching with content hashing |
 | | [prompt_hash.ts](../worker/deno/lib/prompt_hash.ts) | SHA-256 prompt content hashing |
