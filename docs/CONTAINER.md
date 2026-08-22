@@ -173,11 +173,17 @@ flowchart TD
   (Issue #192). Browser and outbound-network capability is granted on an
   explicit need signal — `RunClaudeOptions.mcpConfig: true` — not by the mere
   presence of a working directory, so a prompt-injected agent working a
-  backend issue has no browser tool to be steered into. Issue work sets the
-  signal from the same `screenshotRequired` detection that injects the
-  screenshot instructions (the `needs-screenshot` label or a repo configured
-  with `requiresScreenshots`); planning, PR feedback and grill-me runs get no
-  browser. When the signal is set the worker generates this configuration per
+  backend issue has no browser tool to be steered into. Both issue-work paths
+  — the main fleet loop (`phases/execute_phase.ts`) and the standalone
+  `execute-claude-phase` command — set the signal from the same
+  `screenshotRequired` detection that injects the screenshot instructions (the
+  `needs-screenshot` label, or a repo configured with `requiresScreenshots`);
+  planning, PR feedback, CI-fix and grill-me runs get no browser. A UI change
+  in a repo that declared neither still self-heals through the existing
+  round trip: the evidence gate blocks the PR, labels the issue
+  `needs-screenshot`, and the retry is granted the browser — set
+  `requires_screenshots: true` on a UI repo to skip that first round trip.
+  When the signal is set the worker generates this configuration per
   clone into `${WORK_DIR}/.vibe-cache/mcp/` and passes it as `--mcp-config` on
   that Claude invocation — it does not depend on a `.mcp.json` in a directory
   the agent never runs from. The server is told `--browser chromium` (its
