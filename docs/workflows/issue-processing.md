@@ -506,6 +506,7 @@ flowchart TD
   Run --> Changes{"Code changes<br/>produced?"}
   Changes -->|Yes| PR["Quality gate → PR"]
   Changes -->|"No, blocked on another issue"| Defer["Defer: record Depends on owner/repo#N,<br/>keep the discovery label, release the claim"]
+  Changes -->|"No, verified already resolved<br/>(commit / PR cited)"| Close["Close with the evidence<br/>in the comment"]
   Changes -->|"No, useful text"| Partial["Post partial answer"] --> HandOff
   Changes -->|"No, no output"| Guard["Fallback loop guard:<br/>failed-once → failed / needs-human"]
   HandOff --> Stop["Apply needs-human + comment,<br/>release claim, stop"]
@@ -515,7 +516,19 @@ flowchart TD
   style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Guard fill:#c45858,stroke:#6b2020,color:#fff
   style Defer fill:#5a86b0,stroke:#1d3a5a,color:#fff
+  style Close fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
+
+**A verified already-fixed run is closed, not escalated.** When the run reports
+the issue already resolved **and cites the evidence** — a commit and/or PR, plus
+how it checked — the worker closes the issue with that evidence in the comment.
+The agent declares it with
+`<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`
+(from `prompts/issue/v35.md` onwards); a broadened keyword list remains as a
+fallback for older prompt versions. A claim with no commit or PR behind it is
+*not* enough to close a live issue — that falls through to the analysis-only
+hand-off below. See
+[already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 
 **A blocked run is checked first.** "Blocked on another issue" is a deferral, not
 an analysis-only hand-off — and it is decided before the already-complete check,
