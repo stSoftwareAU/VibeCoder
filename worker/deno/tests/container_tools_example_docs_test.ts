@@ -320,11 +320,15 @@ Deno.test("container_tools docs - the deployment guide warns that the selection 
   assertStringIncludes(section, "rebuild");
 });
 
-Deno.test("container_tools docs - the changelog records the slice", () => {
-  const changelog = read("CHANGELOG.md");
-  const unreleased = changelog.slice(
-    changelog.indexOf("## [Unreleased]"),
-    changelog.indexOf("\n## [", changelog.indexOf("## [Unreleased]") + 1),
-  );
-  assertStringIncludes(unreleased, "container_tools");
+Deno.test("container_tools docs - the archived PR summaries record the slice", () => {
+  // Issue #217 retired CHANGELOG.md; the archived PR summaries are the record.
+  const summaries = [
+    "docs/archive/pr-summaries/pr-summary-69.md",
+    "docs/archive/pr-summaries/pr-summary-71.md",
+    "docs/archive/pr-summaries/pr-summary-73.md",
+    "docs/archive/pr-summaries/pr-summary-75.md",
+  ];
+  for (const path of summaries) {
+    assertStringIncludes(read(path), "container_tools");
+  }
 });
