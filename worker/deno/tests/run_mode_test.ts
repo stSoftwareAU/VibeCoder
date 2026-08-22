@@ -439,6 +439,7 @@ Deno.test("run mode - the worker logs the mode it resolved for the run", async (
           env: {
             PATH: "/bin",
             VIBE_RUN_ID: "run-1",
+            VIBE_SIDE_REPO_CLONE_ARGS: "",
             WORKER_LOG_FILE: "",
             LOG_FILE: "",
           },

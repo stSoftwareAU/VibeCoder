@@ -36,6 +36,7 @@ function okBootstrap(): BootstrapResult {
     env: {
       PATH: "/bin",
       VIBE_RUN_ID: "run-1",
+      VIBE_SIDE_REPO_CLONE_ARGS: "--filter=blob:none",
       WORKER_LOG_FILE: "",
       LOG_FILE: "",
     },
@@ -240,7 +241,13 @@ Deno.test("runWorker - bootstrap failure aborts before the loop (fail-loud)", as
         rec.calls.push("bootstrap");
         return Promise.resolve({
           ok: false,
-          env: { PATH: "", VIBE_RUN_ID: "", WORKER_LOG_FILE: "", LOG_FILE: "" },
+          env: {
+            PATH: "",
+            VIBE_RUN_ID: "",
+            VIBE_SIDE_REPO_CLONE_ARGS: "",
+            WORKER_LOG_FILE: "",
+            LOG_FILE: "",
+          },
           stepsRun: ["path", "run-id", "log-init", "git-reset"],
           error: "git reset --hard origin/main failed",
           defaultBranch: "main",
@@ -529,6 +536,7 @@ Deno.test("runWorker - records the resolved run mode with the host and run id af
           env: {
             PATH: "",
             VIBE_RUN_ID: "vibe-test-run",
+            VIBE_SIDE_REPO_CLONE_ARGS: "",
             WORKER_LOG_FILE: "",
             LOG_FILE: "",
           },
