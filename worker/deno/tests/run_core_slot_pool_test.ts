@@ -1361,6 +1361,128 @@ Deno.test("slot pool - host disk drops low during slot A's run: no slot claims a
   );
 });
 
+// ============================================================================
+// Disposable-tier reclaim before the disk gate (Issue #242)
+// ============================================================================
+
+Deno.test("host disk low - the disposable tier is reclaimed first, and a healed host keeps claiming (Issue #242)", async () => {
+  let now = 0;
+  let reclaims = 0;
+  let processed = 0;
+  const logs: string[] = [];
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => logs.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    checkHostDisk: () =>
+      Promise.resolve({
+        level: "low" as const,
+        detail: "18.0 GB free (3.9%) of 460.0 GB — below the floor",
+      }),
+    reclaimDiskSpace: () => {
+      reclaims++;
+      return Promise.resolve({
+        bytesReclaimed: 11_811_160_064,
+        detail: "side/data 4.2 GB in 3 dirs — host disk now ok",
+        healed: true,
+      });
+    },
+    processIssue: () => {
+      processed++;
+      now += config.runDurationSeconds * 400;
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 1);
+
+  assert(reclaims >= 1, "the reclaim must run before the gate stops claiming");
+  assertEquals(processed, 1, "a healed host claims normally");
+  assert(
+    logs.some((m) => m.includes("reclaimed") && m.includes("Issue #242")),
+    logs.join("\n"),
+  );
+});
+
+Deno.test("host disk low - a reclaim that frees nothing still stops the cycle claiming (Issue #242)", async () => {
+  let now = 0;
+  let processed = 0;
+  const errors: string[] = [];
+  const deps = createMockDeps({
+    now: () => now,
+    logError: (m) => errors.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    checkHostDisk: () =>
+      Promise.resolve({
+        level: "low" as const,
+        detail: "18.0 GB free — below the floor",
+      }),
+    reclaimDiskSpace: () =>
+      Promise.resolve({
+        bytesReclaimed: 0,
+        detail: "nothing disposable remains",
+        healed: false,
+      }),
+    processIssue: () => {
+      processed++;
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 1);
+
+  assertEquals(processed, 0, "a host still short must claim nothing");
+  assertEquals(
+    errors.filter((m) => m.startsWith("[HOST_DISK_LOW]")).length,
+    1,
+    "the low disk is reported once per cycle",
+  );
+});
+
+Deno.test("host disk low - a reclaim that throws is loud and the disk gate still holds (Issue #242)", async () => {
+  let now = 0;
+  let processed = 0;
+  const errors: string[] = [];
+  const deps = createMockDeps({
+    now: () => now,
+    logError: (m) => errors.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    checkHostDisk: () =>
+      Promise.resolve({
+        level: "low" as const,
+        detail: "18.0 GB free — below the floor",
+      }),
+    reclaimDiskSpace: () => Promise.reject(new Error("du timed out")),
+    processIssue: () => {
+      processed++;
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 1);
+
+  assertEquals(processed, 0);
+  assert(
+    errors.some((m) =>
+      m.includes("reclaim failed") && m.includes("du timed out")
+    ),
+    errors.join("\n"),
+  );
+});
+
 Deno.test("slot pool - a work-volume fault surfaced during slot A's run stops every further claim (Issue #229)", async () => {
   let faulted = false;
   let processed = 0;
