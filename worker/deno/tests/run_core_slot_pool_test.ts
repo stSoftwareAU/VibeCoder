@@ -15,6 +15,19 @@ import {
   runCoreLoop,
 } from "../lib/run_core.ts";
 import { reportRunDeadline } from "../lib/slot_context.ts";
+import {
+  _resetWriteRepoAllowlistSinks,
+  _setWriteRepoAllowlistSinks,
+  currentWriteRepoAllowlistContext,
+  enforceGhWriteAllowlist,
+  isWriteRepoAllowed,
+  listAllowedWriteRepos,
+  pinWriteRepo,
+  resetWriteRepoAllowlist,
+  seedWriteRepoAllowlist,
+  unpinWriteRepo,
+  WriteRepoBlockedError,
+} from "../lib/write_repo_allowlist.ts";
 import type { DiagnosticSummary } from "../lib/issue_finder_logger.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
@@ -1389,4 +1402,139 @@ Deno.test("slot pool - a work-volume fault surfaced during slot A's run stops ev
     errors.filter((m) => m.startsWith("[WORK_VOLUME_FAULT]")).length,
     1,
   );
+});
+
+/**
+ * Per-claim write-repo allowlist wiring (Issue #183).
+ *
+ * `withWriteRepoAllowlistContext` existed (Issue #4175) but nothing in
+ * production called it, so every slot fell through to the process-wide
+ * default context and the claim that seeded second clobbered its sibling's
+ * allowlist. These tests drive the real pool and let each claim seed the
+ * allowlist exactly as `issue_worker.ts` does.
+ */
+
+/** Silence the security log and the audit journal for a test body. */
+function withSilentAllowlistSinks(): void {
+  _setWriteRepoAllowlistSinks({
+    record: () => Promise.resolve({ ok: true, value: undefined as never }),
+    log: () => undefined,
+  });
+}
+
+/** Wait (bounded) until every concurrent claim has reached the barrier. */
+async function awaitClaims(count: () => number, want: number): Promise<void> {
+  for (let n = 0; n < 500 && count() < want; n++) {
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
+Deno.test("slot pool - two concurrent claims each seed their own write-repo allowlist (Issue #183)", async () => {
+  withSilentAllowlistSinks();
+  const allowedSeen = new Map<string, string[]>();
+  const siblingRefused = new Map<string, boolean>();
+  let seeded = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    processIssue: async (i) => {
+      // What issue_worker.ts does on every claim.
+      seedWriteRepoAllowlist(i.repo);
+      seeded++;
+      // Interleave: neither claim inspects its allowlist until the sibling
+      // has seeded, which is exactly when a shared context clobbers.
+      await awaitClaims(() => seeded, 2);
+      allowedSeen.set(i.repo, listAllowedWriteRepos());
+      const sibling = i.repo === "o/a" ? "o/b" : "o/a";
+      let refused = false;
+      try {
+        await enforceGhWriteAllowlist([
+          "issue",
+          "comment",
+          "1",
+          "--repo",
+          sibling,
+          "--body",
+          "x",
+        ]);
+      } catch (err) {
+        refused = err instanceof WriteRepoBlockedError;
+      }
+      siblingRefused.set(i.repo, refused);
+      resetWriteRepoAllowlist(); // issue_worker.ts's finally
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  try {
+    await runOneCycle(deps, 2);
+  } finally {
+    _resetWriteRepoAllowlistSinks();
+    resetWriteRepoAllowlist();
+  }
+  // Each claim sees ITS repo — the list the gh guard shim bakes into that
+  // claim's agent — never the sibling's and never the union.
+  assertEquals(allowedSeen.get("o/a"), ["o/a"]);
+  assertEquals(allowedSeen.get("o/b"), ["o/b"]);
+  assertEquals(siblingRefused.get("o/a"), true, "o/a may not write to o/b");
+  assertEquals(siblingRefused.get("o/b"), true, "o/b may not write to o/a");
+  // No claim seeded the process-wide default context.
+  assertEquals(currentWriteRepoAllowlistContext().active, false);
+  assertEquals(listAllowedWriteRepos(), []);
+});
+
+Deno.test("slot pool - a claim's heartbeat pin stays inside its own allowlist context (Issue #183/#3760)", async () => {
+  withSilentAllowlistSinks();
+  const pinVisibleToSibling = new Map<string, boolean>();
+  const snapshot = new Map<string, string[]>();
+  const ownRepoWritable = new Map<string, boolean>();
+  let pinned = 0;
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    processIssue: async (i) => {
+      seedWriteRepoAllowlist(i.repo);
+      pinWriteRepo(i.repo); // what startHeartbeat does
+      pinned++;
+      await awaitClaims(() => pinned, 2);
+      const sibling = i.repo === "o/a" ? "o/b" : "o/a";
+      pinVisibleToSibling.set(i.repo, isWriteRepoAllowed(sibling));
+      // A reseed inside the claim clears `allowed`; the pin keeps the
+      // claim's own repo writable for the heartbeat (Issue #3760).
+      seedWriteRepoAllowlist("o/reseeded");
+      ownRepoWritable.set(i.repo, isWriteRepoAllowed(i.repo));
+      // What prepareGhGuardShim bakes for this claim's agent: the seeded
+      // set only. Pins are worker-side by design, so a background writer's
+      // repo never widens the agent's boundary.
+      snapshot.set(i.repo, listAllowedWriteRepos());
+      unpinWriteRepo(i.repo); // what stopHeartbeat does
+      resetWriteRepoAllowlist();
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+  });
+  try {
+    await runOneCycle(deps, 2);
+  } finally {
+    _resetWriteRepoAllowlistSinks();
+    resetWriteRepoAllowlist();
+  }
+  assertEquals(pinVisibleToSibling.get("o/a"), false, "o/b's pin leaked");
+  assertEquals(pinVisibleToSibling.get("o/b"), false, "o/a's pin leaked");
+  assertEquals(ownRepoWritable.get("o/a"), true, "o/a's pin was lost");
+  assertEquals(ownRepoWritable.get("o/b"), true, "o/b's pin was lost");
+  assertEquals(snapshot.get("o/a"), ["o/reseeded"]);
+  assertEquals(snapshot.get("o/b"), ["o/reseeded"]);
 });
