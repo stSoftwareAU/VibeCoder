@@ -21,38 +21,66 @@ import {
   type FailureCategory,
 } from "./failure_diagnosis.ts";
 
+/**
+ * Short facts a run wants stated on the release comment alongside whatever it
+ * achieved (Issue #210) — a follow-up reference the agent named that does not
+ * exist, for instance. Independent of `kind`: a run can raise a PR *and* have
+ * got a reference wrong.
+ */
+export interface RunOutcomeNotes {
+  notes?: string[];
+}
+
 /** What a run achieved, as reported in the claim-release comment. */
 export type RunOutcome =
-  | { kind: "pr"; prUrl: string; prNumber: number }
-  | {
-    kind: "no_pr";
-    /** Failure category from failure_diagnosis.ts (#4298's corrected diagnosis). */
-    category: FailureCategory;
-    /** Phase that died — the `phase` field of WorkOnIssueResult. */
-    phase: string;
-    /** Wall-clock seconds from claim to release. */
-    elapsedSeconds: number;
-    /** Raw failure message, for downstream classification/filing. */
-    message: string;
-  }
-  | { kind: "no_pr_expected"; phase: string; summary: string }
-  /**
-   * The issue was resolved by another PR while this run was working on it
-   * (Issue #218) — a sibling host's PR merged mid-run on VibeCoder#185. The
-   * run raised no PR and nothing failed, so it is neither a `no_pr` failure
-   * (which files a run-failure issue and labels the issue) nor a plain
-   * `no_pr_expected` (which says nothing about what resolved the issue).
-   */
-  | {
-    kind: "superseded";
-    /** Phase that discovered the superseding PR. */
-    phase: string;
-    prUrl: string;
-    prNumber: number;
-    prState: "MERGED" | "CLOSED";
-    /** WIP this run preserved on its branch before stopping, if any. */
-    wipNote?: string;
-  };
+  & (
+    | { kind: "pr"; prUrl: string; prNumber: number }
+    | {
+      kind: "no_pr";
+      /** Failure category from failure_diagnosis.ts (#4298's corrected diagnosis). */
+      category: FailureCategory;
+      /** Phase that died — the `phase` field of WorkOnIssueResult. */
+      phase: string;
+      /** Wall-clock seconds from claim to release. */
+      elapsedSeconds: number;
+      /** Raw failure message, for downstream classification/filing. */
+      message: string;
+    }
+    | { kind: "no_pr_expected"; phase: string; summary: string }
+    /**
+     * The issue was resolved by another PR while this run was working on it
+     * (Issue #218) — a sibling host's PR merged mid-run on VibeCoder#185. The
+     * run raised no PR and nothing failed, so it is neither a `no_pr` failure
+     * (which files a run-failure issue and labels the issue) nor a plain
+     * `no_pr_expected` (which says nothing about what resolved the issue).
+     */
+    | {
+      kind: "superseded";
+      /** Phase that discovered the superseding PR. */
+      phase: string;
+      prUrl: string;
+      prNumber: number;
+      prState: "MERGED" | "CLOSED";
+      /** WIP this run preserved on its branch before stopping, if any. */
+      wipNote?: string;
+    }
+  )
+  & RunOutcomeNotes;
+
+/**
+ * Attach notes to an outcome for the release comment (Issue #210).
+ *
+ * Blank notes are dropped and existing ones are preserved, so a caller can
+ * add a note without knowing what the run already recorded.
+ */
+export function withRunOutcomeNotes(
+  outcome: RunOutcome,
+  notes: readonly string[],
+): RunOutcome {
+  const extra = notes.map((note) => note.trim()).filter((note) => note !== "");
+  if (extra.length === 0) return outcome;
+  return { ...outcome, notes: [...(outcome.notes ?? []), ...extra] };
+}
 
 /** The subset of a work result the builder reads. */
 export interface RunOutcomeSource {

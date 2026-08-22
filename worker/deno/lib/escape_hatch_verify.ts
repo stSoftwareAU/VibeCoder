@@ -38,6 +38,15 @@
 
 import type { GitHubClient, Logger } from "../types.ts";
 import { parseFollowUpIssueRef } from "./escape_hatch_label_strip.ts";
+import { isDefinitiveNotFound } from "./github_not_found.ts";
+
+/**
+ * Re-exported from `github_not_found.ts` (Issue #210), which owns the one
+ * definition every model-named-issue path shares — including the GraphQL
+ * "could not resolve to an issue or pull request" wording a hallucinated
+ * number produces.
+ */
+export { isDefinitiveNotFound };
 
 /** Outcome of the follow-up existence check. */
 export interface FollowUpVerification {
@@ -77,20 +86,6 @@ export function isTrustedFollowUpAuthor(
     (candidate) =>
       typeof candidate === "string" && candidate.trim().toLowerCase() === key,
   );
-}
-
-/**
- * Recognise a "this issue does not exist" answer from the GitHub API.
- *
- * `gh` surfaces a missing issue as a 404 with a "Not Found" message; anything
- * else (timeout, 401, 403, 5xx) is an inconclusive lookup.
- *
- * @param message - The error message from the failed lookup.
- * @returns true when the API definitively reported the issue as absent.
- */
-export function isDefinitiveNotFound(message: string): boolean {
-  const lower = message.toLowerCase();
-  return lower.includes("not found") || lower.includes("404");
 }
 
 /**

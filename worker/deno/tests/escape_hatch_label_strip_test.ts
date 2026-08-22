@@ -19,6 +19,7 @@
 import { assert, assertEquals } from "@std/assert";
 import type { GitHubIssue, Logger } from "../types.ts";
 import {
+  describeUnresolvedFollowUp,
   parseFollowUpIssueRef,
   stripReservedLabelsFromFollowUp,
   stripReservedLabelsFromModelFollowUp,
@@ -574,4 +575,127 @@ Deno.test("stripReservedLabelsFromModelFollowUp - no message is a no-op", async 
 
   assert(result.ok);
   assertEquals(getCalls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// A follow-up reference that does not resolve in the repo (Issue #210)
+// ---------------------------------------------------------------------------
+
+/**
+ * A client whose `getIssue` reports the number as absent, in the exact GraphQL
+ * wording `gh` returned for NEAT-AI-Lamarck#3952.
+ */
+function missingIssueClient() {
+  const getCalls: Array<{ repo: string; issue: number }> = [];
+  const removeCalls: Array<{ repo: string; issue: number; label: string }> = [];
+  const ghClient = {
+    getIssue(repo: string, issueNumber: number): Promise<GitHubIssue> {
+      getCalls.push({ repo, issue: issueNumber });
+      return Promise.reject(
+        new Error(
+          "gh command failed (exit 1): GraphQL: Could not resolve to an " +
+            `issue or pull request with the number of ${issueNumber}. ` +
+            "(repository.issue)",
+        ),
+      );
+    },
+    removeLabel(
+      repo: string,
+      issueNumber: number,
+      label: string,
+    ): Promise<void> {
+      removeCalls.push({ repo, issue: issueNumber, label });
+      return Promise.resolve();
+    },
+  };
+  return { ghClient, getCalls, removeCalls };
+}
+
+Deno.test("stripReservedLabelsFromFollowUp - a reference that does not exist is one WARNING, no retry, no failure (Issue #210)", async () => {
+  const { ghClient, getCalls, removeCalls } = missingIssueClient();
+  const { logger, warnings } = recordingLogger();
+
+  const result = await stripReservedLabelsFromFollowUp({
+    issueRef: "#3952",
+    currentRepo: "stSoftwareAU/NEAT-AI-Lamarck",
+    ghClient,
+    logger,
+  });
+
+  // No ERROR for the caller to raise, and nothing was mutated.
+  assert(result.ok, "a bogus reference is not a strip failure");
+  assertEquals(removeCalls, []);
+  // One read only — the retry that produced the reported ERROR is gone.
+  assertEquals(getCalls, [{
+    repo: "stSoftwareAU/NEAT-AI-Lamarck",
+    issue: 3952,
+  }]);
+  assertEquals(warnings.length, 1, "exactly one WARNING");
+  assertEquals(warnings[0]?.context?.issueNumber, 3952);
+  assertEquals(
+    warnings[0]?.context?.repo,
+    "stSoftwareAU/NEAT-AI-Lamarck",
+  );
+  // The caller needs the ref to state it on the claim-release comment.
+  assert(result.ok);
+  assertEquals(result.value.unresolved, [{
+    repo: "stSoftwareAU/NEAT-AI-Lamarck",
+    number: 3952,
+  }]);
+});
+
+Deno.test("stripReservedLabelsFromFollowUp - a transient read failure is still a retried failure (Issue #210)", async () => {
+  // Only a definitive not-found is skipped: an inconclusive read keeps the
+  // Issue #3708 retry-then-fail-loud behaviour, so a real follow-up carrying
+  // a reserved label is never quietly abandoned.
+  const { ghClient, getCalls } = fakeClient({
+    labelsByIssue: { "owner/repo#77": [RESERVED] },
+    failRead: true,
+  });
+  const { logger } = recordingLogger();
+
+  const result = await stripReservedLabelsFromFollowUp({
+    issueRef: "#77",
+    currentRepo: "owner/repo",
+    ghClient,
+    logger,
+  });
+
+  assertEquals(result.ok, false, "an inconclusive read still fails loud");
+  assertEquals(getCalls.length, 2, "and is still retried once");
+});
+
+Deno.test("stripReservedLabelsFromModelFollowUp - a hallucinated follow-up number in Claude's text is skipped, not stripped (Issue #210)", async () => {
+  const { ghClient, removeCalls } = missingIssueClient();
+  const { logger, warnings } = recordingLogger();
+
+  const result = await stripReservedLabelsFromModelFollowUp({
+    message: "This is out of scope for this run — see follow-up issue #3952.",
+    currentRepo: "stSoftwareAU/NEAT-AI-Lamarck",
+    excludeIssueNumber: 187,
+    ghClient,
+    logger,
+  });
+
+  assert(result.ok);
+  assertEquals(removeCalls, []);
+  assertEquals(warnings.length, 1);
+  assertEquals(result.value.unresolved[0]?.number, 3952);
+});
+
+Deno.test("describeUnresolvedFollowUp - names the repo the reference failed to resolve in (Issue #210)", () => {
+  assertEquals(
+    describeUnresolvedFollowUp(
+      { repo: "stSoftwareAU/NEAT-AI-Lamarck", number: 3952 },
+      "stSoftwareAU/NEAT-AI-Lamarck",
+    ),
+    "follow-up reference #3952 not found in this repo",
+  );
+  assertEquals(
+    describeUnresolvedFollowUp(
+      { repo: "owner/dep", number: 5 },
+      "owner/repo",
+    ),
+    "follow-up reference owner/dep#5 not found in owner/dep",
+  );
 });

@@ -834,6 +834,22 @@ exactly the state the guard exists to prevent, so it must never be reported as a
 clean run. A skip on the monitored-repo allowlist is a deliberate refusal, not a
 failure, and stays `ok`.
 
+**A reference that does not exist is validated, not retried.** The
+follow-up *number* is model-authored too, so it can name an issue that was
+never filed: a hand-off on NEAT-AI-Lamarck#187 named `#3952` — a number from
+another repo's series — and the worker took it at face value, spending two `gh`
+round-trips, a retry and an ERROR on an issue that cannot exist, while the real
+outcome (no follow-up was filed) was never stated. The label read that already
+precedes every mutation is the validation: when GitHub definitively reports the
+issue as absent — `isDefinitiveNotFound()`
+(`worker/deno/lib/github_not_found.ts`), which also recognises the GraphQL
+`Could not resolve to an issue or pull request` wording that carries neither
+"not found" nor "404" — the ref is recorded in `summary.unresolved` after **one
+WARNING** and is neither retried nor reported as a failure. The issue-work path
+turns it into a claim-release note via `describeUnresolvedFollowUp()`, so the
+release comment says `follow-up reference #3952 not found in this repo` and the
+agent's mistake is visible off the host's log.
+
 ```mermaid
 flowchart TD
     A["PR feedback<br/>.pr_response_message"] --> D
@@ -842,10 +858,12 @@ flowchart TD
     D{"detectEscapeHatch<br/>follow-up ref?"} -->|no| Z["No-op"]
     D -->|yes| E{"Self-reference<br/>or off-allowlist?"}
     E -->|yes| Z2["Skipped — ok"]
-    E -->|no| F["Strip RESERVED_LABELS"]
-    F -->|failure| G["Retry once"]
+    E -->|no| F["Read labels<br/>(validates the ref)"]
+    F -->|"issue absent"| U["1 WARNING → unresolved<br/>release comment states it"]
+    F -->|"issue exists"| S["Strip RESERVED_LABELS"]
+    S -->|failure| G["Retry once"]
     G -->|still failing| H["ok: false → ERROR log"]
-    F -->|success| I["ok: labels stripped"]
+    S -->|success| I["ok: labels stripped"]
     G -->|success| I
 ```
 

@@ -40,11 +40,21 @@
  * (`escape_hatch_label_strip.ts`) and denies by default when the allowlist is
  * absent.
  *
+ * **A ref that does not exist is validated, not retried (Issue #210).** The
+ * ref is model-authored, so the *number* can simply be wrong as well as the
+ * repo. The label read that precedes every mutation is that validation: when
+ * GitHub definitively reports the issue as absent
+ * (`isDefinitiveNotFound`, `github_not_found.ts`), the ref is recorded as
+ * `unresolved` after one WARNING rather than as a failure — a retry cannot
+ * conjure the issue, and the ERROR it ended in reported a fault that could
+ * not exist.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import { isReservedLabel } from "./config_defaults.ts";
+import { isDefinitiveNotFound } from "./github_not_found.ts";
 
 /**
  * A single issue to scrub, identified by its repository and number.
@@ -91,13 +101,20 @@ export interface ReservedLabelStripSummary {
   stripped: StrippedLabel[];
   /** Refs deliberately skipped by the destination allowlist — not failures. */
   skipped: IssueRef[];
+  /**
+   * Refs GitHub reports do not exist (Issue #210) — the model named an issue
+   * number that is not in the repo. Not failures: there is no issue to carry
+   * a reserved label, so retrying cannot help. The caller states them so the
+   * agent's mistake is visible off this host's log.
+   */
+  unresolved: IssueRef[];
   /** Steps that did not complete, so the guard may not have applied. */
   failures: StripFailure[];
 }
 
 /** An empty (nothing-to-do) summary. */
 export function emptyStripSummary(): ReservedLabelStripSummary {
-  return { stripped: [], skipped: [], failures: [] };
+  return { stripped: [], skipped: [], unresolved: [], failures: [] };
 }
 
 /**
@@ -222,6 +239,23 @@ export async function stripReservedLabelsFromIssueRefs(args: {
       reserved = issue.labels.filter((label) => isReservedLabel(label));
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
+      // Issue #210: the read is also the validation — it happens before any
+      // mutation, so a ref GitHub definitively reports as absent is answered
+      // here. That is the model naming an issue that does not exist (a
+      // NEAT-AI-Lamarck hand-off named `#3952`, a number from another repo's
+      // series); nothing carries a reserved label, so retrying it and then
+      // erroring reported a fault that cannot exist. One WARNING, recorded as
+      // unresolved, and on to the next ref.
+      if (isDefinitiveNotFound(error)) {
+        logger.warn(
+          "Skipping reserved-label strip: the issue does not exist in this " +
+            "repo — the reference names an issue that was never filed " +
+            "(Issue #210)",
+          { repo, issueNumber, error },
+        );
+        summary.unresolved.push({ repo, number: issueNumber });
+        continue;
+      }
       logger.warn(
         "Failed to read labels while stripping reserved labels",
         { repo, issueNumber, error },
