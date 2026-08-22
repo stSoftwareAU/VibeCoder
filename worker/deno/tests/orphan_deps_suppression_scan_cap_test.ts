@@ -20,8 +20,10 @@ import {
 } from "../lib/orphan_deps_suppression_scan.ts";
 import {
   _resetSuppressionAuthorAllowlist,
+  _resetSuppressionCommitAuthors,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
+  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 
 const MARKER = (id: string) =>
@@ -37,8 +39,10 @@ function reader(files: Record<string, string>) {
 
 Deno.test("collectInSourceSuppressedIds - honours markers inside the cap, drops those past it", async () => {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   resetSuppressionRegistry();
   setSuppressionAuthorAllowlist(["nigel"]);
+  setSuppressionCommitAuthors(["nigel"]);
   try {
     const filler = "x".repeat(MAX_MANIFEST_SCAN_CHARS);
     const text = `${MARKER("BP-aaaaaaaaaaaa")}\n${filler}\n${
@@ -50,14 +54,17 @@ Deno.test("collectInSourceSuppressedIds - honours markers inside the cap, drops 
     assertEquals(ids, ["BP-aaaaaaaaaaaa"]);
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
     resetSuppressionRegistry();
   }
 });
 
 Deno.test("collectInSourceSuppressedIds - an adversarial lockfile line does not stall the scan", async () => {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   resetSuppressionRegistry();
   setSuppressionAuthorAllowlist(["nigel"]);
+  setSuppressionCommitAuthors(["nigel"]);
   try {
     // The exact shape from the finding: an unclosed block marker followed by
     // a long whitespace tail, repeated well past the cap.
@@ -72,6 +79,7 @@ Deno.test("collectInSourceSuppressedIds - an adversarial lockfile line does not 
     assert(ms < 2_000, `scan took ${ms.toFixed(0)} ms, budget 2000`);
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
     resetSuppressionRegistry();
   }
 });

@@ -21,10 +21,12 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   _resetSuppressionAuthorAllowlist,
+  _resetSuppressionCommitAuthors,
   findSuppressions,
   MAX_SUPPRESSION_LINE_CHARS,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
+  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import {
   collectInSourceSuppressedIds,
@@ -63,7 +65,9 @@ Deno.test("SEC-82bf6e57e20d - unterminated block comments do not backtrack super
 
 Deno.test("SEC-82bf6e57e20d - a line longer than the cap is skipped, not parsed", () => {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
+  setSuppressionCommitAuthors(["nigel"]);
   try {
     const marker =
       "/* security-scan-ignore: SEC-aabbcc — author=nigel expires=2099-12-31 known */";
@@ -83,6 +87,7 @@ Deno.test("SEC-82bf6e57e20d - a line longer than the cap is skipped, not parsed"
     assertEquals(records[0]?.valid, true);
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
   }
 });
 
@@ -132,7 +137,9 @@ Deno.test("SEC-82bf6e57e20d - block-comment reasons still parse unchanged", () =
 
 Deno.test("SEC-82bf6e57e20d - the manifest scan caps oversized lockfiles", async () => {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
+  setSuppressionCommitAuthors(["nigel"]);
   resetSuppressionRegistry();
   try {
     const marker = (id: string) =>
@@ -157,6 +164,7 @@ Deno.test("SEC-82bf6e57e20d - the manifest scan caps oversized lockfiles", async
   } finally {
     resetSuppressionRegistry();
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
   }
 });
 

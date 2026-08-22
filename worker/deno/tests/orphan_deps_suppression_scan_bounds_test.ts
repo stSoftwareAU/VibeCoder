@@ -18,8 +18,10 @@ import {
 } from "../lib/orphan_deps_suppression_scan.ts";
 import {
   _resetSuppressionAuthorAllowlist,
+  _resetSuppressionCommitAuthors,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
+  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 
 const MARKER =
@@ -37,12 +39,15 @@ function reader(files: Record<string, string>) {
 
 async function withAllowlist<T>(fn: () => Promise<T>): Promise<T> {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   resetSuppressionRegistry();
   setSuppressionAuthorAllowlist(["nigel"]);
+  setSuppressionCommitAuthors(["nigel"]);
   try {
     return await fn();
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
     resetSuppressionRegistry();
   }
 }

@@ -20,10 +20,12 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   _resetSuppressionAuthorAllowlist,
+  _resetSuppressionCommitAuthors,
   findSuppressions,
   MAX_SUPPRESSION_LINE_CHARS,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
+  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 
 /** A governed marker trailer every parsed record needs to be `valid`. */
@@ -31,12 +33,15 @@ const TRAILER = "author=nigel expires=2099-12-31 finished with it";
 
 function withAllowlist<T>(fn: () => T): T {
   _resetSuppressionAuthorAllowlist();
+  _resetSuppressionCommitAuthors();
   resetSuppressionRegistry();
   setSuppressionAuthorAllowlist(["nigel"]);
+  setSuppressionCommitAuthors(["nigel"]);
   try {
     return fn();
   } finally {
     _resetSuppressionAuthorAllowlist();
+    _resetSuppressionCommitAuthors();
     resetSuppressionRegistry();
   }
 }
