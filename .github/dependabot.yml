@@ -43,7 +43,18 @@ updates:
     # intent as the github-actions entry and renovate.json's
     # minimumReleaseAge). Advisory gates (bundle-audit, dependency-review.yml)
     # stay in place.
+    #
+    # semgrep's dependabot-missing-cooldown wants default-days: 7 on every
+    # ecosystem. A cooldown *is* set here; the rule is asserting a longer one
+    # than this repo's standard. That standard is 24h and it is deliberate and
+    # repo-wide — renovate.json `minimumReleaseAge`, both Deno
+    # `minimumDependencyAge` settings, the github-actions entry above, and the
+    # worker's own VIBE_BUMP_QUARANTINE_HOURS default. Diverging to 7 days for
+    # Ruby alone would make Gemfile.lock the one ecosystem out of step, which
+    # is the inconsistency Issue #273 exists to remove. Majors already get the
+    # full week the rule asks for.
     cooldown:
+      # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
       default-days: 1
       semver-major-days: 7
     commit-message:
