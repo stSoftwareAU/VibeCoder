@@ -35,7 +35,7 @@ setting and [Containment](CONTAINMENT.md) for the boundary.
 | `jq`                             | GitHub release binary                               | Version + SHA-256 per architecture |
 | the coding-agent binaries (`claude`, …) | one `container/providers/<id>.sh` per id in `AGENT_PROVIDERS` | Version + SHA-256 per architecture |
 | the monitored-repository toolchains (below) | `toolchains` layers            | Version + SHA-256 per architecture |
-| `playwright-core` + headless Chromium | npm release tarball, then `install --with-deps` | Version + SHA-256 (noarch) |
+| `playwright-core` + headless Chromium | npm tarball, then checksum-verified Chromium zip, then `install --with-deps` | Version + SHA-256 (noarch tarball + chromium_amd64 / chromium_arm64); apt deps residual |
 
 Every version lives in [`container/tools.json`](../container/tools.json);
 `container/Containerfile` only restates those values as build `ARG`s. Nothing
@@ -124,11 +124,16 @@ flowchart TD
 The worker captures PR evidence through the Playwright MCP server, and a
 contained worker has no host browser and no desktop session to borrow. So the
 image bakes Chromium at build time: `container/Containerfile`
-installs the checksum-verified `playwright-core` tarball, runs
-`playwright-core install --with-deps chromium chromium-headless-shell` into
-`PLAYWRIGHT_BROWSERS_PATH` (`/opt/playwright-browsers`), makes that tree
-readable to the non-root `vibe` user, and then launches the browser once so a
-missing system library fails the build rather than the first screenshot.
+installs the checksum-verified `playwright-core` tarball, downloads the
+Chromium zip Playwright would have fetched, verifies it against the
+committed `chromium_amd64` / `chromium_arm64` digest (Issue #274), extracts
+it into `PLAYWRIGHT_BROWSERS_PATH` (`/opt/playwright-browsers`), then runs
+`playwright-core install --with-deps chromium` so apt still installs the
+system-library set. The tree is made readable to the non-root `vibe` user,
+and the build launches the browser once so a missing system library fails
+the build rather than the first screenshot. Apt packages stay unpinned —
+Debian's signed repos on the digest-pinned trixie base are the accepted
+trust root for those libraries.
 
 **The Playwright version is not a free choice.** Playwright resolves browsers
 as `chromium-<revision>` and every release pins its own revision, so the image

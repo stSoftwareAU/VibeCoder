@@ -214,10 +214,12 @@
       "versionArg": "PLAYWRIGHT_VERSION",
       "source": "https://registry.npmjs.org/playwright-core",
       "sha256": {
-        "noarch": "d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516"
+        "noarch": "d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516",
+        "chromium_amd64": "4f5dfbb09cc103573be201e870573fe53f36b1de076ac649049c421bb5b31e69",
+        "chromium_arm64": "549844a1f15687f91486645079ec0e495a880687e6813e2d42ef4d044782d589"
       },
       "browsersPath": "/opt/playwright-browsers",
-      "notes": "Installs headless Chromium into browsersPath at build time (Issue #4069), so the worker captures PR evidence with no host browser and no download mid-run. The version is not a free choice: it is exactly what @playwright/mcp@<PLAYWRIGHT_MCP_VERSION> depends on, because Playwright resolves browsers as chromium-<revision> and each release pins its own revision — worker/deno/tests/container_manifest_test.ts fails the gate when this drifts from PLAYWRIGHT_INSTALLER_VERSION in worker/deno/setup/screenshot.ts. Pure JavaScript, so one noarch checksum covers both architectures; the Chromium system libraries come from `playwright-core install --with-deps`, which resolves the package set Playwright itself declares for this distribution."
+      "notes": "Installs headless Chromium into browsersPath at build time (Issues #4069, #274), so the worker captures PR evidence with no host browser and no download mid-run. The version is not a free choice: it is exactly what @playwright/mcp@<PLAYWRIGHT_MCP_VERSION> depends on, because Playwright resolves browsers as chromium-<revision> and each release pins its own revision — worker/deno/tests/container_manifest_test.ts fails the gate when this drifts from PLAYWRIGHT_INSTALLER_VERSION in worker/deno/setup/screenshot.ts. The noarch checksum is the npm tarball (pure JavaScript, one digest for both architectures). chromium_amd64 / chromium_arm64 are the browser zips Playwright then fetches — Chrome for Testing 149.0.7827.3 (linux64) and Playwright chromium revision 1224 (linux-arm64) for this pin. The build downloads those zips, verifies the committed digest, extracts them, then runs `playwright-core install --with-deps chromium` so apt still installs the system-library set. Apt packages stay unpinned by design: Playwright's install-deps list is large and Debian security updates move the versions; pinning them would break the next point release and blow the Containerfile size cap. Residual risk: `--with-deps` trusts Debian's signed apt repos on the digest-pinned trixie base rather than a committed per-package SHA-256."
     }
   ]
 }
