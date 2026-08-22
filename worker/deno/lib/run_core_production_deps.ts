@@ -23,6 +23,8 @@ import type {
   RunCoreDeps,
 } from "./run_core.ts";
 import { createDefaultRunCoreConfig } from "./run_core.ts";
+import { acquireMaintenanceRepoLease } from "./maintenance_lane.ts";
+import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 
 // Config & logging
 import { loadConfig } from "./config.ts";
@@ -944,92 +946,111 @@ export async function createProductionRunCoreDeps(
 
       const comment = result.value;
 
-      // Set up the target repository so Claude runs with correct context.
-      // Without this, Claude runs in the worker directory instead of
-      // the target repo with the PR branch checked out (Issue #1297).
-      const repoSetupResult = await setupRepo(comment.repo, workDir);
-      if (!repoSetupResult.success) {
-        logger.error("Failed to set up repo for PR feedback", {
-          repo: comment.repo,
-          error: repoSetupResult.message,
-        });
+      // Issue #213: in the maintenance lane this pass runs beside the issue
+      // slots, and both check out into the same `${WORK_DIR}/<repo>` clone.
+      // Lease the repository before touching it — a slot already working
+      // there means this PR waits for the next cycle rather than fighting it
+      // for the working tree. Outside the lane the lease is uncontended.
+      const lease = acquireMaintenanceRepoLease(comment.repo, comment.prNumber);
+      if (lease === null) {
+        logger.info(
+          "Deferring PR feedback: an issue slot holds the repository",
+          { repo: comment.repo, prNumber: comment.prNumber },
+        );
         return { ok: true, value: { processed: false } };
       }
-      const repoWorkDir = repoSetupResult.message;
-
-      // Checkout and sync the PR branch
-      const branchName = comment.branchName;
       try {
-        await runGitCommand(
-          buildFetchArgs("origin", branchName),
-          { cwd: repoWorkDir },
+        // Set up the target repository so Claude runs with correct context.
+        // Without this, Claude runs in the worker directory instead of
+        // the target repo with the PR branch checked out (Issue #1297).
+        const repoSetupResult = await setupRepo(comment.repo, workDir);
+        if (!repoSetupResult.success) {
+          logger.error("Failed to set up repo for PR feedback", {
+            repo: comment.repo,
+            error: repoSetupResult.message,
+          });
+          return { ok: true, value: { processed: false } };
+        }
+        const repoWorkDir = repoSetupResult.message;
+
+        // Checkout and sync the PR branch
+        const branchName = comment.branchName;
+        try {
+          await runGitCommand(
+            buildFetchArgs("origin", branchName),
+            { cwd: repoWorkDir },
+          );
+          await runGitCommand(
+            buildCheckoutArgs(branchName),
+            { cwd: repoWorkDir },
+          );
+          await runGitCommand(
+            buildPullArgs("origin", branchName),
+            { cwd: repoWorkDir },
+          );
+        } catch (err) {
+          logger.error("Failed to checkout PR branch for feedback", {
+            repo: comment.repo,
+            branch: branchName,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return { ok: true, value: { processed: false } };
+        }
+
+        // Decode base64-encoded body
+        let decodedBody: string;
+        try {
+          decodedBody = atob(comment.encodedBody);
+        } catch {
+          decodedBody = comment.encodedBody;
+        }
+
+        // Load quality and custom instructions for this repo
+        const qualityInstructions = buildQualityInstructions(
+          config.repoConfig,
+          comment.repo,
         );
-        await runGitCommand(
-          buildCheckoutArgs(branchName),
-          { cwd: repoWorkDir },
+        const customInstructions = getCustomInstructions(
+          config.repoConfig,
+          comment.repo,
         );
-        await runGitCommand(
-          buildPullArgs("origin", branchName),
-          { cwd: repoWorkDir },
+
+        // Issue #1072: Pass workerId for distributed PR comment claiming
+        const workerId = getWorkerUniqueId(config.workerName);
+
+        const feedbackResult = await processPrFeedback(
+          {
+            repo: comment.repo,
+            prNumber: comment.prNumber,
+            branchName: comment.branchName,
+            commentType: comment.commentType,
+            commentId: comment.commentId,
+            commentBody: decodedBody,
+          },
+          {
+            logger,
+            deps: workerDeps,
+            workDir: repoWorkDir,
+            qualityInstructions,
+            customInstructions,
+            // Issue #213: the dedicated reactive budget, not the issue-work
+            // `claude_timeout` this dispatch path used to pass.
+            claudeTimeout: reactivePhaseTimeout(config, "pr-feedback"),
+            claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+            maxRateLimitRetries: config.maxRateLimitRetries,
+            workerId,
+            // Issue #185: lets the escape-hatch verifier recognise a follow-up
+            // the worker filed under its own login as trusted.
+            githubUser,
+            trustedReviewBots: config.trustedReviewBots ?? [],
+            repoConfigs: config.repoConfig,
+          },
         );
-      } catch (err) {
-        logger.error("Failed to checkout PR branch for feedback", {
-          repo: comment.repo,
-          branch: branchName,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return { ok: true, value: { processed: false } };
+
+        return { ok: true, value: { processed: feedbackResult.ok } };
+      } finally {
+        lease.release();
       }
-
-      // Decode base64-encoded body
-      let decodedBody: string;
-      try {
-        decodedBody = atob(comment.encodedBody);
-      } catch {
-        decodedBody = comment.encodedBody;
-      }
-
-      // Load quality and custom instructions for this repo
-      const qualityInstructions = buildQualityInstructions(
-        config.repoConfig,
-        comment.repo,
-      );
-      const customInstructions = getCustomInstructions(
-        config.repoConfig,
-        comment.repo,
-      );
-
-      // Issue #1072: Pass workerId for distributed PR comment claiming
-      const workerId = getWorkerUniqueId(config.workerName);
-
-      const feedbackResult = await processPrFeedback(
-        {
-          repo: comment.repo,
-          prNumber: comment.prNumber,
-          branchName: comment.branchName,
-          commentType: comment.commentType,
-          commentId: comment.commentId,
-          commentBody: decodedBody,
-        },
-        {
-          logger,
-          deps: workerDeps,
-          workDir: repoWorkDir,
-          qualityInstructions,
-          customInstructions,
-          claudeTimeout: config.claudeTimeout,
-          claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-          maxRateLimitRetries: config.maxRateLimitRetries,
-          workerId,
-          // Issue #185: lets the escape-hatch verifier recognise a follow-up
-          // the worker filed under its own login as trusted.
-          githubUser,
-          trustedReviewBots: config.trustedReviewBots ?? [],
-          repoConfigs: config.repoConfig,
-        },
-      );
-
-      return { ok: true, value: { processed: feedbackResult.ok } };
     },
 
     // -- Priority 1.5: Spelling checks (Issue #1297 — repo setup + cwd fix) --
@@ -1055,60 +1076,74 @@ export async function createProductionRunCoreDeps(
 
       const check = result.value;
 
-      // Set up repo and checkout PR branch (Issue #1297)
-      const repoSetupResult = await setupRepo(check.repo, workDir);
-      if (!repoSetupResult.success) {
-        logger.error("Failed to set up repo for spelling fix", {
-          repo: check.repo,
-          error: repoSetupResult.message,
-        });
+      // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
+      // checkout, so this pass and an issue slot never write one tree.
+      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
+      if (lease === null) {
+        logger.info(
+          "Deferring spelling fix: an issue slot holds the repository",
+          { repo: check.repo, prNumber: check.prNumber },
+        );
         return { ok: true, value: { processed: false } };
       }
-      const repoWorkDir = repoSetupResult.message;
-
       try {
-        await runGitCommand(
-          buildFetchArgs("origin", check.branchName),
-          { cwd: repoWorkDir },
+        // Set up repo and checkout PR branch (Issue #1297)
+        const repoSetupResult = await setupRepo(check.repo, workDir);
+        if (!repoSetupResult.success) {
+          logger.error("Failed to set up repo for spelling fix", {
+            repo: check.repo,
+            error: repoSetupResult.message,
+          });
+          return { ok: true, value: { processed: false } };
+        }
+        const repoWorkDir = repoSetupResult.message;
+
+        try {
+          await runGitCommand(
+            buildFetchArgs("origin", check.branchName),
+            { cwd: repoWorkDir },
+          );
+          await runGitCommand(
+            buildCheckoutArgs(check.branchName),
+            { cwd: repoWorkDir },
+          );
+          await runGitCommand(
+            buildPullArgs("origin", check.branchName),
+            { cwd: repoWorkDir },
+          );
+        } catch (err) {
+          logger.error("Failed to checkout PR branch for spelling fix", {
+            repo: check.repo,
+            branch: check.branchName,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return { ok: true, value: { processed: false } };
+        }
+
+        const fixResult = await processSpellingFailure(
+          {
+            repo: check.repo,
+            prNumber: check.prNumber,
+            branchName: check.branchName,
+            checkRunId: check.checkId,
+            checkName: check.checkName,
+            encodedAnnotations: check.encodedAnnotations,
+          },
+          {
+            logger,
+            deps: workerDeps,
+            workDir: repoWorkDir,
+            claudeTimeout: config.claudeTimeout,
+            claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+            maxRateLimitRetries: config.maxRateLimitRetries,
+            repoConfigs: config.repoConfig,
+          },
         );
-        await runGitCommand(
-          buildCheckoutArgs(check.branchName),
-          { cwd: repoWorkDir },
-        );
-        await runGitCommand(
-          buildPullArgs("origin", check.branchName),
-          { cwd: repoWorkDir },
-        );
-      } catch (err) {
-        logger.error("Failed to checkout PR branch for spelling fix", {
-          repo: check.repo,
-          branch: check.branchName,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return { ok: true, value: { processed: false } };
+
+        return { ok: true, value: { processed: fixResult.ok } };
+      } finally {
+        lease.release();
       }
-
-      const fixResult = await processSpellingFailure(
-        {
-          repo: check.repo,
-          prNumber: check.prNumber,
-          branchName: check.branchName,
-          checkRunId: check.checkId,
-          checkName: check.checkName,
-          encodedAnnotations: check.encodedAnnotations,
-        },
-        {
-          logger,
-          deps: workerDeps,
-          workDir: repoWorkDir,
-          claudeTimeout: config.claudeTimeout,
-          claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-          maxRateLimitRetries: config.maxRateLimitRetries,
-          repoConfigs: config.repoConfig,
-        },
-      );
-
-      return { ok: true, value: { processed: fixResult.ok } };
     },
 
     // -- Priority 1.55: CI checks (Issue #1297 — repo setup + cwd fix) --
@@ -1135,65 +1170,83 @@ export async function createProductionRunCoreDeps(
 
       const check = result.value;
 
-      // Set up repo and checkout PR branch (Issue #1297)
-      const repoSetupResult = await setupRepo(check.repo, workDir);
-      if (!repoSetupResult.success) {
-        logger.error("Failed to set up repo for CI fix", {
-          repo: check.repo,
-          error: repoSetupResult.message,
-        });
-        return { ok: true, value: { processed: false } };
-      }
-      const repoWorkDir = repoSetupResult.message;
-
-      try {
-        await runGitCommand(
-          buildFetchArgs("origin", check.branchName),
-          { cwd: repoWorkDir },
-        );
-        await runGitCommand(
-          buildCheckoutArgs(check.branchName),
-          { cwd: repoWorkDir },
-        );
-        await runGitCommand(
-          buildPullArgs("origin", check.branchName),
-          { cwd: repoWorkDir },
-        );
-      } catch (err) {
-        logger.error("Failed to checkout PR branch for CI fix", {
-          repo: check.repo,
-          branch: check.branchName,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return { ok: true, value: { processed: false } };
-      }
-
-      const fixResult = await processCiFailure(
-        {
+      // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
+      // checkout, so this pass and an issue slot never write one tree.
+      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
+      if (lease === null) {
+        logger.info("Deferring CI fix: an issue slot holds the repository", {
           repo: check.repo,
           prNumber: check.prNumber,
-          branchName: check.branchName,
-          checkRunId: check.checkId,
-          checkName: check.checkName,
-          encodedAnnotations: check.encodedAnnotations,
-        },
-        {
-          logger,
-          deps: workerDeps,
-          workDir: repoWorkDir,
-          claudeTimeout: config.claudeTimeout,
-          claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-          maxRateLimitRetries: config.maxRateLimitRetries,
-          // Issue #3582: cap auto-fix attempts per stable failure signature.
-          maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
-          repoConfigs: config.repoConfig,
-          // Issue #3754: cross-host PR lock so two hosts cannot fix the
-          // same PR's CI failure concurrently.
-          workerId: getWorkerUniqueId(config.workerName),
-        },
-      );
+        });
+        return { ok: true, value: { processed: false } };
+      }
+      try {
+        // Set up repo and checkout PR branch (Issue #1297)
+        const repoSetupResult = await setupRepo(check.repo, workDir);
+        if (!repoSetupResult.success) {
+          logger.error("Failed to set up repo for CI fix", {
+            repo: check.repo,
+            error: repoSetupResult.message,
+          });
+          return { ok: true, value: { processed: false } };
+        }
+        const repoWorkDir = repoSetupResult.message;
 
-      return { ok: true, value: { processed: fixResult.ok } };
+        try {
+          await runGitCommand(
+            buildFetchArgs("origin", check.branchName),
+            { cwd: repoWorkDir },
+          );
+          await runGitCommand(
+            buildCheckoutArgs(check.branchName),
+            { cwd: repoWorkDir },
+          );
+          await runGitCommand(
+            buildPullArgs("origin", check.branchName),
+            { cwd: repoWorkDir },
+          );
+        } catch (err) {
+          logger.error("Failed to checkout PR branch for CI fix", {
+            repo: check.repo,
+            branch: check.branchName,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return { ok: true, value: { processed: false } };
+        }
+
+        const fixResult = await processCiFailure(
+          {
+            repo: check.repo,
+            prNumber: check.prNumber,
+            branchName: check.branchName,
+            checkRunId: check.checkId,
+            checkName: check.checkName,
+            encodedAnnotations: check.encodedAnnotations,
+          },
+          {
+            logger,
+            deps: workerDeps,
+            workDir: repoWorkDir,
+            // Issue #213: the dedicated reactive budget, not the issue-work
+            // `claude_timeout` — this dispatch path passing `claudeTimeout` is
+            // why a host with `claude_timeout: 3600` logged "Running Claude
+            // Code with 3600s timeout" for a CI fix the docs cap at 1800.
+            claudeTimeout: reactivePhaseTimeout(config, "ci-fix"),
+            claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+            maxRateLimitRetries: config.maxRateLimitRetries,
+            // Issue #3582: cap auto-fix attempts per stable failure signature.
+            maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
+            repoConfigs: config.repoConfig,
+            // Issue #3754: cross-host PR lock so two hosts cannot fix the
+            // same PR's CI failure concurrently.
+            workerId: getWorkerUniqueId(config.workerName),
+          },
+        );
+
+        return { ok: true, value: { processed: fixResult.ok } };
+      } finally {
+        lease.release();
+      }
     },
 
     // -- Priority 1.6: Update PR branches (Issue #1280) --
@@ -1424,55 +1477,72 @@ export async function createProductionRunCoreDeps(
 
       const conflict = scan.value;
 
-      const repoSetupResult = await setupRepo(conflict.repo, workDir);
-      if (!repoSetupResult.success) {
-        logger.error("Failed to set up repo for merge-conflict resolution", {
-          repo: conflict.repo,
-          error: repoSetupResult.message,
-        });
+      // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
+      // merge, so this pass and an issue slot never write one tree.
+      const lease = acquireMaintenanceRepoLease(
+        conflict.repo,
+        conflict.prNumber,
+      );
+      if (lease === null) {
+        logger.info(
+          "Deferring merge-conflict resolution: an issue slot holds the repository",
+          { repo: conflict.repo, prNumber: conflict.prNumber },
+        );
         return { ok: true, value: { processed: false } };
       }
+      try {
+        const repoSetupResult = await setupRepo(conflict.repo, workDir);
+        if (!repoSetupResult.success) {
+          logger.error("Failed to set up repo for merge-conflict resolution", {
+            repo: conflict.repo,
+            error: repoSetupResult.message,
+          });
+          return { ok: true, value: { processed: false } };
+        }
 
-      const result = await processMergeConflict(conflict, {
-        logger,
-        deps: workerDeps,
-        workDir: repoSetupResult.message,
-        qualityInstructions: buildQualityInstructions(
-          config.repoConfig,
-          conflict.repo,
-        ),
-        customInstructions: getCustomInstructions(
-          config.repoConfig,
-          conflict.repo,
-        ),
-        claudeTimeout: config.claudeTimeout,
-        claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-        maxRateLimitRetries: config.maxRateLimitRetries,
-        workerId: getWorkerUniqueId(config.workerName),
-        needsHumanLabel: config.needsHumanLabel,
-        repoConfigs: config.repoConfig,
-      });
+        const result = await processMergeConflict(conflict, {
+          logger,
+          deps: workerDeps,
+          workDir: repoSetupResult.message,
+          qualityInstructions: buildQualityInstructions(
+            config.repoConfig,
+            conflict.repo,
+          ),
+          customInstructions: getCustomInstructions(
+            config.repoConfig,
+            conflict.repo,
+          ),
+          claudeTimeout: config.claudeTimeout,
+          claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+          maxRateLimitRetries: config.maxRateLimitRetries,
+          workerId: getWorkerUniqueId(config.workerName),
+          needsHumanLabel: config.needsHumanLabel,
+          repoConfigs: config.repoConfig,
+        });
 
-      if (!result.ok) {
-        logger.error("Merge-conflict resolution failed", {
+        if (!result.ok) {
+          logger.error("Merge-conflict resolution failed", {
+            repo: conflict.repo,
+            prNumber: conflict.prNumber,
+            error: result.error.message,
+          });
+          return { ok: true, value: { processed: false } };
+        }
+
+        // A pushed merge changes the PR's state, so the iteration-scoped
+        // open-PR cache must not serve the stale listing (Issue #1799).
+        if (result.value.merged) {
+          await issueCache.invalidate(conflict.repo, "prs_open_all");
+        }
+
+        logger.info(result.value.summary, {
           repo: conflict.repo,
           prNumber: conflict.prNumber,
-          error: result.error.message,
         });
-        return { ok: true, value: { processed: false } };
+        return { ok: true, value: { processed: result.value.processed } };
+      } finally {
+        lease.release();
       }
-
-      // A pushed merge changes the PR's state, so the iteration-scoped
-      // open-PR cache must not serve the stale listing (Issue #1799).
-      if (result.value.merged) {
-        await issueCache.invalidate(conflict.repo, "prs_open_all");
-      }
-
-      logger.info(result.value.summary, {
-        repo: conflict.repo,
-        prNumber: conflict.prNumber,
-      });
-      return { ok: true, value: { processed: result.value.processed } };
     },
 
     // -- Priority 1.62: Nudge stalled CI on Vibe Coder PRs (Issue #2100) --
