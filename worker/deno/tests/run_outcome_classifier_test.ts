@@ -11,6 +11,7 @@ import {
   classifyRunFailure,
   RUN_FAILURE_CLASSES,
   type RunFailureClassification,
+  splitAgentNarration,
 } from "../lib/run_outcome_classifier.ts";
 import {
   detectFailureCategory,
@@ -301,4 +302,185 @@ Deno.test("classifyRunFailure - interrupted is not_code_fixable and classed 'int
   assertEquals(c.fixability, "not_code_fixable");
   assertEquals(c.failureClass, "interrupted");
   assert(RUN_FAILURE_CLASSES.includes("interrupted"));
+});
+
+// ===========================================================================
+// Issue #249 — agent narration is not worker crash evidence
+// ===========================================================================
+
+/**
+ * The message that filed Issue #249, reproduced from the issue body.
+ *
+ * A clean deadline stop on GRQ#4204: category `timeout`, exit 143 (SIGTERM),
+ * two WIP checkpoints pushed. The only thing resembling a crash is inside the
+ * quoted agent output, where Claude is describing a concurrency bug in the
+ * *user's* code it was in the middle of fixing.
+ */
+const ISSUE_249_MESSAGE = [
+  "Claude timed out at the cycle deadline with its work preserved on the " +
+  "branch — WIP preserved: 2 checkpoint commits pushed to " +
+  "'issue-4204-fix-the-1h55m-pre-scoring-load-the-daily-history-r' — the " +
+  "next claim resumes from that branch (Issue #4170)",
+  "",
+  "### Diagnostics",
+  "- Elapsed: 2932s",
+  "- Output: partial (2459 characters captured before timeout)",
+  "- Timeout: 2924s",
+  "- Watchdog: hard-timeout",
+  "- Raw exit code: 143 (SIGTERM)",
+  "- Clarity: assessed as clear",
+  "",
+  "<details>",
+  "<summary>Last output from Claude (click to expand)</summary>",
+  "",
+  "```",
+  " running (that ✅ was a sub-stage). Let me review the final diff while it " +
+  "finishes.One correctness gap in the concurrency driver: on a failure the " +
+  "remaining workers keep pulling, so a second failure surfaces as an " +
+  "unhandled rejection. Tightening it to stop dispatch and re-throw.Let me " +
+  "add a test pinning that dispatch actually stops, then re-run the History " +
+  "suite.Let me commit this refinement while the gate finishes.The gate is " +
+  "cloning the share-price data repo (`worker/repos.sh`). Waiting it out.",
+  "```",
+  "",
+  "</details>",
+].join("\n");
+
+Deno.test("classify #249 - a deadline timeout is not a worker crash because Claude said 'unhandled rejection'", () => {
+  const result = classifyRunFailure("timeout", ISSUE_249_MESSAGE);
+  assertEquals(
+    result.failureClass,
+    "timeout",
+    "the run stopped cleanly at its deadline with WIP preserved; the only " +
+      "'unhandled rejection' is Claude describing the user's code",
+  );
+  assertEquals(result.fixability, "unknown");
+});
+
+Deno.test("classify #249 - the same prose in the worker's own words IS a crash", () => {
+  // The fix must not blind the classifier: outside the quoted agent block
+  // the identical phrase is exactly the signal it was written to catch.
+  const result = classifyRunFailure(
+    "timeout",
+    "Claude timed out after 3600s\nunhandled rejection in the worker loop",
+  );
+  assertEquals(result.failureClass, "worker-crash");
+  assertEquals(result.fixability, "code_fixable");
+});
+
+Deno.test("classify #249 - a real stack frame inside the agent block still counts", () => {
+  // A Claude CLI crash dump reaches us through the agent's stdout. A frame
+  // naming a function and a file:// URL is a crash, not prose about one.
+  const message = [
+    "Claude exited unexpectedly",
+    "",
+    "<details>",
+    "<summary>Last output from Claude (click to expand)</summary>",
+    "",
+    "```",
+    "TypeError: Cannot read properties of undefined (reading 'value')",
+    "    at Object.run (file:///usr/lib/claude/cli.js:120:9)",
+    "```",
+    "",
+    "</details>",
+  ].join("\n");
+  assertEquals(
+    classifyRunFailure("unknown", message).failureClass,
+    "worker-crash",
+  );
+});
+
+Deno.test("classify #249 - prose alone inside the agent block never reaches worker-crash", () => {
+  for (
+    const prose of [
+      "so a second failure surfaces as an unhandled rejection",
+      "this throws a TypeError: bad input, which we should catch",
+      "the old code raised a ReferenceError: x is not defined",
+      "I will add an unhandled exception handler around the pool",
+    ]
+  ) {
+    const message = [
+      "Claude timed out after 2924s",
+      "<details>",
+      "<summary>Last output from Claude (click to expand)</summary>",
+      "",
+      "```",
+      prose,
+      "```",
+      "",
+      "</details>",
+    ].join("\n");
+    assertEquals(
+      classifyRunFailure("timeout", message).failureClass,
+      "timeout",
+      `agent prose must not classify as a crash: ${prose}`,
+    );
+  }
+});
+
+Deno.test("classify #249 - the 'Processes at the kill' block stays worker evidence", () => {
+  // The sibling <details> block is written by the worker, not the agent —
+  // the narration strip must not swallow it.
+  const message = [
+    "Claude was killed",
+    "<details>",
+    "<summary>Last output from Claude (click to expand)</summary>",
+    "",
+    "```",
+    "just tidying up the imports now",
+    "```",
+    "",
+    "</details>",
+    "",
+    "<details>",
+    "<summary>Processes at the kill (click to expand)</summary>",
+    "",
+    "```",
+    "unhandled exception in the supervisor",
+    "```",
+    "",
+    "</details>",
+  ].join("\n");
+  assertEquals(
+    classifyRunFailure("unknown", message).failureClass,
+    "worker-crash",
+  );
+});
+
+Deno.test("splitAgentNarration - removes the agent block and keeps everything else", () => {
+  const { worker, agent } = splitAgentNarration(ISSUE_249_MESSAGE);
+  assert(worker.includes("Raw exit code: 143"), "diagnostics are worker text");
+  assert(worker.includes("WIP preserved"), "the summary line is worker text");
+  assert(
+    !worker.includes("unhandled rejection"),
+    "the agent's prose is not worker text",
+  );
+  assert(agent.includes("unhandled rejection"), "and it is captured, not lost");
+});
+
+Deno.test("splitAgentNarration - a message with no agent block is unchanged", () => {
+  const { worker, agent } = splitAgentNarration("Claude timed out after 60s");
+  assertEquals(worker, "Claude timed out after 60s");
+  assertEquals(agent, "");
+});
+
+Deno.test("classify #249 - disk exhaustion in the agent block is still real evidence", () => {
+  // The deliberate asymmetry: ENOSPC reaching us through the agent's stdout
+  // means the run genuinely hit a full disk. That is environmental evidence
+  // the worker can act on, unlike a mention of an exception.
+  const message = [
+    "Claude timed out after 2924s",
+    "<details>",
+    "<summary>Last output from Claude (click to expand)</summary>",
+    "",
+    "```",
+    "Error: ENOSPC: no space left on device, write",
+    "```",
+    "",
+    "</details>",
+  ].join("\n");
+  assertEquals(
+    classifyRunFailure("timeout", message).failureClass,
+    "disk-full",
+  );
 });
