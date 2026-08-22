@@ -109,6 +109,26 @@ jobs:
       - name: Normalise heading IDs (strip leading hyphen)
         run: ruby .github/scripts/normalise_heading_ids.rb
 
+      # Issue #272: the structural checks below assert files exist; this
+      # asserts what those files *execute*. The Mermaid securityLevel and CDN
+      # SRI hash were only ever validated on the source include
+      # (_includes/head-custom.html), so a bump that loosened `strict` or
+      # dropped `integrity` in the served HTML passed every test and every
+      # step here. Runs after the build, before the artifact is uploaded, so
+      # an unhardened site fails the deploy rather than shipping.
+      - name: Install deno
+        # denoland/setup-deno@v2.0.4
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282
+        with:
+          deno-version-file: .deno-version
+
+      - name: Assert Mermaid hardening in the built site
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-read --allow-env \
+            worker/deno/mod.ts check-mermaid-built-output --site-dir _site
+
       - name: Verify build output
         env:
           BASE_PATH: ${{ steps.pages.outputs.base_path }}
