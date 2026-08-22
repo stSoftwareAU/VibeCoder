@@ -39,8 +39,16 @@ What changed:
 ## Evidence
 
 Backend/CLI change — no web interface to screenshot. Verified by the unit tests
-below (`deno test` — 20 new detection tests, 4 new phase tests, all passing) and
+below (`deno test` — 21 new detection tests, 4 new phase tests, all passing) and
 by the full `./quality.sh` gate.
+
+Ten tests fail in this container **before and after** this change, so they are
+environmental, not a regression: `setup_workdir_reminder_test.ts` (7),
+`fleet_health_test.ts:914`, `host_workdir_guard_test.ts:288` and
+`optional_feature_env_test.ts:57`. They assert on the host `WORK_DIR` / `HOME`
+layout, and this container's `/home/vibe/auto-issue-work` already holds real
+clones. Confirmed by running the same four files in a `git worktree` at the
+parent commit: `FAILED | 63 passed | 10 failed`, the same ten.
 
 ```mermaid
 flowchart TD
