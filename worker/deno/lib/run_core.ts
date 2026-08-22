@@ -691,6 +691,15 @@ export interface RunCoreDeps {
    * nothing new; the launcher repairs or recreates it next launch.
    */
   checkWorkVolumeFault?: () => { faulted: boolean; detail: string };
+  /**
+   * Standing work-volume totals by category (Issue #244), logged once at
+   * cycle start beside the `Concurrency:` line. Returns the formatted line
+   * — monitored repos, side/data clones, build artefacts, caches, other,
+   * with the top offenders named — so growth is visible in the worker log
+   * long before the host-disk gate (Issue #226) trips. Optional; production
+   * wires it to a depth-1 `du` walk of the work root.
+   */
+  reportWorkVolumeUsage?: () => Promise<string>;
 
   // Misc
   touchPidFile: () => Promise<void>;
@@ -2807,6 +2816,23 @@ export async function runCoreLoop(
         ? `(issue pool; effective slots may be lowered under memory pressure)`
         : `(serial loop; claims run one at a time)`),
   );
+
+  // What the work volume is holding right now (Issue #244) — the standing
+  // totals beside the concurrency line, so growth is visible before the
+  // host-disk gate stops the cycle claiming. Best-effort: a failed walk is
+  // reported loud and never blocks the cycle.
+  if (deps.reportWorkVolumeUsage) {
+    try {
+      const line = await deps.reportWorkVolumeUsage();
+      if (line) deps.log(line);
+    } catch (err) {
+      deps.logError(
+        `Work volume: standing totals unavailable (continuing): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 
   let plannedShutdown = false;
   let exitedOnFailures = false;
