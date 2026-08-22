@@ -51,6 +51,9 @@ const CLUSTERS: readonly string[] = [
   "resource",
   "pointer",
   "static hygiene",
+  // Issue #310 — toolchain 1.96–1.98 learnings.
+  "runtime symbol definitions",
+  "standard-library supersessions",
 ];
 
 Deno.test("buckets/rust.md - names every adopted bug-class cluster", async () => {
@@ -71,6 +74,8 @@ Deno.test("buckets/rust.md - states each capability gate", async () => {
     "has_async",
     "has_packed_repr",
     "has_fs_io",
+    // Issue #310: the repr(transparent) cluster is gated, not repo-wide.
+    "has_transparent_repr",
   ];
   const missing = gates.filter((g) => !body.includes(g));
   assert(
@@ -126,3 +131,101 @@ Deno.test(
     assertStringIncludes(out, guide.trim());
   },
 );
+
+// ===========================================================================
+// Issue #310 — Rust 1.96–1.98 release-note learnings
+// ===========================================================================
+
+/**
+ * Each cluster adopted from the 1.96/1.97/1.98 release notes, with the
+ * capability gate it must state.
+ *
+ * Following this file's existing approach: assert the cluster is named and
+ * its gate is stated, without pinning prose wording. A reword is free; a
+ * silent deletion is not.
+ */
+const TOOLCHAIN_CLUSTERS: readonly { phrase: string; gate: string }[] = [
+  { phrase: "runtime symbol definitions", gate: "has_ffi" },
+  { phrase: "repr(transparent)", gate: "has_transparent_repr" },
+  { phrase: "standard-library supersessions", gate: "Always applies" },
+];
+
+Deno.test("buckets/rust.md - names every 1.96-1.98 cluster with its gate (Issue #310)", async () => {
+  const body = await readRustBucket();
+  // Scope to the new section: `#[repr(transparent)]` also appears in the
+  // capability-gate table, where the gate name precedes it rather than
+  // following it, so a whole-file search would anchor on the wrong line.
+  const start = body.indexOf("## Toolchain 1.96");
+  assert(start > -1, "the 1.96-1.98 section must exist");
+  const section = body.slice(start);
+
+  for (const { phrase, gate } of TOOLCHAIN_CLUSTERS) {
+    assertStringIncludes(section.toLowerCase(), phrase.toLowerCase());
+    // The gate must appear in the same check paragraph, not merely
+    // somewhere in the file — an ungated cluster makes the scan
+    // speculate about code the crate does not contain.
+    const at = section.toLowerCase().indexOf(phrase.toLowerCase());
+    const paragraph = section.slice(at, at + 900);
+    assert(
+      paragraph.includes(gate),
+      `cluster "${phrase}" must state its gate "${gate}" alongside it`,
+    );
+  }
+});
+
+Deno.test("buckets/rust.md - names the lints that a -D warnings gate now fails on (Issue #310)", async () => {
+  // These are the reason a toolchain bump is a reviewable event: they fail
+  // the build with no code change.
+  const body = await readRustBucket();
+  for (
+    const lint of [
+      "invalid_runtime_symbol_definitions",
+      "suspicious_runtime_symbol_definitions",
+      "c_void_returns",
+    ]
+  ) {
+    assertStringIncludes(body, lint);
+  }
+});
+
+Deno.test("buckets/rust.md - the 1.98 repr(transparent) tightening names all three newly non-trivial field kinds (Issue #310)", async () => {
+  // Dropping any one of these would leave the check quietly incomplete —
+  // it would pass a type that no longer compiles.
+  const body = await readRustBucket();
+  for (const kind of ["repr(C)", "private fields", "#[non_exhaustive]"]) {
+    assertStringIncludes(body, kind);
+  }
+});
+
+Deno.test("buckets/rust.md - the supersession cluster names its replacement APIs (Issue #310)", async () => {
+  const body = await readRustBucket();
+  for (
+    const api of [
+      "substr_range",
+      "subslice_range",
+      "strip_circumfix",
+      "from_utf16le",
+      "bit_width",
+      "highest_one",
+      "assert_matches!",
+    ]
+  ) {
+    assertStringIncludes(body, api);
+  }
+});
+
+Deno.test("buckets/rust.md - the new checks stay static-evidence only (Issue #310)", async () => {
+  // The bucket's hard constraint: its checks grep the source tree. A new
+  // cluster must not require cargo build/check/clippy to run.
+  const body = await readRustBucket();
+  const at = body.indexOf("## Toolchain 1.96");
+  assert(at > -1, "the 1.96-1.98 section must exist");
+  const section = body.slice(at);
+  assertStringIncludes(section, "Static evidence only");
+  for (const forbidden of ["cargo build", "cargo check", "cargo clippy"]) {
+    assert(
+      !section.includes(`run \`${forbidden}\``),
+      `the 1.96-1.98 section must not require ${forbidden}`,
+    );
+  }
+});
