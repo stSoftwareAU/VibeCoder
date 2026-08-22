@@ -201,6 +201,7 @@ Deno.test("run-entrypoint command - blocked guard yields exit 0 without a shadow
             env: {
               PATH: "",
               VIBE_RUN_ID: "",
+              VIBE_SIDE_REPO_CLONE_ARGS: "",
               WORKER_LOG_FILE: "",
               LOG_FILE: "",
             },
