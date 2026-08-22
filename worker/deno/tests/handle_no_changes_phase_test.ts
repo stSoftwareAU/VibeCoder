@@ -281,11 +281,16 @@ Deno.test(
     // explicit "already complete" signal in Claude's output should
     // still produce a close-comment — that branch precedes the
     // partial-answer suppression.
+    //
+    // Issue #241 tightened that branch: the claim must cite evidence, so this
+    // fixture now names the commit and PR that resolved it. The behaviour
+    // under test — close beats suppression — is unchanged.
     const calls = makeStubGhCalls();
     const ctx = makeContext({ issueTitle: SECURITY_SCAN_ISSUE_TITLE });
     const state = makeState({
       claudeOutput:
-        "This wrapper is already complete — nothing to scan, no findings to file.",
+        "This wrapper is already complete — nothing to scan, no findings to " +
+        "file. The scan was wired up in commit `8f21ab3` (PR #310).",
     });
     const deps = createMockDeps({
       github: {
@@ -298,6 +303,137 @@ Deno.test(
     assertEquals(result.status, "early_exit");
     assertEquals((result as { reason: string }).reason, "already_complete");
     assertEquals(calls.closeIssue.length, 1);
+  },
+);
+
+// -------------------------------------------------------------------------
+// Issue #241 — an evidence-backed already-fixed run closes with a note
+// -------------------------------------------------------------------------
+
+Deno.test(
+  "handle_no_changes_phase - the already-resolved marker closes the issue with its evidence (Issue #241)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput: [
+        "This has already been fixed. No code change was required.",
+        "",
+        '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+        'verified="ran deno test tests/backprop_test.ts — passes" -->',
+      ].join("\n"),
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals(result.status, "early_exit");
+    assertEquals((result as { reason: string }).reason, "already_complete");
+    assertEquals(calls.closeIssue.length, 1);
+    const body = calls.closeIssue[0]!.comment ?? "";
+    assertStringIncludes(body, "4c6f932");
+    assertStringIncludes(body, "#97");
+    assertStringIncludes(body, "ran deno test tests/backprop_test.ts — passes");
+    // No needs-human hand-off: the issue is closed, not escalated.
+    assert(
+      !calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+      "must NOT escalate an issue it just closed",
+    );
+    assertEquals(calls.unassignIssue.length, 1);
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - a verified already-fixed narrative closes without the marker (Issue #241)",
+  async () => {
+    // The exact shape from NEAT-AI-Backpropagation#96: the run verified the
+    // fix and cited it, but used phrasing the #519 keyword list missed, so the
+    // issue was escalated to needs-human instead of closed.
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput: "A".repeat(200) +
+        "\nIssue #42 was resolved on `Develop` by commit `4c6f932` (PR #97). " +
+        "I verified this by reading the code and running the test, not by " +
+        "inference.",
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals((result as { reason: string }).reason, "already_complete");
+    assertEquals(calls.closeIssue.length, 1);
+    const body = calls.closeIssue[0]!.comment ?? "";
+    assertStringIncludes(body, "4c6f932");
+    assertStringIncludes(body, "#97");
+    assert(
+      !calls.postComment.some((c) => c.body.includes("Partial Answer")),
+      "must not post a Partial Answer for a verified already-fixed run",
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - an unevidenced already-fixed claim hands off instead of closing (Issue #241)",
+  async () => {
+    // Deliberately tighter than the #519 keyword path: a claim with no commit
+    // or PR behind it is not enough to close a live issue.
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput: "A".repeat(200) +
+        "\nThis has already been fixed; no code change was required.",
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
+    assertEquals(calls.closeIssue.length, 0);
+    assert(
+      calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+      "an unevidenced claim is handed to a human",
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - a marker inside a blocked run does not close the issue (Issue #241, #222)",
+  async () => {
+    // The blocked-outcome deferral is checked first and stays first: a run
+    // blocked on another issue is deferred, never closed.
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput: [
+        "## Blocked: the rule bodies have not landed",
+        "",
+        "Depends on org/repo#560",
+        "",
+        '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+        'verified="ran the suite" -->',
+      ].join("\n"),
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals(calls.closeIssue.length, 0);
+    assertStringIncludes(
+      (result as { reason: string }).reason,
+      "deferred: depends on org/repo#560",
+    );
   },
 );
 
@@ -340,7 +476,11 @@ Deno.test(
     const calls = makeStubGhCalls();
     const ctx = makeContext();
     const state = makeState({
-      claudeOutput: `The implementation is already complete.\n\n${LEAKY_TAIL}`,
+      // Issue #241: the close now needs cited evidence, so the claim names the
+      // commit that landed it. Redaction of the published tail is unchanged.
+      claudeOutput:
+        `The implementation is already complete — commit \`ab12cd3\` landed ` +
+        `it.\n\n${LEAKY_TAIL}`,
     });
     const deps = createMockDeps({
       github: { createClient: () => makeStubGhClient(calls) },
@@ -388,8 +528,10 @@ Deno.test(
     const calls = makeStubGhCalls();
     const ctx = makeContext();
     const state = makeState({
+      // Issue #241: evidence is required for the close, so the commit is cited.
       claudeOutput:
-        "The implementation is already complete — no changes needed.",
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
       claudeRunStats: [{
         runStats: {
           servedModels: ["claude-opus-4-8"],
@@ -427,7 +569,8 @@ Deno.test(
     const calls = makeStubGhCalls();
     const ctx = makeContext();
     const state = makeState({
-      claudeOutput: "No changes needed — this was already fixed.",
+      // Issue #241: evidence is required for the close, so the PR is cited.
+      claudeOutput: "No changes needed — this was already fixed in PR #310.",
     });
     const deps = createMockDeps({
       github: { createClient: () => makeStubGhClient(calls) },

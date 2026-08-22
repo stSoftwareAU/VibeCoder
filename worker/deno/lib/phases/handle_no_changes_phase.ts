@@ -1,10 +1,10 @@
 /**
  * Phase 3b — Handle No Changes.
  *
- * Invoked when Claude produced no code changes. Closes the issue if
- * Claude indicated it is already complete, posts a partial answer if
- * useful text was produced (question disguised as issue), or reports
- * a detailed failure otherwise. Single responsibility: classify the
+ * Invoked when Claude produced no code changes. Closes the issue when the run
+ * verified it was already resolved and cited the evidence (Issue #241), posts
+ * a partial answer if useful text was produced (question disguised as issue),
+ * or reports a detailed failure otherwise. Single responsibility: classify the
  * "no changes" outcome and communicate it back to GitHub.
  *
  * Extracted from worker/deno/lib/issue_worker.ts (Issue #1527).
@@ -27,6 +27,10 @@ import {
   formatDependencyRef,
 } from "../blocked_outcome.ts";
 import { deferBlockedIssue, hasPriorDeferral } from "../blocked_deferral.ts";
+import {
+  detectAlreadyResolved,
+  formatAlreadyResolvedEvidence,
+} from "../already_resolved_outcome.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
 
@@ -143,35 +147,49 @@ export async function workOnIssueHandleNoChanges(
     };
   }
 
-  // Check if the issue was already complete (Issue #519)
-  // Look for completion indicators in Claude's output
-  const completionIndicators = [
-    "already complete",
-    "already implemented",
-    "already fixed",
-    "already resolved",
-    "no changes needed",
-    "no changes required",
-    "implementation is already",
-  ];
-
-  const lowerOutput = claudeOutput.toLowerCase();
-  // Issue #222: blocked-shaped output never reads as "already complete", even
+  // Check whether the run verified the issue was already resolved (Issue #519,
+  // tightened by Issue #241). Detection is the explicit
+  // `vibe-already-resolved` marker first, then a broadened keyword claim — and
+  // either way the close needs cited evidence (a commit and/or PR, plus how the
+  // fix was verified on the marker path). An unevidenced claim falls through to
+  // the analysis-only hand-off below, so an issue is never closed by inference.
+  //
+  // Issue #222: blocked-shaped output never reads as "already resolved", even
   // on the repeat-deferral path above — "no changes needed until #560 lands"
-  // is a block, and closing the issue is what this whole change exists to
-  // prevent.
-  const isAlreadyComplete = !blocked &&
-    completionIndicators.some((indicator) => lowerOutput.includes(indicator));
+  // is a block, and closing the issue is what that change exists to prevent.
+  const alreadyResolved = blocked
+    ? ({ status: "none" } as const)
+    : detectAlreadyResolved(claudeOutput, { repo, issueNumber });
 
-  if (isAlreadyComplete) {
-    logger.info("Issue appears to be already complete based on Claude output");
+  if (alreadyResolved.status === "unverified") {
+    logger.info(
+      "Run reported the issue already fixed but cited no evidence — " +
+        "handing off instead of closing (Issue #241)",
+      { repo, issueNumber, reason: alreadyResolved.reason },
+    );
+  }
+
+  if (alreadyResolved.status === "resolved") {
+    const { evidence, source } = alreadyResolved.outcome;
+    logger.info(
+      "Issue verified as already resolved — closing with the cited evidence",
+      {
+        repo,
+        issueNumber,
+        source,
+        commit: evidence.commit ?? "",
+        pr: evidence.pr ?? "",
+      },
+    );
 
     // Post a comment, close the issue, and unassign (Issue #1364)
     try {
       const ghClient = deps.github.createClient(logger);
       const outputSnippet = publishableSnippet(claudeOutput);
       const closeComment =
-        `## Already Complete\n\nThis issue appears to already be resolved.\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>`;
+        `## Already Complete\n\nThis issue was verified as already resolved on the default branch, so it is closed with the evidence below rather than handed to a human (Issue #241).\n\n${
+          formatAlreadyResolvedEvidence(evidence)
+        }\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>`;
       await ghClient.closeIssue(repo, issueNumber, closeComment);
       // Issue #3756 — the worker closed the issue itself, so this is its
       // wrap-up point: post the run's single cost/model stats comment.

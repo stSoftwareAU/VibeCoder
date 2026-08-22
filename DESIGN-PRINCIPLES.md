@@ -2056,10 +2056,39 @@ flowchart TD
     N["Run made no code changes"] --> B{"Output opens a<br/>Blocked / Depends on<br/>section naming an issue?"}
     B -- yes --> D["Defer: issue open, discovery label kept,<br/>Depends on owner/repo#N recorded,<br/>claim released 'deferred: depends on …'"]
     D --> G["Dependency gate skips it<br/>until the dependency closes"]
-    B -- no --> C{"Says already complete?"}
-    C -- yes --> X["Close as complete"]
+    B -- no --> C{"Verified already resolved,<br/>citing a commit / PR?"}
+    C -- yes --> X["Close as complete,<br/>evidence in the comment"]
     C -- no --> A["Analysis-only hand-off<br/>(needs-human)"]
 ```
+
+### An already-fixed issue is closed with a note, not escalated
+
+A run that reads the code, finds the issue already fixed on the default branch
+and says so must end with the issue **closed**. NEAT-AI-Backpropagation#96 ended
+the other way: the agent verified the fix (commit `4c6f932`, PR #97, test
+re-run) and the worker still posted a "Partial Answer" and escalated to
+`needs-human`, because the keyword list did not contain the phrasing the agent
+actually used.
+
+Detection is now a structured marker the agent emits —
+`<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`, parsed
+deterministically like `vibe-cross-repo-pr` — with the broadened keyword list
+kept as a fallback for older prompt versions.
+
+**Closing requires cited evidence.** A commit and/or PR reference, plus (on the
+marker path) how the fix was verified. Without it the run falls back to the
+analysis-only hand-off, which is deliberately tighter than the keyword path it
+replaces: that path closed on a plain "already fixed" claim. The evidence is
+recorded in the close comment, so the closure is auditable from the issue alone,
+and it is what keeps this from recreating the failure of closing an issue by
+inference from a PR that merely references it — the agent must verify the code
+itself, not read a cross-reference.
+
+**Implementation:**
+[`already_resolved_outcome.ts`](worker/deno/lib/already_resolved_outcome.ts),
+wired into
+[`phases/handle_no_changes_phase.ts`](worker/deno/lib/phases/handle_no_changes_phase.ts)
+behind the blocked-outcome deferral, which stays ahead of it.
 
 **Implementation:** [`blocked_outcome.ts`](worker/deno/lib/blocked_outcome.ts)
 (detection) and [`blocked_deferral.ts`](worker/deno/lib/blocked_deferral.ts)
