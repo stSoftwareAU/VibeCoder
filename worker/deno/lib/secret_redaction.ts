@@ -44,6 +44,142 @@ interface RedactionRule {
   readonly replace: (match: string, ...groups: string[]) => string;
 }
 
+/** Shortest wrap width the PEM-body fallback treats as a "long" line. */
+const PEM_BODY_LINE_MIN = 40;
+
+/**
+ * Longest wrap width the PEM-body fallback will scan. A ReDoS ceiling,
+ * not a PEM convention: real wrapping sits at 48–76.
+ */
+const PEM_BODY_LINE_MAX = 128;
+
+/** One physical line inside a candidate PEM-body run. */
+interface PemBodyLine {
+  readonly raw: string;
+  readonly payloadLen: number;
+  readonly hasPadding: boolean;
+  readonly newline: string;
+  readonly isBase64: boolean;
+}
+
+/**
+ * Split `text` into physical lines, keeping each line's ending so a
+ * reconstructed span is byte-identical to the input when nothing is
+ * redacted.
+ */
+function splitLinesKeepEndings(text: string): string[] {
+  const lines: string[] = [];
+  const re = /[^\r\n]*\r?\n|[^\r\n]+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    lines.push(m[0]);
+  }
+  return lines;
+}
+
+/** Classify a physical line as a (possibly padded) base64 payload. */
+function parsePemBodyLine(raw: string): PemBodyLine {
+  let newline = "";
+  let content = raw;
+  if (raw.endsWith("\r\n")) {
+    newline = "\r\n";
+    content = raw.slice(0, -2);
+  } else if (raw.endsWith("\n")) {
+    newline = "\n";
+    content = raw.slice(0, -1);
+  }
+  const m = /^([A-Za-z0-9+/]+)(={0,2})$/.exec(content);
+  if (!m) {
+    return {
+      raw,
+      payloadLen: 0,
+      hasPadding: false,
+      newline,
+      isBase64: false,
+    };
+  }
+  const payload = m[1] ?? "";
+  const padding = m[2] ?? "";
+  return {
+    raw,
+    payloadLen: payload.length,
+    hasPadding: padding.length > 0,
+    newline,
+    isBase64: payload.length > 0,
+  };
+}
+
+/**
+ * Redact uniform PEM-shaped runs inside a candidate span (Issue #196).
+ *
+ * A run is two or more consecutive base64 lines of the same width
+ * `W` (40–128) followed by a final line of width 1..W with optional
+ * `=` / `==` padding. Ragged (non-uniform) long lines are left intact,
+ * including any uniform sub-run that does not meet that shape.
+ */
+function redactUniformPemBodyRuns(text: string): string {
+  const parsed = splitLinesKeepEndings(text).map(parsePemBodyLine);
+  if (parsed.length === 0) return text;
+
+  const out: string[] = [];
+  let i = 0;
+  while (i < parsed.length) {
+    const start = parsed[i];
+    if (
+      !start ||
+      !start.isBase64 ||
+      start.hasPadding ||
+      start.payloadLen < PEM_BODY_LINE_MIN ||
+      start.payloadLen > PEM_BODY_LINE_MAX ||
+      start.newline === ""
+    ) {
+      out.push(start?.raw ?? "");
+      i++;
+      continue;
+    }
+
+    const width = start.payloadLen;
+    let j = i + 1;
+    while (j < parsed.length) {
+      const next = parsed[j];
+      if (
+        !next ||
+        !next.isBase64 ||
+        next.hasPadding ||
+        next.payloadLen !== width ||
+        next.newline === ""
+      ) {
+        break;
+      }
+      j++;
+    }
+    const fullCount = j - i;
+    const last = parsed[j];
+    const lastIsPartial = !!last && last.isBase64 &&
+      last.payloadLen >= 1 &&
+      last.payloadLen <= width &&
+      last.payloadLen <= PEM_BODY_LINE_MAX;
+
+    if (fullCount >= 2 && lastIsPartial && last) {
+      // The pattern does not consume a newline after the final payload,
+      // so keep that ending (if any) visible after the placeholder.
+      out.push(REDACTION_PLACEHOLDER + last.newline);
+      i = j + 1;
+      continue;
+    }
+    if (fullCount >= 3) {
+      const tail = parsed[j - 1];
+      out.push(REDACTION_PLACEHOLDER + (tail?.newline ?? ""));
+      i = j;
+      continue;
+    }
+
+    out.push(start.raw);
+    i++;
+  }
+  return out.join("");
+}
+
 /**
  * Ordered redaction rules. URL-credential rules run before the bare-token
  * rules so the host/path of a tokenised URL stays visible after the embedded
@@ -65,16 +201,23 @@ const RULES: readonly RedactionRule[] = [
       /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
     replace: () => REDACTION_PLACEHOLDER,
   },
-  // Bare PEM body with no markers at all (Issue #3707). A key can reach a log
-  // sink stripped of its header — a truncated tail, a `grep` of the file, a
-  // JSON-escaped value split across lines. Anchored on the PEM wrapping
-  // convention: two or more consecutive full-width (64-character) base64
-  // lines. Ordinary base64 in logs is a single short line, so this does not
-  // match patch blobs, hashes, or prose.
+  // Bare PEM body with no markers at all (Issue #3707 / #196). A key can
+  // reach a log sink stripped of its header — a truncated tail, a `grep` of
+  // the file, a JSON-escaped value split across lines. The signal is two or
+  // more consecutive *long uniform* base64 lines plus a final (possibly
+  // padded) line — not a hard-coded wrap width. PEM is wrapped at 64, 76
+  // (MIME), 72, 48 and other widths; ordinary base64 in logs is a single
+  // short line, so patch blobs, hashes, ragged lines and prose stay intact.
+  //
+  // Line width is bounded (Issue #3942): an unbounded `{40,}` on a 500 kB
+  // single-line blob backtracks from every start position. 128 is well
+  // above any wrap in circulation. Uniformity is asserted in the replace
+  // callback so the pattern itself stays linear and cannot ReDoS on a
+  // backreference-style "same length" construction.
   {
     name: "pem-body-block",
-    pattern: /(?:[A-Za-z0-9+/]{64}\r?\n){2,}[A-Za-z0-9+/]{1,64}={0,2}/g,
-    replace: () => REDACTION_PLACEHOLDER,
+    pattern: /(?:[A-Za-z0-9+/]{40,128}\r?\n){2,}[A-Za-z0-9+/]{1,128}={0,2}/g,
+    replace: (match: string) => redactUniformPemBodyRuns(match),
   },
   // Credentials embedded in a URL: scheme://user:secret@host/path.
   // Keep scheme, the username, and host/path; mask only the password/token.

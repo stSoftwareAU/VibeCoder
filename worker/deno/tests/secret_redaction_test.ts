@@ -334,3 +334,156 @@ Deno.test("containsSecret - true when a secret is present, false otherwise", () 
   assertEquals(containsSecret("ghp_" + "e".repeat(36)), true);
   assertEquals(containsSecret("a perfectly ordinary log line"), false);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #196 — PEM-body fallback must honour any uniform wrap width, not
+// only the conventional 64-character line. Ordinary base64 in logs is a
+// single short line; the signal is multiple consecutive *long uniform*
+// lines. These fixtures are fake (gitleaks:allow) and never a real key.
+// ---------------------------------------------------------------------------
+
+const PEM_BODY_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * Marker-less PEM-shaped body: `fullLines` newline-terminated lines of
+ * exactly `width` base64 characters, plus a final line of `lastLen`
+ * characters and optional PEM padding. Distinctive prefix so the
+ * assertion can name a substring that must vanish.
+ */
+function wrappedPemBody(
+  width: number,
+  lastLen: number,
+  padding = "",
+  fullLines = 2,
+): string {
+  const total = width * fullLines + lastLen;
+  // RSA-ish prefix so a leaked body is recognisable in failure output.
+  const prefix = "MIIE";
+  let payload = prefix;
+  while (payload.length < total) {
+    payload += PEM_BODY_ALPHABET;
+  }
+  payload = payload.slice(0, total);
+  const lines: string[] = [];
+  for (let i = 0; i < fullLines; i++) {
+    lines.push(payload.slice(i * width, (i + 1) * width));
+  }
+  lines.push(payload.slice(fullLines * width) + padding);
+  return lines.join("\n");
+}
+
+Deno.test("redactSecrets - masks a marker-less PEM body wrapped at 76 (Issue #196)", () => {
+  const body = wrappedPemBody(76, 40);
+  const out = redactSecrets(`captured key material:\n${body}\nend`);
+  assertEquals(out.includes("MIIE"), false);
+  assertEquals(out.includes(body.slice(0, 76)), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+  assertStringIncludes(out, "captured key material:");
+  assertStringIncludes(out, "end");
+});
+
+Deno.test("redactSecrets - masks a marker-less PEM body wrapped at 72 (Issue #196)", () => {
+  const body = wrappedPemBody(72, 36);
+  const out = redactSecrets(`grep of the key file:\n${body}`);
+  assertEquals(out.includes("MIIE"), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("redactSecrets - masks a marker-less PEM body wrapped at 48 (Issue #196)", () => {
+  const body = wrappedPemBody(48, 24);
+  const out = redactSecrets(body);
+  assertEquals(out.includes("MIIE"), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("redactSecrets - still masks a marker-less PEM body wrapped at 64 (Issue #196)", () => {
+  const body = wrappedPemBody(64, 32);
+  const out = redactSecrets(`stripped tail:\n${body}\nend`);
+  assertEquals(out.includes("MIIE"), false);
+  assertEquals(out.includes(body.slice(0, 64)), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("redactSecrets - masks a PEM body whose final line carries = padding (Issue #196)", () => {
+  const body = wrappedPemBody(76, 20, "=");
+  assertEquals(body.endsWith("="), true);
+  const out = redactSecrets(`material:\n${body}\ndone`);
+  assertEquals(out.includes("MIIE"), false);
+  assertEquals(out.includes(body.slice(-8)), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+  assertStringIncludes(out, "done");
+});
+
+Deno.test("redactSecrets - masks a PEM body whose final line carries == padding (Issue #196)", () => {
+  const body = wrappedPemBody(64, 18, "==");
+  assertEquals(body.endsWith("=="), true);
+  const out = redactSecrets(body);
+  assertEquals(out.includes("MIIE"), false);
+  assertEquals(out.includes("=="), false);
+  assertEquals(out, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("redactSecrets - leaves a single long base64 line untouched (Issue #196)", () => {
+  const line = "A".repeat(200) + "B".repeat(200);
+  const text = `id ${line} ok`;
+  assertEquals(redactSecrets(text), text);
+  assertEquals(containsSecret(text), false);
+});
+
+Deno.test("redactSecrets - leaves a unified-diff hunk of base64-ish lines untouched (Issue #196)", () => {
+  const hunk = [
+    "diff --git a/payload.b64 b/payload.b64",
+    "--- a/payload.b64",
+    "+++ b/payload.b64",
+    "@@ -1,4 +1,4 @@",
+    `-${"A".repeat(64)}`,
+    `+${"B".repeat(64)}`,
+    ` ${"C".repeat(64)}`,
+    ` ${"D".repeat(48)}`,
+  ].join("\n");
+  assertEquals(redactSecrets(hunk), hunk);
+  assertEquals(containsSecret(hunk), false);
+});
+
+Deno.test("redactSecrets - leaves ordinary prose mentioning base64 untouched (Issue #196)", () => {
+  const text =
+    "Processing issue #196 took 12s; the base64 hash is deadbeef and the build is green.";
+  assertEquals(redactSecrets(text), text);
+  assertEquals(containsSecret(text), false);
+});
+
+Deno.test("redactSecrets - leaves ragged non-uniform long base64 lines untouched (Issue #196)", () => {
+  const ragged = [
+    "A".repeat(48),
+    "B".repeat(64),
+    "C".repeat(76),
+    "D".repeat(40),
+  ].join("\n");
+  assertEquals(redactSecrets(ragged), ragged);
+  assertEquals(containsSecret(ragged), false);
+});
+
+Deno.test("redactSecrets - primary BEGIN/END PEM rule still masks a complete block (Issue #196)", () => {
+  const pem = [
+    "-----BEGIN RSA PRIVATE KEY-----", // gitleaks:allow fake fixture, not a real key
+    "MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn0",
+    "abcdEFGH1234567890ijklMNOPqrst==",
+    "-----END RSA PRIVATE KEY-----",
+  ].join("\n");
+  const out = redactSecrets(`the App key is:\n${pem}\nend`);
+  assertEquals(out.includes("MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn0"), false);
+  assertEquals(out.includes("BEGIN RSA PRIVATE KEY"), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+  assertStringIncludes(out, "end");
+});
+
+Deno.test("redactSecrets - primary PEM rule still masks a block with no END marker (Issue #196)", () => {
+  const body = wrappedPemBody(64, 32);
+  const text =
+    `error: -----BEGIN RSA PRIVATE KEY-----\n${body}\n... (truncated)`;
+  const out = redactSecrets(text);
+  assertEquals(out.includes("MIIE"), false);
+  assertEquals(out.includes("BEGIN RSA PRIVATE KEY"), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+});
