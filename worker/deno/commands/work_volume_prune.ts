@@ -5,6 +5,11 @@
  * directories (by age and a total cap), agents' scratch directories left in
  * the work root, and stale heartbeat-marker state files.
  *
+ * The summary also carries the volume's standing totals by category
+ * (Issue #244) so a reclamation's before/after is visible in the log — the
+ * "after" line is measured only when something was actually removed, so an
+ * idle prune costs one walk, not two.
+ *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
@@ -14,6 +19,7 @@ import {
   summariseWorkVolumePrune,
   type WorkVolumePruneResult,
 } from "../lib/work_volume_prune.ts";
+import { reportWorkVolumeUsage } from "../lib/work_volume_usage.ts";
 
 function numberArg(
   args: Record<string, unknown>,
@@ -58,6 +64,12 @@ export const workVolumePruneCommand: Command = {
         };
       }
     }
+    const monitoredRepos = config?.repos ?? [];
+    const before = await reportWorkVolumeUsage(
+      { workDir, monitoredRepos },
+      "Work volume before",
+    );
+
     const result = await pruneWorkVolume({
       workDir,
       artefactMaxAgeDays: knobs.artefactMaxAgeDays as number | undefined,
@@ -65,9 +77,21 @@ export const workVolumePruneCommand: Command = {
       scratchMaxAgeHours: knobs.scratchMaxAgeHours as number | undefined,
       markerMaxAgeDays: knobs.markerMaxAgeDays as number | undefined,
     });
+
+    const reclaimed = result.artefacts.removed.length +
+      result.scratch.removed.length + result.markers.removed.length;
+    const after = reclaimed > 0
+      ? ` | ${await reportWorkVolumeUsage(
+        { workDir, monitoredRepos },
+        "Work volume after",
+      )}`
+      : "";
+
     return {
       success: result.errors.length === 0,
-      message: `work-volume-prune: ${summariseWorkVolumePrune(result)}`,
+      message: `work-volume-prune: ${
+        summariseWorkVolumePrune(result)
+      } | ${before}${after}`,
       data: result,
     };
   },
