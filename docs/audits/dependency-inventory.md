@@ -40,7 +40,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | gemini | provider | 0.55.1 | noarch: 4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e | exact version + SHA-256 verified |
 | gh | tool | 2.97.0 | amd64: a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112<br>arm64: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 | exact version + SHA-256 verified |
 | jq | tool | 1.8.2 | amd64: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f<br>arm64: 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 | exact version + SHA-256 verified |
-| playwright-core | tool | 1.61.0-alpha-1778188671000 | noarch: d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516 | exact version + SHA-256 verified |
+| playwright-core | tool | 1.61.0-alpha-1778188671000 | chromium_amd64: 4f5dfbb09cc103573be201e870573fe53f36b1de076ac649049c421bb5b31e69<br>chromium_arm64: 549844a1f15687f91486645079ec0e495a880687e6813e2d42ef4d044782d589<br>noarch: d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516 | exact version + SHA-256 verified |
 | actionlint | toolchain | 1.7.12 | amd64: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8<br>arm64: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 | exact version + SHA-256 verified |
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
 | markdownlint-cli2 | toolchain | 0.23.2 | noarch: b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09 | exact version + SHA-256 verified |
