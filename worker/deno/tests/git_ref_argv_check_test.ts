@@ -71,6 +71,17 @@ Deno.test("scanner - a comment naming the pattern is not a violation", () => {
   );
 });
 
+Deno.test("scanner - flags a multi-line fetch argv (Issue #268)", () => {
+  const content = `const fetchResult = await deps.runGitCommand([
+      "fetch",
+      "origin",
+      branchName,
+    ]);`;
+  const violations = scanContentForGitRefArgv(content, "worker/deno/lib/x.ts");
+  assertEquals(violations.length, 1, JSON.stringify(violations));
+  assertEquals(violations[0]?.file, "worker/deno/lib/x.ts");
+});
+
 Deno.test("the real lib/commands tree routes every ref through the builders (Issue #12)", async () => {
   const { violations, filesScanned } = await scanDirectoriesForGitRefArgv(
     REPO_ROOT,
