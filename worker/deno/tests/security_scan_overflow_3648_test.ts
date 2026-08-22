@@ -153,7 +153,9 @@ Deno.test("SEC-3edee182987d - prepareQuestionComments preserves small input", ()
   const json = JSON.stringify({
     comments: [{ body: "hello", author: { login: "alice" } }],
   });
-  assertEquals(prepareQuestionComments(json), "[alice]: hello");
+  // Issue #190: the legacy path now labels every author UNTRUSTED, because it
+  // runs precisely when no trust configuration exists.
+  assertEquals(prepareQuestionComments(json), "[UNTRUSTED - alice]: hello");
 });
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ import {
 } from "../lib/question_processor.ts";
 import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
-import { prepareQuestionComments } from "../lib/comment_filter.ts";
+import { prepareQuestionCommentsWithAudit } from "../lib/comment_filter.ts";
 import { prepareTrustAnnotatedComments } from "../lib/comment_trust_filter.ts";
 
 // Re-export library functions for external use
@@ -125,7 +125,14 @@ export const questionProcessorCommand: Command = {
             deps.logger.warn(auditMsg, { repo, issueNumber });
           }
         } else {
-          filteredComments = prepareQuestionComments(rawJson);
+          // No trust config: every author is treated as untrusted and the
+          // same suspicious-pattern audit events are logged (Issue #190).
+          const legacyResult = prepareQuestionCommentsWithAudit(rawJson);
+          filteredComments = legacyResult.formattedComments;
+
+          for (const auditMsg of legacyResult.securityAuditMessages) {
+            deps.logger.warn(auditMsg, { repo, issueNumber });
+          }
         }
 
         const ctx: IssueContext = {

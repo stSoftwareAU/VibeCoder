@@ -11,7 +11,8 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
-import { prepareQuestionComments } from "../lib/comment_filter.ts";
+import { prepareQuestionCommentsWithAudit } from "../lib/comment_filter.ts";
+import { createLogger } from "../lib/logger.ts";
 
 export const commentFilterCommand: Command = {
   name: "comment-filter",
@@ -29,8 +30,21 @@ export const commentFilterCommand: Command = {
         const truncateLength = args["truncate-length"]
           ? Number(args["truncate-length"])
           : undefined;
-        const result = prepareQuestionComments(jsonData, truncateLength);
-        return { success: true, message: result };
+        const result = prepareQuestionCommentsWithAudit(
+          jsonData,
+          truncateLength,
+        );
+
+        // Audit events go to the logger (stderr), keeping the formatted blob
+        // on stdout intact for the shell caller (Issue #190).
+        const logger = createLogger({
+          debug: Deno.env.get("DEBUG") === "true",
+        });
+        for (const auditMsg of result.securityAuditMessages) {
+          logger.warn(auditMsg);
+        }
+
+        return { success: true, message: result.formattedComments };
       }
 
       default:
