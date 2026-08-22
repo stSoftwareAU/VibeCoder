@@ -9,6 +9,7 @@
  */
 
 import type { ConfigFile, WorkerConfig } from "../types.ts";
+import { EXCLUSION_TEAM_PATTERN } from "./validation.ts";
 import { isBotLogin } from "./trust_exclusions.ts";
 
 /**
@@ -154,6 +155,20 @@ export function validateRequiredFields(config: WorkerConfig): string[] {
     errors.push(
       "ALLOWED_AUTHORS is not set or contains no authors. " +
         "Configure 'allowed_authors' array or 'allowed_author' string in .config.json",
+    );
+  }
+
+  // Issue #252: exclusion_team is schema-ready ahead of GitHub-allowlist
+  // wiring. Validate the loaded WorkerConfig field here (not only the raw
+  // JSON key in config.ts) so unused_config_fields_test sees a real consumer
+  // outside config plumbing — same pattern as authorSource above.
+  if (
+    config.exclusionTeam !== undefined &&
+    !EXCLUSION_TEAM_PATTERN.test(config.exclusionTeam)
+  ) {
+    errors.push(
+      `Invalid exclusion_team '${config.exclusionTeam}'. ` +
+        "Expected org/slug (e.g. stSoftwareAU/vibe-workers).",
     );
   }
 
