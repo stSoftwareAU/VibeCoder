@@ -18,7 +18,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { buildCheckoutArgs } from "./git_ref_args.ts";
+import { buildCheckoutArgs, buildPushArgs } from "./git_ref_args.ts";
 import type { Result } from "../types.ts";
 import type { CiStartStatus } from "./pr_ci_started.ts";
 import { assertNever } from "./assert_never.ts";
@@ -194,7 +194,7 @@ async function pushEmptyCommit(
 
   // Push — surface the actual git error so the operator can diagnose.
   try {
-    await opts.gitCommandFn(["push", "origin", opts.headBranch]);
+    await opts.gitCommandFn(buildPushArgs("origin", opts.headBranch));
   } catch (err) {
     return {
       ok: false,
