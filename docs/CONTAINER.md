@@ -478,6 +478,56 @@ over the virtiofs `/workspace` mount. The entrypoint now:
   checkout stays the source of truth (`--base-dir` still points at it), and
   any staging failure falls back loudly to the previous behaviour.
 
+## The work volume has two tiers (Issue #242)
+
+Not everything on the `vibe-work` volume is a repository the worker is
+responsible for. A monitored repo's `quality.sh` or bench scripts clone
+sibling **data** repos as `../<name>`, and on GRQ-23 those siblings
+(`GRQ-shareprices2026Q2` 7.3 GB, `GRQ-listing` 3.9 GB, `GRQ-companyreports`
+2.1 GB, …) were ~15 GB of the 43 directories in the work root, while the 15
+monitored clones the worker actually wants to keep warm were a couple of GB.
+The work root is therefore tiered, from the monitored list the worker
+already has:
+
+- **Tier 1 — monitored repos.** Persistent. Never removed by either path
+  below, so a large clone is not re-downloaded every cycle; the build output
+  and caches *inside* them stay bounded by the `work-volume-prune` step.
+- **Tier 2 — everything else.** Disposable. Aged out by the
+  `work-volume-tiers` housekeeping step after
+  `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` idle days (default 3 — long enough
+  that a nightly gate's data repo stays warm), and removed **largest first**
+  the moment the host-disk monitor reports `low`, *before* the gate stops
+  claiming.
+
+```mermaid
+flowchart TD
+    E["entry in the work root"] --> D{"dot-prefixed<br/>or reserved?"}
+    D -->|yes| S["worker state — owned by<br/>work-volume-prune"]
+    D -->|no| M{"on the monitored<br/>list from .config.json?"}
+    M -->|yes| T1["tier 1 — persistent<br/>never reclaimed"]
+    M -->|no| T2["tier 2 — disposable"]
+    T2 --> A{"host disk low?"}
+    A -->|yes| L["remove largest first<br/>until the floor is cleared"]
+    A -->|no| G{"idle > 3 days?"}
+    G -->|yes| L
+    G -->|no| K["kept — a gate is still using it"]
+    style T1 fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style L fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
+Nothing is removed while a slot is mid-execute — a gate may be reading the
+clone right now — unpushed commits are pushed first with the same rescue the
+stale-workdir sweep uses (a clone whose push fails is kept), and a
+`.git`-less or unreadable directory goes without a rescue because it has no
+commits to save. Removal is safe because the consuming scripts re-fetch on
+demand: GRQ's `worker/model_fetch.sh` clones the sibling when the directory
+is absent and fetches when it is present, so a removed data repo costs one
+clone, not a failed gate.
+
+Both paths log the split before anything goes, e.g.
+`work volume: monitored 2.1 GB in 15 repos; side/data 15.2 GB in 8 dirs;
+removed 2 (11.0 GB, disk-low)`.
+
 ## The launcher — `run.sh` is the containment boundary
 
 `run.sh` is a thin, trusted, host-side launcher. It asks the

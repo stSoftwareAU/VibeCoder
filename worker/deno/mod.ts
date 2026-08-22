@@ -103,6 +103,7 @@ import { staleWorkDirCommand } from "./commands/stale_workdir.ts";
 import { sessionSweepCommand } from "./commands/session_sweep.ts";
 import { denoCacheGuardCommand } from "./commands/deno_cache_guard.ts";
 import { workVolumePruneCommand } from "./commands/work_volume_prune.ts";
+import { workVolumeTiersCommand } from "./commands/work_volume_tiers.ts";
 import { benchmarkCommand } from "./commands/benchmark.ts";
 import { worktreeCleanupCommand } from "./commands/worktree_cleanup.ts";
 import { claudeTailCleanupCommand } from "./commands/claude_tail_cleanup.ts";
@@ -291,6 +292,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(sessionSweepCommand);
   registry.register(denoCacheGuardCommand);
   registry.register(workVolumePruneCommand);
+  registry.register(workVolumeTiersCommand);
   registry.register(benchmarkCommand);
   registry.register(worktreeCleanupCommand);
   registry.register(claudeTailCleanupCommand);

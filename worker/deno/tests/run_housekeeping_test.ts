@@ -25,6 +25,7 @@ import {
   sweepVolatileCliState,
 } from "../lib/run_housekeeping.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { DEFAULT_SIDE_REPO_MAX_AGE_DAYS } from "../lib/work_volume_tiers.ts";
 import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
@@ -408,5 +409,39 @@ Deno.test("sweepVolatileCliState - outside the worker container the CLI state is
     );
   } finally {
     await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+// --- Two-tier work volume (Issue #242) -------------------------------------
+
+Deno.test("buildHousekeepingSteps - ages the work root's disposable tier out", () => {
+  assertEquals(HOUSEKEEPING_STEP_IDS.includes("work-volume-tiers"), true);
+  // It runs beside the artefact prune, after it.
+  assertEquals(
+    HOUSEKEEPING_STEP_IDS.indexOf("work-volume-tiers"),
+    HOUSEKEEPING_STEP_IDS.indexOf("work-volume-prune") + 1,
+  );
+
+  const step = buildHousekeepingSteps(baseOptions({ workDir: "/w" }))
+    .find((s) => s.id === "work-volume-tiers");
+  assertEquals(step?.command, "work-volume-tiers");
+  assertEquals(step?.args["work-dir"], "/w");
+  assertEquals(step?.args["mode"], "age");
+  assertEquals(step?.args["max-age-days"], DEFAULT_SIDE_REPO_MAX_AGE_DAYS);
+});
+
+Deno.test("buildHousekeepingSteps - work-volume-tiers honours its env override", () => {
+  const previous = Deno.env.get("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS");
+  Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS", "7");
+  try {
+    const step = buildHousekeepingSteps(baseOptions())
+      .find((s) => s.id === "work-volume-tiers");
+    assertEquals(step?.args["max-age-days"], 7);
+  } finally {
+    if (previous === undefined) {
+      Deno.env.delete("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS");
+    } else {
+      Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS", previous);
+    }
   }
 });
