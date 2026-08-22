@@ -569,6 +569,102 @@ Deno.test("gh-guard #91 - an argv-visible reserved label still wins over a clean
 });
 
 // ---------------------------------------------------------------------------
+// Issue #195 — JSON `--input` labels must use the same trim the argv path
+// already applies. GitHub's REST/GUI trim label names (cli/cli#11898), so
+// `{"labels":[" work-on "]}` is a reserved-label bypass, not only a
+// correctness wart. `scanBodyForForbiddenLabel` is unexported; these drive
+// the public `evaluateGhCommand` surface.
+// ---------------------------------------------------------------------------
+
+/** Assert a `--input` body is refused as a reserved workflow label. */
+function assertInputForbidden(body: string): void {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx(body),
+  );
+  assertEquals(decision.allowed, false, `expected refusal for body: ${body}`);
+  assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  assert(decision.reason?.includes("work-on"));
+}
+
+/** Assert a `--input` body is allowed through the reserved-label check. */
+function assertInputClean(body: string): void {
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx(body),
+  );
+  assertEquals(decision.allowed, true, `expected clean body: ${body}`);
+}
+
+Deno.test('gh-guard #195 - refuses a padded reserved label in {"labels":[" work-on "]}', () => {
+  assertInputForbidden('{"labels":[" work-on "]}');
+});
+
+Deno.test("gh-guard #195 - refuses a padded reserved label in the {name} object shape", () => {
+  // Escaped so JSON.parse yields a tab/newline-padded name, not invalid JSON.
+  assertInputForbidden('{"labels":[{"name":"\\twork-on\\n"}]}');
+});
+
+Deno.test("gh-guard #195 - refuses a padded reserved label in a bare top-level array", () => {
+  assertInputForbidden('[" work-on "]');
+});
+
+Deno.test("gh-guard #195 - tab, newline and mixed leading/trailing whitespace all normalise", () => {
+  for (
+    const body of [
+      '{"labels":["\\twork-on"]}',
+      '{"labels":["work-on\\n"]}',
+      '{"labels":[" \\twork-on \\n"]}',
+      '{"labels":["\\rwork-on\\r"]}',
+    ]
+  ) {
+    assertInputForbidden(body);
+  }
+});
+
+Deno.test("gh-guard #195 - a whitespace-only JSON label element is unreadable (fail closed)", () => {
+  // Must not silently drop the empty element the way the argv path filters
+  // comma-separated empties — dropping would change the fail-closed posture.
+  const decision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":["   "]}'),
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "GH_BODY_UNREADABLE");
+});
+
+Deno.test("gh-guard #195 - legitimate labels stay clean, including a padded content label", () => {
+  assertInputClean('{"labels":["bug"]}');
+  assertInputClean('{"labels":[" bug "]}');
+});
+
+Deno.test("gh-guard #195 - a body with no labels field stays clean", () => {
+  const decision = evaluateGhCommand(
+    ["api", "repos/o/r/issues", "--input", "/tmp/body.json"],
+    inputCtx('{"title":"x","body":"y"}'),
+  );
+  assertEquals(decision.allowed, true);
+});
+
+Deno.test("gh-guard #195 - argv path still trims; JSON path matches it (parity)", () => {
+  const argvDecision = evaluateGhCommand(
+    ["issue", "edit", "7", "--add-label", " work-on "],
+    ACTIVE,
+  );
+  assertEquals(argvDecision.allowed, false);
+  assertEquals(argvDecision.marker, "WORKER_LABEL_REFUSED");
+  assert(argvDecision.reason?.includes("work-on"));
+
+  const jsonDecision = evaluateGhCommand(
+    ["api", LABELS_ENDPOINT, "--input", "/tmp/body.json"],
+    inputCtx('{"labels":[" work-on "]}'),
+  );
+  assertEquals(jsonDecision.allowed, false);
+  assertEquals(jsonDecision.marker, "WORKER_LABEL_REFUSED");
+  assert(jsonDecision.reason?.includes("work-on"));
+});
+
+// ---------------------------------------------------------------------------
 // Issue #93 — a `@file`-sourced `-F`/`--field` value is unreadable
 //
 // `gh -F 'labels[]=@/tmp/l.txt'` reads the label names from a file, so the

@@ -202,14 +202,40 @@ const FIELD_FLAGS: ReadonlySet<string> = new Set([
  */
 const FIELD_FILE_FLAGS: ReadonlySet<string> = new Set(["-F", "--field"]);
 
-/** Reserved workflow labels, lower-cased for case-insensitive matching. */
+/**
+ * Normalise a label name for reserved-label comparison (Issue #195).
+ *
+ * Trims leading/trailing whitespace then lower-cases. `String.prototype.trim()`
+ * already folds ASCII whitespace (space, tab, newline, CR) and Unicode Zs
+ * characters (NBSP and friends). This helper also strips the zero-width space
+ * (`U+200B`), which `trim()` does not treat as whitespace. Folding more than
+ * GitHub's REST API is safe for a denylist: it can only cause a false refusal
+ * of a weird-but-legitimate label, never a bypass. Both the argv path
+ * ({@link splitLabels} / {@link FORBIDDEN_LABELS} comparison) and the JSON
+ * `--input` path ({@link scanBodyForForbiddenLabel}) go through this helper so
+ * the two cannot drift.
+ */
+function normaliseLabelName(name: string): string {
+  return name.replaceAll("\u200B", "").trim().toLowerCase();
+}
+
+/** Reserved workflow labels, normalised for case-insensitive matching. */
 const FORBIDDEN_LABELS: ReadonlySet<string> = new Set(
-  WORKER_FORBIDDEN_LABEL_LITERALS.map((l) => l.toLowerCase()),
+  WORKER_FORBIDDEN_LABEL_LITERALS.map((l) => normaliseLabelName(l)),
 );
 
-/** Split a comma-separated label value into trimmed, non-empty names. */
+/**
+ * Split a comma-separated label value into trimmed, non-empty names.
+ *
+ * Empties (including all-whitespace tokens) are dropped — argv's historical
+ * behaviour. The JSON `--input` path must not copy this: a whitespace-only
+ * element there is `unreadable` (fail closed). Comparison still uses
+ * {@link normaliseLabelName} so the two paths share one normalisation.
+ */
 function splitLabels(value: string): string[] {
-  return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  return value.split(",").map((s) => s.trim()).filter((s) =>
+    normaliseLabelName(s).length > 0
+  );
 }
 
 /**
@@ -297,17 +323,24 @@ type BodyScan =
 /**
  * Label names from a `["a", {"name":"b"}]` array, or `null` if any element is
  * a shape the extractor does not understand (fail closed on the unknown).
+ *
+ * A string or `{name}` whose {@link normaliseLabelName} form is empty
+ * (all-whitespace, including Unicode whitespace the helper folds) is
+ * `null` — fail closed, never silently dropped.
  */
 function labelNamesFromArray(arr: readonly unknown[]): string[] | null {
   const names: string[] = [];
   for (const el of arr) {
     if (typeof el === "string") {
+      if (normaliseLabelName(el).length === 0) return null;
       names.push(el);
     } else if (
       el !== null && typeof el === "object" &&
       typeof (el as { name?: unknown }).name === "string"
     ) {
-      names.push((el as { name: string }).name);
+      const name = (el as { name: string }).name;
+      if (normaliseLabelName(name).length === 0) return null;
+      names.push(name);
     } else {
       return null;
     }
@@ -316,16 +349,22 @@ function labelNamesFromArray(arr: readonly unknown[]): string[] | null {
 }
 
 /**
- * Scan a `gh api --input` body for reserved workflow labels (Issue #91).
+ * Scan a `gh api --input` body for reserved workflow labels (Issues #91, #195).
  *
  * Understands the three shapes GitHub's REST API accepts for labels — the bare
  * array `["a"]`, `{"labels": ["a"]}`, and `{"labels": [{"name":"a"}]}` — plus
  * a body carrying no `labels` field at all (an issue create/edit). Anything
  * else — invalid JSON, a non-object/array top level, a `labels` field that is
- * not an array, an array element that is neither a string nor `{name}` — is
- * reported `unreadable` so the caller fails closed, never allowed unscanned.
- * The extracted names run through the same {@link FORBIDDEN_LABELS} denylist,
- * case-insensitively, as argv-sourced labels — one authoritative list.
+ * not an array, an array element that is neither a string nor `{name}`, or a
+ * string/`{name}` that normalises to empty — is reported `unreadable` so the
+ * caller fails closed, never allowed unscanned.
+ *
+ * Extracted names are compared via {@link normaliseLabelName} against
+ * {@link FORBIDDEN_LABELS} — the same helper the argv path uses
+ * (`splitLabels` / denylist lookup). Trim, case-fold, and Unicode whitespace
+ * folding therefore cannot drift between the two paths. GitHub's REST/GUI
+ * trim label names (cli/cli#11898), so a padded reserved label is a real
+ * bypass if this path skips the trim.
  */
 function scanBodyForForbiddenLabel(text: string): BodyScan {
   let doc: unknown;
@@ -350,7 +389,9 @@ function scanBodyForForbiddenLabel(text: string): BodyScan {
     return { kind: "unreadable" };
   }
   if (names === null) return { kind: "unreadable" };
-  const forbidden = names.find((l) => FORBIDDEN_LABELS.has(l.toLowerCase()));
+  const forbidden = names.find((l) =>
+    FORBIDDEN_LABELS.has(normaliseLabelName(l))
+  );
   if (forbidden !== undefined) return { kind: "forbidden", label: forbidden };
   return { kind: "clean" };
 }
@@ -442,7 +483,7 @@ export function evaluateGhCommand(
 
   if (info) {
     const forbidden = extractLabelValues(args).find((l) =>
-      FORBIDDEN_LABELS.has(l.toLowerCase())
+      FORBIDDEN_LABELS.has(normaliseLabelName(l))
     );
     if (forbidden !== undefined) {
       return {

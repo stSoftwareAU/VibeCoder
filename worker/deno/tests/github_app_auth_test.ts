@@ -226,6 +226,136 @@ Deno.test("github_app_auth - getInstallationToken rejects empty installationId",
 });
 
 // =============================================================================
+// Issue #197 — Bound the token-exchange error body
+// =============================================================================
+
+/** Chosen body cap (a few hundred characters). Hard-coded so raising it
+ * without updating the assertion is a visible regression. */
+const TOKEN_EXCHANGE_ERROR_BODY_LIMIT = 400;
+
+const TOKEN_EXCHANGE_ERROR_BODY_ELISION = "…[truncated]";
+
+Deno.test("github_app_auth - getInstallationToken bounds a >10 kB non-201 body", async () => {
+  const hugeBody = "x".repeat(11_000);
+  const mockFetch: FetchFn = () =>
+    Promise.resolve(new Response(hugeBody, { status: 502 }));
+
+  const error = await assertRejects(
+    () => getInstallationToken("fake.jwt.token", "67890", mockFetch),
+    Error,
+  );
+
+  assertStringIncludes(error.message, "502");
+  assertStringIncludes(error.message, TOKEN_EXCHANGE_ERROR_BODY_ELISION);
+  assertEquals(
+    error.message.includes("x".repeat(TOKEN_EXCHANGE_ERROR_BODY_LIMIT + 1)),
+    false,
+    "error message must not contain more than the chosen body limit of raw text",
+  );
+  assertEquals(
+    error.message.length < hugeBody.length,
+    true,
+    "error message must be smaller than the unbounded response body",
+  );
+});
+
+Deno.test("github_app_auth - getInstallationToken surfaces GitHub error message", async () => {
+  const mockFetch: FetchFn = () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          message: "Bad credentials",
+          documentation_url:
+            "https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app",
+        }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+  const error = await assertRejects(
+    () => getInstallationToken("fake.jwt.token", "67890", mockFetch),
+    Error,
+  );
+
+  assertStringIncludes(error.message, "401");
+  assertStringIncludes(error.message, "Bad credentials");
+});
+
+Deno.test("github_app_auth - getInstallationToken keeps a usable message for HTML bodies", async () => {
+  const html = "<html><body>502 Bad Gateway</body></html>" + "y".repeat(11_000);
+  const mockFetch: FetchFn = () =>
+    Promise.resolve(
+      new Response(html, {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+
+  const error = await assertRejects(
+    () => getInstallationToken("fake.jwt.token", "67890", mockFetch),
+    Error,
+  );
+
+  assertEquals(error instanceof SyntaxError, false);
+  assertEquals(error.name, "Error");
+  assertStringIncludes(error.message, "502");
+  assertStringIncludes(error.message, TOKEN_EXCHANGE_ERROR_BODY_ELISION);
+  assertStringIncludes(error.message, "<html>");
+});
+
+Deno.test("github_app_auth - getInstallationToken keeps a usable message for an empty body", async () => {
+  const mockFetch: FetchFn = () =>
+    Promise.resolve(new Response("", { status: 404 }));
+
+  const error = await assertRejects(
+    () => getInstallationToken("fake.jwt.token", "67890", mockFetch),
+    Error,
+  );
+
+  // A JSON.parse throw inside the error path would replace the original
+  // status with an opaque SyntaxError and lose the diagnostic entirely.
+  assertEquals(error instanceof SyntaxError, false);
+  assertEquals(error.name, "Error");
+  assertStringIncludes(error.message, "404");
+});
+
+Deno.test("getGhTokenForSubprocess - reports fallback when the token exchange fails", async () => {
+  resetTokenCache();
+  const { logger, events } = captureSecurityEvents();
+
+  const tmpFile = await Deno.makeTempFile({ suffix: ".pem" });
+  const originalFetch = globalThis.fetch;
+  try {
+    await Deno.writeTextFile(tmpFile, TEST_PRIVATE_KEY_PEM);
+    globalThis.fetch = ((_url, _init) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ message: "Bad credentials" }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        ),
+      )) as typeof fetch;
+
+    const token = await getGhTokenForSubprocess(
+      "12345",
+      "67890",
+      tmpFile,
+      logger,
+    );
+
+    assertEquals(token, undefined);
+    assertEquals(events.length, 1);
+    assertEquals(events[0]!.event, APP_AUTH_FALLBACK_EVENT);
+    assertStringIncludes(events[0]!.details, "appId=12345");
+    assertStringIncludes(events[0]!.details, "installationId=67890");
+    assertStringIncludes(events[0]!.details, "401");
+    assertStringIncludes(events[0]!.details, "Bad credentials");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await Deno.remove(tmpFile);
+  }
+});
+
+// =============================================================================
 // ensureValidToken — Token Caching and Auto-Refresh
 // =============================================================================
 
