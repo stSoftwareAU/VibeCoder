@@ -81,7 +81,7 @@ attack paths below.
 ```mermaid
 flowchart TD
     U["🌍 Any GitHub user<br/>UNTRUSTED"] -->|"issue/comment/label text"| BND
-    T["👤 allowed_authors<br/>TRUSTED"] -->|"approval, task"| BND
+    T["👤 Trusted authors<br/>local arrays or GitHub<br/>collaborators minus exclusions"] -->|"approval, task"| BND
     BND{{"Boundary 1 — inbound trust gate<br/>author + label + content-hash checks"}}
     BND --> P["Prompt assembly<br/>untrusted text fenced, never instruction"]
     P --> BND2{{"Boundary 2 — execution containment<br/>container, scoped env, read-only credentials"}}
@@ -94,11 +94,22 @@ flowchart TD
     style AG fill:#e85d04,stroke:#dc2f02,color:#000
 ```
 
-**Trusted:** the operator's host and the configuration file on it; the accounts
-listed in `allowed_authors`; the worker's own Deno process.
+**Trusted:** the operator's host and the configuration file on it; the
+current trusted-author set; the worker's own Deno process.
 
-**Partially trusted:** `authorized_commenters` — they can trigger PR feedback
-processing, but they do not widen the egress boundary.
+That trusted-author set is **not** always `allowed_authors`. Under
+`author_source: "config"` (the default) it is the local
+`allowed_authors` array. Under `"github"` it is each monitored repo's
+write, maintain, or admin collaborators, minus the host login,
+`service_accounts`, optional `exclusion_team` members, and bot-shaped
+logins. Anyone who can grant write access on a monitored repo can
+authorise an instructor of the worker. That is the intended design, and
+it is a wider set than a hand-edited allowlist.
+
+**Partially trusted:** `authorized_commenters` under `"config"` — they can
+trigger PR feedback processing, but they do not widen the egress
+boundary. Under `"github"` that key is parsed and ignored for trust; the
+derived collaborator set fills both roles.
 
 **Untrusted:** every byte that arrives from GitHub, and — by design — the agent
 subprocess itself. See
@@ -133,7 +144,7 @@ answer is enforced.
 | **AP-3** | **Injection via repository-supplied text** — `CLAUDE.md`/`AGENTS.md` on the branch under work, quality-gate output, a fetched sub-issue body — reaching the model as instruction rather than data | A1–A4 | C7, C8 | `worker/deno/lib/repo_context_reader.ts` |
 | **AP-4** | **Image-borne injection (GhostCommit)** — instructions inside an untrusted image, which text fencing cannot reach | A1–A4 | C9 | `worker/deno/lib/suspicious_image_handoff.ts` |
 | **AP-5** | **Label abuse** — an untrusted triage actor adds `work-on`/`top-priority` to steer routing and priority, or parks an issue with a blocking label | A3, A6 | C2, C3, C15 | `worker/deno/lib/label_security.ts` |
-| **AP-6** | **Unauthorised author / unauthorised commenter bypass** — triggering a run without being on either allowlist | A1–A4 | C1, C2, C3 | `worker/deno/lib/security.ts` |
+| **AP-6** | **Unauthorised author / unauthorised commenter bypass** — triggering a run without being on the current trusted-author set | A1–A4 | C1, C2, C3, C29 | `worker/deno/lib/security.ts` |
 | **AP-7** | **Edit after approval (TOCTOU)** — a trusted approval is captured, then the body or title is rewritten before the prompt is built | A1–A4, A6 | C10 | `worker/deno/lib/pickup_content_integrity.ts` |
 | **AP-8** | **Exfiltration via GitHub writes** — a successful injection posts private repository contents as a comment, PR body or issue in a different, public repository | A4, A5 | C12, C13, C14, C16 | `worker/deno/lib/write_repo_allowlist.ts` |
 | **AP-9** | **Exfiltration or denial of service via outbound fetch** — a hostile or hung server streams until the heap is exhausted, or never responds at all | A2, A5 | C17 | `worker/deno/lib/bounded_fetch.ts` |
@@ -143,6 +154,7 @@ answer is enforced.
 | **AP-13** | **Secret leakage into a permanent public record** — a token echoed by a subprocess is quoted into a comment, PR body or log that cannot be un-published | A1, A5 | C23, C24 | `worker/deno/lib/secret_redaction.ts` |
 | **AP-14** | **Credential drift / identity confusion** — the host's ambient credential resolves to a human account, so worker writes run with that person's broader permissions | A1, A3 | C25 | `worker/deno/lib/identity_guard.ts` |
 | **AP-15** | **Committing a secret** — a credential file staged into a commit and pushed to a public repository | A1 | C26 | `hooks/pre-commit` |
+| **AP-16** | **Grant write access to instruct the worker** — when `author_source` is `"github"`, adding a write collaborator authorises an instructor. Compromise of the worker token is now trust resolution, not just repo actions | A1–A4 | C1, C25, C29 | `worker/deno/lib/collaborator_permissions.ts` |
 
 ## 🔗 Traceability — control → code → test
 
@@ -155,7 +167,7 @@ here exists.
 
 | Id | Control | Implemented in | Enforcing test |
 | -- | ------- | -------------- | -------------- |
-| **C1** | Author trust classification — only `allowed_authors` and `authorized_commenters` are trusted; everyone else's content is untrusted data | `worker/deno/lib/security.ts` | `worker/deno/tests/security_test.ts` |
+| **C1** | Author trust classification — only the current trusted-author snapshot is trusted (`allowed_authors` / `authorized_commenters` under `"config"`, or collaborators minus exclusions under `"github"`); everyone else's content is untrusted data | `worker/deno/lib/security.ts` | `worker/deno/tests/security_test.ts` |
 | **C2** | Approval-label origin verification — the approval label counts only when a trusted author added it, verified against the GitHub timeline | `worker/deno/lib/issue_query.ts` | `worker/deno/tests/issue_query_test.ts` |
 | **C3** | Operational-label trust verification — routing labels added by untrusted actors are ignored and audited | `worker/deno/lib/label_security.ts` | `worker/deno/tests/label_security_test.ts` |
 | **C4** | Nonce-fenced untrusted boundaries with delimiter sanitising and literal (non-`$`-expanding) substitution | `worker/deno/lib/prompt_delimiter.ts` | `worker/deno/tests/prompt_delimiter_test.ts` |
@@ -183,6 +195,7 @@ here exists.
 | **C26** | Commit safety — the enforced ignore allowlist plus a fail-closed pre-commit hook that blocks staged credential files | `worker/deno/lib/gitignore_enforcer.ts`, `hooks/pre-commit` | `worker/deno/tests/gitignore_enforcer_test.ts`, `worker/deno/tests/hidden_files_safety_integration_test.ts` |
 | **C27** | Repository allowlist and git-URL validation before any clone or query | `worker/deno/lib/config_validator.ts` | `worker/deno/tests/config_validator_test.ts` |
 | **C28** | Automated-failure comment path masks secrets before posting | `worker/deno/lib/label_failure.ts` | **Gap G2** |
+| **C29** | Fail-closed trusted-author refresh — any collaborator or exclusion-team fetch failure skips the cycle rather than widening trust; `service_accounts` and the host login are excluded so a fleet account cannot authorise itself | `worker/deno/lib/run_core.ts`, `worker/deno/lib/collaborator_permissions.ts`, `worker/deno/lib/trust_exclusions.ts` | `worker/deno/tests/run_core_trust_refresh_test.ts`, `worker/deno/tests/trust_exclusions_test.ts` |
 
 ## 🕳️ Known gaps — controls with no enforcing test
 
@@ -208,10 +221,11 @@ accept.
 | **R1** | **The agent guard is containment, not a sandbox.** An agent that calls the real `gh` binary by absolute path, rewrites `PATH`, or reaches the API without `gh` bypasses C13, and the guard child logs its refusals without journalling them | The durable fix is a per-run GitHub App token scoped to the single target repository; until then the shim raises the cost of the obvious path without claiming to close every path |
 | **R2** | **Suspicious-pattern detection is advisory.** C11 logs and never blocks | Blocking on pattern matches would stop ordinary issues that quote an attack; the boundary fencing (C4) is the control that must hold, and it does not depend on detection |
 | **R3** | **Sophisticated social engineering.** Plausible, well-formed untrusted guidance that trips no detector | No automated system reliably separates this from genuine community input; the compensating control is that a human reviews every PR before merge |
-| **R4** | **Trusted-account compromise.** A compromised `allowed_authors` account has full trusted access | Inherent to any trust-based system; compensated by two-factor authentication, short-lived tokens, and the audit journal |
+| **R4** | **Trusted-account compromise.** A compromised trusted-author account has full trusted access. Under `"github"` the instructor set is whoever holds write access, so a write-grant is an instructor-grant | Inherent to any trust-based system; compensated by two-factor authentication, short-lived tokens, tight repository-permission hygiene, and the audit journal |
 | **R5** | **A checkout older than Issue #4 can still run a host mode.** The `native` and `seatbelt` opt-ins were removed (containment is mandatory); a fleet host that has not pulled the removal could still launch outside C22 | Current code refuses the removed modes loud and never falls back to the host; the green-gate report counts any host-mode launch record as NOT GREEN, so a stale host is visible rather than silently uncontained |
 | **R6** | **Repository-supplied build scripts execute.** The agent runs the monitored repository's own `quality.sh` and its test suite | Running the repository's gate is the product; the boundary that must hold is containment (C22) and egress control (C12, C13), not the contents of that script |
 | **R7** | **The model is not deterministic.** No prompt-level control can guarantee an instruction is never followed | Which is exactly why the boundaries below the prompt exist — see the next section |
+| **R8** | **Worker-token compromise now includes trust resolution.** A stolen worker token can list collaborators and, with a write-grant, add an instructor. A failed fetch does not widen trust (C29), but a successful fetch as the attacker does | Accepted when choosing `"github"`: GitHub's permission model *is* the allowlist. Compensate by scoping the token, rotating it, and treating collaborator-admin as a privileged role |
 
 ## 🧨 The assumption this model holds under
 

@@ -26,6 +26,10 @@ export interface SetupConfig {
   pr_reviewers?: string[];
   repos?: string[];
   authorized_commenters?: string[];
+  /** `"github"` | `"config"` — default `"config"` (Issue #252). */
+  author_source?: string;
+  /** Org team slug `org/slug` excluded from GitHub-derived allowlists. */
+  exclusion_team?: string;
   /**
    * Worker identity guard allowlist (Issues #3528, #4030). Setup writes it
    * from `VIBE_SERVICE_ACCOUNTS`, defaulting to the resolved worker login so
@@ -132,6 +136,8 @@ const EXPLICITLY_HANDLED_KEYS: ReadonlySet<string> = new Set([
   "pr_reviewers",
   "repos",
   "authorized_commenters",
+  "author_source",
+  "exclusion_team",
   "claude_model",
   "failed_label",
   "failed_once_label",
@@ -208,6 +214,15 @@ export function buildOverridesOnly(
 
   if (config.authorized_commenters && config.authorized_commenters.length > 0) {
     result.authorized_commenters = config.authorized_commenters;
+  }
+
+  // Issue #252: default author_source is "config" — only persist an override.
+  if (config.author_source && config.author_source !== "config") {
+    result.author_source = config.author_source;
+  }
+
+  if (config.exclusion_team) {
+    result.exclusion_team = config.exclusion_team;
   }
 
   if (config.claude_model) {

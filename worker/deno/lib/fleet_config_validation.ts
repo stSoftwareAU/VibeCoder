@@ -50,6 +50,15 @@ export interface FleetConfigInput {
    * definition, so they join the effective author set (Issue #209).
    */
   serviceAccounts?: string[];
+  /**
+   * The active trust source (Issue #256). Under `"github"` the local
+   * `allowed_authors` array is ignored by design, so its emptiness is the
+   * expected healthy state and warning about it every start-up would train
+   * operators to ignore this validator. The sibling-divergence checks still
+   * run: `fleet_pr_authors` and `service_accounts` are host configuration
+   * either way, and a sibling missing from them is still worth naming.
+   */
+  authorSource?: "config" | "github";
 }
 
 /** Trim, drop blanks, and return a lowercase membership set. */
@@ -123,7 +132,11 @@ export function validateFleetConfig(
     return { level, effectiveAuthors, missingFromAllowed, messages };
   }
 
-  if (allowedSet.size === 0) {
+  // Issue #256: under author_source "github" an empty allowed_authors is
+  // correct, not a misconfiguration — the derived resolver supplies the set
+  // each cycle and the local array is deliberately ignored. Warning here
+  // would fire on every healthy start-up.
+  if (allowedSet.size === 0 && input.authorSource !== "github") {
     level = "warning";
     messages.push(
       "allowed_authors is empty — the open-PR duplicate guard sees only " +

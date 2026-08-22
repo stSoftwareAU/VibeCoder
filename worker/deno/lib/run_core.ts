@@ -20,6 +20,7 @@
 import type { Result } from "../types.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import type { FableAvailability } from "./health_check_cache.ts";
+import type { RefreshOutcome } from "./trust_snapshot.ts";
 import {
   formatCounterSummary,
   resetCounters,
@@ -714,6 +715,26 @@ export interface RunCoreDeps {
    * the same iteration boundary as the gh-call telemetry.
    */
   resetIterationCaches?: () => void;
+
+  /**
+   * Refresh the trusted-author snapshot at the top of each cycle
+   * (Issue #253).
+   *
+   * Production currently copies the static config arrays, so the
+   * snapshot's contents never change between cycles. The hook exists so
+   * a later source flip (Issue #256) can replace that copy with a
+   * GitHub-derived resolve without touching the loop again.
+   *
+   * A failed refresh is fail-closed and stricter than the spend-ceiling
+   * or host-disk gates: no issue claiming, no comment-driven work, no
+   * label-driven work, and no PR-invitation or escape-hatch processing
+   * for that cycle. No maintenance pass is treated as trust-independent
+   * — if that is not obvious for a given pass, it is skipped.
+   *
+   * Optional so existing test deps can omit it; when omitted the gate
+   * is inert and behaviour is unchanged.
+   */
+  refreshTrustedAuthors?: () => Promise<RefreshOutcome>;
 
   /**
    * Report worker health to the private-repo-6 repository (Issue #1935).
@@ -3008,6 +3029,36 @@ export async function runCoreLoop(
 
           // Touch PID file for proof of life
           await deps.touchPidFile();
+
+          // --- Trusted-author snapshot (Issue #253) ---
+          // Fail-closed: a refresh failure skips every trust-dependent
+          // pass for this cycle (claiming, comment-driven work,
+          // label-driven work, PR invitation, escape hatch, and every
+          // maintenance pass that reads fleet-author sets). No pass is
+          // treated as trust-independent — if that is not obvious, it
+          // is skipped. The failure is logged every cycle it persists
+          // so a worker that is quietly doing nothing is not mistaken
+          // for a healthy idle host. The host is marked unhealthy so
+          // the end-of-run FLEET report cannot claim otherwise.
+          if (deps.refreshTrustedAuthors) {
+            let refresh: RefreshOutcome;
+            try {
+              refresh = await deps.refreshTrustedAuthors();
+            } catch (refreshErr) {
+              const reason = refreshErr instanceof Error
+                ? refreshErr.message
+                : String(refreshErr);
+              refresh = { ok: false, reason };
+            }
+            if (!refresh.ok) {
+              lastHealthCheckPassed = false;
+              deps.logError(
+                `[TRUST_REFRESH] ${refresh.reason} — skipping all trust-dependent processing this cycle (Issue #253).`,
+              );
+              await deps.sleep(config.sleepInterval * 1000);
+              continue;
+            }
+          }
 
           // --- Daily spend ceiling (Issue #3648) ---
           // The credit log was append-only and never compared against a

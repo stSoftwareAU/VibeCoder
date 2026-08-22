@@ -9,23 +9,13 @@
  * Issue #36 — Security hardening for authorised commenters.
  */
 
+import { isBotLogin } from "./trust_exclusions.ts";
+
 /** Default maximum length for issue titles. */
 export const DEFAULT_MAX_TITLE_LENGTH = 500;
 
 /** Default maximum length for issue bodies. */
 export const DEFAULT_MAX_BODY_LENGTH = 50000;
-
-/** Known bot account patterns for audit purposes. */
-const BOT_PATTERNS: RegExp[] = [
-  /\[bot\]$/,
-  /^github-copilot/,
-  /^copilot/,
-  /^cursor/,
-  /^dependabot/,
-  /^renovate/,
-  /^snyk/,
-  /^codecov/,
-];
 
 /**
  * Bounded any-character gap between the tokens of a multi-token rule.
@@ -287,11 +277,8 @@ export function detectBotAccounts(
     if (!commenter) continue;
     if (allowedAuthor && commenter === allowedAuthor) continue;
 
-    for (const pattern of BOT_PATTERNS) {
-      if (pattern.test(commenter)) {
-        botNames.push(commenter);
-        break;
-      }
+    if (isBotLogin(commenter)) {
+      botNames.push(commenter);
     }
   }
 
