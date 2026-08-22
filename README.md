@@ -383,7 +383,6 @@ flowchart LR
 | **[Design Principles](DESIGN-PRINCIPLES.md)**                                  | Design digest — why each subsystem behaves as it does, each linking its canonical operator manual under `docs/`                                        |
 | **[AGENTS.md](AGENTS.md)**                                                     | Thin pointer for AI agents into the one set of human+agent instructions (points at Coding Standards, Design Principles, and the docs above)            |
 | **[Contributing](CONTRIBUTING.md)**                                            | How to contribute: branching, commits, quality gate, and PR conventions                                                                                |
-| **[Changelog](CHANGELOG.md)**                                                  | Notable changes across releases                                                                                                                        |
 
 ## 🏷️ Supported Labels
 
