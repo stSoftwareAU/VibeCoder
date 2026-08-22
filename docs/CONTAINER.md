@@ -72,7 +72,7 @@ weight.
 
 | Toolchain                                          | Commands                                  | Exists for                                                                                    |
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `rust` 1.95.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation |
+| `rust` 1.98.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
@@ -80,10 +80,14 @@ weight.
 
 Two consequences worth knowing:
 
-- **Rust is pinned to 1.95.0, not `stable`.** That is the channel
-  NEAT-AI-scorer, NEAT-AI-Lamarck and NEAT-AI-Backpropagation pin in their
-  `rust-toolchain.toml`. Bump those repos and this pin together — a new
-  stable's clippy lints break their `-D warnings` gates with no code change.
+- **Rust is pinned to 1.98.0, not `stable`.** That is the channel
+  NEAT-AI-scorer, NEAT-AI-Lamarck, NEAT-AI-Backpropagation and NEAT-AI-Forests
+  pin in their `rust-toolchain.toml`. Forests was the fourth consumer this
+  list omitted until Issue #309 enumerated `rust-toolchain.toml` across the
+  fleet; it commits `Cargo.toml`, `deny.toml` and its own `quality.sh`, so it
+  is in the Rust gate like the other three. Bump those repos and this pin
+  together — a new stable's clippy lints break their `-D warnings` gates with
+  no code change.
 - **There is no `rustup`.** The toolchain is installed into `/usr/local`, so
   nothing updates at run time. FLEET-taxation's gate would otherwise call
   `rustup update stable`, so the image sets `QUALITY_SKIP_RUST_UPDATE=1` and
