@@ -42,10 +42,10 @@ The tag is a hash of the container definition, so a changed definition is a
 different image:
 
 ```bash
-deno run --allow-read worker/deno/mod.ts container-image-hash
+deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash
 # vibe-coder:941c9bfe80fa
 
-docker image inspect "$(deno run --allow-read worker/deno/mod.ts container-image-hash)"
+docker image inspect "$(deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash)"
 # Apple container: container images inspect <reference>
 ```
 
@@ -55,7 +55,7 @@ The launcher rebuilds only when the reference is **absent locally**, so the way
 to force a rebuild is to delete the image and run the launcher again:
 
 ```bash
-IMAGE="$(deno run --allow-read worker/deno/mod.ts container-image-hash)"
+IMAGE="$(deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash)"
 docker image rm "$IMAGE"        # podman image rm / container images delete
 ./run.sh
 ```
