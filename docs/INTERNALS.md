@@ -1641,8 +1641,12 @@ type-safe dependency analysis:
 
 - **`extractSubIssueReferences(body, repo?)`** — extracts task list items and
   "Parent of #N" patterns.
-- **`extractDependencyReferences(body)`** — extracts `Depends on #N` and
-  `Blocked by #N` patterns.
+- **`extractDependencyReferences(body)`** — extracts same-repo `Depends on #N`
+  and `Blocked by #N` patterns as plain numbers.
+- **`extractDependencyReferencesDetailed(body)`** — the same patterns keeping
+  the repo each reference names, so a cross-repo `Depends on owner/repo#N` is
+  resolved against **its own** repo rather than as this repo's `#N`. This is the
+  form a deferred (blocked) issue records; `isDependencyBlocked` reads it.
 - **`checkParentBlocked()`** — checks if a parent issue is blocked by open
   children. Fails closed (treats unreachable children as open for safety).
 - **`buildDependencyGraph()`** — constructs a full graph of forward dependencies
@@ -1740,6 +1744,31 @@ The comment filter (migrated to Deno TypeScript) prepares issue comments for
 follow-up question prompts. The `prepareQuestionComments`
 function trims prior bot answers to avoid context bloat when the same issue
 receives multiple follow-up questions.
+
+This path runs precisely when **no trust configuration exists**, so it cannot
+establish any author as trusted. It therefore delegates per-comment handling to
+`comment_trust_filter.ts`'s `annotateCommentsWithTrust` with empty trust lists
+(Issue #190): every author classifies `UNTRUSTED`, every body goes through
+suspicious-pattern detection and delimiter sanitisation, and each detection
+raises a `[SECURITY]` audit event. `prepareQuestionCommentsWithAudit` returns
+those events alongside the formatted blob so callers log them; the
+`prepareQuestionComments` wrapper returns the blob alone. Audit events are
+collected *before* the total-character cap, so a security signal is never
+dropped with the text that triggered it.
+
+```mermaid
+flowchart TD
+    J["Raw issue JSON"] --> C{"Trust config<br/>present?"}
+    C -->|yes| T["prepareTrustAnnotatedComments"]
+    C -->|no| L["prepareQuestionCommentsWithAudit"]
+    T --> A["annotateCommentsWithTrust"]
+    L -->|empty trust lists| A
+    A --> D["classify author +<br/>detectSuspiciousPatterns +<br/>sanitiseDelimiterPatterns"]
+    D --> S["[SECURITY] audit events → logger"]
+    D --> F["Formatted comments → prompt"]
+    style A fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#9d0208,stroke:#6a040f,color:#fff
+```
 
 ### 🔍 Question clarification
 

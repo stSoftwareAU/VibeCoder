@@ -52,6 +52,10 @@ import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
 } from "./write_repo_allowlist.ts";
+import {
+  resetClaimedIssueGuard,
+  seedClaimedIssueGuard,
+} from "./claimed_issue_guard.ts";
 import { listTemplates } from "./idle_task_template.ts";
 // Importing the security-scan template ensures it is registered when
 // the idle-task pre-flight check below consults the registry. Issue
@@ -179,6 +183,12 @@ async function workOnIssueCore(
   // shared chokepoint (runGhCommandRaw); an off-allowlist write is refused.
   seedWriteRepoAllowlist(ctx.repo);
 
+  // Issue #222 — issue-lifecycle containment. The agent this run spawns may
+  // comment on and label the claimed issue, but closing/reopening/locking it
+  // is the worker's or a human's call. Seeding here bakes the refusal into the
+  // agent's `gh` guard shim for the whole run.
+  seedClaimedIssueGuard(ctx.repo, ctx.issueNumber);
+
   /** Run a single phase with timing. */
   async function runPhase(
     name: string,
@@ -255,6 +265,7 @@ async function workOnIssueCore(
     // Deactivate the allowlist seeded above before the early return so it
     // does not leak into the main loop (Issue #3311).
     resetWriteRepoAllowlist();
+    resetClaimedIssueGuard();
     return {
       success: false,
       phase: "idle_task_guard",
@@ -679,5 +690,7 @@ async function workOnIssueCore(
     // not leak into the main loop's legitimate cross-repo maintenance
     // (which is re-seeded per run when the next issue is claimed).
     resetWriteRepoAllowlist();
+    // Issue #222 — same for the claimed-issue lifecycle guard.
+    resetClaimedIssueGuard();
   }
 }
