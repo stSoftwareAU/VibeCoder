@@ -2018,6 +2018,14 @@ reference in that section naming something other than the issue being worked.
 References quoted inside code fences are ignored, matching
 `extractDependencyReferences`.
 
+**A deferral is never repeated silently.** The deferral comment carries a hidden
+marker naming the dependency, and a run that reports the *same* dependency again
+does not defer a second time — the gate plainly did not hold (the dependency
+closed and the work is still reported blocked, or the record was lost), and
+re-deferring would spend a full agent run on every scan. The repeat falls
+through to the analysis-only hand-off, so a human sees it; it is still never
+closed.
+
 Two supporting changes make the deferral hold. The dependency gate now resolves
 a **cross-repo** `Depends on owner/repo#N` against its own repo — previously
 that form matched nothing at all, so a cross-repo deferral was re-claimed

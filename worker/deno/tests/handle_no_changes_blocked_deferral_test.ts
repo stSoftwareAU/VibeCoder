@@ -19,6 +19,10 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, GitHubIssue } from "../types.ts";
 import { extractDependencyReferencesDetailed } from "../lib/issue_dependencies.ts";
+import {
+  buildDeferralMarker,
+  hasPriorDeferral,
+} from "../lib/blocked_deferral.ts";
 
 const REPO = "stSoftwareAU/NEAT-AI-Backpropagation";
 const ISSUE = 94;
@@ -169,6 +173,8 @@ Deno.test(
       !calls.postComment[0]!.includes("analysis-only"),
       "a blocked run must not be described as analysis-only",
     );
+    // The comment carries the loop-guard marker naming the dependency.
+    assertStringIncludes(calls.postComment[0]!, buildDeferralMarker(DEP));
 
     // Claim released, with the outcome the release comment states.
     assertEquals(calls.unassignIssue, 1);
@@ -212,6 +218,40 @@ Depends on ${DEP}
 );
 
 Deno.test(
+  "handle_no_changes_phase - a second deferral on the same dependency hands off instead of looping",
+  async () => {
+    // The gate did not hold (the dependency closed and the run still reports
+    // itself blocked), so deferring again would spin a fresh agent run every
+    // scan. The repeat escalates to a human — and is still never closed.
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+    });
+
+    const priorComment = `## Deferred — blocked on ${DEP}\n\n…\n\n${
+      buildDeferralMarker(DEP)
+    }`;
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: priorComment }),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
+    assertEquals(calls.closeIssue, 0);
+    // No second dependency line, and no second deferral comment.
+    assertEquals(calls.editIssue.length, 0);
+    assert(
+      !calls.postComment.some((c) => c.includes("## Deferred")),
+      "a repeat deferral must not post another deferral comment",
+    );
+  },
+);
+
+Deno.test(
   "handle_no_changes_phase - non-blocked analysis-only output still hands off",
   async () => {
     // The deferral must not swallow the existing analysis-only behaviour.
@@ -235,3 +275,13 @@ Deno.test(
     assertEquals(calls.editIssue.length, 0);
   },
 );
+
+Deno.test("hasPriorDeferral matches only the same dependency", () => {
+  const comments = `Some chatter\n\n${buildDeferralMarker(DEP)}\n`;
+  assert(hasPriorDeferral(comments, DEP));
+  // Case-insensitive: the reference is rendered from the agent's own text.
+  assert(hasPriorDeferral(comments, DEP.toUpperCase()));
+  // A deferral on a different dependency is a fresh block, not a repeat.
+  assert(!hasPriorDeferral(comments, "stSoftwareAU/NEAT-AI-core#561"));
+  assert(!hasPriorDeferral("", DEP));
+});

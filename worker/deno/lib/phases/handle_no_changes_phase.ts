@@ -22,8 +22,11 @@ import { formatDetailedFailureMessage } from "../failure_message.ts";
 import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
 import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
-import { detectBlockedOutcome } from "../blocked_outcome.ts";
-import { deferBlockedIssue } from "../blocked_deferral.ts";
+import {
+  detectBlockedOutcome,
+  formatDependencyRef,
+} from "../blocked_outcome.ts";
+import { deferBlockedIssue, hasPriorDeferral } from "../blocked_deferral.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
 
@@ -94,7 +97,27 @@ export async function workOnIssueHandleNoChanges(
   // `Depends on owner/repo#N`, and the dependency gate skips it until the
   // dependency closes.
   const blocked = detectBlockedOutcome(claudeOutput, { repo, issueNumber });
-  if (blocked) {
+  // Loop guard: a deferral holds only while the dependency gate skips the
+  // issue. Back here on the *same* dependency means it did not hold, and
+  // deferring again would spin a fresh agent run on every scan — so the repeat
+  // falls through to the analysis-only hand-off and a human sees it.
+  const repeatDeferral = blocked !== undefined &&
+    hasPriorDeferral(
+      ctx.issueComments,
+      formatDependencyRef(blocked.dependency),
+    );
+  if (blocked && repeatDeferral) {
+    logger.warn(
+      "Blocked on a dependency already deferred once — handing off to a " +
+        "human instead of deferring again",
+      {
+        repo,
+        issueNumber,
+        dependency: formatDependencyRef(blocked.dependency),
+      },
+    );
+  }
+  if (blocked && !repeatDeferral) {
     const ghClient = deps.github.createClient(logger);
     const result = await deferBlockedIssue({
       ghClient,
@@ -133,9 +156,12 @@ export async function workOnIssueHandleNoChanges(
   ];
 
   const lowerOutput = claudeOutput.toLowerCase();
-  const isAlreadyComplete = completionIndicators.some((indicator) =>
-    lowerOutput.includes(indicator)
-  );
+  // Issue #222: blocked-shaped output never reads as "already complete", even
+  // on the repeat-deferral path above — "no changes needed until #560 lands"
+  // is a block, and closing the issue is what this whole change exists to
+  // prevent.
+  const isAlreadyComplete = !blocked &&
+    completionIndicators.some((indicator) => lowerOutput.includes(indicator));
 
   if (isAlreadyComplete) {
     logger.info("Issue appears to be already complete based on Claude output");

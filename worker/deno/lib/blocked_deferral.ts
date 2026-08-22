@@ -33,6 +33,37 @@ import type { GitHubClient, Logger, Result } from "../types.ts";
 /** Label applied when the dependency line cannot be written to the body. */
 export const BLOCKED_LABEL = "blocked";
 
+/** Marker prefix embedded in the deferral comment — the loop guard's signal. */
+export const BLOCKED_DEFERRAL_MARKER_PREFIX = "<!-- vibe-blocked-deferral:";
+
+/**
+ * The hidden marker a deferral comment carries, naming the dependency.
+ *
+ * Mirrors `buildAnalysisHandoffMarker`: a later run reads it to tell a first
+ * deferral from a repeat one.
+ */
+export function buildDeferralMarker(ref: string): string {
+  return `${BLOCKED_DEFERRAL_MARKER_PREFIX}${ref.toLowerCase()} -->`;
+}
+
+/**
+ * Loop guard — has this issue already been deferred on the same dependency?
+ *
+ * A deferral holds only while the dependency gate skips the issue. If the run
+ * is back here on the *same* dependency, the gate did not hold (the dependency
+ * closed and the work is still reported blocked, or the record was lost), and
+ * deferring again would spin an expensive agent run every scan. The caller
+ * escalates instead, so the loop fails loud to a human rather than quietly
+ * repeating.
+ *
+ * @param comments - The issue's comment text, as fetched for the run.
+ * @param ref - `owner/repo#N` of the dependency this run reports.
+ */
+export function hasPriorDeferral(comments: string, ref: string): boolean {
+  if (!comments) return false;
+  return comments.toLowerCase().includes(buildDeferralMarker(ref));
+}
+
 /** Injectable dependencies for {@link deferBlockedIssue} (testing). */
 export interface DeferBlockedIssueDeps {
   /** Override the claim-release helper. Defaults to {@link releaseClaim}. */
@@ -92,7 +123,8 @@ export function buildDeferralComment(
     `**Reason given by the run:**\n\n` +
     `${blocked.reason.split("\n").map((l) => `> ${l}`).join("\n")}\n\n` +
     `<details>\n<summary>Full output</summary>\n\n` +
-    `\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>`;
+    `\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>\n\n` +
+    `${buildDeferralMarker(ref)}`;
 }
 
 /** True when `body` already declares `dep` in a form the gate reads. */
