@@ -42,10 +42,10 @@ The tag is a hash of the container definition, so a changed definition is a
 different image:
 
 ```bash
-deno run --allow-read worker/deno/mod.ts container-image-hash
+deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash
 # vibe-coder:941c9bfe80fa
 
-docker image inspect "$(deno run --allow-read worker/deno/mod.ts container-image-hash)"
+docker image inspect "$(deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash)"
 # Apple container: container images inspect <reference>
 ```
 
@@ -55,7 +55,7 @@ The launcher rebuilds only when the reference is **absent locally**, so the way
 to force a rebuild is to delete the image and run the launcher again:
 
 ```bash
-IMAGE="$(deno run --allow-read worker/deno/mod.ts container-image-hash)"
+IMAGE="$(deno run --allow-env --allow-read worker/deno/mod.ts container-image-hash)"
 docker image rm "$IMAGE"        # podman image rm / container images delete
 ./run.sh
 ```
@@ -280,7 +280,8 @@ succeeds, only the bump is dropped. Symptoms and remedies:
 
 | Symptom                                                                    | Likely cause                                                                                        | Remedy                                                                                                                                                            |
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Bumps land on every host except one; PRs from that host carry no dep bump   | The repo's `bump-deps.sh` failed its tool pre-flight, so the bump was reverted as `rejected_by_script` | Check the PR comment / `~/logs/worker.log` for the rejection reason (e.g. `ERROR: deno is required`), then confirm the tool resolves on that host's unattended `PATH` |
+| Bumps land on every host except one; PRs from that host carry no dep bump   | The repo's `bump-deps.sh` failed its tool pre-flight, so the bump was reverted as `rejected_by_script` | The rejection WARNING is followed by a `bump-deps.sh output tail (last 20 lines)` block in `~/logs/worker.log` (secret-redacted) — read it for the cause (e.g. `ERROR: deno is required`), then confirm the tool resolves on that host's unattended `PATH` |
+| A repo gets an auto-filed `bump-deps.sh` fails on every run issue | The script was rejected on 3 consecutive runs, so bumps are effectively disabled for that repo | Fix the script in that repo — the issue body carries the redacted output tail. Apply `work-on` to schedule it; the streak clears (and the worker stops reporting) as soon as the script exits `0` again |
 | `ERROR: deno is required` from `bump-deps.sh` on a launchd/cron host        | Deno was installed by the official installer into `~/.deno/bin`, which the unattended `PATH` omits     | Confirm `~/.deno/bin/deno` exists; the bootstrap adds that directory to the driver and to spawned repo scripts, so a stale checkout of the worker is the usual cause  |
 | A bump is reverted as `rejected_by_quarantine` | `bump-deps.sh` picked a version published inside `VIBE_BUMP_QUARANTINE_HOURS` (default 24h) | Expected — the embargo held. Re-run once the release has aged past the window, or fix the repo's script to honour `VIBE_BUMP_QUARANTINE_HOURS` itself |
 | `[bump-deps] Ignoring VIBE_BUMP_QUARANTINE_HOURS=…` in the log             | The window was set to `0`, a negative, fractional, or non-numeric value; it fell back to 24h           | Set the variable to a positive whole number of hours, or unset it. `0` does **not** disable the embargo — there is deliberately no silent off switch                 |

@@ -106,6 +106,53 @@ when the seed's pins drift from `screenshot.ts`, the Containerfile ARG or
 the worker lock, and Container Build drives the MCP server from the seed
 with `--network none`.
 
+## Deployer-supplied build-time tools
+
+A deployment whose monitored repositories need a toolchain the fleet image
+does not carry — Java and Maven are the first expected use — declares it in
+`.config.json` as `container_tools`. The build takes that validated array as
+the `VIBE_CONTAINER_TOOLS` build argument, writes it to a spec file and runs
+`container/install-tools.sh` over it, which downloads, SHA-256 verifies and
+extracts each entry under `/opt/vibe-tools/<id>`. The whole set is validated
+before anything is downloaded, and any fault — a bad id, a missing digest for
+the build architecture, an unsupported archive extension, a checksum mismatch
+— aborts the build naming the tool, rather than producing an image that
+silently lacks it. The spec shape, a worked Java + Maven example and the
+checksum rules a deployer needs are in
+[Container Image](CONTAINER.md#deployer-supplied-build-time-tools).
+
+```mermaid
+flowchart LR
+    C[".config.json<br/>container_tools"] --> A["ARG VIBE_CONTAINER_TOOLS"]
+    A --> S["spec file"]
+    S --> I["container/install-tools.sh"]
+    I --> P["/opt/vibe-tools/&lt;id&gt;"]
+    A -->|empty: the fleet default| N["no-op — today's image"]
+    style N fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+The block is **one fixed-size step whatever the tool count** — the script
+loops over the spec, so no tool adds a `RUN` and nothing pushes the
+Containerfile towards Apple `container`'s cap. An absent or empty argument
+writes an empty spec, runs nothing and leaves nothing behind, so a deployment
+that selects no extra tools pays nothing.
+
+The selection is part of the image's **identity**, not just its build: the tag
+`container-image-hash` prints mixes in a canonical serialisation of the
+validated spec (see
+[Image identity](CONTAINER.md#image-identity--the-tag-is-the-definitions-hash)),
+so a host that selects Java and Maven cannot be satisfied by another host's
+cached tools-free image.
+
+These archives are deliberately *not* in `container/tools.json`: they are the
+deployment's, pinned by the digests it declared, not the fleet's. That is the
+single allowance in the parity gate — `findContainerfileViolations` reports
+any *other* build step that downloads without verifying a checksum in the same
+step, and reports this one too if the spec comes from anywhere but
+`${VIBE_CONTAINER_TOOLS}`, if the argument defaults to a non-empty selection,
+or if the argument is declared and never acted on. `install-tools.sh` is part
+of the hashed definition, so editing it changes the image tag.
+
 ## Built from a comment-stripped copy
 
 Apple `container` rejects a Dockerfile over 16,384 bytes (apple/container),

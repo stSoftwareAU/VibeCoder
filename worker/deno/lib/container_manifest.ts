@@ -720,12 +720,148 @@ function unpinnedPackages(command: string): string[] {
   return [];
 }
 
+/** Build argument carrying the deployer-selected extra tools (Issue #71). */
+export const CONTAINER_TOOLS_ARG = "VIBE_CONTAINER_TOOLS";
+
+/** The generic install step that argument drives, as the build invokes it. */
+const TOOLS_INSTALLER = "install-tools.sh";
+
+/** A step that fetches its payload over the network. */
+const FETCH_RE = /\b(?:curl|wget)\b/;
+
+/** A checksum verification in the same build step as the fetch. */
+const CHECKSUM_RE = /\bsha256sum\s+-c\b/;
+
+/** A download piped straight into a shell, verified by nothing. */
+const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|]*\|\s*(?:ba)?sh\b/;
+
+/** `ARG VIBE_CONTAINER_TOOLS`, with or without a default. */
+const TOOLS_ARG_RE = new RegExp(`^ARG\\s+${CONTAINER_TOOLS_ARG}(?:=|$)`);
+
+/** `RUN` bodies with `\` continuations joined and comment lines dropped. */
+function runInstructions(containerfile: string): string[] {
+  const runs: string[] = [];
+  let current: string | undefined;
+
+  for (const rawLine of containerfile.split("\n")) {
+    const line = codeOf(rawLine);
+    if (line === "" || line.startsWith("#")) continue;
+
+    const continues = line.endsWith("\\");
+    const body = continues ? line.slice(0, -1).trim() : line;
+
+    if (current !== undefined) {
+      current = `${current} ${body}`;
+      if (!continues) {
+        runs.push(current);
+        current = undefined;
+      }
+      continue;
+    }
+
+    const run = /^RUN\s+(.*)$/i.exec(body);
+    if (!run) continue;
+    if (continues) current = run[1]!;
+    else runs.push(run[1]!);
+  }
+
+  // An unterminated continuation is still a step; report on what it does.
+  if (current !== undefined) runs.push(current);
+  return runs;
+}
+
+/**
+ * Report every build step that installs something nothing verifies
+ * (Issue #71, parent #5).
+ *
+ * Every download in the image is checksum-verified against a pin: the tools
+ * and toolchains verify inline, and the provider fragments are checked by
+ * {@link findProviderInstallViolations}. The deployer-supplied tool step is
+ * the single allowance — it installs archives that are deliberately *not* in
+ * `container/tools.json`, verified inside `container/install-tools.sh`
+ * against the digests the deployment declared. The allowance is exactly that
+ * step: `install-tools.sh` driven by the `VIBE_CONTAINER_TOOLS` build
+ * argument, defaulting to empty so a default build installs nothing. An
+ * unpinned download added anywhere else is still reported.
+ *
+ * @param containerfile - Raw Containerfile text.
+ * @returns Human-readable violations; empty when every install is accounted
+ *   for.
+ */
+function findInstallStepViolations(containerfile: string): string[] {
+  const violations: string[] = [];
+
+  const argLine = containerfile
+    .split("\n")
+    .map(codeOf)
+    .find((line) => TOOLS_ARG_RE.test(line));
+  const argDefault = argLine === undefined
+    ? undefined
+    : argValue(argLine)?.value ?? "";
+
+  let runsTools = false;
+
+  for (const run of runInstructions(containerfile)) {
+    if (PIPE_TO_SHELL_RE.test(run)) {
+      violations.push(`build step pipes a download into a shell: ${run}`);
+    }
+
+    if (run.includes(TOOLS_INSTALLER)) {
+      runsTools = true;
+      // The spec must come from the build argument: any other source would
+      // install from content the deployment never validated.
+      if (!run.includes(`\${${CONTAINER_TOOLS_ARG}}`)) {
+        violations.push(
+          `build step runs ${TOOLS_INSTALLER} on a spec that does not come ` +
+            `from \${${CONTAINER_TOOLS_ARG}}: ${run}`,
+        );
+      }
+    }
+
+    // The allowed step delegates its downloads to install-tools.sh, which
+    // verifies them; a fetch written into the step itself is not excused.
+    if (FETCH_RE.test(run) && !CHECKSUM_RE.test(run)) {
+      violations.push(
+        `build step downloads without verifying a checksum: ${run}`,
+      );
+    }
+  }
+
+  if (argLine === undefined) {
+    if (runsTools) {
+      violations.push(
+        `Containerfile runs ${TOOLS_INSTALLER} but does not declare ARG ` +
+          `${CONTAINER_TOOLS_ARG}: the tool set would not be selectable at ` +
+          "build time",
+      );
+    }
+    return violations;
+  }
+
+  if (argDefault !== "") {
+    violations.push(
+      `ARG ${CONTAINER_TOOLS_ARG} must default to empty so a default build ` +
+        `installs no extra tools (got "${argDefault}")`,
+    );
+  }
+
+  if (!runsTools) {
+    violations.push(
+      `Containerfile declares ARG ${CONTAINER_TOOLS_ARG} but never runs ` +
+        `${TOOLS_INSTALLER}: the selected tools would be silently ignored`,
+    );
+  }
+
+  return violations;
+}
+
 /**
  * Report every place `container/Containerfile` disagrees with the manifest.
  *
  * Checks that each `FROM` resolves to a digest-pinned manifest image, that
  * every manifest version and checksum is restated verbatim as a build
- * `ARG`, that no package is installed without a version pin, and that the
+ * `ARG`, that no package is installed without a version pin, that no build
+ * step downloads without verifying a checksum (Issue #71), and that the
  * image's default `USER` and `WORKDIR` are the manifest's.
  *
  * @param containerfile - Raw Containerfile text.
@@ -736,7 +872,7 @@ export function findContainerfileViolations(
   containerfile: string,
   manifest: ContainerManifest,
 ): string[] {
-  const violations: string[] = [];
+  const violations: string[] = findInstallStepViolations(containerfile);
   const lines = containerfile.split("\n");
 
   const args = new Map<string, string>();

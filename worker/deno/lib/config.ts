@@ -29,6 +29,7 @@ import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
+import { parseContainerTools } from "./container_tools_config.ts";
 import {
   detectUnknownConfigKeys,
   formatUnknownKeyWarnings,
@@ -237,6 +238,16 @@ async function loadConfigFile(configPath: string): Promise<ConfigFile> {
       const formatted = formatUnknownKeyWarnings(warnings);
       console.error(formatted);
     }
+  }
+
+  // Issue #69 (parent #5): deployer-supplied container tool specs are the
+  // trust boundary for an unverified download — a malformed spec fails the
+  // config load loudly rather than reaching the image build.
+  const tools = parseContainerTools(
+    (validated.value as ConfigFile).container_tools,
+  );
+  if (!tools.ok) {
+    throw new Error(`Config file ${configPath} is invalid: ${tools.error}`);
   }
 
   return validated.value as ConfigFile;

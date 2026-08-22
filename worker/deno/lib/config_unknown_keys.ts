@@ -168,6 +168,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Software auto-update minimum version floors (Issue #2622)
   "software_min_versions",
+
+  // Deployer-supplied container build-time tools (Issue #69, parent #5)
+  "container_tools",
 ]);
 
 /**

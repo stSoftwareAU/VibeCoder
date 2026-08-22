@@ -519,3 +519,66 @@ Deno.test("run.ps1 - PowerShell availability is reported, never assumed", () => 
     );
   }
 });
+
+Deno.test({
+  name:
+    "run.ps1 - carries the container_tools spec into the build, JSON intact (Issue #72)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+    try {
+      const spec = [
+        {
+          id: "java",
+          version: "21.0.5+11",
+          url: { noarch: "https://example.com/openjdk21.tar.gz" },
+          sha256: { noarch: "a".repeat(64) },
+          stripComponents: 1,
+          bin: ["bin"],
+          env: { JAVA_HOME: "" },
+        },
+      ];
+      await Deno.writeTextFile(
+        `${harness.tmpDir}/config.json`,
+        JSON.stringify({ repos: ["org/repo1"], container_tools: spec }),
+      );
+
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      const build = await recorded(harness, "build");
+      assert(build, "an absent image reference must trigger a build");
+      const at = build.indexOf("--build-arg");
+      assert(at !== -1, `build carried no --build-arg: ${build.join(" ")}`);
+      // The JSON (quotes, braces, commas) must survive PowerShell argument
+      // handling byte-for-byte — the parity risk this issue calls out.
+      assertEquals(
+        build[at + 1],
+        `VIBE_CONTAINER_TOOLS=${JSON.stringify(spec)}`,
+      );
+      assertEquals(build.at(-1), `${REPO_ROOT}/container`);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "run.ps1 - no container_tools means no extra build arg (Issue #72)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+      const build = await recorded(harness, "build");
+      assert(build, "an absent image reference must trigger a build");
+      assertEquals(
+        build.some((a) => a.startsWith("VIBE_CONTAINER_TOOLS=")),
+        false,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});

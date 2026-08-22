@@ -17,9 +17,11 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildBumpCommitMessage,
   buildBumpRejectionComment,
+  BUMP_OUTPUT_TAIL_LINES,
   type BumpDepsDeps,
   type BumpInfo,
   DEFAULT_BUMP_QUARANTINE_HOURS,
+  formatBumpOutputTail,
   runBumpDeps,
 } from "../lib/bump_deps.ts";
 import type {
@@ -491,6 +493,84 @@ Deno.test(
     assertStringIncludes(comment, "rejected by quality audit");
     assertStringIncludes(comment, "go.mod");
     assertStringIncludes(comment, "Quality gate passed only without the bump.");
+  },
+);
+
+// =============================================================================
+// Output tail surfaced on rejection (Issue #207)
+// =============================================================================
+
+Deno.test(
+  "formatBumpOutputTail - keeps the last lines and redacts secrets",
+  () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`);
+    lines.push("cloning https://x-access-token:ghp_" + "a".repeat(36) + "@x/y");
+    const tail = formatBumpOutputTail(lines.join("\n") + "\n");
+
+    assertEquals(tail.split("\n").length, BUMP_OUTPUT_TAIL_LINES);
+    assertStringIncludes(tail, "line 50");
+    assertStringIncludes(tail, "***REDACTED***");
+    assertEquals(
+      tail.includes("ghp_"),
+      false,
+      "a tokenised URL must never reach the log",
+    );
+    assertEquals(tail.includes("line 30"), false, "older lines are dropped");
+  },
+);
+
+Deno.test("formatBumpOutputTail - empty output yields an empty tail", () => {
+  assertEquals(formatBumpOutputTail(""), "");
+  assertEquals(formatBumpOutputTail("\n\n  \n"), "");
+});
+
+Deno.test("formatBumpOutputTail - bounds a single runaway line by bytes", () => {
+  const tail = formatBumpOutputTail("x".repeat(10_000), { maxBytes: 512 });
+  assertEquals(new TextEncoder().encode(tail).length <= 512, true);
+  assertStringIncludes(tail, "truncated");
+});
+
+Deno.test(
+  "runBumpDeps - rejected_by_script: reason and outputTail carry the script's output",
+  async () => {
+    const result = await runBumpDeps(
+      { repoPath: "/tmp/repo" },
+      makeDeps({
+        runScript: () =>
+          Promise.resolve({
+            exitCode: 1,
+            output: "deno outdated: failed\nERROR: deno is required\n",
+          }),
+        getModifiedFiles: () => Promise.resolve(["deno.lock"]),
+      }),
+    );
+
+    assertEquals(result.status, "rejected_by_script");
+    assertStringIncludes(result.outputTail ?? "", "ERROR: deno is required");
+    // The captured output is no longer dropped: the reason states why.
+    assertStringIncludes(result.rejectionReason ?? "", "exited with status 1");
+    assertStringIncludes(
+      result.rejectionReason ?? "",
+      "ERROR: deno is required",
+    );
+  },
+);
+
+Deno.test(
+  "runBumpDeps - rejected_by_script: says so when the script printed nothing",
+  async () => {
+    const result = await runBumpDeps(
+      { repoPath: "/tmp/repo" },
+      makeDeps({
+        runScript: () => Promise.resolve({ exitCode: 2, output: "" }),
+        getModifiedFiles: () => Promise.resolve([]),
+      }),
+    );
+    assertEquals(result.outputTail, "");
+    assertStringIncludes(
+      result.rejectionReason ?? "",
+      "The script produced no output.",
+    );
   },
 );
 
