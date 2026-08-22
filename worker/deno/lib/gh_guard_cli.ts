@@ -36,6 +36,7 @@ import {
   UnredactableBodyError,
 } from "./gh_body_redaction.ts";
 import { evaluateGhCommand } from "./gh_guard_decision.ts";
+import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 
 /** Printed on stdout when — and only when — the command may proceed. */
 export const GH_GUARD_ALLOW_MARKER = "VIBE_GH_GUARD_ALLOW";
@@ -93,52 +94,88 @@ const denoBodyFileWriter: BodyFileWriter = (content) => {
 interface ParsedArgv {
   active: boolean;
   allowedRepos: string[];
+  /** The run's claimed issue, when `--claimed-issue` named one (Issue #222). */
+  claimedIssue?: ClaimedIssue;
   ghArgs: string[];
   /** Set when the invocation is malformed. */
   error?: string;
 }
 
-/** Parse `--active` / `--allow-repo <slug>` up to the `--` separator. */
+/** `owner/repo#N` as passed to `--claimed-issue`. */
+function parseClaimedIssue(value: string): ClaimedIssue | undefined {
+  const match = value.match(/^([^/\s]+\/[^#\s]+)#(\d+)$/);
+  if (!match) return undefined;
+  return {
+    repo: match[1]!,
+    issueNumber: parseInt(match[2]!, 10),
+    allowedVerbs: [],
+  };
+}
+
+/**
+ * Parse the guard's own flags up to the `--` separator.
+ *
+ * `--active` / `--allow-repo <slug>` carry the write-repo allowlist;
+ * `--claimed-issue <owner/repo#N>` and `--allow-issue-verb <verb>` carry the
+ * claimed-issue lifecycle guard (Issue #222).
+ */
 function parseArgv(argv: readonly string[]): ParsedArgv {
   const allowedRepos: string[] = [];
+  const allowedVerbs: string[] = [];
+  let claimedIssue: ClaimedIssue | undefined;
   let active = false;
   let i = 0;
+  const fail = (error: string): ParsedArgv => ({
+    active,
+    allowedRepos,
+    ghArgs: [],
+    error,
+  });
+  const finish = (ghArgs: string[]): ParsedArgv => ({
+    active,
+    allowedRepos,
+    ...(claimedIssue
+      ? { claimedIssue: { ...claimedIssue, allowedVerbs } }
+      : {}),
+    ghArgs,
+  });
   for (; i < argv.length; i++) {
     const token = argv[i];
-    if (token === "--") {
-      return { active, allowedRepos, ghArgs: argv.slice(i + 1) as string[] };
-    }
+    if (token === "--") return finish(argv.slice(i + 1) as string[]);
     if (token === "--active") {
       active = true;
       continue;
     }
     if (token === "--allow-repo") {
       const value = argv[i + 1];
-      if (value === undefined) {
-        return {
-          active,
-          allowedRepos,
-          ghArgs: [],
-          error: "--allow-repo requires a value",
-        };
-      }
+      if (value === undefined) return fail("--allow-repo requires a value");
       allowedRepos.push(value);
       i++;
       continue;
     }
-    return {
-      active,
-      allowedRepos,
-      ghArgs: [],
-      error: `unknown guard argument: ${token}`,
-    };
+    if (token === "--claimed-issue") {
+      const value = argv[i + 1];
+      if (value === undefined) return fail("--claimed-issue requires a value");
+      const parsed = parseClaimedIssue(value);
+      if (!parsed) {
+        return fail(`--claimed-issue expects owner/repo#N, got: ${value}`);
+      }
+      claimedIssue = parsed;
+      i++;
+      continue;
+    }
+    if (token === "--allow-issue-verb") {
+      const value = argv[i + 1];
+      if (value === undefined) {
+        return fail("--allow-issue-verb requires a value");
+      }
+      allowedVerbs.push(value);
+      i++;
+      continue;
+    }
+    return fail(`unknown guard argument: ${token}`);
   }
-  return {
-    active,
-    allowedRepos,
-    ghArgs: [],
-    error: "missing '--' separator before the gh arguments",
-  };
+  return fail("missing '--' separator before the gh arguments");
 }
 
 /**
@@ -166,6 +203,8 @@ export function runGhGuardCli(
   const decision = evaluateGhCommand(parsed.ghArgs, {
     active: parsed.active,
     allowedRepos: parsed.allowedRepos,
+    // Issue #222: the claimed issue's lifecycle guard, when the run seeded one.
+    ...(parsed.claimedIssue ? { claimedIssue: parsed.claimedIssue } : {}),
     // Issue #91: let the decision scan a readable `--input <file>` body for
     // reserved labels instead of failing closed on every one. The decision
     // module stays pure; the filesystem reader is injected here.

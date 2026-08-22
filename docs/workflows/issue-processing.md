@@ -377,6 +377,7 @@ gitGraph
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
+- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
 - **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
@@ -475,6 +476,7 @@ flowchart TD
   Marker -->|No| Run["Run Claude"]
   Run --> Changes{"Code changes<br/>produced?"}
   Changes -->|Yes| PR["Quality gate → PR"]
+  Changes -->|"No, blocked on another issue"| Defer["Defer: record Depends on owner/repo#N,<br/>keep the discovery label, release the claim"]
   Changes -->|"No, useful text"| Partial["Post partial answer"] --> HandOff
   Changes -->|"No, no output"| Guard["Fallback loop guard:<br/>failed-once → failed / needs-human"]
   HandOff --> Stop["Apply needs-human + comment,<br/>release claim, stop"]
@@ -483,7 +485,15 @@ flowchart TD
   style Stop fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Guard fill:#c45858,stroke:#6b2020,color:#fff
+  style Defer fill:#5a86b0,stroke:#1d3a5a,color:#fff
 ```
+
+**A blocked run is checked first.** "Blocked on another issue" is a deferral, not
+an analysis-only hand-off — and it is decided before the already-complete check,
+because a blocked answer routinely contains phrases such as "no changes needed"
+and closing a live task is the one outcome the next scan cannot undo. The agent
+cannot make that call itself either: the `gh` guard refuses
+`gh issue close|reopen|delete|transfer|lock` on the claimed repo.
 
 **Fallback loop guard.** When neither clean signal fires — Claude produces no
 changes **and** no useful output — the run returns a failure and the existing

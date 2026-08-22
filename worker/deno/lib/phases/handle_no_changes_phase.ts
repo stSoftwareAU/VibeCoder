@@ -22,6 +22,8 @@ import { formatDetailedFailureMessage } from "../failure_message.ts";
 import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
 import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
+import { detectBlockedOutcome } from "../blocked_outcome.ts";
+import { deferBlockedIssue } from "../blocked_deferral.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
 
@@ -83,6 +85,40 @@ export async function workOnIssueHandleNoChanges(
   const { repo, issueNumber, githubUser, config } = ctx;
   const logger = deps.logger;
   const claudeOutput = state.claudeOutput;
+
+  // Issue #222 — a run that reported itself blocked on another issue is a
+  // DEFERRAL, and it is checked first: its output routinely contains phrases
+  // the completion indicators below match ("no changes needed until #560
+  // lands"), and closing a live task is the one outcome that cannot be undone
+  // by the next scan. The issue stays open with its discovery label, records
+  // `Depends on owner/repo#N`, and the dependency gate skips it until the
+  // dependency closes.
+  const blocked = detectBlockedOutcome(claudeOutput, { repo, issueNumber });
+  if (blocked) {
+    const ghClient = deps.github.createClient(logger);
+    const result = await deferBlockedIssue({
+      ghClient,
+      repo,
+      issueNumber,
+      githubUser,
+      blocked,
+      outputSnippet: publishableSnippet(claudeOutput),
+      logger,
+      deps: { ensureLabelExists: deps.github.ensureLabelExists },
+    });
+    logger.info("Blocked on a dependency — deferred instead of closing", {
+      repo,
+      issueNumber,
+      dependency: result.ref,
+      recorded: result.recorded,
+    });
+    return {
+      status: "early_exit",
+      reason: `deferred: depends on ${result.ref}`,
+      expectedSkip: true,
+      outcome: result.outcome,
+    };
+  }
 
   // Check if the issue was already complete (Issue #519)
   // Look for completion indicators in Claude's output
