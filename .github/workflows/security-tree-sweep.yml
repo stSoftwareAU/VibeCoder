@@ -62,13 +62,13 @@ jobs:
           persist-credentials: false
 
       - name: Install Deno
-        # denoland/setup-deno@v2.0.4
+        # denoland/setup-deno@v2.0.5
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with:
           deno-version-file: .deno-version
 
       - name: Initialise CodeQL (JavaScript/TypeScript, SARIF kept local)
-        # github/codeql-action/init@v4.37.7
+        # github/codeql-action/init@v4.37.8
         uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         with:
           languages: javascript-typescript
@@ -77,7 +77,7 @@ jobs:
           queries: security-and-quality
 
       - name: Analyse with CodeQL
-        # github/codeql-action/analyze@v4.37.7
+        # github/codeql-action/analyze@v4.37.8
         uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         with:
           category: security-tree-sweep
