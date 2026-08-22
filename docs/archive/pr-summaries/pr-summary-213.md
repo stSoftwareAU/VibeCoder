@@ -88,8 +88,9 @@ agent after SIGTERM.
 pre-existing failures unrelated to this change**
 (`setup_workdir_reminder_test.ts`, `fleet_health_test.ts`,
 `host_workdir_guard_test.ts`, `optional_feature_env_test.ts`). Verified by
-running those four files on a clean `origin/main` worktree: the same 10 fail
-there. Everything else is green — 15267 passed.
+running those four files on a clean `main` worktree: the same
+`FAILED | 63 passed | 10 failed` appears there. Everything else is green —
+`FAILED | 15291 passed | 10 failed | 34 ignored (5m44s)`.
 
 ## Test Plan
 

@@ -271,6 +271,11 @@ issue to a slot it is still working on.
 At `max_concurrent_issues: 1` there is no pool to run beside, so every pass
 stays in the serial ladder and behaviour is unchanged.
 
+One consequence for reading telemetry: the `cycle-timings` line reports each
+step's own wall time, and the lane's steps now overlap `Issue Scanning`. The
+per-step figures therefore sum to **more** than `total=` on a busy cycle — that
+overlap is the fix working, not double counting.
+
 ## 📏 Shared invariants
 
 These behaviours are required for the workflow:
