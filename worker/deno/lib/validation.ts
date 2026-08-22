@@ -103,6 +103,8 @@ export interface ConfigFileJson {
   claude_model?: string;
   best_planning_model?: string;
   claude_timeout?: number;
+  min_claim_runway_seconds?: number;
+  claim_require_full_execute_budget?: boolean;
   claude_kill_after?: number;
   max_clarification_rounds?: number;
   sleep_interval?: number;
@@ -586,6 +588,7 @@ export function validateConfigFileJson(
   // Optional number fields (Issue #277 — operational settings)
   const numberFields = [
     "claude_timeout",
+    "min_claim_runway_seconds",
     "claude_kill_after",
     "max_clarification_rounds",
     "sleep_interval",
@@ -629,6 +632,7 @@ export function validateConfigFileJson(
   // Optional boolean fields (Issue #435)
   const booleanFields = [
     "shuffle_repos",
+    "claim_require_full_execute_budget",
     "update_gh_user_status",
     "enable_model_fallback",
     "sync_milestone_branches",

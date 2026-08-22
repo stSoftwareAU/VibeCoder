@@ -13,6 +13,7 @@
 
 import type { WorkerConfig } from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
+import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
 import { DEFAULT_CADENCE_POLICY } from "./idle_task_cadence.ts";
 import { DEFAULT_RUN_MODE } from "./run_mode.ts";
 import { cloneCadencePolicy } from "./idle_task_cadence_config.ts";
@@ -193,6 +194,19 @@ export const OPERATIONAL_DEFAULTS = {
   // and starved other repositories. If issue work genuinely needs more
   // than an hour, the escape hatch should raise a sub-issue.
   claudeTimeout: 3600,
+  /**
+   * Claim-runway floor in seconds (Issue #289). Five minutes: enough to rule
+   * out a claim that cannot finish setup, small enough that a run keeps
+   * claiming until its last minutes. The single definition lives in
+   * `claim_runway.ts`.
+   */
+  minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
+  /**
+   * Full-execute-budget claim gate (Issue #289). Off by default: on a host
+   * whose cycle is longer than `claudeTimeout` it idles the cycle tail, and
+   * WIP preservation (Issues #47/#148) makes a deadline-bound execute safe.
+   */
+  claimRequireFullExecuteBudget: false,
   /**
    * Re-armable hard deadline for issue work (Issue #4296, part of #4290).
    *
@@ -1025,6 +1039,9 @@ export function buildDefaultWorkerConfig(
     // Issue #2654: configured best planning model for degraded-model detection.
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
+    minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
+    claimRequireFullExecuteBudget:
+      OPERATIONAL_DEFAULTS.claimRequireFullExecuteBudget,
     progressExtensionEnabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,
     progressExtensionGrantSeconds:
       OPERATIONAL_DEFAULTS.progressExtensionGrantSeconds,

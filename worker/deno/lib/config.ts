@@ -96,6 +96,25 @@ export function getEnvNumberOrDefault(
 }
 
 /**
+ * Read a non-negative number from the environment, or `undefined` when the
+ * variable is unset, empty, or not a finite non-negative number (Issue #289).
+ *
+ * Distinct from {@link getEnvNumberOrDefault}: the caller needs to tell "the
+ * operator set nothing" from "the operator set a value", so that a
+ * `.config.json` key can take precedence over the environment without a
+ * sentinel default standing in for an absent variable.
+ *
+ * @param name - Environment variable name
+ * @returns The parsed value, or `undefined` when there is no usable one
+ */
+export function readNonNegativeNumberEnv(name: string): number | undefined {
+  const raw = Deno.env.get(name);
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+/**
  * Get an environment variable as a comma-separated array or return a default value.
  *
  * @param name - Environment variable name
@@ -416,6 +435,19 @@ export async function loadConfig(
   // Operational settings — all from .config.json with defaults (Issue #277)
   const claudeTimeout = file.claude_timeout ??
     OPERATIONAL_DEFAULTS.claudeTimeout;
+  // Claim-runway floor (Issue #289). Config first, then the legacy
+  // environment variables, then the default. The env vars are never
+  // forwarded into the worker container (`container_launch.ts` passes only
+  // the five it sets itself), so on a containerised host the config key is
+  // the only interface that works — hence the key, and hence config winning.
+  const minClaimRunwaySeconds = file.min_claim_runway_seconds ??
+    readNonNegativeNumberEnv("MIN_CLAIM_RUNWAY_SECONDS") ??
+    OPERATIONAL_DEFAULTS.minClaimRunwaySeconds;
+  const claimRequireFullExecuteBudget =
+    file.claim_require_full_execute_budget ??
+      (Deno.env.get("CLAIM_REQUIRE_FULL_EXECUTE_BUDGET") === "1"
+        ? true
+        : OPERATIONAL_DEFAULTS.claimRequireFullExecuteBudget);
   // Re-armable issue-work deadline (Issue #4296, part of #4290). Off by
   // default; only issue work consults it. Non-positive tunables are rejected
   // loudly rather than silently disabling or extending forever (#3234).
@@ -695,6 +727,8 @@ export async function loadConfig(
     claudeModel,
     bestPlanningModel,
     claudeTimeout,
+    minClaimRunwaySeconds,
+    claimRequireFullExecuteBudget,
     progressExtensionEnabled,
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,

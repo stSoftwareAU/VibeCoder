@@ -63,6 +63,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Timeout and interval fields
   "claude_timeout",
+  "min_claim_runway_seconds",
+  "claim_require_full_execute_budget",
   // Re-armable issue-work deadline (Issue #4296, part of #4290)
   "progress_extension_enabled",
   "progress_extension_grant_seconds",
