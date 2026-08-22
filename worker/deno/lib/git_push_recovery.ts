@@ -15,7 +15,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertSafeGitRef, buildPullArgs } from "./git_ref_args.ts";
+import {
+  assertSafeGitRef,
+  buildPullArgs,
+  buildPushArgs,
+} from "./git_ref_args.ts";
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
@@ -159,9 +163,10 @@ export async function recoverFromPushRejection(
     }
   }
 
-  // Retry the push
+  // Retry the push — through the sanctioned builder (Issue #275) so a
+  // dash-leading branch name cannot be parsed as an option.
   const retryResult = await runGitCommand(
-    ["push", "origin", branchName],
+    buildPushArgs("origin", branchName),
     options,
   );
 

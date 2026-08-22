@@ -160,6 +160,16 @@ export function buildPullArgs(
 export interface PushArgsOptions {
   /** Add `-u` so the first push of a branch sets its upstream. */
   setUpstream?: boolean;
+  /**
+   * Lease the force push (Issue #275). `true` emits a bare
+   * `--force-with-lease`; a string is the full pinned form, e.g.
+   * `--force-with-lease=feature:<sha>`.
+   *
+   * The flag must precede `--end-of-options`, since everything after the
+   * separator is a positional — a trailing `--force-with-lease` would reach
+   * git as a third refspec rather than as a flag.
+   */
+  forceWithLease?: true | string;
 }
 
 /**
@@ -183,7 +193,15 @@ export function buildPushArgs(
 ): string[] {
   assertSafeGitRef(remote, "push remote");
   assertSafeGitRef(branchName, "push branch name");
-  const flags = options.setUpstream ? ["-u"] : [];
+  const flags: string[] = [];
+  if (options.setUpstream) flags.push("-u");
+  if (options.forceWithLease !== undefined) {
+    flags.push(
+      options.forceWithLease === true
+        ? "--force-with-lease"
+        : options.forceWithLease,
+    );
+  }
   return ["push", ...flags, "--end-of-options", remote, branchName];
 }
 
