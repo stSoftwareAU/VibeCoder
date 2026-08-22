@@ -7,9 +7,10 @@
 # pin AND the trailing version comment, and honours a cooldown that mirrors
 # the 24h quarantine Renovate would have applied.
 #
-# Deno/JSR and Ruby dependencies stay with their own mechanisms
-# (deno.json minimumDependencyAge; dependency-audit.yml) — only the actions
-# ecosystem is enabled here, so the two updaters cannot overlap.
+# Deno/JSR stays with deno.json minimumDependencyAge. Ruby/Jekyll
+# (Gemfile.lock) is updated here via the bundler ecosystem with the same
+# 24h cooldown (Issue #273); advisory scanning stays in bundle-audit and
+# dependency-review.yml. The two Dependabot ecosystems do not overlap.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -29,5 +30,27 @@ updates:
       - "dependencies"
     groups:
       github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "bundler"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Supply-chain quarantine for Gemfile.lock (Jekyll / Pages): never take
+    # a gem younger than a day, and give majors a week (Issue #273; same
+    # intent as the github-actions entry and renovate.json's
+    # minimumReleaseAge). Advisory gates (bundle-audit, dependency-review.yml)
+    # stay in place.
+    cooldown:
+      default-days: 1
+      semver-major-days: 7
+    commit-message:
+      prefix: "chore(bundler)"
+    labels:
+      - "dependencies"
+    groups:
+      bundler:
         patterns:
           - "*"
