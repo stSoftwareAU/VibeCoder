@@ -23,6 +23,12 @@ export type SkipReason =
   | "milestone-occupied"
   | "pr-blocked"
   | "closed-pr-cooldown"
+  /**
+   * Issue #319: a **merged** fleet PR blocks permanently (Issue #3151),
+   * unlike the cooldown-windowed closed-unmerged case. Distinct so the
+   * scan tally does not report a permanent strand as a passing cooldown.
+   */
+  | "merged-pr-permanent"
   | "dependency-blocked"
   | "cooldown"
   | "cross-worker-cooldown"

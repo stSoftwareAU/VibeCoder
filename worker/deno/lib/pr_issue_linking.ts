@@ -35,30 +35,10 @@ function buildPrUrl(repo: string, prNumber: number): string {
 /** Pattern for a valid GitHub PR URL (https://github.com/owner/repo/pull/123). */
 const PR_URL_PATTERN = /^https?:\/\/.+\/pull\/\d+$/;
 
-/**
- * Return true if a PR title contains a reference to the given issue number.
- * Matches worker title conventions in both paren and bracket delimiter styles:
- * "(#N)", "(Issue #N)", "(issue #N)", "[#N]", "[Issue #N]", "[issue #N]"
- * (Issue #106: PR GRQ-validation#844 was titled "[#836] …", which the
- * paren-only match missed, so the existing-PR backstop failed to recognise a
- * completed run).
- *
- * Uses string-includes rather than a dynamic RegExp to avoid any ReDoS risk
- * from interpolating external values into a regular expression. The closing
- * delimiter also rejects digit-prefix variants for free (`[#142]` ⊉ `[#42]`).
- */
-export function prTitleMatchesIssue(
-  title: string,
-  issueNumber: number,
-): boolean {
-  const n = String(Math.trunc(issueNumber));
-  return title.includes(`(#${n})`) ||
-    title.includes(`(Issue #${n})`) ||
-    title.includes(`(issue #${n})`) ||
-    title.includes(`[#${n}]`) ||
-    title.includes(`[Issue #${n}]`) ||
-    title.includes(`[issue #${n}]`);
-}
+// Issue #319: moved to a leaf module so `issue_query.ts` can use it without
+// an import cycle. Re-exported here for the existing importers.
+import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
+export { prTitleMatchesIssue };
 
 /** Default gh command function — routed through the shared chokepoint. */
 async function defaultGhCommand(args: string[]): Promise<string> {
