@@ -10,6 +10,7 @@ import {
   describeAttemptOutcome,
   formatDuration,
   OUTCOME_BLOCK_MAX_LENGTH,
+  OUTCOME_DETAIL_MAX_LENGTH,
   parseHeartbeatMarker,
   renderHeartbeatBody,
   renderRunOutcomeClause,
@@ -19,7 +20,7 @@ import {
   getFailureCategoryDisplay,
   getFailureDiagnosisOneliner,
 } from "../lib/failure_diagnosis.ts";
-import type { RunOutcome } from "../lib/run_outcome.ts";
+import { type RunOutcome, withRunOutcomeNotes } from "../lib/run_outcome.ts";
 
 const NOW = 1_700_000_000; // 2023-11-14 22:13:20 UTC
 const nowFn = () => NOW;
@@ -219,4 +220,49 @@ Deno.test("outcome render - a superseded attempt is tallied by the PR that resol
     describeAttemptOutcome(CASES[4]!.outcome),
     "superseded by #215",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Outcome notes (Issue #210)
+// ---------------------------------------------------------------------------
+
+Deno.test("outcome render - a bogus follow-up reference is stated on a run that raised a PR (Issue #210)", () => {
+  const body = render(
+    withRunOutcomeNotes(CASES[0]!.outcome!, [
+      "follow-up reference #3952 not found in this repo",
+    ]),
+  );
+  assertStringIncludes(body, "Raised #4277");
+  assertStringIncludes(
+    body,
+    "**Note:** follow-up reference #3952 not found in this repo",
+  );
+});
+
+Deno.test("outcome render - notes ride a failure block too, and are flattened and bounded (Issue #210)", () => {
+  const body = render(
+    withRunOutcomeNotes(CASES[1]!.outcome!, [
+      `follow-up reference #1 not found\nin this repo ${"x".repeat(400)}`,
+    ]),
+  );
+  assertStringIncludes(body, "**Outcome:** no PR raised");
+  assertStringIncludes(
+    body,
+    "**Note:** follow-up reference #1 not found in this repo",
+  );
+  const note = body.split("**Note:** ")[1] ?? "";
+  assert(
+    note.length <= OUTCOME_DETAIL_MAX_LENGTH + 1,
+    `the note must stay bounded, got ${note.length} chars`,
+  );
+});
+
+Deno.test("outcome render - an outcome with no notes renders exactly as before (Issue #210)", () => {
+  for (const c of CASES) {
+    assertEquals(
+      render(withRunOutcomeNotes(c.outcome ?? CASES[0]!.outcome!, ["  "])),
+      render(c.outcome ?? CASES[0]!.outcome!),
+      `${c.name}: a blank note must change nothing`,
+    );
+  }
 });

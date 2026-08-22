@@ -470,8 +470,29 @@ function boundOutcomeText(text: string, maxLength: number): string {
  * (`getFailureCategoryDisplay`, `getFailureDiagnosisOneliner`) so the
  * release comment inherits #4298's corrected diagnosis rather than
  * duplicating it.
+ *
+ * Outcome notes (Issue #210) follow the clause on their own line, whatever
+ * the outcome kind: a run can raise a PR and still have named a follow-up
+ * reference that does not exist, and a human must see that.
  */
 export function renderRunOutcomeClause(outcome: RunOutcome): string {
+  return `${renderOutcomeKindClause(outcome)}${renderOutcomeNotes(outcome)}`;
+}
+
+/** Longest number of notes rendered — a brief line, not a log dump. */
+const MAX_OUTCOME_NOTES = 3;
+
+/** The `**Note:**` line for a run's outcome notes, or "" when it has none. */
+function renderOutcomeNotes(outcome: RunOutcome): string {
+  const notes = (outcome.notes ?? [])
+    .map((note) => boundOutcomeText(note, OUTCOME_DETAIL_MAX_LENGTH))
+    .filter((note) => note !== "")
+    .slice(0, MAX_OUTCOME_NOTES);
+  return notes.length === 0 ? "" : `\n**Note:** ${notes.join("; ")}`;
+}
+
+/** The kind-specific clause, without notes. */
+function renderOutcomeKindClause(outcome: RunOutcome): string {
   switch (outcome.kind) {
     case "pr": {
       const url = boundOutcomeText(outcome.prUrl, OUTCOME_DETAIL_MAX_LENGTH);

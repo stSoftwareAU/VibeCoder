@@ -198,11 +198,8 @@ import {
   deleteResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
-import {
-  type FleetAuthorSetInput,
-  resolveFleetAuthors,
-  resolveFleetMaintenanceAuthorSet,
-} from "./fleet_authors.ts";
+import { type FleetAuthorSetInput } from "./fleet_authors.ts";
+import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
 import { getMachineId } from "./machine_id.ts";
 
 // Fault tolerance observability (Issue #1173)
@@ -304,9 +301,10 @@ export async function createProductionRunCoreDeps(
   setPhaseModelConfigOverrides(config.phaseModelOverrides);
   // Apply phase effort config overrides (Issue #1403)
   setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
-  // Wire the suppression author allowlist from the trusted-author list —
-  // unconfigured, the suppression gate fails closed (Issue #3941).
-  setSuppressionAuthorAllowlist(config.allowedAuthors ?? []);
+  // Wire the suppression author allowlist from the trusted-author snapshot
+  // (Issue #253). Unconfigured, the suppression gate fails closed
+  // (Issue #3941). Re-applied on every refresh so a later source flip
+  // cannot leave the gate holding a start-up copy.
 
   // Logger writes to both stderr and ~/logs/worker.log (symlinked to the
   // per-PID log file by run_core.sh). No env var or config needed.
@@ -433,16 +431,27 @@ export async function createProductionRunCoreDeps(
 
   // Stable machine identifier used by GitHub heartbeat markers (Issue #1454)
   const machineId = await getMachineId(workDir);
+  // Issue #253: trusted-author sets are a per-cycle snapshot, not values
+  // captured once at start-up. The production refresh still copies the
+  // static config arrays, so observable behaviour is unchanged; the
+  // derived fleet-author sets are recomputed on every apply so they
+  // cannot drift from the raw arrays (#4023/#4079).
+  const trustHolder = createTrustSnapshotHolder(
+    {
+      githubUser,
+      fleetPrAuthors: config.fleetPrAuthors ?? [],
+    },
+    {
+      allowedAuthors: config.allowedAuthors ?? [],
+      authorisedCommenters: config.authorisedCommenters ?? [],
+    },
+  );
   // Issue #3164: only heartbeat/claim markers posted by a fleet account
   // suppress stale-assignment recovery. Resolve the same fleet-author union
   // (host login + allowed_authors + fleet_pr_authors) the label-authorship
   // and open-PR guards use so a forged marker from a non-fleet commenter
   // cannot pin an issue "in progress".
-  const fleetAuthors = resolveFleetAuthors(
-    githubUser,
-    config.allowedAuthors ?? [],
-    config.fleetPrAuthors ?? [],
-  );
+  let fleetAuthors = trustHolder.read().fleetAuthors;
   // Issue #4024: the single source of truth for "the PRs the fleet owns in
   // this repo". Every PR scan takes its author inputs from this object, and
   // `findOldestIssue` takes the resolved set so the blocking guard and the
@@ -450,7 +459,7 @@ export async function createProductionRunCoreDeps(
   // rather than drifting in silence (#4023).
   const fleetPrAuthorInput = {
     githubUser,
-    allowedAuthors: config.allowedAuthors ?? [],
+    allowedAuthors: trustHolder.read().allowedAuthors,
     fleetPrAuthors: config.fleetPrAuthors ?? [],
   } satisfies FleetAuthorSetInput;
   // Issue #4079: the divergence check is only meaningful when it is fed the
@@ -459,9 +468,13 @@ export async function createProductionRunCoreDeps(
   // the scans do — feeding the wider fleet-owned set here would also make
   // the blocking-PR line's `in-maintenance-set=` flag claim a human's PR is
   // maintained when no scan touches it.
-  const maintenanceAuthors = resolveFleetMaintenanceAuthorSet(
-    fleetPrAuthorInput,
-  );
+  let maintenanceAuthors = trustHolder.read().maintenanceAuthors;
+  // Site 927 historically classified PR-feedback authors against
+  // `allowedAuthors` (the const was named `authorisedCommenters`). Keep
+  // that binding so this refactor is behaviour-neutral; the snapshot's
+  // `authorisedCommenters` is what the comment-trust path (site 1616)
+  // already read from `config.authorisedCommenters`.
+  let authorisedCommenters = trustHolder.read().allowedAuthors;
   // The same union gates heartbeat marker adoption (Issue #3751) so a run
   // reuses the fleet's existing marker comment and never adopts a forged one.
   const defaultMarkerOptions: HeartbeatMarkerOptions = {
@@ -478,6 +491,29 @@ export async function createProductionRunCoreDeps(
     machineId,
     fleetAuthors,
   };
+
+  /**
+   * Push a new snapshot into every consumer that used to hold a
+   * construction-time copy (Issue #253).
+   */
+  function applyTrustSnapshot(sets: {
+    allowedAuthors: string[];
+    authorisedCommenters: string[];
+  }): void {
+    const snap = trustHolder.apply(sets);
+    fleetAuthors = snap.fleetAuthors;
+    authorisedCommenters = snap.allowedAuthors;
+    fleetPrAuthorInput.allowedAuthors = snap.allowedAuthors;
+    maintenanceAuthors = snap.maintenanceAuthors;
+    defaultMarkerOptions.allowedAuthors = snap.fleetAuthors;
+    stuckIssueConfig.fleetAuthors = snap.fleetAuthors;
+    setSuppressionAuthorAllowlist(snap.allowedAuthors);
+  }
+
+  applyTrustSnapshot({
+    allowedAuthors: config.allowedAuthors ?? [],
+    authorisedCommenters: config.authorisedCommenters ?? [],
+  });
 
   // Bind default marker options so every recordHeartbeat/clearHeartbeat call
   // from the processors automatically publishes and maintains the GitHub
@@ -575,7 +611,6 @@ export async function createProductionRunCoreDeps(
   };
 
   const repos = config.repos ?? [];
-  const authorisedCommenters = config.allowedAuthors ?? [];
 
   // Issue #1935: build the private-repo-6 config + deps once so the
   // per-iteration heartbeat does not re-resolve env vars / hostname on
@@ -1613,7 +1648,7 @@ export async function createProductionRunCoreDeps(
           // Issue #4133: only a fleet-authored PR can block a `work-on`
           // issue, so only a fleet-authored PR can stall one.
           pushCapableAuthors: maintenanceAuthors,
-          authorisedCommenters: config.authorisedCommenters ?? [],
+          authorisedCommenters: trustHolder.read().authorisedCommenters,
           config,
           needsHumanLabel: config.needsHumanLabel,
           githubUser,
@@ -2559,6 +2594,19 @@ export async function createProductionRunCoreDeps(
       timelineBatchRegistry.reset();
       clearCommentCache();
       resetRepoAccessLogState();
+    },
+
+    // Issue #253: per-cycle trusted-author refresh. Still sourced from
+    // static config, so the snapshot's contents never change between
+    // cycles and a full run's observable behaviour is unchanged. The
+    // hook recomputes the derived fleet-author sets on every call so a
+    // later source flip cannot leave a stale `fleetPrAuthorInput`.
+    refreshTrustedAuthors: () => {
+      applyTrustSnapshot({
+        allowedAuthors: config.allowedAuthors ?? [],
+        authorisedCommenters: config.authorisedCommenters ?? [],
+      });
+      return Promise.resolve({ ok: true as const });
     },
 
     // Issue #1935: per-iteration private-repo-6 heartbeat. The end-of-run

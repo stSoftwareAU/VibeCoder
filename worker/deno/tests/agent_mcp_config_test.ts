@@ -120,7 +120,7 @@ async function withStubClaude<T>(
 
 Deno.test({
   name:
-    "claude runner - a run with a cwd passes --mcp-config pointing at a written config; mcpConfig:false opts out (Issue #4355)",
+    "claude runner - a run that declares the browser needed passes --mcp-config pointing at a written config; a cwd alone does not (Issues #4355, #192)",
   ignore: Deno.build.os === "windows",
   async fn() {
     const workDir = await Deno.makeTempDir({ prefix: "mcp-run-" });
@@ -128,6 +128,8 @@ Deno.test({
     const prevWorkDir = Deno.env.get("WORK_DIR");
     Deno.env.set("WORK_DIR", workDir);
     try {
+      // Issue #192: the need signal, not the cwd, grants the browser. A run
+      // that never asked for one is invoked with no MCP server at all.
       await withStubClaude(argvFile, async () => {
         await runClaudeWithRetry(
           {
@@ -136,6 +138,27 @@ Deno.test({
             cwd: workDir,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
+          },
+          { maxRetries: 0, maxWaitSeconds: 0, initialWaitInterval: 0 },
+        );
+      });
+      const ungranted = (await Deno.readTextFile(argvFile)).split("\n");
+      assertEquals(
+        ungranted.includes("--mcp-config"),
+        false,
+        `a cwd alone must not wire the browser: ${ungranted.join(" ")}`,
+      );
+
+      // mcpConfig: true — the explicit need signal (Issue #192).
+      await withStubClaude(argvFile, async () => {
+        await runClaudeWithRetry(
+          {
+            prompt: "P",
+            model: "m",
+            cwd: workDir,
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            mcpConfig: true,
           },
           { maxRetries: 0, maxWaitSeconds: 0, initialWaitInterval: 0 },
         );
@@ -170,6 +193,23 @@ Deno.test({
       });
       const argv2 = (await Deno.readTextFile(argvFile)).split("\n");
       assertEquals(argv2.includes("--mcp-config"), false);
+
+      // The need signal without a clone still wires nothing — the server is
+      // configured per clone, so there is nothing to point it at.
+      await withStubClaude(argvFile, async () => {
+        await runClaudeWithRetry(
+          {
+            prompt: "P",
+            model: "m",
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            mcpConfig: true,
+          },
+          { maxRetries: 0, maxWaitSeconds: 0, initialWaitInterval: 0 },
+        );
+      });
+      const argv3 = (await Deno.readTextFile(argvFile)).split("\n");
+      assertEquals(argv3.includes("--mcp-config"), false);
     } finally {
       if (prevWorkDir === undefined) Deno.env.delete("WORK_DIR");
       else Deno.env.set("WORK_DIR", prevWorkDir);

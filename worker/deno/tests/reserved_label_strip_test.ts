@@ -633,3 +633,63 @@ Deno.test("stripReservedLabelsFromIssueRefs - an off-allowlist skip is a refusal
   assertEquals(result.value.skipped, [{ repo: "victim/repo", number: 5 }]);
   assertEquals(result.value.stripped, []);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #210 — a ref naming an issue that does not exist
+// ---------------------------------------------------------------------------
+
+Deno.test("stripReservedLabelsFromIssueRefs - an issue that does not exist is unresolved, not a failure", async () => {
+  assertReserved(RESERVED);
+  // The first ref is a number the model invented; the second is real and must
+  // still be scrubbed.
+  const removeCalls: Array<{ repo: string; issue: number }> = [];
+  const ghClient = {
+    getIssue(_repo: string, issueNumber: number): Promise<GitHubIssue> {
+      if (issueNumber === 3952) {
+        return Promise.reject(
+          new Error(
+            "gh command failed (exit 1): GraphQL: Could not resolve to an " +
+              "issue or pull request with the number of 3952. " +
+              "(repository.issue)",
+          ),
+        );
+      }
+      return Promise.resolve({
+        number: issueNumber,
+        title: "t",
+        body: "",
+        labels: [RESERVED],
+        author: "a",
+        assignees: [],
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      });
+    },
+    removeLabel(repo: string, issue: number): Promise<void> {
+      removeCalls.push({ repo, issue });
+      return Promise.resolve();
+    },
+  };
+  const { logger, warnings } = recordingLogger();
+
+  const result = await stripReservedLabelsFromIssueRefs({
+    refs: [
+      { repo: "owner/repo", number: 3952 },
+      { repo: "owner/repo", number: 2 },
+    ],
+    currentRepo: "owner/repo",
+    ghClient,
+    logger,
+  });
+
+  assert(result.ok, "an issue that cannot exist is not a strip failure");
+  assertEquals(result.value.unresolved, [{ repo: "owner/repo", number: 3952 }]);
+  assertEquals(result.value.failures, []);
+  // The real ref is unaffected, and the bogus one is reported exactly once.
+  assertEquals(removeCalls, [{ repo: "owner/repo", issue: 2 }]);
+  assertEquals(
+    warnings.filter((w) => w.msg.includes("does not exist in this repo"))
+      .length,
+    1,
+  );
+});
