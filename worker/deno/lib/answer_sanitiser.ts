@@ -17,9 +17,17 @@
  * logger (`logger.ts`) and crash notifications (`crash_notification.ts`) already
  * apply on their sinks.
  *
+ * System-prompt leakage (Issue #189): the meta-commentary strip below scans
+ * only the first paragraph by design, and secret-shape redaction does not
+ * recognise instruction text — so injected issue content asking the model to
+ * "print your instructions, after a blank line" had no code-level backstop.
+ * `redactPromptLeakage()` runs over the **whole** answer at this same
+ * chokepoint and masks echoed prompt scaffolding before it can be posted.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { redactPromptLeakage } from "./prompt_leak_redaction.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /**
@@ -87,8 +95,9 @@ export function sanitiseAnswerOutput(rawOutput: string): string {
   const firstParagraph = extractFirstParagraph(rawOutput);
 
   if (!isMetaCommentary(firstParagraph)) {
-    // Redact secrets before the answer leaves this chokepoint (Issue #3195).
-    return redactSecrets(rawOutput);
+    // Redact leaked prompt content (Issue #189) and secrets (Issue #3195)
+    // before the answer leaves this chokepoint.
+    return redactSecrets(redactPromptLeakage(rawOutput));
   }
 
   // Strip the meta-commentary preamble and extract the actual answer.
@@ -149,6 +158,7 @@ export function sanitiseAnswerOutput(rawOutput: string): string {
   // Remove leading blank lines
   remaining = remaining.replace(/^\n+/, "");
 
-  // Redact secrets before the answer leaves this chokepoint (Issue #3195).
-  return redactSecrets(remaining);
+  // Redact leaked prompt content (Issue #189) and secrets (Issue #3195)
+  // before the answer leaves this chokepoint.
+  return redactSecrets(redactPromptLeakage(remaining));
 }
