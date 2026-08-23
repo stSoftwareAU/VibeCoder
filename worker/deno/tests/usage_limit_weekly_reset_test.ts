@@ -193,3 +193,47 @@ Deno.test("#333 - a missing or corrupt signal is not an outage", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Formats the merged #339 parser did not cover (from PR #341)
+// ---------------------------------------------------------------------------
+
+Deno.test("#333 - day-first dates parse (resets on 25 Aug 2026 at 13:30)", () => {
+  assertEquals(
+    parseUsageLimitReset("resets on 25 Aug 2026 at 13:30 (UTC)", NOW, "UTC"),
+    Date.parse("2026-08-25T13:30:00Z"),
+  );
+});
+
+Deno.test("#333 - a full month name and an explicit year parse", () => {
+  assertEquals(
+    parseUsageLimitReset("resets September 1, 12:30pm (UTC)", NOW, "UTC"),
+    Date.parse("2026-09-01T12:30:00Z"),
+  );
+});
+
+Deno.test("#333 - an abbreviated month with a full stop parses", () => {
+  assertEquals(
+    parseUsageLimitReset("resets Aug. 25, 1am (UTC)", NOW, "UTC"),
+    Date.parse("2026-08-25T01:00:00Z"),
+  );
+});
+
+Deno.test("#333 - an impossible date is rejected, not overflowed", () => {
+  // `Date.UTC(2026, 1, 31)` silently becomes 3 March. A reset that cannot
+  // exist must not resolve to a real time five weeks out.
+  assertEquals(
+    parseUsageLimitReset("resets Feb 31, 1am (UTC)", NOW, "UTC"),
+    null,
+  );
+});
+
+Deno.test("#333 - with no zone in the message the caller's zone is honoured", () => {
+  // 1am on 25 Aug in Sydney is 15:00 on 24 Aug UTC. The first cut of this
+  // parser built non-UTC dates with `new Date(y, m, d, …)`, which uses the
+  // *process* zone and ignored the caller's argument entirely.
+  assertEquals(
+    parseUsageLimitReset("resets Aug 25, 1am", NOW, "Australia/Sydney"),
+    Date.parse("2026-08-24T15:00:00Z"),
+  );
+});

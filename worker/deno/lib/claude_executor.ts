@@ -462,106 +462,64 @@ export function detectRunInterrupted(
   return RUN_INTERRUPTED_RE.test(tail);
 }
 
-/** Month names as the CLI writes them, in `Date`'s 0-based order. */
-const RESET_MONTHS = [
-  "jan",
-  "feb",
-  "mar",
-  "apr",
+/** Month names the CLI's reset messages use, full or abbreviated. */
+const MONTH_NAMES = [
+  "january",
+  "february",
+  "march",
+  "april",
   "may",
-  "jun",
-  "jul",
-  "aug",
-  "sep",
-  "oct",
-  "nov",
-  "dec",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
 ];
 
-/**
- * Parse the dated weekly form — `resets Aug 25, 1am (UTC)` (Issue #333).
- *
- * Returns null when the message carries no date, leaving the bare-clock path
- * to handle the five-hour window. A dated reset with no year is taken as the
- * next occurrence of that date, so a December message naming a January reset
- * does not resolve into the past.
- */
-function parseDatedReset(text: string, nowMs: number): number | null {
-  const m =
-    /reset[s]?(?:\s+at)?\s+([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i
-      .exec(text);
-  if (!m) return null;
-
-  const month = RESET_MONTHS.indexOf(m[1]!.slice(0, 3).toLowerCase());
-  if (month < 0) return null;
-  const day = Number(m[2]);
-  if (day < 1 || day > 31) return null;
-
-  let hour = Number(m[3]);
-  const minute = m[4] ? Number(m[4]) : 0;
-  const meridiem = m[5]?.toLowerCase();
-  if (meridiem === "pm" && hour < 12) hour += 12;
-  if (meridiem === "am" && hour === 12) hour = 0;
-  if (hour > 23 || minute > 59) return null;
-
-  // The CLI states its zone; only UTC is emitted today, and anything else is
-  // left to the caller's zone rather than guessed at.
-  const utc = /\(\s*UTC\s*\)/i.test(text);
-  const year = new Date(nowMs).getUTCFullYear();
-  const build = (y: number) =>
-    utc
-      ? Date.UTC(y, month, day, hour, minute)
-      : new Date(y, month, day, hour, minute).getTime();
-
-  const candidate = build(year);
-  // No year in the message: a date that has already passed means next year.
-  return candidate >= nowMs ? candidate : build(year + 1);
+/** Zero-based month for a full or abbreviated name, or null if unknown. */
+function monthIndex(name: string): number | null {
+  const lowered = name.toLowerCase();
+  if (lowered.length < 3) return null;
+  const index = MONTH_NAMES.findIndex((month) => month.startsWith(lowered));
+  return index === -1 ? null : index;
 }
 
 /**
- * Parse the reset time from a usage-limit message into epoch milliseconds,
- * or null when nothing parseable is present.
- *
- * Handles: the CLI's machine-readable `|<epoch-seconds>` suffix; the dated
- * weekly form `resets Aug 25, 1am (UTC)`; and the bare clock forms `resets
- * 3am` / `resets at 3 pm` / `reset at 14:30`.
- *
- * Bare clock forms resolve to the NEXT future occurrence in `timeZone`
- * (default: the process zone) — a time already past today means tomorrow.
- * That is right for the five-hour window and **wrong for the weekly one**,
- * which is why the dated form is matched first (Issue #333): on
- * 2026-08-23 the real message read `resets Aug 25, 1am (UTC)`, the dated
- * pattern did not exist, the whole parse returned null, and the log claimed
- * the message carried no reset time at all.
- *
- * An explicit zone in the message wins over `timeZone`: the CLI states the
- * zone it means, and a host in Australia/Sydney reading `1am (UTC)` as local
- * would be ten hours out.
+ * A reset time qualified by a DATE — `resets Aug 25, 1am (UTC)`, `resets on
+ * 25 Aug 2026 at 13:30` (Issue #333). The weekly window puts the date between
+ * "resets" and the clock, which the clock-only pattern below cannot see.
  */
-export function parseUsageLimitReset(
-  text: string,
-  nowMs: number = Date.now(),
-  timeZone?: string,
-): number | null {
-  const epoch = /\|(\d{9,11})\b/.exec(text);
-  if (epoch) return Number(epoch[1]) * 1000;
+const DATED_RESET_RE =
+  /reset[s]?(?:\s+(?:at|on))?\s+(?:(?<mon>[A-Za-z]{3,9})\.?\s+(?<day>\d{1,2})|(?<day2>\d{1,2})\s+(?<mon2>[A-Za-z]{3,9})\.?)(?:st|nd|rd|th)?(?:,?\s*(?<year>\d{4}))?[,\s]+(?:at\s+)?(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<meridiem>am|pm)?\b/i;
 
-  const dated = parseDatedReset(text, nowMs);
-  if (dated !== null) return dated;
+/** A reset time given as a bare clock — `resets 3am`, `reset at 14:30`. */
+const CLOCK_RESET_RE =
+  /reset[s]?(?:\s+at)?\s+(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<meridiem>am|pm)?\b/i;
 
-  const clock = /reset[s]?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
-    .exec(text);
-  if (!clock) return null;
-  let hour = Number(clock[1]);
-  const minute = clock[2] ? Number(clock[2]) : 0;
-  const meridiem = clock[3]?.toLowerCase();
-  if (meridiem === "pm" && hour < 12) hour += 12;
-  if (meridiem === "am" && hour === 12) hour = 0;
-  if (!meridiem && !clock[2] && hour > 24) return null;
-  if (hour > 23 || minute > 59) return null;
+/**
+ * An explicit zone qualifier on the reset time — `(UTC)`, `(Australia/Sydney)`.
+ * When present it wins over the host zone: the message states the zone its own
+ * clock is in, and the host's is irrelevant to it (Issue #333).
+ */
+const ZONE_QUALIFIER_RE = /\(\s*(UTC|GMT|Z|[A-Za-z_]+\/[A-Za-z_+\-0-9]+)\s*\)/;
 
-  // Build "today at HH:MM" in the target zone, then roll forward if past.
-  const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** The qualifier's zone if it names one Intl accepts, else null. */
+function explicitZone(text: string): string | null {
+  const match = ZONE_QUALIFIER_RE.exec(text);
+  if (!match?.[1]) return null;
+  const zone = match[1] === "Z" ? "UTC" : match[1];
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone;
+  } catch {
+    return null;
+  }
+}
+
+/** Wall-clock fields of `utcMs` as read in `zone`. */
+function zoneWallParts(utcMs: number, zone: string) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: zone,
     year: "numeric",
@@ -571,23 +529,137 @@ export function parseUsageLimitReset(
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  }).formatToParts(new Date(nowMs));
+  }).formatToParts(new Date(utcMs));
   const get = (type: string) =>
     Number(parts.find((p) => p.type === type)?.value);
-  const y = get("year"), mo = get("month"), d = get("day");
-  const localNowMs = Date.UTC(
-    y,
-    mo - 1,
-    d,
-    get("hour"),
-    get("minute"),
-    get("second"),
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: get("hour"),
+    minute: get("minute"),
+    second: get("second"),
+  };
+}
+
+/** Offset between `zone`'s wall clock and UTC at the instant `utcMs`. */
+function zoneOffsetMs(utcMs: number, zone: string): number {
+  const p = zoneWallParts(utcMs, zone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) -
+    Math.floor(utcMs / 1000) * 1000;
+}
+
+/**
+ * Epoch ms for a wall clock in `zone`. Two passes because the offset itself
+ * depends on the instant: the first pass gets close enough to pick the right
+ * side of a DST transition, the second settles on it.
+ */
+function wallClockToEpochMs(
+  year: number,
+  month: number, // 1-12
+  day: number,
+  hour: number,
+  minute: number,
+  zone: string,
+): number {
+  const naive = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const firstPass = naive - zoneOffsetMs(naive, zone);
+  return naive - zoneOffsetMs(firstPass, zone);
+}
+
+/** Normalise a matched clock to 24-hour fields, or null if out of range. */
+function normaliseClock(
+  hourRaw: string,
+  minuteRaw: string | undefined,
+  meridiemRaw: string | undefined,
+): { hour: number; minute: number } | null {
+  let hour = Number(hourRaw);
+  const minute = minuteRaw ? Number(minuteRaw) : 0;
+  const meridiem = meridiemRaw?.toLowerCase();
+  if (meridiem === "pm" && hour < 12) hour += 12;
+  if (meridiem === "am" && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return null;
+  return { hour, minute };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Parse the reset time from a usage-limit message into epoch milliseconds,
+ * or null when nothing parseable is present.
+ *
+ * Handles: the CLI's machine-readable `|<epoch-seconds>` suffix; the weekly
+ * window's date-qualified form `resets Aug 25, 1am (UTC)` (Issue #333); and
+ * the 5-hour window's bare clock `resets 3am` / `reset at 14:30`.
+ *
+ * Zone resolution, in order: an explicit qualifier in the message (`(UTC)`),
+ * then `timeZone`, then the process zone. Bare-clock forms resolve to the
+ * NEXT future occurrence — a time already past today means tomorrow — while
+ * a date-qualified form is taken at its word, which is what a weekly reset up
+ * to seven days out needs.
+ */
+export function parseUsageLimitReset(
+  text: string,
+  nowMs: number = Date.now(),
+  timeZone?: string,
+): number | null {
+  const epoch = /\|(\d{9,11})\b/.exec(text);
+  if (epoch?.[1]) return Number(epoch[1]) * 1000;
+
+  const hostZone = () =>
+    timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // Date-qualified first: its date sits exactly where the clock-only pattern
+  // expects digits, so trying that one first would only ever miss.
+  const dated = DATED_RESET_RE.exec(text);
+  const dg = dated?.groups;
+  if (dated && dg) {
+    const month = monthIndex(dg.mon ?? dg.mon2 ?? "");
+    const day = Number(dg.day ?? dg.day2);
+    const clock = normaliseClock(dg.hour ?? "", dg.minute, dg.meridiem);
+    if (month !== null && clock) {
+      const zone = explicitZone(text.slice(dated.index)) ?? hostZone();
+      const year = dg.year ? Number(dg.year) : zoneWallParts(nowMs, zone).year;
+      // Reject impossible dates (Feb 31) instead of letting them overflow.
+      const probe = new Date(Date.UTC(year, month, day));
+      if (probe.getUTCMonth() === month && probe.getUTCDate() === day) {
+        const at = (y: number) =>
+          wallClockToEpochMs(y, month + 1, day, clock.hour, clock.minute, zone);
+        const candidate = at(year);
+        // No year in the message and the date has passed: it means next year.
+        return !dg.year && candidate < nowMs - DAY_MS
+          ? at(year + 1)
+          : candidate;
+      }
+    }
+  }
+
+  const bare = CLOCK_RESET_RE.exec(text);
+  const bg = bare?.groups;
+  if (!bare || !bg) return null;
+  const clock = normaliseClock(bg.hour ?? "", bg.minute, bg.meridiem);
+  if (!clock) return null;
+
+  // Build "today at HH:MM" in the target zone, then roll forward if past.
+  const zone = explicitZone(text.slice(bare.index)) ?? hostZone();
+  const today = zoneWallParts(nowMs, zone);
+  const candidate = wallClockToEpochMs(
+    today.year,
+    today.month,
+    today.day,
+    clock.hour,
+    clock.minute,
+    zone,
   );
-  // Offset between the zone's wall clock and UTC at this instant.
-  const offsetMs = localNowMs - Math.floor(nowMs / 1000) * 1000;
-  let candidate = Date.UTC(y, mo - 1, d, hour, minute, 0) - offsetMs;
-  if (candidate <= nowMs) candidate += 24 * 60 * 60 * 1000;
-  return candidate;
+  if (candidate > nowMs) return candidate;
+  return wallClockToEpochMs(
+    today.year,
+    today.month,
+    today.day + 1,
+    clock.hour,
+    clock.minute,
+    zone,
+  );
 }
 
 // ---------------------------------------------------------------------------
