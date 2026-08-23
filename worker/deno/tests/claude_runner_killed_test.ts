@@ -529,3 +529,64 @@ Deno.test({
     assert(/pid=\d+/.test(pressureWarns[0]!), "the process table is attached");
   },
 });
+
+// ===========================================================================
+// Issue #325 — an unkillable descendant must not hold the slot
+// ===========================================================================
+
+Deno.test({
+  name:
+    "runClaudeWithRetry #325 - a descendant holding stdout does not delay settling past the drain cap",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // The 2026-08-22 shape: the agent spawns a descendant that inherits
+    // stdout and outlives it. The direct child dies, but the pipe never
+    // reaches EOF, so the stream pumps never finish. Awaiting them as part of
+    // "settled" held a pool slot for 2473s against a 120s cap — with both
+    // slots held, the cycle could not end.
+    //
+    // Settling is now keyed on the child's *status*, which a dead child
+    // reports promptly however long the pipe stays open. This asserts the
+    // timing property directly: the run must return in far less than the time
+    // the descendant lives.
+    const dir = await Deno.makeTempDir({ prefix: "claude_pipe_holder_" });
+    const stubPath = `${dir}/claude`;
+    await Deno.writeTextFile(
+      stubPath,
+      [
+        "#!/usr/bin/env bash",
+        `printf '%s\\n' '{"type":"result","result":"working"}'`,
+        // The descendant inherits stdout and holds it for 60s. Crucially it
+        // is NOT redirected, so the write end of the pipe stays open.
+        "sleep 60 &",
+        "exit 0",
+      ].join("\n") + "\n",
+    );
+    await Deno.chmod(stubPath, 0o755);
+    const originalPath = Deno.env.get("PATH") ?? "";
+    Deno.env.set("PATH", `${dir}:${originalPath}`);
+    const startedAt = Date.now();
+    try {
+      const { logger } = capturingLogger();
+      await runClaudeWithRetry(
+        {
+          ...COMMON_OPTS,
+          logger,
+          streamDrainCapSeconds: 2,
+          probeMemoryPressure: () => Promise.resolve({ level: "ok" as const }),
+        },
+        SLOW_IF_RETRIED,
+      );
+      const elapsedMs = Date.now() - startedAt;
+      assert(
+        elapsedMs < 30_000,
+        `settling must not wait on the held pipe; took ${elapsedMs}ms while ` +
+          `the descendant holds stdout for 60s`,
+      );
+    } finally {
+      Deno.env.set("PATH", originalPath);
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  },
+});
