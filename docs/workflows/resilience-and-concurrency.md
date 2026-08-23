@@ -30,6 +30,8 @@ flowchart TD
   style Pid fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style Copy fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Reset fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Quota fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Cadence fill:#707070,stroke:,color:#fff
   style Loop fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Fail fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style Exit fill:#c45858,stroke:#6b2020,color:#fff
@@ -70,30 +72,37 @@ The container is a disposable execution environment: when it dies, the superviso
 
 1. **Restart storms.** `loop.sh` / `loop.ps1` no longer sleep a fixed `LOOP_SLEEP_SECONDS` regardless of outcome. After each launcher invocation they call `deno run … mod.ts container-restart-backoff --exit-status <status>`, which counts consecutive failures in `${WORK_DIR}/.container_restart_state.json` and answers with the seconds to wait — the base sleep doubled per consecutive failure, capped at 30 minutes. A clean run resets the counter. If the recorder cannot run, the supervisor says so on stderr and falls back to the base sleep; it never stops supervising.
 2. **A host that cannot heal itself.** `run.sh` / `run.ps1` write the phase they reached (`runtime_detection`, `image_build`, `container_run`) to `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, so a failure is attributed to **runtime detection**, **image build**, **container start** (the runtime's own 125/126/127) or the **worker run**. Once consecutive failures reach the phase's threshold — **2** for a failed image build, because the known-good environment cannot be reconstructed at all, **3** otherwise — the failure is reported through the existing [crash-notification](../../worker/deno/lib/crash_notification.ts) channel (GitHub issue comment on the issue that was in flight, plus the optional webhook), rate-limited by that channel's cooldown.
+3. **A host that is merely out of quota.** Quota exhaustion is neither of the above: the worker stops on purpose, with the reset already known, so backing off exponentially, escalating and rebuilding the container are all wrong answers. The run declares the pause twice — it exits **75** (`QUOTA_PAUSE_EXIT_STATUS`, a status no crash produces), and it writes `~/logs/quota-pause.json`, which crosses the container boundary on the one host mount both sides share. The recorder **consumes** that marker, so it can only ever explain the invocation that just ended: a later run that genuinely crashes while the quota is still out has no marker of its own and backs off exactly as before. A quota pause **resets the failure streak**, escalates nothing, claims no recovery, and re-probes at a **fixed cadence** (`--quota-pause-sleep-seconds`, default 3600 s) — clamped down when the window reopens sooner, never grown — because the quota may be *extended* before its stated reset and a host whose interval doubles every cycle would not notice.
 
-Every action — backoff, recovery, escalation — is emitted as a structured self-heal event, so it appears in `self-heal-summary` rather than only in a host log.
+Every action — backoff, recovery, escalation, quota pause — is emitted as a structured self-heal event, so it appears in `self-heal-summary` rather than only in a host log.
 
 ```mermaid
 flowchart TD
   Loop["loop.sh / loop.ps1"]
   Launch["run.sh — writes phase marker"]
-  Status{"Exit status"}
+  Status{"Exit status<br/>and quota-pause marker"}
   Reset["Reset counter<br/>self-heal: recovered"]
+  Quota["Reset counter, no escalation<br/>self-heal: quota_pause"]
   Count["Increment consecutive failures<br/>self-heal: restart_backoff"]
   Threshold{"Failures ≥ phase threshold?<br/>image build 2, otherwise 3"}
   Escalate["Crash notification to GitHub<br/>naming the failure phase"]
+  Cadence["Sleep the fixed quota cadence<br/>(~1 hour, never grown)"]
   Sleep["Sleep the recommended backoff"]
   Loop --> Launch --> Status
   Status -->|0| Reset --> Sleep
-  Status -->|non-zero| Count --> Threshold
+  Status -->|75, or a marker| Quota --> Cadence
+  Status -->|any other non-zero| Count --> Threshold
   Threshold -->|No| Sleep
   Threshold -->|Yes| Escalate --> Sleep
   Sleep --> Loop
+  Cadence --> Loop
   style Loop fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style Launch fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Status fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style Threshold fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style Reset fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Quota fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Cadence fill:#707070,stroke:,color:#fff
   style Count fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Escalate fill:#c45858,stroke:#6b2020,color:#fff
   style Sleep fill:#707070,stroke:,color:#fff
@@ -241,6 +250,8 @@ flowchart TD
   style Exec fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Exit0 fill:#707070,stroke:,color:#fff
   style Reset fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Quota fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+  style Cadence fill:#707070,stroke:,color:#fff
   style Loop fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Fail fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style ExitFail fill:#c45858,stroke:#6b2020,color:#fff

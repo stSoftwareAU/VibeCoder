@@ -21,6 +21,10 @@ import type {
   BootstrapOptions,
   BootstrapResult,
 } from "../lib/run_bootstrap.ts";
+import {
+  QUOTA_PAUSE_EXIT_STATUS,
+  type QuotaPauseMarker,
+} from "../lib/quota_pause.ts";
 
 /** Recording harness capturing the order and arguments of every seam. */
 interface Recorder {
@@ -28,6 +32,8 @@ interface Recorder {
   setEnv: Record<string, string>;
   pidClaimed: number | null;
   cleanupCalled: boolean;
+  /** Quota-pause declaration the driver wrote, when it made one (#342). */
+  quotaPause?: { dir: string; marker: QuotaPauseMarker };
 }
 
 function okBootstrap(): BootstrapResult {
@@ -94,6 +100,11 @@ function stubDeps(
       rec.calls.push("loop");
       return Promise.resolve({ success: true, message: "planned shutdown" });
     },
+    declareQuotaPause: (dir, marker) => {
+      rec.calls.push("quota-pause");
+      rec.quotaPause = { dir, marker };
+      return Promise.resolve();
+    },
     cleanup: () => {
       rec.calls.push("cleanup");
       rec.cleanupCalled = true;
@@ -151,6 +162,68 @@ Deno.test("runWorker - blocked guard exits 0 and claims nothing", async () => {
   assertEquals(rec.calls, ["guard"]);
   assertEquals(rec.pidClaimed, null);
   assertEquals(rec.cleanupCalled, false);
+});
+
+// =============================================================================
+// Quota pause (Issue #342) — a scheduled stop, declared twice.
+// =============================================================================
+
+Deno.test("runWorker - an out-of-quota run exits on its own status and declares the pause", async () => {
+  const rec = newRecorder();
+  const resetEpochMs = 1_700_000_000_000;
+  const result = await runWorker(
+    baseOptions(),
+    stubDeps(rec, {
+      runMainLoop: () => {
+        rec.calls.push("loop");
+        return Promise.resolve({
+          success: true,
+          message: "Run complete: Run duration expired",
+          quotaPaused: true,
+          quotaResetEpochMs: resetEpochMs,
+        });
+      },
+    }),
+  );
+
+  // Not "completed": a status shared with a crash is read as a crash.
+  assertEquals(result.outcome, "quota-paused");
+  assertEquals(result.exitCode, QUOTA_PAUSE_EXIT_STATUS);
+
+  // The durable half of the declaration lands in the host-visible log
+  // directory, carrying the reset the supervisor paces its re-probe on.
+  assertEquals(rec.quotaPause?.dir, "/home/worker/logs");
+  assertEquals(rec.quotaPause?.marker.resetEpochMs, resetEpochMs);
+  assertEquals(
+    rec.quotaPause?.marker.reason,
+    "Run complete: Run duration expired",
+  );
+  assert(
+    (rec.quotaPause?.marker.declaredAtMs ?? 0) > 0,
+    "the declaration must be timestamped",
+  );
+  // Declared before the run tears down, and cleanup still runs.
+  assertEquals(rec.calls, [
+    "guard",
+    "claim",
+    "bootstrap",
+    "validate",
+    "credentials",
+    "github-user",
+    "identity",
+    "gh-scopes",
+    "housekeeping",
+    "loop",
+    "quota-pause",
+    "cleanup",
+  ]);
+});
+
+Deno.test("runWorker - a run that was not out of quota declares nothing", async () => {
+  const rec = newRecorder();
+  const result = await runWorker(baseOptions(), stubDeps(rec));
+  assertEquals(result.outcome, "completed");
+  assertEquals(rec.quotaPause, undefined);
 });
 
 // =============================================================================

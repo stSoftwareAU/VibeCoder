@@ -21,6 +21,12 @@
  *      threshold, the failure is reported through the existing
  *      crash-notification channel (GitHub issue comment plus optional
  *      webhook), whose cooldown provides the rate limiting.
+ *   4. **Quota pauses are not failures** (Issue #342). A run that stops
+ *      because the host is out of Claude quota exits on purpose, with the
+ *      reset already known. It resets the failure streak, escalates nothing,
+ *      claims no recovery, and re-probes at a fixed cadence — because the
+ *      quota may be extended before its stated reset, and a host whose
+ *      interval doubles every cycle would not notice.
  *
  * Every action is also emitted as a structured self-heal event so recoveries
  * show up in `self-heal-summary` rather than only in a host log.
@@ -37,6 +43,10 @@ import {
 import { emitSelfHealEvent } from "./self_heal_events.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { reportStateLoadFailure } from "./state_load_failure.ts";
+import {
+  QUOTA_PAUSE_EXIT_STATUS,
+  type QuotaPauseMarker,
+} from "./quota_pause.ts";
 
 /** Module name used for the self-heal events this file emits. */
 export const SELF_HEAL_MODULE = "container_restart";
@@ -87,6 +97,16 @@ export interface ContainerRestartConfig {
   escalationThreshold: number;
   /** Lower threshold used when the image itself cannot be built. */
   imageBuildEscalationThreshold: number;
+  /**
+   * Fixed re-probe interval while the host is out of quota (Issue #342).
+   *
+   * Backoff is for unknown faults. Quota exhaustion is a known fault whose
+   * recovery time is set elsewhere — and the quota may be *extended* before
+   * the stated reset, which a host asleep for an ever-growing interval would
+   * not notice. So it re-probes at this cadence for as long as the quota is
+   * out, matching the hourly agent-side re-probe of Issue #333.
+   */
+  quotaPauseSleepSeconds: number;
 }
 
 /** Production defaults. */
@@ -95,6 +115,7 @@ export const CONTAINER_RESTART_DEFAULTS: Readonly<ContainerRestartConfig> = {
   maxBackoffSeconds: 1800,
   escalationThreshold: 3,
   imageBuildEscalationThreshold: 2,
+  quotaPauseSleepSeconds: 3600,
 } as const;
 
 /** Persisted backoff state. */
@@ -163,7 +184,63 @@ export function resolveContainerRestartConfig(
       overrides.imageBuildEscalationThreshold,
       CONTAINER_RESTART_DEFAULTS.imageBuildEscalationThreshold,
     ),
+    quotaPauseSleepSeconds: positiveInteger(
+      overrides.quotaPauseSleepSeconds,
+      CONTAINER_RESTART_DEFAULTS.quotaPauseSleepSeconds,
+    ),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Outcome classification (Issue #342)
+// ---------------------------------------------------------------------------
+
+/** What one launcher invocation actually was. */
+export type LauncherOutcomeKind = "success" | "quota_pause" | "failure";
+
+/**
+ * Classify a launcher outcome.
+ *
+ * The marker is preferred over the exit status: the run writes it on the way
+ * out, so it survives a container runtime that loses the container's exit code
+ * and reports its own generic status instead. It is consumed by whoever reads
+ * it, so it can only ever describe the invocation that just ended — a host
+ * that *crashes* while the quota is out has no marker of its own, keeps its
+ * crash status, and so still backs off normally.
+ *
+ * @param exitStatus - Exit status the launcher reported (0 is success)
+ * @param quotaPause - Marker the run wrote, when it declared a quota pause
+ */
+export function classifyLauncherOutcome(
+  exitStatus: number,
+  quotaPause?: QuotaPauseMarker | null,
+): LauncherOutcomeKind {
+  if (quotaPause) return "quota_pause";
+  if (exitStatus === QUOTA_PAUSE_EXIT_STATUS) return "quota_pause";
+  return exitStatus === 0 ? "success" : "failure";
+}
+
+/**
+ * Seconds to wait before the next attempt while the host is out of quota.
+ *
+ * The configured cadence, except when the window reopens sooner than that —
+ * sleeping an hour past a reset ten minutes away wastes the quota it was
+ * waiting for. Never grows across consecutive pauses, and never drops below
+ * the base sleep, so it can neither decay into hours nor become a hot loop.
+ */
+export function computeQuotaPauseSleepSeconds(
+  quotaPause: QuotaPauseMarker | null | undefined,
+  config: ContainerRestartConfig,
+  nowMs: number = Date.now(),
+): number {
+  const reset = quotaPause?.resetEpochMs;
+  if (typeof reset === "number" && Number.isFinite(reset)) {
+    const remaining = Math.ceil((reset - nowMs) / 1000);
+    if (remaining > 0 && remaining < config.quotaPauseSleepSeconds) {
+      return Math.max(config.baseSleepSeconds, remaining);
+    }
+  }
+  return config.quotaPauseSleepSeconds;
 }
 
 /**
@@ -242,6 +319,8 @@ export function computeBackoffSeconds(
 export interface ContainerRestartDecision {
   /** State to persist. */
   state: ContainerRestartState;
+  /** What the invocation was (Issue #342). */
+  kind: LauncherOutcomeKind;
   /** Failure phase, or null when the launcher exited cleanly. */
   phase: ContainerFailurePhase | null;
   /** Seconds the supervisor should wait before the next attempt. */
@@ -262,6 +341,7 @@ export interface ContainerRestartDecision {
  * @param marker - Launcher phase marker contents
  * @param config - Resolved tunables
  * @param now - Clock seam, in Unix seconds
+ * @param quotaPause - Quota-pause marker the run wrote, when it declared one
  */
 export function nextContainerRestartDecision(
   previous: ContainerRestartState,
@@ -269,8 +349,37 @@ export function nextContainerRestartDecision(
   marker: string | null | undefined,
   config: ContainerRestartConfig,
   now: () => number = nowSeconds,
+  quotaPause?: QuotaPauseMarker | null,
 ): ContainerRestartDecision {
-  if (exitStatus === 0) {
+  const kind = classifyLauncherOutcome(exitStatus, quotaPause);
+
+  // A quota pause is a scheduled outcome, not an error (Issue #342): the
+  // streak resets rather than growing, nothing escalates, and the wait is the
+  // fixed re-probe cadence. It is deliberately not reported as a *recovery*
+  // either — a paused worker proves nothing about the container image, so
+  // there is no environment reconstruction to announce.
+  if (kind === "quota_pause") {
+    return {
+      state: {
+        consecutiveFailures: 0,
+        lastPhase: null,
+        lastExitStatus: exitStatus,
+        lastUpdated: now(),
+      },
+      kind,
+      phase: null,
+      backoffSeconds: computeQuotaPauseSleepSeconds(
+        quotaPause,
+        config,
+        now() * 1000,
+      ),
+      escalate: false,
+      recovered: false,
+      threshold: 0,
+    };
+  }
+
+  if (kind === "success") {
     return {
       state: {
         consecutiveFailures: 0,
@@ -278,6 +387,7 @@ export function nextContainerRestartDecision(
         lastExitStatus: 0,
         lastUpdated: now(),
       },
+      kind,
       phase: null,
       backoffSeconds: config.baseSleepSeconds,
       escalate: false,
@@ -297,6 +407,7 @@ export function nextContainerRestartDecision(
       lastExitStatus: exitStatus,
       lastUpdated: now(),
     },
+    kind,
     phase,
     backoffSeconds: computeBackoffSeconds(consecutiveFailures, config),
     escalate: consecutiveFailures >= threshold,
@@ -539,6 +650,11 @@ export interface RecordContainerOutcomeOptions {
   exitStatus: number;
   /** Phase marker the launcher wrote, if any. */
   phaseMarker?: string | null;
+  /**
+   * Quota-pause marker the run wrote on the way out (Issue #342). Already
+   * consumed by the caller, so it describes this invocation and no other.
+   */
+  quotaPause?: QuotaPauseMarker | null;
   /** Tunable overrides. */
   config?: Partial<ContainerRestartConfig>;
   /** Crash-notification channel configuration (cooldown, webhook, state). */
@@ -559,6 +675,8 @@ export interface RecordContainerOutcomeOptions {
 
 /** What the supervisor is told after recording an outcome. */
 export interface ContainerRestartOutcome {
+  /** What the invocation was (Issue #342). */
+  kind: LauncherOutcomeKind;
   /** Failure phase, or null when the launcher exited cleanly. */
   phase: ContainerFailurePhase | null;
   /** Consecutive failures after this outcome. */
@@ -597,6 +715,7 @@ export async function recordContainerRestartOutcome(
     options.phaseMarker,
     config,
     now,
+    options.quotaPause,
   );
 
   const persisted = await persistContainerRestartState(
@@ -612,6 +731,7 @@ export async function recordContainerRestartOutcome(
   }
 
   const outcome: ContainerRestartOutcome = {
+    kind: decision.kind,
     phase: decision.phase,
     consecutiveFailures: decision.state.consecutiveFailures,
     backoffSeconds: decision.backoffSeconds,
@@ -619,6 +739,36 @@ export async function recordContainerRestartOutcome(
     escalated: false,
     escalationReason: null,
   };
+
+  // Quota pause (Issue #342): recorded as the scheduled outcome it is, with
+  // the streak already reset above. No escalation, no recovery claim, and a
+  // fixed cadence — the operator reading `self-heal-summary` sees "out of
+  // quota", not a host that keeps crashing.
+  if (decision.kind === "quota_pause") {
+    const reset = options.quotaPause?.resetEpochMs;
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "quota_pause",
+      reason: `worker paused: out of quota — re-probing in ` +
+        `${decision.backoffSeconds}s` +
+        (previous.consecutiveFailures > 0
+          ? ` (failure streak of ${previous.consecutiveFailures} cleared — ` +
+            "a scheduled pause is not a failure)"
+          : ""),
+      result: "ok",
+      details: {
+        exitStatus: options.exitStatus,
+        sleepSeconds: decision.backoffSeconds,
+        previousFailures: previous.consecutiveFailures,
+        reason: options.quotaPause?.reason ?? null,
+        resetEpochMs: reset ?? null,
+        remainingSeconds: typeof reset === "number"
+          ? Math.max(0, Math.ceil((reset - now() * 1000) / 1000))
+          : null,
+      },
+    }, { workDir: options.workDir });
+    return outcome;
+  }
 
   if (decision.recovered) {
     await emitSelfHealEvent({

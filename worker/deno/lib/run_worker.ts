@@ -64,6 +64,11 @@ import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
 import { runCoreCommand } from "../commands/run_core.ts";
 import { applyOptionalFeatureEnv } from "./optional_feature_env.ts";
+import {
+  QUOTA_PAUSE_EXIT_STATUS,
+  type QuotaPauseMarker,
+  writeQuotaPauseMarker,
+} from "./quota_pause.ts";
 
 /** Distinct outcomes of a worker driver invocation. */
 export type RunWorkerOutcome =
@@ -74,6 +79,7 @@ export type RunWorkerOutcome =
   | "github-user-failed"
   | "identity-mismatch"
   | "completed"
+  | "quota-paused"
   | "failed";
 
 /** Result of {@link runWorker}. Carries the process exit code to surface. */
@@ -147,7 +153,21 @@ export interface RunWorkerDeps {
       githubUser: string;
       config: WorkerConfig;
     },
-  ): Promise<{ success: boolean; message: string }>;
+  ): Promise<{
+    success: boolean;
+    message: string;
+    /** The loop stopped because the host is out of quota (Issue #342). */
+    quotaPaused?: boolean;
+    /** When that quota window reopens, in epoch milliseconds, when known. */
+    quotaResetEpochMs?: number;
+  }>;
+  /**
+   * Declare a quota pause to the host supervisor (Issue #342) by writing the
+   * marker into the host-visible log directory. Best-effort: a marker that
+   * cannot be written is reported loudly, and the exit status still carries
+   * the declaration.
+   */
+  declareQuotaPause(logDir: string, marker: QuotaPauseMarker): Promise<void>;
   /**
    * Remove the PID file and terminate descendant processes (exit cleanup).
    * `liveSlots` is the configured concurrent-slot count (Issue #4182): the
@@ -285,7 +305,24 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
         "work-dir": workDir,
         "github-user": githubUser,
       }, config);
-      return { success: result.success, message: result.message };
+      const data = result.data as
+        | { quotaPaused?: boolean; quotaResetEpochMs?: number }
+        | undefined;
+      return {
+        success: result.success,
+        message: result.message,
+        quotaPaused: data?.quotaPaused === true,
+        quotaResetEpochMs: data?.quotaResetEpochMs,
+      };
+    },
+    declareQuotaPause: async (dir, marker) => {
+      const written = await writeQuotaPauseMarker(dir, marker);
+      if (!written.ok) {
+        // Loud, never silent: without the marker a runtime that loses the
+        // container's exit status leaves the supervisor reading this pause
+        // as a crash — the exact misclassification Issue #342 is about.
+        logger.error(`[run-worker] ${written.error.message}`);
+      }
     },
     cleanup: async (pidFile, pid, liveSlots) => {
       await runSignalCleanup({
@@ -528,6 +565,25 @@ ${credentialFailure}`);
       githubUser,
       config: options.config,
     });
+    // Issue #342: an out-of-quota run ends on purpose. It says so twice — in
+    // a marker under the host-visible log directory, and in an exit status no
+    // crash produces — so the supervisor re-probes at its fixed cadence
+    // instead of backing off, escalating and rebuilding a healthy container.
+    if (loop.quotaPaused) {
+      await deps.declareQuotaPause(logDir, {
+        declaredAtMs: Date.now(),
+        ...(loop.quotaResetEpochMs !== undefined
+          ? { resetEpochMs: loop.quotaResetEpochMs }
+          : {}),
+        reason: loop.message,
+      });
+      return {
+        outcome: "quota-paused",
+        exitCode: QUOTA_PAUSE_EXIT_STATUS,
+        reason: loop.message,
+      };
+    }
+
     return {
       outcome: loop.success ? "completed" : "failed",
       exitCode: loop.success ? 0 : 1,

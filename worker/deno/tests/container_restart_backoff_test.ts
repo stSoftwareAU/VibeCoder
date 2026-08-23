@@ -13,7 +13,9 @@
  *   - the failure phase (runtime detection, image build, container start,
  *     worker run) is carried into the escalation message, with a failed image
  *     build escalating earlier than a failed worker run;
- *   - `loop.sh` actually asks for the backoff and sleeps it.
+ *   - `loop.sh` actually asks for the backoff and sleeps it;
+ *   - a quota pause is recorded as the scheduled outcome it is, on a fixed
+ *     re-probe cadence, and never as a failure (Issue #342).
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
@@ -21,16 +23,28 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildContainerEscalationParams,
+  classifyLauncherOutcome,
   computeBackoffSeconds,
+  computeQuotaPauseSleepSeconds,
   CONTAINER_RESTART_DEFAULTS,
   type ContainerRestartConfig,
+  type ContainerRestartOutcome,
   describeFailurePhase,
   escalationThresholdFor,
   loadContainerRestartState,
   recordContainerRestartOutcome,
+  resolveContainerRestartConfig,
   resolveFailurePhase,
   resolveInFlightIssue,
 } from "../lib/container_restart_backoff.ts";
+import {
+  consumeQuotaPauseMarker,
+  QUOTA_PAUSE_EXIT_STATUS,
+  type QuotaPauseMarker,
+  writeQuotaPauseMarker,
+} from "../lib/quota_pause.ts";
+import { containerRestartBackoffCommand } from "../commands/container_restart_backoff.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   buildCrashMessage,
   type CrashNotificationConfig,
@@ -80,6 +94,7 @@ const FAST_CONFIG: Partial<ContainerRestartConfig> = {
   maxBackoffSeconds: 100,
   escalationThreshold: 3,
   imageBuildEscalationThreshold: 2,
+  quotaPauseSleepSeconds: 50,
 };
 
 /** Record one launcher outcome against a harness, capturing escalations. */
@@ -88,11 +103,13 @@ function record(
   exitStatus: number,
   phaseMarker: string | null,
   overrides: Partial<ContainerRestartConfig> = FAST_CONFIG,
+  quotaPause: QuotaPauseMarker | null = null,
 ) {
   return recordContainerRestartOutcome({
     workDir: harness.workDir,
     exitStatus,
     phaseMarker,
+    quotaPause,
     config: overrides,
     crashConfig: harness.crashConfig,
     send: (config, params) => {
@@ -380,6 +397,269 @@ Deno.test("recordContainerRestartOutcome - escalation is rate-limited by the cra
 });
 
 // ---------------------------------------------------------------------------
+// Quota pause (Issue #342)
+// ---------------------------------------------------------------------------
+
+/** A declaration a run would write on its way out of a quota-exhausted cycle. */
+function quotaMarker(
+  overrides: Partial<QuotaPauseMarker> = {},
+): QuotaPauseMarker {
+  return {
+    declaredAtMs: Date.now(),
+    reason: "Run duration expired",
+    ...overrides,
+  };
+}
+
+Deno.test("classifyLauncherOutcome - a declared pause is not a crash", () => {
+  assertEquals(classifyLauncherOutcome(0, null), "success");
+  assertEquals(classifyLauncherOutcome(17, null), "failure");
+  // The run says so in its exit status ...
+  assertEquals(
+    classifyLauncherOutcome(QUOTA_PAUSE_EXIT_STATUS, null),
+    "quota_pause",
+  );
+  // ... and in the marker, which is what survives a runtime that loses the
+  // container's exit status and reports its own generic one instead.
+  assertEquals(classifyLauncherOutcome(255, quotaMarker()), "quota_pause");
+});
+
+Deno.test("classifyLauncherOutcome - a crash while rate-limited is still a crash", () => {
+  // No marker: this invocation did not declare a pause, whatever an earlier
+  // one did or how out-of-quota the host happens to be.
+  assertEquals(classifyLauncherOutcome(139, null), "failure");
+  assertEquals(classifyLauncherOutcome(91, null), "failure");
+});
+
+Deno.test("computeQuotaPauseSleepSeconds - a fixed cadence, clamped to a nearer reset", () => {
+  const config = resolveContainerRestartConfig({
+    baseSleepSeconds: 60,
+    quotaPauseSleepSeconds: 3600,
+  });
+  const nowMs = 1_700_000_000_000;
+
+  // No reset known: the configured cadence.
+  assertEquals(computeQuotaPauseSleepSeconds(null, config, nowMs), 3600);
+  assertEquals(
+    computeQuotaPauseSleepSeconds(
+      quotaMarker({ declaredAtMs: nowMs }),
+      config,
+      nowMs,
+    ),
+    3600,
+  );
+  // A window two days out still re-probes on the cadence — the quota may be
+  // extended before its stated reset.
+  assertEquals(
+    computeQuotaPauseSleepSeconds(
+      quotaMarker({ resetEpochMs: nowMs + 2 * 24 * 3600_000 }),
+      config,
+      nowMs,
+    ),
+    3600,
+  );
+  // A window that reopens sooner is not slept past.
+  assertEquals(
+    computeQuotaPauseSleepSeconds(
+      quotaMarker({ resetEpochMs: nowMs + 600_000 }),
+      config,
+      nowMs,
+    ),
+    600,
+  );
+  // ... but never below the base sleep, so it cannot become a hot loop.
+  assertEquals(
+    computeQuotaPauseSleepSeconds(
+      quotaMarker({ resetEpochMs: nowMs + 1_000 }),
+      config,
+      nowMs,
+    ),
+    60,
+  );
+});
+
+Deno.test("recordContainerRestartOutcome - a quota pause holds a fixed cadence instead of decaying", async () => {
+  const harness = await setupHarness();
+  try {
+    const cadence = FAST_CONFIG.quotaPauseSleepSeconds;
+    const first = await record(
+      harness,
+      QUOTA_PAUSE_EXIT_STATUS,
+      "container_run",
+    );
+    const second = await record(
+      harness,
+      QUOTA_PAUSE_EXIT_STATUS,
+      "container_run",
+    );
+    const fifth = await (async () => {
+      let last = second;
+      for (let i = 0; i < 3; i++) {
+        last = await record(harness, QUOTA_PAUSE_EXIT_STATUS, "container_run");
+      }
+      return last;
+    })();
+
+    for (const outcome of [first, second, fifth]) {
+      assertEquals(outcome.kind, "quota_pause");
+      assertEquals(outcome.phase, null);
+      assertEquals(outcome.consecutiveFailures, 0);
+      assertEquals(outcome.escalated, false);
+      // No exponential decay: the fifth pause waits exactly as long as the
+      // first, which is the whole point of Issue #342.
+      assertEquals(outcome.backoffSeconds, cadence);
+    }
+
+    // Nothing was recorded as a failure, so nothing can escalate.
+    assertEquals(harness.escalations.length, 0);
+    const state = await loadContainerRestartState(harness.workDir);
+    assertEquals(state.consecutiveFailures, 0);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a quota pause clears the streak without claiming a recovery", async () => {
+  const harness = await setupHarness();
+  try {
+    await record(harness, 17, "container_run");
+    await record(harness, 17, "container_run");
+
+    const paused = await record(
+      harness,
+      QUOTA_PAUSE_EXIT_STATUS,
+      "container_run",
+    );
+    assertEquals(paused.consecutiveFailures, 0);
+    assertEquals(paused.recovered, false);
+
+    const summary = await summariseSelfHealEvents({ workDir: harness.workDir });
+    const actions = summary.recent.map((e) => e.action);
+    assert(
+      actions.includes("quota_pause"),
+      `the pause must be visible to operators, got: ${actions.join(", ")}`,
+    );
+    // Nothing about the image is suspect, so no environment reconstruction is
+    // announced and no escalation is sent.
+    assertEquals(actions.includes("recovered"), false);
+    assertEquals(actions.includes("escalated"), false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - the marker classifies a pause the exit status lost", async () => {
+  const harness = await setupHarness();
+  try {
+    // The symptom from the field: a clean quota exit surfaced to the
+    // supervisor as 255 and was counted as a crash.
+    const paused = await record(
+      harness,
+      255,
+      "container_run",
+      FAST_CONFIG,
+      quotaMarker({ reason: "Run duration expired" }),
+    );
+    assertEquals(paused.kind, "quota_pause");
+    assertEquals(paused.consecutiveFailures, 0);
+    assertEquals(paused.backoffSeconds, FAST_CONFIG.quotaPauseSleepSeconds);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a crash after a quota pause still backs off", async () => {
+  const harness = await setupHarness();
+  try {
+    await record(harness, QUOTA_PAUSE_EXIT_STATUS, "container_run");
+
+    // The next run genuinely dies while the host is still out of quota: it
+    // declared nothing, so it is a failure and backs off exactly as before.
+    const crash = await record(harness, 17, "container_run");
+    assertEquals(crash.kind, "failure");
+    assertEquals(crash.phase, "worker_run");
+    assertEquals(crash.consecutiveFailures, 1);
+    assertEquals(crash.backoffSeconds, FAST_CONFIG.baseSleepSeconds);
+
+    const second = await record(harness, 17, "container_run");
+    assert(
+      second.backoffSeconds > crash.backoffSeconds,
+      "a real crash streak must still grow its backoff",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test({
+  name:
+    "container-restart-backoff command - consumes the marker and answers with the quota cadence",
+  permissions: { read: true, write: true, env: true, run: true, net: true },
+  async fn() {
+    const harness = await setupHarness();
+    const logDir = join(harness.workDir, "logs");
+    try {
+      await Deno.mkdir(logDir, { recursive: true });
+      const written = await writeQuotaPauseMarker(logDir, quotaMarker());
+      assert(written.ok, "the run must be able to declare its pause");
+
+      const result = await containerRestartBackoffCommand.execute({
+        "exit-status": 255,
+        "work-dir": harness.workDir,
+        "log-dir": logDir,
+        "state-dir": join(harness.workDir, "state"),
+        "base-sleep-seconds": 10,
+        "quota-pause-sleep-seconds": 900,
+      }, buildDefaultWorkerConfig());
+
+      // The supervisor reads one integer off stdout — the fixed re-probe
+      // cadence, not a grown backoff.
+      assertEquals(result.success, true);
+      assertEquals(result.message, "900");
+      const outcome = result.data as ContainerRestartOutcome | undefined;
+      assertEquals(outcome?.kind, "quota_pause");
+      assertEquals(outcome?.consecutiveFailures, 0);
+
+      // Consumed: the next outcome is judged on its own evidence.
+      assertEquals(await consumeQuotaPauseMarker(logDir), null);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "container-restart-backoff command - the quota cadence is operator-configurable by environment",
+  permissions: { read: true, write: true, env: true, run: true, net: true },
+  async fn() {
+    const harness = await setupHarness();
+    const logDir = join(harness.workDir, "logs");
+    const previous = Deno.env.get("VIBE_QUOTA_PAUSE_SLEEP_SECONDS");
+    try {
+      await Deno.mkdir(logDir, { recursive: true });
+      Deno.env.set("VIBE_QUOTA_PAUSE_SLEEP_SECONDS", "1800");
+
+      const result = await containerRestartBackoffCommand.execute({
+        "exit-status": QUOTA_PAUSE_EXIT_STATUS,
+        "work-dir": harness.workDir,
+        "log-dir": logDir,
+        "state-dir": join(harness.workDir, "state"),
+      }, buildDefaultWorkerConfig());
+
+      assertEquals(result.message, "1800");
+    } finally {
+      if (previous === undefined) {
+        Deno.env.delete("VIBE_QUOTA_PAUSE_SLEEP_SECONDS");
+      } else {
+        Deno.env.set("VIBE_QUOTA_PAUSE_SLEEP_SECONDS", previous);
+      }
+      await harness.cleanup();
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Escalation target
 // ---------------------------------------------------------------------------
 
@@ -475,6 +755,79 @@ Deno.test({
         await child.status;
         await child.stdout.cancel().catch(() => {});
         await child.stderr.cancel().catch(() => {});
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: "loop.sh - names a quota pause instead of reporting a crash",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const tmpDir = await Deno.makeTempDir({ prefix: "vibe_loop_quota_" });
+    try {
+      await Deno.writeTextFile(
+        join(tmpDir, "loop.sh"),
+        await Deno.readTextFile(join(REPO_ROOT, "loop.sh")),
+      );
+      await Deno.chmod(join(tmpDir, "loop.sh"), 0o755);
+
+      // A launcher whose worker stopped because the host is out of quota.
+      await Deno.writeTextFile(
+        join(tmpDir, "run.sh"),
+        `#!/bin/bash\nexit ${QUOTA_PAUSE_EXIT_STATUS}\n`,
+      );
+      await Deno.chmod(join(tmpDir, "run.sh"), 0o755);
+
+      await Deno.mkdir(join(tmpDir, "worker", "deno"), { recursive: true });
+      await Deno.writeTextFile(join(tmpDir, "worker", "deno", "mod.ts"), "");
+      await Deno.writeTextFile(join(tmpDir, "worker", "deno", "deno.lock"), "");
+
+      const binDir = join(tmpDir, "bin");
+      await Deno.mkdir(binDir, { recursive: true });
+      await Deno.writeTextFile(join(binDir, "git"), "#!/bin/bash\nexit 0\n");
+      await Deno.chmod(join(binDir, "git"), 0o755);
+      await Deno.writeTextFile(
+        join(binDir, "deno"),
+        `#!/bin/bash\nprintf '%s\\n' "$*" >> "${tmpDir}/deno-args.log"\necho 1\n`,
+      );
+      await Deno.chmod(join(binDir, "deno"), 0o755);
+
+      const child = new Deno.Command("bash", {
+        args: [join(tmpDir, "loop.sh")],
+        cwd: tmpDir,
+        env: {
+          LOOP_SLEEP_SECONDS: "1",
+          PATH: `${binDir}:${Deno.env.get("PATH") ?? ""}`,
+          HOME: tmpDir,
+        },
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        child.kill("SIGKILL");
+        const output = await child.output();
+        const stdout = new TextDecoder().decode(output.stdout);
+
+        assertStringIncludes(stdout, "out of quota");
+        assert(
+          !stdout.includes("backing off and retrying"),
+          `a scheduled pause must not be reported as a crash: ${stdout}`,
+        );
+        // The recorder still sees the outcome — it is what sets the cadence.
+        assertStringIncludes(
+          await Deno.readTextFile(join(tmpDir, "deno-args.log")),
+          `--exit-status ${QUOTA_PAUSE_EXIT_STATUS}`,
+        );
+      } finally {
+        try {
+          child.kill("SIGKILL");
+        } catch { /* already dead */ }
       }
     } finally {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

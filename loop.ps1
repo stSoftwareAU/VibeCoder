@@ -9,6 +9,9 @@
 # It continuously re-invokes run.ps1, backing off between failures.
 #
 # Issue #919:  PowerShell equivalent for cross-platform support.
+# Issue #342:  A launcher that stopped because the host is out of Claude quota
+#              is a scheduled pause, not a failure: it exits $QuotaPauseExit and
+#              the recorder re-probes on a fixed cadence instead of backing off.
 # Issue #4072: A failed launcher is recorded rather than retried blindly: the
 #              worker's `container-restart-backoff` command grows the wait
 #              across consecutive failures, records the recovery as a self-heal
@@ -26,6 +29,10 @@ if (-not $LoopSleepSeconds) { $LoopSleepSeconds = "60" }
 # This supervisor records every launcher outcome itself, so run.ps1 must not
 # also record it — one failure must be counted once (Issue #4072).
 $env:VIBE_SUPERVISOR_RECORDS_OUTCOME = "1"
+
+# The worker's own "I stopped because this host is out of quota" status
+# (QUOTA_PAUSE_EXIT_STATUS in worker/deno/lib/quota_pause.ts, Issue #342).
+$QuotaPauseExit = 75
 
 $WorkerMod = Join-Path $ScriptDir "worker/deno/mod.ts"
 $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyContinue |
@@ -87,7 +94,10 @@ while ($true) {
     }
     if ($null -eq $status) { $status = 0 }
 
-    if ($status -ne 0) {
+    if ($status -eq $QuotaPauseExit) {
+        Write-Host ("loop.ps1: run.ps1 paused — this host is out of quota (status $status); " +
+            "re-probing on the quota cadence, not backing off (Issue #342)")
+    } elseif ($status -ne 0) {
         Write-Host "loop.ps1: run.ps1 exited with status $status — backing off and retrying"
     }
 

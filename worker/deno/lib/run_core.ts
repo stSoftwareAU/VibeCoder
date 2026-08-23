@@ -229,6 +229,17 @@ export interface RunCoreResult {
   /** Human-readable reason for exit. */
   exitReason: string;
   /**
+   * Issue #342: whether the loop stopped because the host is out of quota and
+   * the wait would outlast this run. A scheduled pause, not a failure — the
+   * supervisor re-probes at a fixed cadence instead of backing off.
+   */
+  quotaPaused: boolean;
+  /**
+   * When the usage window the pause was waiting on reopens, in epoch
+   * milliseconds. Only set alongside `quotaPaused` (Issue #342).
+   */
+  quotaResetEpochMs?: number;
+  /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
    * passed. Used to gate the end-of-run private-repo-6 report — a worker that
    * could not authenticate must not report itself healthy.
@@ -3024,6 +3035,14 @@ export async function runCoreLoop(
   // Starts false so a run that never reaches a healthy iteration (e.g. Claude
   // 401 every cycle) does not report healthy at end of run.
   let lastHealthCheckPassed = false;
+  /**
+   * Set once this run stopped for quota exhaustion (Issue #342): the wait
+   * would outlast the run-duration cap, so the run ends and the supervisor
+   * re-probes on its own fixed cadence.
+   */
+  let quotaPaused = false;
+  /** Reset the quota pause was waiting on, in Unix seconds (Issue #342). */
+  let quotaResetEpochSeconds = 0;
 
   // Build result helper
   function buildResult(reason: string): RunCoreResult {
@@ -3035,6 +3054,10 @@ export async function runCoreLoop(
       issuesProcessed: tracker.issuesProcessed,
       durationSeconds,
       exitReason: reason,
+      quotaPaused,
+      ...(quotaPaused && quotaResetEpochSeconds > 0
+        ? { quotaResetEpochMs: quotaResetEpochSeconds * 1000 }
+        : {}),
       lastHealthCheckPassed,
     };
   }
@@ -3053,6 +3076,12 @@ export async function runCoreLoop(
     // supervisor can respawn for the next window.
     const waitMs = (resetEpoch - Math.floor(deps.now() / 1000)) * 1000;
     if (deps.now() + Math.max(0, waitMs) >= endTime) {
+      // Issue #342: this is the quota-pause exit. Record it so the driver can
+      // declare it to the supervisor — a clean pause that shares its exit
+      // status with a crash is read as a crash, and the host then backs off
+      // exponentially instead of re-probing hourly.
+      quotaPaused = true;
+      quotaResetEpochSeconds = resetEpoch;
       deps.log(
         `${source}: rate-limit wait would exceed run-duration cap — exiting cleanly`,
       );
@@ -3118,6 +3147,7 @@ export async function runCoreLoop(
       issuesProcessed: 0,
       durationSeconds: 0,
       exitReason: pidCheck.message,
+      quotaPaused: false,
       lastHealthCheckPassed: false,
     };
   }
@@ -4036,9 +4066,13 @@ export async function runCoreLoop(
     // while (e.g. preflight, init) or a non-rate-limit fatal error —
     // crash-notify and exit.
     if (isPrimaryRateLimitMessage(message)) {
+      // Issue #342: the run is ending because the quota is gone, not because
+      // anything broke — the same scheduled outcome as the in-loop pause.
+      quotaPaused = true;
       let resetFragment = "";
       try {
         const resetEpoch = await deps.getRateLimitReset();
+        quotaResetEpochSeconds = resetEpoch;
         resetFragment = ` — quota resets ${
           formatRateLimitReset(resetEpoch, Math.floor(deps.now() / 1000))
         }`;
