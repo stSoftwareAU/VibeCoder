@@ -434,3 +434,47 @@ Deno.test("nukeWorkDir - clears contents without removing the directory itself (
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+Deno.test("nukeWorkDir - keeps the audit trail and its roster sidecars (Issue #337)", async () => {
+  // The audit journals are the tamper-evident record of every mutation the
+  // worker makes; an emergency nuke that erases them (or erases only the
+  // roster expectation beside them) destroys the evidence it may be needed
+  // to explain.
+  const workDir = await Deno.makeTempDir({ prefix: "nuke_workdir_audit_" });
+  try {
+    await Deno.mkdir(`${workDir}/audit/anchors`, { recursive: true });
+    await Deno.writeTextFile(
+      `${workDir}/audit/audit-worker-2026-08-22.jsonl`,
+      "{}\n",
+    );
+    await Deno.writeTextFile(`${workDir}/audit.roster.jsonl`, "{}\n");
+    await Deno.writeTextFile(`${workDir}/audit.roster.seen`, "1");
+    await Deno.mkdir(`${workDir}/stSoftwareAU/SomeRepo`, { recursive: true });
+
+    await nukeWorkDir(workDir);
+
+    assertEquals(
+      (await Deno.stat(`${workDir}/audit/audit-worker-2026-08-22.jsonl`))
+        .isFile,
+      true,
+    );
+    assertEquals(
+      (await Deno.stat(`${workDir}/audit.roster.jsonl`)).isFile,
+      true,
+    );
+    assertEquals(
+      (await Deno.stat(`${workDir}/audit.roster.seen`)).isFile,
+      true,
+    );
+    // The emergency sweep still reclaims everything else.
+    let repoGone = false;
+    try {
+      await Deno.stat(`${workDir}/stSoftwareAU`);
+    } catch {
+      repoGone = true;
+    }
+    assertEquals(repoGone, true, "clone content must still be removed");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

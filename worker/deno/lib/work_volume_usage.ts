@@ -52,7 +52,7 @@
 
 import { duBytes, findCargoTargets, formatGb } from "./work_volume_prune.ts";
 import { monitoredDirNames } from "./work_volume_tiers.ts";
-import { RESERVED_WORKDIR_NAMES } from "./stale_workdir.ts";
+import { isReservedWorkRootEntry } from "./stale_workdir.ts";
 
 const GIB = 1_073_741_824;
 
@@ -159,7 +159,7 @@ export function categoriseWorkVolumeEntry(
   if (monitored.has(name)) return "monitored";
   if (isWorkerCacheDir(name)) return "cache";
   if (name.startsWith(".")) return "other";
-  if (RESERVED_WORKDIR_NAMES.has(name)) return "other";
+  if (isReservedWorkRootEntry(name)) return "other";
   return "side";
 }
 

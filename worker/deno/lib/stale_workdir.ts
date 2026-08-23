@@ -40,11 +40,41 @@ export const DEFAULT_STALE_WORKDIR_DAYS = 7;
  *   filesystem whose root always carries this root-owned directory; the
  *   worker (uid 1000) cannot remove it, and trying produced a
  *   Permission-denied SELF-HEALING warning every cycle (Issue #4212).
+ * - `audit` — `audit_journal.ts` writes the hash-chained mutation journals
+ *   to `${WORK_DIR}/audit/`. It has no `.git` and sits untouched between
+ *   sweeps, so every housekeeping path treated it as a disposable clone and
+ *   deleted the worker's own tamper-evident record — `audit-chain-verify`
+ *   then reported `AUDIT_CHAIN_BROKEN` on every swept host (Issue #337).
  */
 export const RESERVED_WORKDIR_NAMES: ReadonlySet<string> = new Set([
   "logs",
   "lost+found",
+  "audit",
 ]);
+
+/**
+ * Work-root **file** names that belong to a reserved subsystem rather than
+ * to a clone: the audit trail's roster and its last-known-non-empty marker,
+ * kept beside (not inside) `audit/` precisely so removing the directory
+ * cannot remove the expectation (Issues #3949, #270).
+ */
+const RESERVED_WORKDIR_FILES: ReadonlySet<string> = new Set([
+  "audit.roster.jsonl",
+  "audit.roster.seen",
+]);
+
+/**
+ * Is this work-root entry owned by a subsystem and off-limits to every
+ * cleanup sweep? Covers {@link RESERVED_WORKDIR_NAMES} and the audit
+ * trail's sibling files, so a sweep that walks files as well as directories
+ * (`nukeWorkDir`) cannot half-erase the trail (Issue #337).
+ *
+ * @param name - Entry name directly under the work root
+ * @returns True when the entry must be left alone
+ */
+export function isReservedWorkRootEntry(name: string): boolean {
+  return RESERVED_WORKDIR_NAMES.has(name) || RESERVED_WORKDIR_FILES.has(name);
+}
 
 /** Options for scanning the work directory. */
 export interface StaleWorkDirOptions {
@@ -182,7 +212,7 @@ export async function scanAndCleanupStaleWorkDirs(
     // Skip reserved non-repo subdirs that other subsystems own. Without
     // this guard the scanner deletes them every cycle and the owning
     // subsystem recreates them — see RESERVED_WORKDIR_NAMES.
-    if (RESERVED_WORKDIR_NAMES.has(entry.name)) continue;
+    if (isReservedWorkRootEntry(entry.name)) continue;
 
     result.scanned++;
     const repoDir = `${workDir}/${entry.name}`;

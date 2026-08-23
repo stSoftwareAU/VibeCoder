@@ -41,8 +41,8 @@
 
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import {
+  isReservedWorkRootEntry,
   pushUnpushedBranches,
-  RESERVED_WORKDIR_NAMES,
 } from "./stale_workdir.ts";
 import { duBytes, formatGb } from "./work_volume_prune.ts";
 
@@ -89,15 +89,15 @@ export function monitoredDirNames(
  *
  * Dot-prefixed entries are the worker's own state and agent scratch, owned
  * by the work-volume prune (Issue #228); reserved names (`logs`,
- * `lost+found`) belong to other subsystems. Everything else that is not a
- * monitored clone is disposable.
+ * `lost+found`, the `audit` trail and its roster sidecars) belong to other
+ * subsystems. Everything else that is not a monitored clone is disposable.
  */
 export function classifyWorkRootEntry(
   name: string,
   monitored: ReadonlySet<string>,
 ): WorkRootTier {
   if (name === "" || name.startsWith(".")) return "state";
-  if (RESERVED_WORKDIR_NAMES.has(name)) return "state";
+  if (isReservedWorkRootEntry(name)) return "state";
   if (monitored.has(name)) return "monitored";
   return "disposable";
 }

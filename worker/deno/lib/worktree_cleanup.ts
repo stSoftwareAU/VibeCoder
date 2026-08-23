@@ -16,7 +16,7 @@
 
 import { runGitCommand } from "./git_timeout.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
-import { RESERVED_WORKDIR_NAMES } from "./stale_workdir.ts";
+import { isReservedWorkRootEntry } from "./stale_workdir.ts";
 
 /** Default age threshold — only remove orphaned worktrees older than 24h. */
 export const DEFAULT_MAX_AGE_HOURS = 24;
@@ -156,7 +156,7 @@ export async function cleanupOrphanedWorktrees(
     if (!entry.isDirectory) continue;
     // Reserved non-repo entries (ext4 lost+found, the logs dir) are other
     // subsystems' — or the filesystem's — property (Issue #4212).
-    if (RESERVED_WORKDIR_NAMES.has(entry.name)) continue;
+    if (isReservedWorkRootEntry(entry.name)) continue;
 
     const repoDir = `${workDir}/${entry.name}`;
     // Only treat a directory as a main repo when `.git` is itself a

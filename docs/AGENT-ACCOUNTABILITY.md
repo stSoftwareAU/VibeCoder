@@ -203,7 +203,13 @@ appended to `${WORK_DIR}/audit/audit-<workerId>-YYYY-MM-DD.jsonl`,
 rotated daily and partitioned per worker. Because the journal lives
 under `${WORK_DIR}/audit/` — a sibling of, never inside, any cloned
 repo — a bug in the worker that rewrites a repo's history cannot rewrite
-its own audit log.
+its own audit log. `audit` is a **reserved work-root name**
+([`stale_workdir.ts`](../worker/deno/lib/stale_workdir.ts)), as are the
+`audit.roster.jsonl` and `audit.roster.seen` sidecars beside it, so no
+housekeeping sweep — tier reclaim, stale-workdir scan, worktree cleanup or
+the 90%-disk `nukeWorkDir` — may delete the trail. Before Issue #337 it
+tiered as a disposable clone and was pruned, and the sweep below then
+reported the erasure the worker itself had caused.
 
 **Tamper detection.** Each entry's `hash` is
 `SHA-256(prevHash + "\n" + canonical-payload)`, linking it to its
