@@ -347,6 +347,13 @@ export interface RunClaudeOptions {
    */
   killCompletionCapSeconds?: number;
   /**
+   * Seconds to keep draining the child's streams after its status has
+   * settled (Issue #325). Short by design: the process is already gone, and
+   * anything still holding the pipe is a survivor we will not outlast. Test
+   * seam; production leaves this unset and uses five seconds.
+   */
+  streamDrainCapSeconds?: number;
+  /**
    * Milliseconds between agent-progress lines (Issue #4169). Test seam:
    * production leaves this unset and uses the one-minute default.
    */
@@ -996,6 +1003,19 @@ export async function runClaudeWithTimeout(
       ? options.killCompletionCapSeconds * 1000
       : killCompletionCapMs(killAfterSeconds);
 
+    // Issue #325: how long to keep draining the streams after the child's
+    // status has settled. Short by design — at this point the process is gone
+    // and anything still holding the pipe is a survivor we are not going to
+    // outlast. Armed only when the drain is actually reached, so a normal run
+    // never creates the timer.
+    const streamDrainMs = options.streamDrainCapSeconds !== undefined
+      ? options.streamDrainCapSeconds * 1000
+      : 5_000;
+    let streamDrainTimer: ReturnType<typeof setTimeout> | undefined;
+    const streamDrainBound = new Promise<void>((resolve) => {
+      streamDrainTimer = setTimeout(resolve, streamDrainMs);
+    });
+
     const fireKill = (
       reason: "hard-timeout" | "no-output",
       message: string,
@@ -1371,10 +1391,30 @@ export async function runClaudeWithTimeout(
     // The settle promise gathers everything the runner used to await
     // unconditionally. After a watchdog kill it races the kill-completion
     // cap (Issue #4254) instead of blocking without bound.
+    //
+    // Issue #325: the child's *status* and the stream *pumps* fail
+    // independently, and lumping them together is what held a pool slot for
+    // 2473 s against a 120 s cap on 2026-08-22. After SIGKILL the direct
+    // child is reaped promptly — `child.status` is about the process — but a
+    // surviving descendant can hold the write end of the stdout pipe open
+    // indefinitely, and the pump only ends at EOF. Awaiting the pumps as part
+    // of "settled" therefore made an unkillable *grandchild* able to wedge
+    // the slot, and with both slots wedged the cycle could not end.
+    //
+    // The status is now the settle condition. The pumps are drained as a
+    // bounded courtesy: whatever has arrived is kept, and a pipe nobody will
+    // ever close is abandoned rather than waited on. Losing the tail of
+    // stdout on a run that is already a timeout failure is a far smaller harm
+    // than never releasing the slot.
     const settle = (async () => {
       const s = await child.status;
-      await stdoutPump.catch(() => {/* reader closed by kill */});
-      await stderrPump.catch(() => {/* reader closed by kill */});
+      await Promise.race([
+        Promise.all([
+          stdoutPump.catch(() => {/* reader closed by kill */}),
+          stderrPump.catch(() => {/* reader closed by kill */}),
+        ]),
+        streamDrainBound,
+      ]);
       return s;
     })();
 
@@ -1415,6 +1455,13 @@ export async function runClaudeWithTimeout(
     if (killBoundTimer) {
       clearTimeout(killBoundTimer);
       killBoundTimer = undefined;
+    }
+    // Issue #325: the drain timer is armed unconditionally, so it must be
+    // cleared on every path or Deno's sanitisers flag a leaked timer on a
+    // perfectly healthy run.
+    if (streamDrainTimer !== undefined) {
+      clearTimeout(streamDrainTimer);
+      streamDrainTimer = undefined;
     }
     if (hardWatchdog) {
       clearTimeout(hardWatchdog);
