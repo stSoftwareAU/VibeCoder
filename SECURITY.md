@@ -369,6 +369,28 @@ scheme was capped at 64 characters. The answer is a bounded *pattern*, never a
 bounded *input* — capping the text would silently leave its tail unmasked, in
 direct conflict with "redact before you truncate" above.
 
+### Transformed secrets are decoded, then re-scanned
+
+A signature rule only recognises the credential's **original** bytes, so a
+secret put through a reversible transform used to defeat the whole control: an
+agent running with unrestricted bash could `echo "$GH_TOKEN" | base64` (or
+`xxd`, or `rev`, or print the token in two halves) and the result matched no
+rule on its way to a public comment.
+
+`redactTransformedSecrets()`
+([`worker/deno/lib/secret_transform_redaction.ts`](worker/deno/lib/secret_transform_redaction.ts))
+runs inside `redactSecrets()` after the rules: each run of
+encoding-charset characters — joined across line breaks, so a wrapped blob or a
+split token is one value — is decoded (base64, url-safe base64, hex) and
+reversed up to two transforms deep, and the run is masked whole when any
+decoding matches a rule. New rules therefore inherit transform coverage for
+free.
+
+Deliberately **not** an entropy heuristic: masking every high-entropy string
+would redact commit SHAs, UUIDs, patch hunks and base64 images out of every log
+line and PR body. Decoding is deterministic, so benign blobs stay readable and
+only a decoded *credential shape* is masked.
+
 ### Sinks already wired
 
 | Sink | Location | Issue |

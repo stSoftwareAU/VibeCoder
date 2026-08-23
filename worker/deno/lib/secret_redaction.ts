@@ -26,8 +26,16 @@
  *    redact-before-truncate standard (SECURITY.md) requires redaction to cover
  *    the whole text, so a scan cap would silently leave the tail unmasked.
  *
+ *  - Signature rules only see the secret's *original* bytes, so a credential
+ *    put through `base64`, `xxd` or `rev` — or split across two `echo` calls
+ *    — matched nothing (Issue #188). `redactTransformedSecrets` closes that
+ *    by decoding candidate runs and re-scanning them with the same rules;
+ *    see `secret_transform_redaction.ts`.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
+
+import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -355,7 +363,29 @@ const RULES: readonly RedactionRule[] = [
 ];
 
 /**
+ * Report whether `text` matches any signature rule, without rewriting it.
+ * This is the scan the decode-then-rescan pass applies to each decoded
+ * candidate (Issue #188).
+ *
+ * Detection goes through `String.prototype.search` rather than
+ * `RegExp.prototype.test`: every rule pattern is global, and `test()` would
+ * advance and carry `lastIndex` across calls, making the result depend on the
+ * previous input. `search` saves and restores `lastIndex`, so the literal rule
+ * patterns can be reused as-is. Cloning them through `new RegExp(...)` would
+ * do the same job but trips semgrep's `detect-non-literal-regexp` rule, and a
+ * dynamically-built regex is the wrong primitive here anyway — the patterns
+ * are all hardcoded literals.
+ */
+function matchesSignatureRule(text: string): boolean {
+  return RULES.some((rule) => text.search(rule.pattern) !== -1);
+}
+
+/**
  * Redact known secret shapes from a string.
+ *
+ * Signature rules run first, then the decode-then-rescan pass
+ * ({@link redactTransformedSecrets}) masks anything hidden under a reversible
+ * transform — base64, hex, `rev`, or a credential split across lines.
  *
  * @param text - Arbitrary text destined for a log sink.
  * @returns The text with any detected secrets replaced by
@@ -371,7 +401,11 @@ export function redactSecrets(text: string): string {
       rule.replace as (substring: string, ...args: unknown[]) => string,
     );
   }
-  return out;
+  return redactTransformedSecrets(
+    out,
+    matchesSignatureRule,
+    REDACTION_PLACEHOLDER,
+  );
 }
 
 /**
