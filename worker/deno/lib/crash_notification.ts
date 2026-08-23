@@ -52,6 +52,16 @@ export interface CrashNotificationParams {
   workStartTime: number;
   /** Whether the shutdown was planned (e.g., duration expired). */
   plannedShutdown: boolean;
+  /**
+   * Optional HTML-comment marker that identifies this report (Issue #343).
+   *
+   * When set, the marker is carried in the comment body and a comment already
+   * carrying it is **edited in place** instead of a second one being posted —
+   * the same body-marker dedup the script-failure (#207) and idle-inversion
+   * (#321) streaks use. An ongoing condition then updates one report rather
+   * than filing another on every re-notification.
+   */
+  dedupMarker?: string;
 }
 
 /** Default crash notification configuration. */
@@ -215,6 +225,9 @@ export function buildCrashMessage(
   }
 
   const lines: string[] = [
+    // Marker first, so the dedup search matches on the body's own contents
+    // (Issue #343) and a re-notification updates this report in place.
+    ...(params.dedupMarker ? [params.dedupMarker, ""] : []),
     "## Worker Crash Notification",
     "",
     "| Field | Value |",
@@ -350,16 +363,73 @@ const defaultGhCommentRunner: GhCommentRunner = async (args) => {
 };
 
 /**
+ * Runs a read-only `gh` command and returns its stdout. Used only on the
+ * dedup-marker path (Issue #343), where the existing report has to be found
+ * before it can be updated.
+ */
+export type GhQueryRunner = (args: string[]) => Promise<string>;
+
+/** Default query runner — spawns the real CLI and captures stdout. */
+const defaultGhQueryRunner: GhQueryRunner = async (args) => {
+  const result = await spawnGh(args, { stderr: "null" });
+  if (!result.success) {
+    // Fail loud: a lookup we could not perform must not read as "no report
+    // exists" without the caller knowing it guessed.
+    throw new Error(`gh ${args[0] ?? ""} exited ${result.code}`);
+  }
+  return result.stdout;
+};
+
+/**
+ * Find the id of an existing comment carrying `marker`, or null when there is
+ * none. Throws when the lookup itself failed.
+ */
+async function findMarkedComment(
+  repo: string,
+  issueNumber: number,
+  marker: string,
+  queryGh: GhQueryRunner,
+): Promise<number | null> {
+  const raw = await queryGh([
+    "api",
+    `repos/${repo}/issues/${issueNumber}/comments`,
+    "--paginate",
+    "--jq",
+    "[.[] | {id: .id, body: .body}]",
+  ]);
+  // `--paginate` concatenates one array per page; parse each in turn.
+  const comments: { id: number; body?: string }[] = [];
+  for (const chunk of (raw || "").split("\n")) {
+    const text = chunk.trim();
+    if (!text) continue;
+    const parsed = JSON.parse(text) as { id: number; body?: string }[];
+    if (Array.isArray(parsed)) comments.push(...parsed);
+  }
+  const match = comments
+    .filter((c) => (c.body ?? "").includes(marker))
+    .sort((a, b) => b.id - a.id)[0];
+  return match ? match.id : null;
+}
+
+/**
  * Post a crash notification as a GitHub issue comment.
+ *
+ * When `params.dedupMarker` is set (Issue #343) an existing comment carrying
+ * that marker is edited in place rather than a second one being posted, so an
+ * ongoing condition updates one report instead of filing another every time
+ * it is re-notified. A failed lookup falls back to posting a fresh comment:
+ * a duplicate report is recoverable, a lost escalation is not.
  *
  * All errors are suppressed — notification must never block cleanup.
  *
- * `runGh` is injectable for tests; production uses the default `gh` runner.
+ * `runGh` and `queryGh` are injectable for tests; production uses the real
+ * `gh` runners.
  */
 export async function notifyCrashViaIssueComment(
   config: CrashNotificationConfig,
   params: CrashNotificationParams,
   runGh: GhCommentRunner = defaultGhCommentRunner,
+  queryGh: GhQueryRunner = defaultGhQueryRunner,
 ): Promise<Result<void>> {
   if (!params.repo || !params.issueNumber) {
     return { ok: true, value: undefined };
@@ -368,6 +438,35 @@ export async function notifyCrashViaIssueComment(
   const message = buildCrashMessage(config, params);
 
   try {
+    if (params.dedupMarker) {
+      let existing: number | null = null;
+      try {
+        existing = await findMarkedComment(
+          params.repo,
+          params.issueNumber,
+          params.dedupMarker,
+          queryGh,
+        );
+      } catch (err) {
+        recordFaultEvent(
+          "catch_block_warning",
+          `crash notification dedup lookup failed, posting a new comment: ` +
+            `${err}`,
+        );
+      }
+      if (existing !== null) {
+        await runGh([
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${params.repo}/issues/comments/${existing}`,
+          "-f",
+          `body=${message}`,
+        ]);
+        return { ok: true, value: undefined };
+      }
+    }
+
     await runGh([
       "issue",
       "comment",

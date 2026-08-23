@@ -20,8 +20,20 @@
  *   3. **Escalation.** Once the consecutive-failure count crosses the phase's
  *      threshold, the failure is reported through the existing
  *      crash-notification channel (GitHub issue comment plus optional
- *      webhook), whose cooldown provides the rate limiting.
- *   4. **Quota pauses are not failures** (Issue #342). A run that stops
+ *      webhook), whose cooldown is the channel's own last line of defence.
+ *   4. **One report per streak, not one per failure** (Issue #343). The
+ *      threshold used to be re-evaluated every cycle, so failures 3, 4, 5 …
+ *      54 of a single ongoing condition each filed their own report — 59
+ *      `escalated` events for a handful of incidents. A streak is now
+ *      identified by its phase and its start, escalates once on the crossing,
+ *      and re-notifies on a decaying schedule (crossing, then hourly, then
+ *      daily) by editing the existing report through its body marker rather
+ *      than filing another. And a suppressed escalation is queued and retried
+ *      rather than dropped: being rate-limited by GitHub is exactly the state
+ *      in which a worker most needs to raise its hand, so an escalation that
+ *      never lands is recorded as a failure in the self-heal health report and
+ *      carried into the next report that does.
+ *   5. **Quota pauses are not failures** (Issue #342). A run that stops
  *      because the host is out of Claude quota exits on purpose, with the
  *      reset already known. It resets the failure streak, escalates nothing,
  *      claims no recovery, and re-probes at a fixed cadence — because the
@@ -118,6 +130,70 @@ export const CONTAINER_RESTART_DEFAULTS: Readonly<ContainerRestartConfig> = {
   quotaPauseSleepSeconds: 3600,
 } as const;
 
+/**
+ * Delivery attempts made for one streak before the escalation is declared
+ * undeliverable (Issue #343).
+ *
+ * Retrying every cycle for ever would hammer a channel that is refusing us;
+ * giving up after one attempt is how failures 50 and 51 were lost. The cap
+ * bounds the per-cycle retry, after which the escalation falls back to the
+ * re-notify schedule and the loss is recorded in the health report.
+ */
+export const ESCALATION_MAX_ATTEMPTS = 5;
+
+/**
+ * Seconds between escalations for one ongoing streak (Issue #343).
+ *
+ * Index by escalations already delivered: the threshold crossing is immediate,
+ * the first follow-up an hour later, and everything after that daily — so a
+ * genuinely stuck host stays visible without filling the channel.
+ */
+export const ESCALATION_RENOTIFY_SCHEDULE_SECONDS: readonly number[] = [
+  0,
+  3600,
+  86400,
+] as const;
+
+/**
+ * Seconds to wait before re-notifying, given the escalations already
+ * delivered for this streak.
+ */
+export function reNotifyIntervalSeconds(delivered: number): number {
+  const index = Math.min(
+    Math.max(0, Math.floor(delivered)),
+    ESCALATION_RENOTIFY_SCHEDULE_SECONDS.length - 1,
+  );
+  return ESCALATION_RENOTIFY_SCHEDULE_SECONDS[index]!;
+}
+
+/** An escalation that was attempted but never delivered (Issue #343). */
+export interface PendingEscalation {
+  /** Delivery attempts made so far for this streak. */
+  attempts: number;
+  /** Why the most recent attempt did not land (e.g. `rate_limited`). */
+  lastReason: string;
+  /** Unix seconds of the first undelivered attempt. */
+  firstAttemptedAt: number;
+  /** Whether the loss has already been recorded in the health report. */
+  reported: boolean;
+}
+
+/** Escalation bookkeeping for one failure streak (Issue #343). */
+export interface StreakEscalationState {
+  /** Phase this streak is escalating for — half of the streak's identity. */
+  phase: ContainerFailurePhase;
+  /** Unix seconds the streak began — the other half of its identity. */
+  streakStartedAt: number;
+  /** Escalations actually delivered for this streak. */
+  delivered: number;
+  /** Unix seconds of the last delivered escalation (0 when none landed). */
+  lastNotifiedAt: number;
+  /** Unix seconds of the last delivery attempt, delivered or not. */
+  lastAttemptAt: number;
+  /** An escalation queued for retry, or null when nothing is outstanding. */
+  pending: PendingEscalation | null;
+}
+
 /** Persisted backoff state. */
 export interface ContainerRestartState {
   /** Consecutive failed launcher invocations. */
@@ -128,6 +204,14 @@ export interface ContainerRestartState {
   lastExitStatus: number | null;
   /** Unix timestamp (seconds) of the last update. */
   lastUpdated: number;
+  /**
+   * Unix seconds the current failure streak began, 0 when there is none
+   * (Issue #343). With the phase, this identifies the streak, so one ongoing
+   * condition is reported once rather than once per failure.
+   */
+  streakStartedAt: number;
+  /** Escalation bookkeeping for the current streak (Issue #343). */
+  escalation: StreakEscalationState | null;
 }
 
 function nowSeconds(): number {
@@ -143,6 +227,8 @@ export function emptyContainerRestartState(
     lastPhase: null,
     lastExitStatus: null,
     lastUpdated: now(),
+    streakStartedAt: 0,
+    escalation: null,
   };
 }
 
@@ -365,6 +451,8 @@ export function nextContainerRestartDecision(
         lastPhase: null,
         lastExitStatus: exitStatus,
         lastUpdated: now(),
+        streakStartedAt: 0,
+        escalation: null,
       },
       kind,
       phase: null,
@@ -386,6 +474,8 @@ export function nextContainerRestartDecision(
         lastPhase: null,
         lastExitStatus: 0,
         lastUpdated: now(),
+        streakStartedAt: 0,
+        escalation: null,
       },
       kind,
       phase: null,
@@ -399,6 +489,12 @@ export function nextContainerRestartDecision(
   const phase = resolveFailurePhase(marker, exitStatus);
   const consecutiveFailures = previous.consecutiveFailures + 1;
   const threshold = escalationThresholdFor(phase, config);
+  // The streak keeps the start it was given until a clean run clears it, so
+  // every failure in one ongoing condition shares an identity (Issue #343).
+  const streakStartedAt =
+    previous.consecutiveFailures > 0 && previous.streakStartedAt > 0
+      ? previous.streakStartedAt
+      : now();
 
   return {
     state: {
@@ -406,6 +502,8 @@ export function nextContainerRestartDecision(
       lastPhase: phase,
       lastExitStatus: exitStatus,
       lastUpdated: now(),
+      streakStartedAt,
+      escalation: previous.escalation,
     },
     kind,
     phase,
@@ -417,8 +515,132 @@ export function nextContainerRestartDecision(
 }
 
 // ---------------------------------------------------------------------------
+// Per-streak escalation planning (Issue #343)
+// ---------------------------------------------------------------------------
+
+/** What should happen to the escalation channel for one recorded failure. */
+export type EscalationPlan =
+  /** The streak has not reached its phase's threshold. */
+  | { send: false; reason: "below_threshold" }
+  /**
+   * This streak has already been reported and its next re-notification is
+   * not due. The flood of Issue #343 lived here: every one of these used to
+   * be a GitHub report.
+   */
+  | { send: false; reason: "suppressed_same_streak"; dueInSeconds: number }
+  /** Send now — a threshold crossing, a scheduled update, or a retry. */
+  | {
+    send: true;
+    kind: "crossing" | "renotify" | "retry";
+    /** Escalations already delivered for this streak. */
+    delivered: number;
+    /** The queued escalation being retried, when this is a retry. */
+    pending: PendingEscalation | null;
+  };
+
+/**
+ * Decide whether this failure should reach the escalation channel.
+ *
+ * Pure, so the dedup rules are testable without a notification seam.
+ *
+ * @param previous - Escalation bookkeeping carried from the last failure
+ * @param decision - The transition just computed for this failure
+ * @param nowSec - Current time, in Unix seconds
+ */
+export function planStreakEscalation(
+  previous: StreakEscalationState | null,
+  decision: ContainerRestartDecision,
+  nowSec: number,
+): EscalationPlan {
+  if (!decision.escalate || !decision.phase) {
+    return { send: false, reason: "below_threshold" };
+  }
+
+  // A different phase is a different fault with a different operator action,
+  // and a different start is a different incident — either way this is the
+  // first report of something new.
+  const sameStreak = previous !== null &&
+    previous.phase === decision.phase &&
+    previous.streakStartedAt === decision.state.streakStartedAt;
+  if (!sameStreak) {
+    return { send: true, kind: "crossing", delivered: 0, pending: null };
+  }
+
+  // A queued escalation is retried on the next cycle: the channel refusing us
+  // is not a reason to stop trying, only a reason to try again. Bounded, so a
+  // permanently refusing channel is not hammered for ever.
+  if (
+    previous.pending !== null &&
+    previous.pending.attempts < ESCALATION_MAX_ATTEMPTS
+  ) {
+    return {
+      send: true,
+      kind: "retry",
+      delivered: previous.delivered,
+      pending: previous.pending,
+    };
+  }
+
+  // Otherwise the decaying schedule governs. `delivered` is floored at one
+  // because the crossing has already been attempted for this streak, so the
+  // immediate slot of the schedule is spent.
+  const interval = reNotifyIntervalSeconds(Math.max(1, previous.delivered));
+  const since = Math.max(previous.lastNotifiedAt, previous.lastAttemptAt);
+  const due = since + interval;
+  if (nowSec >= due) {
+    return {
+      send: true,
+      kind: previous.pending !== null ? "retry" : "renotify",
+      delivered: previous.delivered,
+      pending: previous.pending,
+    };
+  }
+  return {
+    send: false,
+    reason: "suppressed_same_streak",
+    dueInSeconds: due - nowSec,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
+
+/** Parse persisted escalation bookkeeping; anything malformed reads as none. */
+function coerceStreakEscalation(
+  value: unknown,
+): StreakEscalationState | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<StreakEscalationState>;
+  if (typeof raw.phase !== "string") return null;
+
+  const finite = (n: unknown): number =>
+    typeof n === "number" && Number.isFinite(n)
+      ? Math.max(0, Math.floor(n))
+      : 0;
+
+  const pendingRaw = raw.pending as Partial<PendingEscalation> | null;
+  const pending = pendingRaw && typeof pendingRaw === "object" &&
+      typeof pendingRaw.attempts === "number"
+    ? {
+      attempts: finite(pendingRaw.attempts),
+      lastReason: typeof pendingRaw.lastReason === "string"
+        ? pendingRaw.lastReason
+        : "unknown",
+      firstAttemptedAt: finite(pendingRaw.firstAttemptedAt),
+      reported: pendingRaw.reported === true,
+    }
+    : null;
+
+  return {
+    phase: raw.phase as ContainerFailurePhase,
+    streakStartedAt: finite(raw.streakStartedAt),
+    delivered: finite(raw.delivered),
+    lastNotifiedAt: finite(raw.lastNotifiedAt),
+    lastAttemptAt: finite(raw.lastAttemptAt),
+    pending,
+  };
+}
 
 function statePath(workDir: string): string {
   return `${workDir}/${STATE_FILENAME}`;
@@ -481,6 +703,13 @@ export async function loadContainerRestartState(
       lastUpdated: typeof parsed.lastUpdated === "number"
         ? parsed.lastUpdated
         : nowSeconds(),
+      // Absent in a state file written before Issue #343: the streak simply
+      // has no identity yet and the next failure gives it one.
+      streakStartedAt: typeof parsed.streakStartedAt === "number" &&
+          Number.isFinite(parsed.streakStartedAt)
+        ? Math.max(0, Math.floor(parsed.streakStartedAt))
+        : 0,
+      escalation: coerceStreakEscalation(parsed.escalation),
     };
   } catch (err) {
     reportStateLoadFailure("container-restart state", path, err, warn);
@@ -513,6 +742,26 @@ export async function persistContainerRestartState(
 // Escalation
 // ---------------------------------------------------------------------------
 
+/** Body-marker prefix that identifies a container escalation report. */
+export const CONTAINER_ESCALATION_MARKER_PREFIX = "VIBE_CONTAINER_ESCALATION";
+
+/**
+ * The dedup marker for one streak's report (Issue #343).
+ *
+ * Keyed by phase and streak start, so every re-notification for one ongoing
+ * condition edits that condition's report — and a different streak, or the
+ * same streak turning into a different fault, can never overwrite it. Same
+ * body-marker dedup as the script-failure streak (#207) and the
+ * idle-inversion streak (#321).
+ */
+export function formatContainerEscalationMarker(
+  phase: ContainerFailurePhase,
+  streakStartedAt: number,
+): string {
+  return `<!-- ${CONTAINER_ESCALATION_MARKER_PREFIX}:${phase}:` +
+    `${Math.max(0, Math.floor(streakStartedAt))} -->`;
+}
+
 /** Everything the escalation message needs. */
 export interface ContainerEscalationInput {
   phase: ContainerFailurePhase;
@@ -526,6 +775,12 @@ export interface ContainerEscalationInput {
   issueNumber?: number;
   /** Optional host-side log tail to append. */
   logTail?: string;
+  /** Unix seconds the streak began — identifies the report (Issue #343). */
+  streakStartedAt?: number;
+  /** Escalations already delivered for this streak (Issue #343). */
+  priorEscalations?: number;
+  /** Attempts for this streak that never reached anyone (Issue #343). */
+  undelivered?: { attempts: number; reason: string };
 }
 
 /**
@@ -535,11 +790,17 @@ export interface ContainerEscalationInput {
  * notification's summary table) and the body, so the report names what broke
  * — an image that cannot be built is a different operator action from a
  * worker that keeps crashing.
+ *
+ * Issue #343: the report carries a per-streak dedup marker so a
+ * re-notification updates the existing report rather than filing another, and
+ * names any earlier attempt that was suppressed — the next successful channel
+ * carries what the suppressed ones could not.
  */
 export function buildContainerEscalationParams(
   input: ContainerEscalationInput,
 ): CrashNotificationParams {
   const description = describeFailurePhase(input.phase);
+  const priorEscalations = Math.max(0, input.priorEscalations ?? 0);
   const lines = [
     "Vibe Coder container self-heal escalation",
     `Failure phase: ${input.phase} (${description})`,
@@ -549,6 +810,20 @@ export function buildContainerEscalationParams(
     `Next attempt after a ${input.backoffSeconds}s backoff`,
   ];
 
+  if (priorEscalations > 0) {
+    lines.push(
+      `This is update ${priorEscalations + 1} for the same ongoing streak — ` +
+        "the streak is reported once and updated on a decaying schedule " +
+        "(crossing, then hourly, then daily), not once per failure.",
+    );
+  }
+  if (input.undelivered && input.undelivered.attempts > 0) {
+    lines.push(
+      `${input.undelivered.attempts} earlier escalation attempt(s) for this ` +
+        `streak were never delivered (${input.undelivered.reason}). This ` +
+        "report carries them — nobody was told at the time.",
+    );
+  }
   if (input.phase === "image_build") {
     lines.push(
       "The container image could not be built, so the known-good environment " +
@@ -566,6 +841,10 @@ export function buildContainerEscalationParams(
     workStage: `container launch — ${description}`,
     workStartTime: 0,
     plannedShutdown: false,
+    dedupMarker: formatContainerEscalationMarker(
+      input.phase,
+      input.streakStartedAt ?? 0,
+    ),
   };
 }
 
@@ -687,8 +966,16 @@ export interface ContainerRestartOutcome {
   recovered: boolean;
   /** True when a GitHub/webhook escalation was actually sent. */
   escalated: boolean;
-  /** Why an escalation was not sent (e.g. `rate_limited`), else null. */
+  /**
+   * Why an escalation was not sent — a delivery reason (`rate_limited`) or
+   * `suppressed_same_streak` when this streak has already been reported and
+   * its next update is not due (Issue #343). Null when one was sent.
+   */
   escalationReason: string | null;
+  /** Escalations delivered for the current streak so far (Issue #343). */
+  escalationsDelivered: number;
+  /** Undelivered attempts queued for retry on this streak (Issue #343). */
+  escalationPendingAttempts: number;
 }
 
 /**
@@ -738,7 +1025,33 @@ export async function recordContainerRestartOutcome(
     recovered: decision.recovered,
     escalated: false,
     escalationReason: null,
+    escalationsDelivered: decision.state.escalation?.delivered ?? 0,
+    escalationPendingAttempts: decision.state.escalation?.pending?.attempts ??
+      0,
   };
+
+  // Issue #343: the streak has ended (a clean run or a scheduled pause) while
+  // an escalation for it was still undelivered. Nobody was ever told about
+  // that outage — record it rather than letting it vanish with the streak.
+  if (!decision.phase && previous.escalation?.pending) {
+    const lost = previous.escalation.pending;
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "escalation_undeliverable",
+      reason: `${lost.attempts} escalation attempt(s) for the ` +
+        `${previous.escalation.phase} streak were never delivered ` +
+        `(${lost.lastReason}) — the streak ended before the operator ` +
+        "was told",
+      result: "failed",
+      details: {
+        phase: previous.escalation.phase,
+        streakStartedAt: previous.escalation.streakStartedAt,
+        attempts: lost.attempts,
+        reason: lost.lastReason,
+        previousFailures: previous.consecutiveFailures,
+      },
+    }, { workDir: options.workDir });
+  }
 
   // Quota pause (Issue #342): recorded as the scheduled outcome it is, with
   // the streak already reset above. No escalation, no recovery claim, and a
@@ -802,12 +1115,30 @@ export async function recordContainerRestartOutcome(
     },
   }, { workDir: options.workDir });
 
-  if (!decision.escalate) return outcome;
+  // Issue #343: an ongoing streak is one incident. The plan decides whether
+  // this failure is its first report, a scheduled update, a retry of one the
+  // channel refused, or the 51st cycle of something already reported.
+  const nowSec = now();
+  const plan = planStreakEscalation(
+    previous.escalation,
+    decision,
+    nowSec,
+  );
+  if (!plan.send) {
+    if (plan.reason === "suppressed_same_streak") {
+      // Deliberately no self-heal event: one per cycle here is the same flood
+      // in a different log. The `restart_backoff` event above already records
+      // every failure of the streak.
+      outcome.escalationReason = "suppressed_same_streak";
+    }
+    return outcome;
+  }
 
   const target = options.repo
     ? { repo: options.repo, issueNumber: options.issueNumber ?? 0 }
     : await resolveInFlightIssue(options.workDir);
 
+  const carried = plan.pending;
   const params = buildContainerEscalationParams({
     phase: decision.phase,
     exitStatus: options.exitStatus,
@@ -817,6 +1148,13 @@ export async function recordContainerRestartOutcome(
     repo: target?.repo,
     issueNumber: target?.issueNumber,
     logTail: options.logTail,
+    streakStartedAt: decision.state.streakStartedAt,
+    priorEscalations: plan.delivered,
+    ...(carried
+      ? {
+        undelivered: { attempts: carried.attempts, reason: carried.lastReason },
+      }
+      : {}),
   });
 
   let notified = false;
@@ -833,16 +1171,45 @@ export async function recordContainerRestartOutcome(
     reason = err instanceof Error ? err.message : String(err);
   }
 
+  // A suppressed escalation is queued, not dropped: the next cycle retries it
+  // and the report that finally lands names what was lost.
+  const pending: PendingEscalation | null = notified ? null : {
+    attempts: (carried?.attempts ?? 0) + 1,
+    lastReason: reason ?? "unknown",
+    firstAttemptedAt: carried?.firstAttemptedAt ?? nowSec,
+    reported: carried?.reported ?? false,
+  };
+  const escalation: StreakEscalationState = {
+    phase: decision.phase,
+    streakStartedAt: decision.state.streakStartedAt,
+    delivered: plan.delivered + (notified ? 1 : 0),
+    lastNotifiedAt: notified
+      ? nowSec
+      : (plan.kind === "crossing"
+        ? 0
+        : previous.escalation?.lastNotifiedAt ?? 0),
+    lastAttemptAt: nowSec,
+    pending,
+  };
+
   outcome.escalated = notified;
   outcome.escalationReason = notified ? null : reason;
+  outcome.escalationsDelivered = escalation.delivered;
+  outcome.escalationPendingAttempts = pending?.attempts ?? 0;
 
   await emitSelfHealEvent({
     module: SELF_HEAL_MODULE,
     action: "escalated",
     reason: notified
-      ? `reported ${decision.phase} failure to GitHub after ` +
-        `${decision.state.consecutiveFailures} consecutive failures`
-      : `escalation for ${decision.phase} not sent (${reason ?? "unknown"})`,
+      ? (plan.kind === "crossing"
+        ? `reported ${decision.phase} failure to GitHub after ` +
+          `${decision.state.consecutiveFailures} consecutive failures`
+        : `updated the ${decision.phase} escalation (update ` +
+          `${escalation.delivered}) at ` +
+          `${decision.state.consecutiveFailures} consecutive failures`)
+      : `escalation for ${decision.phase} not sent (${reason ?? "unknown"}) ` +
+        `— queued for retry (attempt ${pending?.attempts ?? 0} of ` +
+        `${ESCALATION_MAX_ATTEMPTS})`,
     result: notified ? "ok" : "skipped",
     details: {
       phase: decision.phase,
@@ -851,8 +1218,48 @@ export async function recordContainerRestartOutcome(
       repo: params.repo,
       issueNumber: params.issueNumber,
       reason,
+      streakStartedAt: escalation.streakStartedAt,
+      escalationKind: plan.kind,
+      delivered: escalation.delivered,
+      pendingAttempts: pending?.attempts ?? 0,
     },
   }, { workDir: options.workDir });
+
+  // Attempts exhausted and still nobody has been told. Record it once as a
+  // failure so the health report carries the outage the channel swallowed.
+  if (
+    pending && pending.attempts >= ESCALATION_MAX_ATTEMPTS && !pending.reported
+  ) {
+    pending.reported = true;
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "escalation_undeliverable",
+      reason: `${decision.phase} escalation undeliverable after ` +
+        `${pending.attempts} attempts (${pending.lastReason}) — the operator ` +
+        "has not been told about this outage",
+      result: "failed",
+      details: {
+        phase: decision.phase,
+        streakStartedAt: escalation.streakStartedAt,
+        attempts: pending.attempts,
+        reason: pending.lastReason,
+        consecutiveFailures: decision.state.consecutiveFailures,
+      },
+    }, { workDir: options.workDir });
+  }
+
+  // Persist the escalation bookkeeping now the outcome of the attempt is
+  // known — without it the dedup has no memory and the flood returns.
+  decision.state.escalation = escalation;
+  const escalationPersisted = await persistContainerRestartState(
+    options.workDir,
+    decision.state,
+  );
+  if (!escalationPersisted.ok) {
+    (options.warn ?? console.error)(
+      `[container-restart] ${escalationPersisted.error.message}`,
+    );
+  }
 
   return outcome;
 }
