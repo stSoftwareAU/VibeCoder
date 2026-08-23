@@ -269,6 +269,23 @@ export function ghRootCommand(args: readonly string[]): string | undefined {
 }
 
 /**
+ * The sub-verb following the root command (`login` in `gh auth login`).
+ *
+ * Derived exactly as {@link classifyGhMutation} derives it, so the agent-side
+ * local-state guard (Issue #187) and the mutation classifier cannot disagree
+ * about which token is the verb.
+ *
+ * @param args - Arguments passed to the `gh` binary.
+ * @returns The sub-verb, or undefined when the vector names none
+ *   (`gh auth`, `gh --version`).
+ */
+export function ghSubVerb(args: readonly string[]): string | undefined {
+  const rootIdx = firstNonFlag(args, 0);
+  if (args[rootIdx] === undefined) return undefined;
+  return args[firstNonFlag(args, rootIdx + 1)];
+}
+
+/**
  * Strip an absolute API origin from an endpoint.
  *
  * `gh api` accepts a full URL as well as a path, so

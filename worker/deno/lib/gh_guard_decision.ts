@@ -14,7 +14,7 @@
  * is pure — the caller supplies the run's allowlist state — so it can be
  * evaluated in a short-lived child process with no permissions at all.
  *
- * Three checks, in order:
+ * Four checks, in order:
  *   1. **Reserved workflow labels.** A *mutation* that adds `top-priority`,
  *      `work-on`, `question`, … is refused. The check is a denylist of the
  *      reserved names (`WORKER_FORBIDDEN_LABEL_LITERALS`), not the worker's
@@ -28,7 +28,12 @@
  *      whatever the alias names is a write the guard never saw. A root the
  *      guard does not recognise as a genuine `gh` command is therefore
  *      refused rather than classified as a read.
- *   3. **Write-repo allowlist.** Mirrors `enforceGhWriteAllowlist`: inert
+ *   3. **Local `gh` state** (Issue #187). `gh auth login|switch|setup-git`,
+ *      `gh config set`, `gh alias set` and `gh extension install` rewrite the
+ *      pinned `GH_CONFIG_DIR` rather than anything on GitHub, so the mutation
+ *      classifier reported no mutation and they passed as reads. They are
+ *      refused unconditionally — see `gh_local_state_guard.ts`.
+ *   4. **Write-repo allowlist.** Mirrors `enforceGhWriteAllowlist`: inert
  *      until the run seeds an allowlist, a no-op for reads and for cwd-repo
  *      writes with no explicit repo, and a refusal for a mutation that
  *      explicitly names an off-allowlist repo.
@@ -46,6 +51,7 @@ import {
   classifyIssueLifecycle,
   ISSUE_LIFECYCLE_VERBS,
 } from "./gh_issue_lifecycle.ts";
+import { classifyGhLocalStateChange } from "./gh_local_state_guard.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 import type { BodyFileReader } from "./gh_body_redaction.ts";
 
@@ -80,6 +86,7 @@ export type GhGuardMarker =
   | "WORKER_LABEL_REFUSED"
   | "GH_BODY_UNREADABLE"
   | "GH_UNKNOWN_COMMAND"
+  | "GH_LOCAL_STATE_REFUSED"
   | "ISSUE_LIFECYCLE_REFUSED";
 
 /** The guard's verdict for one `gh` argument vector. */
@@ -536,6 +543,29 @@ export function evaluateGhCommand(
         return unreadableBodyRefusal(info.verb);
       }
     }
+  }
+
+  // Issue #187: a command that rewrites the local `gh` installation —
+  // credentials, config, aliases, extensions — changes nothing on GitHub, so
+  // `classifyGhMutation` reports no mutation and it reached here as a "read".
+  // It is not one: the wrapper pins `GH_CONFIG_DIR` to the worker's own
+  // persistent identity directory, so a credential written there re-points
+  // every later `gh` call, the worker's included. Refused unconditionally,
+  // like the unknown-root check below — credentials are provisioned once by
+  // `setup.sh` and consumed read-only, so no run has a legitimate use for one.
+  // Ahead of that check so the more specific refusal wins when both apply.
+  const localState = classifyGhLocalStateChange(args);
+  if (localState) {
+    return {
+      allowed: false,
+      marker: "GH_LOCAL_STATE_REFUSED",
+      reason: `Refused 'gh ${localState.root} ${localState.verb}' from the ` +
+        `agent subprocess — it rewrites ${localState.target} of this run's ` +
+        `gh installation, which every later gh call (the worker's included) ` +
+        `then uses. Credentials are provisioned non-interactively by setup.sh ` +
+        `and consumed read-only; the read verbs ('gh auth status', ` +
+        `'gh config get', 'gh extension list') are unaffected.`,
+    };
   }
 
   // Issue #3866: a root the real binary does not implement is expanded from
