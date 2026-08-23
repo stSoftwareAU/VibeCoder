@@ -30,7 +30,10 @@ import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { buildDefaultWorkerConfig } from "./config_defaults.ts";
-import { setSuppressionAuthorAllowlist } from "./suppression_comments.ts";
+import {
+  setSuppressionAuthorAllowlist,
+  setSuppressionFleetLogins,
+} from "./suppression_comments.ts";
 import {
   setPhaseEffortConfigOverrides,
   setPhaseModelConfigOverrides,
@@ -203,7 +206,10 @@ import {
   deleteResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
-import { type FleetAuthorSetInput } from "./fleet_authors.ts";
+import {
+  type FleetAuthorSetInput,
+  resolveFleetAuthors,
+} from "./fleet_authors.ts";
 import {
   clearIdleInversion,
   idleInversionStatePath,
@@ -558,6 +564,14 @@ export async function createProductionRunCoreDeps(
     defaultMarkerOptions.allowedAuthors = snap.fleetAuthors;
     stuckIssueConfig.fleetAuthors = snap.fleetAuthors;
     setSuppressionAuthorAllowlist(snap.allowedAuthors);
+    // Issue #334: the service accounts belong in `allowed_authors` for
+    // PR-dedup, so the allowlist above will contain them — but the fleet must
+    // not be able to waive findings in code it wrote. The exclusion set is
+    // `github_user ∪ fleet_pr_authors`, matching #3426: `allowed_authors`
+    // itself would strip the humans who legitimately suppress.
+    setSuppressionFleetLogins(
+      resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+    );
   }
 
   // Issue #256: identifies the cycle for the resolver's per-cycle cache, so
