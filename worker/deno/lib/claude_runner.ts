@@ -727,6 +727,56 @@ export async function terminateActiveAgentRuns(
 }
 
 /** Milliseconds the runner waits for the child to settle after a kill. */
+/** Default niceness for the agent process (Issue #324). */
+export const DEFAULT_AGENT_NICENESS = 5;
+
+/**
+ * Scheduler niceness for the agent, or `undefined` to spawn it unwrapped
+ * (Issue #324).
+ *
+ * `VIBE_AGENT_NICE` overrides the default; `0` or an unparseable value means
+ * "do not wrap", so an operator can turn this off without editing code and a
+ * typo degrades to today's behaviour rather than to something surprising.
+ * Only positive values are accepted: a *negative* niceness would raise the
+ * agent above the worker, which is the opposite of the point and needs
+ * privileges the container does not have.
+ */
+/**
+ * Absolute path to `nice`, or `undefined` where it is not present
+ * (Issue #324).
+ *
+ * Resolved by absolute path rather than through `PATH`. The agent is spawned
+ * with `clearEnv: true` and a curated environment, so a `PATH`-based lookup
+ * depends on that environment containing a directory it was never guaranteed
+ * to contain — which is how the first cut of this change broke the
+ * `withGhLessStubClaude` tests, whose `PATH` holds only the stub. Where `nice`
+ * is absent the agent is spawned unwrapped, exactly as before.
+ */
+export function resolveNiceBinary(
+  exists: (path: string) => boolean = (path) => {
+    try {
+      return Deno.statSync(path).isFile;
+    } catch {
+      return false;
+    }
+  },
+): string | undefined {
+  for (const candidate of ["/usr/bin/nice", "/bin/nice"]) {
+    if (exists(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+export function resolveAgentNiceness(
+  env: (key: string) => string | undefined = (k) => Deno.env.get(k),
+): number | undefined {
+  const raw = env("VIBE_AGENT_NICE");
+  if (raw === undefined || raw.trim() === "") return DEFAULT_AGENT_NICENESS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.min(19, Math.floor(parsed));
+}
+
 export function killCompletionCapMs(killAfterSeconds: number): number {
   return Math.max(
     KILL_COMPLETION_FLOOR_SECONDS,
@@ -845,8 +895,37 @@ export async function runClaudeWithTimeout(
     }
     ghGuard = shimOutcome.status === "installed" ? shimOutcome.shim : undefined;
 
-    const command = new Deno.Command(provider.binary, {
-      args,
+    // Issue #324: run the agent at a lower scheduler priority.
+    //
+    // On 2026-08-22 two agents each wrote an unbounded bash busy-wait — one
+    // with no `sleep` at all — and pinned the container. The worker's own
+    // watchdogs then fired 1350 s and 2737 s late, `vminitd` stopped
+    // answering, and the cycle had to be killed by hand. The guards were not
+    // wrong; they were starved by the thing they were guarding.
+    //
+    // `quality.sh` already nices itself for precisely this reason, and the
+    // Containerfile names the hazard outright ("kill-on-unresponsive monitors
+    // exist in this ecosystem: vminitd's vsock health checks"). The agent —
+    // and every shell it spawns, since priority is inherited — is the other
+    // way the container gets saturated, and it was not covered.
+    //
+    // `nice` is a priority, not a quota: the agent still gets every idle
+    // core and only yields under contention, so a healthy run is unaffected.
+    // It `execvp`s, so the child PID is still the agent's and the existing
+    // process-tree kill is unchanged. Where `nice` is absent the prefix is
+    // empty and behaviour is exactly as before.
+    const agentNice = resolveAgentNiceness();
+    const niceBinary = agentNice === undefined
+      ? undefined
+      : resolveNiceBinary();
+    const wrapped = agentNice !== undefined && niceBinary !== undefined;
+    const spawnBinary = wrapped ? niceBinary! : provider.binary;
+    const spawnArgs = wrapped
+      ? ["-n", String(agentNice), provider.binary, ...args]
+      : args;
+
+    const command = new Deno.Command(spawnBinary, {
+      args: spawnArgs,
       cwd,
       clearEnv: true,
       env: ghGuard?.env ?? baseEnv,
