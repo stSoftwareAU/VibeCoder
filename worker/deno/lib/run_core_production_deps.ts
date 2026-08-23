@@ -118,6 +118,7 @@ import {
   scanPrBranchUpdates,
 } from "./pr_branch_update.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
+import { prBranchFailureStatePath } from "./pr_branch_update_failure_streak.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo } from "../commands/git_operations.ts";
 import { updatePrBranch } from "./git_pull.ts";
@@ -1494,6 +1495,14 @@ export async function createProductionRunCoreDeps(
           workDir,
           logger,
           workerId,
+          // Issue #335: count consecutive failures per (repo, branch) so a
+          // branch that can never be updated is escalated once instead of
+          // retried at WARNING on every cycle.
+          failureStreak: {
+            statePath: prBranchFailureStatePath(workDir),
+            cycleId: resolveRunId(),
+            ghFn: (args: string[]) => runGhCommand(args),
+          },
           setupRepo: async (repo: string, wd: string) => {
             const cmdResult = await setupRepo(repo, wd);
             if (!cmdResult.success) {

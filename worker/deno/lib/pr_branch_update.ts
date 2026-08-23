@@ -22,6 +22,11 @@ import {
   releaseBranchUpdateLock,
 } from "./pr_branch_lock.ts";
 import { WORKER_PR_MARKER_PREFIX } from "./pr_body.ts";
+import {
+  checkPrBranchUpdateSuppression,
+  clearPrBranchUpdateFailure,
+  recordPrBranchUpdateFailure,
+} from "./pr_branch_update_failure_streak.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,6 +95,12 @@ export interface PrBranchUpdateExecutionResult {
   conflictCount?: number;
   /** Number of PRs skipped because another worker holds the lock (Issue #1281). */
   lockedCount: number;
+  /**
+   * PRs skipped because their branch has already been escalated after
+   * repeated failures (Issue #335) — retrying them every cycle changed
+   * nothing but the log volume.
+   */
+  suppressedCount?: number;
   /** Per-PR update details. */
   details: PrBranchUpdateDetail[];
 }
@@ -141,6 +152,30 @@ export interface PrBranchExecutionDeps {
     lockCommentId: number;
     ghCommandFn?: (args: string[]) => Promise<string>;
   }) => Promise<Result<void>>;
+  /**
+   * Per-`(repo, branch)` failure-streak tracking (Issue #335). Omit it and
+   * the pass behaves exactly as before — every failure is retried next cycle.
+   */
+  failureStreak?: PrBranchFailureStreakDeps;
+}
+
+/**
+ * Wiring for the per-branch failure streak (Issue #335).
+ *
+ * Only `gh` is injected; the streak state itself is real, so tests exercise
+ * the same counting, escalation and suppression the worker runs.
+ */
+export interface PrBranchFailureStreakDeps {
+  /** Streak state file — see `prBranchFailureStatePath()`. */
+  statePath: string;
+  /** Identifies this cycle; repeats within it do not count twice. */
+  cycleId: string;
+  /** gh runner used to file the escalation issue. */
+  ghFn: (args: string[]) => Promise<string>;
+  /** Consecutive failing cycles before escalating (default 3). */
+  threshold?: number;
+  /** Cycles an escalated branch is skipped before one re-probe (default 10). */
+  retryAfterSkips?: number;
 }
 
 /**
@@ -466,12 +501,50 @@ export async function executePrBranchUpdates(
   let failedCount = 0;
   let conflictCount = 0;
   let lockedCount = 0;
+  let suppressedCount = 0;
   const details: PrBranchUpdateDetail[] = [];
 
   const doAcquireLock = deps.acquireLock ?? acquireBranchUpdateLock;
   const doReleaseLock = deps.releaseLock ?? releaseBranchUpdateLock;
+  const streak = deps.failureStreak;
 
   for (const action of actions) {
+    // Issue #335: a branch that has already been escalated after repeated
+    // failures is skipped rather than retried — 65 identical warnings for one
+    // branch is the state this replaces. It is re-probed periodically, so a
+    // branch that is fixed recovers without anyone touching the worker.
+    if (streak) {
+      const suppression = await checkPrBranchUpdateSuppression({
+        statePath: streak.statePath,
+        repo: action.repo,
+        branch: action.branchName,
+        cycleId: streak.cycleId,
+        retryAfterSkips: streak.retryAfterSkips,
+        log: (message: string) => deps.logger.warn(message),
+      });
+      if (suppression.suppressed) {
+        suppressedCount++;
+        deps.logger.info(
+          `PR #${action.prNumber} (${action.branchName}) branch update skipped — ` +
+            `${suppression.count} consecutive failures already escalated${
+              suppression.issueNumber ? ` as #${suppression.issueNumber}` : ""
+            } (Issue #335)`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+        details.push({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          branchName: action.branchName,
+          status: "failed",
+          message: `Skipped: ${suppression.count} consecutive failures ` +
+            `escalated${
+              suppression.issueNumber ? ` as #${suppression.issueNumber}` : ""
+            }`,
+        });
+        continue;
+      }
+    }
+
     // Log what we're about to do
     if (action.reason === "behind") {
       deps.logger.info(
@@ -573,6 +646,16 @@ export async function executePrBranchUpdates(
 
     if (updateResult.ok) {
       updatedCount++;
+      // Issue #335: one success ends the streak — the next failure starts
+      // counting from one, so a transient failure never escalates.
+      if (streak) {
+        await clearPrBranchUpdateFailure(
+          streak.statePath,
+          action.repo,
+          action.branchName,
+          (message: string) => deps.logger.warn(message),
+        );
+      }
       details.push({
         repo: action.repo,
         prNumber: action.prNumber,
@@ -615,6 +698,33 @@ export async function executePrBranchUpdates(
         "catch_block_warning",
         `pr-branch-update failed ${action.repo}#${action.prNumber}: ${updateResult.error.message}`,
       );
+      // Issue #335: count this branch's consecutive failing cycles, and at the
+      // threshold file one issue naming the PR, the count and the git error.
+      if (streak) {
+        const decision = await recordPrBranchUpdateFailure({
+          statePath: streak.statePath,
+          cycleId: streak.cycleId,
+          threshold: streak.threshold,
+          ghFn: streak.ghFn,
+          report: {
+            repo: action.repo,
+            prNumber: action.prNumber,
+            branch: action.branchName,
+            baseBranch: action.baseBranch,
+            error: updateResult.error.message,
+          },
+          log: (message: string) => deps.logger.warn(message),
+        });
+        if (decision.action === "filed") {
+          deps.logger.warn(
+            `PR #${action.prNumber} (${action.branchName}) branch update has ` +
+              `failed on ${decision.count} consecutive cycles — escalated as ` +
+              `#${decision.issueNumber}; the branch is now skipped until it ` +
+              `updates cleanly (Issue #335)`,
+            { repo: action.repo, prNumber: action.prNumber },
+          );
+        }
+      }
       details.push({
         repo: action.repo,
         prNumber: action.prNumber,
@@ -639,10 +749,18 @@ export async function executePrBranchUpdates(
     failedCount,
     conflictCount,
     lockedCount,
+    suppressedCount,
   });
 
   return {
     ok: true,
-    value: { updatedCount, failedCount, conflictCount, lockedCount, details },
+    value: {
+      updatedCount,
+      failedCount,
+      conflictCount,
+      lockedCount,
+      suppressedCount,
+      details,
+    },
   };
 }

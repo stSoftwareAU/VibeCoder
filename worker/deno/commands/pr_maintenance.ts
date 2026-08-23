@@ -50,6 +50,8 @@ import { setupRepo } from "./git_operations.ts";
 import { updatePrBranch } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { getWorkerUniqueId } from "../lib/worker_identity.ts";
+import { resolveRunId } from "../lib/audit_journal.ts";
+import { prBranchFailureStatePath } from "../lib/pr_branch_update_failure_streak.ts";
 
 // Re-export library functions for external use
 export {
@@ -423,6 +425,14 @@ export const prMaintenanceCommand: Command = {
         workDir,
         logger,
         workerId,
+        // Issue #335: count consecutive failures per (repo, branch) so a
+        // branch that can never be updated is escalated once instead of
+        // retried at WARNING on every cycle.
+        failureStreak: {
+          statePath: prBranchFailureStatePath(workDir),
+          cycleId: resolveRunId(),
+          ghFn: (args: string[]) => runGhCommand(args),
+        },
         setupRepo: async (repo: string, wd: string) => {
           const cmdResult = await setupRepo(repo, wd);
           if (!cmdResult.success) {
