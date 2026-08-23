@@ -123,10 +123,93 @@ trap 'on_signal SIGHUP'  SIGHUP
 # also record it — one failure must be counted once (Issue #4072).
 export VIBE_SUPERVISOR_RECORDS_OUTCOME=1
 
+################################################################################
+# Supervisor deadline (Issue #322)
+#
+# run_core bounds itself with in-process `setTimeout` watchdogs. Those are only
+# as reliable as the event loop they run on, and on 2026-08-22 two agents
+# saturated the container: the watchdogs fired 1350 s and 2737 s late, a kill
+# could not complete, and the cycle ran 2h26m past its deadline until a human
+# killed it. A timer that only fires when the process is healthy cannot bound
+# an unhealthy process.
+#
+# So the supervisor — the one process guaranteed not to be inside the failure —
+# owns a wall-clock cap. `timeout` sends SIGTERM at the cap and SIGKILL after
+# the grace, and the expiry is reported to the backoff recorder as a launcher
+# failure so a host that does this repeatedly escalates (Issue #4072).
+#
+# Default 5400 s: the 3600 s run duration plus a wide margin for a slow but
+# genuinely progressing shutdown. Set VIBE_RUN_MAX_SECONDS=0 to disable.
+################################################################################
+VIBE_RUN_MAX_SECONDS="${VIBE_RUN_MAX_SECONDS:-5400}"
+VIBE_RUN_KILL_GRACE_SECONDS="${VIBE_RUN_KILL_GRACE_SECONDS:-120}"
+
+# `timeout` exits 124 on expiry; 137 when its own SIGKILL was what stopped the
+# child. Both mean "the supervisor ended this run", not "the run failed".
+readonly RUN_DEADLINE_EXIT=124
+readonly RUN_KILLED_EXIT=137
+
+# Reap what a killed run.sh leaves behind (Issue #322).
+#
+# run.sh execs the worker inside a container named `vibe-coder-<run.sh pid>`.
+# Killing run.sh does not stop that container: on 2026-08-22 the orphaned VM
+# kept running at 705% CPU with nothing supervising it, which makes the *next*
+# cycle fail the same way.
+#
+# Orphans are identified by reparenting rather than by PID: after run.sh dies,
+# its `container run` client is reparented to init (PPID 1). That test needs no
+# bookkeeping, and it also clears a client stranded by an earlier cycle or by a
+# human kill. A client still owned by a live run.sh has a PPID that is not 1
+# and is never touched, so a healthy run is safe.
+#
+# Best-effort and always logged. Recovering a container whose own init has died
+# is Issue #323.
+reap_orphaned_containers() {
+    command -v pgrep >/dev/null 2>&1 || return 0
+    local pid ppid reaped=0
+    while read -r pid; do
+        [[ -z "${pid}" ]] && continue
+        ppid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d ' ')"
+        [[ "${ppid}" == "1" ]] || continue
+        echo "loop.sh: reaping orphaned container client PID ${pid} (parent gone)"
+        kill -TERM "${pid}" 2>/dev/null || true
+        reaped=1
+    done < <(pgrep -f "container run .*--name vibe-coder-" 2>/dev/null || true)
+
+    [[ "${reaped}" == "1" ]] || return 0
+    sleep 5
+    while read -r pid; do
+        [[ -z "${pid}" ]] && continue
+        ppid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d ' ')"
+        [[ "${ppid}" == "1" ]] || continue
+        echo "loop.sh: orphaned client PID ${pid} survived SIGTERM — SIGKILL"
+        kill -KILL "${pid}" 2>/dev/null || true
+    done < <(pgrep -f "container run .*--name vibe-coder-" 2>/dev/null || true)
+}
+
+# Run "$@" under the supervisor deadline, echoing its exit status.
+run_under_deadline() {
+    if [[ "${VIBE_RUN_MAX_SECONDS}" == "0" ]] || \
+       [[ ${#TIMEOUT_PREFIX[@]} -eq 0 ]]; then
+        "$@"
+        return $?
+    fi
+    "${TIMEOUT_PREFIX[0]}" --kill-after="${VIBE_RUN_KILL_GRACE_SECONDS}" \
+        "${VIBE_RUN_MAX_SECONDS}" "$@"
+}
+
 while true; do
     run_status=0
-    ./run.sh || run_status=$?
-    if [[ "${run_status}" -ne 0 ]]; then
+    run_under_deadline ./run.sh || run_status=$?
+    if [[ "${run_status}" -eq "${RUN_DEADLINE_EXIT}" ]] || \
+       [[ "${run_status}" -eq "${RUN_KILLED_EXIT}" ]]; then
+        # Issue #322: the run outlived its wall-clock cap. Say so distinctly —
+        # a cycle ended by its supervisor must be as visible in the log as one
+        # that failed on its own, or an unattended host looks merely slow.
+        echo "loop.sh: ./run.sh exceeded VIBE_RUN_MAX_SECONDS=${VIBE_RUN_MAX_SECONDS}s" \
+             "(status ${run_status}) — terminated by the supervisor; reaping and retrying"
+        reap_orphaned_containers
+    elif [[ "${run_status}" -ne 0 ]]; then
         echo "loop.sh: ./run.sh exited with status ${run_status} — backing off and retrying"
     fi
 
