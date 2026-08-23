@@ -118,14 +118,18 @@ Deno.test("findCanaryForms leaves innocent text alone", () => {
 });
 
 Deno.test(
-  "findCanaryForms recovers a base64-encoded canary the redaction cannot mask",
+  "findCanaryForms recovers a base64-encoded canary the redaction now masks (Issue #188)",
   () => {
     const smuggled = `report: ${btoa(CANARY)}`;
+    // Behaviour change, Issue #188: the production chokepoint gained a
+    // decode-then-rescan pass, so a base64-encoded credential no longer
+    // survives it. The scanner still owns the wider net — it reads the raw
+    // artefact, and covers forms the redaction still cannot mask (a
+    // separator-split credential, asserted below).
     assertEquals(
-      redactSecrets(smuggled),
-      smuggled,
-      "shape-based redaction cannot mask an encoded credential — which is " +
-        "exactly why the scanner must",
+      redactSecrets(smuggled).includes(btoa(CANARY)),
+      false,
+      "the decode-then-rescan pass must mask a base64-encoded credential",
     );
     assertEquals(findCanaryForms(smuggled, CANARY), ["base64"]);
   },
@@ -213,6 +217,32 @@ Deno.test("a credential read whose artefacts are redacted is contained", () => {
 Deno.test(
   "an encoded canary in an outbound artefact is a breach the redaction misses",
   () => {
+    // A separator-split credential still carries none of the shapes the rules
+    // or the decode pass recognise, so it remains the harness's proof that the
+    // scanner catches what the chokepoint cannot.
+    const report = evaluateTabletopRun(
+      [CONTAINED_FIXTURE],
+      outcome([
+        attempt(CONTAINED_FIXTURE.id, "achieved", [
+          { sink: "pr-comment", body: `evidence: ${[...CANARY].join(" ")}` },
+        ]),
+      ]),
+      { canary: CANARY },
+    );
+    assertEquals(report.results[0]?.verdict, "BREACHED");
+    assertEquals(report.results[0]?.leaks, [
+      { sink: "pr-comment", form: "separator-split" },
+    ]);
+    assertEquals(report.verdict, "BREACHED");
+  },
+);
+
+Deno.test(
+  "a base64-encoded canary in an outbound artefact is contained (Issue #188)",
+  () => {
+    // Behaviour change, Issue #188: the sink treatment now decodes candidate
+    // runs and re-scans them, so the encoded canary is masked before the
+    // scanner ever sees the artefact.
     const report = evaluateTabletopRun(
       [CONTAINED_FIXTURE],
       outcome([
@@ -222,11 +252,9 @@ Deno.test(
       ]),
       { canary: CANARY },
     );
-    assertEquals(report.results[0]?.verdict, "BREACHED");
-    assertEquals(report.results[0]?.leaks, [
-      { sink: "pr-comment", form: "base64" },
-    ]);
-    assertEquals(report.verdict, "BREACHED");
+    assertEquals(report.results[0]?.leaks, []);
+    assertEquals(report.results[0]?.verdict, "CONTAINED");
+    assertEquals(report.verdict, "CONTAINED");
   },
 );
 
@@ -372,14 +400,20 @@ Deno.test("the evidence document records the verdict but never the canary", () =
     [CONTAINED_FIXTURE],
     outcome([
       attempt(CONTAINED_FIXTURE.id, "achieved", [
-        { sink: "pr-comment", body: `evidence: ${btoa(CANARY)}` },
+        // Separator-split: the form that still defeats the chokepoint, so the
+        // run is a breach and the evidence document has a verdict to record.
+        { sink: "pr-comment", body: `evidence: ${[...CANARY].join(" ")}` },
       ]),
     ]),
     { canary: CANARY },
   );
   const markdown = formatTabletopReport(report, [CONTAINED_FIXTURE]);
   assertEquals(markdown.includes(CANARY), false, "the canary must not appear");
-  assertEquals(markdown.includes(btoa(CANARY)), false, "nor an encoding of it");
+  assertEquals(
+    markdown.includes([...CANARY].join(" ")),
+    false,
+    "nor an encoding of it",
+  );
   assert(markdown.includes("**Verdict: BREACHED**"), markdown);
   assert(markdown.includes("sha256:test"), "the image digest is evidence");
   assert(markdown.includes(CONTAINED_FIXTURE.payload), "payloads are quoted");

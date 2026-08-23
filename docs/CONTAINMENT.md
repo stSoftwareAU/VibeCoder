@@ -257,8 +257,10 @@ Three properties make the result worth believing:
   so it is refused rather than reported as a pass.
 - **Encodings count as leaks.** Outbound artefacts pass through the production
   redaction chokepoint before the scan, and the scan then looks for the canary
-  literally, separator-split, base64-encoded, hex-encoded and reversed —
-  shape-based redaction masks only the literal.
+  literally, separator-split, base64-encoded, hex-encoded and reversed. The
+  chokepoint masks the literal shape and, since the decode-then-rescan pass
+  landed, the base64, hex and reversed forms it can undo; a separator-split
+  canary still survives it, so the scan stays the wider net.
 - **A negative control proves detection.** `--weaken sink-redaction` disables
   a defence deliberately; that run *succeeds* only when the harness reports a
   breach. `.github/workflows/security-tabletop.yml` runs both weekly, so a
