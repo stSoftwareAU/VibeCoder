@@ -39,6 +39,8 @@ interface Harness {
 async function setupHarness(opts: {
   runStub: string;
   gitStub?: string;
+  /** Stub `container` binary for the control-plane probe (Issue #323). */
+  containerStub?: string;
 }): Promise<Harness> {
   const tmpDir = await Deno.makeTempDir({ prefix: "vibe_loop_test_" });
 
@@ -52,6 +54,16 @@ async function setupHarness(opts: {
   const runPath = join(tmpDir, "run.sh");
   await Deno.writeTextFile(runPath, opts.runStub);
   await Deno.chmod(runPath, 0o755);
+
+  // Stub `container` on PATH when the test needs one (Issue #323), so the
+  // control-plane probe can be driven without a real container runtime.
+  if (opts.containerStub !== undefined) {
+    const cDir = join(tmpDir, "bin");
+    await Deno.mkdir(cDir, { recursive: true });
+    const cPath = join(cDir, "container");
+    await Deno.writeTextFile(cPath, opts.containerStub);
+    await Deno.chmod(cPath, 0o755);
+  }
 
   // Stub `git` binary on PATH so `git pull` is fast and predictable.
   const gitDir = join(tmpDir, "bin");
@@ -367,6 +379,112 @@ Deno.test({
       assert(
         completed.includes("done"),
         "with the cap disabled the 4s run must reach its own exit, not be killed",
+      );
+    } finally {
+      try {
+        child.kill("SIGKILL");
+        await child.status;
+      } catch { /* best-effort */ }
+      await harness.cleanup();
+    }
+  },
+});
+
+// ===========================================================================
+// Issue #323 — the control-plane probe
+// ===========================================================================
+
+Deno.test({
+  name:
+    "loop.sh #323 - a container whose exec keeps failing is recovered, not waited on",
+  // The 2026-08-22 shape: `container ls` reports the container healthy and
+  // running while `container exec` resets its socket. Liveness was inferred
+  // from the worker writing logs — a symptom, not a check — so nothing
+  // noticed. The probe must reach its failure threshold and act.
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: [
+        "#!/bin/bash",
+        'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+        "sleep 300",
+      ].join("\n"),
+      containerStub: [
+        "#!/bin/bash",
+        'log="$(dirname "$0")/../container.log"',
+        'echo "$*" >> "$log"',
+        'case "$1" in',
+        // Reports healthy and running throughout — exactly as it did.
+        '  ls) echo "vibe-coder-999  img  linux  arm64  running  ip  6  16384";;',
+        // The control plane is dead: every exec fails.
+        "  exec) exit 1;;",
+        "  kill) exit 0;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "1",
+      VIBE_PROBE_FAILURES: "2",
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      const out = await Deno.readTextFile(join(harness.tmpDir, "container.log"))
+        .catch(() => "");
+      // Two failed probes must escalate to a kill of the named container.
+      assert(
+        out.includes("kill vibe-coder-999"),
+        `the probe must recover the container; container calls were:\n${out}`,
+      );
+    } finally {
+      try {
+        child.kill("SIGKILL");
+        await child.status;
+      } catch { /* best-effort */ }
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "loop.sh #323 - a healthy container is probed and left alone",
+  // The probe must not become a periodic killer of working containers.
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: [
+        "#!/bin/bash",
+        'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+        "sleep 300",
+      ].join("\n"),
+      containerStub: [
+        "#!/bin/bash",
+        'log="$(dirname "$0")/../container.log"',
+        'echo "$*" >> "$log"',
+        'case "$1" in',
+        '  ls) echo "vibe-coder-999  img  linux  arm64  running  ip  6  16384";;',
+        // A live control plane answers.
+        "  exec) exit 0;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "1",
+      VIBE_PROBE_FAILURES: "2",
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 8_000));
+      const out = await Deno.readTextFile(join(harness.tmpDir, "container.log"))
+        .catch(() => "");
+      assert(out.includes("exec vibe-coder-999"), "the probe must run");
+      assert(
+        !out.includes("kill vibe-coder-999"),
+        `a healthy container must be left alone; got:\n${out}`,
       );
     } finally {
       try {
