@@ -352,6 +352,46 @@ _The `main` line represents `Develop`. When new commits land on `Develop` (from
 other merged PRs), the worker rebases the feature branch to keep it current.
 After feedback fixes and quality checks, the PR is auto-merged._
 
+## 🔁 A branch that can never be updated (Issue #335)
+
+A branch update that fails is retried on the next cycle — correct for a
+transient failure, useless for a permanent one. One branch in
+`stSoftwareAU/NEAT-AI-core` logged the same
+`Failed to checkout branch 'issue-3832-detect-cycles-linear'` warning **65
+times** across days: nothing counted the repeats, nothing escalated, and the
+line never said *why* git refused.
+
+The pass now keeps a per-`(repo, branch)` memory in
+[`pr_branch_update_failure_streak.ts`](../../worker/deno/lib/pr_branch_update_failure_streak.ts)
+— the same shape as the bump-script (Issue #207) and idle-inversion
+(Issue #321) streaks:
+
+| Cycle outcome | What happens |
+| --- | --- |
+| Update succeeds | The streak is deleted — the next failure counts from one |
+| Update fails, count below 3 | Counted; the warning carries git's own stderr |
+| Third consecutive failing cycle | **One** issue is filed against the repo naming the PR, the branch, the count and the git error |
+| Any cycle after escalation | The branch is skipped, not retried — re-probed once every 10 cycles so a fixed branch heals itself |
+
+The count is per `(repo, branch)`, so one stuck branch never suppresses updates
+for the rest, and it counts **cycles**, not attempts — a pass that runs twice in
+one cycle counts once. The escalation issue is filed with no label (the worker
+cannot self-apply `work-on`), deduped on a body marker so two hosts converge on
+one issue, and never filed twice for the same streak.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Healthy
+    Healthy --> Counting: update fails (warning names git's stderr)
+    Counting --> Counting: fails again (count < 3)
+    Counting --> Healthy: update succeeds — streak cleared
+    Counting --> Escalated: 3rd consecutive failing cycle — one issue filed
+    Escalated --> Escalated: skipped, not retried
+    Escalated --> Reprobe: 10 skipped cycles
+    Reprobe --> Healthy: update succeeds — streak cleared
+    Reprobe --> Escalated: still failing
+```
+
 ## 🔀 Decision points and exceptions
 
 - **No feedback / no spelling / no stale branches:** Skip; no side effects.

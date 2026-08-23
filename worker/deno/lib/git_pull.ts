@@ -32,6 +32,28 @@ import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 
 /**
+ * Describe a failed `git checkout` with git's own stderr (Issue #49, #335).
+ *
+ * A checkout failure that only says which branch failed cannot be acted on:
+ * Issue #335 saw the same branch log 65 identical warnings across days with
+ * no diagnosis in any of them. The stderr *is* the diagnosis — a missing ref,
+ * a dirty tree, a lock file — so it travels with the error.
+ *
+ * @param branchName - The branch that could not be checked out
+ * @param result - The `runGitCommand` result for the failed checkout
+ * @returns An error naming the branch and git's own failure
+ */
+function checkoutFailureError(
+  branchName: string,
+  result: Result<{ code: number; stderr: string }>,
+): Error {
+  const detail = (result.ok ? result.value.stderr : result.error.message)
+    .trim().split("\n").slice(0, 6).join(" | ") ||
+    (result.ok ? `exit ${result.value.code}` : "git reported no stderr");
+  return new Error(`Failed to checkout branch '${branchName}': ${detail}`);
+}
+
+/**
  * Sync a feature branch with the latest default branch (Issue #230).
  *
  * If the rebase encounters conflicts:
@@ -92,17 +114,9 @@ export async function syncFeatureBranchWithDefault(
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
       // Surface git's own stderr (Issue #49): a dirty tree or a missing ref is
       // the whole diagnosis, and the old error discarded it.
-      const stderrTail = (checkoutResult.ok
-        ? checkoutResult.value.stderr
-        : checkoutResult.error.message)
-        .trim().split("\n").slice(0, 6).join(" | ");
       return {
         ok: false,
-        error: new Error(
-          `Failed to checkout branch '${branchName}': ${
-            stderrTail || "git reported no stderr"
-          }`,
-        ),
+        error: checkoutFailureError(branchName, checkoutResult),
       };
     }
   }
@@ -551,7 +565,7 @@ export async function updatePrBranch(
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
       return {
         ok: false,
-        error: new Error(`Failed to checkout branch '${branchName}'`),
+        error: checkoutFailureError(branchName, checkoutResult),
       };
     }
   }
@@ -808,7 +822,7 @@ export async function ensurePrMergeable(
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
       return {
         ok: false,
-        error: new Error(`Failed to checkout branch '${branchName}'`),
+        error: checkoutFailureError(branchName, checkoutResult),
       };
     }
   }
