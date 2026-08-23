@@ -204,6 +204,12 @@ import {
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
 import { type FleetAuthorSetInput } from "./fleet_authors.ts";
+import {
+  clearIdleInversion,
+  idleInversionStatePath,
+  recordIdleInversion,
+} from "./idle_inversion_streak.ts";
+import { resolveRunId } from "./audit_journal.ts";
 import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
 import {
   formatDerivedAuthorsFoldSummary,
@@ -2979,8 +2985,70 @@ export async function createProductionRunCoreDeps(
           workerUser: githubUser,
           repos: perRepo,
         });
-        for (const line of formatIdleDecisionCensus(census, host)) {
+        const censusLines = formatIdleDecisionCensus(census, host);
+        for (const line of censusLines) {
           logger.info(line);
+        }
+
+        // Issue #321: give the signal a memory. These ALERT lines fired on
+        // every cycle for over a day while VibeCoder#187/#188 sat
+        // unclaimable, and escalated to nothing — the cause (Issue #319) was
+        // found by a human asking why, not by the alert. Count consecutive
+        // *cycles* (the census runs several times per cycle) and file one
+        // issue against a repo whose inversion persists. Best-effort: the
+        // idle path must never fail because its own reporting did.
+        try {
+          const statePath = idleInversionStatePath(workDir);
+          const cycleId = resolveRunId();
+          const inverted = new Set(census.inversionRepos);
+          for (const repo of census.inversionRepos) {
+            const snapshot = census.perRepo.find((r) => r.repo === repo);
+            const decision = await recordIdleInversion({
+              statePath,
+              cycleId,
+              report: {
+                repo,
+                claimable: snapshot
+                  ? snapshot.unblocked.topPriority +
+                    snapshot.unblocked.workOn +
+                    snapshot.unblocked.lowPriority
+                  : 0,
+                detail: censusLines.filter((l) => l.includes(repo)).join("\n"),
+              },
+              ghFn: (args: string[]) => runGhCommand(args),
+              log: (message: string) => logger.warn(message),
+            });
+            if (decision.action === "filed") {
+              logger.warn(
+                "Idle inversion escalated: filed an issue for a repo the " +
+                  "claim scan keeps refusing (Issue #321)",
+                {
+                  repo,
+                  issue: decision.issueNumber,
+                  consecutiveCycles: decision.count,
+                },
+              );
+            } else if (decision.action === "counted") {
+              logger.warn(
+                "Idle inversion persisting (Issue #321)",
+                { repo, consecutiveCycles: decision.count },
+              );
+            }
+          }
+          // A repo that scanned cleanly this cycle has nothing to escalate.
+          for (const snapshot of census.perRepo) {
+            if (!inverted.has(snapshot.repo)) {
+              await clearIdleInversion(
+                statePath,
+                snapshot.repo,
+                (m) => logger.warn(m),
+              );
+            }
+          }
+        } catch (err) {
+          logger.warn("Idle-inversion escalation failed (continuing)", {
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
         // Issue #2813: hand the fleet-global inversion verdict back to the
         // loop so it can suppress the idle-task filer when an open,
