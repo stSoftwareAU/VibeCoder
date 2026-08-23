@@ -99,6 +99,24 @@ export function formatRemainingDuration(remainingSec: number): string {
   return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
+/**
+ * Format a long duration coarsely — `3d 4h`, `4h 12m`, `12m` (Issue #333).
+ *
+ * {@link formatRemainingDuration} is minutes-and-seconds, which is right for
+ * a countdown someone is watching and useless for a weekly reset: two days
+ * reads as `2880m 00s`. This is for the "when does the window reopen" half of
+ * the message, where the unit that matters is days.
+ */
+export function formatCoarseDuration(remainingSec: number): string {
+  const total = Math.max(0, Math.ceil(remainingSec));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 /** Format an epoch (seconds) as an ISO 8601 string without milliseconds. */
 function formatEpochIso(epochSec: number): string {
   return new Date(epochSec * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -189,10 +207,22 @@ export async function waitUntilRateLimitReset(
     // (Issue #1903). Skipped entirely when no logger dep is provided.
     if (deps.log && current - lastHeartbeat >= heartbeat) {
       const remaining = target - current;
+      // Issue #333: when the safety cap will end this wait before the reset,
+      // say so. "26m 53s remaining until reset at <t>" read as though <t> was
+      // the real reset; with the dated weekly form now parsed, <t> can be two
+      // days out while this wait returns within the hour, and a heartbeat
+      // that implied otherwise would be misleading in the other direction.
+      const cappedShort = deadline < target;
       deps.log(
-        `Rate-limit wait: ${
-          formatRemainingDuration(remaining)
-        } remaining until reset at ${formatEpochIso(options.resetEpoch)}`,
+        cappedShort
+          ? `Rate-limit wait: the window reopens in ${
+            formatCoarseDuration(options.resetEpoch - current)
+          } (${formatEpochIso(options.resetEpoch)}) — re-probing in ${
+            formatRemainingDuration(Math.max(0, deadline - current))
+          } in case the quota is extended`
+          : `Rate-limit wait: ${
+            formatRemainingDuration(remaining)
+          } remaining until reset at ${formatEpochIso(options.resetEpoch)}`,
       );
       lastHeartbeat = current;
     }

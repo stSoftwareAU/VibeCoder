@@ -462,14 +462,81 @@ export function detectRunInterrupted(
   return RUN_INTERRUPTED_RE.test(tail);
 }
 
+/** Month names as the CLI writes them, in `Date`'s 0-based order. */
+const RESET_MONTHS = [
+  "jan",
+  "feb",
+  "mar",
+  "apr",
+  "may",
+  "jun",
+  "jul",
+  "aug",
+  "sep",
+  "oct",
+  "nov",
+  "dec",
+];
+
+/**
+ * Parse the dated weekly form — `resets Aug 25, 1am (UTC)` (Issue #333).
+ *
+ * Returns null when the message carries no date, leaving the bare-clock path
+ * to handle the five-hour window. A dated reset with no year is taken as the
+ * next occurrence of that date, so a December message naming a January reset
+ * does not resolve into the past.
+ */
+function parseDatedReset(text: string, nowMs: number): number | null {
+  const m =
+    /reset[s]?(?:\s+at)?\s+([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i
+      .exec(text);
+  if (!m) return null;
+
+  const month = RESET_MONTHS.indexOf(m[1]!.slice(0, 3).toLowerCase());
+  if (month < 0) return null;
+  const day = Number(m[2]);
+  if (day < 1 || day > 31) return null;
+
+  let hour = Number(m[3]);
+  const minute = m[4] ? Number(m[4]) : 0;
+  const meridiem = m[5]?.toLowerCase();
+  if (meridiem === "pm" && hour < 12) hour += 12;
+  if (meridiem === "am" && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return null;
+
+  // The CLI states its zone; only UTC is emitted today, and anything else is
+  // left to the caller's zone rather than guessed at.
+  const utc = /\(\s*UTC\s*\)/i.test(text);
+  const year = new Date(nowMs).getUTCFullYear();
+  const build = (y: number) =>
+    utc
+      ? Date.UTC(y, month, day, hour, minute)
+      : new Date(y, month, day, hour, minute).getTime();
+
+  const candidate = build(year);
+  // No year in the message: a date that has already passed means next year.
+  return candidate >= nowMs ? candidate : build(year + 1);
+}
+
 /**
  * Parse the reset time from a usage-limit message into epoch milliseconds,
  * or null when nothing parseable is present.
  *
- * Handles: the CLI's machine-readable `|<epoch-seconds>` suffix; `resets
- * 3am` / `resets at 3 pm`; `reset at 14:30`. Clock forms resolve to the
- * NEXT future occurrence in `timeZone` (default: the process zone) — a
- * time already past today means tomorrow.
+ * Handles: the CLI's machine-readable `|<epoch-seconds>` suffix; the dated
+ * weekly form `resets Aug 25, 1am (UTC)`; and the bare clock forms `resets
+ * 3am` / `resets at 3 pm` / `reset at 14:30`.
+ *
+ * Bare clock forms resolve to the NEXT future occurrence in `timeZone`
+ * (default: the process zone) — a time already past today means tomorrow.
+ * That is right for the five-hour window and **wrong for the weekly one**,
+ * which is why the dated form is matched first (Issue #333): on
+ * 2026-08-23 the real message read `resets Aug 25, 1am (UTC)`, the dated
+ * pattern did not exist, the whole parse returned null, and the log claimed
+ * the message carried no reset time at all.
+ *
+ * An explicit zone in the message wins over `timeZone`: the CLI states the
+ * zone it means, and a host in Australia/Sydney reading `1am (UTC)` as local
+ * would be ten hours out.
  */
 export function parseUsageLimitReset(
   text: string,
@@ -478,6 +545,9 @@ export function parseUsageLimitReset(
 ): number | null {
   const epoch = /\|(\d{9,11})\b/.exec(text);
   if (epoch) return Number(epoch[1]) * 1000;
+
+  const dated = parseDatedReset(text, nowMs);
+  if (dated !== null) return dated;
 
   const clock = /reset[s]?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
     .exec(text);

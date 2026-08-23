@@ -16,6 +16,7 @@
  */
 
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
+import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
   describeMemoryPressure,
   memoryPressureLogFields,
@@ -523,6 +524,18 @@ export const UNRESOLVED_MODEL_SENTINEL = "default";
  * the worker is not re-probing a dead window every cycle.
  */
 export const USAGE_LIMIT_DEFAULT_WAIT_SECONDS = 3600;
+
+/**
+ * Longest single usage-limit pause (Issue #333).
+ *
+ * The reset time and the retry cadence are deliberately separate. A weekly
+ * window can reopen two days out, but the quota may be *extended* before
+ * then, and a worker asleep until the stated reset would not notice. So the
+ * pause is `min(time-until-reset, this)` — re-probe about hourly, and pick up
+ * a topped-up quota within that window. Matches the safety cap
+ * `rate_limit_wait.ts` already applies for the same reason.
+ */
+export const USAGE_LIMIT_MAX_WAIT_SECONDS = 3600;
 
 /**
  * Where the fleet-wide rate/usage-limit signal lives (Issue #4315): the
@@ -2286,16 +2299,33 @@ export async function runClaudeWithRetry(
       // message carries no time.
       if (detectUsageLimit(bothStreams, errorScanTailLines)) {
         const resetMs = parseUsageLimitReset(bothStreams);
-        const waitSeconds = resetMs !== null
+        // Issue #333: cap the pause so an extended quota is picked up within
+        // the hour, whatever the stated reset. The reset is reported, not
+        // slept on.
+        const untilResetSeconds = resetMs !== null
           ? Math.max(60, Math.ceil((resetMs - Date.now()) / 1000))
           : USAGE_LIMIT_DEFAULT_WAIT_SECONDS;
+        const waitSeconds = Math.min(
+          untilResetSeconds,
+          USAGE_LIMIT_MAX_WAIT_SECONDS,
+        );
         currentOptions.logger?.error(
           `Claude usage limit reached (subscription window) — exit code ` +
             `${exitCode}. Not retrying and not falling back (every model ` +
             `bills the same window). Pausing agent work for ${waitSeconds}s` +
-            (resetMs !== null
-              ? ` (until ${new Date(resetMs).toISOString()})`
-              : " (no reset time in the message; default hour)") +
+            // Issue #333: say what the message actually said. This used to
+            // claim "no reset time in the message" against a message reading
+            // `resets Aug 25, 1am (UTC)`, which is what hid the missing
+            // dated-form parse for a day and a half.
+            (resetMs === null
+              ? " (the message carried no parseable reset time)"
+              : waitSeconds < untilResetSeconds
+              ? ` — the window reopens in ${
+                formatCoarseDuration(untilResetSeconds)
+              } (${
+                new Date(resetMs).toISOString()
+              }); re-probing every ${waitSeconds}s in case the quota is extended`
+              : ` (until ${new Date(resetMs).toISOString()})`) +
             ".",
         );
         currentOptions.logger?.security?.(
@@ -2304,9 +2334,13 @@ export async function runClaudeWithRetry(
         );
         const signalDir = resolveSignalDir(currentOptions.cwd);
         if (signalDir) {
+          // Issue #333: carry the true reset beside the capped wait, so the
+          // FLEET report can say "no quota until Tuesday" rather than only
+          // "unhealthy".
           const signalResult = await writeRateLimitSignal(
             signalDir,
             waitSeconds,
+            resetMs ?? undefined,
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(

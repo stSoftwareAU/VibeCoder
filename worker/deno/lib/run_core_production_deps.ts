@@ -211,6 +211,15 @@ import {
 } from "./idle_inversion_streak.ts";
 import { resolveRunId } from "./audit_journal.ts";
 import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
+import { readQuotaOutage } from "./rate_limit_signal.ts";
+import { formatCoarseDuration } from "./rate_limit_wait.ts";
+/**
+ * A quota outage at least this long makes the host unhealthy (Issue #333).
+ * Six hours: longer than the five-hour subscription window, so an ordinary
+ * mid-cycle lapse never flags a host, and any weekly limit always does.
+ */
+const QUOTA_OUTAGE_UNHEALTHY_SECONDS = 6 * 3600;
+
 import {
   formatDerivedAuthorsFoldSummary,
   intersectDerivedAuthors,
@@ -667,12 +676,32 @@ export async function createProductionRunCoreDeps(
   // this fix).
   const fleetHealthConfig = buildFleetHealthConfig(repoDir);
   // Issue #226: name a low host disk on the fleet-health payload.
+  // Issue #333: the quota outage is read once per cycle rather than inside
+  // `hostNotes`, which is synchronous. A stale reading is harmless — the note
+  // exists to name a multi-day outage, not to be second-accurate.
+  let quotaOutageNote: string | null = null;
+  const refreshQuotaOutageNote = async () => {
+    const outage = await readQuotaOutage(workDir);
+    // Only a *long* outage is a health condition. A five-hour window that
+    // lapses mid-cycle is ordinary operation and must not flag the host.
+    quotaOutageNote = outage !== null &&
+        outage.remainingSeconds >= QUOTA_OUTAGE_UNHEALTHY_SECONDS
+      ? `out of Claude quota for ${
+        formatCoarseDuration(outage.remainingSeconds)
+      } — the window reopens at ${
+        new Date(outage.resetEpochMs).toISOString()
+      }; this host needs a different account or a topped-up plan`
+      : null;
+  };
+
   fleetHealthConfig.hostNotes = () => {
     const notes: string[] = [];
     const status = hostDisk.status;
     if (status.level === "low") notes.push(`host-disk low: ${status.detail}`);
     const fault = workVolumeFault();
     if (fault !== null) notes.push(`work-volume fault: ${fault.detail}`);
+    // Issue #333: "unhealthy" alone does not say which host to fix.
+    if (quotaOutageNote !== null) notes.push(quotaOutageNote);
     return notes;
   };
   const fleetHealthDeps = createProductionFleetHealthDeps(logger);
@@ -2837,6 +2866,9 @@ export async function createProductionRunCoreDeps(
     // throw is logged and the loop continues.
     reportFleetHealthHeartbeat: async () => {
       try {
+        // Issue #333: refresh before reporting so a multi-day quota outage is
+        // named on the heartbeat that carries it.
+        await refreshQuotaOutageNote();
         await runFleetHealthReporting(fleetHealthConfig, fleetHealthDeps);
       } catch { /* best-effort */ }
     },

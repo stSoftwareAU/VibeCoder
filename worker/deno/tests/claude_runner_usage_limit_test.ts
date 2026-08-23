@@ -12,7 +12,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { runClaudeWithRetry } from "../lib/claude_runner.ts";
+import {
+  runClaudeWithRetry,
+  USAGE_LIMIT_MAX_WAIT_SECONDS,
+} from "../lib/claude_runner.ts";
 import { rateLimitSignalPath } from "../lib/rate_limit_signal.ts";
 
 async function withUsageLimitStub<T>(
@@ -81,12 +84,29 @@ Deno.test({
       assertEquals(models, ["fable"]);
       assert(result.value.usageLimit, "usageLimit evidence must be carried");
       assertEquals(result.value.usageLimit!.resetEpochMs, resetEpoch * 1000);
-      assert(result.value.usageLimit!.waitSeconds > 3600);
+      // Issue #333: the reset and the retry cadence are separate. The true
+      // reset is still carried in full — that is what an operator reads — but
+      // the pause is capped so an *extended* quota is picked up within the
+      // hour rather than the worker sleeping to a reset that may have moved.
+      // This previously asserted `> 3600`, i.e. sleep until the reset.
+      assertEquals(
+        result.value.usageLimit!.waitSeconds,
+        USAGE_LIMIT_MAX_WAIT_SECONDS,
+      );
+      assert(
+        (result.value.usageLimit!.resetEpochMs ?? 0) >
+          Date.now() + USAGE_LIMIT_MAX_WAIT_SECONDS * 1000,
+        "the fixture's reset must be beyond the cap for this to mean anything",
+      );
       // The signal lands in WORK_DIR, not in the per-issue cwd.
       const signal = JSON.parse(
         await Deno.readTextFile(rateLimitSignalPath(workDir)),
       );
-      assert(signal.waitSeconds > 3600, JSON.stringify(signal));
+      assertEquals(
+        signal.waitSeconds,
+        USAGE_LIMIT_MAX_WAIT_SECONDS,
+        JSON.stringify(signal),
+      );
       let cwdSignal = false;
       try {
         await Deno.stat(rateLimitSignalPath(`${workDir}/some-repo-clone`));
