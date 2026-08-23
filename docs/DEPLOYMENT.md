@@ -770,15 +770,17 @@ Whichever supervisor you use — launchd, cron, systemd, Task Scheduler, `loop.s
 
 - **Backoff instead of a restart storm.** Consecutive launcher failures are counted in `${WORK_DIR}/.container_restart_state.json`; `loop.sh` / `loop.ps1` wait longer after each one (base sleep doubled per failure, capped at 30 minutes) and reset after a successful run. Under a scheduler the fixed interval is the retry, and the launcher records the same counter itself.
 - **Escalation through GitHub.** The launcher records the phase it reached in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, so a failure is attributed to runtime detection, image build, container start or the worker run. Past the phase's threshold — 2 for a failed image build, 3 otherwise — the failure is reported through the crash-notification channel (GitHub issue comment plus optional webhook, subject to its cooldown), naming the phase.
+- **A quota pause is not a failure.** A run that stops because this host is out of Claude quota exits **75** and writes `~/logs/quota-pause.json`. That is a scheduled outcome: the failure streak resets, nothing escalates, the container is not treated as suspect, and the supervisor re-probes at a fixed cadence (`VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default 3600 s) rather than doubling its wait — the quota may be extended before its stated reset. A host that genuinely *crashes* while out of quota writes no marker, so it backs off exactly as above.
 
 - **A wedged container VM.** Backoff only helps once the launcher returns, and a container whose VM stops answering leaves the host-side `container run` client waiting on it for ever — three hours of blocked `run.sh` on host-23. Both launchers now wait under the launch plan's `watchdog` deadline (the worker's maximum run duration plus a 10-minute margin), reap a container that outlives it (`<runtime> kill`, then SIGKILL of the host-side client and runtime helper), and exit **87** so the next cycle runs. Every launch also reaps `vibe-coder-*` containers left behind by an earlier cycle — including one that survived a host reboot. Forced reaps are `container_wedged` self-heal events.
 
-Recoveries, backoffs, escalations and forced reaps are structured self-heal events: `deno run worker/deno/mod.ts self-heal-summary` shows them. See [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-container-restart-backoff-and-escalation).
+Recoveries, backoffs, escalations, quota pauses and forced reaps are structured self-heal events: `deno run worker/deno/mod.ts self-heal-summary` shows them. See [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-container-restart-backoff-and-escalation).
 
 | Variable | Description |
 |----------|-------------|
 | `LOOP_SLEEP_SECONDS` | Base sleep, and the first failure's backoff (default: 60) |
 | `VIBE_STATE_DIR` | State directory holding the launch-phase marker (default: `~/.vibe-coder`) |
+| `VIBE_QUOTA_PAUSE_SLEEP_SECONDS` | Fixed re-probe interval while this host is out of quota (default: 3600) |
 | `CRASH_WEBHOOK_URL` | Optional webhook the escalation also posts to |
 | `VIBE_CONTAINER_WATCHDOG_SECONDS` | Launcher deadline before a container is reaped as wedged (default: the worker's max run duration + 600) |
 | `VIBE_CONTAINER_REAP_GRACE_SECONDS` | Grace after `<runtime> kill` before the reaper escalates to SIGKILL (default: 30) |

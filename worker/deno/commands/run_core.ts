@@ -29,6 +29,10 @@ interface RunCoreCommandData {
   issuesProcessed: number;
   durationSeconds: number;
   exitReason: string;
+  /** The run stopped because the host is out of quota (Issue #342). */
+  quotaPaused: boolean;
+  /** When that quota window reopens, in epoch milliseconds, when known. */
+  quotaResetEpochMs?: number;
 }
 
 /**
@@ -63,6 +67,7 @@ export const runCoreCommand: Command = {
           issuesProcessed: 0,
           durationSeconds: config.runDurationSeconds,
           exitReason: "not started",
+          quotaPaused: false,
         },
       };
     }
@@ -88,6 +93,7 @@ export const runCoreCommand: Command = {
             issuesProcessed: 0,
             durationSeconds: 0,
             exitReason: "missing github-user",
+            quotaPaused: false,
           },
         };
       }
@@ -172,6 +178,10 @@ export const runCoreCommand: Command = {
           issuesProcessed: result.issuesProcessed,
           durationSeconds: result.durationSeconds,
           exitReason: result.exitReason,
+          quotaPaused: result.quotaPaused,
+          ...(result.quotaResetEpochMs !== undefined
+            ? { quotaResetEpochMs: result.quotaResetEpochMs }
+            : {}),
         },
       };
     }
@@ -187,6 +197,7 @@ export const runCoreCommand: Command = {
         issuesProcessed: 0,
         durationSeconds: 0,
         exitReason: "not started — command registry invocation",
+        quotaPaused: false,
       },
     };
   },

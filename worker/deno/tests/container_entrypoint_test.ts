@@ -9,6 +9,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { QUOTA_PAUSE_EXIT_STATUS } from "../lib/quota_pause.ts";
 
 const ENTRYPOINT = new URL("../../../container/entrypoint.sh", import.meta.url)
   .pathname;
@@ -485,6 +486,30 @@ Deno.test("entrypoint - stays PID 1, reaps orphans, forwards TERM, keeps the exi
     // reaper loop.
     assertEquals(outcome.code, 23, outcome.stderr);
     assertStringIncludes(await Deno.readTextFile(recordFile), "STARTED");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - carries the quota-pause status across the container boundary (Issue #342)", async () => {
+  // The supervisor classifies on this status: a run that stopped because the
+  // host is out of quota must not reach it wearing a crash's status.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    await Deno.mkdir(`${dir}/bin`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/bin/deno`,
+      `#!/bin/bash\nexit ${QUOTA_PAUSE_EXIT_STATUS}\n`,
+    );
+    await Deno.chmod(`${dir}/bin/deno`, 0o755);
+    await fakeRepo(dir);
+
+    const outcome = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo`, HOME: `${dir}/home` },
+    });
+    assertEquals(outcome.code, QUOTA_PAUSE_EXIT_STATUS, outcome.stderr);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

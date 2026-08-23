@@ -413,6 +413,64 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
+// 5b. Quota exhaustion is reported as a scheduled pause (Issue #342).
+//     A wait that would outlast the run-duration cap ends the run — and the
+//     result must say *why*, so the driver can exit on the quota-pause status
+//     instead of a status the supervisor reads as a crash.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "run_core resume - a wait past the run-duration cap reports a quota pause",
+  async () => {
+    let nowValue = 0;
+    const remainingSeconds = 7200;
+
+    const deps = createMockDeps({
+      isRateLimitActive: () => Promise.resolve(true),
+      getRateLimitRemainingSeconds: () => Promise.resolve(remainingSeconds),
+      now: () => nowValue,
+      sleep: (ms?: number) => {
+        nowValue += ms ?? 30000;
+        return Promise.resolve();
+      },
+    });
+
+    const config = createDefaultRunCoreConfig();
+    // The quota reopens after this run would have ended, so the loop exits.
+    config.runDurationSeconds = 3600;
+
+    const result = await runCoreLoop(config, deps);
+
+    assertEquals(result.quotaPaused, true);
+    assertEquals(result.plannedShutdown, true);
+    assertEquals(result.exitedOnFailures, false);
+    // The reset the pause was waiting on rides along, so the supervisor can
+    // pace its re-probe on the real window rather than guessing.
+    assertEquals(result.quotaResetEpochMs, remainingSeconds * 1000);
+  },
+);
+
+Deno.test(
+  "run_core resume - an ordinary run reports no quota pause",
+  async () => {
+    let nowValue = 0;
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: (ms?: number) => {
+        nowValue += ms ?? 30000;
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 1;
+
+    const result = await runCoreLoop(config, deps);
+    assertEquals(result.quotaPaused, false);
+    assertEquals(result.quotaResetEpochMs, undefined);
+  },
+);
+
+// ---------------------------------------------------------------------------
 // 6. Per-priority catch short-circuits on a thrown rate-limit error (Issue #1921).
 //    A priority handler that throws a primary rate-limit error must stop the
 //    priority dispatch loop immediately — no subsequent priorities should run

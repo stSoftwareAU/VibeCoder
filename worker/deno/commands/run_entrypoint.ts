@@ -83,9 +83,15 @@ export const runEntrypointCommand: Command = {
     // another instance is running). A non-zero exit code (bootstrap failure,
     // invalid config, unresolvable user, or a failed loop) fails loud so the
     // command framework surfaces exit 1 (Issue #3234).
+    //
+    // Issue #342: a quota pause is the third case — a clean, deliberate stop
+    // that must reach the supervisor under its own status, so the exit code
+    // is named here rather than collapsed into the 0/1 default.
+    const quotaPaused = result.outcome === "quota-paused";
     return {
-      success: result.exitCode === 0,
+      success: result.exitCode === 0 || quotaPaused,
       message: `${result.outcome.toUpperCase()}: ${result.reason}`,
+      exitCode: result.exitCode,
       data: {
         outcome: result.outcome,
         exitCode: result.exitCode,

@@ -25,6 +25,9 @@ set -uo pipefail
 #   #4065 — run.sh launches that driver inside the worker container and
 #           forwards SIGTERM/SIGINT to it, exiting with the container's status,
 #           so the notes below still hold across the containment boundary.
+#   #342  — a launcher that stopped because the host is out of Claude quota is
+#           a scheduled pause, not a failure: it exits QUOTA_PAUSE_EXIT and the
+#           recorder re-probes on a fixed cadence instead of backing off.
 #   #4072 — a failed launcher is now recorded rather than retried blindly: the
 #           worker's `container-restart-backoff` command grows the wait across
 #           consecutive failures, records the recovery as a self-heal event and
@@ -148,6 +151,12 @@ VIBE_RUN_KILL_GRACE_SECONDS="${VIBE_RUN_KILL_GRACE_SECONDS:-120}"
 # child. Both mean "the supervisor ended this run", not "the run failed".
 readonly RUN_DEADLINE_EXIT=124
 readonly RUN_KILLED_EXIT=137
+
+# The worker's own "I stopped because this host is out of quota" status
+# (QUOTA_PAUSE_EXIT_STATUS in worker/deno/lib/quota_pause.ts, Issue #342). A
+# scheduled pause, not a crash - the recorder answers with the fixed re-probe
+# cadence rather than a grown backoff.
+readonly QUOTA_PAUSE_EXIT=75
 
 # Reap what a killed run.sh leaves behind (Issue #322).
 #
@@ -310,6 +319,9 @@ while true; do
         echo "loop.sh: ./run.sh exceeded VIBE_RUN_MAX_SECONDS=${VIBE_RUN_MAX_SECONDS}s" \
              "(status ${run_status}) — terminated by the supervisor; reaping and retrying"
         reap_orphaned_containers
+    elif [[ "${run_status}" -eq "${QUOTA_PAUSE_EXIT}" ]]; then
+        echo "loop.sh: ./run.sh paused — this host is out of quota (status ${run_status});" \
+             "re-probing on the quota cadence, not backing off (Issue #342)"
     elif [[ "${run_status}" -ne 0 ]]; then
         echo "loop.sh: ./run.sh exited with status ${run_status} — backing off and retrying"
     fi
