@@ -23,6 +23,16 @@ export interface RateLimitSignalData {
   timestamp: number;
   /** How long the worker planned to wait, in seconds. */
   waitSeconds: number;
+  /**
+   * When the usage window actually reopens, in epoch milliseconds
+   * (Issue #333). Distinct from `waitSeconds`, which is capped so an
+   * extended quota is picked up within the hour: a weekly limit reports a
+   * one-hour wait and a reset two days out, and only this field can tell
+   * "briefly throttled" from "this host has no quota until Tuesday".
+   *
+   * Optional so an older signal file still parses.
+   */
+  resetEpochMs?: number;
 }
 
 /** Result of checking whether a rate limit is currently active. */
@@ -50,11 +60,13 @@ export function rateLimitSignalPath(workDir: string): string {
 export async function writeRateLimitSignal(
   workDir: string,
   waitSeconds: number,
+  resetEpochMs?: number,
 ): Promise<Result<void>> {
   try {
     const data: RateLimitSignalData = {
       timestamp: Math.floor(Date.now() / 1000),
       waitSeconds,
+      ...(resetEpochMs !== undefined ? { resetEpochMs } : {}),
     };
     await Deno.writeTextFile(
       rateLimitSignalPath(workDir),
@@ -220,4 +232,30 @@ export function formatRateLimitReset(
   }
 
   return `at ${wallClock} ${tzLabel} (in ${relative})`;
+}
+
+/**
+ * How long this host is out of quota, or `null` when it is not (Issue #333).
+ *
+ * Reads the signal and reports the *true* reset, not the capped retry
+ * interval. A host waiting days for a weekly window is a host that needs a
+ * different Claude account, and "unhealthy" alone does not say which one or
+ * why — this is what makes the FLEET report actionable.
+ */
+export async function readQuotaOutage(
+  workDir: string,
+  nowMs: number = Date.now(),
+): Promise<{ resetEpochMs: number; remainingSeconds: number } | null> {
+  try {
+    const raw = await Deno.readTextFile(rateLimitSignalPath(workDir));
+    const data = JSON.parse(raw) as Partial<RateLimitSignalData>;
+    const reset = data.resetEpochMs;
+    if (typeof reset !== "number" || !Number.isFinite(reset)) return null;
+    const remainingSeconds = Math.ceil((reset - nowMs) / 1000);
+    if (remainingSeconds <= 0) return null;
+    return { resetEpochMs: reset, remainingSeconds };
+  } catch {
+    // No signal, or an unreadable one: not a quota outage we can assert.
+    return null;
+  }
 }
