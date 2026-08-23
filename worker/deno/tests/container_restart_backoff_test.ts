@@ -594,7 +594,9 @@ Deno.test("recordContainerRestartOutcome - a crash after a quota pause still bac
 Deno.test({
   name:
     "container-restart-backoff command - consumes the marker and answers with the quota cadence",
-  permissions: { read: true, write: true, env: true, run: true, net: true },
+  // No net: a quota pause escalates nothing, so the command must reach the
+  // fixed cadence without ever opening the crash-notification channel.
+  permissions: { read: true, write: true, env: true, run: true },
   async fn() {
     const harness = await setupHarness();
     const logDir = join(harness.workDir, "logs");
@@ -631,7 +633,7 @@ Deno.test({
 Deno.test({
   name:
     "container-restart-backoff command - the quota cadence is operator-configurable by environment",
-  permissions: { read: true, write: true, env: true, run: true, net: true },
+  permissions: { read: true, write: true, env: true, run: true },
   async fn() {
     const harness = await setupHarness();
     const logDir = join(harness.workDir, "logs");
