@@ -41,6 +41,36 @@
  *   which are fleet logins by definition (Issue #209).
  * @returns Deduplicated, non-empty fleet login list.
  */
+/**
+ * Logins that may never author a suppression (Issues #334, #338).
+ *
+ * Every fleet identity: this host's own login, the sibling logins in
+ * `fleet_pr_authors`, **and** the `service_accounts`. Issue #209 records
+ * siblings being configured under `service_accounts` alone, and hosts in this
+ * fleet run under different git users — so a login omitted here is a login
+ * that can suppress on every host but its own.
+ *
+ * Deliberately **not** `allowed_authors`: that also lists the humans who
+ * legitimately suppress, and excluding them would silence real waivers
+ * (#3426).
+ *
+ * Named rather than assembled at the call site so the composition is the
+ * thing under test. #338 was a dropped positional argument to
+ * {@link resolveFleetAuthors}; there is no argument to drop here.
+ */
+export function resolveSuppressionExcludedLogins(input: {
+  githubUser: string;
+  fleetPrAuthors?: readonly string[];
+  serviceAccounts?: readonly string[];
+}): string[] {
+  return resolveFleetAuthors(
+    input.githubUser,
+    [],
+    [...(input.fleetPrAuthors ?? [])],
+    [...(input.serviceAccounts ?? [])],
+  );
+}
+
 export function resolveFleetAuthors(
   githubUser: string,
   allowedAuthors: string[],
