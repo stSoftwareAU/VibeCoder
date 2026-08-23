@@ -187,6 +187,100 @@ reap_orphaned_containers() {
     done < <(pgrep -f "container run .*--name vibe-coder-" 2>/dev/null || true)
 }
 
+################################################################################
+# Container control-plane liveness (Issue #323)
+#
+# On 2026-08-22 the container's init (`vminitd`) stopped answering. Every
+# control-plane operation failed — `container exec` reset its socket,
+# `container stop` returned 0 while the container kept running, `container
+# kill` did nothing — and `container ls` reported the container healthy and
+# `running` the whole time. Liveness was being *inferred* from the worker
+# writing logs, which is a symptom of health rather than a check, and a wedged
+# worker stops writing at precisely the moment a check is needed.
+#
+# So probe, do not infer: a trivial `exec` against the live container, and N
+# consecutive failures means the control plane is gone whatever `container ls`
+# says. Recovery skips `stop`/`kill` — they are already known not to work in
+# this state — and terminates the host-side client, then the VM, verifying
+# each. Killing the client alone leaves the VM running: on 2026-08-22 it sat
+# at 705% CPU with nothing supervising it.
+################################################################################
+VIBE_PROBE_INTERVAL_SECONDS="${VIBE_PROBE_INTERVAL_SECONDS:-120}"
+VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
+
+# Echo the name of the running vibe-coder container, or nothing.
+running_vibe_container() {
+    command -v container >/dev/null 2>&1 || return 0
+    timeout 30 container ls 2>/dev/null |
+        awk '$1 ~ /^vibe-coder-/ && $0 ~ /running/ { print $1; exit }'
+}
+
+# Terminate a container whose control plane is dead, and the VM behind it.
+force_stop_container() {
+    local name="$1"
+    [[ -z "${name}" ]] && return 0
+
+    # Try the runtime first — it costs a second and works when the control
+    # plane is merely slow rather than gone.
+    timeout 30 container kill "${name}" >/dev/null 2>&1 || true
+    sleep 3
+    # Verify, never trust the exit code: `container stop` returned 0 on
+    # 2026-08-22 while the container kept running.
+    if ! timeout 30 container ls 2>/dev/null | grep -q "${name}.*running"; then
+        echo "loop.sh: ${name} stopped by the runtime"
+        return 0
+    fi
+
+    echo "loop.sh: ${name} survived the runtime kill — terminating the client"
+    local client
+    client="$(pgrep -f "container run .*--name ${name}( |$)" 2>/dev/null | head -1 || true)"
+    if [[ -n "${client}" ]]; then
+        kill -TERM "${client}" 2>/dev/null || true
+        sleep 5
+        kill -KILL "${client}" 2>/dev/null || true
+    fi
+
+    # The VM outlives its client (Issue #323): killing the client alone left a
+    # VM at 705% CPU on 2026-08-22, which makes the next cycle fail the same
+    # way. Only VMs with no live client are touched.
+    local vm ppid
+    while read -r vm; do
+        [[ -z "${vm}" ]] && continue
+        ppid="$(ps -o ppid= -p "${vm}" 2>/dev/null | tr -d ' ')"
+        [[ "${ppid}" == "1" ]] || continue
+        echo "loop.sh: reaping orphaned VM PID ${vm}"
+        kill -TERM "${vm}" 2>/dev/null || true
+    done < <(pgrep -f "Virtualization.VirtualMachine" 2>/dev/null || true)
+}
+
+# Probe the control plane until it fails N times in a row, then recover.
+# Runs in the background beside run.sh and exits when the container goes away.
+probe_control_plane() {
+    command -v container >/dev/null 2>&1 || return 0
+    local failures=0 name
+    while true; do
+        sleep "${VIBE_PROBE_INTERVAL_SECONDS}"
+        name="$(running_vibe_container)"
+        if [[ -z "${name}" ]]; then
+            failures=0
+            continue
+        fi
+        if timeout 30 container exec "${name}" true >/dev/null 2>&1; then
+            failures=0
+            continue
+        fi
+        failures=$((failures + 1))
+        echo "loop.sh: control-plane probe failed for ${name}" \
+             "(${failures}/${VIBE_PROBE_FAILURES})"
+        if (( failures >= VIBE_PROBE_FAILURES )); then
+            echo "loop.sh: ${name} control plane is unresponsive — recovering" \
+                 "(Issue #323)"
+            force_stop_container "${name}"
+            return 0
+        fi
+    done
+}
+
 # Run "$@" under the supervisor deadline, echoing its exit status.
 run_under_deadline() {
     if [[ "${VIBE_RUN_MAX_SECONDS}" == "0" ]] || \
@@ -200,7 +294,14 @@ run_under_deadline() {
 
 while true; do
     run_status=0
+    # Issue #323: probe the container's control plane while the run is up. The
+    # probe exits on its own once it recovers a dead container; otherwise it is
+    # stopped below when the run ends.
+    probe_control_plane &
+    probe_pid=$!
     run_under_deadline ./run.sh || run_status=$?
+    kill "${probe_pid}" 2>/dev/null || true
+    wait "${probe_pid}" 2>/dev/null || true
     if [[ "${run_status}" -eq "${RUN_DEADLINE_EXIT}" ]] || \
        [[ "${run_status}" -eq "${RUN_KILLED_EXIT}" ]]; then
         # Issue #322: the run outlived its wall-clock cap. Say so distinctly —
