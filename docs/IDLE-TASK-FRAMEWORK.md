@@ -484,10 +484,39 @@ every monitored repo the census records:
 
 "Unblocked" means the issue carries the priority label, carries **no** blocking
 label (`failed`, `needs-revision`, `refine-issue`, `planning`, `question`,
-`needs-human`), and has **no assignees** — i.e. work GitHub could hand a worker
-right now. Crucially, neither `degraded-model` nor `lang:*` is a blocking label,
-so an issue carrying them still counts: the census exists precisely to refute
-the "a `degraded-model` filter is hiding the work" hypothesis.
+`needs-human`), has **no assignees**, is not blocked by an open PR in its work
+stream, and sits in a work stream this worker has **not** already occupied —
+i.e. work the Priority 2 scan could hand a worker right now. Crucially, neither
+`degraded-model` nor `lang:*` is a blocking label, so an issue carrying them
+still counts: the census exists precisely to refute the "a `degraded-model`
+filter is hiding the work" hypothesis.
+
+Work streams are milestones, plus `""` for the default-branch stream. A stream
+is **occupied** once it hosts an open issue assigned to this worker, and the
+Priority 2 scan then refuses every sibling in it (`isMilestoneOccupied` → the
+`milestone-occupied` skip). The census applies the same gate and reports the
+excluded siblings as `stream_occupied=<n>`, alongside `pr_blocked=<n>`, so both
+deferrals stay observable without inflating the inversion signal ():
+
+```mermaid
+flowchart LR
+    I[Open issue] --> L{Priority label?}
+    L -- no --> X[not counted]
+    L -- yes --> B{Blocking label<br/>or assignee?}
+    B -- yes --> X
+    B -- no --> S{Stream already<br/>occupied?}
+    S -- yes --> SO["stream_occupied+1"]
+    S -- no --> P{Open PR blocks<br/>its stream?}
+    P -- yes --> PB["pr_blocked+1"]
+    P -- no --> U["unblocked+1<br/>→ inversion signal"]
+```
+
+Before Issue #3852 the census skipped the occupancy gate, so every sibling of an
+in-flight claim counted as claimable. `stSoftwareAU/NEAT-AI` logged
+`work_on=4 inversion_signal=true` cycle after cycle while the scan logged
+`milestone-occupied=4` and the audit logged `claimable=0 reason=stream_occupied`
+— the scan was right, and the false signal both suppressed the idle-task filer
+and escalated to a filed issue.
 
 Any monitored repo holding ≥1 unblocked `top-priority` / `work-on` /
 `low-priority` issue at this moment is the **inversion signal**; `idle-task` is
