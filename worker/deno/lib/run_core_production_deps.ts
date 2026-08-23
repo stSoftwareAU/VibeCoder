@@ -208,7 +208,7 @@ import {
 } from "./resume_state_store.ts";
 import {
   type FleetAuthorSetInput,
-  resolveFleetAuthors,
+  resolveSuppressionExcludedLogins,
 } from "./fleet_authors.ts";
 import {
   clearIdleInversion,
@@ -569,8 +569,16 @@ export async function createProductionRunCoreDeps(
     // not be able to waive findings in code it wrote. The exclusion set is
     // `github_user ∪ fleet_pr_authors`, matching #3426: `allowed_authors`
     // itself would strip the humans who legitimately suppress.
+    // Issues #334, #338: every fleet identity, including siblings configured
+    // under `service_accounts` alone (#209). Hosts run under different git
+    // users, so a login omitted from this set can suppress on every host but
+    // its own.
     setSuppressionFleetLogins(
-      resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+      resolveSuppressionExcludedLogins({
+        githubUser,
+        fleetPrAuthors: config.fleetPrAuthors,
+        serviceAccounts: config.serviceAccounts,
+      }),
     );
   }
 
