@@ -15,7 +15,7 @@
 
 import type { Result } from "../types.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
-import { RESERVED_WORKDIR_NAMES } from "./stale_workdir.ts";
+import { isReservedWorkRootEntry } from "./stale_workdir.ts";
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
 import { cleanDenoCache as realCleanDenoCache } from "./deno_cache.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
@@ -872,9 +872,11 @@ export async function nukeWorkDir(workDir: string): Promise<void> {
   // (Issue #4212): since #4203 the work dir is a named-volume mountpoint,
   // which cannot be removed (EBUSY) — the old remove-and-recreate shape
   // swallowed that error and silently nuked nothing in a genuine disk
-  // emergency. Reserved entries (the ext4 lost+found, the logs dir) are
-  // skipped: the worker cannot remove the former and must not remove the
-  // latter. Per-entry failures are logged loud and never abort the sweep.
+  // emergency. Reserved entries (the ext4 lost+found, the logs dir, the
+  // audit trail and its roster sidecars) are skipped: the worker cannot
+  // remove the first and must not remove the rest — a disk emergency is no
+  // reason to erase the tamper-evident record of what it did (Issue #337).
+  // Per-entry failures are logged loud and never abort the sweep.
   let entries: Deno.DirEntry[] = [];
   try {
     for await (const entry of Deno.readDir(workDir)) {
@@ -885,7 +887,7 @@ export async function nukeWorkDir(workDir: string): Promise<void> {
     entries = [];
   }
   for (const entry of entries) {
-    if (RESERVED_WORKDIR_NAMES.has(entry.name)) continue;
+    if (isReservedWorkRootEntry(entry.name)) continue;
     try {
       await Deno.remove(`${workDir}/${entry.name}`, { recursive: true });
     } catch (err) {

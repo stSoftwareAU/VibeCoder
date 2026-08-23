@@ -9,6 +9,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   classifyWorkDir,
   DEFAULT_STALE_WORKDIR_DAYS,
+  isReservedWorkRootEntry,
   scanAndCleanupStaleWorkDirs,
 } from "../lib/stale_workdir.ts";
 
@@ -295,6 +296,51 @@ Deno.test("scanAndCleanupStaleWorkDirs - ignores reserved subdirs (logs)", async
     assertEquals(result.removedPartial, []);
     const stat = await Deno.stat(`${workDir}/logs`);
     assertEquals(stat.isDirectory, true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("isReservedWorkRootEntry - reserved dirs plus the audit sidecars (Issue #337)", () => {
+  assert(isReservedWorkRootEntry("logs"));
+  assert(isReservedWorkRootEntry("lost+found"));
+  assert(isReservedWorkRootEntry("audit"));
+  // The roster and its seen marker are files beside the audit directory
+  // (Issues #3949, #270) — the expectation that makes a real erasure
+  // detectable, so a sweep must not take them either.
+  assert(isReservedWorkRootEntry("audit.roster.jsonl"));
+  assert(isReservedWorkRootEntry("audit.roster.seen"));
+  // Ordinary clones and lookalikes are not reserved.
+  assertEquals(isReservedWorkRootEntry("VibeCoder"), false);
+  assertEquals(isReservedWorkRootEntry("audit-scratch"), false);
+  assertEquals(isReservedWorkRootEntry("audit.roster.jsonl.bak"), false);
+});
+
+Deno.test("scanAndCleanupStaleWorkDirs - ignores the audit trail (Issue #337)", async () => {
+  // ${workDir}/audit holds the hash-chained mutation journals. It carries no
+  // .git, so without the reserved-name guard the scanner calls it "partial"
+  // and deletes the worker's own audit evidence.
+  const workDir = await makeTempWorkDir();
+  try {
+    await Deno.mkdir(`${workDir}/audit/anchors`, { recursive: true });
+    await Deno.writeTextFile(
+      `${workDir}/audit/audit-worker-2026-08-22.jsonl`,
+      "{}\n",
+    );
+
+    const result = await scanAndCleanupStaleWorkDirs({
+      workDir,
+      maxAgeDays: 7,
+      nowFn: () => Math.floor(Date.now() / 1000),
+    });
+
+    assertEquals(result.scanned, 0);
+    assertEquals(result.removedPartial, []);
+    assertEquals(
+      (await Deno.stat(`${workDir}/audit/audit-worker-2026-08-22.jsonl`))
+        .isFile,
+      true,
+    );
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }

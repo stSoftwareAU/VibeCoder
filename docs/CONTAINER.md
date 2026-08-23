@@ -503,10 +503,21 @@ already has:
   the moment the host-disk monitor reports `low`, *before* the gate stops
   claiming.
 
+**Reserved names are neither tier (Issue #337).** `logs`, the ext4
+`lost+found`, and the `audit` trail (with its `audit.roster.jsonl` and
+`audit.roster.seen` sidecars) are worker- or filesystem-owned state, so every
+sweep — the tier reclaim, the stale-workdir scan, the worktree cleanup and
+the 90%-disk `nukeWorkDir` — skips them. `audit/` carries no `.git` and sits
+untouched between sweeps, so before #337 it tiered as disposable and the
+worker deleted its own tamper-evident journals; `audit-chain-verify` then
+reported `[SECURITY] [AUDIT_CHAIN_BROKEN]` on every swept host. A genuine
+deletion is still detected — the roster beside the directory is what makes it
+detectable, and it is untouched by this change.
+
 ```mermaid
 flowchart TD
-    E["entry in the work root"] --> D{"dot-prefixed<br/>or reserved?"}
-    D -->|yes| S["worker state — owned by<br/>work-volume-prune"]
+    E["entry in the work root"] --> D{"dot-prefixed<br/>or reserved?<br/>(logs, lost+found, audit)"}
+    D -->|yes| S["worker state — never reclaimed<br/>(audit trail, logs)"]
     D -->|no| M{"on the monitored<br/>list from .config.json?"}
     M -->|yes| T1["tier 1 — persistent<br/>never reclaimed"]
     M -->|no| T2["tier 2 — disposable"]

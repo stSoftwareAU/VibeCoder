@@ -10,6 +10,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { resolveBaseDir } from "../lib/audit_journal.ts";
 import {
   anySlotMidExecute,
   classifyWorkRootEntry,
@@ -100,6 +101,24 @@ Deno.test("classifyWorkRootEntry - tiers are a pure function of name and list", 
   // An empty monitored list makes every clone disposable, not every clone
   // monitored — the classification never guesses.
   assertEquals(classifyWorkRootEntry("VibeCoder", new Set()), "disposable");
+});
+
+Deno.test("classifyWorkRootEntry - the audit trail is state, never disposable (Issue #337)", () => {
+  const monitored = monitoredDirNames(MONITORED);
+  assertEquals(classifyWorkRootEntry("audit", monitored), "state");
+  // The name is not a guess: whatever the audit journal resolves its base
+  // directory to under WORK_DIR is the name that must tier as state, so a
+  // rename on either side fails here rather than on a swept host.
+  const previous = Deno.env.get("WORK_DIR");
+  try {
+    Deno.env.set("WORK_DIR", "/work");
+    const baseDir = resolveBaseDir();
+    const auditDirName = baseDir.slice(baseDir.lastIndexOf("/") + 1);
+    assertEquals(classifyWorkRootEntry(auditDirName, monitored), "state");
+  } finally {
+    if (previous === undefined) Deno.env.delete("WORK_DIR");
+    else Deno.env.set("WORK_DIR", previous);
+  }
 });
 
 Deno.test("classifyWorkRootEntry - a monitored repo whose name matches a sibling stays monitored", () => {
@@ -285,6 +304,48 @@ Deno.test("reclaimWorkVolumeTiers - age mode drops idle side repos and keeps war
     assertEquals(await exists(`${workDir}/GRQ-companyreports`), false);
   } finally {
     await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("reclaimWorkVolumeTiers - never prunes the audit trail (Issue #337)", async () => {
+  // The audit directory has no `.git` and sits untouched between sweeps, so
+  // before #337 it was disposable and both modes deleted it — which is what
+  // made audit-chain-verify report AUDIT_CHAIN_BROKEN on every swept host.
+  for (const mode of ["age", "disk-low"] as const) {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/audit/anchors`, { recursive: true });
+      const journal = `${workDir}/audit/audit-worker-2026-08-22.jsonl`;
+      await Deno.writeTextFile(journal, "{}\n");
+      await Deno.writeTextFile(`${workDir}/audit.roster.jsonl`, "{}\n");
+      const stale = new Date((NOW - 30 * 86400) * 1000);
+      for (
+        const p of [journal, `${workDir}/audit/anchors`, `${workDir}/audit`]
+      ) {
+        await Deno.utime(p, stale, stale);
+      }
+      await makeDir(workDir, "GRQ-listing", { ageDays: 30 });
+
+      const result = await reclaimWorkVolumeTiers({
+        workDir,
+        monitoredRepos: MONITORED,
+        mode,
+        maxAgeDays: 3,
+        bytesNeeded: 100 * GIB,
+        nowFn: () => NOW,
+        sizeOf: sizes({ audit: 4096, "GRQ-listing": 2 * GIB }),
+        anySlotActive: NEVER_ACTIVE,
+        rescue: RESCUE_OK,
+      });
+
+      // The sweep still does its job on the genuinely disposable clone.
+      assertEquals(result.removed.map((d) => d.name), ["GRQ-listing"]);
+      assertEquals(result.disposable.count, 1);
+      assertEquals(await exists(journal), true);
+      assertEquals(await exists(`${workDir}/audit.roster.jsonl`), true);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
   }
 });
 

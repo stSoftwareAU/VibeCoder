@@ -35,7 +35,7 @@
 
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
-import { RESERVED_WORKDIR_NAMES } from "./stale_workdir.ts";
+import { isReservedWorkRootEntry } from "./stale_workdir.ts";
 
 const GIB = 1_073_741_824;
 const DU_TIMEOUT_MS = 120_000;
@@ -281,7 +281,7 @@ export async function pruneWorkVolume(
   // 1. Build artefacts.
   for (const entry of entries) {
     if (!entry.isDirectory || entry.name.startsWith(".")) continue;
-    if (RESERVED_WORKDIR_NAMES.has(entry.name)) continue;
+    if (isReservedWorkRootEntry(entry.name)) continue;
     const repoDir = `${workDir}/${entry.name}`;
     if (!(await exists(`${repoDir}/.git`))) continue;
     const targets = await findCargoTargets(repoDir);
@@ -319,7 +319,7 @@ export async function pruneWorkVolume(
   for (const entry of entries) {
     if (!entry.isDirectory || !entry.name.startsWith(".")) continue;
     if (WORK_ROOT_STATE_DIRS.has(entry.name)) continue;
-    if (RESERVED_WORKDIR_NAMES.has(entry.name)) continue;
+    if (isReservedWorkRootEntry(entry.name)) continue;
     const path = `${workDir}/${entry.name}`;
     const m = await mtimeEpoch(path);
     if (m !== null && now - m < scratchMaxAgeSeconds) continue;
