@@ -363,23 +363,21 @@ const RULES: readonly RedactionRule[] = [
 ];
 
 /**
- * Non-global clones of every rule pattern, used to *detect* a secret without
- * rewriting it. Cloned rather than reused because a `/g` pattern carries
- * `lastIndex` state across `test()` calls, which would make detection depend
- * on the previous input.
- */
-const DETECTION_PATTERNS: readonly RegExp[] = RULES.map(
-  (rule) =>
-    new RegExp(rule.pattern.source, rule.pattern.flags.replace("g", "")),
-);
-
-/**
  * Report whether `text` matches any signature rule, without rewriting it.
  * This is the scan the decode-then-rescan pass applies to each decoded
  * candidate (Issue #188).
+ *
+ * Detection goes through `String.prototype.search` rather than
+ * `RegExp.prototype.test`: every rule pattern is global, and `test()` would
+ * advance and carry `lastIndex` across calls, making the result depend on the
+ * previous input. `search` saves and restores `lastIndex`, so the literal rule
+ * patterns can be reused as-is. Cloning them through `new RegExp(...)` would
+ * do the same job but trips semgrep's `detect-non-literal-regexp` rule, and a
+ * dynamically-built regex is the wrong primitive here anyway — the patterns
+ * are all hardcoded literals.
  */
 function matchesSignatureRule(text: string): boolean {
-  return DETECTION_PATTERNS.some((pattern) => pattern.test(text));
+  return RULES.some((rule) => text.search(rule.pattern) !== -1);
 }
 
 /**

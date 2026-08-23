@@ -165,3 +165,22 @@ Deno.test("redactSecrets - masks a secret at the tail of a large input (Issue #1
   const out = redactSecrets("filler text. ".repeat(20_000) + encoded);
   assertEquals(out.includes(encoded), false);
 });
+
+Deno.test("redactSecrets - decoded-secret detection is not order-dependent", () => {
+  // The decode-then-rescan pass matches each decoded candidate against the
+  // signature rules. Those rule patterns are global, so a detection scan must
+  // not leave `lastIndex` advanced — otherwise whether a secret is found
+  // depends on the previous call's input. Encoding the same token twice in one
+  // input, and redacting the same input repeatedly, both exercise that.
+  const encoded = btoa(GH_TOKEN);
+  const twice = `first ${encoded} second ${encoded}`;
+  assertEquals(redactSecrets(twice).includes(encoded), false);
+
+  for (let i = 0; i < 3; i++) {
+    assertEquals(
+      containsSecret(btoa(ANTHROPIC_KEY)),
+      true,
+      `detection failed on repeat ${i}`,
+    );
+  }
+});
