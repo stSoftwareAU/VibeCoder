@@ -301,6 +301,36 @@ export function _resetSuppressionAuthorAllowlist(): void {
 }
 
 /**
+ * Fleet worker logins that may never author a suppression (Issue #334).
+ *
+ * Service accounts belong in `allowed_authors` — that is where the open-PR
+ * dedup guard reads them, and `[fleet-config]` warns when they are missing.
+ * But `allowed_authors` is also what feeds
+ * {@link setSuppressionAuthorAllowlist}, so putting them there would let the
+ * fleet waive findings in code the fleet wrote. Issue #269 binds `author=` to
+ * a verified commit identity, and the service account *is* the identity the
+ * fleet commits under, so that bind is satisfied by the worker's own commits
+ * and stops nothing here.
+ *
+ * Issue #3416 established the pattern for the reserved `work-on` label: sit in
+ * `allowedAuthors` for PR-dedup, and be excluded where the trust must not
+ * follow. Suppression authorship is such a place. The set is
+ * `github_user ∪ fleet_pr_authors` — deliberately not `allowed_authors`,
+ * which also lists the humans who legitimately suppress (Issue #3426).
+ */
+let configuredFleetLogins: readonly string[] = [];
+
+/** Configure the logins that may never author a suppression (Issue #334). */
+export function setSuppressionFleetLogins(logins: readonly string[]): void {
+  configuredFleetLogins = [...logins];
+}
+
+/** Clear the configured fleet logins. Test-only helper. */
+export function _resetSuppressionFleetLogins(): void {
+  configuredFleetLogins = [];
+}
+
+/**
  * Process-wide verified commit identities for `author=` binding
  * (Issue #269).
  *
@@ -394,6 +424,19 @@ function rejectionReason(
     !allowed.some((a) => normaliseLogin(a) === normaliseLogin(parts.author!))
   ) {
     return `author ${parts.author} is not authorised to suppress findings`;
+  }
+  // Issue #334: allowlist membership is not authority to waive one's own work.
+  // A fleet worker login sits in `allowed_authors` for PR-dedup; letting it
+  // suppress would let the worker retire findings in code it just wrote, and
+  // the #269 commit-identity bind cannot catch that because the service
+  // account is the committer.
+  if (
+    configuredFleetLogins.some((a) =>
+      normaliseLogin(a) === normaliseLogin(parts.author!)
+    )
+  ) {
+    return `author ${parts.author} is a fleet worker login — the fleet ` +
+      `cannot waive its own findings; a human must sign this suppression`;
   }
   // Issue #269: allowlist membership is not provenance. `author=` must
   // also match a verified commit identity — the blamed line, or the
