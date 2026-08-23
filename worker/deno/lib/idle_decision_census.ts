@@ -45,11 +45,25 @@
  * `planning`, `question`, `needs-human`), has **no assignees**, and is not
  * blocked by an open PR under the same milestone-aware rule the Priority 2
  * scan applies ({@link getBlockingPRForIssue}, Issue #3526 — honouring the
- * `ignore-open-prs` bypass label). That matches "an issue the scan could
+ * `ignore-open-prs` bypass label), and sits in a work stream the worker has
+ * not already occupied (Issue #3852). That matches "an issue the scan could
  * hand to a worker right now", mirroring the claimable definition in
  * `idle_detect_diagnostics.ts`. Note that neither `degraded-model` nor
  * `lang:*` is a blocking label, so an issue carrying them still counts —
  * exactly the point the diagnosis must make.
+ *
+ * Stream occupancy matters for the same reason PR blocking does. The
+ * Priority 2 scan refuses an issue whose milestone (or default-branch)
+ * stream already hosts a worker-assigned open issue (`isMilestoneOccupied`
+ * → the `milestone-occupied` skip), and the audit mirrors that gate as
+ * `stream_occupied`. The census did not, so every sibling of an in-flight
+ * claim kept counting as claimable: on 2026-08-23 `stSoftwareAU/NEAT-AI`
+ * logged `work_on=4 inversion_signal=true` cycle after cycle while the scan
+ * logged `milestone-occupied=4` and the audit logged
+ * `claimable=0 reason=stream_occupied`. The scan was right; the census
+ * filed Issue #3852 against a repo whose work was simply already being
+ * done, and suppressed the idle-task filer while it did. Issues excluded
+ * solely by occupancy are surfaced per repo as `stream_occupied=<n>`.
  *
  * PR-blocking matters because the inversion verdict suppresses the
  * idle-task filer (Issue #2813): counting PR-blocked issues as available
@@ -164,6 +178,15 @@ export interface RepoCensusEntry {
    */
   prBlocked: number;
   /**
+   * Count of priority (`top-priority` / `work-on` / `low-priority`) issues
+   * that passed the label/assignee checks but were excluded solely because
+   * their work stream already hosts a worker-assigned open issue — the
+   * scan's `milestone-occupied` skip (Issue #3852). Kept separate from
+   * `unblocked` so the deferral stays observable in the `[idle-census]`
+   * line.
+   */
+  streamOccupied: number;
+  /**
    * `true` when the repo holds ≥1 unblocked `top-priority` / `work-on` /
    * `low-priority` issue — the idle-vs-work-on inversion symptom.
    * `idle-task` is excluded by design.
@@ -226,18 +249,46 @@ function isPrBlocked(issue: CensusIssue, openPRs: OpenPR[]): boolean {
   return getBlockingPRForIssue(openPRs, issue.milestone, []) !== null;
 }
 
+/**
+ * Work streams the worker already occupies — milestones (or `""` for the
+ * default-branch stream) hosting an open issue assigned to `workerUser`.
+ *
+ * Mirrors {@link classifyIssues}' `stream_occupied` gate in
+ * `idle_detect_diagnostics.ts`, which in turn mirrors the scan's
+ * `isMilestoneOccupied`. The scan widens the set to the whole fleet
+ * (`workerUser ∪ allowedAuthors`); the census keeps the narrower
+ * worker-only set the audit uses, so the two instruments cannot disagree
+ * and a sibling host's claim never silences this host's inversion signal.
+ */
+function occupiedStreamsFor(
+  issues: CensusIssue[],
+  workerUser: string,
+): ReadonlySet<string> {
+  const lowerUser = workerUser.toLowerCase();
+  const occupied = new Set<string>();
+  for (const issue of issues) {
+    if (issue.assignees.some((a) => a.toLowerCase() === lowerUser)) {
+      occupied.add(issue.milestone);
+    }
+  }
+  return occupied;
+}
+
 /** Count unblocked issues per priority label for one repo. */
 function countUnblocked(
   issues: CensusIssue[],
   openPRs: OpenPR[],
-): { counts: UnblockedCounts; prBlocked: number } {
+  workerUser: string,
+): { counts: UnblockedCounts; prBlocked: number; streamOccupied: number } {
   const counts: UnblockedCounts = {
     topPriority: 0,
     workOn: 0,
     lowPriority: 0,
     idleTask: 0,
   };
+  const occupiedStreams = occupiedStreamsFor(issues, workerUser);
   let prBlocked = 0;
+  let streamOccupied = 0;
   for (const issue of issues) {
     // Idle-task claiming is gated by repo busyness, not by
     // getBlockingPRForIssue, so its count ignores PR blocking.
@@ -249,6 +300,13 @@ function countUnblocked(
       isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel) ||
       isUnblockedFor(issue, LABEL_DEFAULTS.lowPriorityLabel);
     if (!carriesPriorityLabel) continue;
+    // Attributed ahead of PR blocking, matching `classifyIssues`: an issue
+    // the scan already refuses for occupancy keeps that reason, so
+    // `pr_blocked` marks only issues that would otherwise be claimable now.
+    if (occupiedStreams.has(issue.milestone)) {
+      streamOccupied += 1;
+      continue;
+    }
     if (isPrBlocked(issue, openPRs)) {
       prBlocked += 1;
       continue;
@@ -263,7 +321,7 @@ function countUnblocked(
       counts.lowPriority += 1;
     }
   }
-  return { counts, prBlocked };
+  return { counts, prBlocked, streamOccupied };
 }
 
 /** Derive the availability verdict from a repo's open issues. */
@@ -305,9 +363,10 @@ export function buildIdleDecisionCensus(opts: {
 }): IdleDecisionCensus {
   const perRepo: RepoCensusEntry[] = [];
   for (const input of opts.repos) {
-    const { counts: unblocked, prBlocked } = countUnblocked(
+    const { counts: unblocked, prBlocked, streamOccupied } = countUnblocked(
       input.issues,
       input.openPRs ?? [],
+      opts.workerUser,
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,
@@ -327,6 +386,7 @@ export function buildIdleDecisionCensus(opts: {
       occupiedStreams,
       unblocked,
       prBlocked,
+      streamOccupied,
       inversionSignal,
     });
   }
@@ -381,6 +441,7 @@ export function formatIdleDecisionCensus(
         `nice=${r.nice} top_priority=${r.unblocked.topPriority} ` +
         `work_on=${r.unblocked.workOn} low_priority=${r.unblocked.lowPriority} ` +
         `idle_task=${r.unblocked.idleTask} pr_blocked=${r.prBlocked} ` +
+        `stream_occupied=${r.streamOccupied} ` +
         `inversion_signal=${r.inversionSignal}`,
     );
   }

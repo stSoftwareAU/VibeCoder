@@ -391,3 +391,146 @@ Deno.test("formatter - per-repo line carries the pr_blocked count (Issue #3526)"
   assert(line.includes("pr_blocked=1"));
   assert(line.includes("low_priority=0"));
 });
+
+// ---------------------------------------------------------------------------
+// Issue #3852: milestone-stream occupancy awareness
+// ---------------------------------------------------------------------------
+// The Priority 2 scan refuses to claim an issue whose work stream already
+// hosts a worker-assigned open issue (`isMilestoneOccupied` →
+// `milestone-occupied`), and `classifyIssues` mirrors that gate as
+// `stream_occupied`. The census did not, so a repo whose only backlog sat
+// behind an in-flight claim raised the inversion signal on every cycle:
+// stSoftwareAU/NEAT-AI logged `work_on=4 inversion_signal=true` while the
+// scan logged `milestone-occupied=4` and the audit logged
+// `claimable=0 reason=stream_occupied`.
+
+Deno.test("census - work-on issues behind an in-flight claim in the same stream are not counted (Issue #3852)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(3849, ["work-on"], ["vibe-bot"]),
+          issue(3850, ["work-on"]),
+          issue(3851, ["work-on"]),
+          issue(3852, ["low-priority"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.unblocked.lowPriority, 0);
+  assertEquals(entry.streamOccupied, 3);
+  assert(!entry.inversionSignal);
+  assert(!census.inversionDetected);
+});
+
+Deno.test("census - occupancy is per work stream, not per repo (Issue #3852)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          // Default-branch stream is occupied by an in-flight claim.
+          issue(10, ["work-on"], ["vibe-bot"]),
+          issue(11, ["work-on"]),
+          // The v2 milestone stream is free, so its work is still claimable.
+          issue(12, ["work-on"], [], "v2"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.streamOccupied, 1);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - a sibling worker's assignment does not occupy the stream (Issue #3852)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(20, ["work-on"], ["other-bot"]),
+          issue(21, ["work-on"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.streamOccupied, 0);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - stream occupancy is attributed ahead of PR blocking (Issue #3852)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(30, ["work-on"], ["vibe-bot"]),
+          issue(31, ["work-on"]),
+        ],
+        openPRs: [openPR(32, "Develop", "issue-30-fix")],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.streamOccupied, 1);
+  assertEquals(entry.prBlocked, 0);
+  assert(!entry.inversionSignal);
+});
+
+Deno.test("census - idle-task counts ignore stream occupancy (Issue #3852)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(40, ["work-on"], ["vibe-bot"]),
+          issue(41, ["idle-task"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.idleTask, 1);
+  assertEquals(entry.streamOccupied, 0);
+  assert(!entry.inversionSignal);
+});
+
+Deno.test("formatter - per-repo line carries the stream_occupied count (Issue #3852)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(50, ["work-on"], ["vibe-bot"]),
+          issue(51, ["work-on"]),
+        ],
+      }),
+    ],
+  });
+  const line = formatIdleDecisionCensus(census).find((l) =>
+    l.includes("repo=org/neat")
+  )!;
+  assert(line.includes("stream_occupied=1"));
+  assert(line.includes("work_on=0"));
+  assert(line.includes("inversion_signal=false"));
+});
