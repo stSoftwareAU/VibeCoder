@@ -73,7 +73,10 @@ async function setupHarness(opts: {
   };
 }
 
-function spawnLoop(tmpDir: string): Deno.ChildProcess {
+function spawnLoop(
+  tmpDir: string,
+  extraEnv: Record<string, string> = {},
+): Deno.ChildProcess {
   return new Deno.Command("bash", {
     args: [join(tmpDir, "loop.sh")],
     cwd: tmpDir,
@@ -81,6 +84,7 @@ function spawnLoop(tmpDir: string): Deno.ChildProcess {
       LOOP_SLEEP_SECONDS: "1",
       PATH: `${join(tmpDir, "bin")}:${Deno.env.get("PATH") ?? ""}`,
       HOME: tmpDir,
+      ...extraEnv,
     },
     stdout: "piped",
     stderr: "piped",
@@ -247,6 +251,128 @@ Deno.test({
       assertEquals(typeof count, "number");
     } finally {
       await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+// ===========================================================================
+// Issue #322 — the supervisor owns a wall-clock deadline
+// ===========================================================================
+
+Deno.test({
+  name:
+    "loop.sh #322 - a run.sh that never exits is terminated and the next cycle starts",
+  // The failure this encodes: run_core's own watchdogs fired 1350s and 2737s
+  // late because two agents had starved its event loop, and the cycle ran
+  // 2h26m past its deadline until a human killed it. A timer inside the
+  // wedged process cannot bound it; the supervisor can.
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: [
+        "#!/bin/bash",
+        'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+        // Never exits on its own — exactly the wedged-cycle shape.
+        "sleep 300",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "2",
+      VIBE_RUN_KILL_GRACE_SECONDS: "1",
+    });
+    try {
+      // Two caps plus two inter-iteration sleeps is ample for ≥2 invocations
+      // if — and only if — the deadline is enforced.
+      await new Promise((resolve) => setTimeout(resolve, 12_000));
+      const count = await readInvocationCount(harness.tmpDir);
+      assert(
+        count >= 2,
+        `run.sh should have been re-launched after the deadline; ran ${count} time(s)`,
+      );
+    } finally {
+      try {
+        child.kill("SIGKILL");
+        await child.status;
+      } catch { /* best-effort */ }
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "loop.sh #322 - a run that finishes inside the cap is not disturbed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: [
+        "#!/bin/bash",
+        'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+        // Well inside the cap, and exits cleanly.
+        "sleep 1",
+        "exit 0",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "30",
+      VIBE_RUN_KILL_GRACE_SECONDS: "5",
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 9_000));
+      const count = await readInvocationCount(harness.tmpDir);
+      assert(
+        count >= 2,
+        `expected repeated clean cycles; ran ${count} time(s)`,
+      );
+    } finally {
+      try {
+        child.kill("SIGKILL");
+        await child.status;
+      } catch { /* best-effort */ }
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #322 - VIBE_RUN_MAX_SECONDS=0 disables the cap rather than capping at zero",
+  // A misread of "0" as an immediate deadline would kill every run instantly,
+  // which is worse than the bug being fixed. The measure is whether a run
+  // *completes*, not how many start — with the cap off, a slow run must reach
+  // its own exit.
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: [
+        "#!/bin/bash",
+        'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+        "sleep 4",
+        'echo done >> "$(dirname "$0")/completed.log"',
+        "exit 0",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, { VIBE_RUN_MAX_SECONDS: "0" });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 9_000));
+      let completed = "";
+      try {
+        completed = await Deno.readTextFile(
+          join(harness.tmpDir, "completed.log"),
+        );
+      } catch { /* absent means nothing completed */ }
+      assert(
+        completed.includes("done"),
+        "with the cap disabled the 4s run must reach its own exit, not be killed",
+      );
+    } finally {
+      try {
+        child.kill("SIGKILL");
+        await child.status;
+      } catch { /* best-effort */ }
       await harness.cleanup();
     }
   },
