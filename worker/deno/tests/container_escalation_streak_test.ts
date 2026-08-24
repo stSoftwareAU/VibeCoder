@@ -591,6 +591,36 @@ Deno.test("recordContainerRestartOutcome - a streak that ends undelivered is sti
   }
 });
 
+Deno.test("recordContainerRestartOutcome - a fault that moves phase does not drop the undelivered escalation", async () => {
+  const harness = await setupHarness();
+  try {
+    // The worker_run crossing is refused by the channel and queued.
+    harness.suppressWith = ["rate_limited", "rate_limited"];
+    for (let i = 0; i < 3; i++) {
+      harness.nowSeconds += 60;
+      await harness.record(17, "container_run");
+    }
+    assertEquals(harness.attempts[0]!.notified, false);
+
+    // The fault then moves to a different phase without the host ever
+    // recovering, so the queued escalation belongs to a streak that is over.
+    // It was never delivered, and must not vanish with the phase change.
+    harness.nowSeconds += 60;
+    await harness.record(17, "runtime_detection");
+
+    const events = await harness.escalatedEvents();
+    const undeliverable = events.filter((e) =>
+      e.action === "escalation_undeliverable"
+    );
+    assertEquals(undeliverable.length, 1);
+    assertEquals(undeliverable[0]!.result, "failed");
+    assertStringIncludes(undeliverable[0]!.reason, "never delivered");
+    assertStringIncludes(undeliverable[0]!.reason, "worker_run");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Escalation body
 // ---------------------------------------------------------------------------

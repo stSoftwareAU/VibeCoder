@@ -78,7 +78,7 @@ and one hourly update.
 ```text
 deno test --allow-all tests/container_escalation_streak_test.ts \
   tests/container_restart_backoff_test.ts tests/crash_notification_test.ts
-ok | 84 passed | 0 failed (8s)
+ok | 85 passed | 0 failed (8s)
 ```
 
 `./quality.sh` passes every gate except `deno tests`, which reports **10
@@ -91,7 +91,7 @@ No test touched by this change fails.
 
 ## Test Plan
 
-New — `worker/deno/tests/container_escalation_streak_test.ts` (15 tests):
+New — `worker/deno/tests/container_escalation_streak_test.ts` (16 tests):
 
 - `reNotifyIntervalSeconds` — crossing is immediate, then hourly, then daily, and
   never below an hour for any delivered count.
@@ -106,7 +106,8 @@ New — `worker/deno/tests/container_escalation_streak_test.ts` (15 tests):
   crossing; a broken streak gets a new marker; a rate-limited escalation is
   retried and delivered with the lost attempts named in the body; an escalation
   undeliverable at the cap is recorded as `escalation_undeliverable` / `failed`;
-  a streak that ends while still undelivered is recorded too.
+  a streak that ends while still undelivered is recorded too, as is one whose
+  fault **moves to a different phase** while its escalation was still queued.
 - `buildContainerEscalationParams` — the marker identifies phase *and* streak
   start, so two streaks can never share one report.
 

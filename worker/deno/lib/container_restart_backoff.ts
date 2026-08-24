@@ -1030,10 +1030,19 @@ export async function recordContainerRestartOutcome(
       0,
   };
 
-  // Issue #343: the streak has ended (a clean run or a scheduled pause) while
-  // an escalation for it was still undelivered. Nobody was ever told about
-  // that outage — record it rather than letting it vanish with the streak.
-  if (!decision.phase && previous.escalation?.pending) {
+  // Issue #343: the streak the queued escalation belongs to is over — the host
+  // recovered, a pause was scheduled, or the fault moved to a different phase —
+  // while that escalation was still undelivered. Nobody was ever told about
+  // that outage, so record it rather than letting it vanish with the streak.
+  // `reported` means the loss already reached the health report when the
+  // attempt cap was hit; recording it again would double-count one outage.
+  const abandoned = previous.escalation?.pending &&
+      !previous.escalation.pending.reported
+    ? (!decision.phase ||
+      previous.escalation.phase !== decision.phase ||
+      previous.escalation.streakStartedAt !== decision.state.streakStartedAt)
+    : false;
+  if (abandoned && previous.escalation?.pending) {
     const lost = previous.escalation.pending;
     await emitSelfHealEvent({
       module: SELF_HEAL_MODULE,
@@ -1049,6 +1058,7 @@ export async function recordContainerRestartOutcome(
         attempts: lost.attempts,
         reason: lost.lastReason,
         previousFailures: previous.consecutiveFailures,
+        endedBy: decision.phase ? "phase_change" : "streak_end",
       },
     }, { workDir: options.workDir });
   }
