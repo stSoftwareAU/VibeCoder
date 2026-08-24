@@ -50,7 +50,11 @@ import {
   type ExistingPrDisposition,
   formatSupersededReason,
 } from "../superseding_pr.ts";
-import { supersededOutcome } from "../run_outcome.ts";
+import { claimStaleOutcome, supersededOutcome } from "../run_outcome.ts";
+import {
+  checkClaimFreshness,
+  formatStaleClaimReason,
+} from "../claim_freshness.ts";
 import { buildProgressExtension } from "../progress_extension_runtime.ts";
 import {
   hasRunwayForInfraRetry,
@@ -238,6 +242,41 @@ async function executeClaudeBody(
   const logger = deps.logger;
   state.executeStartTime = Date.now();
   state.lastKillMemoryPressure = undefined;
+
+  // The cheap half of the claim-freshness re-check (Issue #344). A cycle that
+  // spent forty minutes rate-limited holds a claim that may already be
+  // resolved; one `gh issue view` here is the difference between finding that
+  // out now and finding it out after a full agent run. Only the decisive
+  // signal is consulted before the agent runs — the issue is closed — so an
+  // in-flight PR (#174, #218 territory) still reaches the paths that know how
+  // to handle it.
+  const freshness = await checkClaimFreshness({
+    repo,
+    issueNumber,
+    runBranch: state.branchName,
+    mode: "pre-write",
+    deps: {
+      findExistingPrForIssue: deps.pr.findExistingPrForIssue,
+      runGhCommand: deps.github.runGhCommand,
+      warn: (m: string) => logger.warn(m),
+    },
+  });
+  if (freshness.kind === "stale") {
+    logger.warn(
+      `Claim on ${repo}#${issueNumber} went stale before the agent ran — ` +
+        `stopping rather than spending a run on resolved work (Issue #344)`,
+      { reason: freshness.reason, detail: freshness.detail },
+    );
+    return {
+      status: "early_exit",
+      reason: formatStaleClaimReason(freshness),
+      outcome: claimStaleOutcome({
+        phase: "execute",
+        stale: freshness,
+        branch: state.branchName,
+      }),
+    };
+  }
 
   // Validate repo state before Claude invocation (Issue #621)
   const repoValidation = await deps.git.validateRepoState(

@@ -63,7 +63,13 @@ import {
   classifyExistingPrForIssue,
   formatSupersededReason,
 } from "../superseding_pr.ts";
-import { supersededOutcome } from "../run_outcome.ts";
+import { claimStaleOutcome, supersededOutcome } from "../run_outcome.ts";
+import {
+  checkClaimFreshness,
+  type ClaimFreshness,
+  formatStaleClaimComment,
+  formatStaleClaimReason,
+} from "../claim_freshness.ts";
 import {
   clearSecurityFixGateBlock,
   recordSecurityFixGateBlock,
@@ -451,6 +457,71 @@ async function createPrViaRestFallback(
     build: formatBuildStamp(resolveWorkerBuildInfo()),
   });
   return created.value;
+}
+
+/**
+ * Stop the run because the claim went stale before the PR could be raised
+ * (Issue #344).
+ *
+ * The branch is already pushed by this point, so nothing is lost — but only
+ * if someone can find it. The comment on the issue is what makes that true,
+ * and it is best-effort: a comment that fails to post must not turn a clean
+ * abort into a failure, so it is warned about and the abort stands.
+ *
+ * Not a failure: no failure label, no `unknown` class, no run-failure issue,
+ * and no contribution to the failure streak — "the claim went stale" is the
+ * system working (Issue #342 is what happens when a normal outcome is counted
+ * as a crash).
+ */
+async function abortStaleClaim(
+  stale: Extract<ClaimFreshness, { kind: "stale" }>,
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<PhaseResult> {
+  const { repo, issueNumber } = ctx;
+  const logger = deps.logger;
+
+  logger.warn(
+    `Claim on ${repo}#${issueNumber} went stale during this run — NOT ` +
+      `opening a PR (Issue #344)`,
+    {
+      reason: stale.reason,
+      detail: stale.detail,
+      branch: state.branchName,
+      ...(stale.prUrl ? { prUrl: stale.prUrl } : {}),
+    },
+  );
+
+  try {
+    const client = deps.github.createClient(logger);
+    await client.postComment(
+      repo,
+      issueNumber,
+      formatStaleClaimComment({
+        repo,
+        branch: state.branchName,
+        stale,
+      }),
+    );
+  } catch (err) {
+    logger.warn(
+      `Could not comment the stale-claim hand-off on ${repo}#${issueNumber} ` +
+        `— the work is still on '${state.branchName}' (Issue #344): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
+  }
+
+  return {
+    status: "early_exit",
+    reason: formatStaleClaimReason(stale),
+    outcome: claimStaleOutcome({
+      phase: "completion",
+      stale,
+      branch: state.branchName,
+    }),
+  };
 }
 
 /** Single-attempt completion-phase body — see `workOnIssueCompletion`. */
@@ -977,6 +1048,30 @@ async function completionBody(
       prBody,
       deps,
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // Claim-freshness re-check (Issue #344) — the last thing before creation.
+  //
+  // The claim was legitimate when it was taken; the question here is whether
+  // it still is. On VibeCoder#333 it was not: the issue closed at 07:57:54Z
+  // and this phase opened PR #341 against it at 08:15:06Z, a CONFLICTING
+  // duplicate of work already on `main`. The lookups above answer "what PR
+  // exists"; none of them asks "is the issue still open".
+  // ---------------------------------------------------------------------
+  const freshness = await checkClaimFreshness({
+    repo,
+    issueNumber,
+    runBranch: state.branchName,
+    mode: "pre-pr",
+    deps: {
+      findExistingPrForIssue: deps.pr.findExistingPrForIssue,
+      runGhCommand: deps.github.runGhCommand,
+      warn: (m: string) => logger.warn(m),
+    },
+  });
+  if (freshness.kind === "stale") {
+    return await abortStaleClaim(freshness, ctx, state, deps);
   }
 
   // Opening a PR for this branch even though something else references the

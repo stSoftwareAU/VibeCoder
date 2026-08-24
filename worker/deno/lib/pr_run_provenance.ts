@@ -148,6 +148,22 @@ export function mergedPrCompletesThisRun(
   prHeadRef: string | null | undefined,
   runBranch: string | null | undefined,
 ): boolean {
+  return prHeadIsRunBranch(prHeadRef, runBranch);
+}
+
+/**
+ * Whether a PR was raised from the branch this run worked.
+ *
+ * The branch comparison {@link mergedPrCompletesThisRun} is built on, exposed
+ * on its own so the claim-freshness re-check (Issue #344) asks the same
+ * question of an *open* PR without inventing a second comparison. A missing
+ * head ref (the lookup failed) returns false: unproven provenance is never
+ * treated as ours.
+ */
+export function prHeadIsRunBranch(
+  prHeadRef: string | null | undefined,
+  runBranch: string | null | undefined,
+): boolean {
   const head = (prHeadRef ?? "").trim();
   const ours = (runBranch ?? "").trim();
   if (head === "" || ours === "") return false;

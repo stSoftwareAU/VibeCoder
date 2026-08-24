@@ -280,6 +280,8 @@ export function describeAttemptOutcome(
       }\`)`;
     case "superseded":
       return `superseded by #${outcome.prNumber}`;
+    case "claim_stale":
+      return `claim went stale (\`${outcome.reason}\`)`;
   }
 }
 
@@ -516,6 +518,19 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
         : "";
       return ` Superseded by ${verb} #${outcome.prNumber} — ${url}` +
         ` (this run raised no PR).${wip}`;
+    }
+    case "claim_stale": {
+      // Issue #344 — the claim was fine when it was taken and stale by the
+      // time the PR would have gone up. Name the branch: it is the only place
+      // the work now lives, and a reader must be able to find it.
+      const detail = boundOutcomeText(outcome.detail, OUTCOME_DETAIL_MAX_LENGTH);
+      const branch = outcome.branch
+        ? ` The work is on \`${boundOutcomeText(outcome.branch, 200)}\`.`
+        : "";
+      const pr = outcome.prUrl
+        ? ` See ${boundOutcomeText(outcome.prUrl, OUTCOME_DETAIL_MAX_LENGTH)}.`
+        : "";
+      return ` No PR raised — the claim went stale: ${detail}.${branch}${pr}`;
     }
     case "no_pr": {
       const display = getFailureCategoryDisplay(outcome.category);
