@@ -40,8 +40,8 @@ import {
   prHeadIsRunBranch,
 } from "./pr_run_provenance.ts";
 import {
-  classifyExistingPrForIssue,
   type ClassifyExistingPrDeps,
+  classifyExistingPrForIssue,
   type ExistingPrDisposition,
 } from "./superseding_pr.ts";
 
@@ -116,12 +116,20 @@ export function decideClaimFreshness(snapshot: ClaimSnapshot): ClaimFreshness {
   const { issueState, existingPr, runBranch } = snapshot;
 
   if (issueState === "CLOSED") {
+    // Name the PR that referenced the issue when the mode looked one up: on
+    // VibeCoder#333 that is merged PR #339, and it is the single most useful
+    // thing the hand-off comment can point a reader at.
+    const closer = existingPr && existingPr.kind !== "none" &&
+        existingPr.prNumber > 0
+      ? { prUrl: existingPr.prUrl, prNumber: existingPr.prNumber }
+      : {};
     return {
       kind: "stale",
       reason: "issue_closed",
       detail:
         "the issue closed while this run was working, so its PR would land " +
         "against work that is already resolved",
+      ...closer,
     };
   }
 
@@ -130,7 +138,8 @@ export function decideClaimFreshness(snapshot: ClaimSnapshot): ClaimFreshness {
       return {
         kind: "stale",
         reason: "work_already_merged",
-        detail: `merged PR #${existingPr.prNumber} already carries this run's ` +
+        detail:
+          `merged PR #${existingPr.prNumber} already carries this run's ` +
           `branch \`${runBranch}\`, so there is nothing left to raise`,
         prUrl: existingPr.prUrl,
         prNumber: existingPr.prNumber,
@@ -181,7 +190,12 @@ export async function checkClaimFreshness(
   const { repo, issueNumber, runBranch, mode, deps } = options;
   const warn = deps.warn ?? (() => {});
 
-  const issueState = await readIssueState(repo, issueNumber, deps.runGhCommand, warn);
+  const issueState = await readIssueState(
+    repo,
+    issueNumber,
+    deps.runGhCommand,
+    warn,
+  );
   const existingPr = mode === "pre-pr"
     ? await classifyExistingPrForIssue(repo, issueNumber, deps)
     : null;

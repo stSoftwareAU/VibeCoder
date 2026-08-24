@@ -523,7 +523,10 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
       // Issue #344 — the claim was fine when it was taken and stale by the
       // time the PR would have gone up. Name the branch: it is the only place
       // the work now lives, and a reader must be able to find it.
-      const detail = boundOutcomeText(outcome.detail, OUTCOME_DETAIL_MAX_LENGTH);
+      const detail = boundOutcomeText(
+        outcome.detail,
+        OUTCOME_DETAIL_MAX_LENGTH,
+      );
       const branch = outcome.branch
         ? ` The work is on \`${boundOutcomeText(outcome.branch, 200)}\`.`
         : "";
