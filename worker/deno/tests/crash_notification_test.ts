@@ -351,6 +351,112 @@ Deno.test("crash notification - issue comment posts crash detail on happy path",
   assertStringIncludes(body, "SIGKILL");
 });
 
+// ============================================================================
+// notifyCrashViaIssueComment — per-streak dedup marker (Issue #343)
+// ============================================================================
+
+Deno.test("crash notification - a marked report updates the existing comment", async () => {
+  const config = testConfig("/tmp");
+  const marker = "<!-- VIBE_CONTAINER_ESCALATION:worker_run:1000 -->";
+  const ghCalls: string[][] = [];
+
+  const result = await notifyCrashViaIssueComment(
+    config,
+    testParams({ repo: "org/myrepo", issueNumber: 77, dedupMarker: marker }),
+    (args) => {
+      ghCalls.push(args);
+      return Promise.resolve();
+    },
+    () =>
+      Promise.resolve(
+        JSON.stringify([
+          { id: 11, body: "unrelated chatter" },
+          { id: 22, body: `${marker}\n\nthe previous report` },
+        ]),
+      ),
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(ghCalls.length, 1);
+  const args = ghCalls[0]!;
+  // Edited in place, not filed again.
+  assertEquals(args[0], "api");
+  assertEquals(args[1], "--method");
+  assertEquals(args[2], "PATCH");
+  assertEquals(args[3], "repos/org/myrepo/issues/comments/22");
+  // The updated body carries the marker so the next update finds it too.
+  assertStringIncludes(args.at(-1)!, marker);
+});
+
+Deno.test("crash notification - an unmatched marker posts a new comment", async () => {
+  const config = testConfig("/tmp");
+  const marker = "<!-- VIBE_CONTAINER_ESCALATION:worker_run:2000 -->";
+  const ghCalls: string[][] = [];
+
+  await notifyCrashViaIssueComment(
+    config,
+    testParams({ repo: "org/myrepo", issueNumber: 77, dedupMarker: marker }),
+    (args) => {
+      ghCalls.push(args);
+      return Promise.resolve();
+    },
+    () => Promise.resolve(JSON.stringify([{ id: 11, body: "unrelated" }])),
+  );
+
+  assertEquals(ghCalls.length, 1);
+  assertEquals(ghCalls[0]![0], "issue");
+  assertEquals(ghCalls[0]![1], "comment");
+  assertStringIncludes(ghCalls[0]!.at(-1)!, marker);
+});
+
+Deno.test("crash notification - a failed dedup lookup still delivers the report", async () => {
+  const config = testConfig("/tmp");
+  const ghCalls: string[][] = [];
+
+  // A lookup we could not perform must never swallow the escalation — a
+  // duplicate report is recoverable, a lost one is not.
+  await notifyCrashViaIssueComment(
+    config,
+    testParams({
+      repo: "org/myrepo",
+      issueNumber: 77,
+      dedupMarker: "<!-- VIBE_CONTAINER_ESCALATION:worker_run:3000 -->",
+    }),
+    (args) => {
+      ghCalls.push(args);
+      return Promise.resolve();
+    },
+    () => Promise.reject(new Error("gh api exploded")),
+  );
+
+  assertEquals(ghCalls.length, 1);
+  assertEquals(ghCalls[0]![0], "issue");
+  assertEquals(ghCalls[0]![1], "comment");
+});
+
+Deno.test("crash notification - no marker means no lookup and no change in behaviour", async () => {
+  const config = testConfig("/tmp");
+  const ghCalls: string[][] = [];
+  let lookups = 0;
+
+  await notifyCrashViaIssueComment(
+    config,
+    testParams({ repo: "org/myrepo", issueNumber: 77 }),
+    (args) => {
+      ghCalls.push(args);
+      return Promise.resolve();
+    },
+    () => {
+      lookups++;
+      return Promise.resolve("[]");
+    },
+  );
+
+  assertEquals(lookups, 0);
+  assertEquals(ghCalls.length, 1);
+  assertEquals(ghCalls[0]![0], "issue");
+});
+
 Deno.test("crash notification - issue comment swallows gh runner failure", async () => {
   const config = testConfig("/tmp");
   // A throwing runner must never propagate — cleanup must not be blocked.

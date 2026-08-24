@@ -361,12 +361,16 @@ Deno.test("recordContainerRestartOutcome - escalation is rate-limited by the cra
   try {
     // No `send` override: the real crash-notification channel runs with an
     // empty repo (no GitHub call, no webhook configured), so only its
-    // cooldown state is exercised.
+    // cooldown state is exercised. The cooldown is set beyond the first
+    // re-notify interval so a due re-notification still meets a closed
+    // channel.
+    let nowSeconds = 1_700_000_000;
     const options = {
       workDir: harness.workDir,
       phaseMarker: "container_run",
       config: FAST_CONFIG,
-      crashConfig: harness.crashConfig,
+      crashConfig: { ...harness.crashConfig, cooldownSeconds: 7200 },
+      now: () => nowSeconds,
     };
 
     await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
@@ -377,12 +381,27 @@ Deno.test("recordContainerRestartOutcome - escalation is rate-limited by the cra
     });
     assertEquals(atThreshold.escalated, true);
 
+    // Issue #343 changed what the *next* failure means. It used to re-enter
+    // the channel and be refused by the cooldown; now the streak has already
+    // been reported, so nothing is attempted at all.
     const afterThreshold = await recordContainerRestartOutcome({
       ...options,
       exitStatus: 17,
     });
     assertEquals(afterThreshold.escalated, false);
-    assertEquals(afterThreshold.escalationReason, "rate_limited");
+    assertEquals(afterThreshold.escalationReason, "suppressed_same_streak");
+
+    // Once the re-notification falls due, the channel is entered again — and
+    // its cooldown is what refuses this one.
+    nowSeconds += 3600;
+    const reNotify = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+    assertEquals(reNotify.escalated, false);
+    assertEquals(reNotify.escalationReason, "rate_limited");
+    // Refused is not dropped: it is queued for the next cycle (Issue #343).
+    assertEquals(reNotify.escalationPendingAttempts, 1);
 
     // The suppressed escalation is still visible to operators.
     const summary = await summariseSelfHealEvents({ workDir: harness.workDir });
