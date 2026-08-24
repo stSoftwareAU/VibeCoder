@@ -594,7 +594,7 @@ flowchart LR
     style A fill:#c9184a,stroke:#800f2f,color:#fff
 ```
 
-## Standing totals at cycle start (Issue #244)
+## Standing totals at cycle start and end of run (Issues #244, #345)
 
 Those lines say what was *removed*. Every disk problem on GRQ-23 was
 invisible until the host hit 95 % because nothing said what the volume still
@@ -636,15 +636,59 @@ caches 0.6 GB · other 0.2 GB
 Without a monitored list the totals are **refused**, not guessed — every
 clone would otherwise read as side/data — and the line says so.
 
+### A blind probe is `unknown`, never `0.0 GB` (Issue #345)
+
+GRQ-23 crashed out of disk on 2026-08-21 with both of its disk signals blind
+and both advertised as `available`. The cause was one word in each probe:
+`duBytes` and `probeDiskReading` asked `runWithTimeout` for `quiet: true`,
+which sets `stdout: "null"` and returns an empty string — and stdout *is* the
+reading. `df` therefore answered "unreadable" (the known #226 symptom) while
+`du` answered a confident `0` for every directory, so the standing totals
+read `total 0.0 GB` beside a count of twelve clones and five `target/` dirs,
+every cycle, for days. Nothing echoes stdout either way, so `quiet` bought
+nothing and cost both signals.
+
+Four boundaries hold now:
+
+- **Zero is not a measurement.** Empty or non-numeric `du` output is
+  `unmeasured` (null), never 0 bytes. A walk that measured N > 0 directories
+  and still totals 0 — or that could not read the work root, or ran out of
+  budget before measuring anything — is reported as `Work volume: unknown —
+  <why>`, exactly as the `df` path already reports itself. A **genuinely
+  empty** work root still reads as a clean `0.0 GB`: that is a measurement,
+  and it is right.
+- **A probe that cannot produce a value is `degraded`.** `Feature host-disk`
+  is `available` only on an `ok` reading (an `unknown` one is degraded), and
+  `Feature work-volume` only when the volume has surfaced no I/O fault
+  **and** its standing totals are measurable.
+- **Both signals blind marks the host unhealthy.** One blind signal is named
+  on the fleet-health payload; losing both is a health condition in its own
+  right — the iteration logs `[DISK_TELEMETRY_BLIND]` once, the host reports
+  unhealthy, and the payload says *which* host lost its disk telemetry. It
+  gates nothing: a monitoring fault must not stop the fleet working.
+- **Measure where the bytes are.** The cycle-start walk lands ~2 minutes in,
+  before the clones a cycle creates exist, so it is sampled **again at end of
+  run** — when the volume is at its fullest — as `Work volume (end of run):`.
+  The walk is cadence-bounded (one per 5 minutes) and the end-of-run sample
+  forces a fresh reading, so the two lines are never the same measurement
+  printed twice.
+
 ```mermaid
 flowchart LR
     C["cycle start<br/>(Concurrency: line)"] --> W["depth-1 du walk<br/>(120 s budget)"]
+    E["end of run<br/>(volume at its fullest)"] --> W
     P["work-volume-prune"] --> W
     W --> B{"monitored list<br/>configured?"}
     B -->|no| R["refused — totals skipped"]
-    B -->|yes| T["Work volume: total … —<br/>monitored · side/data · artefacts ·<br/>caches · other"]
+    B -->|yes| M{"a measurement?<br/>(Issue #345)"}
+    M -->|"all-zero · unreadable root ·<br/>budget measured nothing"| U["Work volume: unknown — why<br/>Feature work-volume: degraded"]
+    M -->|yes| T["Work volume: total … —<br/>monitored · side/data · artefacts ·<br/>caches · other"]
+    U --> H{"host-disk<br/>also blind?"}
+    H -->|yes| X["[DISK_TELEMETRY_BLIND]<br/>host reported unhealthy"]
     style T fill:#2d6a4f,stroke:#1b4332,color:#fff
     style R fill:#c9184a,stroke:#800f2f,color:#fff
+    style U fill:#e9c46a,stroke:#b07d1a,color:#000
+    style X fill:#c9184a,stroke:#800f2f,color:#fff
 ```
 
 ## The launcher — `run.sh` is the containment boundary

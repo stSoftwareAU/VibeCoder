@@ -733,14 +733,31 @@ export interface RunCoreDeps {
    */
   checkWorkVolumeFault?: () => { faulted: boolean; detail: string };
   /**
-   * Standing work-volume totals by category (Issue #244), logged once at
-   * cycle start beside the `Concurrency:` line. Returns the formatted line
-   * — monitored repos, side/data clones, build artefacts, caches, other,
-   * with the top offenders named — so growth is visible in the worker log
-   * long before the host-disk gate (Issue #226) trips. Optional; production
-   * wires it to a depth-1 `du` walk of the work root.
+   * Standing work-volume totals by category (Issue #244), logged at cycle
+   * start beside the `Concurrency:` line and again at end of run. Returns
+   * the formatted line — monitored repos, side/data clones, build artefacts,
+   * caches, other, with the top offenders named — so growth is visible in
+   * the worker log long before the host-disk gate (Issue #226) trips.
+   *
+   * Issue #345: `label` names the sample and `force` skips the walk's
+   * cadence, so the end-of-run line is a fresh reading of the volume at its
+   * fullest rather than a replay of the cycle-start one. Optional;
+   * production wires it to a depth-1 `du` walk of the work root.
    */
-  reportWorkVolumeUsage?: () => Promise<string>;
+  reportWorkVolumeUsage?: (
+    options?: { label?: string; force?: boolean },
+  ) => Promise<string>;
+  /**
+   * Whether this host can still see its own disk (Issue #345).
+   *
+   * `blind` is true only when **both** disk signals have failed — the
+   * host-disk reading (Issue #226) and the work-volume totals (Issue #244).
+   * A host with neither signal cannot warn anybody before it fills up, which
+   * is how GRQ-23 crashed out of disk with every line reading `available`,
+   * so it is a health condition in its own right: the iteration marks the
+   * host unhealthy and the fleet payload names it. Optional.
+   */
+  checkDiskTelemetry?: () => { blind: boolean; detail: string };
 
   // Misc
   touchPidFile: () => Promise<void>;
@@ -2963,6 +2980,31 @@ async function runSlotIssue(
 // ---------------------------------------------------------------------------
 
 /**
+ * Log the work volume's standing totals, if the hook is wired (Issue #244).
+ *
+ * Best-effort: a failed walk is reported loud and never blocks the cycle.
+ * Sampled twice per run (Issue #345) — at cycle start, and again at end of
+ * run, which is both when the volume is at its fullest and after the clones
+ * the cycle-start walk may have been too early to see.
+ */
+async function logWorkVolumeUsage(
+  deps: RunCoreDeps,
+  options: { label?: string; force?: boolean } = {},
+): Promise<void> {
+  if (!deps.reportWorkVolumeUsage) return;
+  try {
+    const line = await deps.reportWorkVolumeUsage(options);
+    if (line) deps.log(line);
+  } catch (err) {
+    deps.logError(
+      `Work volume: standing totals unavailable (continuing): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
  * Run the main worker event loop.
  *
  * This is the top-level orchestration: PID locking, initialisation, the
@@ -3007,20 +3049,8 @@ export async function runCoreLoop(
 
   // What the work volume is holding right now (Issue #244) — the standing
   // totals beside the concurrency line, so growth is visible before the
-  // host-disk gate stops the cycle claiming. Best-effort: a failed walk is
-  // reported loud and never blocks the cycle.
-  if (deps.reportWorkVolumeUsage) {
-    try {
-      const line = await deps.reportWorkVolumeUsage();
-      if (line) deps.log(line);
-    } catch (err) {
-      deps.logError(
-        `Work volume: standing totals unavailable (continuing): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  }
+  // host-disk gate stops the cycle claiming.
+  await logWorkVolumeUsage(deps);
 
   let plannedShutdown = false;
   let exitedOnFailures = false;
@@ -3031,6 +3061,8 @@ export async function runCoreLoop(
   let hostDiskLowReported = false;
   /** Set once the work-volume fault has been reported this cycle (Issue #229). */
   let workVolumeFaultReported = false;
+  /** Set once blind disk telemetry has been reported (Issue #345). */
+  let diskTelemetryBlindReported = false;
   // Issue #2602: tracks whether the latest iteration's health checks passed.
   // Starts false so a run that never reaches a healthy iteration (e.g. Claude
   // 401 every cycle) does not report healthy at end of run.
@@ -3487,6 +3519,31 @@ export async function runCoreLoop(
             );
           } else {
             lastHealthCheckPassed = true;
+          }
+
+          // Issue #345: fourth health condition — can this host still see its
+          // own disk? Both disk signals blind (host-disk unreadable *and* the
+          // work-volume totals unmeasurable) is exactly the state GRQ-23 was
+          // in for days before it crashed out of disk, with every feature line
+          // still reading `available`. Visibility only, like the repo-access
+          // check above: the host is marked unhealthy and the fleet payload
+          // names it, but nothing is gated — a monitoring fault must not stop
+          // the fleet working. Recovery is automatic on the next readable
+          // probe.
+          if (deps.checkDiskTelemetry) {
+            const telemetry = deps.checkDiskTelemetry();
+            if (telemetry.blind) {
+              lastHealthCheckPassed = false;
+              if (!diskTelemetryBlindReported) {
+                diskTelemetryBlindReported = true;
+                deps.logError(
+                  `[DISK_TELEMETRY_BLIND] ${telemetry.detail} — this host cannot ` +
+                    `see its own disk filling; marking it unhealthy (Issue #345).`,
+                );
+              }
+            } else {
+              diskTelemetryBlindReported = false;
+            }
           }
 
           // Issue #3230: populate the Fable-availability cache alongside the
@@ -4033,6 +4090,17 @@ export async function runCoreLoop(
     if (!exitedOnFailures) {
       plannedShutdown = true;
     }
+
+    // Measure where the bytes actually are (Issue #345): the cycle-start
+    // walk lands ~2 minutes in, before the clones a cycle creates exist, so
+    // it can describe an empty work root. End of run is when the volume is
+    // at its fullest — the sample that would have warned before GRQ-23
+    // filled up. `force` skips the walk's cadence so this is a fresh
+    // reading, not a replay of the cycle-start one.
+    await logWorkVolumeUsage(deps, {
+      label: "Work volume (end of run)",
+      force: true,
+    });
 
     // Write fault tolerance summary (Issue #1173)
     const counterSummary = formatCounterSummary();
