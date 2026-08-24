@@ -1385,12 +1385,18 @@ claim at two points, with one decision function:
 - **`pre-pr`** — immediately before `gh pr create`. The issue state, plus the PR
   that references the issue.
 
-The rules, most decisive first: **the issue closed** during the cycle; **a
-merged PR already carries this run's branch** (decided by `pr_run_provenance.ts`
+Two rules, most decisive first: **the issue closed** during the cycle; and **a
+merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
 so there is no second notion of "already done" — a merged PR on a _different_
 branch deliberately does **not** make the claim stale, because #174's rule is
-that it does not complete this run); **an open PR from another branch**, which a
-competing PR would only add review noise to.
+that it does not complete this run.
+
+The third hazard #344 names, "do not open a competing PR", is deliberately
+**not** a rule here: `decideCompletionPr` already recovers an open PR that
+references the issue rather than creating a second one. Repeating it as a
+stale-claim abort would be both the duplicated notion this module avoids and the
+harsher of the two, because `superseding_pr.ts` fails safe to "open" when a PR's
+state cannot be read — an unreadable `gh pr view` would abandon a finished run.
 
 A stale claim is a clean stop, never a failure: the branch is already pushed, so
 the completion phase comments the branch link on the issue and returns a
@@ -1406,7 +1412,7 @@ flowchart TD
     C["claim issue"] --> W{"pre-write:<br/>issue still open?"}
     W -- no --> S1["claim_stale:issue_closed<br/>no agent run spent"]
     W -- "yes / unreadable" --> A["agent run → quality gate → push branch"]
-    A --> P{"pre-pr:<br/>open? merged? competing PR?"}
+    A --> P{"pre-pr:<br/>issue open? our branch already merged?"}
     P -- stale --> S2["comment the branch link<br/>claim_stale outcome, no PR"]
     P -- fresh --> PR["gh pr create"]
     style S1 fill:#e9c46a,stroke:#b08968,color:#000
