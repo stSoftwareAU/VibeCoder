@@ -134,36 +134,20 @@ Deno.test("claim freshness #344 - a merged PR with an unknown head is not treate
   assertEquals(verdict.kind, "fresh");
 });
 
-Deno.test("claim freshness #344 - an open PR from another branch stops a competing PR", () => {
-  const verdict = decideClaimFreshness({
-    issueState: "OPEN",
-    existingPr: {
-      kind: "open",
-      prUrl: PR_URL,
-      prNumber: 341,
-      headRefName: OTHER_BRANCH,
-    },
-    runBranch: BRANCH,
-  });
+Deno.test("claim freshness #344 - an open PR for the issue is left to decideCompletionPr", () => {
+  for (const headRefName of [BRANCH, OTHER_BRANCH, undefined]) {
+    const verdict = decideClaimFreshness({
+      issueState: "OPEN",
+      existingPr: { kind: "open", prUrl: PR_URL, prNumber: 341, headRefName },
+      runBranch: BRANCH,
+    });
 
-  assert(verdict.kind === "stale");
-  assertEquals(verdict.reason, "competing_open_pr");
-  assertEquals(verdict.prNumber, 341);
-});
-
-Deno.test("claim freshness #344 - an open PR on our OWN branch is not a competitor", () => {
-  const verdict = decideClaimFreshness({
-    issueState: "OPEN",
-    existingPr: {
-      kind: "open",
-      prUrl: PR_URL,
-      prNumber: 341,
-      headRefName: BRANCH,
-    },
-    runBranch: BRANCH,
-  });
-
-  assertEquals(verdict.kind, "fresh");
+    // Not a stale-claim rule: `decideCompletionPr` already recovers an open
+    // PR that references the issue rather than creating a competing one, and
+    // `superseding_pr.ts` reports an *unreadable* PR state as "open" — so
+    // aborting here would abandon a finished run on a `gh` hiccup.
+    assertEquals(verdict.kind, "fresh", `head '${headRefName}' must be fresh`);
+  }
 });
 
 Deno.test("claim freshness #344 - an unreadable issue state fails safe to fresh", () => {

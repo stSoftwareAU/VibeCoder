@@ -28,6 +28,15 @@
  * complete this run — #174 exists precisely because treating it as completion
  * discarded three unpublished commits on VibeCoder#42.
  *
+ * **An open PR for the issue is deliberately not a rule here.** The third
+ * hazard #344 names — "do not open a competing PR" — is already answered by
+ * `decideCompletionPr`, which *recovers* an open PR that references the issue
+ * instead of creating a second one. Duplicating that as a stale-claim abort
+ * would be the second notion of "already done" this module exists to avoid,
+ * and it would be the harsher of the two: `superseding_pr.ts` fails safe to
+ * "open" when a PR's state cannot be read, so an unreadable `gh pr view` would
+ * abandon a finished run that today recovers cleanly.
+ *
  * Every lookup failure fails safe to `fresh`. This guard refuses a PR for
  * finished, pushed, quality-gated work, so a `gh` hiccup must never be the
  * thing that withholds it — but the reason is always logged, never swallowed.
@@ -35,10 +44,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import {
-  mergedPrCompletesThisRun,
-  prHeadIsRunBranch,
-} from "./pr_run_provenance.ts";
+import { mergedPrCompletesThisRun } from "./pr_run_provenance.ts";
 import {
   type ClassifyExistingPrDeps,
   classifyExistingPrForIssue,
@@ -50,9 +56,7 @@ export type ClaimStaleReason =
   /** The issue closed during the cycle. */
   | "issue_closed"
   /** A merged PR already carries this run's branch — nothing left to raise. */
-  | "work_already_merged"
-  /** Another PR for this issue is open — do not raise a competing one. */
-  | "competing_open_pr";
+  | "work_already_merged";
 
 /** A claim that has gone stale, with what a human needs to see. */
 export interface StaleClaim {
@@ -103,11 +107,8 @@ export interface ClaimSnapshot {
  *     empty or conflicting. A merged PR on a *different* branch is deliberately
  *     NOT stale: #174's rule is that it does not complete this run, and the
  *     branch's commits still deserve their PR.
- *  3. **An open PR for this issue on another branch.** Someone else's work is
- *     in flight; a competing PR only creates review noise. Author-agnostic on
- *     purpose — a duplicate from this worker's own earlier branch is no more
- *     welcome than a human's.
- *  4. Otherwise the claim is fresh.
+ *  3. Otherwise the claim is fresh — including when an open PR references the
+ *     issue, which `decideCompletionPr` recovers rather than competing with.
  *
  * An unreadable issue state (`null`) is fresh: it means the lookup failed, and
  * withholding a finished PR on a failed lookup is the worse error.
@@ -148,20 +149,6 @@ export function decideClaimFreshness(snapshot: ClaimSnapshot): ClaimFreshness {
     // Issue #174: someone else's merged PR does not complete this run — the
     // commits on this branch are still unpublished and still want a PR.
     return { kind: "fresh" };
-  }
-
-  if (
-    existingPr?.kind === "open" &&
-    !prHeadIsRunBranch(existingPr.headRefName, runBranch)
-  ) {
-    return {
-      kind: "stale",
-      reason: "competing_open_pr",
-      detail: `PR #${existingPr.prNumber} is already open against this issue ` +
-        `from a different branch, so this run did not raise a competing one`,
-      prUrl: existingPr.prUrl,
-      prNumber: existingPr.prNumber,
-    };
   }
 
   return { kind: "fresh" };

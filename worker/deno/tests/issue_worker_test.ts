@@ -2996,8 +2996,11 @@ Deno.test({
     const deps = createMockDeps({
       github: {
         createClient: () => makeStubGhClient(calls),
-        runGhCommand: () => {
-          prCreated = true;
+        // Only a real creation counts (Issue #344): read-only `gh` calls —
+        // the pre-write claim-freshness `gh issue view` among them — are not
+        // PR creations, and the assertion below is about raising a PR.
+        runGhCommand: (args: string[]) => {
+          if (args[0] === "pr" && args[1] === "create") prCreated = true;
           return Promise.resolve("https://github.com/org/repo/pull/1");
         },
       },

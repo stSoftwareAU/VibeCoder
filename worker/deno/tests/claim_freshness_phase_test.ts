@@ -113,7 +113,12 @@ interface CompletionRun {
  * of `main`, with the issue in the given state.
  */
 async function runCompletion(
-  options: { issueState: string; commentThrows?: boolean },
+  options: {
+    issueState: string;
+    commentThrows?: boolean;
+    /** An open PR from another author that already references the issue. */
+    openPrForIssue?: string;
+  },
 ): Promise<CompletionRun> {
   const repoPath = await Deno.makeTempDir();
   await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
@@ -172,14 +177,15 @@ async function runCompletion(
         })) as never,
     },
     pr: {
-      // No PR references the issue by the time completion runs — the #333
-      // shape, where the closing PR was raised from a different branch and
-      // the issue-number linker no longer surfaces it.
+      // By default no PR references the issue by the time completion runs —
+      // the #333 shape, where the closing PR was raised from a different
+      // branch and the issue-number linker no longer surfaces it.
       findExistingPrForIssue: (() =>
-        Promise.resolve({
-          ok: false,
-          error: new Error("No PR found"),
-        })) as never,
+        Promise.resolve(
+          options.openPrForIssue
+            ? { ok: true, value: options.openPrForIssue }
+            : { ok: false, error: new Error("No PR found") },
+        )) as never,
       findExistingPrForBranch: (() =>
         Promise.resolve({
           ok: false,
@@ -242,6 +248,23 @@ Deno.test("completion #344 - an issue still open raises its PR exactly as before
     `an open issue must still get its PR: ${JSON.stringify(run.ghCalls)}`,
   );
   assertEquals(run.comments.length, 0);
+});
+
+Deno.test("completion #344 - another author's open PR is recovered, never competed with", async () => {
+  const OTHER_PR = "https://github.com/stSoftwareAU/VibeCoder/pull/347";
+  const run = await runCompletion({
+    issueState: "OPEN",
+    openPrForIssue: OTHER_PR,
+  });
+
+  // #344's third hazard — "do not open a competing PR" — is answered by
+  // `decideCompletionPr`, not by a second stale-claim rule: the open PR is
+  // recovered and no `pr create` is issued.
+  assertEquals(run.status, "continue");
+  assert(
+    !createdAPr(run.ghCalls),
+    `no competing PR may be raised: ${JSON.stringify(run.ghCalls)}`,
+  );
 });
 
 Deno.test("completion #344 - a hand-off comment that fails to post does not turn the abort into a failure", async () => {
