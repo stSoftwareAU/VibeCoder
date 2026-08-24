@@ -20,6 +20,7 @@ import {
   detectFailureCategory,
   type FailureCategory,
 } from "./failure_diagnosis.ts";
+import type { ClaimStaleReason, StaleClaim } from "./claim_freshness.ts";
 
 /**
  * Short facts a run wants stated on the release comment alongside whatever it
@@ -63,6 +64,27 @@ export type RunOutcome =
       prState: "MERGED" | "CLOSED";
       /** WIP this run preserved on its branch before stopping, if any. */
       wipNote?: string;
+    }
+    /**
+     * The claim was still legitimate when it was taken, but the world moved
+     * before the PR went up (Issue #344) — the issue closed mid-cycle, or a
+     * PR overtook this run. The run stopped cleanly rather than opening a PR
+     * against resolved work, so it is not a failure and must not feed the
+     * failure streak.
+     */
+    | {
+      kind: "claim_stale";
+      /** Phase that found the claim stale. */
+      phase: string;
+      /** Which freshness rule fired. */
+      reason: ClaimStaleReason;
+      /** One sentence naming what changed. */
+      detail: string;
+      /** Branch this run's work is on, when it pushed one. */
+      branch?: string;
+      /** The PR that overtook this run, when one did. */
+      prUrl?: string;
+      prNumber?: number;
     }
   )
   & RunOutcomeNotes;
@@ -151,6 +173,8 @@ export function describeRunOutcome(outcome: RunOutcome | undefined): string {
       return `no_pr_expected:${outcome.phase}`;
     case "superseded":
       return `superseded:pr#${outcome.prNumber}`;
+    case "claim_stale":
+      return `claim_stale:${outcome.reason}`;
   }
 }
 
@@ -172,6 +196,30 @@ export function supersededOutcome(options: {
     prNumber: options.prNumber,
     prState: options.prState,
     ...(options.wipNote ? { wipNote: options.wipNote } : {}),
+  };
+}
+
+/**
+ * Outcome for a run that stopped because its claim went stale (Issue #344) —
+ * the issue closed mid-cycle, or a PR overtook the run. Like
+ * {@link supersededOutcome} this is the system working: no category, no
+ * `unknown` class, nothing filed, and no contribution to the failure streak.
+ */
+export function claimStaleOutcome(options: {
+  phase: string;
+  stale: StaleClaim;
+  /** Branch the work is on, when the run pushed one. */
+  branch?: string;
+}): RunOutcome {
+  const { phase, stale, branch } = options;
+  return {
+    kind: "claim_stale",
+    phase,
+    reason: stale.reason,
+    detail: stale.detail,
+    ...(branch ? { branch } : {}),
+    ...(stale.prUrl ? { prUrl: stale.prUrl } : {}),
+    ...(stale.prNumber ? { prNumber: stale.prNumber } : {}),
   };
 }
 

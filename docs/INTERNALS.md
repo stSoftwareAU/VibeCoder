@@ -1373,6 +1373,62 @@ creation:
   PR body lacks a closing keyword, preventing issues from staying open after
   merge.
 
+### 🕰️ Claim-freshness re-check (`claim_freshness.ts`)
+
+A claim is legitimate when it is taken and can be worthless by the time the run
+ends. The worker holds one claim across a whole cycle — on VibeCoder#333 across
+a rate-limit pause of nearly an hour — and nothing re-checked the world before
+the PR went up: #333 closed at 07:57:54Z when PR #339 merged, and the worker
+opened PR #341 against it at 08:15:06Z, a `CONFLICTING`/`DIRTY` duplicate of
+work already on `main`. The trigger is not exotic — any issue worked
+concurrently by a human, a sibling host, or a second slot produces it, and it is
+_more_ likely when cycles are long, which is exactly when the host is degraded.
+
+[claim_freshness.ts](../worker/deno/lib/claim_freshness.ts) re-verifies the
+claim at two points, with one decision function:
+
+- **`pre-write`** — start of the execute phase. One `gh issue view`, before an
+  agent run is spent on work that may already be merged. Only the decisive
+  signal (the issue closed) stops the run here, so an in-flight PR still reaches
+  the #174/#218 paths that know how to handle it.
+- **`pre-pr`** — immediately before `gh pr create`. The issue state, plus the PR
+  that references the issue.
+
+Two rules, most decisive first: **the issue closed** during the cycle; and **a
+merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
+so there is no second notion of "already done" — a merged PR on a _different_
+branch deliberately does **not** make the claim stale, because #174's rule is
+that it does not complete this run.
+
+The third hazard #344 names, "do not open a competing PR", is deliberately
+**not** a rule here: `decideCompletionPr` already recovers an open PR that
+references the issue rather than creating a second one. Repeating it as a
+stale-claim abort would be both the duplicated notion this module avoids and the
+harsher of the two, because `superseding_pr.ts` fails safe to "open" when a PR's
+state cannot be read — an unreadable `gh pr view` would abandon a finished run.
+
+A stale claim is a clean stop, never a failure: the branch is already pushed, so
+the completion phase comments the branch link on the issue and returns a
+`claim_stale` [`RunOutcome`](../worker/deno/lib/run_outcome.ts) — no failure
+label, no `unknown` class, no run-failure issue, and no contribution to the
+failure streak (Issue #342 is what happens when a normal outcome is counted as a
+crash). Every lookup failure fails safe to "fresh" and is warned about: this
+guard withholds a PR for finished, pushed, quality-gated work, so a `gh` hiccup
+must never be the thing that withholds it.
+
+```mermaid
+flowchart TD
+    C["claim issue"] --> W{"pre-write:<br/>issue still open?"}
+    W -- no --> S1["claim_stale:issue_closed<br/>no agent run spent"]
+    W -- "yes / unreadable" --> A["agent run → quality gate → push branch"]
+    A --> P{"pre-pr:<br/>issue open? our branch already merged?"}
+    P -- stale --> S2["comment the branch link<br/>claim_stale outcome, no PR"]
+    P -- fresh --> PR["gh pr create"]
+    style S1 fill:#e9c46a,stroke:#b08968,color:#000
+    style S2 fill:#e9c46a,stroke:#b08968,color:#000
+    style PR fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### ⚠️ Failure handling
 
 PR comment processing uses a two-attempt system:
