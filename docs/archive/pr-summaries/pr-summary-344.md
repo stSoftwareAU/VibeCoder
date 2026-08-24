@@ -76,30 +76,29 @@ FAILURES
 completion #344 - an issue closed mid-cycle stops the PR being raised
 completion #344 - a hand-off comment that fails to post does not turn the abort into a failure
 execute #344 - a claim whose issue closed during the cycle never spends an agent run
-FAILED | 2 passed | 3 failed
+FAILED | 3 passed | 3 failed
 ```
 
 With the guard in place:
 
 ```text
-ok | 22 passed | 0 failed   tests/claim_freshness_test.ts
+ok | 21 passed | 0 failed   tests/claim_freshness_test.ts
 ok |  6 passed | 0 failed   tests/claim_freshness_phase_test.ts
 ok | 134 passed | 0 failed  (with tests/issue_worker_test.ts)
 ```
 
 `./quality.sh` reports every check `PASSED` except `deno tests`, which carries a
-**pre-existing** 34-failure baseline in this container. That baseline was
-measured on `main` in a clean worktree before any change here (34 failed) and is
-unchanged on this branch (34 failed); the failures are environment- and
-timing-dependent families — `setup_workdir_reminder`, `claude_runner_*`,
-`fleet_health`, `run_sh_launcher` — with zero failures in any file this change
-touches:
+**pre-existing** 10-failure baseline in this container:
 
 ```text
-$ ./quality.sh | sed -n '/^ FAILURES/,/^FAILED |/p' \
-    | grep -cE 'claim_freshness|issue_worker_test|completion_phase|execute_phase|run_outcome|heartbeat_storage|pr_run_provenance'
-0
+FAILED | 15807 passed | 10 failed | 34 ignored (6m27s)
 ```
+
+The same ten failures reproduce on `origin/main` in a clean worktree with none
+of this change present (`FAILED | 63 passed | 10 failed`), so the baseline is
+unchanged by this branch. They are environment-dependent host-filesystem tests —
+`setup_workdir_reminder` (7), `fleet_health` (1), `host_workdir_guard` (1),
+`optional_feature_env` (1) — and no file this change touches has a failing test.
 
 ### Security self-check
 
@@ -119,7 +118,7 @@ $ ./quality.sh | sed -n '/^ FAILURES/,/^FAILED |/p' \
 
 ## Test Plan
 
-`worker/deno/tests/claim_freshness_test.ts` — 22 tests over the decision rules,
+`worker/deno/tests/claim_freshness_test.ts` — 21 tests over the decision rules,
 the lookups and the outcome:
 
 - an issue closed mid-cycle is stale; the closing PR is named on the verdict
