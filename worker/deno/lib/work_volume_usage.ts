@@ -312,6 +312,37 @@ export async function scanWorkVolumeUsage(
   return usage;
 }
 
+/**
+ * Why a reading cannot be published as a measurement, or null when it can
+ * (Issue #345).
+ *
+ * A probe that counted directories and then sized every one of them at zero
+ * has not measured an empty volume — it has failed to measure anything. The
+ * GRQ-23 host logged `total 0.0 GB` beside a count of twelve clones and five
+ * `target/` dirs for days before it crashed out of disk: the number read as
+ * "plenty of room" precisely because it was blind. Say `unknown` instead,
+ * exactly as the `df` path (Issue #226) already does.
+ *
+ * A genuinely empty work root — nothing measured, nothing counted — is still
+ * a clean zero: it is a measurement, and it is right.
+ */
+export function workVolumeUnknownReason(usage: WorkVolumeUsage): string | null {
+  if (usage.errors.length > 0) {
+    return "the work root could not be read";
+  }
+  if (usage.measured === 0 && usage.truncated) {
+    return `the ${
+      Math.round(usage.budgetMs / 1000)
+    }s budget ran out before any directory was measured (${usage.skipped} skipped)`;
+  }
+  if (usage.measured > 0 && usage.totalBytes === 0) {
+    return `${usage.measured} director${
+      usage.measured === 1 ? "y" : "ies"
+    } measured and every bucket read 0 bytes — the probe is blind, not the volume empty`;
+  }
+  return null;
+}
+
 /** Bare GB number for an inline `<name> <size>` pair. */
 function gbNumber(bytes: number): string {
   return (bytes / GIB).toFixed(1);
@@ -355,10 +386,12 @@ export function formatWorkVolumeUsage(
     `caches ${formatGb(usage.caches.bytes)}`,
     `other ${formatGb(usage.other.bytes)}`,
   ];
-  let line = `${label}: total ${formatGb(usage.totalBytes)} — ${
-    parts.join(" · ")
-  }`;
-  if (usage.truncated) {
+  // Issue #345: never publish a total the probe did not measure.
+  const unknown = workVolumeUnknownReason(usage);
+  let line = unknown === null
+    ? `${label}: total ${formatGb(usage.totalBytes)} — ${parts.join(" · ")}`
+    : `${label}: unknown — ${unknown} (Issue #345)`;
+  if (usage.truncated && unknown === null) {
     line += ` — walk stopped at the ${
       Math.round(usage.budgetMs / 1000)
     }s budget (${usage.measured} dir(s) measured, ${usage.skipped} skipped; totals are a floor)`;

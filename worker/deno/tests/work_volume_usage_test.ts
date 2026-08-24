@@ -16,6 +16,7 @@ import {
   isWorkerCacheDir,
   reportWorkVolumeUsage,
   scanWorkVolumeUsage,
+  workVolumeUnknownReason,
   type WorkVolumeUsage,
 } from "../lib/work_volume_usage.ts";
 
@@ -336,6 +337,87 @@ Deno.test("formatWorkVolumeUsage - a single artefact dir is named without a plur
     "build artefacts 3.1 GB (1 target dir: GRQ-23/target 3.1)",
   );
   assert(!formatWorkVolumeUsage(usage).includes("target dirs"));
+});
+
+// ---------------------------------------------------------------------------
+// Zero is not a measurement (Issue #345)
+// ---------------------------------------------------------------------------
+
+/** An all-zero reading over `measured` directories — the #345 symptom. */
+function allZeroUsage(measured: number): WorkVolumeUsage {
+  const usage = usageFixture();
+  usage.totalBytes = 0;
+  for (
+    const bucket of [
+      usage.monitored,
+      usage.side,
+      usage.caches,
+      usage.other,
+      usage.artefacts,
+    ]
+  ) {
+    bucket.bytes = 0;
+    bucket.entries = bucket.entries.map((e) => ({ ...e, bytes: 0 }));
+  }
+  usage.measured = measured;
+  return usage;
+}
+
+Deno.test("workVolumeUnknownReason - a real reading is a measurement", () => {
+  assertEquals(workVolumeUnknownReason(usageFixture()), null);
+});
+
+Deno.test("workVolumeUnknownReason - every bucket zero over measured directories is unknown, not 0.0 GB (Issue #345)", () => {
+  const reason = workVolumeUnknownReason(allZeroUsage(26));
+  assert(reason !== null, "expected an all-zero reading to be unknown");
+  assertStringIncludes(reason, "26");
+});
+
+Deno.test("workVolumeUnknownReason - a genuinely empty work root still reads as a clean zero", () => {
+  const empty = allZeroUsage(0);
+  empty.monitored.count = 0;
+  empty.side.count = 0;
+  empty.caches.count = 0;
+  empty.other.count = 0;
+  empty.artefacts.count = 0;
+  empty.monitored.entries = [];
+  empty.side.entries = [];
+  empty.artefacts.entries = [];
+  assertEquals(workVolumeUnknownReason(empty), null);
+});
+
+Deno.test("workVolumeUnknownReason - an unreadable work root and a budget that measured nothing are unknown", () => {
+  const broken = usageFixture();
+  broken.errors = ["cannot read /work: Structure needs cleaning"];
+  assert(workVolumeUnknownReason(broken) !== null);
+
+  const starved = allZeroUsage(0);
+  starved.truncated = true;
+  starved.skipped = 12;
+  const reason = workVolumeUnknownReason(starved);
+  assert(reason !== null, "expected a budget-starved walk to be unknown");
+  assertStringIncludes(reason, "budget");
+});
+
+Deno.test("formatWorkVolumeUsage - an all-zero reading reports unknown and never a confident total (Issue #345)", () => {
+  const usage = allZeroUsage(26);
+  usage.unmeasured = ["lost+found"];
+  const line = formatWorkVolumeUsage(usage);
+  assertStringIncludes(line, "Work volume: unknown");
+  assert(
+    !line.includes("total 0.0 GB"),
+    `a blind probe must not publish a total: ${line}`,
+  );
+  // The diagnostics that say *why* survive on the same line.
+  assertStringIncludes(line, "unmeasured (counted as 0): lost+found");
+});
+
+Deno.test("formatWorkVolumeUsage - an unreadable work root reports unknown with the error", () => {
+  const usage = allZeroUsage(0);
+  usage.errors = ["cannot read /work: Structure needs cleaning"];
+  const line = formatWorkVolumeUsage(usage, "Work volume (after prune)");
+  assertStringIncludes(line, "Work volume (after prune): unknown");
+  assertStringIncludes(line, "errors: cannot read /work");
 });
 
 Deno.test("reportWorkVolumeUsage - refuses to publish a split with no monitored list", async () => {

@@ -277,13 +277,14 @@ import {
 } from "./software_updates.ts";
 import { enableAutoMerge } from "./pr_auto_merge.ts";
 import { closeIssuesForMergedPrs as prIssueCloseForMerged } from "./pr_issue_linking.ts";
-import { HostDiskMonitor } from "./host_disk.ts";
+import { formatGb, HostDiskMonitor } from "./host_disk.ts";
+import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
   reclaimWorkVolumeTiers,
   summariseWorkVolumeTiers,
 } from "./work_volume_tiers.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
-import { reportWorkVolumeUsage } from "./work_volume_usage.ts";
+import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 
 // FLEET health
 import {
@@ -431,6 +432,13 @@ export async function createProductionRunCoreDeps(
   const hostDisk = new HostDiskMonitor({
     workDir,
     log: (message: string) => logger.info(message),
+  });
+  // Work-volume standing totals (Issues #244, #345): one shared reading feeds
+  // the log line, the feature report and the fleet-health payload, so a probe
+  // that cannot produce a value can never be advertised as `available`.
+  const workVolume = new WorkVolumeMonitor({
+    workDir,
+    monitoredRepos: config.repos ?? [],
   });
   // Cache directories live on the durable work volume (Issue #4303) so a
   // relaunch inside the TTL — restart storms, back-to-back cycles — starts
@@ -717,12 +725,29 @@ export async function createProductionRunCoreDeps(
       : null;
   };
 
+  /**
+   * The two disk signals' shared verdict (Issue #345). A work-volume probe
+   * that has not run yet is not a blind probe — only a walk that ran and
+   * could not produce a measurement counts against the host.
+   */
+  const diskTelemetry = () =>
+    assessDiskTelemetry({
+      hostDiskKnown: hostDisk.status.level !== "unknown",
+      hostDiskDetail: hostDisk.status.detail,
+      workVolumeKnown: !workVolume.status.probed || workVolume.status.known,
+      workVolumeDetail: workVolume.status.reason ??
+        `total ${formatGb(workVolume.status.totalBytes ?? 0)}`,
+    });
+
   fleetHealthConfig.hostNotes = () => {
     const notes: string[] = [];
     const status = hostDisk.status;
     if (status.level === "low") notes.push(`host-disk low: ${status.detail}`);
     const fault = workVolumeFault();
     if (fault !== null) notes.push(`work-volume fault: ${fault.detail}`);
+    // Issue #345: a host that has lost its disk telemetry says so on the
+    // fleet board *before* it fills up, not after the crash.
+    notes.push(...diskTelemetry().notes);
     // Issue #333: "unhealthy" alone does not say which host to fix.
     if (quotaOutageNote !== null) notes.push(quotaOutageNote);
     return notes;
@@ -912,17 +937,26 @@ export async function createProductionRunCoreDeps(
       registerBuiltinFeatures(registry);
       // Issue #226: the host's disk is a feature like any other — a `low`
       // reading shows as `Feature host-disk: degraded` in the startup log.
+      // Issue #345: so does an `unknown` one. A probe that cannot produce a
+      // value is degraded, never available — GRQ-23 advertised `available`
+      // with `df` unreadable right up to the crash.
       const disk = await hostDisk.check();
       registry.register(
         "host-disk",
-        () => disk.level !== "low",
+        () => disk.level === "ok",
         `Host filesystem has room for new work — ${disk.detail}`,
       );
       // Issue #229: a work volume that has surfaced an I/O fault.
+      // Issue #345: or whose standing totals are not a measurement — an
+      // all-zero walk reads as "plenty of room" and is worth less than no
+      // reading at all.
+      const volume = await workVolume.probe();
       registry.register(
         "work-volume",
-        () => workVolumeFault() === null,
-        "Work volume filesystem has surfaced no I/O fault",
+        () => workVolumeFault() === null && volume.known,
+        volume.known
+          ? "Work volume filesystem has surfaced no I/O fault and its standing totals are measurable"
+          : `Work volume telemetry is blind — ${volume.reason}`,
       );
       const results = registry.checkAll();
       for (const featureResult of results) {
@@ -2255,9 +2289,12 @@ export async function createProductionRunCoreDeps(
     // Issue #244: what the volume is holding right now, one depth-1 `du`
     // walk per top-level directory under a single 120 s budget. Logged at
     // cycle start next to `Concurrency:` so growth is visible in the worker
-    // log before the disk gate trips.
-    reportWorkVolumeUsage: () =>
-      reportWorkVolumeUsage({ workDir, monitoredRepos: config.repos }),
+    // log before the disk gate trips, and again at end of run (Issue #345)
+    // where the volume is at its fullest.
+    reportWorkVolumeUsage: (options) => workVolume.report(options),
+    // Issue #345: both disk signals blind is a health condition — the state
+    // GRQ-23 was in for days before it crashed out of disk.
+    checkDiskTelemetry: () => diskTelemetry(),
     checkWorkVolumeFault: () => {
       const fault = workVolumeFault();
       return fault === null

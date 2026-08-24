@@ -347,14 +347,40 @@ Deno.test({
 
     /**
      * Normalise the two run-specific values away: each harness gets its own
-     * temporary host directory, and each launch its own container name.
+     * temporary host directory, each launch its own container name, and each
+     * `container-launch-plan` its own live `df` reading. Available bytes
+     * drift by tens of kilobytes between sequential launches once `df`
+     * stdout is actually captured (Issue #345); the parity this test
+     * cares about is that both launchers pass the env vars, not that the
+     * host's free space stayed still for a few seconds.
      */
     const normalise = (invocation: { args: string[]; tmpDir: string }) =>
       invocation.args.map((arg) =>
         arg
           .replaceAll(invocation.tmpDir, "<host>")
           .replace(/^vibe-coder-\d+$/, "<container-name>")
+          .replace(
+            /^VIBE_HOST_DISK_AVAIL_BYTES=\d+$/,
+            "VIBE_HOST_DISK_AVAIL_BYTES=<bytes>",
+          )
+          .replace(
+            /^VIBE_HOST_DISK_TOTAL_BYTES=\d+$/,
+            "VIBE_HOST_DISK_TOTAL_BYTES=<bytes>",
+          )
       );
+
+    const hostDiskEnvPresent = (name: string, args: string[]) => {
+      assert(
+        args.some((arg) => arg.startsWith("VIBE_HOST_DISK_AVAIL_BYTES=")),
+        `${name} must pass the host-disk reading into the container (Issue #226)`,
+      );
+      assert(
+        args.some((arg) => arg.startsWith("VIBE_HOST_DISK_TOTAL_BYTES=")),
+        `${name} must pass the host-disk total into the container (Issue #226)`,
+      );
+    };
+    hostDiskEnvPresent("run.sh", bash.args);
+    hostDiskEnvPresent("run.ps1", powershell.args);
 
     assertEquals(
       normalise(powershell),

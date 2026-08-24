@@ -174,7 +174,13 @@ Deno.test("run_core - logs the work volume's standing totals beside the Concurre
   const result = await runCoreLoop(config, deps);
 
   assertEquals(result.plannedShutdown, true);
-  assertEquals(calls, 1, "the walk runs once per cycle start, not per claim");
+  // Issue #345 changed this from one walk to two: cycle start, and again at
+  // end of run where the volume is at its fullest. Still never per claim.
+  assertEquals(
+    calls,
+    2,
+    "the walk runs at cycle start and end of run, not per claim",
+  );
   const concurrency = logs.findIndex((m) => m.startsWith("Concurrency:"));
   const usage = logs.indexOf(line);
   assert(concurrency >= 0, "expected the concurrency line");
@@ -183,6 +189,92 @@ Deno.test("run_core - logs the work volume's standing totals beside the Concurre
     concurrency + 1,
     "expected the standing totals immediately after the concurrency line",
   );
+});
+
+Deno.test("run_core - samples the work volume again at end of run, where the bytes are (Issue #345)", async () => {
+  const logs: string[] = [];
+  const calls: Array<{ label?: string; force?: boolean }> = [];
+  const deps = oneCycleDeps({
+    log: (m: string) => logs.push(m),
+    reportWorkVolumeUsage: (options?: { label?: string; force?: boolean }) => {
+      calls.push(options ?? {});
+      return Promise.resolve(
+        `${
+          options?.label ?? "Work volume"
+        }: total 18.4 GB — monitored repos 2.1 GB (15)`,
+      );
+    },
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  await runCoreLoop(config, deps);
+
+  assertEquals(calls.length, 2, "cycle start and end of run");
+  assertEquals(calls[0]?.label, undefined);
+  assertEquals(calls[1]?.label, "Work volume (end of run)");
+  assertEquals(
+    calls[1]?.force,
+    true,
+    "the end-of-run sample must be fresh, not a replay of the cycle-start walk",
+  );
+  assert(
+    logs.some((m) => m.startsWith("Work volume (end of run): total ")),
+    `expected the end-of-run totals in the log, got: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("run_core - two blind disk signals mark the host unhealthy, once per cycle (Issue #345)", async () => {
+  const errors: string[] = [];
+  let heartbeats = 0;
+  const deps = oneCycleDeps({
+    logError: (m: string) => errors.push(m),
+    reportFleetHealthHeartbeat: () => {
+      heartbeats++;
+      return Promise.resolve();
+    },
+    checkDiskTelemetry: () => ({
+      blind: true,
+      detail:
+        "host-disk unknown (no launch baseline and df unreadable) and work-volume totals unknown",
+    }),
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  const result = await runCoreLoop(config, deps);
+
+  assertEquals(
+    result.lastHealthCheckPassed,
+    false,
+    "a host that cannot see its own disk is not healthy",
+  );
+  assertEquals(heartbeats, 0, "an unhealthy host reports no healthy heartbeat");
+  const blind = errors.filter((m) => m.includes("[DISK_TELEMETRY_BLIND]"));
+  assertEquals(
+    blind.length,
+    1,
+    `expected exactly one line, got ${blind.length}`,
+  );
+  assert(blind[0]!.includes("df unreadable"), blind[0]);
+});
+
+Deno.test("run_core - one readable disk signal keeps the host healthy (Issue #345)", async () => {
+  const errors: string[] = [];
+  const deps = oneCycleDeps({
+    logError: (m: string) => errors.push(m),
+    checkDiskTelemetry: () => ({
+      blind: false,
+      detail: "both signals readable",
+    }),
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  const result = await runCoreLoop(config, deps);
+
+  assertEquals(result.lastHealthCheckPassed, true);
+  assertEquals(errors.some((m) => m.includes("[DISK_TELEMETRY_BLIND]")), false);
 });
 
 Deno.test("run_core - a failed work-volume walk is reported loud and never stops the cycle (Issue #244)", async () => {
@@ -217,6 +309,83 @@ Deno.test("run_core - omitting the work-volume hook is a no-op (Issue #244)", as
 
   assertEquals(result.plannedShutdown, true);
   assertEquals(logs.some((m) => m.startsWith("Work volume:")), false);
+});
+
+Deno.test("production deps report work-volume degraded when the walk cannot measure (Issue #345)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    // A work root that cannot be walked at all: a path *through* a file.
+    await Deno.writeTextFile(`${tmp}/not-a-directory`, "x");
+    const lines: string[] = [];
+    const { deps, cleanup } = await createProductionRunCoreDeps({
+      repoDir: tmp,
+      workDir: `${tmp}/not-a-directory/work`,
+      githubUser: "test-user",
+      logger: createLogger({ write: (line: string) => lines.push(line) }),
+      config: {
+        ...buildDefaultWorkerConfig(),
+        repos: ["stSoftwareAU/VibeCoder"],
+      },
+    });
+    try {
+      await deps.checkFeatureAvailability();
+      assert(
+        lines.some((l) => l.includes("Feature work-volume: degraded")),
+        `expected a degraded work-volume feature, got: ${lines.join(" | ")}`,
+      );
+      assert(
+        !lines.some((l) => l.includes("Feature work-volume: available")),
+        "a blind probe must never be advertised as available",
+      );
+      const telemetry = deps.checkDiskTelemetry!();
+      assert(
+        telemetry.detail.includes("work-volume telemetry blind") ||
+          telemetry.detail.includes("both disk signals blind"),
+        `expected the blind volume to be named, got: ${telemetry.detail}`,
+      );
+    } finally {
+      cleanup();
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("production deps report both disk signals readable on a measurable host (Issue #345)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${tmp}/VibeCoder`);
+    await Deno.writeFile(
+      `${tmp}/VibeCoder/payload.bin`,
+      new Uint8Array(2 * 1024 * 1024),
+    );
+    const lines: string[] = [];
+    const { deps, cleanup } = await createProductionRunCoreDeps({
+      repoDir: tmp,
+      workDir: tmp,
+      githubUser: "test-user",
+      logger: createLogger({ write: (line: string) => lines.push(line) }),
+      config: {
+        ...buildDefaultWorkerConfig(),
+        repos: ["stSoftwareAU/VibeCoder"],
+      },
+    });
+    try {
+      await deps.checkFeatureAvailability();
+      assert(
+        lines.some((l) => l.includes("Feature work-volume: available")),
+        `expected a measurable volume to be available, got: ${
+          lines.join(" | ")
+        }`,
+      );
+      const telemetry = deps.checkDiskTelemetry!();
+      assertEquals(telemetry.blind, false);
+    } finally {
+      cleanup();
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
 });
 
 Deno.test("production deps wire the standing totals to the real work root (Issue #244)", async () => {
