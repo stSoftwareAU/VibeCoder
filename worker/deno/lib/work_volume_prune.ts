@@ -96,17 +96,35 @@ export interface WorkVolumePruneResult {
   errors: string[];
 }
 
+/**
+ * Bytes from a `du -sk` line, or null when the output said nothing usable
+ * (Issue #345).
+ *
+ * Empty or non-numeric output is **not** zero. The old parser ran
+ * `Number("")`, which is a finite 0, so a `du` that printed nothing was
+ * reported as a directory holding no bytes — a confident zero from a probe
+ * that had measured nothing.
+ */
+export function parseDuBytes(stdout: string): number | null {
+  const field = stdout.trim().split(/\s+/)[0] ?? "";
+  if (!/^\d+$/.test(field)) return null;
+  const kb = Number(field);
+  return Number.isFinite(kb) ? kb * 1024 : null;
+}
+
 /** `du -sk` in bytes, or null when it cannot be measured. */
 export async function duBytes(path: string): Promise<number | null> {
+  // No `quiet: true` (Issue #345): `quiet` sets `stdout: "null"` and returns
+  // an empty string, and stdout *is* the reading here. Every size on every
+  // host came back 0 because of it. Nothing is echoed either way — piped
+  // output is captured, not printed.
   const result = await runWithTimeout("du", ["-sk", path], {
     timeoutMs: DU_TIMEOUT_MS,
-    quiet: true,
   });
   if (!result.ok || result.value.timedOut || !result.value.success) {
     return null;
   }
-  const kb = Number(result.value.stdout.trim().split(/\s+/)[0]);
-  return Number.isFinite(kb) ? kb * 1024 : null;
+  return parseDuBytes(result.value.stdout);
 }
 
 /** Default liveness check: any `.heartbeat_*_<repo>_<n>` file in the root. */

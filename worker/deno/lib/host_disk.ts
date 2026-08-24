@@ -100,9 +100,11 @@ export function parseDfKP(text: string): DiskReading | null {
 export async function probeDiskReading(
   path: string,
 ): Promise<DiskReading | null> {
+  // No `quiet: true` (Issue #345): `quiet` sets `stdout: "null"` and returns
+  // an empty string, so `parseDfKP` saw nothing and every reading came back
+  // as "df unreadable" — the blind host-disk signal in the GRQ-23 outage.
   const result = await runWithTimeout("df", ["-kP", path], {
     timeoutMs: DF_TIMEOUT_MS,
-    quiet: true,
   });
   if (!result.ok || result.value.timedOut || !result.value.success) {
     return null;
