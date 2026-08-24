@@ -240,6 +240,7 @@ export class HostDiskMonitor {
     detail: "not probed yet",
   };
   private lastLevel: HostDiskStatus["level"] | undefined;
+  private hasProbed = false;
 
   constructor(options: HostDiskMonitorOptions) {
     this.workDir = options.workDir;
@@ -255,6 +256,18 @@ export class HostDiskMonitor {
   /** The most recent status without probing. */
   get status(): HostDiskStatus {
     return this.lastStatus;
+  }
+
+  /**
+   * True once a reading has actually been attempted (Issue #345).
+   *
+   * The unprobed state and a failed probe both report `level: "unknown"`, so
+   * the level alone cannot tell "we have not looked" from "we looked and saw
+   * nothing". Only the latter is a blind signal: the disk-telemetry verdict
+   * must not mark a host unhealthy for a probe it has not run yet.
+   */
+  get probed(): boolean {
+    return this.hasProbed;
   }
 
   /**
@@ -349,6 +362,7 @@ export class HostDiskMonitor {
       this.lastLevel = status.level;
     }
     this.lastStatus = status;
+    this.hasProbed = true;
     return status;
   }
 }

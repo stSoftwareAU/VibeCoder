@@ -22,9 +22,9 @@
 import {
   formatWorkVolumeUsage,
   scanWorkVolumeUsage,
+  workVolumeUnknownReason,
   type WorkVolumeUsage,
   type WorkVolumeUsageOptions,
-  workVolumeUnknownReason,
 } from "./work_volume_usage.ts";
 
 /** Minimum milliseconds between walks — a `du` sweep is not free. */
@@ -101,7 +101,11 @@ export class WorkVolumeMonitor {
   async probe(options: { force?: boolean } = {}): Promise<WorkVolumeStatus> {
     if (this.options.monitoredRepos.length === 0) {
       this.lastUsage = null;
-      this.lastStatus = { probed: true, known: false, reason: NO_MONITORED_REPOS };
+      this.lastStatus = {
+        probed: true,
+        known: false,
+        reason: NO_MONITORED_REPOS,
+      };
       return this.lastStatus;
     }
     const t = this.now();
@@ -121,7 +125,12 @@ export class WorkVolumeMonitor {
     this.lastUsage = usage;
     const reason = workVolumeUnknownReason(usage);
     this.lastStatus = reason === null
-      ? { probed: true, known: true, reason: null, totalBytes: usage.totalBytes }
+      ? {
+        probed: true,
+        known: true,
+        reason: null,
+        totalBytes: usage.totalBytes,
+      }
       : { probed: true, known: false, reason };
     return this.lastStatus;
   }

@@ -16,8 +16,8 @@ import {
   isWorkerCacheDir,
   reportWorkVolumeUsage,
   scanWorkVolumeUsage,
-  type WorkVolumeUsage,
   workVolumeUnknownReason,
+  type WorkVolumeUsage,
 } from "../lib/work_volume_usage.ts";
 
 const GIB = 1_073_741_824;

@@ -726,13 +726,15 @@ export async function createProductionRunCoreDeps(
   };
 
   /**
-   * The two disk signals' shared verdict (Issue #345). A work-volume probe
-   * that has not run yet is not a blind probe — only a walk that ran and
-   * could not produce a measurement counts against the host.
+   * The two disk signals' shared verdict (Issue #345). A probe that has not
+   * run yet is not a blind probe — on either signal. Both monitors report
+   * the unprobed state with the same shape as a failed reading (`unknown`),
+   * so the verdict asks whether the probe ran before counting it against the
+   * host: only a probe that ran and could not produce a value is blind.
    */
   const diskTelemetry = () =>
     assessDiskTelemetry({
-      hostDiskKnown: hostDisk.status.level !== "unknown",
+      hostDiskKnown: !hostDisk.probed || hostDisk.status.level !== "unknown",
       hostDiskDetail: hostDisk.status.detail,
       workVolumeKnown: !workVolume.status.probed || workVolume.status.known,
       workVolumeDetail: workVolume.status.reason ??

@@ -176,7 +176,11 @@ Deno.test("run_core - logs the work volume's standing totals beside the Concurre
   assertEquals(result.plannedShutdown, true);
   // Issue #345 changed this from one walk to two: cycle start, and again at
   // end of run where the volume is at its fullest. Still never per claim.
-  assertEquals(calls, 2, "the walk runs at cycle start and end of run, not per claim");
+  assertEquals(
+    calls,
+    2,
+    "the walk runs at cycle start and end of run, not per claim",
+  );
   const concurrency = logs.findIndex((m) => m.startsWith("Concurrency:"));
   const usage = logs.indexOf(line);
   assert(concurrency >= 0, "expected the concurrency line");
@@ -195,7 +199,9 @@ Deno.test("run_core - samples the work volume again at end of run, where the byt
     reportWorkVolumeUsage: (options?: { label?: string; force?: boolean }) => {
       calls.push(options ?? {});
       return Promise.resolve(
-        `${options?.label ?? "Work volume"}: total 18.4 GB — monitored repos 2.1 GB (15)`,
+        `${
+          options?.label ?? "Work volume"
+        }: total 18.4 GB — monitored repos 2.1 GB (15)`,
       );
     },
   });
@@ -245,7 +251,11 @@ Deno.test("run_core - two blind disk signals mark the host unhealthy, once per c
   );
   assertEquals(heartbeats, 0, "an unhealthy host reports no healthy heartbeat");
   const blind = errors.filter((m) => m.includes("[DISK_TELEMETRY_BLIND]"));
-  assertEquals(blind.length, 1, `expected exactly one line, got ${blind.length}`);
+  assertEquals(
+    blind.length,
+    1,
+    `expected exactly one line, got ${blind.length}`,
+  );
   assert(blind[0]!.includes("df unreadable"), blind[0]);
 });
 
@@ -253,7 +263,10 @@ Deno.test("run_core - one readable disk signal keeps the host healthy (Issue #34
   const errors: string[] = [];
   const deps = oneCycleDeps({
     logError: (m: string) => errors.push(m),
-    checkDiskTelemetry: () => ({ blind: false, detail: "both signals readable" }),
+    checkDiskTelemetry: () => ({
+      blind: false,
+      detail: "both signals readable",
+    }),
   });
   const config = createDefaultRunCoreConfig();
   config.runDurationSeconds = 3600;
@@ -361,7 +374,9 @@ Deno.test("production deps report both disk signals readable on a measurable hos
       await deps.checkFeatureAvailability();
       assert(
         lines.some((l) => l.includes("Feature work-volume: available")),
-        `expected a measurable volume to be available, got: ${lines.join(" | ")}`,
+        `expected a measurable volume to be available, got: ${
+          lines.join(" | ")
+        }`,
       );
       const telemetry = deps.checkDiskTelemetry!();
       assertEquals(telemetry.blind, false);

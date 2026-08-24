@@ -16,7 +16,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { duBytes, parseDuBytes } from "../lib/work_volume_prune.ts";
-import { probeDiskReading } from "../lib/host_disk.ts";
+import { HostDiskMonitor, probeDiskReading } from "../lib/host_disk.ts";
 
 const MIB = 1024 * 1024;
 
@@ -67,4 +67,41 @@ Deno.test("probeDiskReading - reads the filesystem df actually reports (Issue #3
 
 Deno.test("probeDiskReading - a path with no filesystem is unreadable, not a zero reading", async () => {
   assertEquals(await probeDiskReading("/definitely/not/a/mount/point"), null);
+});
+
+Deno.test("HostDiskMonitor - 'not probed yet' is not a blind signal (Issue #345)", async () => {
+  const m = new HostDiskMonitor({
+    workDir: "/work",
+    env: () => undefined,
+    probe: () => Promise.resolve(null),
+    log: () => {},
+  });
+  // Both the unprobed state and a genuinely failed probe report
+  // `level: "unknown"`, so the level alone cannot tell them apart — and a
+  // host that has not looked yet must never be counted as one that looked
+  // and saw nothing.
+  assertEquals(m.probed, false);
+  assertEquals(m.status.level, "unknown");
+
+  await m.check();
+  assertEquals(m.probed, true);
+  assertEquals(m.status.level, "unknown");
+});
+
+Deno.test("HostDiskMonitor - probed stays true once a reading has been taken (Issue #345)", async () => {
+  const m = new HostDiskMonitor({
+    workDir: "/work",
+    env: () => undefined,
+    probe: () =>
+      Promise.resolve({
+        availableBytes: 40 * 1024 * MIB,
+        usedBytes: 10 * 1024 * MIB,
+        totalBytes: 50 * 1024 * MIB,
+      }),
+    log: () => {},
+  });
+  assertEquals(m.probed, false);
+  const status = await m.check();
+  assertEquals(status.level, "ok");
+  assertEquals(m.probed, true);
 });
