@@ -60,9 +60,28 @@ import {
  * beside an existing journal. Never absorbed as a fresh chain.
  */
 export class AuditChainAnchorError extends Error {
-  constructor(message: string) {
+  /**
+   * Is this damage the kind a fresh segment should be started beside
+   * (Issue #361)?
+   *
+   * True for a journal that exists and disagrees with its anchor —
+   * truncated, rewritten, carrying a torn line, or appended past the
+   * anchored head. Those cannot be repaired without destroying evidence,
+   * and until now they stopped journalling on that host dead: every later
+   * mutation logged `[SECURITY] [AUDIT_JOURNAL_REFUSED]` and went
+   * unrecorded, so damage to yesterday's evidence quietly cost all of
+   * today's.
+   *
+   * False for a journal with **no anchor at all** — a pre-#3712 chain
+   * awaiting `audit-chain-verify --adopt`. Rolling that over would strand
+   * the very journal the operator is about to adopt.
+   */
+  readonly quarantinable: boolean;
+
+  constructor(message: string, quarantinable = true) {
     super(message);
     this.name = "AuditChainAnchorError";
+    this.quarantinable = quarantinable;
   }
 }
 
@@ -319,6 +338,7 @@ function reconcile(
       `audit journal has no chain anchor: ${path} — the anchor at ` +
         `${anchorPath(path)} is missing. Adopt the existing chain with ` +
         `\`deno task audit-chain-verify --adopt\` once it has been reviewed.`,
+      false,
     );
   }
 
@@ -377,43 +397,9 @@ export async function recordMutation(
 ): Promise<Result<AuditEntry>> {
   try {
     const baseDir = resolveBaseDir(opts.baseDir);
-    const path = auditFilePath(opts);
-    const entry = await withLock(path, async () => {
-      await Deno.mkdir(baseDir, { recursive: true });
-      const state = await getChainState(path);
-      const timestamp = mutation.timestamp ?? new Date().toISOString();
-      const payload = { ...mutation, timestamp };
-      const hash = await computeEntryHash(payload, state.headHash);
-      const full: AuditEntry = { ...payload, prevHash: state.headHash, hash };
-      await Deno.writeTextFile(path, `${JSON.stringify(full)}\n`, {
-        append: true,
-      });
-      const next: ChainState = { count: state.count + 1, headHash: hash };
-      chainStateByPath.set(path, next);
-      const anchored = await writeAnchor(path, next);
-      if (!anchored.ok) {
-        // Fail loud (Issue #3234): an un-anchored append leaves the chain
-        // unverifiable, so the caller must see the failure.
-        throw new AuditChainAnchorError(
-          `audit entry appended but its anchor could not be written: ` +
-            anchored.error.message,
-        );
-      }
-      // Issue #3949: record the journal in the expected-journal roster so a
-      // later deletion of the journal together with its anchor (or of the
-      // whole audit directory) is a broken chain, not an empty sweep.
-      const rostered = await addToRoster(
-        baseDir,
-        path.slice(path.lastIndexOf("/") + 1),
-      );
-      if (!rostered.ok) {
-        throw new AuditChainAnchorError(
-          `audit entry appended but the journal roster could not be ` +
-            `updated: ${rostered.error.message}`,
-        );
-      }
-      return full;
-    });
+    await Deno.mkdir(baseDir, { recursive: true });
+    const path = await resolveWritableJournal(auditFilePath(opts));
+    const entry = await withLock(path, () => appendEntry(path, mutation));
     return { ok: true, value: entry };
   } catch (error: unknown) {
     return {
@@ -421,6 +407,132 @@ export async function recordMutation(
       error: error instanceof Error ? error : new Error(String(error)),
     };
   }
+}
+
+/** Append one chained, anchored, rostered entry to `path`. */
+async function appendEntry(
+  path: string,
+  mutation: AuditMutation,
+): Promise<AuditEntry> {
+  const baseDir = path.slice(0, path.lastIndexOf("/")) || ".";
+  const state = await getChainState(path);
+  const timestamp = mutation.timestamp ?? new Date().toISOString();
+  const payload = { ...mutation, timestamp };
+  const hash = await computeEntryHash(payload, state.headHash);
+  const full: AuditEntry = { ...payload, prevHash: state.headHash, hash };
+  await Deno.writeTextFile(path, `${JSON.stringify(full)}\n`, {
+    append: true,
+  });
+  const next: ChainState = { count: state.count + 1, headHash: hash };
+  chainStateByPath.set(path, next);
+  const anchored = await writeAnchor(path, next);
+  if (!anchored.ok) {
+    // Fail loud (Issue #3234): an un-anchored append leaves the chain
+    // unverifiable, so the caller must see the failure.
+    throw new AuditChainAnchorError(
+      `audit entry appended but its anchor could not be written: ` +
+        anchored.error.message,
+    );
+  }
+  // Issue #3949: record the journal in the expected-journal roster so a
+  // later deletion of the journal together with its anchor (or of the
+  // whole audit directory) is a broken chain, not an empty sweep.
+  const rostered = await addToRoster(
+    baseDir,
+    path.slice(path.lastIndexOf("/") + 1),
+  );
+  if (!rostered.ok) {
+    throw new AuditChainAnchorError(
+      `audit entry appended but the journal roster could not be ` +
+        `updated: ${rostered.error.message}`,
+    );
+  }
+  return full;
+}
+
+/** Verb recorded as the first entry of a segment opened beside damage. */
+export const AUDIT_JOURNAL_QUARANTINED_VERB = "audit-journal-quarantined";
+
+/** Segment suffix for the nth journal opened beside a damaged one. */
+function segmentPath(basePath: string, n: number): string {
+  return `${basePath.replace(/\.jsonl$/, "")}.s${n}.jsonl`;
+}
+
+/**
+ * The journal this process should append to (Issue #361).
+ *
+ * Normally the day's journal. When that journal exists but disagrees with
+ * its anchor, it is **quarantined**: left exactly as it is — evidence is
+ * never repaired or deleted — and a fresh segment is opened beside it,
+ * `audit-<worker>-<date>.s1.jsonl`, whose first entry records what was
+ * quarantined and why.
+ *
+ * The alternative, which is what happened on host GRQ-23 on 2026-08-25, is
+ * that one torn line at entry 31 stopped the trail dead: every subsequent
+ * `gh` and `git` mutation logged `[SECURITY] [AUDIT_JOURNAL_REFUSED]` and
+ * went unrecorded, for the rest of the host's life, while the worker
+ * carried on mutating GitHub. Damage to yesterday's evidence must not cost
+ * today's — an audit trail that stops recording when it is damaged is
+ * precisely the wrong failure direction.
+ *
+ * Nothing is laundered by this. The damaged journal keeps its own anchor,
+ * stays on the roster, and keeps failing `audit-chain-verify` exactly as
+ * loudly as before — a forged tail is never re-anchored, because the file
+ * carrying it is never written to again.
+ */
+async function resolveWritableJournal(basePath: string): Promise<string> {
+  let damaged: { path: string; reason: string } | null = null;
+  // Bounded: a host that has quarantined 100 segments in one day has a
+  // problem no further segment is going to help with, and an unbounded
+  // walk would spin.
+  for (let n = 0; n <= 100; n++) {
+    const path = n === 0 ? basePath : segmentPath(basePath, n);
+    try {
+      const state = await getChainState(path);
+      // Note the quarantine once, when the segment is opened. Every later
+      // process re-detects the same damage on its way past; repeating the
+      // note would bury the segment's real content under duplicates.
+      if (damaged && state.count === 0) await noteQuarantine(path, damaged);
+      return path;
+    } catch (error: unknown) {
+      if (
+        !(error instanceof AuditChainAnchorError) || !error.quarantinable
+      ) {
+        throw error;
+      }
+      if (!damaged) damaged = { path, reason: error.message };
+    }
+  }
+  throw new AuditChainAnchorError(
+    `audit journal cannot be opened: ${basePath} and 100 segments beside it ` +
+      `all disagree with their anchors`,
+  );
+}
+
+/**
+ * Open a quarantine segment by recording what was displaced, loudly.
+ *
+ * The note is the segment's first chained entry, so "why does this host
+ * have a `.s1` journal" is answerable from the trail itself rather than
+ * from whoever happened to read the console that day.
+ */
+async function noteQuarantine(
+  segment: string,
+  damaged: { path: string; reason: string },
+): Promise<void> {
+  console.error(
+    `[SECURITY] [AUDIT_JOURNAL_QUARANTINED] ${damaged.path}: ${damaged.reason} ` +
+      `— left intact as evidence and still failing the sweep; recording ` +
+      `continues in ${segment}`,
+  );
+  await withLock(segment, () =>
+    appendEntry(segment, {
+      runId: resolveRunId(),
+      verb: AUDIT_JOURNAL_QUARANTINED_VERB,
+      target: damaged.path.slice(damaged.path.lastIndexOf("/") + 1),
+      outcome: "error",
+      caller: damaged.reason,
+    }));
 }
 
 /**

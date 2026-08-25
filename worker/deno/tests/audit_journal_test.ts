@@ -8,7 +8,7 @@
  * Uses Australian English throughout.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   _resetAuditCaches,
   type AuditEntry,
@@ -391,14 +391,180 @@ Deno.test("audit_journal - recordMutation refuses to extend a journal with unanc
   );
   _resetAuditCaches();
 
-  // A fresh process appending must not silently re-anchor the forged tail.
+  const forged = await Deno.readTextFile(path);
+
+  // Contract change, Issue #361 (documented, not silently relaxed): this
+  // used to assert the append FAILS. The invariant it protects — a forged
+  // tail is never laundered into the anchor — is unchanged and is now
+  // asserted directly: the file and its anchor are byte-for-byte as the
+  // forger left them. What changed is that recording continues in a
+  // quarantine segment instead of stopping dead, because refusing every
+  // later append left the host mutating GitHub with no trail at all.
   const second = await recordMutation(
     { runId: "r", verb: "pr-create", outcome: "success" },
     opts,
   );
+  assert(second.ok, "recording must continue rather than stop dead");
   assertEquals(
-    second.ok,
-    false,
+    await Deno.readTextFile(path),
+    forged,
     "appending over a forged tail would launder it into the anchor",
+  );
+  assertStringIncludes(
+    await Deno.readTextFile(path.replace(/\.jsonl$/, ".s1.jsonl")),
+    "pr-create",
+  );
+
+  // And the forged journal still fails the sweep, as loudly as before.
+  const swept = await verifyAllChains(opts.baseDir);
+  assert(swept.ok);
+  if (!swept.ok) return;
+  assertEquals(swept.value.broken.filter((b) => b.path === path).length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Quarantine on damage (Issue #361)
+//
+// Host GRQ-23, 2026-08-25: one torn line at entry 31 of the day's journal.
+// Every subsequent gh/git mutation logged
+//   [SECURITY] [AUDIT_JOURNAL_REFUSED] issue-comment: audit journal rewritten:
+//   …/audit-worker-2026-08-25.jsonl entry 31 no longer carries the anchored
+//   head hash
+// and went unrecorded, while the worker carried on mutating GitHub. An audit
+// trail that stops recording when it is damaged fails in exactly the wrong
+// direction: the damage is in the past, the mutations it stops attesting are
+// in the future.
+// ---------------------------------------------------------------------------
+
+Deno.test("audit_journal - a torn line does not stop the trail; recording moves to a quarantine segment (Issue #361)", async () => {
+  const opts = await freshOpts();
+  for (let i = 0; i < 3; i++) {
+    assert(
+      (await recordMutation({
+        runId: `r${i}`,
+        verb: "issue-comment",
+        outcome: "success",
+      }, opts)).ok,
+    );
+  }
+  const path = auditFilePath(opts);
+
+  // Tear the anchored head line, exactly as the host's entry 31 was torn:
+  // "entry 31 no longer carries the anchored head hash". A half-written
+  // final line is what an interrupted or interleaved append leaves behind.
+  const lines = (await Deno.readTextFile(path)).split("\n").filter((l) =>
+    l.trim().length > 0
+  );
+  const last = lines.length - 1;
+  lines[last] = lines[last]!.slice(0, Math.floor(lines[last]!.length / 2));
+  await Deno.writeTextFile(path, `${lines.join("\n")}\n`);
+  const torn = await Deno.readTextFile(path);
+  const anchorBefore = await Deno.readTextFile(anchorPath(path));
+  _resetAuditCaches();
+
+  const after = await recordMutation({
+    runId: "after-tear",
+    verb: "pr-merge",
+    outcome: "success",
+  }, opts);
+  assert(
+    after.ok,
+    `the mutation must still be recorded, got: ${
+      !after.ok && after.error.message
+    }`,
+  );
+
+  // The torn journal is evidence: untouched, still anchored as it was.
+  assertEquals(await Deno.readTextFile(path), torn);
+  assertEquals(await Deno.readTextFile(anchorPath(path)), anchorBefore);
+
+  // The segment beside it opens by recording what it displaced, and carries
+  // the mutation — chained, anchored and verifiable in its own right.
+  const segment = path.replace(/\.jsonl$/, ".s1.jsonl");
+  const entries = await loadEntries(segment);
+  assert(entries.ok);
+  if (!entries.ok) return;
+  assertEquals(entries.value.length, 2);
+  assertEquals(entries.value[0]!.verb, "audit-journal-quarantined");
+  assertEquals(entries.value[0]!.outcome, "error");
+  assertEquals(entries.value[1]!.verb, "pr-merge");
+  const segmentChain = await verifyChain(segment);
+  assert(segmentChain.ok && segmentChain.value.valid);
+
+  // The damage stays loud: the sweep still fails on the torn journal, and
+  // the segment is not offered as a replacement for it.
+  const swept = await verifyAllChains(opts.baseDir);
+  assert(swept.ok);
+  if (!swept.ok) return;
+  assertEquals(swept.value.broken.filter((b) => b.path === path).length, 1);
+  assertEquals(swept.value.broken.filter((b) => b.path === segment).length, 0);
+});
+
+Deno.test("audit_journal - a second run appends to the existing segment rather than opening another (Issue #361)", async () => {
+  const opts = await freshOpts();
+  assert(
+    (await recordMutation({
+      runId: "a",
+      verb: "issue-create",
+      outcome: "success",
+    }, opts))
+      .ok,
+  );
+  const path = auditFilePath(opts);
+  await Deno.writeTextFile(path, "{ not json\n");
+  _resetAuditCaches();
+
+  for (const runId of ["b", "c"]) {
+    assert(
+      (await recordMutation(
+        { runId, verb: "pr-create", outcome: "success" },
+        opts,
+      ))
+        .ok,
+    );
+    _resetAuditCaches();
+  }
+
+  const entries = await loadEntries(path.replace(/\.jsonl$/, ".s1.jsonl"));
+  assert(entries.ok);
+  if (!entries.ok) return;
+  // One quarantine note, then both mutations — not a fresh segment each time.
+  assertEquals(entries.value.map((e) => e.runId).slice(1), ["b", "c"]);
+  await Deno.stat(path.replace(/\.jsonl$/, ".s2.jsonl")).then(
+    () => {
+      throw new Error("a second segment should not have been opened");
+    },
+    () => {},
+  );
+});
+
+Deno.test("audit_journal - a journal awaiting --adopt is not quarantined out from under the operator (Issue #361)", async () => {
+  const opts = await freshOpts();
+  assert(
+    (await recordMutation({
+      runId: "a",
+      verb: "issue-create",
+      outcome: "success",
+    }, opts))
+      .ok,
+  );
+  const path = auditFilePath(opts);
+  await Deno.remove(anchorPath(path));
+  _resetAuditCaches();
+
+  // A missing anchor is the pre-#3712 case `audit-chain-verify --adopt`
+  // exists for. Rolling it over would strand the chain the operator is
+  // about to adopt, so this one still refuses.
+  const blocked = await recordMutation({
+    runId: "b",
+    verb: "pr-create",
+    outcome: "success",
+  }, opts);
+  assertEquals(blocked.ok, false);
+  await Deno.stat(path.replace(/\.jsonl$/, ".s1.jsonl")).then(
+    () => {
+      throw new Error("no segment should have been opened");
+    },
+    () => {},
   );
 });

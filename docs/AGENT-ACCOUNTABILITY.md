@@ -244,6 +244,29 @@ written before the anchor existed is adopted **explicitly** by an operator
 (`deno task audit-chain-verify --adopt`), and adoption re-walks the chain
 first so a tampered file can never be blessed.
 
+**Damage quarantines, it does not stop the trail (Issue #361).** When the
+day's journal exists but disagrees with its anchor — truncated, rewritten,
+appended past the anchored head, or carrying a torn final line — it is left
+**exactly as found** and a fresh segment is opened beside it,
+`audit-<worker>-<date>.s1.jsonl`, whose first entry records what was
+quarantined and why. A `[SECURITY] [AUDIT_JOURNAL_QUARANTINED]` line names
+both files.
+
+Nothing is laundered: the damaged journal keeps its own anchor, stays on the
+roster, and keeps failing the sweep as loudly as before, because the file
+carrying the damage is never written to again. What changes is that recording
+continues. Previously the append was refused and journalling on that host
+stopped dead — on GRQ-23 on 2026-08-25 one torn line at entry 31 meant every
+later `gh` and `git` mutation logged
+`[SECURITY] [AUDIT_JOURNAL_REFUSED]` and went unrecorded while the worker
+carried on mutating GitHub. An audit trail that stops recording when it is
+damaged fails in the wrong direction: the damage is in the past, the mutations
+it stops attesting are in the future.
+
+The one exception is a journal with **no anchor at all** — the pre-#3712 case
+`--adopt` exists for. That still refuses, because opening a segment beside it
+would strand the chain the operator is about to adopt.
+
 **Scheduled verification.** `deno task audit-chain-verify`
 ([`worker/deno/commands/audit_chain_verify.ts`](../worker/deno/commands/audit_chain_verify.ts))
 sweeps every chain under the audit directory — enumerating anchors as well
