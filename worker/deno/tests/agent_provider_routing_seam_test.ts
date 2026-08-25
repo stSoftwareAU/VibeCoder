@@ -6,8 +6,8 @@
  * so `request.phase` reached Codex and Gemini and was silently discarded. The
  * seam moves the decision onto every descriptor —
  * `resolveModel(phase)` / `resolveEffort(phase)` — with the explicit
- * `request.model` / `request.effort` still winning, and Codex/Gemini returning
- * nothing until their own tables land (#363, #364).
+ * `request.model` / `request.effort` still winning. Codex's tables landed in
+ * #363 and Gemini's in #364, so all three providers now route a phase.
  *
  * This issue is a pure refactor, so these tests are argv-equality tests: for
  * every registered provider the built argv must match the golden list today's
@@ -35,6 +35,7 @@ import {
 import {
   CODEX_PHASE_EFFORT_DEFAULTS,
   CODEX_PHASE_MODEL_DEFAULTS,
+  GEMINI_PHASE_MODEL_DEFAULTS,
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
@@ -114,14 +115,31 @@ Deno.test("routing seam - Claude's resolvers are the existing precedence chain",
   }
 });
 
-Deno.test("routing seam - Gemini resolves nothing, leaving today's pass-through", () => {
-  // Codex gained its own tables in Issue #363 and is covered by
-  // `codex_phase_routing_test.ts`; Gemini keeps the pass-through until #364.
+Deno.test("routing seam - Gemini resolves every routed phase through its own table (Issue #364)", () => {
+  // Codex gained its own tables in Issue #363 and Gemini its model table in
+  // #364; both are covered in depth by their own routing tests. Gemini has no
+  // effort *flag*, so its effort resolver reports the effort the phase was
+  // asked for — the value the descriptor then warns about rather than applies.
   const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
-  for (const phase of [undefined, ...ROUTED_PHASES]) {
-    assertEquals(gemini.resolveModel(phase), undefined, "gemini model");
-    assertEquals(gemini.resolveEffort(phase), undefined, "gemini effort");
-  }
+  // A base env var is precedence step 6 and would mask the table, so clear it.
+  withEnv("GEMINI_MODEL", undefined, () => {
+    for (const phase of ROUTED_PHASES) {
+      assertEquals(
+        gemini.resolveModel(phase),
+        GEMINI_PHASE_MODEL_DEFAULTS[phase],
+        `gemini model for phase ${phase}`,
+      );
+      assertEquals(
+        gemini.resolveEffort(phase),
+        PHASE_EFFORT_DEFAULTS[phase],
+        `gemini requested effort for phase ${phase}`,
+      );
+    }
+
+    // A phase-less invocation is deliberate: nothing routes, nothing warns.
+    assertEquals(gemini.resolveModel(undefined), undefined, "gemini model");
+    assertEquals(gemini.resolveEffort(undefined), undefined, "gemini effort");
+  });
 });
 
 Deno.test("routing seam - Codex resolves every routed phase through its own tables (Issue #363)", () => {
@@ -176,23 +194,30 @@ Deno.test("routing seam - a blank explicit value falls through to the resolver",
   assertEquals(routing.effort, resolveClaudeEffort("planning"));
 });
 
-Deno.test("routing seam - a provider that resolves nothing keeps the explicit values", () => {
+Deno.test("routing seam - an explicit value beats a provider's own phase routing", () => {
   const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
 
   const routing = resolveInvocationRouting(gemini, {
     prompt: "PROMPT",
     phase: "planning",
-    model: "gemini-2.5-pro",
-    effort: "high",
+    model: "gemini-pinned",
+    effort: "low",
   });
 
-  assertEquals(routing, { model: "gemini-2.5-pro", effort: "high" });
+  assertEquals(routing, { model: "gemini-pinned", effort: "low" });
 
-  const unrouted = resolveInvocationRouting(gemini, {
-    prompt: "PROMPT",
-    phase: "planning",
+  // With nothing explicit, Gemini's own table decides the model (Issue #364),
+  // and a phase-less call still leaves the CLI on its own default.
+  withEnv("GEMINI_MODEL", undefined, () => {
+    const routed = resolveInvocationRouting(gemini, {
+      prompt: "PROMPT",
+      phase: "planning",
+    });
+    assertEquals(routed.model, GEMINI_PHASE_MODEL_DEFAULTS.planning);
+
+    const unrouted = resolveInvocationRouting(gemini, { prompt: "PROMPT" });
+    assertEquals(unrouted, { model: undefined, effort: undefined });
   });
-  assertEquals(unrouted, { model: undefined, effort: undefined });
 });
 
 // ---------------------------------------------------------------------------
@@ -325,27 +350,40 @@ Deno.test("routing seam - Codex argv carries each phase's designed defaults (Iss
   });
 });
 
-Deno.test("routing seam - Gemini argv ignores the phase, as it did before the seam", () => {
+Deno.test("routing seam - Gemini argv carries each phase's designed model (Issue #364)", () => {
   const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
 
-  for (const phase of [undefined, ...ROUTED_PHASES]) {
-    const unrouted = gemini.buildInvocation({ prompt: "PROMPT", phase });
+  // The base env var is precedence step 6 and would mask the table.
+  withEnv("GEMINI_MODEL", undefined, () => {
     assertEquals(
-      unrouted.includes("--model"),
+      gemini.buildInvocation({ prompt: "PROMPT" }).includes("--model"),
       false,
-      `phase ${phase} must add no Gemini --model yet (Issue #364)`,
+      "a phase-less invocation leaves Gemini on its configured default",
     );
 
-    const explicit = gemini.buildInvocation({
-      prompt: "PROMPT",
-      phase,
-      model: "gemini-2.5-pro",
-      effort: "high",
-    });
-    assertEquals(explicit[explicit.indexOf("--model") + 1], "gemini-2.5-pro");
-    assert(
-      !explicit.includes("--effort"),
-      "the Gemini CLI has no reasoning-effort option to carry",
-    );
-  }
+    for (const phase of ROUTED_PHASES) {
+      const routed = gemini.buildInvocation({ prompt: "PROMPT", phase });
+      assertEquals(
+        routed[routed.indexOf("--model") + 1],
+        GEMINI_PHASE_MODEL_DEFAULTS[phase],
+        `phase ${phase} must carry its designed Gemini model`,
+      );
+      assert(
+        !routed.some((arg) => arg.includes("effort")),
+        "the Gemini CLI has no reasoning-effort option to carry",
+      );
+
+      const explicit = gemini.buildInvocation({
+        prompt: "PROMPT",
+        phase,
+        model: "gemini-pinned",
+        effort: "high",
+      });
+      assertEquals(explicit[explicit.indexOf("--model") + 1], "gemini-pinned");
+      assert(
+        !explicit.includes("--effort"),
+        "the Gemini CLI has no reasoning-effort option to carry",
+      );
+    }
+  });
 });

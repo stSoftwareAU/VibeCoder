@@ -149,14 +149,19 @@ Deno.test("per-provider invocation - each provider routes a phase through its ow
   assertEquals(codexArgs.includes("--effort"), false);
   assert(codexArgs.some((a) => a.includes("model_reasoning_effort")));
 
-  // Gemini has no routing tables yet (Issue #364), so a phase alone adds
-  // nothing.
+  // Gemini routes the same phase through its own model table (Issue #364) and
+  // carries no effort at all — its CLI has no such option.
   const geminiArgs = resolveAgentProvider("gemini").buildInvocation({
     prompt: "p",
     phase: "issue",
   });
-  assertEquals(geminiArgs.includes("--model"), false);
-  assertEquals(geminiArgs.includes("--effort"), false);
+  assert(geminiArgs.includes("--model"));
+  assertEquals(
+    geminiArgs.includes(claudeArgs[claudeArgs.indexOf("--model") + 1]!),
+    false,
+    "Gemini must not be handed a Claude model tier",
+  );
+  assertEquals(geminiArgs.some((a) => a.includes("effort")), false);
 });
 
 Deno.test("per-provider invocation - effort uses each provider's own syntax, or none at all", () => {

@@ -11,6 +11,7 @@ the worker.
   - [Phase-Specific Defaults](#phase-specific-defaults)
   - [Model/effort precedence chain](#-modeleffort-precedence-chain)
   - [Codex per-phase routing](#-codex-per-phase-routing)
+  - [Gemini per-phase routing](#-gemini-per-phase-routing)
   - [Model Fallback on Rate Limit](#model-fallback-on-rate-limit)
   - [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow)
   - [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection)
@@ -374,6 +375,79 @@ flowchart LR
     C --> P["phase_routing.ts<br/>six-step chain"]
     P -->|resolved| A["--model / -c model_reasoning_effort"]
     P -->|nothing, phase set| W["⚠️ warn once, CLI default stands"]
+```
+
+### ✨ Gemini per-phase routing
+
+The Gemini CLI has **one** of the two levers: `--model`, but no
+reasoning-effort option at all. Until Issue #364 the Gemini descriptor
+discarded `request.phase` entirely, so every Gemini phase ran on whatever the
+CLI happened to be configured with, and a configured `request.effort` was
+dropped without a word.
+
+Gemini now routes `phase` through its own table,
+`GEMINI_PHASE_MODEL_DEFAULTS` in
+[`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts).
+It covers the same phase keys as the Claude table, with Gemini model ids:
+
+| Phase | Gemini model |
+|-------|--------------|
+| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gemini-2.5-pro` (top tier) |
+| `issue` (implementation) | `gemini-2.5-flash` (base tier) |
+| `ci_fix`, `pr_feedback`, `quality_fix` | `gemini-2.5-flash` (base tier) |
+| `spelling_fix`, `summarise`, `health` | `gemini-2.5-flash-lite` (cheap tier) |
+
+The model ids are an implementation choice over the current Gemini line-up, not
+a fixed contract: a deployment on a different line-up re-pins a tier through
+configuration rather than a code change.
+
+**Precedence** is Claude's chain with Gemini-named keys, through the same
+[`worker/deno/lib/phase_routing.ts`](../worker/deno/lib/phase_routing.ts):
+
+1. **Phase-specific environment variable** — `GEMINI_MODEL_<PHASE>` (operator
+   escape hatch)
+2. **Per-repo phase override** — `gemini_phase_model_overrides` in the repo's
+   `repo_config` entry
+3. **Per-repo base model** — `gemini_model` in the repo's `repo_config` entry
+4. **Global config phase overrides** — `gemini_phase_model_overrides` in
+   `.config.json`
+5. **Phase-specific hardcoded defaults** — the table above
+6. **Global environment variable** — `GEMINI_MODEL`
+
+An explicit `model` on the invocation request still beats all six, and per-repo
+overrides are **replaced** — never merged — on every repo switch. There is
+deliberately **no** effort counterpart to any of these keys: configuration the
+CLI could never apply would be dead surface.
+
+**Fail loud — the missing effort lever is reported, not swallowed.** An
+operator who pins an effort for a phase, or simply relies on
+`PHASE_EFFORT_DEFAULTS`, would otherwise get no signal that the lever does
+nothing under Gemini. So when an effort is resolved for a Gemini invocation —
+explicitly on the request, or from the phase effort design — the executor emits
+**one** `console.warn` naming the provider, the phase and the requested effort:
+
+```text
+[gemini] Reasoning effort "high" requested for phase "planning" but the Gemini
+CLI has no effort option; the request is ignored. Run this phase under a
+provider that has the lever (claude, codex), or clear the effort configuration
+for it.
+```
+
+The warning is de-duplicated **once per phase per worker process**, so a
+multi-phase run states the gap for each phase it routes and a retried phase
+states it once. No flag the CLI does not have is invented, the argv is
+byte-identical to one carrying no effort, and the run is **not** failed — the
+warning is the fix. A phase that resolves to no model warns the same way the
+Claude and Codex chains do, and a phase-less invocation stays quiet.
+
+```mermaid
+flowchart LR
+    R["buildInvocation({ phase })"] --> S["resolveInvocationRouting()"]
+    S --> M["resolveGeminiModel<br/>(six-step chain)"]
+    S --> E["resolveGeminiEffort<br/>(what was asked for)"]
+    M -->|resolved| A["--model"]
+    M -->|nothing, phase set| W["⚠️ warn once, CLI default stands"]
+    E -->|any effort| V["⚠️ warn once per phase<br/>no argv element"]
 ```
 
 ### Model Fallback on Rate Limit

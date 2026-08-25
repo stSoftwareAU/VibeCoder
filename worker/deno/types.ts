@@ -315,6 +315,8 @@ export interface WorkerConfig {
   codexPhaseModelOverrides: Record<string, string>;
   /** Per-phase Codex effort overrides from .config.json (Issue #363) */
   codexPhaseEffortOverrides: Record<string, string>;
+  /** Per-phase Gemini model overrides from .config.json (Issue #364) */
+  geminiPhaseModelOverrides: Record<string, string>;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -831,6 +833,22 @@ export interface RepoConfig {
    * repo. Operator-only.
    */
   codexPhaseEffortOverrides?: Record<string, string>;
+  /**
+   * Per-repo base Gemini model tier (Issue #364) — the Gemini counterpart of
+   * `claudeModel`. Overrides {@link GEMINI_PHASE_MODEL_DEFAULTS} for every
+   * phase in this repo, and is itself overridden by
+   * `geminiPhaseModelOverrides` and by a phase-specific `GEMINI_MODEL_<PHASE>`
+   * env var. Operator-only.
+   */
+  geminiModel?: string;
+  /**
+   * Per-repo per-phase Gemini model overrides (Issue #364). Same shape as the
+   * global `gemini_phase_model_overrides` key, but scoped to this repo.
+   * Operator-only. There is no Gemini effort counterpart: the Gemini CLI has
+   * no reasoning-effort option, and an effort requested for a Gemini phase is
+   * reported loudly rather than configured.
+   */
+  geminiPhaseModelOverrides?: Record<string, string>;
 }
 
 /**
@@ -1018,6 +1036,8 @@ export interface ConfigFile {
   codex_phase_model_overrides?: Record<string, string>;
   /** Per-phase Codex reasoning-effort overrides (Issue #363) */
   codex_phase_effort_overrides?: Record<string, string>;
+  /** Per-phase Gemini model overrides (Issue #364) */
+  gemini_phase_model_overrides?: Record<string, string>;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */
