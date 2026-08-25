@@ -47,6 +47,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "best_planning_model",
   "phase_model_overrides",
   "phase_effort_overrides",
+  // Codex per-phase routing overrides (Issue #363).
+  "codex_phase_model_overrides",
+  "codex_phase_effort_overrides",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both

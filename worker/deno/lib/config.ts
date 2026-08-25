@@ -167,6 +167,10 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   best_planning_model: "bestPlanningModel",
   phase_model_overrides: "phaseModelOverrides",
   phase_effort_overrides: "phaseEffortOverrides",
+  // Per-repo Codex model/effort routing (Issue #363).
+  codex_model: "codexModel",
+  codex_phase_model_overrides: "codexPhaseModelOverrides",
+  codex_phase_effort_overrides: "codexPhaseEffortOverrides",
   // Pre-flight enforcement gate (Issue #3577). Accept the kebab-case form
   // shown in the issue/docs example (`"pre-flight"`) and the snake_case form
   // (`pre_flight`); camelCase (`preFlight`) passes through unchanged.
@@ -611,6 +615,12 @@ export async function loadConfig(
   const phaseEffortOverrides: Record<string, string> =
     file.phase_effort_overrides ?? {};
 
+  // Phase-specific Codex model/effort overrides (Issue #363)
+  const codexPhaseModelOverrides: Record<string, string> =
+    file.codex_phase_model_overrides ?? {};
+  const codexPhaseEffortOverrides: Record<string, string> =
+    file.codex_phase_effort_overrides ?? {};
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -781,6 +791,8 @@ export async function loadConfig(
     stalePlanningWarningDays,
     phaseModelOverrides,
     phaseEffortOverrides,
+    codexPhaseModelOverrides,
+    codexPhaseEffortOverrides,
     includeRecentActivity,
     includeCodebaseMap,
     recentActivityMergedPrLimit,

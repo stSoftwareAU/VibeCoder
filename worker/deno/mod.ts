@@ -41,6 +41,10 @@ import {
   setPhaseEffortConfigOverrides,
   setPhaseModelConfigOverrides,
 } from "./lib/claude_executor.ts";
+import {
+  setCodexPhaseEffortConfigOverrides,
+  setCodexPhaseModelConfigOverrides,
+} from "./lib/codex_executor.ts";
 import type { CommandResult, Logger, WorkerConfig } from "./types.ts";
 
 // Import built-in commands
@@ -490,6 +494,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
     setPhaseModelConfigOverrides(config.phaseModelOverrides);
     // Apply phase effort config overrides (Issue #1403)
     setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
+    // Apply the Codex phase model/effort config overrides (Issue #363)
+    setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+    setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
     // Wire the suppression author allowlist from the trusted-author list —
     // unconfigured, the suppression gate fails closed (Issue #3941).
     setSuppressionAuthorAllowlist(config.allowedAuthors ?? []);
