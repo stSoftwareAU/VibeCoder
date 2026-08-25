@@ -171,6 +171,10 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   codex_model: "codexModel",
   codex_phase_model_overrides: "codexPhaseModelOverrides",
   codex_phase_effort_overrides: "codexPhaseEffortOverrides",
+  // Per-repo Gemini model routing (Issue #364). Model only — the Gemini CLI
+  // has no reasoning-effort option to override.
+  gemini_model: "geminiModel",
+  gemini_phase_model_overrides: "geminiPhaseModelOverrides",
   // Pre-flight enforcement gate (Issue #3577). Accept the kebab-case form
   // shown in the issue/docs example (`"pre-flight"`) and the snake_case form
   // (`pre_flight`); camelCase (`preFlight`) passes through unchanged.
@@ -621,6 +625,10 @@ export async function loadConfig(
   const codexPhaseEffortOverrides: Record<string, string> =
     file.codex_phase_effort_overrides ?? {};
 
+  // Phase-specific Gemini model overrides (Issue #364)
+  const geminiPhaseModelOverrides: Record<string, string> =
+    file.gemini_phase_model_overrides ?? {};
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -793,6 +801,7 @@ export async function loadConfig(
     phaseEffortOverrides,
     codexPhaseModelOverrides,
     codexPhaseEffortOverrides,
+    geminiPhaseModelOverrides,
     includeRecentActivity,
     includeCodebaseMap,
     recentActivityMergedPrLimit,

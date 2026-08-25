@@ -1082,6 +1082,76 @@ export const CODEX_PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
   health: CODEX_EFFORT_LEVELS.low,
 } as const;
 
+// ---------------------------------------------------------------------------
+// Gemini per-phase routing (Issue #364, parent #357)
+//
+// The Gemini CLI has one of the two levers: `--model`, but no
+// reasoning-effort option at all. The model half of the phase cost design
+// documented in docs/MODEL-AND-CACHING.md therefore applies unchanged, and the
+// table below mirrors PHASE_MODEL_DEFAULTS key for key with Gemini model ids.
+// There is deliberately no GEMINI_PHASE_EFFORT_DEFAULTS: a table of efforts
+// the CLI can never apply would be dead configuration. An effort that is
+// nonetheless requested for a Gemini phase is reported loudly by
+// `gemini_executor.ts` rather than dropped in silence (Issue #3234).
+//
+// The model ids are an implementation decision (Issue #364 leaves the
+// "correct" ids open): a sane cheap/base/top mapping over the current Gemini
+// line-up. Explicit configuration always overrides them — a
+// `GEMINI_MODEL_<PHASE>` env var, a per-repo `gemini_phase_model_overrides`
+// entry, a per-repo `gemini_model` base tier, or a global
+// `gemini_phase_model_overrides` entry — so a deployment on a different
+// line-up re-pins the tier without a code change.
+// ---------------------------------------------------------------------------
+
+/**
+ * Top Gemini model tier — the reasoning flagship (Issue #364).
+ *
+ * Reserved for the planning-shaped phases, where the Vibe Coder interprets the
+ * user's words into an implementable state and a better interpretation
+ * compounds across every downstream sub-issue and PR.
+ */
+export const DEFAULT_GEMINI_MODEL_TOP_TIER = "gemini-2.5-pro" as const;
+
+/**
+ * Base Gemini model tier (Issue #364) — the general-purpose model every
+ * non-extreme phase runs on. Gemini has no effort lever to differentiate them
+ * further, so the tier itself carries the whole routing decision.
+ */
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash" as const;
+
+/**
+ * Cheap Gemini model tier (Issue #364) — the small model the three trivial
+ * phases (`spelling_fix`, `summarise`, `health`) run on, mirroring Claude's
+ * Haiku tier. The flagship premium buys nothing on a typo fix.
+ */
+export const DEFAULT_GEMINI_MODEL_CHEAP_TIER = "gemini-2.5-flash-lite" as const;
+
+/**
+ * Per-phase Gemini model defaults (Issue #364).
+ *
+ * Same phase keys as {@link PHASE_MODEL_DEFAULTS}, same tier design: the
+ * planning-shaped phases (planning, grill_me, both Quorum phases, refinement,
+ * revision, question, clarification) take the top tier; the trivial trio takes
+ * the cheap tier; everything else runs on the base tier.
+ */
+export const GEMINI_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
+  planning: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  grill_me: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  quorum: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  quorum_judge: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  refinement: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  revision: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  question: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  clarification: DEFAULT_GEMINI_MODEL_TOP_TIER,
+  issue: DEFAULT_GEMINI_MODEL,
+  ci_fix: DEFAULT_GEMINI_MODEL,
+  pr_feedback: DEFAULT_GEMINI_MODEL,
+  quality_fix: DEFAULT_GEMINI_MODEL,
+  spelling_fix: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
+  summarise: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
+  health: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
+} as const;
+
 /**
  * Overrides accepted by {@link buildDefaultWorkerConfig}. Issue #2166: typed as
  * `Partial<WorkerConfig>` so a misspelt key is caught at compile time.
@@ -1208,6 +1278,7 @@ export function buildDefaultWorkerConfig(
     phaseEffortOverrides: {},
     codexPhaseModelOverrides: {},
     codexPhaseEffortOverrides: {},
+    geminiPhaseModelOverrides: {},
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
       OPERATIONAL_DEFAULTS.recentActivityMergedPrLimit,

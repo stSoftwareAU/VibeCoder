@@ -66,7 +66,11 @@ import {
   codexAuthActionableMessage,
   isCodexAuthError,
 } from "./codex_auth.ts";
-import { buildGeminiArgs } from "./gemini_executor.ts";
+import {
+  buildGeminiArgs,
+  resolveGeminiEffort,
+  resolveGeminiModel,
+} from "./gemini_executor.ts";
 import {
   buildGeminiChildEnv,
   GEMINI_ENV_DENYLIST,
@@ -211,8 +215,10 @@ export interface AgentProviderDescriptor {
   /**
    * The reasoning effort this provider routes `phase` to (Issue #362).
    *
-   * `undefined` means the provider has no phase routing of its own, or no
-   * effort control at all (the Gemini CLI exposes none).
+   * `undefined` means the provider has no phase routing of its own. A provider
+   * whose CLI has no effort option at all (Gemini) still reports the effort the
+   * phase was *asked* to run at, so `buildInvocation` can say loudly that it
+   * cannot be honoured (Issue #364) instead of dropping it in silence.
    */
   resolveEffort(phase?: string): string | undefined;
   /** Build the CLI argument list for one invocation. */
@@ -444,26 +450,33 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/gemini.sh` },
   promptTransport: "argv",
 
-  // Gemini has no phase table of its own yet (Issue #364), and the CLI exposes
-  // no reasoning-effort option at all: both resolvers stay empty, which is
-  // today's behaviour expressed through the seam.
-  resolveModel(): string | undefined {
-    return undefined;
+  // Gemini routes `phase` to a model through its own table (Issue #364), the
+  // way Claude and Codex do; the chain lives in `gemini_executor.ts` and is
+  // never restated here. The effort resolver reports what a phase was *asked*
+  // to run at — the CLI has no effort option to honour it with, so the value
+  // is warned about rather than turned into an argument.
+  resolveModel(phase?: string): string | undefined {
+    return resolveGeminiModel(phase);
   },
 
-  resolveEffort(): string | undefined {
-    return undefined;
+  resolveEffort(phase?: string): string | undefined {
+    return resolveGeminiEffort(phase);
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {
+    const routing = resolveInvocationRouting(this, request);
     return buildGeminiArgs({
       prompt: request.prompt,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
-      model: resolveInvocationRouting(this, request).model,
+      model: routing.model,
+      // No flag carries an effort under Gemini, so this adds no argv element —
+      // it is passed so the executor can warn once rather than drop it
+      // silently (Issue #364, fail-loud standard #3234).
+      effort: routing.effort,
+      phase: request.phase,
       // Gemini resumes its own most recent session; the first phase of an
-      // issue starts one instead (`phaseCount === 0`). The CLI exposes no
-      // reasoning-effort option, so `request.effort` has no flag to carry it.
+      // issue starts one instead (`phaseCount === 0`).
       resumeSession: buildSessionResumeFlags(request.sessionResumeState).resume,
     });
   },
