@@ -10,6 +10,7 @@ the worker.
 - [Model Selection](#model-selection)
   - [Phase-Specific Defaults](#phase-specific-defaults)
   - [Model/effort precedence chain](#-modeleffort-precedence-chain)
+  - [Codex per-phase routing](#-codex-per-phase-routing)
   - [Model Fallback on Rate Limit](#model-fallback-on-rate-limit)
   - [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow)
   - [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection)
@@ -308,6 +309,72 @@ records the model and effort actually resolved per run (the
 [Credit Logging](#credit-logging) `model`/`effort` fields), so a per-repo
 override is visible in the cost logs. The resolution logic lives in
 [`worker/deno/lib/claude_executor.ts`](../worker/deno/lib/claude_executor.ts).
+
+### 🤖 Codex per-phase routing
+
+The Codex CLI has both levers Claude has — `--model` and
+`-c model_reasoning_effort="…"` — so the same effort-first cost design applies to
+it (Issue #363). Until that issue the Codex descriptor forwarded only an
+*explicit* model/effort, and because the worker relies on phase defaults, every
+Codex phase — the cheapest `summarise` and the most expensive `planning` alike —
+ran on whatever the CLI happened to be configured with.
+
+Codex now routes `phase` through its own tables,
+`CODEX_PHASE_MODEL_DEFAULTS` and `CODEX_PHASE_EFFORT_DEFAULTS` in
+[`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts).
+They cover the same phase keys as the Claude tables with Codex model ids and the
+four reasoning-effort levels Codex accepts (`minimal`, `low`, `medium`, `high` —
+there is no Codex equivalent of Claude's `xhigh`/`max`, so the planning-shaped
+phases top out at `high`):
+
+| Phase | Codex model | Codex effort |
+|-------|-------------|--------------|
+| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gpt-5-codex` (top tier) | `high` |
+| `issue` (implementation) | `gpt-5` (base tier) | `high` |
+| `ci_fix`, `pr_feedback`, `quality_fix` | `gpt-5` (base tier) | `medium` |
+| `spelling_fix`, `summarise`, `health` | `gpt-5-mini` (cheap tier) | `low` |
+
+The model ids are an implementation choice over the current Codex-capable
+line-up, not a fixed contract: a deployment on a different line-up re-pins a tier
+through configuration rather than a code change.
+
+**Precedence** is Claude's chain with Codex-named keys — the six steps
+themselves are stated once, in
+[`worker/deno/lib/phase_routing.ts`](../worker/deno/lib/phase_routing.ts), and
+both providers supply their own names, tables and override state to it:
+
+1. **Phase-specific environment variable** — `CODEX_MODEL_<PHASE>` /
+   `CODEX_EFFORT_<PHASE>` (operator escape hatch)
+2. **Per-repo phase override** — `codex_phase_model_overrides` /
+   `codex_phase_effort_overrides` in the repo's `repo_config` entry
+3. **Per-repo base model** — `codex_model` in the repo's `repo_config` entry
+   (model only; effort has no per-repo base, exactly as Claude's has none)
+4. **Global config phase overrides** — `codex_phase_model_overrides` /
+   `codex_phase_effort_overrides` in `.config.json`
+5. **Phase-specific hardcoded defaults** — the tables above
+6. **Global environment variable** — `CODEX_MODEL` / `CODEX_EFFORT`
+
+An explicit `model`/`effort` on the invocation request still beats all six, and
+per-repo overrides are **replaced** — never merged — on every repo switch, so a
+premium repo's Codex tier cannot leak into a filler repo.
+
+**Fail loud.** Unlike Claude's effort chain there is no hardcoded terminal
+fallback: a phase that resolves to nothing leaves Codex on its own configured
+default, which would be invisible. So a non-empty phase that resolves to no model
+(or no effort) emits **one** `console.warn` naming the phase and the table that
+is missing an entry, exactly as `buildClaudeModelArgs` does — a typo or a new
+phase whose author forgot a default is caught rather than shipping silently. A
+phase-less invocation is deliberate and stays quiet.
+
+```mermaid
+flowchart LR
+    R["buildInvocation({ phase })"] --> S["resolveInvocationRouting()"]
+    S -->|explicit model/effort| X["use it verbatim"]
+    S -->|otherwise| C["resolveCodexModel / resolveCodexEffort"]
+    C --> P["phase_routing.ts<br/>six-step chain"]
+    P -->|resolved| A["--model / -c model_reasoning_effort"]
+    P -->|nothing, phase set| W["⚠️ warn once, CLI default stands"]
+```
 
 ### Model Fallback on Rate Limit
 

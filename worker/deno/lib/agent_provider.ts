@@ -51,7 +51,11 @@ import {
   buildSessionResumeFlags,
   type SessionResumeState,
 } from "./session_resume.ts";
-import { buildCodexArgs } from "./codex_executor.ts";
+import {
+  buildCodexArgs,
+  resolveCodexEffort,
+  resolveCodexModel,
+} from "./codex_executor.ts";
 import {
   buildCodexChildEnv,
   CODEX_ENV_DENYLIST,
@@ -377,15 +381,14 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/codex.sh` },
   promptTransport: "argv",
 
-  // Codex has no phase table of its own yet (Issue #363): routing resolves to
-  // nothing, so the caller's explicit model/effort alone decides — today's
-  // behaviour, now expressed through the seam.
-  resolveModel(): string | undefined {
-    return undefined;
+  // Codex routes `phase` through its own tables (Issue #363), the way Claude
+  // does: the chain lives in `codex_executor.ts` and is never restated here.
+  resolveModel(phase?: string): string | undefined {
+    return resolveCodexModel(phase);
   },
 
-  resolveEffort(): string | undefined {
-    return undefined;
+  resolveEffort(phase?: string): string | undefined {
+    return resolveCodexEffort(phase);
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {

@@ -125,7 +125,7 @@ Deno.test("selectAgentProvider - a descriptor without an id fails loudly", () =>
 // Model and effort routing stay per provider
 // ---------------------------------------------------------------------------
 
-Deno.test("per-provider invocation - phase routing applies to Claude and is ignored by providers without it", () => {
+Deno.test("per-provider invocation - each provider routes a phase through its own tables", () => {
   const claudeArgs = resolveAgentProvider("claude").buildInvocation({
     prompt: "p",
     phase: "issue",
@@ -134,15 +134,23 @@ Deno.test("per-provider invocation - phase routing applies to Claude and is igno
   assert(claudeArgs.includes("--model"));
   assert(claudeArgs.includes("--effort"));
 
-  // Codex and Gemini have no Claude model tiers, so a phase alone must not
-  // make them emit flags carrying a Claude model name.
+  // Codex routes the same phase through its own tables (Issue #363): a Codex
+  // model id, and effort in Codex's `-c` syntax rather than Claude's --effort.
   const codexArgs = resolveAgentProvider("codex").buildInvocation({
     prompt: "p",
     phase: "issue",
   });
-  assertEquals(codexArgs.includes("--model"), false);
+  assert(codexArgs.includes("--model"));
+  assertEquals(
+    codexArgs.includes(claudeArgs[claudeArgs.indexOf("--model") + 1]!),
+    false,
+    "Codex must not be handed a Claude model tier",
+  );
   assertEquals(codexArgs.includes("--effort"), false);
+  assert(codexArgs.some((a) => a.includes("model_reasoning_effort")));
 
+  // Gemini has no routing tables yet (Issue #364), so a phase alone adds
+  // nothing.
   const geminiArgs = resolveAgentProvider("gemini").buildInvocation({
     prompt: "p",
     phase: "issue",

@@ -264,6 +264,8 @@ explicitly overridden.
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_overrides`      | `{}`                      | Per-phase model tier overrides (see below)                                                                                                                                                                                                                                                       |
 | `phase_effort_overrides`     | `{}`                      | Per-phase effort level overrides (see [Effort Level Configuration](#-effort-level-configuration))                                                                                                                                                                                     |
+| `codex_phase_model_overrides` | `{}` | Per-phase **Codex** model overrides, applied when `agent_provider` is `codex`. Same shape as `phase_model_overrides`, with Codex model ids. See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
+| `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
@@ -1797,6 +1799,15 @@ when nothing else is queued) avoids burning premium tokens.
 | `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
 | `phase_model_overrides` | object | Per-repo per-phase model map (e.g. `{ "issue": "fable" }`). Same shape as the global `phase_model_overrides`.       |
 | `phase_effort_overrides`| object | Per-repo per-phase effort map (e.g. `{ "issue": "xhigh" }`). Same shape as the global `phase_effort_overrides`.     |
+| `codex_model`           | string | Per-repo base **Codex** model tier overriding the Codex phase defaults for every phase in this repo — the Codex counterpart of `claude_model`. |
+| `codex_phase_model_overrides` | object | Per-repo per-phase **Codex** model map (e.g. `{ "issue": "gpt-5-mini" }`). Same shape as the global `codex_phase_model_overrides`. |
+| `codex_phase_effort_overrides`| object | Per-repo per-phase **Codex** effort map (e.g. `{ "issue": "medium" }`). Same shape as the global `codex_phase_effort_overrides`. |
+
+The Codex keys mirror the Claude ones step for step — including the caveat that
+a per-repo `codex_model` base tier beats the built-in Codex phase defaults, so it
+demotes the top-tier planning phases unless they are re-pinned in
+`codex_phase_model_overrides`. The full Codex chain is documented in
+[MODEL-AND-CACHING.md → Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing).
 
 The resolution order (most specific wins) is documented in full in
 [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain).
@@ -1933,6 +1944,9 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
 | `phase_model_overrides` | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                           |
 | `phase_effort_overrides`| object  | Per-repo per-phase effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                          |
+| `codex_model`           | string  | Per-repo base Codex model tier overriding the Codex phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `codex_phase_model_overrides` | object | Per-repo per-phase Codex model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `codex_phase_effort_overrides`| object | Per-repo per-phase Codex reasoning-effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 
 **Use cases:**
 
