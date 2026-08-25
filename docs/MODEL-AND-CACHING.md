@@ -1659,6 +1659,39 @@ stream-json output:
 Implementation:
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts)
 
+#### Non-Claude providers: unknown, never zero
+
+Extraction reads the **Claude** `stream-json` shape. Codex emits its own JSONL
+under `--json` and Gemini its own `--output-format stream-json` events, so
+neither parses today — real Codex/Gemini token parsing is **not implemented**.
+
+That gap is loud rather than silent. Every run goes through
+[`worker/deno/lib/provider_token_usage.ts`](../worker/deno/lib/provider_token_usage.ts),
+which dispatches on the active provider descriptor:
+
+- **Claude** — unchanged, and quiet when a run genuinely reports no usage.
+- **Any other provider** — the shared extractor is tried first (a CLI whose
+  output happens to be Claude-compatible is parsed normally); when nothing is
+  parseable the run is warned about once, naming the provider, repo, phase and
+  model, and the credit-log entry is flagged `usageUnknown`.
+
+An `usageUnknown` invocation contributes **no** tokens or cost to the daily
+totals and is counted separately, so `credit summary` ends with a line such as
+`WARNING: 2 invocation(s) reported no parseable token usage (provider(s):
+codex, gemini) — their tokens and cost are UNKNOWN, not zero, and are NOT
+counted in the totals above.` Adding a real extractor is a new branch in
+`extractProviderTokenUsage()` plus a pricing row below.
+
+```mermaid
+flowchart LR
+    R["raw CLI stdout"] --> X["extractProviderTokenUsage()"]
+    X -->|claude| C["extractTokenUsage()<br/>(unchanged)"]
+    X -->|other| T["try shared extractor"]
+    T -->|parsed| U["TokenUsage → priced"]
+    T -->|nothing| W["usageUnknown<br/>+ warning"]
+    C --> U
+```
+
 ### Model Pricing
 
 Approximate list prices (USD per million tokens, as of July 2026):
@@ -1800,7 +1833,17 @@ and reported separately:
 | `unpricedModels` | Model ids with no pricing row, sorted |
 | `unpricedTokens` | Tokens billed under those ids |
 | `unpricedEstimatedCost` | Upper-bound USD included in `totalEstimatedCost` |
+| `unknownUsageInvocations` | Runs whose token usage could not be parsed |
+| `unknownUsageProviders` | Providers those runs ran under, sorted |
 | `malformedLogLines` | Log lines that could not be parsed and were skipped |
+
+**Non-Claude ids land here too.** `MODEL_PRICING` holds Claude rows only, so a
+Codex or Gemini model id (`gpt-5-codex`, `gemini-2.5-pro`) has no pricing row
+and its tokens are charged at the same upper bound and named in
+`unpricedModels` — an over-estimate an operator can see, never a `$0`. A run of
+that provider whose usage could not be parsed at all has no tokens to charge,
+so it is counted in `unknownUsageInvocations` instead
+([above](#non-claude-providers-unknown-never-zero)).
 
 `formatSummary` prints both an `Unpriced models` line and a `WARNING:` line for
 malformed log lines, and the spend-ceiling hook logs a `[SPEND_CEILING]` line

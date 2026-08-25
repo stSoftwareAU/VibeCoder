@@ -72,6 +72,14 @@ export interface InvocationEntry {
    * per-invocation seam existed.
    */
   provider?: string;
+  /**
+   * The run reported no token usage the worker could parse (Issue #366).
+   *
+   * Set for a non-Claude run whose CLI output does not carry the Claude-shaped
+   * usage the extractor reads. The entry then records **unknown** tokens and
+   * cost rather than an implied zero, and the daily summary says so.
+   */
+  usageUnknown?: boolean;
   /** Input tokens consumed (Issue #1260). */
   inputTokens?: number;
   /** Output tokens generated (Issue #1260). */
@@ -102,6 +110,8 @@ export interface LogInvocationOptions {
   provider?: string;
   /** Token usage from this invocation (Issue #1260). */
   tokenUsage?: TokenUsage;
+  /** The run's usage could not be parsed — record it unknown (Issue #366). */
+  usageUnknown?: boolean;
 }
 
 /** Options for retrieving a daily summary. */
@@ -165,6 +175,17 @@ export interface DailySummary {
   unpricedTokens: TokenUsage;
   /** Upper-bound USD included in {@link totalEstimatedCost} (Issue #3870). */
   unpricedEstimatedCost: number;
+  /**
+   * Invocations whose token usage could not be parsed (Issue #366).
+   *
+   * Their tokens and cost are **unknown**, not zero, so they are excluded from
+   * every total above and counted here instead. A non-zero count means the
+   * day's figures under-report by however much those runs actually cost.
+   * Optional for compatibility with summaries built before #366.
+   */
+  unknownUsageInvocations?: number;
+  /** Providers contributing to {@link unknownUsageInvocations}, sorted. */
+  unknownUsageProviders?: string[];
   /**
    * Log lines that could not be parsed and were skipped (Issue #3870).
    *
@@ -254,6 +275,7 @@ export async function logInvocation(
     effort,
     provider,
     tokenUsage,
+    usageUnknown,
   } = options;
 
   // Ensure directory exists
@@ -268,6 +290,9 @@ export async function logInvocation(
     ...(fallbackFrom ? { fallbackFrom } : {}),
     ...(effort ? { effort } : {}),
     ...(provider ? { provider } : {}),
+    // An unparseable run is flagged rather than left to look like a zero-token
+    // invocation (Issue #366).
+    ...(usageUnknown ? { usageUnknown: true } : {}),
     ...(tokenUsage
       ? {
         inputTokens: tokenUsage.inputTokens,
@@ -351,6 +376,8 @@ export async function getDailySummary(
     unpricedModels: [],
     unpricedTokens: zeroTokens(),
     unpricedEstimatedCost: 0,
+    unknownUsageInvocations: 0,
+    unknownUsageProviders: [],
     malformedLogLines: 0,
   };
 
@@ -376,6 +403,18 @@ export async function getDailySummary(
         const transition = `${entry.fallbackFrom}\u2192${entry.model}`;
         summary.byFallback[transition] = (summary.byFallback[transition] ?? 0) +
           1;
+      }
+
+      // A run whose usage could not be parsed contributes no tokens, so it
+      // must be counted separately or it reads as a free invocation
+      // (Issue #366).
+      if (entry.usageUnknown) {
+        summary.unknownUsageInvocations = (summary.unknownUsageInvocations ??
+          0) + 1;
+        const source = entry.provider ?? "unknown";
+        if (!summary.unknownUsageProviders!.includes(source)) {
+          summary.unknownUsageProviders!.push(source);
+        }
       }
 
       // Aggregate token usage (Issue #1260)
@@ -447,6 +486,7 @@ export async function getDailySummary(
     }
   }
   summary.unpricedModels.sort();
+  summary.unknownUsageProviders!.sort();
 
   // Prompt-cache effectiveness for the day (Issue #4282) — derived from the
   // tokens already summed, so it costs nothing extra to report.
@@ -823,6 +863,24 @@ export function formatSummary(summary: DailySummary): string {
       `  Unpriced tokens: in ${summary.unpricedTokens.inputTokens.toLocaleString()}, out ${summary.unpricedTokens.outputTokens.toLocaleString()} — $${
         summary.unpricedEstimatedCost.toFixed(4)
       }`,
+    );
+  }
+
+  // Runs whose usage the worker could not parse (Issue #366) — Codex and
+  // Gemini emit their own event shapes, so their tokens are unknown rather
+  // than zero. Saying so is the difference between an honest gap and a silent
+  // under-report.
+  const unknownUsage = summary.unknownUsageInvocations ?? 0;
+  if (unknownUsage > 0) {
+    const providers = summary.unknownUsageProviders ?? [];
+    const providerNote = providers.length > 0
+      ? ` (provider(s): ${providers.join(", ")})`
+      : "";
+    lines.push("");
+    lines.push(
+      `WARNING: ${unknownUsage} invocation(s) reported no parseable token ` +
+        `usage${providerNote} — their tokens and cost are UNKNOWN, not zero, ` +
+        `and are NOT counted in the totals above.`,
     );
   }
 
