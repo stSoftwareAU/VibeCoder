@@ -33,6 +33,8 @@ import {
   resolveClaudeModel,
 } from "../lib/claude_executor.ts";
 import {
+  CODEX_PHASE_EFFORT_DEFAULTS,
+  CODEX_PHASE_MODEL_DEFAULTS,
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
@@ -112,14 +114,35 @@ Deno.test("routing seam - Claude's resolvers are the existing precedence chain",
   }
 });
 
-Deno.test("routing seam - Codex and Gemini resolve nothing, leaving today's pass-through", () => {
-  for (const id of [CODEX_PROVIDER_ID, GEMINI_PROVIDER_ID]) {
-    const provider = resolveAgentProvider(id);
-    for (const phase of [undefined, ...ROUTED_PHASES]) {
-      assertEquals(provider.resolveModel(phase), undefined, `${id} model`);
-      assertEquals(provider.resolveEffort(phase), undefined, `${id} effort`);
-    }
+Deno.test("routing seam - Gemini resolves nothing, leaving today's pass-through", () => {
+  // Codex gained its own tables in Issue #363 and is covered by
+  // `codex_phase_routing_test.ts`; Gemini keeps the pass-through until #364.
+  const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
+  for (const phase of [undefined, ...ROUTED_PHASES]) {
+    assertEquals(gemini.resolveModel(phase), undefined, "gemini model");
+    assertEquals(gemini.resolveEffort(phase), undefined, "gemini effort");
   }
+});
+
+Deno.test("routing seam - Codex resolves every routed phase through its own tables (Issue #363)", () => {
+  const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
+  // A base env var is precedence step 6 and would mask the tables, so clear it.
+  withEnv("CODEX_MODEL", undefined, () => {
+    withEnv("CODEX_EFFORT", undefined, () => {
+      for (const phase of ROUTED_PHASES) {
+        assertEquals(
+          codex.resolveModel(phase),
+          CODEX_PHASE_MODEL_DEFAULTS[phase],
+          `codex model for phase ${phase}`,
+        );
+        assertEquals(
+          codex.resolveEffort(phase),
+          CODEX_PHASE_EFFORT_DEFAULTS[phase],
+          `codex effort for phase ${phase}`,
+        );
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -154,18 +177,18 @@ Deno.test("routing seam - a blank explicit value falls through to the resolver",
 });
 
 Deno.test("routing seam - a provider that resolves nothing keeps the explicit values", () => {
-  const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
+  const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
 
-  const routing = resolveInvocationRouting(codex, {
+  const routing = resolveInvocationRouting(gemini, {
     prompt: "PROMPT",
     phase: "planning",
-    model: "gpt-5-codex",
+    model: "gemini-2.5-pro",
     effort: "high",
   });
 
-  assertEquals(routing, { model: "gpt-5-codex", effort: "high" });
+  assertEquals(routing, { model: "gemini-2.5-pro", effort: "high" });
 
-  const unrouted = resolveInvocationRouting(codex, {
+  const unrouted = resolveInvocationRouting(gemini, {
     prompt: "PROMPT",
     phase: "planning",
   });
@@ -242,7 +265,7 @@ Deno.test("routing seam - Claude argv carries each phase's designed defaults", (
   }
 });
 
-Deno.test("routing seam - Codex argv ignores the phase, as it did before the seam", () => {
+Deno.test("routing seam - Codex argv carries each phase's designed defaults (Issue #363)", () => {
   const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
 
   const base = [
@@ -252,31 +275,54 @@ Deno.test("routing seam - Codex argv ignores the phase, as it did before the sea
     "--dangerously-bypass-approvals-and-sandbox",
   ];
 
-  for (const phase of [undefined, ...ROUTED_PHASES]) {
-    assertEquals(
-      codex.buildInvocation({ prompt: "PROMPT", phase }),
-      [...base, "PROMPT"],
-      `phase ${phase} must add no Codex routing flags yet (Issue #363)`,
-    );
+  // Issue #363 replaced the pre-seam pass-through this test used to pin: a
+  // phase now reaches argv as `--model` + `-c model_reasoning_effort`, and a
+  // phase-less call is the only one that still adds no routing flags. The base
+  // env vars are precedence step 6 and would mask the tables, so clear them.
+  withEnv("CODEX_MODEL", undefined, () => {
+    withEnv("CODEX_EFFORT", undefined, () => {
+      assertEquals(
+        codex.buildInvocation({ prompt: "PROMPT" }),
+        [...base, "PROMPT"],
+        "a phase-less invocation leaves Codex on its configured default",
+      );
 
-    assertEquals(
-      codex.buildInvocation({
-        prompt: "PROMPT",
-        phase,
-        model: "gpt-5-codex",
-        effort: "high",
-      }),
-      [
-        ...base,
-        "--model",
-        "gpt-5-codex",
-        "-c",
-        'model_reasoning_effort="high"',
-        "PROMPT",
-      ],
-      `phase ${phase} must not disturb an explicit Codex model/effort`,
-    );
-  }
+      for (const phase of [undefined, ...ROUTED_PHASES]) {
+        if (phase) {
+          assertEquals(
+            codex.buildInvocation({ prompt: "PROMPT", phase }),
+            [
+              ...base,
+              "--model",
+              CODEX_PHASE_MODEL_DEFAULTS[phase],
+              "-c",
+              `model_reasoning_effort="${CODEX_PHASE_EFFORT_DEFAULTS[phase]}"`,
+              "PROMPT",
+            ],
+            `phase ${phase} must carry its designed Codex model and effort`,
+          );
+        }
+
+        assertEquals(
+          codex.buildInvocation({
+            prompt: "PROMPT",
+            phase,
+            model: "gpt-5-codex",
+            effort: "high",
+          }),
+          [
+            ...base,
+            "--model",
+            "gpt-5-codex",
+            "-c",
+            'model_reasoning_effort="high"',
+            "PROMPT",
+          ],
+          `phase ${phase} must not disturb an explicit Codex model/effort`,
+        );
+      }
+    });
+  });
 });
 
 Deno.test("routing seam - Gemini argv ignores the phase, as it did before the seam", () => {
