@@ -37,6 +37,7 @@
  */
 
 import { resolveClaudeEffort, resolveClaudeModel } from "./claude_executor.ts";
+import { getCheaperModel } from "./config_defaults.ts";
 import {
   buildClaudeChildEnv,
   CLAUDE_ENV_DENYLIST,
@@ -221,6 +222,17 @@ export interface AgentProviderDescriptor {
    * cannot be honoured (Issue #364) instead of dropping it in silence.
    */
   resolveEffort(phase?: string): string | undefined;
+  /**
+   * The next-cheaper model below `model`, when this provider has a
+   * cheaper-model ladder (Issue #365).
+   *
+   * `null` means the ladder exists and `model` is already on its cheapest
+   * rung. The method being **absent** means the provider has no ladder at
+   * all — a distinction the rate-limit fallback reports as
+   * `no-ladder-for-provider` rather than silently as "already cheapest",
+   * which is what made the downgrade a no-op under Codex and Gemini.
+   */
+  cheaperModel?(model: string): string | null;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
   /** Build the child subprocess environment, minus worker-only secrets. */
@@ -301,6 +313,12 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
 
   resolveEffort(phase?: string): string | undefined {
     return resolveClaudeEffort(phase);
+  },
+
+  // The tier ladder `config_defaults.ts` owns (fable → opus → sonnet → haiku),
+  // never restated here (Issue #365).
+  cheaperModel(model: string): string | null {
+    return getCheaperModel(model);
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {
