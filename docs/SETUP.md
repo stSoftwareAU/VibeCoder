@@ -698,6 +698,34 @@ explained beneath the block, never inside it.
   health tracking, both optional and both in the same
   [defaults table](CONFIGURATION.md#configuration-defaults).
 
+### Choosing the coding agent
+
+The worker is provider agnostic: `claude` (Claude Code) is the default, and
+`codex` (the OpenAI Codex CLI) and `gemini` (the Gemini CLI) are registered
+alongside it. Nothing else in the configuration changes with the choice —
+`agent_provider` names the agent a run uses, and `agent_providers` names every
+vendor whose credentials are provisioned, preflighted and mounted:
+
+```json
+{
+  "agent_provider": "codex",
+  "agent_providers": ["codex"]
+}
+```
+
+Omit both and the worker uses Claude Code alone, exactly as a deployment that
+predates the choice. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
+(comma-separated) override them for a single run. The enabled set must include
+the active provider — a set that excludes it fails loudly at startup, because
+its agent would have no credential mounted, as does an id that is not
+registered.
+
+Each enabled vendor needs its own `<provider>/provider.env` from
+[the credential layout above](#providerproviderenv), and the container image
+must have been built with that provider installed — see
+[the coding-agent provider layer](CONTAINER.md#the-coding-agent-provider-layer)
+in the Container Guide.
+
 ### Where the full reference lives
 
 This section deliberately stops at the two examples above. The
