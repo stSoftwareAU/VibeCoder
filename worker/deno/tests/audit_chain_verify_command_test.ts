@@ -9,7 +9,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { auditChainVerifyCommand } from "../commands/audit_chain_verify.ts";
+import {
+  auditChainVerifyCommand,
+  type AuditChainVerifyData,
+} from "../commands/audit_chain_verify.ts";
 import {
   _resetAuditCaches,
   auditFilePath,
@@ -19,6 +22,15 @@ import { anchorPath, rosterPath } from "../lib/audit_anchor.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const CONFIG = {} as WorkerConfig;
+
+/**
+ * The command's typed payload. `Command.execute` is declared over the
+ * registry's non-generic result, so the sweep data needs naming here for
+ * the assertions to reach `broken` / `acknowledged`.
+ */
+function payload(data: unknown): AuditChainVerifyData {
+  return data as AuditChainVerifyData;
+}
 
 /** Seed an isolated audit directory holding one journal of `n` entries. */
 async function seedDir(n = 2): Promise<{ baseDir: string; path: string }> {
@@ -161,4 +173,226 @@ Deno.test("audit-chain-verify - fails loud on complete erasure of the audit dire
     "deleting the audit directory and roster together must not report success",
   );
   assertStringIncludes(result.message, "[SECURITY] [AUDIT_CHAIN_BROKEN]");
+});
+
+// ---------------------------------------------------------------------------
+// Acknowledged losses (Issue #359)
+//
+// Issue #337 had the housekeeping prune the worker's own audit directory.
+// The fix stopped further losses but could not undo one, and the roster is
+// append-only — so hosts swept before the fix logged three [SECURITY] lines
+// on every worker start, for ever, with no exit but hand-editing the
+// tamper-evidence file. A permanently-red alarm is a broken alarm: the next
+// genuine deletion just adds a line nobody reads.
+// ---------------------------------------------------------------------------
+
+/** Delete the whole audit directory, leaving the roster sidecar behind. */
+async function sweepAwayJournals(baseDir: string): Promise<void> {
+  await Deno.remove(baseDir, { recursive: true });
+  _resetAuditCaches();
+}
+
+Deno.test("audit-chain-verify - a swept audit directory fails until the loss is signed for (Issue #359)", async () => {
+  const { baseDir, path } = await seedDir();
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+  await sweepAwayJournals(baseDir);
+
+  // Unacknowledged: loud, and the line now names the way out.
+  const before = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(before.success, false);
+  assertStringIncludes(before.message, "[SECURITY] [AUDIT_CHAIN_BROKEN]");
+  assertStringIncludes(before.message, "directory deleted");
+  assertStringIncludes(before.message, "--acknowledge-loss");
+  assertStringIncludes(before.message, journal);
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-loss": journal,
+    "reason": "pruned by the work-volume housekeeping (Issue #337)",
+    "by": "nleck",
+  }, CONFIG);
+  assertEquals(signed.success, true);
+  assertEquals(payload(signed.data).newlyAcknowledged, [journal]);
+
+  // Acknowledged: green, but the loss is still named on every sweep.
+  const after = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(after.success, true);
+  assertEquals(payload(after.data).broken.length, 0);
+  assertEquals(payload(after.data).acknowledged.length, 1);
+  assertStringIncludes(after.message, "[AUDIT_CHAIN_LOSS_ACKNOWLEDGED]");
+  assertStringIncludes(after.message, "signed for by nleck");
+  assertStringIncludes(after.message, "Issue #337");
+  assertStringIncludes(after.message, "1 acknowledged as lost");
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("audit-chain-verify - the acknowledgement is recorded in the hash chain, not only the roster (Issue #359)", async () => {
+  const { baseDir, path } = await seedDir();
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+  await sweepAwayJournals(baseDir);
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-loss": journal,
+    "reason": "swept by Issue #337",
+    "by": "nleck",
+  }, CONFIG);
+  assertEquals(signed.success, true);
+
+  // A fresh journal now exists carrying the acknowledgement as a chained,
+  // anchored entry — so "who silenced this alarm" is answerable from the
+  // audit trail itself, not from a sidecar a forger could write alone.
+  const names: string[] = [];
+  for await (const item of Deno.readDir(baseDir)) {
+    if (item.isFile && item.name.endsWith(".jsonl")) names.push(item.name);
+  }
+  assertEquals(names.length, 1);
+  const chained = await Deno.readTextFile(`${baseDir}/${names[0]}`);
+  assertStringIncludes(chained, "audit-loss-acknowledged");
+  assertStringIncludes(chained, journal);
+  assertStringIncludes(chained, "nleck");
+  assertStringIncludes(chained, "swept by Issue #337");
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("audit-chain-verify - a journal still on disk can never be acknowledged (Issue #359)", async () => {
+  const { baseDir, path } = await seedDir(3);
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+
+  // Truncate the journal: a real tamper signal, and exactly the case an
+  // acknowledgement must never be able to silence.
+  const lines = (await Deno.readTextFile(path)).split("\n").filter((l) =>
+    l.trim().length > 0
+  );
+  await Deno.writeTextFile(path, `${lines.slice(0, 1).join("\n")}\n`);
+  _resetAuditCaches();
+
+  const refused = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-loss": journal,
+    "reason": "trying to bless a truncation",
+    "by": "attacker",
+  }, CONFIG);
+  assertEquals(refused.success, false);
+  assertStringIncludes(refused.message, "[AUDIT_CHAIN_LOSS_NOT_ACKNOWLEDGED]");
+  assertStringIncludes(refused.message, "still on disk");
+
+  // And the sweep is as broken as it was before the attempt.
+  const swept = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(swept.success, false);
+  assertStringIncludes(swept.message, "[SECURITY] [AUDIT_CHAIN_BROKEN]");
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("audit-chain-verify - a journal that was never rostered cannot be pre-acknowledged (Issue #359)", async () => {
+  const { baseDir } = await seedDir();
+
+  const refused = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-loss": "audit-worker-2099-01-01.jsonl",
+    "reason": "silencing something that never existed",
+    "by": "attacker",
+  }, CONFIG);
+  assertEquals(refused.success, false);
+  assertStringIncludes(refused.message, "not on the roster");
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("audit-chain-verify - an acknowledgement without a reason is refused (Issue #359)", async () => {
+  const { baseDir, path } = await seedDir();
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+  await sweepAwayJournals(baseDir);
+
+  for (
+    const args of [
+      { "base-dir": baseDir, "acknowledge-loss": journal },
+      { "base-dir": baseDir, "acknowledge-loss": journal, "reason": "   " },
+    ]
+  ) {
+    const refused = await auditChainVerifyCommand.execute(args, CONFIG);
+    assertEquals(refused.success, false);
+    assertStringIncludes(refused.message, "--reason");
+  }
+
+  // Nothing was written, so the alarm still sounds.
+  const swept = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(swept.success, false);
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("audit-chain-verify - acknowledging one journal leaves the others loud (Issue #359)", async () => {
+  _resetAuditCaches();
+  const baseDir = await Deno.makeTempDir();
+  const paths: string[] = [];
+  for (const date of ["2026-08-21", "2026-08-22", "2026-08-23"]) {
+    const opts = { baseDir, workerId: "worker", date };
+    const result = await recordMutation({
+      runId: "run",
+      verb: "issue-comment",
+      outcome: "success",
+    }, opts);
+    assert(result.ok);
+    paths.push(auditFilePath(opts));
+  }
+  await sweepAwayJournals(baseDir);
+  const names = paths.map((p) => p.slice(p.lastIndexOf("/") + 1));
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-loss": names[0]!,
+    "reason": "Issue #337",
+    "by": "nleck",
+  }, CONFIG);
+  // The one journal is signed for — and the run is still red, because two
+  // unexplained losses remain. Signing for one loss must never green the
+  // sweep on behalf of the others.
+  assertEquals(payload(signed.data).newlyAcknowledged, [names[0]]);
+  assertEquals(signed.success, false);
+
+  const swept = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(swept.success, false);
+  assertEquals(payload(swept.data).acknowledged.length, 1);
+  assertEquals(payload(swept.data).broken.length, 2);
+  for (const name of names.slice(1)) {
+    assertStringIncludes(swept.message, name);
+  }
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("audit-chain-verify - a half-formed acknowledgement line is a tamper signal, not a silencer (Issue #359)", async () => {
+  const { baseDir, path } = await seedDir();
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+  await sweepAwayJournals(baseDir);
+
+  // No reason, no operator: it matches neither roster line shape, so the
+  // roster read must fail loud rather than read it as an expectation line.
+  await Deno.writeTextFile(
+    rosterPath(baseDir),
+    `${JSON.stringify({ journal, acknowledgedAt: "2026-08-25T00:00:00Z" })}\n`,
+    { append: true },
+  );
+
+  const swept = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(swept.success, false);
+  assertStringIncludes(swept.message, "unexpected shape");
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
 });
