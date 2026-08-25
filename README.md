@@ -9,10 +9,15 @@
 **Create GitHub issues from your phone, get PRs (Pull Requests) automatically,
 review and request fixes with a thumbs up.**
 
-VibeCoder is an automated GitHub issue worker powered by
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code). It monitors your
-repositories, picks up issues, writes code, runs quality checks, and opens pull
-requests — all without you touching a keyboard.
+VibeCoder is an automated GitHub issue worker driven by a coding-agent CLI. It
+monitors your repositories, picks up issues, writes code, runs quality checks,
+and opens pull requests — all without you touching a keyboard.
+
+It is **provider agnostic**: `claude`
+([Claude Code](https://docs.anthropic.com/en/docs/claude-code)) is the default,
+and `codex` (the OpenAI Codex CLI) and `gemini` (the Gemini CLI) are built in
+and chosen by configuration — see
+[Choose your coding agent](#-choose-your-coding-agent).
 
 ## 🔄 How It Works
 
@@ -20,24 +25,68 @@ requests — all without you touching a keyboard.
 sequenceDiagram
     actor You
     participant Worker as 🤖 VibeCoder Worker
-    participant Claude as Claude Code
+    participant Agent as 🧠 Coding agent
     participant GitHub as 🐙 GitHub
 
     You->>GitHub: Create issue (from phone)
     GitHub->>Worker: Detect & self-assign
     Worker->>Worker: Create feature branch
-    Worker->>Claude: Work on issue
-    Claude->>Worker: Code changes
+    Worker->>Agent: Work on issue
+    Agent->>Worker: Code changes
     Worker->>Worker: Run quality checks
     Worker->>GitHub: Create PR
     GitHub->>You: PR appears for review
     You->>GitHub: Leave feedback (thumbs up)
     GitHub->>Worker: Fix feedback & push
-    Worker->>Claude: Apply feedback
-    Claude->>Worker: Updated code
+    Worker->>Agent: Apply feedback
+    Agent->>Worker: Updated code
     Worker->>GitHub: Updated PR ready
     You->>GitHub: Approve & merge
 ```
+
+## 🔌 Choose your coding agent
+
+The coding agent is a **separable layer** — every workflow above is the worker's,
+not the vendor's, so swapping the agent changes which CLI writes the code and
+nothing else. Three providers are built in:
+
+| Provider id        | Agent       | Credential file       |
+| ------------------ | ----------- | --------------------- |
+| `claude` (default) | Claude Code | `claude/provider.env` |
+| `codex`            | Codex CLI   | `codex/provider.env`  |
+| `gemini`           | Gemini CLI  | `gemini/provider.env` |
+
+Select one with the `agent_provider` key in `.config.json`:
+
+```json
+{
+  "agent_provider": "codex",
+  "agent_providers": ["codex"]
+}
+```
+
+`agent_providers` lists every provider enabled for a run: each gets its own
+credential file, its own startup preflight and its own read-only container
+mount, so no vendor's secret reaches another vendor's agent. It must include
+the active provider. For a single run, `VIBE_AGENT_PROVIDER` and
+`VIBE_AGENT_PROVIDERS` (comma-separated) override both keys.
+
+An id that is set but not registered fails loudly at startup with the supported
+ids named — the worker never silently falls back to the default and runs an
+agent you did not choose.
+
+The default container image installs Claude Code alone, so choosing another
+provider also means building the image with it in the `AGENT_PROVIDERS` set.
+
+- [Container Image — the coding-agent provider layer](docs/CONTAINER.md#the-coding-agent-provider-layer)
+  — how the seam works, what the image installs, and how to add a fourth
+  provider.
+- [Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults) —
+  the `agent_provider` and `agent_providers` keys in full.
+- [Setup Guide](docs/SETUP.md#choosing-the-coding-agent) — provisioning each
+  vendor's credentials.
+- [Quorum](docs/QUORUM.md) — running several providers at once, so two agents
+  draft a plan and a third judges it.
 
 ## ✨ Key Features
 
