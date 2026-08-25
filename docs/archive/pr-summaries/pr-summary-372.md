@@ -93,7 +93,7 @@ live repository tree:
 ### Quality gate
 
 `./quality.sh < /dev/null` passes every stage except `deno tests`, which reports
-**15930 passed / 10 failed**. All ten failures are pre-existing and unrelated to
+**15950 passed / 10 failed**. All ten failures are pre-existing and unrelated to
 this change — they are environment-sensitive tests that read the real host work
 directory (`/home/vibe/auto-issue-work`):
 
