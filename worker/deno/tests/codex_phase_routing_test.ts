@@ -316,9 +316,37 @@ Deno.test("codex routing - a phase-less invocation resolves nothing and stays qu
 
 Deno.test("codex routing - the descriptor's resolvers are the Codex chain", () => {
   withCleanRouting(() => {
-    for (const phase of [undefined, ...Object.keys(CODEX_PHASE_MODEL_DEFAULTS)]) {
+    for (
+      const phase of [undefined, ...Object.keys(CODEX_PHASE_MODEL_DEFAULTS)]
+    ) {
       assertEquals(codex.resolveModel(phase), resolveCodexModel(phase));
       assertEquals(codex.resolveEffort(phase), resolveCodexEffort(phase));
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// The documented routing matches the code
+// ---------------------------------------------------------------------------
+
+Deno.test("codex routing - docs/MODEL-AND-CACHING.md states the routing the code applies", async () => {
+  const doc = await Deno.readTextFile(
+    new URL("../../../docs/MODEL-AND-CACHING.md", import.meta.url),
+  );
+  // Only the Codex section counts — the Claude tables above it use the same
+  // phase keys with Claude tiers.
+  const start = doc.indexOf("### 🤖 Codex per-phase routing");
+  assert(start !== -1, "the Codex routing section is missing from the doc");
+  const end = doc.indexOf("\n### ", start + 1);
+  const section = doc.slice(start, end === -1 ? undefined : end);
+  const rows = section.split("\n").filter((line) =>
+    line.trimStart().startsWith("|")
+  );
+
+  for (const [phase, model] of Object.entries(CODEX_PHASE_MODEL_DEFAULTS)) {
+    const row = rows.find((line) => line.includes(`\`${phase}\``));
+    assert(row, `no Codex routing row documents phase ${phase}`);
+    assertStringIncludes(row, `\`${model}\``);
+    assertStringIncludes(row, `\`${CODEX_PHASE_EFFORT_DEFAULTS[phase]}\``);
+  }
 });
