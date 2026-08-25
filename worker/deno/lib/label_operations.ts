@@ -13,7 +13,11 @@ import { runGhCommand } from "./github.ts";
 import type { LabelManagerDeps } from "./label_types.ts";
 import { getCachedLabels, labelCacheInvalidate } from "./label_cache.ts";
 import { invalidateTimelineCache } from "./timeline_cache.ts";
-import { getLabelByName } from "../setup/label_definitions.ts";
+import {
+  getLabelByName,
+  getLabelColour,
+  getLabelDescription,
+} from "../setup/label_definitions.ts";
 import { assertWorkerCanApplyLabel } from "./worker_label_guard.ts";
 
 /**
@@ -107,15 +111,25 @@ export async function addLabelToIssue(
  *
  * Issue #976 — Uses REST API as primary method for label creation,
  * with CLI fallback.
+ *
+ * Issue #368 — `colour` and `description` are resolved from the canonical
+ * label table when the caller omits them. Before this, the parameter
+ * defaulted to red and each call site hard-coded its own literal, so a
+ * label's colour was decided by whichever call site created it first in
+ * that repo — the same label ended up a different colour in every repo.
+ * Pass a colour explicitly only when the label is genuinely not
+ * fleet-managed.
  */
 export async function ensureLabelExists(
   repo: string,
   labelName: string,
-  colour: string = "d73a4a",
-  description: string = "",
+  colour?: string,
+  description?: string,
   deps: LabelManagerDeps = {},
 ): Promise<Result<void>> {
   const ghCommandFn = deps.ghCommandFn ?? runGhCommand;
+  const canonicalColour = colour ?? getLabelColour(labelName);
+  const canonicalDescription = description ?? getLabelDescription(labelName);
   const cacheDir = deps.cacheDir ??
     `${Deno.env.get("TMPDIR") ?? "/tmp"}/vibe-label-cache`;
   const ttlSeconds = deps.cacheTtlSeconds ?? 3600;
@@ -142,8 +156,10 @@ export async function ensureLabelExists(
       "-f",
       `name=${labelName}`,
       "-f",
-      `color=${colour}`,
-      ...(description ? ["-f", `description=${description}`] : []),
+      `color=${canonicalColour}`,
+      ...(canonicalDescription
+        ? ["-f", `description=${canonicalDescription}`]
+        : []),
     ]);
     await labelCacheInvalidate(cacheDir, repo);
     return { ok: true, value: undefined };
@@ -168,10 +184,10 @@ export async function ensureLabelExists(
     "--repo",
     repo,
     "--color",
-    colour,
+    canonicalColour,
   ];
-  if (description) {
-    createArgs.push("--description", description);
+  if (canonicalDescription) {
+    createArgs.push("--description", canonicalDescription);
   }
 
   try {

@@ -330,9 +330,34 @@ Colours match the seeded definitions in
 | `needs-failure-detection-repair` | `d4c5f9` | Worker | Planning published a usable plan, but named sub-issues still lack their `## Failure Detection` criterion (Issue #59). The parent stays open and is **not** marked `failed-once`. The Priority 1.81 resume pass re-gates the sub-issues each cycle, finishes the repairs, and removes the label — escalating to `needs-human` after 3 failed attempts (Issue #60) |
 | `orphan-deps` | `0e8a16` | Worker (idle scan) | Category label on a finding — does **not** queue work alone |
 
+### Content / finding labels
+
 Idle-task finding category labels (security, dead-code, audits, and so
 on) are signals for triage. They do **not** start implementation until
 a human adds a work-tier label.
+
+Their colours come from the canonical content table in
+`worker/deno/setup/content_label_definitions.ts` (Issue #368) — one table for
+the whole fleet, so a `severity:critical` in one repo is the same red as a
+`severity:critical` in the next.
+
+| Label | Colour | Who adds it | What happens |
+| ----- | ------ | ----------- | ------------ |
+| `severity:critical` | `b60205` | Worker (scan) | Severity ramp: red → orange → yellow → green as severity falls |
+| `severity:high` | `d93f0b` | Worker (scan) | ↑ |
+| `severity:medium` | `fbca04` | Worker (scan) | ↑ |
+| `severity:low` | `0e8a16` | Worker (scan) | ↑ |
+| `confidence:high` | `0e8a16` | Worker (scan) | Confidence ramp — how sure the scan is the finding is real |
+| `confidence:medium` | `fbca04` | Worker (scan) | ↑ |
+| `confidence:low` | `c2e0c6` | Worker (scan) | ↑ |
+| `security` | `b60205` | Worker (scan) | Security-scan finding |
+| `lang:<bucket>` | per language | Worker (scan) | Best-practices bucket, in that language's own brand colour |
+
+These labels are **not** seeded at onboarding — a repo grows them the first
+time a scan files a matching finding. A fleet that drifted before the table
+existed is repaired with
+`setup_cli.ts label-colour-reconcile` (`--dry-run` to preview); it repaints
+only labels the table names and never creates one.
 
 ---
 

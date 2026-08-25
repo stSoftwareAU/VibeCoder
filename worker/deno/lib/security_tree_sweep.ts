@@ -1540,14 +1540,10 @@ export function createDefaultSweepDeps(): SweepDeps {
     ghCommandFn: (args) => runGhCommand(args),
     whichFn: defaultWhich,
     ensureLabelFn: async (slug, label) => {
-      const result = await ensureLabelExists(
-        slug,
-        label,
-        label === SWEEP_LABEL ? "5319e7" : "d73a4a",
-        label === SWEEP_LABEL
-          ? "Whole-tree security sweep finding (Issue #4193)"
-          : "",
-      );
+      // Issue #368: every colour comes from the canonical label table, so
+      // `security-tree-sweep` is the same purple in every repo the sweep
+      // touches rather than whichever colour this call site invented.
+      const result = await ensureLabelExists(slug, label);
       if (!result.ok) {
         throw new Error(
           `could not ensure label ${label} on ${slug}: ${result.error.message}`,
