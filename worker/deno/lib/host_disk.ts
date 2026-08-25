@@ -35,6 +35,11 @@
  */
 
 import { runWithTimeout } from "./subprocess_timeout.ts";
+import {
+  classifyWorkVolumeRatchet,
+  describeWorkVolumeRatchet,
+  type WorkVolumeRatchet,
+} from "./work_volume_ratchet.ts";
 
 /** Env the launcher sets from the host's `df` at launch. */
 export const HOST_DISK_AVAIL_ENV = "VIBE_HOST_DISK_AVAIL_BYTES";
@@ -175,16 +180,22 @@ export function formatGb(bytes: number): string {
  * The thin-provisioned volume image only grows on the host, so every byte
  * the work volume gained since launch is a byte the host lost. Shrinkage is
  * ignored (a freed block inside the volume does not come back to the host).
+ *
+ * Issue #384: the third argument is therefore the volume's **high-water
+ * mark**, not its current usage. Passing the current reading made a
+ * guest-side sweep look like host free space — the tier reclaim deleted
+ * 18 GB inside the guest, the estimate rose by 18 GB the host never got, and
+ * `healed` came back true while `df` on the host had not moved a byte.
  */
 export function estimateHostFree(
   baseline: HostDiskBaseline,
   volumeUsedAtLaunch: number | null,
-  volumeUsedNow: number | null,
+  volumeUsedPeak: number | null,
 ): number {
-  if (volumeUsedAtLaunch === null || volumeUsedNow === null) {
+  if (volumeUsedAtLaunch === null || volumeUsedPeak === null) {
     return baseline.availableBytes;
   }
-  const growth = Math.max(0, volumeUsedNow - volumeUsedAtLaunch);
+  const growth = Math.max(0, volumeUsedPeak - volumeUsedAtLaunch);
   return Math.max(0, baseline.availableBytes - growth);
 }
 
@@ -232,6 +243,10 @@ export class HostDiskMonitor {
   private readonly floors: DiskFloors;
   private readonly baseline: HostDiskBaseline | null;
   private volumeUsedAtLaunch: number | null = null;
+  /** Highest volume usage seen this run — what the host has lost (#384). */
+  private volumeUsedPeak: number | null = null;
+  /** Most recent volume usage, for the ratchet split (#384). */
+  private volumeUsedNow: number | null = null;
   private baselined = false;
   private lastSampleAt: number | undefined;
   private lastStatus: HostDiskStatus = {
@@ -277,6 +292,19 @@ export class HostDiskMonitor {
   }
 
   /**
+   * How much of the host's loss is space the guest has already freed but the
+   * volume image still holds (Issue #384).
+   *
+   * Only meaningful in container mode: on a native host `df` measures the
+   * host itself, so freed space is genuinely free and there is no ratchet to
+   * claim.
+   */
+  get workVolumeRatchet(): WorkVolumeRatchet {
+    if (this.baseline === null) return classifyWorkVolumeRatchet(null, null);
+    return classifyWorkVolumeRatchet(this.volumeUsedNow, this.volumeUsedPeak);
+  }
+
+  /**
    * Probe if the cadence allows, then return the current status.
    *
    * `force` skips the cadence — the re-read after a reclaim (Issue #242)
@@ -306,22 +334,35 @@ export class HostDiskMonitor {
         this.volumeUsedAtLaunch = reading?.usedBytes ?? null;
         this.baselined = true;
       }
+      // Issue #384: the host lost every byte the volume ever grew to, and a
+      // guest-side delete does not hand those blocks back — the estimate
+      // tracks the high-water mark, and the gap below it is named as what
+      // it is: dead space inside the volume image.
+      this.volumeUsedNow = reading?.usedBytes ?? this.volumeUsedNow;
+      if (reading?.usedBytes !== undefined) {
+        this.volumeUsedPeak = this.volumeUsedPeak === null
+          ? reading.usedBytes
+          : Math.max(this.volumeUsedPeak, reading.usedBytes);
+      }
       const available = estimateHostFree(
         this.baseline,
         this.volumeUsedAtLaunch,
-        reading?.usedBytes ?? null,
+        this.volumeUsedPeak,
       );
       const cls = classifyHostDisk(
         available,
         this.baseline.totalBytes,
         this.floors,
       );
+      const ratchet = describeWorkVolumeRatchet(this.workVolumeRatchet);
       status = {
         level: cls.level,
         availableBytes: available,
         totalBytes: this.baseline.totalBytes,
         source: "launch-baseline",
-        detail: `host (estimated from launch baseline) ${cls.detail}`,
+        detail: `host (estimated from launch baseline) ${cls.detail}${
+          ratchet === "" ? "" : ` — ${ratchet}`
+        }`,
       };
     } else if (reading !== null) {
       const cls = classifyHostDisk(

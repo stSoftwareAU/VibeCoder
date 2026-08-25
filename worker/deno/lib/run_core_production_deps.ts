@@ -290,6 +290,7 @@ import {
 } from "./work_volume_tiers.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
+import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
 
 // FLEET health
 import {
@@ -2283,11 +2284,25 @@ export async function createProductionRunCoreDeps(
         log: (message: string) => logger.info(message),
       });
       const after = await hostDisk.check({ force: true });
+      // Issue #384: on a containerised host the sweep above deleted files
+      // INSIDE the volume image, and the floor it is measured against is on
+      // the host — the image keeps every block it was ever allocated. Say
+      // that plainly instead of logging a reclaim that reads as a failure;
+      // on a native host `df` is the host, so the bytes are genuinely free
+      // and there is nothing to explain away.
+      const hostReturn = after.source === "launch-baseline"
+        ? ` — ${
+          describeGuestReclaimToHost(
+            result.bytesReclaimed,
+            hostDisk.workVolumeRatchet,
+          )
+        }`
+        : "";
       return {
         bytesReclaimed: result.bytesReclaimed,
         detail: `${
           summariseWorkVolumeTiers(result)
-        } — host disk now ${after.level}: ${after.detail}`,
+        }${hostReturn} — host disk now ${after.level}: ${after.detail}`,
         healed: after.level !== "low",
       };
     },
