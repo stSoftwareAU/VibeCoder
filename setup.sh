@@ -989,10 +989,19 @@ prompt_launchagent_setup() {
     print_info "The macOS LaunchAgent runs the worker automatically via launchd"
     print_info "(run.sh every 5 minutes, restarted at login). It keeps full GUI"
     print_info "access — it can launch Chrome — while you are logged in."
-    print_info "Answer 'n' on a machine where you start the worker manually via loop.sh."
-    echo -n "  Install the LaunchAgent now? [Y/n] "
+    print_info "Answer 'y' ONLY on a machine where nothing starts the worker by hand."
+    print_info "If you run ./loop.sh yourself, answer 'n' — two workers on one host"
+    print_info "collide on the work volumes (Issue #26)."
+    # Defaults to NO. Installing starts a second worker on a host that may
+    # already have one, and a bare Enter must never do that: on GRQ-23 an
+    # Enter through this prompt left launchd running the worker every five
+    # minutes beside the operator's own `./loop.sh`, unnoticed until the two
+    # were found fighting over the same work volume. The safe answer is the
+    # one that changes nothing, so it is the one Enter gives you.
+    echo -n "  Install the LaunchAgent now? [y/N] "
     read -r install_launchagent
-    if [[ "$install_launchagent" != "n" && "$install_launchagent" != "N" ]]; then
+    if [[ "$install_launchagent" == "y" || "$install_launchagent" == "Y" ||
+          "$install_launchagent" == "yes" || "$install_launchagent" == "YES" ]]; then
         run_setup_cli launchagent
         return 0
     fi
