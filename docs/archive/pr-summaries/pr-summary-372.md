@@ -90,4 +90,22 @@ live repository tree:
   `unwrap()`, `prompts/best_practices/buckets/rust.md`, and
   `worker/deno/lib/best_practices_bucket_picker.ts`.
 
-`./quality.sh < /dev/null` passes.
+### Quality gate
+
+`./quality.sh < /dev/null` passes every stage except `deno tests`, which reports
+**15930 passed / 10 failed**. All ten failures are pre-existing and unrelated to
+this change — they are environment-sensitive tests that read the real host work
+directory (`/home/vibe/auto-issue-work`):
+
+- `tests/fleet_health_test.ts` — 1
+- `tests/host_workdir_guard_test.ts` — 1
+- `tests/optional_feature_env_test.ts` — 1
+- `tests/setup_workdir_reminder_test.ts` — 7
+
+Verified pre-existing by checking out the untouched base branch
+(`milestone/358-coding-standards-should-be-model-agnostic` at `e96a999`) in a
+separate worktree and running those four files there: the same **10 failed**.
+This branch touches only `CODING-STANDARDS.md`, the new
+`worker/deno/lib/bucket_docs_check.ts`, and its test, none of which those tests
+import. `deno lint`, `deno check`, `deno fmt --check`, markdownlint, mermaid and
+`docs prompt versions` all pass.
