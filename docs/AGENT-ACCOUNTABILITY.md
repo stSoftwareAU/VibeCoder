@@ -259,7 +259,47 @@ deno task audit-chain-verify                   # sweep + verify every chain
 deno task audit-chain-verify --base-dir /path/to/audit
 deno task audit-chain-verify --adopt           # bless pre-anchor journals
 deno task audit-chain-verify --json            # machine-readable verdict
+deno task audit-chain-verify \
+  --acknowledge-loss audit-worker-2026-08-21.jsonl \
+  --reason "pruned by the work-volume housekeeping (Issue #337)" \
+  --by nleck                                   # sign for an accounted-for loss
 ```
+
+**Signing for a loss that has been accounted for (Issue #359).** The roster
+is append-only and has no forget: a journal it records but that no longer
+exists on disk fails the sweep on every worker start, for ever. That is
+correct for an unexplained deletion and wrong for one already investigated.
+Hosts swept by the Issue #337 bug had three journals deleted by the worker
+itself; the fix stopped further losses but could not undo those, so
+`audit-chain-verify` stayed red with no exit but hand-editing the very file
+that is the tamper evidence. A permanently-red integrity alarm is a broken
+integrity alarm — the next genuine deletion just adds a line nobody reads.
+
+`--acknowledge-loss` is the supported exit, and it is deliberately narrow:
+
+- the journal must be **on the roster** — an unexpected journal cannot be
+  pre-acknowledged;
+- it must be **absent from disk**, journal and anchor both. A journal that
+  is present but truncated, rewritten, or carrying a malformed line is
+  never acknowledgeable and keeps failing exactly as before — silencing
+  those would be blessing tampering, which `--adopt` has always refused;
+- a `--reason` is **required**, and an operator identity is recorded
+  (`--by`, defaulting to `VIBE_OPERATOR`/`USER`);
+- the acknowledgement is written into the **hash chain first**, as an
+  `audit-loss-acknowledged` entry. If that append fails, nothing is
+  acknowledged and the alarm keeps sounding.
+
+Nothing is erased. The roster keeps saying the journal existed and gains a
+dated, attributed line saying its absence was signed for; every later sweep
+still names the loss as `[AUDIT_CHAIN_LOSS_ACKNOWLEDGED]` and counts it in
+the summary. It stops being a *failure*, not a *fact*.
+
+This is accountability, not unforgeability, and the distinction is worth
+stating plainly: a principal who can append to the roster can already delete
+it outright — which trips the complete-erasure alarm instead. What the
+acknowledgement changes is that an accounted-for loss becomes a dated,
+attributed, reviewable record, so a **new** deletion on that host is once
+again the only red line in the sweep.
 
 **Inspection CLI.** `deno task audit-log-tail` (the
 `audit-log-tail` command,

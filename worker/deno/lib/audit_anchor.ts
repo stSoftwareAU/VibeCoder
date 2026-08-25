@@ -161,6 +161,41 @@ interface RosterEntry {
 }
 
 /**
+ * One roster line acknowledging that an expected journal is genuinely gone
+ * and the loss has been accounted for (Issue #359).
+ *
+ * The roster stays append-only: acknowledging a loss **adds** a line, it
+ * never removes the `RosterEntry` that records the journal existed. The
+ * roster therefore keeps saying "this journal was here" and additionally
+ * says "and its absence was signed for, by whom, when, and why".
+ *
+ * This is not a claim of unforgeability. A principal who can append to the
+ * roster can already delete it outright — which trips the complete-erasure
+ * alarm (Issue #270). What the acknowledgement buys is accountability: the
+ * loss stops being an anonymous recurring alarm and becomes a dated,
+ * attributed, reviewable record, mirrored into the hash chain itself by
+ * `acknowledgeJournalLoss` in `audit_journal.ts`.
+ */
+export interface RosterAcknowledgement {
+  /** Basename of the journal whose loss is acknowledged. */
+  journal: string;
+  /** ISO 8601 timestamp the acknowledgement was recorded. */
+  acknowledgedAt: string;
+  /** Why the journal is gone — free text, required, never empty. */
+  reason: string;
+  /** Who signed for the loss. */
+  by: string;
+}
+
+/** Everything one roster file holds, in a single read. */
+export interface RosterContents {
+  /** Journal basenames the directory is expected to hold, first-seen order. */
+  journals: string[];
+  /** Acknowledged losses, keyed by journal basename (last line wins). */
+  acknowledged: Map<string, RosterAcknowledgement>;
+}
+
+/**
  * Roster file path for an audit directory.
  *
  * The anchor closed the lone-delete hole, but a journal deleted **together
@@ -204,6 +239,77 @@ function isRosterEntry(value: unknown): value is RosterEntry {
     typeof e["addedAt"] === "string";
 }
 
+/** Is `value` a structurally valid acknowledgement line (Issue #359)? */
+function isRosterAcknowledgement(
+  value: unknown,
+): value is RosterAcknowledgement {
+  if (typeof value !== "object" || value === null) return false;
+  const e = value as Record<string, unknown>;
+  return typeof e["journal"] === "string" && e["journal"].length > 0 &&
+    typeof e["acknowledgedAt"] === "string" &&
+    typeof e["reason"] === "string" && e["reason"].trim().length > 0 &&
+    typeof e["by"] === "string" && e["by"].trim().length > 0;
+}
+
+/**
+ * Read the whole roster for an audit directory — expectations and
+ * acknowledgements in one pass.
+ *
+ * @param baseDir - Audit directory the roster covers
+ * @returns Journal basenames in first-seen order, plus acknowledged losses
+ *   (both empty when no roster file exists)
+ * @throws When the roster exists but a line is unreadable or matches
+ *   neither line shape — a corrupted roster is a tamper signal, never a
+ *   silent "no expectations".
+ */
+export async function readRosterContents(
+  baseDir: string,
+): Promise<RosterContents> {
+  const path = rosterPath(baseDir);
+  let raw: string;
+  try {
+    raw = await Deno.readTextFile(path);
+  } catch (error: unknown) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { journals: [], acknowledged: new Map() };
+    }
+    throw new Error(
+      `audit roster unreadable: ${path}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const journals: string[] = [];
+  const seen = new Set<string>();
+  const acknowledged = new Map<string, RosterAcknowledgement>();
+  for (const line of raw.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      throw new Error(`audit roster has a malformed line: ${path}: ${line}`);
+    }
+    // Acknowledgements are checked first: they carry `journal` too, and a
+    // half-formed acknowledgement must be rejected rather than silently
+    // read as an expectation line that happens to lack `addedAt`.
+    if (isRosterAcknowledgement(parsed)) {
+      acknowledged.set(parsed.journal, parsed);
+      continue;
+    }
+    if (!isRosterEntry(parsed)) {
+      throw new Error(
+        `audit roster entry has an unexpected shape: ${path}: ${line}`,
+      );
+    }
+    if (!seen.has(parsed.journal)) {
+      seen.add(parsed.journal);
+      journals.push(parsed.journal);
+    }
+  }
+  return { journals, acknowledged };
+}
+
 /**
  * Read the roster for an audit directory.
  *
@@ -214,39 +320,77 @@ function isRosterEntry(value: unknown): value is RosterEntry {
  *   corrupted roster is a tamper signal, never a silent "no expectations".
  */
 export async function readRoster(baseDir: string): Promise<string[]> {
-  const path = rosterPath(baseDir);
-  let raw: string;
+  return (await readRosterContents(baseDir)).journals;
+}
+
+/**
+ * Record that an expected journal is genuinely gone and the loss has been
+ * accounted for (Issue #359).
+ *
+ * Append-only, like every other roster write: the journal's `RosterEntry`
+ * stays exactly where it is, and this adds a dated, attributed line beside
+ * it. Re-acknowledging a journal appends a fresh line; the newest wins.
+ *
+ * The caller is responsible for the checks that make an acknowledgement
+ * legitimate — that the journal is on the roster, that it really is absent,
+ * and that the act has been mirrored into the hash chain. See
+ * `acknowledgeJournalLoss` in `audit_journal.ts`, which is the only
+ * supported way in.
+ *
+ * @param baseDir - Audit directory the roster covers
+ * @param journalName - Basename of the lost journal
+ * @param reason - Why it is gone; must not be blank
+ * @param by - Who is signing for the loss; must not be blank
+ * @param now - ISO timestamp override (tests)
+ * @returns Result carrying the appended acknowledgement
+ */
+export async function acknowledgeRosterLoss(
+  baseDir: string,
+  journalName: string,
+  reason: string,
+  by: string,
+  now?: string,
+): Promise<Result<RosterAcknowledgement>> {
+  if (reason.trim().length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge ${journalName}: a reason is required`,
+      ),
+    };
+  }
+  if (by.trim().length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge ${journalName}: an operator identity is ` +
+          `required`,
+      ),
+    };
+  }
+  const acknowledgement: RosterAcknowledgement = {
+    journal: journalName,
+    acknowledgedAt: now ?? new Date().toISOString(),
+    reason: reason.trim(),
+    by: by.trim(),
+  };
   try {
-    raw = await Deno.readTextFile(path);
-  } catch (error: unknown) {
-    if (error instanceof Deno.errors.NotFound) return [];
-    throw new Error(
-      `audit roster unreadable: ${path}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+    await Deno.writeTextFile(
+      rosterPath(baseDir),
+      `${JSON.stringify(acknowledgement)}\n`,
+      { append: true },
     );
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: new Error(
+        `audit roster acknowledgement could not be appended: ${
+          rosterPath(baseDir)
+        }: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    };
   }
-  const names: string[] = [];
-  const seen = new Set<string>();
-  for (const line of raw.split("\n")) {
-    if (line.trim().length === 0) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      throw new Error(`audit roster has a malformed line: ${path}: ${line}`);
-    }
-    if (!isRosterEntry(parsed)) {
-      throw new Error(
-        `audit roster entry has an unexpected shape: ${path}: ${line}`,
-      );
-    }
-    if (!seen.has(parsed.journal)) {
-      seen.add(parsed.journal);
-      names.push(parsed.journal);
-    }
-  }
-  return names;
+  return { ok: true, value: acknowledgement };
 }
 
 /**
