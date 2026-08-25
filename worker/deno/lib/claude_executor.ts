@@ -930,17 +930,17 @@ function isRecognisedModel(value: string): boolean {
 }
 
 /**
- * Build the `["--model", value]` arg pair for a resolved model value, warning
- * once when the value is neither a known alias nor a `claude-*` id (Issue
- * #2711, audit #2702 F3). The value is still forwarded verbatim — full model
- * ids must keep working and the CLI is the authority — but a typo at any
- * precedence level is now visible in the logs rather than silently producing
- * a wrong `--model`.
+ * Return a resolved model value, warning once when it is neither a known alias
+ * nor a `claude-*` id (Issue #2711, audit #2702 F3). The value is still
+ * forwarded verbatim — full model ids must keep working and the CLI is the
+ * authority — but a typo at any precedence level is now visible in the logs
+ * rather than silently producing a wrong `--model`.
  *
  * @param level - Human-readable precedence level (named for the log message).
- * @param value - The resolved model value to forward to `--model`.
+ * @param value - The resolved model value.
+ * @returns The value, unchanged.
  */
-function modelArg(level: string, value: string): string[] {
+function checkedModel(level: string, value: string): string {
   if (!isRecognisedModel(value)) {
     console.warn(
       `[claude-executor] Model "${value}" resolved from ${level} is not a ` +
@@ -948,11 +948,16 @@ function modelArg(level: string, value: string): string[] {
         `id; forwarding to --model verbatim. Check for a typo.`,
     );
   }
-  return ["--model", value];
+  return value;
 }
 
 /**
- * Build the model arguments for the Claude CLI.
+ * Resolve the model Claude runs a phase on — the value behind `--model`.
+ *
+ * This is the single statement of the model precedence chain (Issue #362): the
+ * provider seam in `agent_provider.ts` reaches routing through here, and
+ * {@link buildClaudeModelArgs} is a thin argv wrapper over it, so the six steps
+ * are never restated.
  *
  * Priority order (most specific wins — Issue #1265, #1270, #2625):
  *   1. Phase-specific env var (e.g. CLAUDE_MODEL_REFINEMENT) — operator escape hatch
@@ -967,23 +972,24 @@ function modelArg(level: string, value: string): string[] {
  *
  * A resolved value that is neither a known alias nor a `claude-*` id emits a
  * single warning naming the level and value (Issue #2711) — the value is still
- * forwarded verbatim so full model ids keep working.
+ * returned verbatim so full model ids keep working.
  *
  * @param phase - Optional phase name (e.g., "planning")
- * @returns Array of CLI args (e.g., ["--model", "claude-sonnet-4-6"]) or empty
+ * @returns The resolved model value, or undefined when no step supplies one —
+ *   the CLI's own default then stands.
  */
-export function buildClaudeModelArgs(phase?: string): string[] {
+export function resolveClaudeModel(phase?: string): string | undefined {
   if (phase) {
     // 1. Phase-specific env var (explicit operator override for this phase)
     const phaseVar = `CLAUDE_MODEL_${phase.toUpperCase()}`;
     const phaseModel = Deno.env.get(phaseVar) ?? "";
     if (phaseModel) {
-      return modelArg(`${phaseVar} env var`, phaseModel);
+      return checkedModel(`${phaseVar} env var`, phaseModel);
     }
 
     // 2. Per-repo phase_model_overrides (Issue #2625)
     if (phase in _repoPhaseModelOverrides && _repoPhaseModelOverrides[phase]) {
-      return modelArg(
+      return checkedModel(
         `per-repo phase_model_overrides["${phase}"]`,
         _repoPhaseModelOverrides[phase] as string,
       );
@@ -993,7 +999,7 @@ export function buildClaudeModelArgs(phase?: string): string[] {
   // 3. Per-repo claude_model base tier (Issue #2625) — overrides the global
   //    base for every phase in this repo, including phase-less calls.
   if (_repoClaudeModel) {
-    return modelArg("per-repo claude_model base tier", _repoClaudeModel);
+    return checkedModel("per-repo claude_model base tier", _repoClaudeModel);
   }
 
   if (phase) {
@@ -1001,7 +1007,7 @@ export function buildClaudeModelArgs(phase?: string): string[] {
     if (
       phase in _phaseModelConfigOverrides && _phaseModelConfigOverrides[phase]
     ) {
-      return modelArg(
+      return checkedModel(
         `global phase_model_overrides["${phase}"]`,
         _phaseModelConfigOverrides[phase] as string,
       );
@@ -1010,14 +1016,14 @@ export function buildClaudeModelArgs(phase?: string): string[] {
     // 5. Phase-specific default from config_defaults (Issue #1071)
     const phaseDefault = PHASE_MODEL_DEFAULTS[phase];
     if (phaseDefault) {
-      return modelArg(`PHASE_MODEL_DEFAULTS["${phase}"]`, phaseDefault);
+      return checkedModel(`PHASE_MODEL_DEFAULTS["${phase}"]`, phaseDefault);
     }
   }
 
   // 6. Base CLAUDE_MODEL env var (global fallback)
   const model = Deno.env.get("CLAUDE_MODEL") ?? "";
   if (model) {
-    return modelArg("CLAUDE_MODEL env var", model);
+    return checkedModel("CLAUDE_MODEL env var", model);
   }
 
   // A non-empty phase that reaches here has no resolvable model and will run on
@@ -1032,7 +1038,21 @@ export function buildClaudeModelArgs(phase?: string): string[] {
         `for "${phase}" or set CLAUDE_MODEL to make the model explicit.`,
     );
   }
-  return [];
+  return undefined;
+}
+
+/**
+ * Build the model arguments for the Claude CLI.
+ *
+ * A thin argv wrapper over {@link resolveClaudeModel}, which states the
+ * precedence chain.
+ *
+ * @param phase - Optional phase name (e.g., "planning")
+ * @returns Array of CLI args (e.g., ["--model", "claude-sonnet-4-6"]) or empty
+ */
+export function buildClaudeModelArgs(phase?: string): string[] {
+  const model = resolveClaudeModel(phase);
+  return model ? ["--model", model] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,7 +1084,13 @@ export function setPhaseEffortConfigOverrides(
 }
 
 /**
- * Build the effort arguments for the Claude CLI.
+ * Resolve the reasoning effort Claude runs a phase at — the value behind
+ * `--effort`.
+ *
+ * This is the single statement of the effort precedence chain (Issue #362):
+ * the provider seam in `agent_provider.ts` reaches routing through here, and
+ * {@link buildClaudeEffortArgs} is a thin argv wrapper over it, so the six
+ * steps are never restated.
  *
  * Priority order (most specific wins — Issue #1403, #2625):
  *   1. Phase-specific env var (e.g. CLAUDE_EFFORT_PLANNING) — operator escape hatch
@@ -1081,46 +1107,59 @@ export function setPhaseEffortConfigOverrides(
  * DEFAULT_EFFORT constant are checked.
  *
  * @param phase - Optional phase name (e.g., "planning")
- * @returns Array of CLI args (e.g., ["--effort", "max"]) or empty
+ * @returns The resolved effort value; step 6 guarantees one.
  */
-export function buildClaudeEffortArgs(phase?: string): string[] {
+export function resolveClaudeEffort(phase?: string): string {
   if (phase) {
     // 1. Phase-specific env var (explicit operator override for this phase)
     const phaseVar = `CLAUDE_EFFORT_${phase.toUpperCase()}`;
     const phaseEffort = Deno.env.get(phaseVar) ?? "";
     if (phaseEffort) {
-      return ["--effort", phaseEffort];
+      return phaseEffort;
     }
 
     // 2. Per-repo phase_effort_overrides (Issue #2625)
     if (
       phase in _repoPhaseEffortOverrides && _repoPhaseEffortOverrides[phase]
     ) {
-      return ["--effort", _repoPhaseEffortOverrides[phase] as string];
+      return _repoPhaseEffortOverrides[phase] as string;
     }
 
     // 3. Global config phase_effort_overrides (Issue #1403)
     if (
       phase in _phaseEffortConfigOverrides && _phaseEffortConfigOverrides[phase]
     ) {
-      return ["--effort", _phaseEffortConfigOverrides[phase] as string];
+      return _phaseEffortConfigOverrides[phase] as string;
     }
 
     // 4. Phase-specific default from config_defaults (Issue #1402)
     const phaseDefault = PHASE_EFFORT_DEFAULTS[phase];
     if (phaseDefault) {
-      return ["--effort", phaseDefault];
+      return phaseDefault;
     }
   }
 
   // 5. Base CLAUDE_EFFORT env var (global fallback)
   const effort = Deno.env.get("CLAUDE_EFFORT") ?? "";
   if (effort) {
-    return ["--effort", effort];
+    return effort;
   }
 
   // 6. DEFAULT_EFFORT constant
-  return ["--effort", DEFAULT_EFFORT];
+  return DEFAULT_EFFORT;
+}
+
+/**
+ * Build the effort arguments for the Claude CLI.
+ *
+ * A thin argv wrapper over {@link resolveClaudeEffort}, which states the
+ * precedence chain.
+ *
+ * @param phase - Optional phase name (e.g., "planning")
+ * @returns Array of CLI args (e.g., ["--effort", "max"])
+ */
+export function buildClaudeEffortArgs(phase?: string): string[] {
+  return ["--effort", resolveClaudeEffort(phase)];
 }
 
 // ---------------------------------------------------------------------------
