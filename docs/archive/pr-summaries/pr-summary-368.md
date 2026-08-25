@@ -134,7 +134,12 @@ flowchart TD
     style S2 fill:#adb5bd,stroke:#6c757d,color:#000
 ```
 
-`./quality.sh` passes.
+`./quality.sh`: every stage passes except `deno tests`, which reports 10
+failures in `fleet_health_test.ts`, `host_workdir_guard_test.ts`,
+`optional_feature_env_test.ts` and `setup_workdir_reminder_test.ts`. These are
+pre-existing and host-path dependent — the same 10 fail at `HEAD~1` with this
+change stashed, and none of the four files touches label code. All 32 tests
+added here pass inside the full-suite run.
 
 ## Test Plan
 
