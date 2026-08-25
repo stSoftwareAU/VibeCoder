@@ -60,6 +60,8 @@ function fakeProvider(id: string): AgentProviderDescriptor {
     environment: { secretAllowlist: [], denylist: [] },
     install: { fragment: `providers/${id}.sh` },
     promptTransport: "argv",
+    resolveModel: () => undefined,
+    resolveEffort: () => undefined,
     buildInvocation: () => [],
     buildChildEnv: () => ({}),
     isAuthError: () => false,

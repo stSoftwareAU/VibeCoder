@@ -36,10 +36,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import {
-  buildClaudeEffortArgs,
-  buildClaudeModelArgs,
-} from "./claude_executor.ts";
+import { resolveClaudeEffort, resolveClaudeModel } from "./claude_executor.ts";
 import {
   buildClaudeChildEnv,
   CLAUDE_ENV_DENYLIST,
@@ -200,6 +197,20 @@ export interface AgentProviderDescriptor {
   install: AgentProviderInstall;
   /** How the prompt reaches the CLI (Issue #4385). */
   promptTransport: PromptTransport;
+  /**
+   * The model this provider routes `phase` to (Issue #362).
+   *
+   * `undefined` means the provider has no phase routing of its own, so the
+   * CLI's configured default stands — what Codex and Gemini do today.
+   */
+  resolveModel(phase?: string): string | undefined;
+  /**
+   * The reasoning effort this provider routes `phase` to (Issue #362).
+   *
+   * `undefined` means the provider has no phase routing of its own, or no
+   * effort control at all (the Gemini CLI exposes none).
+   */
+  resolveEffort(phase?: string): string | undefined;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
   /** Build the child subprocess environment, minus worker-only secrets. */
@@ -208,6 +219,40 @@ export interface AgentProviderDescriptor {
   isAuthError(output: string): boolean;
   /** Operator-facing message for an authentication failure. */
   authActionableMessage(): string;
+}
+
+/** The model and effort one invocation runs with. */
+export interface AgentInvocationRouting {
+  /** Model id, or undefined to leave the CLI on its own default. */
+  model?: string;
+  /** Reasoning effort, or undefined to leave the CLI on its own default. */
+  effort?: string;
+}
+
+/**
+ * Resolve the model and effort for one invocation (Issue #362).
+ *
+ * The precedence is stated here once, for every provider: an explicit
+ * `request.model` / `request.effort` always wins, otherwise the provider's own
+ * phase routing decides, and when neither supplies a value the CLI's default
+ * stands. The six-step chain behind a provider's routing lives in that
+ * provider's resolver — Claude's in `claude_executor.ts` — never restated here.
+ *
+ * @param provider - The descriptor whose routing applies to this invocation.
+ * @param request - The invocation, carrying any explicit model/effort and the
+ *   phase driving routing.
+ * @returns The model and effort this invocation must use.
+ */
+export function resolveInvocationRouting(
+  provider: AgentProviderDescriptor,
+  request: AgentInvocationRequest,
+): AgentInvocationRouting {
+  return {
+    // A blank explicit value is no value: it falls through to phase routing,
+    // exactly as the pre-seam `request.model ? … : …` test did.
+    model: request.model || provider.resolveModel(request.phase),
+    effort: request.effort || provider.resolveEffort(request.phase),
+  };
 }
 
 /**
@@ -238,22 +283,24 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
   // `claude -p` with no positional prompt reads it from stdin (Issue #4385).
   promptTransport: "stdin",
 
+  // Claude is the provider with phase routing today: both resolvers delegate
+  // to the chain `claude_executor.ts` owns (Issue #362).
+  resolveModel(phase?: string): string | undefined {
+    return resolveClaudeModel(phase);
+  },
+
+  resolveEffort(phase?: string): string | undefined {
+    return resolveClaudeEffort(phase);
+  },
+
   buildInvocation(request: AgentInvocationRequest): string[] {
     const args: string[] = [];
 
-    // Model selection (Issue #260, #2625).
-    args.push(
-      ...(request.model
-        ? ["--model", request.model]
-        : buildClaudeModelArgs(request.phase)),
-    );
-
-    // Effort selection (Issue #1403).
-    args.push(
-      ...(request.effort
-        ? ["--effort", request.effort]
-        : buildClaudeEffortArgs(request.phase)),
-    );
+    // Model (Issue #260, #2625) and effort (Issue #1403) selection, through
+    // the provider-agnostic seam.
+    const routing = resolveInvocationRouting(this, request);
+    if (routing.model) args.push("--model", routing.model);
+    if (routing.effort) args.push("--effort", routing.effort);
 
     args.push("--dangerously-skip-permissions");
     const disallowed = request.disallowedTools ?? [];
@@ -330,13 +377,25 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/codex.sh` },
   promptTransport: "argv",
 
+  // Codex has no phase table of its own yet (Issue #363): routing resolves to
+  // nothing, so the caller's explicit model/effort alone decides — today's
+  // behaviour, now expressed through the seam.
+  resolveModel(): string | undefined {
+    return undefined;
+  },
+
+  resolveEffort(): string | undefined {
+    return undefined;
+  },
+
   buildInvocation(request: AgentInvocationRequest): string[] {
+    const routing = resolveInvocationRouting(this, request);
     return buildCodexArgs({
       prompt: request.prompt,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
-      model: request.model,
-      effort: request.effort,
+      model: routing.model,
+      effort: routing.effort,
       // Codex resumes its own most recent session; the first phase of an issue
       // starts one instead (`phaseCount === 0`).
       resumeSession: buildSessionResumeFlags(request.sessionResumeState).resume,
@@ -382,12 +441,23 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/gemini.sh` },
   promptTransport: "argv",
 
+  // Gemini has no phase table of its own yet (Issue #364), and the CLI exposes
+  // no reasoning-effort option at all: both resolvers stay empty, which is
+  // today's behaviour expressed through the seam.
+  resolveModel(): string | undefined {
+    return undefined;
+  },
+
+  resolveEffort(): string | undefined {
+    return undefined;
+  },
+
   buildInvocation(request: AgentInvocationRequest): string[] {
     return buildGeminiArgs({
       prompt: request.prompt,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
-      model: request.model,
+      model: resolveInvocationRouting(this, request).model,
       // Gemini resumes its own most recent session; the first phase of an
       // issue starts one instead (`phaseCount === 0`). The CLI exposes no
       // reasoning-effort option, so `request.effort` has no flag to carry it.
