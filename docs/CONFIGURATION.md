@@ -809,7 +809,9 @@ flowchart TD
     B -- no --> C[Claim — the plain floor decides]
     B -- yes --> D{Runway ≥ 75% of<br/>min claude_timeout, cycle?}
     D -- yes --> C
-    D -- no --> E[Defer: log once, skip this cycle]
+    D -- no --> G{Deferred on the last<br/>3 cycles running?}
+    G -- yes --> H[ALERT starvation:<br/>claim deadline-bound]
+    G -- no --> E[Defer: log once, skip this cycle]
     E --> F[Scan the next candidate]
 ```
 
@@ -820,6 +822,34 @@ whole budget would leave such a host claiming nothing at all; three quarters
 refuses the doomed slice (933 s of 3600 s) while leaving the runs that made
 progress on #222 — 56 min and 49 min — untouched. A deferral never parks the
 slot: it is logged once per cycle and the scan moves to the next candidate.
+
+#### The deferral is bounded (Issue #375)
+
+Three quarters is only safe while the requirement stays *satisfiable*, and on a
+host whose cycle length equals its `claude_timeout` it is not. There the
+requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a claim gate
+is first reached after startup, the maintenance passes and the scan have run —
+about twenty minutes in, so the best runway ever offered was 2430 s. VibeCoder
+#355 was refused on six consecutive cycles under the wording "leaving it for
+the next cycle", while the idle-decision census kept counting it as claimable
+and `[idle-census] ALERT inversion` fired every cycle. A permanent strand that
+reads as a passing deferral is the same failure shape as Issue #319.
+
+So the deferral has a memory. The worker counts the consecutive **cycles**
+(not scans — a slot re-scans every 30 s) that the floor deferred one issue in
+`adaptive_floor_deferrals.json` under the work directory. On the third it
+yields: the issue is claimed on whatever runway is left, and the run is
+deadline-bound with WIP preservation carrying its progress into the next cycle
+— the regime Issue #47 already documents for this class of host. The override
+is logged as
+
+```text
+[adaptive-floor] ALERT starvation issue=owner/repo#355 deferred_cycles=3 limit=3 runway=2360s required=2700s — …
+```
+
+and the streak resets as soon as the floor accepts the issue, so an issue that
+genuinely fits a later cycle is never claimed on a doomed slice. Entries expire
+after seven days.
 
 ### ⏱️ How timeouts interact
 

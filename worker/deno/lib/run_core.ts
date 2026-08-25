@@ -73,6 +73,10 @@ import {
   issueClaimKey,
 } from "./claim_runway_evidence.ts";
 import {
+  ADAPTIVE_FLOOR_STARVATION_LIMIT,
+  formatAdaptiveFloorStarvation,
+} from "./adaptive_floor_starvation.ts";
+import {
   type DiagnosticSummary,
   formatScanSummary,
 } from "./issue_finder_logger.ts";
@@ -608,6 +612,29 @@ export interface RunCoreDeps {
   gatherIssueClaimEvidence?: (
     issue: DiscoveredIssue,
   ) => Promise<{ evidence: IssueClaimEvidence; lookupError?: string }>;
+
+  /**
+   * Record that the adaptive floor deferred an issue this cycle, and return
+   * how many consecutive cycles it has now been deferred (Issue #375). The
+   * key is `issueClaimKey(repo, number)`. Optional: absent means the floor
+   * defers without a memory, exactly as before #375 — which on a host whose
+   * cycle can never satisfy the floor strands the issue for ever.
+   */
+  recordAdaptiveFloorDeferral?: (key: string) => Promise<number>;
+
+  /**
+   * Forget an issue's deferral streak (Issue #375) — called whenever the
+   * adaptive floor stops deferring it, so the next starvation run starts
+   * from zero. Optional, and paired with `recordAdaptiveFloorDeferral`.
+   */
+  clearAdaptiveFloorDeferral?: (key: string) => Promise<void>;
+
+  /**
+   * Consecutive deferred cycles after which the adaptive floor yields and the
+   * issue is claimed on whatever runway is left (Issue #375). Defaults to
+   * {@link ADAPTIVE_FLOOR_STARVATION_LIMIT}; tests override it.
+   */
+  adaptiveFloorStarvationLimit?: number;
 
   /**
    * How long a shutdown (SIGTERM / SIGINT) waits for in-flight slots to
@@ -1469,6 +1496,14 @@ const MAX_DEFERRED_REOFFERS = 3;
  * Returns false — claim as before — whenever the gate cannot decide: no
  * evidence lookup wired, no execute budget known, or a lookup that failed
  * (which is logged as an error, never swallowed).
+ *
+ * Issue #375: the deferral is **bounded**. On a host whose cycle can never
+ * offer the floor's required runway (cycle length == `claude_timeout`, where a
+ * claim gate is first reached twenty minutes in), the floor refused the same
+ * issue every cycle for ever while wording it "leaving it for the next cycle".
+ * After {@link ADAPTIVE_FLOOR_STARVATION_LIMIT} consecutive deferred cycles the
+ * floor yields: the claim proceeds deadline-bound and WIP preservation carries
+ * the progress, which is the regime Issue #47 already documents for this host.
  */
 async function deferClaimForAdaptiveFloor(
   deps: RunCoreDeps,
@@ -1491,19 +1526,46 @@ async function deferClaimForAdaptiveFloor(
     return false;
   }
 
+  const remainingRunwaySeconds = Math.max(
+    0,
+    Math.round((endTime - deps.now()) / 1000),
+  );
   const decision = decideAdaptiveClaim({
     evidence,
-    remainingRunwaySeconds: Math.max(
-      0,
-      Math.round((endTime - deps.now()) / 1000),
-    ),
+    remainingRunwaySeconds,
     fullExecuteBudgetSeconds: budgetSeconds,
     cycleSeconds: config.runDurationSeconds,
   });
-  if (decision.claim) return false;
+  const key = issueClaimKey(issue.repo, issue.issueNumber);
+  if (decision.claim) {
+    // The floor no longer defers this issue, so its starvation streak ends.
+    await deps.clearAdaptiveFloorDeferral?.(key);
+    return false;
+  }
 
-  deferredClaims.add(issueClaimKey(issue.repo, issue.issueNumber));
-  log(`${issue.repo}#${issue.issueNumber} ${decision.reason}`);
+  // Issue #375: how long has the floor been refusing this issue?
+  const deferredCycles = await deps.recordAdaptiveFloorDeferral?.(key) ?? 0;
+  const limit = deps.adaptiveFloorStarvationLimit ??
+    ADAPTIVE_FLOOR_STARVATION_LIMIT;
+  if (deferredCycles >= limit) {
+    log(
+      formatAdaptiveFloorStarvation({
+        key,
+        consecutiveCycles: deferredCycles,
+        limit,
+        remainingRunwaySeconds,
+        requiredRunwaySeconds: decision.requiredRunwaySeconds,
+      }),
+    );
+    await deps.clearAdaptiveFloorDeferral?.(key);
+    return false;
+  }
+
+  deferredClaims.add(key);
+  const streak = deferredCycles > 0
+    ? ` [deferred cycle ${deferredCycles} of ${limit}]`
+    : "";
+  log(`${issue.repo}#${issue.issueNumber} ${decision.reason}${streak}`);
   return true;
 }
 
