@@ -78,6 +78,26 @@ for target in "$@"; do
       unrepairable=1
       continue
     fi
+    # Return the guest's freed blocks to the host (Issue #384). A named
+    # volume is a thin-provisioned image: blocks are allocated to it when the
+    # guest writes and are never returned when the guest deletes, so the
+    # image only ever grows and every guest-side reclaim - the tier sweep,
+    # the 90%-disk nuke - hands the host exactly zero bytes. fstrim discards
+    # the filesystem's unused blocks, which punches them out of the image.
+    # This is the supported compaction path: it runs on every launch, with
+    # the root privileges FITRIM needs and no operator incantation. Loud but
+    # never fatal - a virtual disk that cannot discard must not block a
+    # launch, and the worker's own alarm then names the fallback.
+    if command -v fstrim >/dev/null 2>&1; then
+      trim_out=""
+      if trim_out="$(fstrim -v "${target}" 2>&1)"; then
+        echo "volume-init: trimmed ${target} - ${trim_out} (Issue #384)" >&2
+      else
+        echo "volume-init: WARNING could not trim ${target} - the volume image keeps every block it was allocated, so guest reclaim cannot return host disk (Issue #384): ${trim_out}" >&2
+      fi
+    else
+      echo "volume-init: WARNING fstrim is not available - blocks the guest frees stay allocated to the ${target} volume image (Issue #384)" >&2
+    fi
   fi
   chown "${owner}" "${target}"
 done

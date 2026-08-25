@@ -571,25 +571,6 @@ if ($storePruned.ExitCode -ne 0) {
         "[run.ps1] warning: could not reclaim the $Runtime store")
 }
 
-# Hard free-disk floor (Issue #226). Mirrors run.sh: a host whose drive is
-# below the floor must not start a worker that would fill it. Best-effort
-# measurement; an unreadable drive does not block the launch.
-$diskHardFloorGb = 5
-if ($env:VIBE_HOST_DISK_HARD_FLOOR_GB -match '^\d+$') {
-    $diskHardFloorGb = [int]$env:VIBE_HOST_DISK_HARD_FLOOR_GB
-}
-try {
-    $driveRoot = [System.IO.Path]::GetPathRoot((Resolve-Path $HOME).Path)
-    $freeBytes = ([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace
-    if ($freeBytes -lt ($diskHardFloorGb * 1GB)) {
-        [Console]::Error.WriteLine(
-            "[run.ps1] refusing to launch: $driveRoot has $([math]::Round($freeBytes / 1MB)) MB free, below the $diskHardFloorGb GB hard floor (Issue #226)")
-        exit 1
-    }
-} catch {
-    [Console]::Error.WriteLine("[run.ps1] warning: could not measure free disk: $_")
-}
-
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
 # live on runtime-managed volumes, not host directories. `volume inspect` /
 # `volume create` are spelled identically on Docker and Podman; the plan
@@ -636,6 +617,31 @@ if ($initialised.ExitCode -ne 0) {
     [Console]::Error.WriteLine(
         "Error: the volume init failed (Issues #4186, #229)")
     Exit-Launcher $initialised.ExitCode
+}
+
+# Hard free-disk floor (Issue #226). Mirrors run.sh: a host whose drive is
+# below the floor must not start a worker that would fill it. Best-effort
+# measurement; an unreadable drive does not block the launch.
+#
+# The gate runs AFTER the volume init (Issue #384), because the init is what
+# trims the work volume and that trim is the only thing that returns the
+# guest's freed blocks to the host. Gating first made the floor unreachable
+# by construction: a host below it refused the launch and the volume was
+# never trimmed.
+$diskHardFloorGb = 5
+if ($env:VIBE_HOST_DISK_HARD_FLOOR_GB -match '^\d+$') {
+    $diskHardFloorGb = [int]$env:VIBE_HOST_DISK_HARD_FLOOR_GB
+}
+try {
+    $driveRoot = [System.IO.Path]::GetPathRoot((Resolve-Path $HOME).Path)
+    $freeBytes = ([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace
+    if ($freeBytes -lt ($diskHardFloorGb * 1GB)) {
+        [Console]::Error.WriteLine(
+            "[run.ps1] refusing to launch: $driveRoot has $([math]::Round($freeBytes / 1MB)) MB free, below the $diskHardFloorGb GB hard floor (Issue #226)")
+        exit 1
+    }
+} catch {
+    [Console]::Error.WriteLine("[run.ps1] warning: could not measure free disk: $_")
 }
 
 Write-LaunchPhase "container_run"

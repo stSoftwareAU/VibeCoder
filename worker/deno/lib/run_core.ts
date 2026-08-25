@@ -748,6 +748,12 @@ export interface RunCoreDeps {
    * for a cycle. `healed` is the post-reclaim disk reading: true only when
    * the host is no longer `low`. Optional; production wires it to the
    * two-tier reclaim.
+   *
+   * Issue #384: `bytesReclaimed` counts bytes deleted **inside the guest**.
+   * On a containerised host those blocks stay allocated to the thin
+   * volume image, so the host figure does not move and `healed` stays
+   * false — `detail` names that condition and the remedy rather than
+   * reading as a cleanup that failed.
    */
   reclaimDiskSpace?: () => Promise<
     { bytesReclaimed: number; detail: string; healed: boolean }
@@ -3425,7 +3431,7 @@ export async function runCoreLoop(
                   const reclaim = await deps.reclaimDiskSpace();
                   healed = reclaim.healed;
                   deps.log(
-                    `[HOST_DISK_LOW] reclaimed ${reclaim.bytesReclaimed} bytes of disposable work-volume space — ${reclaim.detail} (Issue #242)`,
+                    `[HOST_DISK_LOW] reclaimed ${reclaim.bytesReclaimed} bytes of disposable space INSIDE the work volume — ${reclaim.detail} (Issue #242)`,
                   );
                 } catch (err) {
                   // A reclaim that fails must be loud, never silent: the
