@@ -103,7 +103,11 @@ import {
   buildTimeoutKillMessage,
   type ExtensionTelemetry,
 } from "./timeout_extension_telemetry.ts";
-import { attemptModelFallback, resolveCurrentModel } from "./model_fallback.ts";
+import {
+  attemptModelFallback,
+  resolveCurrentModel,
+  warnNoModelLadder,
+} from "./model_fallback.ts";
 import { selectModelForLargeInput } from "./phase_model_escalation.ts";
 import type { SessionResumeState } from "./session_resume.ts";
 import {
@@ -2241,10 +2245,12 @@ export async function runClaudeWithRetry(
         const currentModel = resolveCurrentModel(
           currentOptions.model,
           currentOptions.phase,
+          currentOptions.agentProvider,
         );
         const fallbackResult = attemptModelFallback(
           currentModel,
           enableFallback,
+          currentOptions.agentProvider,
         );
 
         if (fallbackResult.ok) {
@@ -2273,7 +2279,10 @@ export async function runClaudeWithRetry(
         }
 
         // No cheaper model available — give up rather than re-run an
-        // unavailable model.
+        // unavailable model. Name the provider when it has no ladder at all
+        // (Issue #365), so "no downgrade attempted" is visible rather than
+        // inferred.
+        warnNoModelLadder(fallbackResult, currentModel, currentOptions.logger);
         currentOptions.logger?.error(
           `Model "${currentModel}" unavailable and no cheaper fallback available (${fallbackResult.reason}). Giving up.`,
         );
@@ -2389,10 +2398,12 @@ export async function runClaudeWithRetry(
           const currentModel = resolveCurrentModel(
             currentOptions.model,
             currentOptions.phase,
+            currentOptions.agentProvider,
           );
           const fallbackResult = attemptModelFallback(
             currentModel,
             enableFallback,
+            currentOptions.agentProvider,
           );
 
           if (fallbackResult.ok) {
@@ -2415,12 +2426,19 @@ export async function runClaudeWithRetry(
             continue;
           }
 
-          // No fallback available — give up
+          // No fallback available — give up. A provider with no ladder is
+          // named once (Issue #365) rather than left to look like a run that
+          // was already on the cheapest tier.
+          warnNoModelLadder(
+            fallbackResult,
+            currentModel,
+            currentOptions.logger,
+          );
           const reason = retryCount > maxRetries
             ? `Rate limit retry count exceeded (${retryCount} > ${maxRetries}).`
             : `Rate limit wait time exceeded (${totalWaitTime}s >= ${maxWaitSeconds}s).`;
           currentOptions.logger?.error(
-            `${reason} No cheaper model available. Giving up.`,
+            `${reason} No cheaper model available (${fallbackResult.reason}). Giving up.`,
           );
           return {
             ok: true,

@@ -461,6 +461,15 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
 
 - Enabled by default; disable via `enable_model_fallback: false` in
   `.config.json`
+- **The ladder is the active provider's, not always Claude's** (Issue #365).
+  The current model is resolved through the running provider's own chain, and
+  the cheaper tier through that provider's ladder. Only Claude defines one
+  today: under **Codex or Gemini** the attempt returns the distinct reason
+  `no-ladder-for-provider` — never `already-cheapest`, which would read as "the
+  run was already on the cheapest tier" — and the worker warns **once**, naming
+  the provider, so an operator sees that no downgrade was attempted rather than
+  inferring it from silence. Give a provider a ladder by adding
+  `cheaperModel()` to its descriptor in `agent_provider.ts`.
 - **Model-unavailable (export-control) downgrade.** When
   the requested tier is *unavailable or not permitted* — rather than
   rate-limited — `detectModelUnavailable()` matches the error tail (403 /
