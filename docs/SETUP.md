@@ -698,6 +698,34 @@ explained beneath the block, never inside it.
   health tracking, both optional and both in the same
   [defaults table](CONFIGURATION.md#configuration-defaults).
 
+### Choosing the coding agent
+
+The worker is provider agnostic: `claude` (Claude Code) is the default, and
+`codex` (the OpenAI Codex CLI) and `gemini` (the Gemini CLI) are registered
+alongside it. Nothing else in the configuration changes with the choice —
+`agent_provider` names the agent a run uses, and `agent_providers` names every
+vendor whose credentials are provisioned, preflighted and mounted:
+
+```json
+{
+  "agent_provider": "codex",
+  "agent_providers": ["codex"]
+}
+```
+
+Omit both and the worker uses Claude Code alone, exactly as a deployment that
+predates the choice. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
+(comma-separated) override them for a single run. The enabled set must include
+the active provider — a set that excludes it fails loudly at startup, because
+its agent would have no credential mounted, as does an id that is not
+registered.
+
+Each enabled vendor needs its own `<provider>/provider.env` from
+[the credential layout above](#providerproviderenv), and the container image
+must have been built with that provider installed — see
+[the coding-agent provider layer](CONTAINER.md#the-coding-agent-provider-layer)
+in the Container Guide.
+
 ### Where the full reference lives
 
 This section deliberately stops at the two examples above. The
@@ -777,6 +805,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account can be assigned issues on every monitored repository; files (or updates) a precheck issue for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
+| `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
 | `hooks` | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only. | No. |
 | `scheduled-task` | Registers the Windows Task Scheduler entry — the LaunchAgent's twin. `--status` / `--uninstall` as for `launchagent`; `--powershell` names the PowerShell host the task should run under. | Yes — same hand-off to the [Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service). |
 | `all` | The default. Runs the full sequence: `prerequisites` (fatal on failure), then `config`, the repo-side syncs and back-fill (each non-fatal), then `hooks`. `launchagent` and `screenshot` join in only when `VIBE_SETUP_LAUNCHAGENT=true` / `VIBE_SETUP_SCREENSHOT_SUPPORT=true`. `best-practices-relabel` is never part of it. | — |

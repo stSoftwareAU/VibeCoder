@@ -5,6 +5,11 @@
  * Labels are organised into categories:
  *   - workflow: Core workflow labels used by the worker (apply to all repos)
  *   - ui: Labels related to UI/screenshot evidence (only for repos with UI)
+ *   - content: Classification/finding labels the fleet applies but does
+ *     not seed onto every repo (Issue #368). Defined in
+ *     `content_label_definitions.ts` and joined here into
+ *     {@link ALL_LABEL_DEFINITIONS}, which is the canonical colour table
+ *     {@link getLabelColour} resolves against.
  *
  * Issue #864: Standardise labels across repos we monitor.
  * Issue #923: Migrate to Deno TypeScript.
@@ -18,10 +23,18 @@
  * Issue #2029: Retire the `refined` completion label. The refinement
  *   workflow now signals handoff by adding `needs-human` (the existing
  *   worker-to-human escalation label).
+ * Issue #368: Add the `content` category so every fleet-managed label —
+ *   `severity:*`, `confidence:*`, `security`, `lang:*`, the per-scan
+ *   category labels — has one canonical colour instead of nine call sites
+ *   each hard-coding their own literal.
  */
 
+import { CONTENT_LABEL_DEFINITIONS } from "./content_label_definitions.ts";
+
+export { CONTENT_LABEL_DEFINITIONS };
+
 /** Category for a label definition. */
-export type LabelCategory = "workflow" | "ui";
+export type LabelCategory = "workflow" | "ui" | "content";
 
 /** A single label definition. */
 export interface LabelDefinition {
@@ -181,6 +194,31 @@ export const LABEL_DEFINITIONS: readonly LabelDefinition[] = [
 ] as const;
 
 /**
+ * The canonical colour table for **every** label the fleet manages
+ * (Issue #368).
+ *
+ * {@link LABEL_DEFINITIONS} carries the workflow/UI labels seeded onto
+ * every monitored repo at onboarding; {@link CONTENT_LABEL_DEFINITIONS}
+ * carries the classification/finding labels that appear only once a scan
+ * files something. Both halves are colour-authoritative, so lookups —
+ * `ensureLabelExists`, and the colour reconcile pass — resolve against
+ * this union rather than against either half.
+ */
+export const ALL_LABEL_DEFINITIONS: readonly LabelDefinition[] = [
+  ...LABEL_DEFINITIONS,
+  ...CONTENT_LABEL_DEFINITIONS,
+];
+
+/**
+ * Colour used for a label the canonical table does not name.
+ *
+ * GitHub's own "bug" red. A label that lands here is not fleet-managed —
+ * the reconcile pass ignores it, and only a create-if-missing call ever
+ * paints it.
+ */
+export const DEFAULT_LABEL_COLOUR = "d73a4a";
+
+/**
  * Labels that have been deprecated and should be removed from repos.
  * Add entries here when retiring a label.
  */
@@ -220,9 +258,37 @@ export function getLabelsByCategory(
   return LABEL_DEFINITIONS.filter((l) => l.category === category);
 }
 
-/** Get a label by name (returns undefined if not found). */
+/**
+ * Get a label definition by name from the canonical table
+ * (returns undefined if the fleet does not manage that label).
+ *
+ * Matching is case-insensitive because GitHub treats label names that way
+ * — `SEVERITY:HIGH` and `severity:high` are the same label, and the
+ * reconcile pass must recognise either spelling (Issue #368).
+ */
 export function getLabelByName(name: string): LabelDefinition | undefined {
-  return LABEL_DEFINITIONS.find((l) => l.name === name);
+  const lower = name.toLowerCase();
+  return ALL_LABEL_DEFINITIONS.find((l) => l.name.toLowerCase() === lower);
+}
+
+/**
+ * Canonical colour for a label name (Issue #368).
+ *
+ * Returns {@link DEFAULT_LABEL_COLOUR} for a label the table does not
+ * name, so a create-if-missing call always has a colour to use.
+ */
+export function getLabelColour(name: string): string {
+  return getLabelByName(name)?.colour ?? DEFAULT_LABEL_COLOUR;
+}
+
+/**
+ * Canonical description for a label name (Issue #368).
+ *
+ * Empty string when the table does not name the label — callers pass it
+ * straight through to `gh label create`, which omits an empty description.
+ */
+export function getLabelDescription(name: string): string {
+  return getLabelByName(name)?.description ?? "";
 }
 
 /** Get the number of defined labels. */

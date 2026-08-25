@@ -152,11 +152,12 @@ export async function handleQuestionFailure(
     } catch {
       // Best-effort
     }
+    // Issue #368: colour + description come from the canonical label table.
     await ensureLabelExists(
       options.repo,
       labels.failedLabel,
-      "d73a4a",
-      "Issue failed permanently after two attempts",
+      undefined,
+      undefined,
       deps,
     );
     // Issue #976: Use REST API with CLI fallback for label operations

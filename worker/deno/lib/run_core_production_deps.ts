@@ -162,6 +162,11 @@ import {
 // Adaptive claim floor (Issue #245): the evidence lookup and the key the
 // per-cycle deferral set is written with.
 import { fetchIssueClaimEvidence } from "./claim_evidence_lookup.ts";
+import {
+  adaptiveFloorStatePath,
+  clearAdaptiveFloorDeferral,
+  recordAdaptiveFloorDeferral,
+} from "./adaptive_floor_starvation.ts";
 import { issueClaimKey } from "./claim_runway_evidence.ts";
 import {
   type CircuitBreakerConfig,
@@ -2349,6 +2354,24 @@ export async function createProductionRunCoreDeps(
         fleetAuthors,
         longJobLabels: config.claimLongJobLabels,
       }),
+
+    // Issue #375: the floor's deferral gets a memory, so a host whose cycle
+    // can never satisfy it stops stranding the issue for ever. Counted per
+    // *cycle* — `resolveRunId()` is stable for the whole run — because a slot
+    // re-scans every 30 s.
+    recordAdaptiveFloorDeferral: (key: string) =>
+      recordAdaptiveFloorDeferral({
+        statePath: adaptiveFloorStatePath(workDir),
+        key,
+        cycleId: resolveRunId(),
+        log: (message: string) => logger.warn(message),
+      }),
+    clearAdaptiveFloorDeferral: (key: string) =>
+      clearAdaptiveFloorDeferral(
+        adaptiveFloorStatePath(workDir),
+        key,
+        (message: string) => logger.warn(message),
+      ),
 
     // Slot-aware sweep (Issue #4178): only heartbeats no live slot owns are
     // stopped, so a sibling slot's healthy heartbeat is never mistaken for
