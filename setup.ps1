@@ -1119,9 +1119,14 @@ function Invoke-VibeScheduledTaskPrompt {
     Write-VibeInfo "Scheduler (run.ps1 every 5 minutes, and again at logon). It runs in"
     Write-VibeInfo "your interactive session, so it keeps desktop access while you are"
     Write-VibeInfo "logged in."
-    Write-VibeInfo "Answer 'n' on a machine where you start the worker manually via loop.ps1."
-    $install = Read-Host "  Register the scheduled task now? [Y/n]"
-    if ($install -match '^[nN]') {
+    Write-VibeInfo "Answer 'y' ONLY on a machine where nothing starts the worker by hand."
+    Write-VibeInfo "If you run .\loop.ps1 yourself, answer 'n' - two workers on one host"
+    Write-VibeInfo "collide on the work volumes (Issue #26)."
+    # Defaults to NO, matching setup.sh. Registering starts a second worker on
+    # a host that may already have one, and a bare Enter must never do that -
+    # the safe answer is the one that changes nothing.
+    $install = Read-Host "  Register the scheduled task now? [y/N]"
+    if ($install -notmatch '^(y|Y|yes|YES)$') {
         # Declined. A task an earlier setup registered is still there, still
         # launching the worker every five minutes beside whatever the operator
         # starts by hand - and two workers on one host collide on the work
