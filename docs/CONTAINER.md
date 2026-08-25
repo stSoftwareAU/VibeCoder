@@ -594,6 +594,68 @@ flowchart LR
     style A fill:#c9184a,stroke:#800f2f,color:#fff
 ```
 
+## The volume image only grows — the launch-time trim (Issue #384)
+
+Reclaiming inside the guest does not give the **host** its disk back. A named
+volume is a thin-provisioned disk image (`volumes/vibe-work/volume.img`):
+blocks are allocated to it when the guest writes and are never returned when
+the guest deletes. The guest filesystem marks them free; the image keeps
+them. GRQ-23 had 36.5 GB allocated on the host for ~13 GB of real content,
+and every guest-side sweep — the tier reclaim above, the 90 %-disk
+`nukeWorkDir` — returned exactly **zero** bytes to the host:
+
+```text
+[HOST_DISK_LOW] reclaimed 0 bytes … host 6.5 GB free (1.4%) of 460.4 GB,
+floor 46.0 GB — below the floor
+```
+
+That ran every few minutes for days while the worker claimed nothing. Three
+things make the floor reachable again:
+
+- **`fstrim` at every launch.** `container/volume-init.sh` already runs as
+  root with the volumes mounted, so it discards each block-device volume's
+  unused blocks — which punches them out of the image and hands them back to
+  the host. This is the supported compaction path: no operator incantation,
+  no `container volume delete`, and it runs on every launch. A runtime whose
+  virtual disk cannot discard, or an image without `fstrim`, says so loudly
+  and the launch still proceeds.
+- **The hard free-disk floor is checked *after* the init.** Gating first made
+  the floor unreachable by construction: a host below it refused the launch,
+  so the volume was never trimmed, so the host never got its blocks back.
+  Both launchers now create the volumes, run the init, and only then measure
+  the floor.
+- **The host estimate tracks the volume's high-water mark, not its current
+  size.** `estimateHostFree` used the current reading, so a guest-side sweep
+  that deleted 18 GB raised the estimate by 18 GB the host never received and
+  reported `healed`. The estimate now only ever falls within a run, and the
+  gap below the peak is named for what it is — dead space inside the image
+  the launch-time trim returns.
+
+```mermaid
+flowchart TD
+    D["guest deletes 18 GB<br/>(tier reclaim / nuke)"] --> F["guest filesystem:<br/>blocks free"]
+    F --> I{"volume image"}
+    I -->|"without a trim"| K["keeps every block —<br/>host gains 0 bytes"]
+    I -->|"fstrim at next launch"| H["blocks punched out —<br/>host gains 18 GB"]
+    K --> A["[HOST_DISK_LOW] names the ratchet<br/>and the remedy"]
+    style K fill:#c9184a,stroke:#800f2f,color:#fff
+    style H fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+The disk-low alarm says which of the two it is, rather than reading as a
+cleanup that failed:
+
+```text
+[HOST_DISK_LOW] reclaimed 11811160064 bytes of disposable space INSIDE the
+work volume — monitored 2.9 GB in 9 repos; side/data 10.8 GB in 1 dirs;
+removed 1 (11.0 GB, disk-low) — 11.0 GB freed inside the guest, 0 bytes
+returned to the host: the vibe-work volume image only grows — 23.5 GB of the
+image is now space the guest has already freed. The launch-time volume trim
+(fstrim in volume-init) hands those blocks back on the next launch; where the
+runtime cannot discard, stop the container and `volume delete vibe-work` —
+the clones re-clone and the approval snapshots re-baseline (Issue #384)
+```
+
 ## Standing totals at cycle start and end of run (Issues #244, #345)
 
 Those lines say what was *removed*. Every disk problem on GRQ-23 was
