@@ -237,3 +237,83 @@ Deno.test("HostDiskMonitor - a forced check re-reads inside the cadence", async 
   assertEquals((await m.check({ force: true })).level, "ok");
   assertEquals(probes, 2);
 });
+
+// --- The volume image only grows (Issue #384) -------------------------------
+
+Deno.test("HostDiskMonitor - guest deletion does not hand the host its blocks back (Issue #384)", async () => {
+  const { m, advance } = monitor({
+    baseline: { avail: 60 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 10 * GIB, totalBytes: 504 * GIB },
+      { availableBytes: 0, usedBytes: 30 * GIB, totalBytes: 504 * GIB },
+      // The tier reclaim deletes 18 GB INSIDE the guest. The volume image
+      // keeps those blocks: the host is no better off than at the peak.
+      { availableBytes: 0, usedBytes: 12 * GIB, totalBytes: 504 * GIB },
+    ],
+  });
+  await m.check();
+  advance(61_000);
+  assertEquals((await m.check()).availableBytes, 40 * GIB);
+  advance(61_000);
+  const afterReclaim = await m.check();
+  assertEquals(
+    afterReclaim.availableBytes,
+    40 * GIB,
+    "a guest-side delete must not be credited to the host",
+  );
+  assertEquals(afterReclaim.level, "low");
+});
+
+Deno.test("HostDiskMonitor - the low alarm names the volume image as where the space went (Issue #384)", async () => {
+  const { m, advance } = monitor({
+    baseline: { avail: 60 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 13 * GIB, totalBytes: 504 * GIB },
+      { availableBytes: 0, usedBytes: 36 * GIB, totalBytes: 504 * GIB },
+      { availableBytes: 0, usedBytes: 13 * GIB, totalBytes: 504 * GIB },
+    ],
+  });
+  await m.check();
+  advance(61_000);
+  await m.check();
+  advance(61_000);
+  const status = await m.check();
+  assertStringIncludes(status.detail, "volume image still holds");
+  assertStringIncludes(status.detail, "Issue #384");
+  assertEquals(m.workVolumeRatchet.ratcheted, true);
+  assertEquals(m.workVolumeRatchet.deadBytes, 23 * GIB);
+});
+
+Deno.test("HostDiskMonitor - a volume that has not shrunk says nothing about a ratchet (Issue #384)", async () => {
+  const { m, advance } = monitor({
+    baseline: { avail: 60 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 10 * GIB, totalBytes: 504 * GIB },
+      { availableBytes: 0, usedBytes: 30 * GIB, totalBytes: 504 * GIB },
+    ],
+  });
+  await m.check();
+  advance(61_000);
+  const status = await m.check();
+  assertEquals(m.workVolumeRatchet.ratcheted, false);
+  assertEquals(status.detail.includes("Issue #384"), false);
+});
+
+Deno.test("HostDiskMonitor - native mode reads df directly, so there is no ratchet to claim (Issue #384)", async () => {
+  const { m, advance } = monitor({
+    readings: [
+      { availableBytes: 40 * GIB, usedBytes: 60 * GIB, totalBytes: 100 * GIB },
+      { availableBytes: 70 * GIB, usedBytes: 30 * GIB, totalBytes: 100 * GIB },
+    ],
+  });
+  await m.check();
+  advance(61_000);
+  const status = await m.check();
+  assertEquals(status.source, "native-df");
+  assertEquals(
+    status.availableBytes,
+    70 * GIB,
+    "on a native host df is the host: freed space is genuinely free",
+  );
+  assertEquals(m.workVolumeRatchet.ratcheted, false);
+});
