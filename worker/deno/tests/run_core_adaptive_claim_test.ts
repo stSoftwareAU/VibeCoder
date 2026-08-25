@@ -151,6 +151,10 @@ async function runScenario(options: {
   remainingSeconds: number;
   gatherFails?: boolean;
   maxConcurrentIssues?: number;
+  /** Issue #375: consecutive cycles the floor has already deferred each issue. */
+  deferredCycles?: Record<number, number>;
+  adaptiveFloorStarvationLimit?: number;
+  cleared?: string[];
 }): Promise<{ claimed: number[]; logs: string[]; errors: string[] }> {
   const config = createDefaultRunCoreConfig();
   if (options.maxConcurrentIssues !== undefined) {
@@ -194,6 +198,27 @@ async function runScenario(options: {
       return Promise.resolve({ ok: true, value: { success: true } });
     },
     sleep: () => Promise.resolve(),
+    ...(options.deferredCycles
+      ? {
+        recordAdaptiveFloorDeferral: (key: string) => {
+          const number = Number(key.split("#")[1]);
+          const seen = (options.deferredCycles![number] ?? 0) + 1;
+          options.deferredCycles![number] = seen;
+          return Promise.resolve(seen);
+        },
+      }
+      : {}),
+    ...(options.cleared
+      ? {
+        clearAdaptiveFloorDeferral: (key: string) => {
+          options.cleared!.push(key);
+          return Promise.resolve();
+        },
+      }
+      : {}),
+    ...(options.adaptiveFloorStarvationLimit !== undefined
+      ? { adaptiveFloorStarvationLimit: options.adaptiveFloorStarvationLimit }
+      : {}),
   });
 
   await runCoreLoop(config, deps);
@@ -283,6 +308,98 @@ Deno.test("adaptive claim #245 - the pool defers and claims the next candidate t
     logs.some((m) => m.includes("[s1]") && m.includes("o/r#222")) ||
       logs.some((m) => m.includes("[s2]") && m.includes("o/r#222")),
     `expected a slot-prefixed skip line, got: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("adaptive floor #375 - an issue starved for the limit is claimed on the runway that is left", async () => {
+  // The floor has already refused #222 on the two previous cycles; this is the
+  // third. On a host whose cycle can never meet the floor, deferring again
+  // strands it for ever — so the floor yields.
+  const { claimed, logs } = await runScenario({
+    evidenceByIssue: {
+      222: { preservedWip: true, previousExecuteTimeout: true },
+    },
+    remainingSeconds: 933,
+    deferredCycles: { 222: 2 },
+  });
+
+  assert(
+    claimed.includes(222),
+    `the starved issue must be claimed, got ${claimed.join(", ")}`,
+  );
+  const alert = logs.find((m) => m.includes("ALERT starvation"));
+  assert(
+    alert !== undefined,
+    `expected the starvation alert, got: ${logs.join(" | ")}`,
+  );
+  assertStringIncludes(alert!, "issue=o/r#222");
+  assertStringIncludes(alert!, "deferred_cycles=3");
+  assertStringIncludes(alert!, "runway=933s");
+});
+
+Deno.test("adaptive floor #375 - below the limit the issue is still deferred, with the streak named", async () => {
+  const { claimed, logs } = await runScenario({
+    evidenceByIssue: {
+      222: { preservedWip: true },
+    },
+    remainingSeconds: 933,
+    deferredCycles: { 222: 0 },
+  });
+
+  assert(
+    !claimed.includes(222),
+    `#222 must still be deferred on its first cycle, got ${claimed.join(", ")}`,
+  );
+  assert(claimed.includes(9), "the slot must move on to the fresh issue");
+  const skip = logs.find((m) => m.includes("o/r#222"));
+  assert(skip !== undefined, `expected a skip line, got: ${logs.join(" | ")}`);
+  assertStringIncludes(skip!, "leaving it for the next cycle");
+  assertStringIncludes(skip!, "[deferred cycle 1 of 3]");
+});
+
+Deno.test("adaptive floor #375 - the limit is configurable and honoured", async () => {
+  const { claimed } = await runScenario({
+    evidenceByIssue: {
+      222: { preservedWip: true },
+    },
+    remainingSeconds: 933,
+    deferredCycles: { 222: 0 },
+    adaptiveFloorStarvationLimit: 1,
+  });
+  assertEquals(claimed[0], 222, "a limit of 1 claims on the first deferral");
+});
+
+Deno.test("adaptive floor #375 - an issue the floor accepts has its streak cleared", async () => {
+  const cleared: string[] = [];
+  const { claimed } = await runScenario({
+    evidenceByIssue: {
+      222: { preservedWip: true },
+    },
+    remainingSeconds: 3400,
+    deferredCycles: { 222: 2 },
+    cleared,
+  });
+  assertEquals(claimed[0], 222);
+  assert(
+    cleared.includes("o/r#222"),
+    `expected the streak to be cleared, got: ${cleared.join(", ")}`,
+  );
+});
+
+Deno.test("adaptive floor #375 - with no streak tracking wired the floor defers as before", async () => {
+  const { claimed, logs } = await runScenario({
+    evidenceByIssue: {
+      222: { preservedWip: true, previousExecuteTimeout: true },
+    },
+    remainingSeconds: 933,
+  });
+  assert(
+    !claimed.includes(222),
+    `without tracking the pre-#375 deferral stands, got ${claimed.join(", ")}`,
+  );
+  assert(
+    !logs.some((m) => m.includes("ALERT starvation")),
+    "no starvation alert without streak tracking",
   );
 });
 
