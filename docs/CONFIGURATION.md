@@ -829,11 +829,12 @@ Three quarters is only safe while the requirement stays *satisfiable*, and on a
 host whose cycle length equals its `claude_timeout` it is not. There the
 requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a claim gate
 is first reached after startup, the maintenance passes and the scan have run —
-about twenty minutes in, so the best runway ever offered was 2430 s. VibeCoder
-#355 was refused on six consecutive cycles under the wording "leaving it for
-the next cycle", while the idle-decision census kept counting it as claimable
-and `[idle-census] ALERT inversion` fired every cycle. A permanent strand that
-reads as a passing deferral is the same failure shape as Issue #319.
+about twenty minutes in, so the best runway ever offered was 2430 s.
+VibeCoder #355 was refused on six consecutive cycles under the wording
+"leaving it for the next cycle", while the idle-decision census counted it as
+claimable and `[idle-census] ALERT inversion` fired every cycle. A permanent
+strand that reads as a passing deferral is the same failure shape as
+Issue #319.
 
 So the deferral has a memory. The worker counts the consecutive **cycles**
 (not scans — a slot re-scans every 30 s) that the floor deferred one issue in
