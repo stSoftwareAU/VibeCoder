@@ -63,17 +63,18 @@ Deno.test("MODEL-AND-CACHING.md captures the Opus 5 prompt-tuning learning", asy
   );
 });
 
-Deno.test("CODING-STANDARDS.md names Opus 5 as the Fable fallback", async () => {
+// Issue #371 superseded the original form of this test, which required
+// CODING-STANDARDS.md to *name* the current fallback generation. Naming it
+// duplicated the routing chain that docs/MODEL-AND-CACHING.md owns and went
+// stale on every routing change, so the standard now names no generation at
+// all and links to the routing doc instead. The intent — the two documents
+// must not drift — is unchanged.
+Deno.test("CODING-STANDARDS.md defers the fallback chain to MODEL-AND-CACHING.md", async () => {
   const text = await readRepoFile("CODING-STANDARDS.md");
-  const staleFallback = /fallback to \*\*Opus 4\.8\*\*/;
   assert(
-    !staleFallback.test(text),
-    "CODING-STANDARDS.md still claims the Fable fallback lands on Opus 4.8; " +
-      "docs/MODEL-AND-CACHING.md records that it lands on Opus 5",
-  );
-  assert(
-    /fallback to \*\*Opus 5\*\*/.test(text),
-    "CODING-STANDARDS.md does not state the Fable fallback lands on Opus 5",
+    text.includes("docs/MODEL-AND-CACHING.md#model-selection"),
+    "CODING-STANDARDS.md does not link to the Model Selection section that " +
+      "owns the per-phase routing chain and the unavailability self-heal",
   );
 });
 

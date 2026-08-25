@@ -263,15 +263,17 @@ proactively:
 
 ## Prompt Engineering Guidance
 
-The top-tier reasoning phases route to the current top model generation —
-**Fable 5**, with automatic fallback to **Opus 5** when Fable is unavailable
-(see [docs/MODEL-AND-CACHING.md](docs/MODEL-AND-CACHING.md) for the per-phase
-routing chain and the Fable-unavailable self-heal). The guidance below is
-model-generation-agnostic good practice for authoring prompt templates and
-agent instructions; it is not tied to any superseded model. Where a rule does
+The guidance below is model-generation-agnostic good practice for authoring
+prompt templates and agent instructions; it names no model generation by
+design. Which generation runs which phase — the per-phase routing chain and
+the self-heal that reroutes when the top-tier generation is unavailable — is
+recorded once, in
+[Model Selection](docs/MODEL-AND-CACHING.md#model-selection). Where a rule does
 depend on the model generation, it defers to
 [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning),
 which records what each generation needs and what was tried and reversed.
+`worker/deno/tests/coding_standards_model_agnostic_test.ts` fails the quality
+gate if a model-generation name reappears in this document.
 
 - **Write precise, unambiguous instructions.** State exactly what you want done
   and to which items. Avoid vague qualitative language such as "appropriate" or
@@ -282,9 +284,10 @@ which records what each generation needs and what was tried and reversed.
   force longer output.
 - **Match verification scaffolding to the model generation.** An explicit
   self-verification checkpoint ("After generating code, review your output for
-  correctness before proceeding") helps a generation that does not self-verify;
-  on a generation that already does — Opus 5 — it is redundant and encourages
-  over-work, which is why the current templates omit it. Check
+  correctness before proceeding") helps a generation that does not self-verify.
+  Add it only for such a generation and omit it for one that self-verifies
+  unprompted, where the ritual re-check is redundant and encourages over-work —
+  the reason the current templates omit it. Check
   [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning)
   before adding or removing such scaffolding.
 - **State when and why a tool should be used** rather than assuming the model
