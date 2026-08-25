@@ -25,6 +25,10 @@ async function fixture(options: {
   device?: string; // what findmnt answers for SOURCE (empty = not a mount)
   e2fsckExit?: number | null; // null = no e2fsck on PATH
   errorsCount?: number;
+  // Issue #384: null (the default) leaves fstrim off PATH, which is also
+  // what the real host gives these tests — /usr/sbin is not on the fixture
+  // PATH, so no test can ever trim the machine running the suite.
+  fstrimExit?: number | null;
 }): Promise<Fixture> {
   const dir = await Deno.makeTempDir({ prefix: "volume_init_" });
   const bin = `${dir}/bin`;
@@ -50,6 +54,15 @@ async function fixture(options: {
   await stub("chown", "exit 0");
   if (options.e2fsckExit !== null && options.e2fsckExit !== undefined) {
     await stub("e2fsck", `exit ${options.e2fsckExit}`);
+  }
+  if (options.fstrimExit !== null && options.fstrimExit !== undefined) {
+    await stub(
+      "fstrim",
+      options.fstrimExit === 0
+        ? `echo "/work: 23.5 GiB (25232932864 bytes) trimmed"; exit 0`
+        : `echo "fstrim: /work: the discard operation is not supported" >&2\n` +
+          `exit ${options.fstrimExit}`,
+    );
   }
   if (device.startsWith("/dev/")) {
     const base = device.slice("/dev/".length);
@@ -180,6 +193,96 @@ Deno.test("volume-init - without e2fsck and no recorded errors, the device is le
     const r = await run(f, ["/work"]);
     assertEquals(r.code, 0, r.stderr);
     assertStringIncludes(r.calls, "chown 1000:1000 /work");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+// --- Returning freed blocks to the host (Issue #384) ------------------------
+
+Deno.test("volume-init - a block-device volume is trimmed so freed blocks go back to the host", async () => {
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+    fstrimExit: 0,
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    assertStringIncludes(r.calls, "fstrim -v /work");
+    assertStringIncludes(r.stderr, "trimmed /work");
+    assertStringIncludes(r.stderr, "Issue #384");
+    // The trim runs on a mounted filesystem, after the check remounted it.
+    const trimAt = r.calls.indexOf("fstrim -v /work");
+    const mountAt = r.calls.indexOf("mount /dev/vdc /work");
+    assertEquals(mountAt < trimAt, true, r.calls);
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - a bind-mounted target is not trimmed (no volume image to punch holes in)", async () => {
+  const f = await fixture({ device: "", e2fsckExit: 0, fstrimExit: 0 });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    assertEquals(r.calls.includes("fstrim"), false, r.calls);
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - a runtime that cannot discard is loud, and the launch still proceeds", async () => {
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+    fstrimExit: 1,
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(
+      r.code,
+      0,
+      "a volume that cannot be trimmed must not block a launch",
+    );
+    assertStringIncludes(r.stderr, "could not trim /work");
+    assertStringIncludes(r.stderr, "discard operation is not supported");
+    assertStringIncludes(r.stderr, "Issue #384");
+    assertStringIncludes(r.calls, "chown 1000:1000 /work");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - an image without fstrim says so rather than failing silently", async () => {
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    assertStringIncludes(r.stderr, "fstrim is not available");
+    assertStringIncludes(r.stderr, "Issue #384");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - an unrepairable device is never trimmed", async () => {
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 8,
+    errorsCount: 3,
+    fstrimExit: 0,
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 3, r.stderr);
+    assertEquals(r.calls.includes("fstrim"), false, r.calls);
   } finally {
     await Deno.remove(f.dir, { recursive: true });
   }

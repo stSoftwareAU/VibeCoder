@@ -919,3 +919,30 @@ Deno.test("run.sh - a malformed container_tools spec fails the launch loudly (Is
     await harness.cleanup();
   }
 });
+
+Deno.test("run.sh - the work volume is trimmed before the hard disk floor can refuse the launch (Issue #384)", async () => {
+  // A floor no host can clear stands in for GRQ-23 sitting below it for days.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "hard floor");
+
+    // The init is what runs fstrim on the volume, so it must already have
+    // run: gating first left the image holding every block it was ever
+    // allocated and the floor unreachable by construction.
+    const init = await recorded(harness, "run-init");
+    assert(init, `the volume init must run before the gate: ${outcome.stderr}`);
+    assert(
+      init.includes("/usr/local/bin/vibe-volume-init"),
+      init.join(" "),
+    );
+    // The refusal still holds: no worker container was started.
+    assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
