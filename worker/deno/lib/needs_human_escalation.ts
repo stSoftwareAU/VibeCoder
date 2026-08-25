@@ -26,6 +26,10 @@
 import type { GitHubClient, GitHubComment, Logger, Result } from "../types.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "./label_operations.ts";
 import { assertWorkerCanApplyLabel } from "./worker_label_guard.ts";
+import {
+  getLabelColour,
+  getLabelDescription,
+} from "../setup/label_definitions.ts";
 
 /**
  * Result returned to callers — reports which side effects fired.
@@ -79,7 +83,10 @@ export interface EscalateToHumanOptions {
   nextStep: string;
   /** Comment heading. Defaults to `"Needs human attention"`. */
   heading?: string;
-  /** Colour for {@link ensureLabelExists}. Defaults to `"fbca04"`. */
+  /**
+   * Colour for {@link ensureLabelExists}. Defaults to the canonical
+   * colour for `needsHumanLabel` (Issue #368).
+   */
   ensureLabelColour?: string;
   /** Description for {@link ensureLabelExists}. */
   ensureLabelDescription?: string;
@@ -121,7 +128,8 @@ export interface EscalateToHumanOptions {
 }
 
 const DEFAULT_HEADING = "Needs human attention";
-const DEFAULT_LABEL_COLOUR = "fbca04";
+// Issue #368: the fallback colour is the canonical table's entry for the
+// label being ensured — no literal duplicated from label_definitions.ts.
 const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const COMMENT_SCAN_LIMIT = 50;
 
@@ -226,8 +234,8 @@ export async function escalateToHuman(
       const ensureResult = await ensureLabel(
         repo,
         needsHumanLabel,
-        ensureLabelColour ?? DEFAULT_LABEL_COLOUR,
-        ensureLabelDescription ?? "",
+        ensureLabelColour ?? getLabelColour(needsHumanLabel),
+        ensureLabelDescription ?? getLabelDescription(needsHumanLabel),
       );
       if (!ensureResult.ok) {
         logger.warn("escalateToHuman: ensureLabelExists failed", {

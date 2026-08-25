@@ -41,16 +41,23 @@ import {
   type AuditFailureMode,
   classifyAuditFailure,
 } from "./audit_fail_closed.ts";
+import {
+  getLabelColour,
+  getLabelDescription,
+} from "../setup/label_definitions.ts";
 
 export type { AuditFailureMode };
 
 /** Label every filed tracking issue carries (best-effort). */
 export const AUDIT_FAILURE_LABEL = "dependency-audit-failure";
 
-/** Colour + description used when ensuring the tracking label exists. */
-const LABEL_COLOUR = "d73a4a";
-const LABEL_DESCRIPTION =
-  "A scheduled dependency audit failed — a committed dependency has a known advisory.";
+/**
+ * Colour + description used when ensuring the tracking label exists.
+ * Issue #368 — read from the canonical label table so the label is the
+ * same colour in every repo the notifier files into.
+ */
+const LABEL_COLOUR = getLabelColour(AUDIT_FAILURE_LABEL);
+const LABEL_DESCRIPTION = getLabelDescription(AUDIT_FAILURE_LABEL);
 
 // ---------------------------------------------------------------------------
 // Issue content
