@@ -30,6 +30,10 @@ import {
 } from "./issue_edit_actor.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import {
+  getLabelColour,
+  getLabelDescription,
+} from "../setup/label_definitions.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { defaultLogger } from "./logger.ts";
 import { assertNever } from "./assert_never.ts";
@@ -84,8 +88,8 @@ async function fetchIssueTitleAndBody(
  * is routed through the same injectable gh CLI as the rest of this module
  * (preserves test injection for the content-integrity helper).
  *
- * The label is created with the red colour previously used by the bespoke
- * `ensureLabelViaGh` helper.
+ * Issue #368: the colour and description fall back to the canonical label
+ * table rather than to this call site's own literals.
  */
 function ensureLabelExistsViaGhFn(
   ghFn: (args: string[]) => Promise<string>,
@@ -96,9 +100,8 @@ function ensureLabelExistsViaGhFn(
     colour?: string,
     description?: string,
   ): Promise<{ ok: true; value: void } | { ok: false; error: Error }> => {
-    const colourArg = colour ?? "d73a4a";
-    const descriptionArg = description ??
-      "Issue needs human attention — automated workflow could not proceed";
+    const colourArg = colour ?? getLabelColour(labelName);
+    const descriptionArg = description ?? getLabelDescription(labelName);
     try {
       await ghFn([
         "api",
@@ -682,9 +685,6 @@ export async function resolveContentIntegrity(
           `needed. If it is not acceptable, revert the change (or remove ` +
           `\`${approvalLabel}\`) before removing ` +
           `\`${config.needsHumanLabel}\`.`,
-        ensureLabelColour: "d73a4a",
-        ensureLabelDescription:
-          "Issue needs human attention — automated workflow could not proceed",
         deps: {
           github: {
             ensureLabelExists: ensureLabelExistsViaGhFn(ghFn),

@@ -74,8 +74,13 @@ export const labelManagerCommand: Command = {
       case "ensure-label": {
         const repo = String(args["repo"] ?? "");
         const labelName = String(args["label-name"] ?? "");
-        const colour = String(args["colour"] ?? "d73a4a");
-        const description = String(args["description"] ?? "");
+        // Issue #368: no `--colour` means "use the canonical table", not
+        // "paint it red" — ensureLabelExists resolves both from
+        // `label_definitions.ts`.
+        const colour = args["colour"] ? String(args["colour"]) : undefined;
+        const description = args["description"]
+          ? String(args["description"])
+          : undefined;
 
         if (!repo || !labelName) {
           return {

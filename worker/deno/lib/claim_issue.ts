@@ -1400,13 +1400,11 @@ export async function checkClaimChurn(
   }
 
   // Ensure the failed label exists before adding it (Issue #1215)
-  await ensureLabelExists(
-    repo,
-    failedLabel,
-    "d73a4a",
-    "Issue failed permanently after two attempts",
-    { ghCommandFn },
-  );
+  // Issue #368: colour + description resolved from the canonical label
+  // table inside ensureLabelExists — no per-call-site literal.
+  await ensureLabelExists(repo, failedLabel, undefined, undefined, {
+    ghCommandFn,
+  });
 
   // Issue #976: Use REST API with CLI fallback for label operations
   // Issue #978: Label-add is non-fatal — the comment is the primary signal

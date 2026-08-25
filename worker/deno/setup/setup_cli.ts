@@ -16,6 +16,7 @@
  *   scheduled-task     Register the Windows Task Scheduler entry
  *   screenshot         Setup Playwright MCP for screenshots
  *   label-sync         Synchronise labels across repos
+ *   label-colour-reconcile  Repaint drifted fleet label colours
  *   workflow-sync      Audit workflows and raise issues for missing protections
  *   best-practices-sync  Audit workflows for best-practice findings and file follow-ups
  *   best-practices-relabel  Backfill severity + category labels on existing best-practice issues
@@ -56,6 +57,7 @@ import {
 } from "./scheduled_task.ts";
 import { setupPlaywrightMcp } from "./screenshot.ts";
 import { syncLabelsForAllRepos } from "./label_sync.ts";
+import { reconcileLabelColoursForAllRepos } from "./label_colour_reconcile.ts";
 import { syncWorkflowsForAllRepos } from "./workflow_sync.ts";
 import { syncBestPracticesForAllRepos } from "./best_practices_sync.ts";
 import { relabelBestPracticesForAllRepos } from "./best_practices_relabel.ts";
@@ -428,6 +430,73 @@ async function runLabelSync(configPath: string): Promise<boolean> {
   } catch (error) {
     printWarning(
       `Label sync failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Repaint fleet-managed labels whose colour drifted from the canonical
+ * table (Issue #368).
+ *
+ * Only labels the table names are touched, and none are created — a label
+ * a human added to their own repo is left exactly as they set it.
+ */
+async function runLabelColourReconcile(
+  configPath: string,
+  dryRun: boolean,
+): Promise<boolean> {
+  printInfo(
+    dryRun
+      ? "Checking fleet label colours (dry run — nothing will be changed)..."
+      : "Reconciling fleet label colours across monitored repositories...",
+  );
+
+  try {
+    const config = await loadExistingConfig(configPath);
+    const repos = config.repos ?? [];
+    if (repos.length === 0) {
+      printWarning("No repos configured — skipping label colour reconcile");
+      return true;
+    }
+
+    const ghConfigDir = config.gh_config_dir
+      ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
+      : undefined;
+    const results = await reconcileLabelColoursForAllRepos(repos, {
+      ghConfigDir,
+      dryRun,
+    });
+
+    let anyFailure = false;
+    for (const r of results) {
+      if (r.error) {
+        printWarning(
+          `Label colours for ${r.repo} could not be read: ${r.error}`,
+        );
+        anyFailure = true;
+        continue;
+      }
+      for (const c of r.changes) {
+        const suffix = c.applied
+          ? ""
+          : c.error
+          ? ` — FAILED: ${c.error}`
+          : " (dry run)";
+        printInfo(`  ${r.repo}: ${c.label} ${c.from} → ${c.to}${suffix}`);
+      }
+      printInfo(
+        `Label colours for ${r.repo}: ${r.inspected} fleet labels, ` +
+          `${r.drifted} drifted, ${r.changed} repainted`,
+      );
+      if (!r.ok) anyFailure = true;
+    }
+    return !anyFailure;
+  } catch (error) {
+    printWarning(
+      `Label colour reconcile failed: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
@@ -922,6 +991,8 @@ Subcommands:
   launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
   screenshot      Setup Playwright MCP for screenshots
   label-sync      Synchronise labels across repos
+  label-colour-reconcile  Repaint drifted fleet label colours to the canonical
+                  table (supports --dry-run)
   workflow-sync   Audit workflows and raise issues for missing protections
   best-practices-sync  Audit workflows for best-practice findings and file follow-ups
   best-practices-relabel  Backfill severity + category labels on existing best-practice issues (supports --dry-run)
@@ -1001,6 +1072,9 @@ if (import.meta.main) {
       break;
     case "label-sync":
       ok = await runLabelSync(configPath);
+      break;
+    case "label-colour-reconcile":
+      ok = await runLabelColourReconcile(configPath, dryRun);
       break;
     case "workflow-sync":
       ok = await runWorkflowSync(configPath);

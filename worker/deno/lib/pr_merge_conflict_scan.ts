@@ -31,6 +31,10 @@ import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
+import {
+  getLabelColour,
+  getLabelDescription,
+} from "../setup/label_definitions.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,12 +43,18 @@ import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 /** Visible queue label applied to every PR found CONFLICTING. */
 export const MERGE_CONFLICT_LABEL = "merge-conflict";
 
-/** Colour for {@link MERGE_CONFLICT_LABEL} when it has to be created. */
-export const MERGE_CONFLICT_LABEL_COLOUR = "b60205";
+/**
+ * Colour for {@link MERGE_CONFLICT_LABEL} when it has to be created.
+ * Issue #368 — resolved from the canonical label table, not a literal.
+ */
+export const MERGE_CONFLICT_LABEL_COLOUR = getLabelColour(
+  MERGE_CONFLICT_LABEL,
+);
 
 /** Description for {@link MERGE_CONFLICT_LABEL} when it has to be created. */
-export const MERGE_CONFLICT_LABEL_DESCRIPTION =
-  "PR conflicts with its base branch and needs a real merge";
+export const MERGE_CONFLICT_LABEL_DESCRIPTION = getLabelDescription(
+  MERGE_CONFLICT_LABEL,
+);
 
 /** Marker that identifies one recorded conflict-resolution attempt. */
 export const CONFLICT_ATTEMPT_MARKER = "<!-- vibe-coder:merge-conflict-attempt";

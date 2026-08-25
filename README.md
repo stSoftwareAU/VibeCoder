@@ -511,6 +511,38 @@ remove them manually to change the workflow.
 | **Needs screenshot**    | `needs-screenshot`    | — (hardwired)               | Applied when a previous attempt lacked screenshot evidence. Injects explicit screenshot instructions into the retry attempt. Hardwired — no config key.                |
 | **Documentation**       | `documentation`       | — (hardwired)               | Marks an issue as documentation-related. Hardwired — no config key.                                                                                                    |
 
+### 🎨 Content Labels and Fleet Colours
+
+Scans classify their findings with **content labels** — the `severity:*` ramp,
+the `confidence:*` ramp, the `lang:*` buckets, and one category label per scan
+(`security`, `best-practices`, `test-audit`, …). Unlike the workflow labels
+above, these are not seeded at onboarding: a repo grows `severity:critical` the
+first time a scan files a critical finding there.
+
+Their colours come from **one canonical table**, so the ramp means the same
+thing in every repo the fleet touches:
+
+| Family         | Colours (high → low)                                                  |
+| -------------- | --------------------------------------------------------------------- |
+| `severity:*`   | `critical` red → `high` orange → `medium` yellow → `low` green         |
+| `confidence:*` | `high` green → `medium` yellow → `low` pale green                      |
+| `lang:*`       | Each language's own brand colour (`lang:rust` rust-orange, …)          |
+
+The table lives in
+[`content_label_definitions.ts`](worker/deno/setup/content_label_definitions.ts)
+beside the workflow labels in
+[`label_definitions.ts`](worker/deno/setup/label_definitions.ts); the two join
+into `ALL_LABEL_DEFINITIONS`, which `ensureLabelExists` resolves every colour
+from. Repos that drifted before the table existed are repaired by:
+
+```bash
+deno run -A worker/deno/setup/setup_cli.ts label-colour-reconcile --dry-run
+deno run -A worker/deno/setup/setup_cli.ts label-colour-reconcile
+```
+
+The reconcile pass only repaints labels the table **names**, and never creates
+one — a label you added to your own repo is left exactly as you set it.
+
 ### 📊 Work Prioritisation
 
 The worker processes work in a fixed priority order: in-flight PR maintenance
