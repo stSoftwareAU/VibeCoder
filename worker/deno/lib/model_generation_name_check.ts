@@ -14,6 +14,12 @@
  * boundaries so an unrelated word that merely contains one of the names is
  * not flagged.
  *
+ * The rule is enforced by this repository's own Deno test
+ * (`worker/deno/tests/coding_standards_model_agnostic_test.ts`), deliberately
+ * *not* by a shared quality-gate check: the gate runs against every monitored
+ * repository, and another repo's `CODING-STANDARDS.md` may legitimately name a
+ * model. Repository isolation means this standard is enforced where it lives.
+ *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
