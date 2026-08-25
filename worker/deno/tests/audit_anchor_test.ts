@@ -112,9 +112,21 @@ Deno.test("audit_anchor - verifyChain passes for an intact anchored journal", as
   assertEquals(result.value.count, 3);
 });
 
-Deno.test("audit_anchor - a deleted journal is not treated as a fresh chain", async () => {
+// Contract change, Issue #361 (documented, not silently relaxed): these two
+// tests used to assert that `recordMutation` FAILS on a damaged journal. It
+// does still refuse to touch the damaged file — that is the invariant, and it
+// is asserted below more strictly than before. What changed is what happens
+// next. Refusing the append stopped the trail dead: on host GRQ-23 one torn
+// line meant every later `gh`/`git` mutation logged
+// `[SECURITY] [AUDIT_JOURNAL_REFUSED]` and went unrecorded, for the rest of
+// the host's life, while the worker carried on mutating GitHub. Damage to
+// yesterday's evidence must not cost today's, so recording now continues in a
+// quarantine segment beside the damaged file, which is left exactly as found.
+
+Deno.test("audit_anchor - a deleted journal is not treated as a fresh chain (Issue #361: recording moves to a segment)", async () => {
   const opts = await freshOpts();
   const path = await seed(opts, 2);
+  const anchorBefore = await Deno.readTextFile(anchorPath(path));
   await Deno.remove(path);
   _resetAuditCaches();
 
@@ -123,24 +135,42 @@ Deno.test("audit_anchor - a deleted journal is not treated as a fresh chain", as
     verb: "issue-comment",
     outcome: "success",
   }, opts);
+  assert(result.ok, "recording must continue rather than stop dead");
 
-  assertEquals(result.ok, false, "appending onto a deleted chain must fail");
-  if (result.ok) return;
-  assertStringIncludes(result.error.message, "anchor");
+  // The deleted journal is NOT recreated: a fresh chain under the old name
+  // would read as the missing evidence having simply come back.
   assertEquals(
     await Deno.readTextFile(path).catch(() => ""),
     "",
-    "no fresh chain should have been started",
+    "no fresh chain should have been started under the deleted name",
+  );
+  // …and its anchor is untouched, so the sweep still reports the deletion.
+  assertEquals(await Deno.readTextFile(anchorPath(path)), anchorBefore);
+
+  const segment = path.replace(/\.jsonl$/, ".s1.jsonl");
+  const written = await Deno.readTextFile(segment);
+  assertStringIncludes(written, "audit-journal-quarantined");
+  assertStringIncludes(written, "run-after-delete");
+
+  const swept = await verifyAllChains(opts.baseDir);
+  assert(swept.ok);
+  if (!swept.ok) return;
+  assertEquals(
+    swept.value.broken.filter((b) => b.path === path).length,
+    1,
+    "the deleted journal must still fail the sweep",
   );
 });
 
-Deno.test("audit_anchor - a truncated journal is not silently extended", async () => {
+Deno.test("audit_anchor - a truncated journal is not silently extended (Issue #361: recording moves to a segment)", async () => {
   const opts = await freshOpts();
   const path = await seed(opts, 3);
   const lines = (await Deno.readTextFile(path)).split("\n").filter((l) =>
     l.trim().length > 0
   );
   await Deno.writeTextFile(path, `${lines[0]}\n`);
+  const truncated = await Deno.readTextFile(path);
+  const anchorBefore = await Deno.readTextFile(anchorPath(path));
   _resetAuditCaches();
 
   const result = await recordMutation({
@@ -148,8 +178,25 @@ Deno.test("audit_anchor - a truncated journal is not silently extended", async (
     verb: "issue-comment",
     outcome: "success",
   }, opts);
+  assert(result.ok, "recording must continue rather than stop dead");
 
-  assertEquals(result.ok, false, "appending onto a truncated chain must fail");
+  // The truncated file and its anchor are byte-for-byte as they were: the
+  // append never lands on it, so the tail can never be re-anchored.
+  assertEquals(await Deno.readTextFile(path), truncated);
+  assertEquals(await Deno.readTextFile(anchorPath(path)), anchorBefore);
+  assertStringIncludes(
+    await Deno.readTextFile(path.replace(/\.jsonl$/, ".s1.jsonl")),
+    "run-after-truncate",
+  );
+
+  const swept = await verifyAllChains(opts.baseDir);
+  assert(swept.ok);
+  if (!swept.ok) return;
+  assertEquals(
+    swept.value.broken.filter((b) => b.path === path).length,
+    1,
+    "the truncated journal must still fail the sweep",
+  );
 });
 
 Deno.test("audit_anchor - adoptAnchor recovers a pre-anchor journal", async () => {

@@ -42,12 +42,14 @@
 
 import type { Result } from "../types.ts";
 import {
+  acknowledgeRosterLoss,
   addToRoster,
   anchorPath,
   type ChainAnchor,
   journalNameForAnchor,
   readAnchor,
-  readRoster,
+  readRosterContents,
+  type RosterAcknowledgement,
   rosterWasSeen,
   writeAnchor,
 } from "./audit_anchor.ts";
@@ -58,9 +60,28 @@ import {
  * beside an existing journal. Never absorbed as a fresh chain.
  */
 export class AuditChainAnchorError extends Error {
-  constructor(message: string) {
+  /**
+   * Is this damage the kind a fresh segment should be started beside
+   * (Issue #361)?
+   *
+   * True for a journal that exists and disagrees with its anchor —
+   * truncated, rewritten, carrying a torn line, or appended past the
+   * anchored head. Those cannot be repaired without destroying evidence,
+   * and until now they stopped journalling on that host dead: every later
+   * mutation logged `[SECURITY] [AUDIT_JOURNAL_REFUSED]` and went
+   * unrecorded, so damage to yesterday's evidence quietly cost all of
+   * today's.
+   *
+   * False for a journal with **no anchor at all** — a pre-#3712 chain
+   * awaiting `audit-chain-verify --adopt`. Rolling that over would strand
+   * the very journal the operator is about to adopt.
+   */
+  readonly quarantinable: boolean;
+
+  constructor(message: string, quarantinable = true) {
     super(message);
     this.name = "AuditChainAnchorError";
+    this.quarantinable = quarantinable;
   }
 }
 
@@ -132,6 +153,23 @@ export interface ChainSweep {
   checked: number;
   /** Journals whose chain or anchor failed verification. */
   broken: ChainSweepEntry[];
+  /**
+   * Journals that are gone and whose loss has been signed for (Issue #359).
+   *
+   * Reported, never hidden — but not a failure. A permanently-red integrity
+   * alarm is a broken integrity alarm: once a host's self-inflicted losses
+   * are always present, a genuine deletion arriving later just adds a line
+   * nobody reads.
+   */
+  acknowledged: AcknowledgedLoss[];
+}
+
+/** One accounted-for journal loss within a sweep (Issue #359). */
+export interface AcknowledgedLoss {
+  /** Journal file path the loss covers. */
+  path: string;
+  /** Why the journal is gone, and who signed for it. */
+  acknowledgement: RosterAcknowledgement;
 }
 
 /** Field order used for the canonical payload (chain fields excluded). */
@@ -300,6 +338,7 @@ function reconcile(
       `audit journal has no chain anchor: ${path} — the anchor at ` +
         `${anchorPath(path)} is missing. Adopt the existing chain with ` +
         `\`deno task audit-chain-verify --adopt\` once it has been reviewed.`,
+      false,
     );
   }
 
@@ -358,43 +397,9 @@ export async function recordMutation(
 ): Promise<Result<AuditEntry>> {
   try {
     const baseDir = resolveBaseDir(opts.baseDir);
-    const path = auditFilePath(opts);
-    const entry = await withLock(path, async () => {
-      await Deno.mkdir(baseDir, { recursive: true });
-      const state = await getChainState(path);
-      const timestamp = mutation.timestamp ?? new Date().toISOString();
-      const payload = { ...mutation, timestamp };
-      const hash = await computeEntryHash(payload, state.headHash);
-      const full: AuditEntry = { ...payload, prevHash: state.headHash, hash };
-      await Deno.writeTextFile(path, `${JSON.stringify(full)}\n`, {
-        append: true,
-      });
-      const next: ChainState = { count: state.count + 1, headHash: hash };
-      chainStateByPath.set(path, next);
-      const anchored = await writeAnchor(path, next);
-      if (!anchored.ok) {
-        // Fail loud (Issue #3234): an un-anchored append leaves the chain
-        // unverifiable, so the caller must see the failure.
-        throw new AuditChainAnchorError(
-          `audit entry appended but its anchor could not be written: ` +
-            anchored.error.message,
-        );
-      }
-      // Issue #3949: record the journal in the expected-journal roster so a
-      // later deletion of the journal together with its anchor (or of the
-      // whole audit directory) is a broken chain, not an empty sweep.
-      const rostered = await addToRoster(
-        baseDir,
-        path.slice(path.lastIndexOf("/") + 1),
-      );
-      if (!rostered.ok) {
-        throw new AuditChainAnchorError(
-          `audit entry appended but the journal roster could not be ` +
-            `updated: ${rostered.error.message}`,
-        );
-      }
-      return full;
-    });
+    await Deno.mkdir(baseDir, { recursive: true });
+    const path = await resolveWritableJournal(auditFilePath(opts));
+    const entry = await withLock(path, () => appendEntry(path, mutation));
     return { ok: true, value: entry };
   } catch (error: unknown) {
     return {
@@ -402,6 +407,132 @@ export async function recordMutation(
       error: error instanceof Error ? error : new Error(String(error)),
     };
   }
+}
+
+/** Append one chained, anchored, rostered entry to `path`. */
+async function appendEntry(
+  path: string,
+  mutation: AuditMutation,
+): Promise<AuditEntry> {
+  const baseDir = path.slice(0, path.lastIndexOf("/")) || ".";
+  const state = await getChainState(path);
+  const timestamp = mutation.timestamp ?? new Date().toISOString();
+  const payload = { ...mutation, timestamp };
+  const hash = await computeEntryHash(payload, state.headHash);
+  const full: AuditEntry = { ...payload, prevHash: state.headHash, hash };
+  await Deno.writeTextFile(path, `${JSON.stringify(full)}\n`, {
+    append: true,
+  });
+  const next: ChainState = { count: state.count + 1, headHash: hash };
+  chainStateByPath.set(path, next);
+  const anchored = await writeAnchor(path, next);
+  if (!anchored.ok) {
+    // Fail loud (Issue #3234): an un-anchored append leaves the chain
+    // unverifiable, so the caller must see the failure.
+    throw new AuditChainAnchorError(
+      `audit entry appended but its anchor could not be written: ` +
+        anchored.error.message,
+    );
+  }
+  // Issue #3949: record the journal in the expected-journal roster so a
+  // later deletion of the journal together with its anchor (or of the
+  // whole audit directory) is a broken chain, not an empty sweep.
+  const rostered = await addToRoster(
+    baseDir,
+    path.slice(path.lastIndexOf("/") + 1),
+  );
+  if (!rostered.ok) {
+    throw new AuditChainAnchorError(
+      `audit entry appended but the journal roster could not be ` +
+        `updated: ${rostered.error.message}`,
+    );
+  }
+  return full;
+}
+
+/** Verb recorded as the first entry of a segment opened beside damage. */
+export const AUDIT_JOURNAL_QUARANTINED_VERB = "audit-journal-quarantined";
+
+/** Segment suffix for the nth journal opened beside a damaged one. */
+function segmentPath(basePath: string, n: number): string {
+  return `${basePath.replace(/\.jsonl$/, "")}.s${n}.jsonl`;
+}
+
+/**
+ * The journal this process should append to (Issue #361).
+ *
+ * Normally the day's journal. When that journal exists but disagrees with
+ * its anchor, it is **quarantined**: left exactly as it is — evidence is
+ * never repaired or deleted — and a fresh segment is opened beside it,
+ * `audit-<worker>-<date>.s1.jsonl`, whose first entry records what was
+ * quarantined and why.
+ *
+ * The alternative, which is what happened on host GRQ-23 on 2026-08-25, is
+ * that one torn line at entry 31 stopped the trail dead: every subsequent
+ * `gh` and `git` mutation logged `[SECURITY] [AUDIT_JOURNAL_REFUSED]` and
+ * went unrecorded, for the rest of the host's life, while the worker
+ * carried on mutating GitHub. Damage to yesterday's evidence must not cost
+ * today's — an audit trail that stops recording when it is damaged is
+ * precisely the wrong failure direction.
+ *
+ * Nothing is laundered by this. The damaged journal keeps its own anchor,
+ * stays on the roster, and keeps failing `audit-chain-verify` exactly as
+ * loudly as before — a forged tail is never re-anchored, because the file
+ * carrying it is never written to again.
+ */
+async function resolveWritableJournal(basePath: string): Promise<string> {
+  let damaged: { path: string; reason: string } | null = null;
+  // Bounded: a host that has quarantined 100 segments in one day has a
+  // problem no further segment is going to help with, and an unbounded
+  // walk would spin.
+  for (let n = 0; n <= 100; n++) {
+    const path = n === 0 ? basePath : segmentPath(basePath, n);
+    try {
+      const state = await getChainState(path);
+      // Note the quarantine once, when the segment is opened. Every later
+      // process re-detects the same damage on its way past; repeating the
+      // note would bury the segment's real content under duplicates.
+      if (damaged && state.count === 0) await noteQuarantine(path, damaged);
+      return path;
+    } catch (error: unknown) {
+      if (
+        !(error instanceof AuditChainAnchorError) || !error.quarantinable
+      ) {
+        throw error;
+      }
+      if (!damaged) damaged = { path, reason: error.message };
+    }
+  }
+  throw new AuditChainAnchorError(
+    `audit journal cannot be opened: ${basePath} and 100 segments beside it ` +
+      `all disagree with their anchors`,
+  );
+}
+
+/**
+ * Open a quarantine segment by recording what was displaced, loudly.
+ *
+ * The note is the segment's first chained entry, so "why does this host
+ * have a `.s1` journal" is answerable from the trail itself rather than
+ * from whoever happened to read the console that day.
+ */
+async function noteQuarantine(
+  segment: string,
+  damaged: { path: string; reason: string },
+): Promise<void> {
+  console.error(
+    `[SECURITY] [AUDIT_JOURNAL_QUARANTINED] ${damaged.path}: ${damaged.reason} ` +
+      `— left intact as evidence and still failing the sweep; recording ` +
+      `continues in ${segment}`,
+  );
+  await withLock(segment, () =>
+    appendEntry(segment, {
+      runId: resolveRunId(),
+      verb: AUDIT_JOURNAL_QUARANTINED_VERB,
+      target: damaged.path.slice(damaged.path.lastIndexOf("/") + 1),
+      outcome: "error",
+      caller: damaged.reason,
+    }));
 }
 
 /**
@@ -668,6 +799,134 @@ export async function adoptAnchor(path: string): Promise<Result<ChainAnchor>> {
   return written;
 }
 
+/**
+ * Verb recorded in the chain when a journal loss is signed for (Issue #359).
+ *
+ * Greppable in the journal itself, and in every downstream consumer of the
+ * audit trail, so "who silenced which alarm" is answerable from the chain
+ * rather than from a sidecar alone.
+ */
+export const AUDIT_LOSS_ACKNOWLEDGED_VERB = "audit-loss-acknowledged";
+
+/** Inputs for {@link acknowledgeJournalLoss}. */
+export interface AcknowledgeLossParams {
+  /** Audit directory the roster covers. */
+  baseDir: string;
+  /** Basename of the journal whose loss is being signed for. */
+  journalName: string;
+  /** Why it is gone. Must not be blank — an unexplained loss stays loud. */
+  reason: string;
+  /** Who is signing for it. Must not be blank. */
+  by: string;
+}
+
+/**
+ * Sign for a journal that is genuinely gone (Issue #359).
+ *
+ * Issue #337 had the work-volume housekeeping prune the worker's own audit
+ * directory. That bug is fixed, but the fix could only stop further losses —
+ * on hosts already swept, the roster kept expecting three journals that no
+ * longer exist, so `audit-chain-verify` failed on every worker start, for
+ * ever. The only exits were a human editing the tamper-evidence file by hand
+ * or rebuilding the container: teaching operators to hand-edit the roster
+ * destroys the very witness it is there to be.
+ *
+ * This is the supported exit, and it is deliberately narrow:
+ *
+ *   - the journal must be **on the roster** — you cannot pre-acknowledge a
+ *     journal that was never expected,
+ *   - it must be **absent from disk**, journal and anchor both — a journal
+ *     that is present but truncated, rewritten or hash-broken is never
+ *     acknowledgeable and keeps failing the sweep exactly as before,
+ *   - a **reason** and an **operator identity** are required,
+ *   - and the act is written into the hash chain **first**. If the chain
+ *     append fails, nothing is acknowledged and the alarm keeps sounding;
+ *     the sidecar is never silenced without a chained record of who did it.
+ *
+ * It is not, and does not claim to be, unforgeable: a principal who can
+ * append to the roster can already delete it, which trips the complete-
+ * erasure alarm instead. What it changes is that an accounted-for loss stops
+ * being an anonymous recurring alarm and becomes a dated, attributed,
+ * reviewable record — so a *new* deletion on the same host is once again the
+ * only red line in the sweep.
+ *
+ * @param params - Which journal, why, and on whose authority
+ * @param opts - Storage overrides for the chained record (mainly tests)
+ * @returns Result carrying the persisted acknowledgement
+ */
+export async function acknowledgeJournalLoss(
+  params: AcknowledgeLossParams,
+  opts: RecordOptions = {},
+): Promise<Result<RosterAcknowledgement>> {
+  const { baseDir, journalName, reason, by } = params;
+
+  let rostered: string[];
+  try {
+    rostered = (await readRosterContents(baseDir)).journals;
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+  if (!rostered.includes(journalName)) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge ${journalName}: it is not on the roster for ` +
+          `${baseDir}, so nothing expects it`,
+      ),
+    };
+  }
+
+  const journalThere = await pathExists(`${baseDir}/${journalName}`);
+  const anchorThere = await pathExists(anchorPath(`${baseDir}/${journalName}`));
+  if (journalThere || anchorThere) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge ${journalName}: it is still on disk ` +
+          `(${journalThere ? "journal" : "anchor"} present) — only a journal ` +
+          `that is genuinely gone can be signed for, never one whose chain ` +
+          `simply does not verify`,
+      ),
+    };
+  }
+
+  // The chain record comes first, deliberately. A failure here leaves the
+  // alarm sounding, which is the safe direction to fail in.
+  const recorded = await recordMutation({
+    runId: resolveRunId(),
+    verb: AUDIT_LOSS_ACKNOWLEDGED_VERB,
+    target: journalName,
+    outcome: "success",
+    caller: `${by}: ${reason}`,
+  }, { ...opts, baseDir });
+  if (!recorded.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge ${journalName}: the acknowledgement could ` +
+          `not be recorded in the audit chain, so it will not be recorded ` +
+          `in the roster either: ${recorded.error.message}`,
+      ),
+    };
+  }
+
+  return await acknowledgeRosterLoss(baseDir, journalName, reason, by);
+}
+
+/** Does `path` exist? Any stat error other than absence is propagated up. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error: unknown) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
 /** Sweep verdict for complete erasure of the journal directory and roster. */
 function completeErasureSweep(dir: string): Result<ChainSweep> {
   return {
@@ -675,6 +934,7 @@ function completeErasureSweep(dir: string): Result<ChainSweep> {
     value: {
       baseDir: dir,
       checked: 1,
+      acknowledged: [],
       broken: [{
         path: dir,
         valid: false,
@@ -710,9 +970,12 @@ export async function verifyAllChains(
   const anchorsOnDisk = new Set<string>();
 
   let rostered: string[];
+  let acknowledgements: Map<string, RosterAcknowledgement>;
   let seen: boolean;
   try {
-    rostered = await readRoster(dir);
+    const contents = await readRosterContents(dir);
+    rostered = contents.journals;
+    acknowledgements = contents.acknowledged;
     seen = await rosterWasSeen(dir);
   } catch (error: unknown) {
     // A corrupted roster or seen-marker is a tamper signal in its own right.
@@ -743,7 +1006,10 @@ export async function verifyAllChains(
     // one is the same erasure, not a first-ever start.
     if (rostered.length === 0) {
       if (seen) return completeErasureSweep(dir);
-      return { ok: true, value: { baseDir: dir, checked: 0, broken: [] } };
+      return {
+        ok: true,
+        value: { baseDir: dir, checked: 0, broken: [], acknowledged: [] },
+      };
     }
     dirMissing = true;
   }
@@ -776,6 +1042,7 @@ export async function verifyAllChains(
   if (names.size === 0 && seen) return completeErasureSweep(dir);
 
   const broken: ChainSweepEntry[] = [];
+  const acknowledged: AcknowledgedLoss[] = [];
   for (const name of [...names].sort()) {
     const path = `${dir}/${name}`;
 
@@ -783,6 +1050,16 @@ export async function verifyAllChains(
     // deleted together (or the directory removed), which is exactly the
     // erasure the roster exists to expose (Issue #3949).
     if (!journalsOnDisk.has(name) && !anchorsOnDisk.has(name)) {
+      // Issue #359: unless the loss has been signed for. Then it is a
+      // closed finding — still reported on every sweep, no longer failing
+      // it. Only *this* shape of breakage is acknowledgeable: a journal
+      // that is present but truncated, rewritten, or hash-broken falls
+      // through to `verifyChain` below and can never be silenced.
+      const ack = acknowledgements.get(name);
+      if (ack) {
+        acknowledged.push({ path, acknowledgement: ack });
+        continue;
+      }
       broken.push({
         path,
         valid: false,
@@ -809,7 +1086,10 @@ export async function verifyAllChains(
     if (!result.value.valid) broken.push({ path, ...result.value });
   }
 
-  return { ok: true, value: { baseDir: dir, checked: names.size, broken } };
+  return {
+    ok: true,
+    value: { baseDir: dir, checked: names.size, broken, acknowledged },
+  };
 }
 
 /**
