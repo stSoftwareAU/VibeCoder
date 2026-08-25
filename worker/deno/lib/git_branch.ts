@@ -12,9 +12,7 @@
 import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
-import { buildBranchDeleteArgs } from "./git_branch_args.ts";
 import {
-  buildCheckoutNewBranchArgs,
   buildCheckoutResetBranchArgs,
   buildFetchArgs,
 } from "./git_ref_args.ts";
@@ -105,26 +103,29 @@ export function isProtectedBranch(branchName: string): boolean {
  * checkout source. If the fetch fails (e.g., offline), a warning is logged and
  * the function falls back to the existing local-then-remote checkout logic.
  *
+ * The branch is created with `checkout -B` — create-or-reset — rather than
+ * `branch -D` followed by `checkout -b` (Issue #356). Git refuses to delete
+ * the branch HEAD is on, and the resume-on-reclaim lookup leaves HEAD exactly
+ * there: it checks a candidate branch out, finds it no commits ahead of base,
+ * passes it over, and returns "start fresh" without moving HEAD back. The
+ * delete then failed, all three `checkout -b` attempts collided with the
+ * branch that was still present, and the claim died in phase `setup`. Being a
+ * deterministic function of the repository's state, it died the same way on
+ * every re-claim: Issue #356 was claimed and released ten times in nine hours
+ * while the idle-decision census kept reporting it as claimable work nobody
+ * was doing. `-B` is no more destructive than the delete it replaces — both
+ * discard whatever the local branch pointed at — and it cannot wedge.
+ *
  * @param branchName - The feature branch name to create
  * @param baseBranch - The branch to create from (e.g., "main" or "milestone/oidc")
  * @param options - Git command options (cwd, etc.)
- * @returns Result indicating success or failure
+ * @returns Result indicating success, or failure naming git's own output
  */
 export async function createFeatureBranchFromBase(
   branchName: string,
   baseBranch: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
-  // Remove existing local branch if present so checkout -b does not collide
-  const showRefResult = await runGitCommand(
-    ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
-    options,
-  );
-
-  if (showRefResult.ok && showRefResult.value.code === 0) {
-    await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
-  }
-
   // Fetch the latest upstream base branch before creating the feature branch
   // (Issue #1501). Non-fatal — if this fails we fall back to local refs.
   const fetchResult = await runGitCommand(
@@ -143,53 +144,35 @@ export async function createFeatureBranchFromBase(
     );
   }
 
-  // Prefer origin/<baseBranch> after a successful fetch so the new branch
-  // starts from the freshest remote commit.
-  if (fetchOk) {
-    const freshRemote = await runGitCommand(
-      buildCheckoutNewBranchArgs(branchName, `origin/${baseBranch}`),
-      options,
-    );
-    if (freshRemote.ok && freshRemote.value.code === 0) {
+  // Start points in order of preference: the freshly fetched remote tip, the
+  // local base ref (Issue #476), then the remote-tracking ref for a clone
+  // that could not be fetched. Each is attempted with `checkout -B` so an
+  // existing local branch — including the one HEAD is on — is reset rather
+  // than collided with (Issue #356).
+  const startPoints = fetchOk
+    ? [`origin/${baseBranch}`, baseBranch]
+    : [baseBranch, `origin/${baseBranch}`];
+
+  const failures: string[] = [];
+  for (const startPoint of startPoints) {
+    const args = buildCheckoutResetBranchArgs(branchName, startPoint);
+    const checkout = await runGitCommand(args, options);
+    if (checkout.ok && checkout.value.code === 0) {
       return {
         ok: true,
-        value:
-          `Created feature branch '${branchName}' from 'origin/${baseBranch}'`,
+        value: `Created feature branch '${branchName}' from '${startPoint}'`,
       };
     }
+    failures.push(describeGitFailure(args, checkout));
   }
 
-  // Try creating from local ref (Issue #476)
-  const localResult = await runGitCommand(
-    buildCheckoutNewBranchArgs(branchName, baseBranch),
-    options,
-  );
-
-  if (localResult.ok && localResult.value.code === 0) {
-    return {
-      ok: true,
-      value: `Created feature branch '${branchName}' from '${baseBranch}'`,
-    };
-  }
-
-  // Fall back to the remote tracking branch (if we did not already try it)
-  const remoteResult = await runGitCommand(
-    buildCheckoutNewBranchArgs(branchName, `origin/${baseBranch}`),
-    options,
-  );
-
-  if (remoteResult.ok && remoteResult.value.code === 0) {
-    return {
-      ok: true,
-      value:
-        `Created feature branch '${branchName}' from 'origin/${baseBranch}'`,
-    };
-  }
-
+  // Fail loud with git's own words: the release comment for Issue #356 read
+  // "could not be automatically determined" because they were discarded here.
   return {
     ok: false,
     error: new Error(
-      `Failed to create feature branch '${branchName}' from '${baseBranch}'`,
+      `Failed to create feature branch '${branchName}' from '${baseBranch}': ` +
+        failures.join("; "),
     ),
   };
 }
@@ -219,19 +202,13 @@ export async function resumeFeatureBranchFromRemote(
     return { ok: true, value: false };
   }
 
-  // Replace any stale local branch so checkout -b does not collide. HEAD
-  // is on the default branch at this point (setupRepo checked it out), so
-  // the delete cannot hit the current branch.
-  const showRefResult = await runGitCommand(
-    ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
-    options,
-  );
-  if (showRefResult.ok && showRefResult.value.code === 0) {
-    await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
-  }
-
+  // Replace any stale local branch. `checkout -B` create-or-resets, so a
+  // leftover local ref — including one HEAD is already sitting on — is moved
+  // onto the remote checkpoint rather than colliding with it (Issue #356);
+  // `branch -D` cannot delete the checked-out branch, and the collision that
+  // followed silently reported "no resumable work" over a pushed commit.
   const checkoutResult = await runGitCommand(
-    buildCheckoutNewBranchArgs(branchName, `origin/${branchName}`),
+    buildCheckoutResetBranchArgs(branchName, `origin/${branchName}`),
     options,
   );
   return {
