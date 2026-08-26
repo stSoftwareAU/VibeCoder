@@ -267,6 +267,7 @@ explicitly overridden.
 | `codex_phase_model_overrides` | `{}` | Per-phase **Codex** model overrides, applied when `agent_provider` is `codex`. Same shape as `phase_model_overrides`, with Codex model ids. See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
+| `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-reasoner` for the planning-shaped phases, `deepseek-chat` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
@@ -1807,6 +1808,8 @@ when nothing else is queued) avoids burning premium tokens.
 | `codex_phase_effort_overrides`| object | Per-repo per-phase **Codex** effort map (e.g. `{ "issue": "medium" }`). Same shape as the global `codex_phase_effort_overrides`. |
 | `gemini_model`          | string | Per-repo base **Gemini** model tier overriding the Gemini phase defaults for every phase in this repo — the Gemini counterpart of `claude_model`. |
 | `gemini_phase_model_overrides` | object | Per-repo per-phase **Gemini** model map (e.g. `{ "issue": "gemini-2.5-flash-lite" }`). Same shape as the global `gemini_phase_model_overrides`. |
+| `deepseek_model`        | string | Per-repo base **DeepSeek** model tier overriding the DeepSeek phase defaults for every phase in this repo — the DeepSeek counterpart of `claude_model`. |
+| `deepseek_phase_model_overrides` | object | Per-repo per-phase **DeepSeek** model map (e.g. `{ "issue": "deepseek-chat" }`). Same shape as the global `deepseek_phase_model_overrides`. |
 
 The Codex keys mirror the Claude ones step for step — including the caveat that
 a per-repo `codex_model` base tier beats the built-in Codex phase defaults, so it
@@ -1960,6 +1963,8 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `codex_phase_effort_overrides`| object | Per-repo per-phase Codex reasoning-effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `gemini_model`          | string  | Per-repo base Gemini model tier overriding the Gemini phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `gemini_phase_model_overrides` | object | Per-repo per-phase Gemini model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `deepseek_model`        | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `deepseek_phase_model_overrides` | object | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 
 **Use cases:**
 
