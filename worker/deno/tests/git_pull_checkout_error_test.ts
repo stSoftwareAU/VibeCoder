@@ -43,7 +43,15 @@ async function setupCloneWithoutFeatureBranch(): Promise<{
   return { tmpDir, localPath };
 }
 
-Deno.test("#335 - updatePrBranch names git's failure when the checkout fails", async () => {
+Deno.test("#335/#394 - updatePrBranch names why the branch could not be positioned", async () => {
+  // Issue #394 changed this message deliberately. `updatePrBranch` no longer
+  // runs a bare `git checkout <branch>` — it positions the branch at its
+  // remote head — so a branch that is nowhere is now diagnosed as "not on
+  // origin" rather than as git's `pathspec … did not match any file(s) known
+  // to git`. That wording was the problem: it reads as "your branch is gone"
+  // and was logged for PRs whose branch was sitting healthily on origin.
+  // Issue #335's requirement — say *why*, not just which branch — still holds
+  // and is what this test pins.
   const { tmpDir, localPath } = await setupCloneWithoutFeatureBranch();
   try {
     const result = await updatePrBranch("issue-999-missing", "main", {
@@ -53,11 +61,10 @@ Deno.test("#335 - updatePrBranch names git's failure when the checkout fails", a
     assertEquals(result.ok, false);
     if (!result.ok) {
       assertStringIncludes(result.error.message, "issue-999-missing");
-      // git's own diagnosis — the whole point of the line.
       assertStringIncludes(
-        result.error.message.toLowerCase(),
-        "pathspec",
-        `expected git's stderr in: ${result.error.message}`,
+        result.error.message,
+        "does not exist on origin",
+        `expected a diagnosis in: ${result.error.message}`,
       );
     }
   } finally {

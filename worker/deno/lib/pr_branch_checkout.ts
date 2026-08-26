@@ -24,6 +24,7 @@ import {
   buildCheckoutResetBranchArgs,
   buildFetchTrackingRefArgs,
 } from "./git_ref_args.ts";
+import { LOCAL_AHEAD_OF_REMOTE_ERROR } from "./git_branch_sync.ts";
 
 /** What the checkout had to do to put the local branch on the remote head. */
 export type BranchAlignment =
@@ -137,15 +138,17 @@ export async function checkoutPrBranchAtRemoteHead(
       };
     }
     if (ahead > 0) {
-      return {
-        ok: false,
-        error: new Error(
-          `Local branch '${branchName}' holds ${ahead} commit(s) that ` +
-            `origin/${branchName} does not — refusing to evaluate or update a ` +
-            `PR from a stale local branch (Issue #211). Push or discard them ` +
-            `first.`,
-        ),
-      };
+      // Named (Issue #394) so callers can tell this apart from a PR fault:
+      // the commits belong to another lane sharing this clone, and the PR is
+      // retried next cycle rather than counted as failed.
+      const error = new Error(
+        `Local branch '${branchName}' holds ${ahead} commit(s) that ` +
+          `origin/${branchName} does not — refusing to evaluate or update a ` +
+          `PR from a stale local branch (Issue #211). Push or discard them ` +
+          `first.`,
+      );
+      error.name = LOCAL_AHEAD_OF_REMOTE_ERROR;
+      return { ok: false, error };
     }
     alignment = "reset-to-remote";
   }

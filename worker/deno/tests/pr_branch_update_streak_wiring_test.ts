@@ -29,9 +29,19 @@ import type { Logger, Result } from "../types.ts";
 
 const REPO = "stSoftwareAU/NEAT-AI-core";
 const BRANCH = "issue-3832-detect-cycles-linear";
-const CHECKOUT_ERROR =
-  `Failed to checkout branch '${BRANCH}': error: pathspec '${BRANCH}' did ` +
-  `not match any file(s) known to git`;
+/**
+ * A genuinely permanent failure — the branch cannot be published at all.
+ *
+ * This used to be the `pathspec … did not match any file(s) known to git`
+ * checkout failure. Issue #394 reclassified that message as *clone
+ * contention* (another lane on the host moved the clone), which is retried
+ * rather than escalated, so it can no longer stand in for a broken branch
+ * here. The #335 behaviour these tests pin — escalate once at the threshold,
+ * then skip — is unchanged; only the sample failure is.
+ */
+const PERMANENT_FAILURE =
+  `Failed to push updated branch '${BRANCH}': ! [remote rejected] ` +
+  `${BRANCH} -> ${BRANCH} (protected branch hook declined)`;
 
 function makeLogger(lines: string[]): Logger {
   const noop = () => {};
@@ -130,7 +140,7 @@ async function withWorkDir(fn: (dir: string) => Promise<void>): Promise<void> {
 Deno.test("#335 - a permanently failing branch is escalated once, then skipped", async () => {
   await withWorkDir(async (dir) => {
     const failing = () =>
-      ({ ok: false, error: new Error(CHECKOUT_ERROR) }) as Result<string>;
+      ({ ok: false, error: new Error(PERMANENT_FAILURE) }) as Result<string>;
     const h = makeHarness(dir, failing);
 
     for (let cycle = 0; cycle < 10; cycle++) {
@@ -147,7 +157,7 @@ Deno.test("#335 - a permanently failing branch is escalated once, then skipped",
     const creates = h.ghCalls.filter((c) => c[1] === "create");
     assertEquals(creates.length, 1);
     const body = creates[0]![creates[0]!.indexOf("--body") + 1]!;
-    assertStringIncludes(body, "pathspec");
+    assertStringIncludes(body, "protected branch hook declined");
     assertStringIncludes(body, "3 consecutive cycles");
     // And the escalation warning is logged once, not on every cycle.
     assertEquals(
@@ -161,7 +171,7 @@ Deno.test("#335 - a permanently failing branch is escalated once, then skipped",
 Deno.test("#335 - the suppressed branch is reported, not silently dropped", async () => {
   await withWorkDir(async (dir) => {
     const failing = () =>
-      ({ ok: false, error: new Error(CHECKOUT_ERROR) }) as Result<string>;
+      ({ ok: false, error: new Error(PERMANENT_FAILURE) }) as Result<string>;
     const h = makeHarness(dir, failing);
 
     let last;
@@ -188,7 +198,7 @@ Deno.test("#335 - a transient failure that clears escalates nothing", async () =
       dir,
       () =>
         (fail
-          ? { ok: false, error: new Error(CHECKOUT_ERROR) }
+          ? { ok: false, error: new Error(PERMANENT_FAILURE) }
           : { ok: true, value: "Updated" }) as Result<string>,
     );
 
@@ -211,7 +221,7 @@ Deno.test("#335 - a successful update after escalation restores normal service",
       dir,
       () =>
         (fail
-          ? { ok: false, error: new Error(CHECKOUT_ERROR) }
+          ? { ok: false, error: new Error(PERMANENT_FAILURE) }
           : { ok: true, value: "Updated" }) as Result<string>,
     );
 
@@ -242,7 +252,7 @@ Deno.test("#335 - one escalated branch does not suppress its siblings", async ()
     });
     const h = makeHarness(
       dir,
-      () => ({ ok: false, error: new Error(CHECKOUT_ERROR) }) as Result<string>,
+      () => ({ ok: false, error: new Error(PERMANENT_FAILURE) }) as Result<string>,
     );
 
     // The bad branch alone fails its way to escalation.
@@ -273,7 +283,7 @@ Deno.test("#335 - without the streak deps the pass behaves exactly as before", a
       performBranchUpdate: (params: { branchName: string }) => {
         attempts.push(params.branchName);
         return Promise.resolve(
-          { ok: false, error: new Error(CHECKOUT_ERROR) } as Result<string>,
+          { ok: false, error: new Error(PERMANENT_FAILURE) } as Result<string>,
         );
       },
     };

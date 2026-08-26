@@ -27,6 +27,7 @@ import {
   buildRebaseArgs,
 } from "./git_ref_args.ts";
 import { syncBranchToRemoteHead } from "./git_branch_sync.ts";
+import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -513,6 +514,35 @@ export function isPrBranchConflictError(err: unknown): boolean {
 }
 
 /**
+ * The ref a PR should be judged and rebased against (Issue #394).
+ *
+ * `refs/remotes/origin/<base>` when the clone has it — the base as published,
+ * which is what GitHub compared the PR with — falling back to the local
+ * branch name when there is no tracking ref (a base that exists only locally,
+ * as in several unit fixtures).
+ *
+ * The local base ref cannot be relied on here: it is shared with every other
+ * lane on the host, and git refuses to move a branch another worktree has
+ * checked out, so `ensureDefaultBranchCurrent` can legitimately leave it
+ * behind the remote.
+ *
+ * @param baseBranch - The PR's base branch name
+ * @param options - Git command options (cwd selects the clone or worktree)
+ * @returns The ref to use for comparison, rebase and merge
+ */
+async function resolvePublishedBaseRef(
+  baseBranch: string,
+  options: GitCommandOptions,
+): Promise<string> {
+  const trackingRef = `refs/remotes/origin/${baseBranch}`;
+  const resolved = await runGitCommand(
+    ["rev-parse", "--verify", "--quiet", trackingRef],
+    options,
+  );
+  return resolved.ok && resolved.value.code === 0 ? trackingRef : baseBranch;
+}
+
+/**
  * Update a PR branch to be current with its base branch (Issue #379, #498).
  *
  * Rebases the feature branch onto the base branch and force-pushes.
@@ -548,51 +578,39 @@ export async function updatePrBranch(
   // Ensure the local base branch is current
   await ensureDefaultBranchCurrent(baseBranch, options);
 
-  // Check out the feature branch
-  const currentBranchResult = await runGitCommand(
-    ["rev-parse", "--abbrev-ref", "HEAD"],
-    options,
-  );
-  const currentBranch = currentBranchResult.ok
-    ? currentBranchResult.value.stdout.trim()
-    : "";
+  // Issue #394: the base ref this update is judged against is the *published*
+  // one wherever it exists. `ensureDefaultBranchCurrent` cannot move a local
+  // base branch that another lane's worktree has checked out — git refuses,
+  // correctly — so trusting the local ref would rebase onto a base that is
+  // already behind and leave the PR reported as behind for ever.
+  const baseRef = await resolvePublishedBaseRef(baseBranch, options);
 
-  if (currentBranch !== branchName) {
-    const checkoutResult = await runGitCommand(
-      buildCheckoutArgs(branchName),
-      options,
-    );
-    if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
-      return {
-        ok: false,
-        error: checkoutFailureError(branchName, checkoutResult),
-      };
-    }
-  }
-
-  // Issue #211: judge the PR by its *remote* head. The worker reuses a clone
-  // across passes, so the local copy of a PR branch can carry commits origin
-  // does not have; rebasing those onto the base can conflict where the PR's
-  // real head would not, and PR #557 was labelled `merge-conflict` while
-  // GitHub reported it mergeable. Fast-forward onto the remote head, and
-  // refuse loudly — with a distinct error, never a conflict verdict — when
-  // the local branch is ahead: those commits are unpushed work, and the pass
-  // force-pushes whatever it produces, so resetting them away would destroy
-  // them silently.
-  const alignResult = await syncBranchToRemoteHead(branchName, options);
+  // Issue #211 / #394: position the branch at its remote head in one
+  // mutating command. The old shape read `HEAD`, ran a bare
+  // `git checkout <branch>`, and then fast-forwarded — three commands with
+  // two windows in which a lane sharing this clone could delete or move the
+  // branch, which is exactly how an open PR whose branch sits healthily on
+  // origin was reported as `pathspec … did not match any file(s) known to
+  // git` (PR #392). `checkoutPrBranchAtRemoteHead` fetches the tracking ref
+  // explicitly and uses `checkout -B`, so a missing, stale or corrupt local
+  // ref is overwritten rather than read — and it still refuses loudly, with
+  // the typed ahead-of-remote error, when the local branch carries commits
+  // origin has never seen: those are somebody's unpushed work and this pass
+  // force-pushes whatever it produces.
+  const alignResult = await checkoutPrBranchAtRemoteHead(branchName, options);
   if (!alignResult.ok) {
     return { ok: false, error: alignResult.error };
   }
-  const alignNote = alignResult.value.action === "fast-forwarded"
-    ? `${alignResult.value.detail}. `
+  const alignNote = alignResult.value === "reset-to-remote"
+    ? `positioned '${branchName}' on its remote head. `
     : "";
 
   // Ensure enough history for range detection on a shallow clone (Issue #1502)
-  await ensureHistoryDepth(["HEAD", baseBranch], options);
+  await ensureHistoryDepth(["HEAD", baseRef], options);
 
   // Check if rebase is needed
   const behindResult = await runGitCommand(
-    ["rev-list", "--count", `HEAD..${baseBranch}`],
+    ["rev-list", "--count", `HEAD..${baseRef}`],
     options,
   );
   const behindCount = behindResult.ok && behindResult.value.code === 0
@@ -607,6 +625,7 @@ export async function updatePrBranch(
     const conflicting = await resolveConflictingPrBranch(
       branchName,
       baseBranch,
+      baseRef,
       options,
     );
     return conflicting.ok
@@ -625,7 +644,7 @@ export async function updatePrBranch(
 
   // Attempt rebase (history already deepened above)
   const rebaseResult = await runGitCommand(
-    buildRebaseArgs(baseBranch),
+    buildRebaseArgs(baseRef),
     options,
   );
 
@@ -662,21 +681,24 @@ export async function updatePrBranch(
  * 3. If that fails, manually resolve each conflicted file with checkout --theirs
  *
  * @param branchName - The feature branch
- * @param baseBranch - The base branch to merge from
+ * @param baseBranch - The base branch's name, for the operator-facing verdict
+ * @param baseRef - The ref actually merged from — the published base wherever
+ *   it exists (Issue #394)
  * @param options - Git command options
  * @returns Result indicating success or failure
  */
 async function resolveConflictingPrBranch(
   branchName: string,
   baseBranch: string,
+  baseRef: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
   // Ensure enough history for the merge on a shallow clone (Issue #1502)
-  await ensureHistoryDepth(["HEAD", baseBranch], options);
+  await ensureHistoryDepth(["HEAD", baseRef], options);
 
   // Attempt 1: Clean merge
   const mergeResult = await runGitCommand(
-    ["merge", baseBranch, "--no-edit"],
+    ["merge", baseRef, "--no-edit"],
     options,
   );
 
