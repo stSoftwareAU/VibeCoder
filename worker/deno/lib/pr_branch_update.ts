@@ -693,6 +693,37 @@ export async function executePrBranchUpdates(
       lockCommentId = lockResult.value.lockCommentId;
     }
 
+    // Issue #386: freshness re-check at the point of action, as Issue #352
+    // taught the claim path to do. The scan read this PR as behind up to a
+    // minute ago; if it has merged since, the push would be refused by the
+    // lease and reported as a failure it never was. Checked before the clone
+    // so a finished PR costs no repository setup either.
+    const preState = await resolvePrLiveState(deps, action);
+    if (isFinishedPrState(preState)) {
+      mergedCount++;
+      const verb = preState === "MERGED" ? "merged" : "closed";
+      deps.logger.info(
+        `PR #${action.prNumber} (${action.branchName}) ${verb} between the ` +
+          `scan and the push — nothing to do (Issue #386)`,
+        { repo: action.repo, prNumber: action.prNumber },
+      );
+      details.push({
+        repo: action.repo,
+        prNumber: action.prNumber,
+        branchName: action.branchName,
+        status: "merged",
+        message: `PR ${verb} before the branch update ran — no update needed`,
+      });
+      if (lockCommentId !== undefined) {
+        await doReleaseLock({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          lockCommentId,
+        });
+      }
+      continue;
+    }
+
     // Set up the repository
     const setupResult = await deps.setupRepo(action.repo, deps.workDir);
     if (!setupResult.ok) {
@@ -733,36 +764,6 @@ export async function executePrBranchUpdates(
       defaultBranch = await deps.getDefaultBranch(action.repo);
     } catch {
       defaultBranch = "main"; // allow-hardcoded-branch — fallback after dynamic detection
-    }
-
-    // Issue #386: freshness re-check at the point of action, as Issue #352
-    // taught the claim path to do. The scan read this PR as behind up to a
-    // minute ago; if it has merged since, the push would be refused by the
-    // lease and reported as a failure it never was.
-    const preState = await resolvePrLiveState(deps, action);
-    if (isFinishedPrState(preState)) {
-      mergedCount++;
-      const verb = preState === "MERGED" ? "merged" : "closed";
-      deps.logger.info(
-        `PR #${action.prNumber} (${action.branchName}) ${verb} between the ` +
-          `scan and the push — nothing to do (Issue #386)`,
-        { repo: action.repo, prNumber: action.prNumber },
-      );
-      details.push({
-        repo: action.repo,
-        prNumber: action.prNumber,
-        branchName: action.branchName,
-        status: "merged",
-        message: `PR ${verb} before the branch update ran — no update needed`,
-      });
-      if (lockCommentId !== undefined) {
-        await doReleaseLock({
-          repo: action.repo,
-          prNumber: action.prNumber,
-          lockCommentId,
-        });
-      }
-      continue;
     }
 
     // Perform the branch update (fetch, checkout, rebase, push, restore)

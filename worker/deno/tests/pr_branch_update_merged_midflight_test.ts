@@ -128,9 +128,14 @@ Deno.test("makeGhPrStateFetcher - asks gh for the PR's state and returns it raw"
 Deno.test("executePrBranchUpdates - a PR merged between scan and push is a no-op, not an update attempt", async () => {
   const captured: CapturedLogs = { info: [], warn: [] };
   let updateCalls = 0;
+  let setupCalls = 0;
   const deps = makeExecDeps({
     logger: makeCapturingLogger(captured),
     getPrState: async () => "MERGED",
+    setupRepo: async () => {
+      setupCalls++;
+      return { ok: true, value: "/tmp/work/repo" } as Result<string>;
+    },
     performBranchUpdate: async () => {
       updateCalls++;
       return { ok: true, value: "should not run" };
@@ -142,6 +147,7 @@ Deno.test("executePrBranchUpdates - a PR merged between scan and push is a no-op
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertEquals(updateCalls, 0, "a merged PR must not be pushed at all");
+  assertEquals(setupCalls, 0, "a merged PR must not cost a repository clone");
   assertEquals(result.value.mergedCount, 1);
   assertEquals(result.value.failedCount, 0);
   assertEquals(result.value.updatedCount, 0);

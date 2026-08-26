@@ -392,6 +392,53 @@ stateDiagram-v2
     Reprobe --> Escalated: still failing
 ```
 
+## 🕰️ A PR that merges mid-cycle is not a failed update (Issue #386)
+
+The pass scans, then executes: PR #381 was read as two commits behind at
+21:48:37Z and pushed at 21:49:37Z, and it merged at 21:49:12Z — inside the
+window. `--force-with-lease` then refused the push with `(stale info)`, which is
+the lease doing exactly its job, but the run counted `failedCount=1` and logged
+a WARNING. That buries the signal that matters: a protected branch, a
+permissions problem, or a real lease violation over someone else's commits read
+identically to "the PR merged while we were working", and on a busy milestone
+the second one is the common case.
+
+The execute step therefore re-checks the PR's live state at the point of action,
+the same lesson
+[`claim_freshness.ts`](../../worker/deno/lib/claim_freshness.ts) learnt one step
+earlier in the pipeline (Issues #344 / #352):
+
+| When | What is asked | Outcome |
+| --- | --- | --- |
+| Before the clone and the push | `gh pr view --json state` | `MERGED`/`CLOSED` → counted as `mergedCount`, logged at INFO, no clone, no push |
+| After a failed update only | The same lookup | `MERGED`/`CLOSED` → `mergedCount`; still `OPEN` → `failedCount`/`conflictCount` and the WARNING, unchanged |
+| Lookup unavailable or failing | — | `UNKNOWN`: the update proceeds and every failure stays loud; the lookup error is warned about, never swallowed |
+
+The counters stay separate — `mergedCount` is reported in its own clause
+(`, N merged mid-update`) and never folded into `failedCount` — and a mid-cycle
+merge records **no** failure against the Issue #335 streak, so a routine merge
+can never escalate a branch that was never broken. `conflictCount` had the same
+defect and is classified by the same re-check: a conflict reported against a
+base that has since taken this PR's commits is a no-op, while a conflict on a
+still-open PR is handed to the merge-conflict pass exactly as before.
+
+The post-update lookup only runs when the update failed, so a clean pass costs
+no extra API call.
+
+```mermaid
+flowchart TD
+    Scan["Scan: PR #381 is 2 commits behind"] --> Pre{"Still open?"}
+    Pre -->|"MERGED / CLOSED"| NoOp["ℹ️ mergedCount — nothing to do"]
+    Pre -->|"OPEN or UNKNOWN"| Push["Clone, rebase, force-with-lease push"]
+    Push -->|ok| Done["✅ updatedCount"]
+    Push -->|"rejected / conflict"| Post{"Still open?"}
+    Post -->|"MERGED / CLOSED"| NoOp
+    Post -->|"OPEN or UNKNOWN"| Loud["⚠️ failedCount / conflictCount — WARNING"]
+    style NoOp fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+    style Done fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style Loud fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+```
+
 ## 🔀 Decision points and exceptions
 
 - **No feedback / no spelling / no stale branches:** Skip; no side effects.
