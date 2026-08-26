@@ -39,7 +39,10 @@ import { denoCacheGuardCommand } from "../commands/deno_cache_guard.ts";
 import { branchCleanupCommand } from "../commands/branch_cleanup.ts";
 import { workVolumePruneCommand } from "../commands/work_volume_prune.ts";
 import { workVolumeTiersCommand } from "../commands/work_volume_tiers.ts";
-import { DEFAULT_SIDE_REPO_MAX_AGE_DAYS } from "./work_volume_tiers.ts";
+import {
+  DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
+  DEFAULT_SIDE_REPO_MAX_GIT_BYTES,
+} from "./work_volume_tiers.ts";
 import { workerLogCleanupCommand } from "../commands/worker_log_cleanup.ts";
 import {
   DEFAULT_HARD_CAP_COUNT,
@@ -318,6 +321,11 @@ export function buildHousekeepingSteps(
       // gate pulled in as `../<name>`. Monitored repos persist; these age
       // out after three idle days (a nightly gate's data repo stays warm)
       // and the scan logs the size of both tiers either way.
+      //
+      // Issue #387: a clone a gate refreshes every cycle is never idle, so
+      // the age limit alone never reaches it while its blobless object
+      // store ratchets by a tree of blobs per refresh — the `.git` cap is
+      // what bounds that one.
       id: "work-volume-tiers",
       command: "work-volume-tiers",
       args: {
@@ -326,6 +334,10 @@ export function buildHousekeepingSteps(
         "max-age-days": envInt(
           "WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS",
           DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
+        ),
+        "max-git-bytes": envInt(
+          "WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES",
+          DEFAULT_SIDE_REPO_MAX_GIT_BYTES,
         ),
       },
     },

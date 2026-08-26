@@ -1152,6 +1152,8 @@ operational purposes:
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
 | `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
+| `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
+| `WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES` | `2147483648` (2 GiB) | Cap on a side/data clone's `.git`; over it the clone is dropped even while warm, because each blobless refresh leaves a tree of blobs git will not prune (`0` disables) — see [A warm clone's object store is capped too](CONTAINER.md#a-warm-clones-object-store-is-capped-too-issue-387) |
 
 ### 💰 Daily Spend Ceiling
 

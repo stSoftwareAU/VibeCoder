@@ -7,6 +7,11 @@
  * `--mode disk-low --bytes-needed N` reclaims largest-first when the host
  * disk monitor (Issue #226) reports `low`.
  *
+ * `--max-git-bytes` caps a tier-2 clone's `.git` in `age` mode (Issue #387):
+ * a data repo a gate refreshes every cycle is never idle, and each refresh of
+ * a blobless partial clone leaves a whole tree of blobs behind in a promisor
+ * pack git will not prune. `0` disables the cap.
+ *
  * The monitored list comes from the loaded configuration unless `--repos`
  * names one explicitly.
  *
@@ -73,6 +78,7 @@ export const workVolumeTiersCommand: Command = {
 
     const knobs = {
       "max-age-days": numberArg(args, "max-age-days"),
+      "max-git-bytes": numberArg(args, "max-git-bytes"),
       "bytes-needed": numberArg(args, "bytes-needed"),
     };
     for (const [flag, value] of Object.entries(knobs)) {
@@ -106,6 +112,7 @@ export const workVolumeTiersCommand: Command = {
       monitoredRepos,
       mode: rawMode,
       maxAgeDays: knobs["max-age-days"] as number | undefined,
+      maxGitBytes: knobs["max-git-bytes"] as number | undefined,
       bytesNeeded: knobs["bytes-needed"] as number | undefined,
       log: (message) => console.log(message),
     });
