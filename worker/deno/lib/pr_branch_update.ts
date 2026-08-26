@@ -611,6 +611,41 @@ export async function executePrBranchUpdates(
   const streak = deps.failureStreak;
 
   for (const action of actions) {
+    // Issue #409: a PR that has merged or closed is settled before anything
+    // else is considered — including the suppression check below. Suppression
+    // short-circuits the loop, so a branch whose streak had already escalated
+    // never reached the finished-PR check that Issue #386 added, and its
+    // streak could never clear: no update will ever succeed on a merged PR,
+    // and success was the only thing that cleared it. The escalation issue
+    // then stayed open for ever describing work nobody could do — #409 is
+    // exactly that, filed against PR #405's branch, which had merged.
+    if (streak) {
+      const settledState = await resolvePrLiveState(deps, action);
+      if (isFinishedPrState(settledState)) {
+        mergedCount++;
+        const verb = settledState === "MERGED" ? "merged" : "closed";
+        deps.logger.info(
+          `PR #${action.prNumber} (${action.branchName}) is ${verb} — ` +
+            `clearing its branch-update failure streak (Issue #409)`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+        await clearPrBranchUpdateFailure(
+          streak.statePath,
+          action.repo,
+          action.branchName,
+          (message: string) => deps.logger.warn(message),
+        );
+        details.push({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          branchName: action.branchName,
+          status: "merged",
+          message: `PR ${verb}; failure streak cleared`,
+        });
+        continue;
+      }
+    }
+
     // Issue #335: a branch that has already been escalated after repeated
     // failures is skipped rather than retried — 65 identical warnings for one
     // branch is the state this replaces. It is re-probed periodically, so a

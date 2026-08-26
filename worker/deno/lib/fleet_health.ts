@@ -15,6 +15,11 @@ import {
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
 import {
+  classifyHostDisk,
+  probeDiskReading,
+  resolveDiskFloors,
+} from "./host_disk.ts";
+import {
   EXTENDED_SUBPROCESS_TIMEOUT_MS,
   runWithTimeout,
 } from "./subprocess_timeout.ts";
@@ -105,6 +110,20 @@ export interface FleetHealthDeps {
     cmd: string[],
     options?: { cwd?: string; timeoutMs?: number },
   ) => Promise<Result<string>>;
+  /**
+   * Is the host below its disk floor right now (Issue #410)?
+   *
+   * Only the **clone** consults this. Fleet health is optional reporting;
+   * spending disk to create a checkout on a host that is already refusing to
+   * claim work for want of disk is the wrong trade, and on GRQ-23 it was
+   * worse than useless: the work-volume reclaimer tiers the checkout as
+   * disposable and removes it at `0.0 days idle` while below the floor, so
+   * clone and prune chased each other every ~4.5 minutes, indefinitely —
+   * 47 MB of fresh volume-image growth per lap, and the image cannot shrink.
+   *
+   * Optional: hosts that do not supply it behave exactly as before.
+   */
+  isBelowDiskFloor?: () => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +292,26 @@ export function createProductionFleetHealthDeps(
       }
     },
 
+    /**
+     * Issue #410: the same floor the work-volume reclaimer acts on, read the
+     * same way (`df -kP` plus the env-configurable floors), so the two sides
+     * cannot disagree about whether the host is short of disk. Unreadable
+     * disk is treated as *not* low: a probe failure must not silently switch
+     * health reporting off.
+     */
+    async isBelowDiskFloor(): Promise<boolean> {
+      const workDir = Deno.env.get("WORK_DIR");
+      if (!workDir) return false;
+      const reading = await probeDiskReading(workDir);
+      if (reading === null) return false;
+      const floors = resolveDiskFloors((name: string) => Deno.env.get(name));
+      return classifyHostDisk(
+        reading.availableBytes,
+        reading.totalBytes,
+        floors,
+      ).level === "low";
+    },
+
     async fileIsExecutable(path: string): Promise<boolean> {
       try {
         const stat = await Deno.stat(path);
@@ -407,6 +446,18 @@ export async function ensureFleetHealthRepo(
         `FLEET health tracking is off: ${config.healthDir} does not exist ` +
         "and FLEET_HEALTH_REPO is not set (optional; clone your fleet's " +
         "health repository there or set FLEET_HEALTH_REPO to enable it)";
+      deps.log(message);
+      return { ok: false, error: new FleetHealthNotConfiguredError(message) };
+    }
+    // Issue #410: do not start the clone/prune livelock. A host below its
+    // disk floor is already declining work; an optional health checkout is
+    // not what its remaining disk is for, and the reclaimer would take this
+    // directory straight back.
+    if (deps.isBelowDiskFloor && await deps.isBelowDiskFloor()) {
+      const message =
+        `FLEET health checkout deferred: the host is below its disk floor, ` +
+        `so ${config.healthDir} is not being cloned this cycle (Issue #410). ` +
+        `Health reporting resumes once the host is above the floor.`;
       deps.log(message);
       return { ok: false, error: new FleetHealthNotConfiguredError(message) };
     }
