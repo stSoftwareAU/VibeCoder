@@ -1073,6 +1073,7 @@ construction and the containment boundary do not change.
 | `claude` | `claude` | `container/providers/claude.sh` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build |
 | `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; add it to `AGENT_PROVIDERS` to install it |
 | `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, add it to `AGENT_PROVIDERS` to install it |
+| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | — (image-side pin only so far) | Carried on the Claude CLI under its own command and its own pin; add it to `AGENT_PROVIDERS` to install it |
 
 Each vendor's credential is provisioned into its own
 `<credential dir>/<id>/provider.env` by `setup.sh` — the variables per vendor
@@ -1113,6 +1114,21 @@ winner. That role shapes two of its facets:
   dependencies and carries the whole CLI, so one `noarch` checksum covers
   every architecture and `container/providers/gemini.sh` installs the bundle
   plus a small `node` launcher on `PATH`.
+
+DeepSeek is the fourth pinned provider, and the only one whose artefact is not
+its own: DeepSeek serves an Anthropic-compatible API, so
+`container/providers/deepseek.sh` installs the **Claude Code CLI**. Two things
+about that entry are deliberate and must not be "de-duplicated" away:
+
+- **It installs `/usr/local/bin/deepseek`**, from the manifest's `binary`
+  field. `claude.sh` and `deepseek.sh` both run in an image built with
+  `AGENT_PROVIDERS="claude,deepseek"`, so a shared command name would mean one
+  fragment silently overwriting the other. `parseContainerManifest` rejects two
+  `providers[]` entries that share a `binary` for exactly that reason.
+- **Its version is pinned independently of `claude`.** DeepSeek's endpoint is a
+  third party tracking Anthropic's API surface, so being able to hold
+  `deepseek` on a known-good CLI version while `claude` moves ahead is the
+  point of the second pin.
 
 Selecting `codex` or `gemini` needs that provider's credential in
 `<credential dir>/<id>/provider.env` — `setup.sh` offers every registered

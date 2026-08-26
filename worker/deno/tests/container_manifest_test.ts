@@ -613,6 +613,62 @@ Deno.test("parseContainerManifest - rejects a fragment that the build argument c
   );
 });
 
+Deno.test("parseContainerManifest - rejects two providers installing the same command", () => {
+  // The DeepSeek hazard (Issue #415): its artefact is the Claude CLI, so a
+  // later edit "de-duplicating" the pin by pointing it at the claude binary
+  // would produce an image where both ids are the same command.
+  const raw = providerSetManifestObject();
+  const providers = raw.providers as Record<string, unknown>[];
+  providers.push({ ...providerPin("deepseek", "2.1.223"), binary: "claude" });
+
+  assertThrows(
+    () => parseContainerManifest(JSON.stringify(raw)),
+    Error,
+    "providers[3].binary",
+  );
+});
+
+Deno.test("container/tools.json - pins deepseek as its own fragment, command and version", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+  const pin = manifest.providers.find((p) => p.id === "deepseek");
+
+  assert(pin, "container/tools.json must pin the deepseek provider");
+  assertEquals(pin.fragment, "providers/deepseek.sh");
+  assertEquals(
+    pin.binary,
+    "deepseek",
+    "deepseek installs its own command, not claude's",
+  );
+  assert(
+    /^\d+\.\d+\.\d+$/.test(pin.version),
+    `the pin is an exact version, got "${pin.version}"`,
+  );
+  for (const arch of ["amd64", "arm64"]) {
+    assert(
+      /^[0-9a-f]{64}$/.test(pin.sha256[arch] ?? ""),
+      `the pin carries a ${arch} SHA-256`,
+    );
+  }
+
+  // A default image stays Claude-only: deepseek is selectable, not installed.
+  assertEquals(manifest.installedProviders, ["claude"]);
+});
+
+Deno.test("container/tools.json - no two pinned providers install the same command", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+
+  const binaries = manifest.providers.map((p) => p.binary);
+  assertEquals(
+    binaries.length,
+    new Set(binaries).size,
+    `two providers would install the same command: ${binaries.join(", ")}`,
+  );
+});
+
 Deno.test("findProviderInstallViolations - accepts a build-argument-selected fragment", () => {
   const manifest = parseContainerManifest(
     JSON.stringify(providerManifestObject()),
