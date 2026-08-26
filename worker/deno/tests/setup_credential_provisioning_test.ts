@@ -147,8 +147,10 @@ Deno.test("provision_vibe_credentials - no credential variables leaves nothing b
       output.includes("platform.deepseek.com"),
       `expected the warning to say where a DeepSeek key comes from: ${output}`,
     );
+    // No login command is ever suggested here: the interactive fallback is
+    // Claude's, and an operator told to run it for DeepSeek cannot obey.
     assert(
-      !/deepseek[^\n]*\b(login|setup-token)\b/i.test(output),
+      !/\b(claude|deepseek|gh auth)\s+(login|setup-token)\b/i.test(output),
       `DeepSeek must not be pointed at an interactive login: ${output}`,
     );
     assert(output.includes("PROVISIONED_GH_DIR=\n"), output);
