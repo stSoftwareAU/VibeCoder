@@ -128,6 +128,12 @@ import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { prBranchFailureStatePath } from "./pr_branch_update_failure_streak.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo } from "../commands/git_operations.ts";
+import { ensureRepoClone } from "./ensure_repo_clone.ts";
+import {
+  detachLaneWorktreeHead,
+  ensureLaneWorktree,
+  PR_BRANCH_UPDATE_LANE_ID,
+} from "./lane_worktree.ts";
 import { updatePrBranch } from "./git_pull.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
@@ -1561,15 +1567,29 @@ export async function createProductionRunCoreDeps(
           // push. A PR that merged inside the scan→push window is a no-op,
           // not the `(stale info)` push failure it used to be reported as.
           getPrState: makeGhPrStateFetcher(runGhCommand),
+          // Issue #394: this lane works in its **own** worktree, never in the
+          // shared `${WORK_DIR}/<repo>` clone. `setupRepo` opens with
+          // `reset --hard` + `clean -fd` + `checkout <default>`, so running it
+          // here threw away whatever an issue slot had in that tree and moved
+          // `HEAD` under it. `ensureRepoClone` only clones when the clone is
+          // genuinely missing, and the worktree gives this lane its own HEAD,
+          // index and checkout off the same object store.
           setupRepo: async (repo: string, wd: string) => {
-            const cmdResult = await setupRepo(repo, wd);
-            if (!cmdResult.success) {
+            const clone = await ensureRepoClone(repo, wd);
+            if (!clone.ok) {
               return {
                 ok: false as const,
-                error: new Error(cmdResult.message),
+                error: new Error(
+                  clone.message ?? `Could not clone ${repo} into ${wd}`,
+                ),
               };
             }
-            return { ok: true as const, value: cmdResult.message };
+            return await ensureLaneWorktree({
+              workDir: wd,
+              repo,
+              laneId: PR_BRANCH_UPDATE_LANE_ID,
+              repoPath: clone.repoPath,
+            });
           },
           getDefaultBranch,
           performBranchUpdate: async (params: {
@@ -1606,11 +1626,13 @@ export async function createProductionRunCoreDeps(
               params.reason,
             );
 
-            // Restore default branch regardless of update outcome
-            await runGitCommand(
-              buildCheckoutArgs(params.defaultBranch),
-              gitOptions,
-            );
+            // Issue #394: leave the lane's worktree detached rather than on
+            // the default branch. Branches are shared between worktrees, so a
+            // lane parked on `<default>` would block every other lane from
+            // moving it — and `git checkout <default>` is itself refused when
+            // the shared clone already has it out. Detaching frees the PR
+            // branch this pass just used, whatever the outcome.
+            await detachLaneWorktreeHead(params.repoPath);
 
             return updateResult;
           },
@@ -1620,7 +1642,12 @@ export async function createProductionRunCoreDeps(
           return { ok: false, error: execResult.error };
         }
 
-        const { updatedCount, failedCount, mergedCount = 0 } = execResult.value;
+        const {
+          updatedCount,
+          failedCount,
+          mergedCount = 0,
+          contendedCount = 0,
+        } = execResult.value;
         // Issue #1799: invalidate the iteration-scoped open-PR cache for
         // every repo we touched — branch updates may have closed/changed
         // PRs, so the next reader inside the same iteration must see
@@ -1639,8 +1666,13 @@ export async function createProductionRunCoreDeps(
         const mergedSuffix = mergedCount > 0
           ? `, ${mergedCount} merged mid-update`
           : "";
+        // Issue #394: contention is named in the summary too, so a pass that
+        // deferred PRs to another lane is not read as a pass that failed them.
+        const contendedSuffix = contendedCount > 0
+          ? `, ${contendedCount} deferred (clone held by another lane)`
+          : "";
         logger.info(
-          `PR branch update complete: ${updatedCount} updated, ${failedCount} failed${mergedSuffix}`,
+          `PR branch update complete: ${updatedCount} updated, ${failedCount} failed${mergedSuffix}${contendedSuffix}`,
         );
         return { ok: true, value: undefined };
       } catch (err) {
