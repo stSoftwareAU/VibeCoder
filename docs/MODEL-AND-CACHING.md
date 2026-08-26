@@ -91,7 +91,7 @@ a section without a marker, fails `deno test`.
 | [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) | ✅ | ⚠️ | ⚠️ | The comment still posts, but no served model is observable in their output, so the verdict is `❓ unknown` and the `degraded-model` label is not applied |
 | [Session ID — a UUID (Issue #204)](#session-id--a-uuid-issue-204) | ✅ | ❌ | ❌ | Both CLIs name their own sessions; the worker supplies no id |
 | [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal) | ✅ | ❌ | ❌ | No Fable tier exists for them; the probe run on their CLI fails and is read optimistically as `available` |
-| [Pre-flight Fable reroute](#pre-flight-fable-reroute) | ✅ | ❌ | ❌ | Nothing to reroute — but the chokepoint is not provider-gated yet, so a mixed deployment can still force `--model opus` on them ([#398](https://github.com/stSoftwareAU/VibeCoder/issues/398)); documented as current, pre-fix behaviour |
+| [Pre-flight Fable reroute](#pre-flight-fable-reroute) | ✅ | ❌ | ❌ | Nothing to reroute: the chokepoint is provider-gated (#398), so their invocations keep their own routing, are never flagged degraded, and the skipped reroute is logged once per provider |
 | **[Session Management](#session-management)** | ✅ | ⚠️ | ⚠️ | The store holds `.claude/` only; their CLI state lives in their own home directories |
 | [Per-Repository Session Persistence](#per-repository-session-persistence) | ✅ | ❌ | ❌ | Nothing of theirs is saved or restored per repository |
 | [Session Persistence Allowlist](#session-persistence-allowlist) | ✅ | ❌ | ❌ | Nothing of theirs is copied, so there is nothing to filter |
@@ -128,11 +128,11 @@ a section without a marker, fails `deno test`.
 | **[Configuration](#configuration)** | ✅ | ⚠️ | ⚠️ | `codex_*` / `gemini_*` keys instead; the session-store keys are Claude-only |
 
 **Gaps with a fix issue.** #363 (Codex phase routing), #364 (Gemini phase
-routing), #365 (provider-aware rate-limit fallback) and #366 (provider token
-usage recorded UNKNOWN, never zero) have **landed** — the rows above describe
-the post-fix behaviour. [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398)
-(pre-flight Fable reroute is not provider-gated) is **open**, and its row is the
-only one describing behaviour a fix is expected to change.
+routing), #365 (provider-aware rate-limit fallback), #366 (provider token
+usage recorded UNKNOWN, never zero) and
+[#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) (provider-gated
+pre-flight Fable reroute) have **landed** — every row above describes the
+post-fix behaviour.
 
 ---
 
@@ -1142,7 +1142,7 @@ flowchart TD
 
 ### Pre-flight Fable reroute
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — neither has a Fable tier to reroute off. The chokepoint is **not** provider-gated today, so in a mixed deployment a cached `unavailable` verdict can still force a Codex/Gemini Quorum invocation onto `--model opus` — tracked as [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398); this section describes current, pre-fix behaviour.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — neither has a Fable tier to reroute off, and since [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) the chokepoint is **provider-gated**: a Codex or Gemini invocation keeps its own routing under a Fable outage, is never flagged `preflightDegraded`, and the skipped reroute is logged once per provider.
 
 The mid-run fallback above self-corrects **after** a wasted first Fable call. A
 **pre-flight** reroute avoids even that wasted call: when the cached Fable
@@ -1156,6 +1156,14 @@ that one invocation, and the run is flagged **degraded** with the reason
   `revision`, `question`, `clarification`, `quorum`, `quorum_judge` — are the
   only phases eligible. Every
   other phase (issue, ci_fix, pr_feedback, health, …) is never rerouted.
+- **Provider-gated** (Issue #398). `opus` is an Anthropic tier alias, so the
+  reroute fires only when the **invocation's** provider routes that phase to
+  the Fable tier. A Quorum draft naming `agentProvider: "codex"` — or any
+  invocation under Gemini — keeps its own routing and is **not** flagged
+  degraded for a tier it never requested. The gate is on the resolved tier, not
+  on the provider id, so a fourth provider carrying a Fable tier needs no edit.
+  Skipping the reroute is logged once per provider per worker process
+  (`[fable-routing] …`), never in silence.
 - **Effort semantics.** The pre-flight reroute bumps effort to `max` ("request
   the higher effort"). This is distinct from the mid-run fallback, whose effort
   is left **unchanged** — the two paths never interfere.
@@ -1176,7 +1184,9 @@ that one invocation, and the run is flagged **degraded** with the reason
 
 ```mermaid
 flowchart TD
-    A["Fable-preferring phase<br/>dispatched via runClaudeWithRetry"] --> B{"Cached Fable verdict?"}
+    A["Fable-preferring phase<br/>dispatched via runClaudeWithRetry"] --> P{"Does this invocation's provider<br/>route the phase to the Fable tier?"}
+    P -- "no (codex / gemini)" --> F["Keep the provider's own routing<br/>NOT degraded; logged once (#398)"]
+    P -- "yes (claude)" --> B{"Cached Fable verdict?"}
     B -- "available / unknown" --> C["Request Fable at normal effort<br/>(mid-run fallback still guards a live loss)"]
     B -- "unavailable" --> D{"Explicit operator<br/>model / effort override?"}
     D -- "yes (pinned)" --> C
@@ -1186,6 +1196,7 @@ flowchart TD
 - Implementation:
   [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts)
   (`resolveFablePreflightRouting`, `applyFablePreflightRouting`,
+  `providerRoutesToFableTier`, `warnProviderHasNoFableTier`,
   `FABLE_PREFERRING_PHASES`), wired at the single `runClaudeWithRetry`
   chokepoint in
   [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts), with the
