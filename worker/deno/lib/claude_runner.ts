@@ -74,7 +74,7 @@ import {
 import { applyJitter } from "./rate_limit_jitter.ts";
 import { writeRateLimitSignal } from "./rate_limit_signal.ts";
 import { logInvocation } from "./credit_tracker.ts";
-import { extractTokenUsage } from "./token_usage.ts";
+import { extractProviderTokenUsage } from "./provider_token_usage.ts";
 import {
   cacheHitRateWarning,
   computeCacheHitRate,
@@ -1635,9 +1635,23 @@ export async function runClaudeWithTimeout(
       ? runStats.servedModels[0] ?? UNRESOLVED_MODEL_SENTINEL
       : resolvedModel;
 
+    // Token usage for this run (Issue #366). Extraction is Claude-shaped, so a
+    // non-Claude provider whose output it cannot parse is marked UNKNOWN and
+    // warned about once — never recorded as a silent zero (Issue #3234). The
+    // warning fires whether or not credit logging is configured, because the
+    // run stats under-report just the same.
+    const providerUsage = extractProviderTokenUsage(rawOutput, {
+      provider: provider.id,
+      displayName: provider.displayName,
+      ...(repo ? { repo } : {}),
+      ...(phase ? { phase } : {}),
+      ...(billedModel ? { model: billedModel } : {}),
+    });
+    if (providerUsage.warning) logger?.warn(providerUsage.warning);
+
     // Log credit usage (Issue #1074) — fire-and-forget, never block execution
     if (creditLogDir && workerName) {
-      const tokenUsage = extractTokenUsage(rawOutput) ?? undefined;
+      const tokenUsage = providerUsage.usage;
       logInvocation({
         logDir: creditLogDir,
         workerName,
@@ -1649,6 +1663,7 @@ export async function runClaudeWithTimeout(
         provider: provider.id,
         ...(options.fallbackFrom ? { fallbackFrom: options.fallbackFrom } : {}),
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
+        ...(providerUsage.usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
       }).catch(() => {/* Credit logging must never fail the main flow */});
     }

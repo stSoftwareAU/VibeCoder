@@ -1261,3 +1261,155 @@ Deno.test("credit_tracker - formatSummary includes per-phase cost and model+effo
   assert(output.includes("claude-opus-4-7 (high)"));
   assert(output.includes("$7.5000"));
 });
+
+// =============================================================================
+// Unknown token usage — never a silent zero (Issue #366)
+// =============================================================================
+
+Deno.test("credit_tracker - logInvocation flags an invocation whose usage is unknown", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await logInvocation({
+      logDir: tmpDir,
+      workerName: "worker-1",
+      phase: "implementation",
+      repo: "org/repo1",
+      model: "gpt-5-codex",
+      provider: "codex",
+      usageUnknown: true,
+    });
+
+    const files: string[] = [];
+    for await (const entry of Deno.readDir(tmpDir)) files.push(entry.name);
+    const content = await Deno.readTextFile(`${tmpDir}/${files[0]}`);
+    const entry: InvocationEntry = JSON.parse(content.trim());
+
+    assertEquals(entry.usageUnknown, true);
+    assertEquals(entry.provider, "codex");
+    // No token fields at all — an absent count, not a zero count.
+    assertEquals(entry.inputTokens, undefined);
+    assertEquals(entry.outputTokens, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("credit_tracker - getDailySummary counts unknown-usage invocations by provider", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await logInvocation({
+      logDir: tmpDir,
+      workerName: "worker-1",
+      phase: "implementation",
+      repo: "org/repo1",
+      model: "gpt-5-codex",
+      provider: "codex",
+      usageUnknown: true,
+    });
+    await logInvocation({
+      logDir: tmpDir,
+      workerName: "worker-1",
+      phase: "planning",
+      repo: "org/repo1",
+      model: "gemini-2.5-pro",
+      provider: "gemini",
+      usageUnknown: true,
+    });
+    await logInvocation({
+      logDir: tmpDir,
+      workerName: "worker-1",
+      phase: "implementation",
+      repo: "org/repo1",
+      model: "claude-opus-5",
+      provider: "claude",
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+    });
+
+    const result = await getDailySummary({ logDir: tmpDir });
+    assert(result.ok);
+    const summary = result.value;
+
+    assertEquals(summary.unknownUsageInvocations, 2);
+    assertEquals(summary.unknownUsageProviders, ["codex", "gemini"]);
+
+    const output = formatSummary(summary);
+    assert(
+      output.includes("2 invocation(s)"),
+      `unknown-usage warning missing from:\n${output}`,
+    );
+    assert(output.includes("codex"));
+    assert(output.includes("gemini"));
+    assert(output.includes("UNKNOWN"));
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("credit_tracker - a Claude-only day reports no unknown-usage invocations", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await logInvocation({
+      logDir: tmpDir,
+      workerName: "worker-1",
+      phase: "implementation",
+      repo: "org/repo1",
+      model: "claude-opus-5",
+      provider: "claude",
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+    });
+
+    const result = await getDailySummary({ logDir: tmpDir });
+    assert(result.ok);
+    assertEquals(result.value.unknownUsageInvocations, 0);
+    assertEquals(result.value.unknownUsageProviders, []);
+    assertEquals(
+      formatSummary(result.value).includes("UNKNOWN"),
+      false,
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("credit_tracker - a Codex model id with real tokens is unpriced, never $0 (Issue #366)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await logInvocation({
+      logDir: tmpDir,
+      workerName: "worker-1",
+      phase: "implementation",
+      repo: "org/repo1",
+      model: "gpt-5-codex",
+      provider: "codex",
+      tokenUsage: {
+        inputTokens: 1_000_000,
+        outputTokens: 100_000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+    });
+
+    const result = await getDailySummary({ logDir: tmpDir });
+    assert(result.ok);
+    const summary = result.value;
+
+    // The non-Claude id has no pricing row, so it is charged at the upper
+    // bound and named — not folded into the totals as free.
+    assertEquals(summary.unpricedModels, ["gpt-5-codex"]);
+    assert(summary.unpricedEstimatedCost > 0);
+    assert(summary.totalEstimatedCost > 0);
+    assert(formatSummary(summary).includes("gpt-5-codex"));
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
