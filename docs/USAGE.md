@@ -749,6 +749,14 @@ ever write the same clone. A 30-minute CI fix therefore runs concurrently with
 issue work rather than idling every slot until it finishes. See
 [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
 
+The Priority-1.6 branch-update pass takes no lease; it works in its own linked
+worktree under `${WORK_DIR}/worktrees/pr-branch-update/<repo>` instead, so it
+never moves the shared clone's `HEAD`, index or working tree under a slot. A PR
+it cannot touch because another lane holds the branch, the git lock, or unpushed
+commits is reported as `deferred (clone held by another lane)` and retried —
+never as a failed update (Issue #394). See
+[Per-lane worktrees](workflows/README.md#per-lane-worktrees-issue-394).
+
 The worker selects the **globally oldest** eligible issue across all configured
 repos (after filtering and open-PR blocking). Within priority 2 the canonical
 configured-label tier is `top-priority` followed by `work-on`. The

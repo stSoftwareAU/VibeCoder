@@ -25,6 +25,7 @@
 
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isProtectedBranch } from "./git_branch.ts";
+import { LANE_WORKTREE_ROOT } from "./lane_worktree.ts";
 
 /** Default age threshold in days before a repo clone with no heartbeat is stale. */
 export const DEFAULT_STALE_WORKDIR_DAYS = 7;
@@ -45,11 +46,17 @@ export const DEFAULT_STALE_WORKDIR_DAYS = 7;
  *   sweeps, so every housekeeping path treated it as a disposable clone and
  *   deleted the worker's own tamper-evident record — `audit-chain-verify`
  *   then reported `AUDIT_CHAIN_BROKEN` on every swept host (Issue #337).
+ * - `worktrees` — `lane_worktree.ts` puts each lane's linked worktree under
+ *   `${WORK_DIR}/worktrees/<lane>/<repo>` so lanes stop sharing one clone's
+ *   `HEAD`, index and working tree (Issue #394). The directory itself holds
+ *   no clone, and removing a live worktree's checkout under the lane using
+ *   it is the very collision it exists to prevent.
  */
 export const RESERVED_WORKDIR_NAMES: ReadonlySet<string> = new Set([
   "logs",
   "lost+found",
   "audit",
+  LANE_WORKTREE_ROOT,
 ]);
 
 /**

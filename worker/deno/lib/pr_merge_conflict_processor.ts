@@ -17,10 +17,13 @@
  * - Push without force, so every commit on the PR survives.
  * - Comment on the PR describing what was merged.
  *
- * The pass is bounded: the attempt is recorded on the PR *before* the merge
- * runs, so a worker that dies mid-merge still spends its attempt, and the
- * final attempt escalates with `needs-human` and a conflict summary instead
- * of retrying forever.
+ * The pass is bounded, and every attempt ends visibly (Issue #395): the
+ * attempt is recorded on the PR *before* the merge runs, and each outcome —
+ * merged, failed, escalated — posts its own conclusion marker. An attempt
+ * that opened and never concluded was disrupted rather than judged, so it
+ * does not spend the budget; the next attempt says so loudly on the PR. The
+ * final *concluded* failure escalates with `needs-human` and a conflict
+ * summary instead of retrying forever.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -40,7 +43,9 @@ import {
 } from "./heartbeat.ts";
 import {
   acquireBranchUpdateLock,
+  type BranchLockRenewalHandle,
   releaseBranchUpdateLock,
+  startBranchUpdateLockRenewal,
 } from "./pr_branch_lock.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
@@ -49,8 +54,10 @@ import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import {
   clearMergeConflictLabel,
   CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
+  DEFAULT_MAX_DISRUPTED_ATTEMPTS,
 } from "./pr_merge_conflict_scan.ts";
 
 // ---------------------------------------------------------------------------
@@ -67,8 +74,13 @@ export interface MergeConflictInput {
   branchName: string;
   /** Base branch the PR targets. */
   baseBranch: string;
-  /** Attempts already recorded against this PR. */
+  /** Attempts that reached a conclusion — what spends the budget. */
   attemptCount: number;
+  /**
+   * Attempts disrupted before they concluded (Issue #395). Surfaced on the
+   * PR so a silent stall cannot masquerade as a quiet queue.
+   */
+  disruptedCount?: number;
 }
 
 /** Outcome of one conflict-resolution attempt. */
@@ -115,6 +127,13 @@ export interface MergeConflictProcessorDeps {
   acquireLockFn?: typeof acquireBranchUpdateLock;
   /** Injectable lock release. Defaults to {@link releaseBranchUpdateLock}. */
   releaseLockFn?: typeof releaseBranchUpdateLock;
+  /**
+   * Injectable lock renewal. Defaults to
+   * {@link startBranchUpdateLockRenewal}.
+   */
+  startLockRenewalFn?: typeof startBranchUpdateLockRenewal;
+  /** Renewal interval in milliseconds (tests). */
+  lockRenewalIntervalMs?: number;
 }
 
 const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
@@ -194,20 +213,41 @@ async function abortMerge(run: GitRunner, cwd: string): Promise<void> {
 // Comment helpers
 // ---------------------------------------------------------------------------
 
-/** Body of the comment that records an attempt before it runs. */
+/**
+ * Body of the comment that records an attempt before it runs.
+ *
+ * When earlier attempts were disrupted rather than judged, the comment says
+ * so (Issue #395) — the silence on GRQ#4408/#4409 after "attempt 1 of 2" is
+ * exactly the state this makes visible.
+ */
 export function buildAttemptComment(
   attemptNumber: number,
   maxAttempts: number,
   baseBranch: string,
+  disruptedCount: number = 0,
 ): string {
-  return [
+  const lines = [
     `${CONFLICT_ATTEMPT_MARKER} n="${attemptNumber}" -->`,
     `🔀 **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts}**`,
     "",
     `This PR conflicts with \`${baseBranch}\`, so no CI can run on it. The ` +
     "worker is merging the base branch in for real — both sides' changes " +
     "must survive — and will run the repository's quality gate on the result.",
-  ].join("\n");
+  ];
+
+  if (disruptedCount > 0) {
+    lines.push(
+      "",
+      `⚠️ **${disruptedCount} earlier attempt(s) were disrupted** — they ` +
+        "opened an attempt and never reported a conclusion, so the conflict " +
+        "was never judged. A disrupted attempt does not spend the " +
+        `${maxAttempts}-attempt budget; after ` +
+        `${DEFAULT_MAX_DISRUPTED_ATTEMPTS} disruptions this PR is handed to ` +
+        "a human instead.",
+    );
+  }
+
+  return lines.join("\n");
 }
 
 /** Body of the comment posted when the merge lands. */
@@ -220,6 +260,38 @@ export function buildResolvedComment(
     ? detail.trim()
     : `Merged \`${baseBranch}\` into \`${branchName}\` and pushed the result.`;
   return `${CONFLICT_RESOLVED_MARKER}\n✅ **Merge conflict resolved**\n\n${body}`;
+}
+
+/**
+ * Body of the comment posted when an attempt is judged and fails (Issue
+ * #395).
+ *
+ * This is the conclusion that turns an opened attempt into a spent one. Its
+ * absence is what makes a disrupted attempt detectable on a later scan, so it
+ * must be posted for every judged failure — including the last one, which
+ * also escalates.
+ */
+export function buildFailedComment(
+  attemptNumber: number,
+  maxAttempts: number,
+  baseBranch: string,
+  failureDetail: string,
+  conflictedFiles: readonly string[],
+): string {
+  const files = conflictedFiles.length > 0
+    ? ["", "Conflicted files:", ...conflictedFiles.map((f) => `- \`${f}\``)]
+    : [];
+  return [
+    `${CONFLICT_FAILED_MARKER} n="${attemptNumber}" -->`,
+    `❌ **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts} failed**`,
+    "",
+    `Merging \`${baseBranch}\` in did not produce a mergeable branch: ` +
+    `${failureDetail}`,
+    ...files,
+    "",
+    "The branch was left exactly as its author pushed it — the worker never " +
+    "side-picks a conflict (Issue #4373), so no change has been lost.",
+  ].join("\n");
 }
 
 /** Escalation reason naming what was tried and what is still conflicted. */
@@ -325,6 +397,10 @@ export async function processMergeConflict(
   const heartbeatStart = await startHeartbeat({
     repo,
     issueNumber: prNumber,
+    // A PR, not an issue (Issue #391): the kind keys this heartbeat apart
+    // from an issue of the same number, and matches the maintenance hold the
+    // sweep's live set reports.
+    kind: "pr",
     workDir: processorDeps.workDir,
     recordFn: processorDeps.deps.crashHandling.recordHeartbeat,
     clearFn: processorDeps.deps.crashHandling.clearHeartbeat,
@@ -340,9 +416,35 @@ export async function processMergeConflict(
     });
   }
 
+  // The lock TTL is five minutes; a resolution runs for as long as the agent
+  // takes (Issue #395). Without renewal a second host cleans this lock as
+  // stale and starts a competing attempt on the same branch — which races
+  // this one's push and leaves this attempt looking disrupted.
+  let renewal: BranchLockRenewalHandle | undefined;
+  if (lockCommentId !== undefined && workerId) {
+    const startRenewal = processorDeps.startLockRenewalFn ??
+      startBranchUpdateLockRenewal;
+    renewal = startRenewal({
+      repo,
+      lockCommentId,
+      workerId,
+      ghCommandFn: processorDeps.deps.github.runGhCommand,
+      note: `🔀 Resolving this PR's merge conflict (worker \`${workerId}\`).`,
+      ...(processorDeps.lockRenewalIntervalMs !== undefined
+        ? { intervalMs: processorDeps.lockRenewalIntervalMs }
+        : {}),
+      onError: (message: string) =>
+        logger.error(`merge_conflict_lock=renew-failed ${message}`, {
+          repo,
+          prNumber,
+        }),
+    });
+  }
+
   try {
     return await resolveConflict(input, processorDeps);
   } finally {
+    renewal?.stop();
     if (heartbeatHandle) await stopHeartbeat(heartbeatHandle);
     if (lockCommentId !== undefined) {
       await releaseLock({ repo, prNumber, lockCommentId });
@@ -394,15 +496,21 @@ async function resolveConflict(
     };
   }
 
-  // Record the attempt before merging anything (Issue #84): a worker that
-  // dies mid-merge must still have spent this attempt, or the PR is
-  // re-attempted every pass — the exact loop this pass replaces.
+  // Record the attempt before merging anything (Issue #84): the marker is
+  // what a later scan reads to tell "this attempt was disrupted" from "no
+  // attempt has run". It opens the attempt; only a conclusion posted below
+  // spends it (Issue #395).
   try {
     await postPrComment(
       deps,
       repo,
       prNumber,
-      buildAttemptComment(attemptNumber, maxAttempts, baseBranch),
+      buildAttemptComment(
+        attemptNumber,
+        maxAttempts,
+        baseBranch,
+        input.disruptedCount ?? 0,
+      ),
     );
   } catch (err) {
     // Without the marker the attempt is unbounded, so refuse to start.
@@ -688,8 +796,10 @@ async function runResolutionAgent(
 /**
  * Record a failed attempt, escalating to a human when the budget is spent.
  *
- * The branch is left exactly as its author pushed it — the caller has
- * already aborted any in-progress merge.
+ * The failure is always posted on the PR (Issue #395): it is the conclusion
+ * that spends this attempt, and without it the attempt is indistinguishable
+ * from one a dying worker abandoned. The branch is left exactly as its author
+ * pushed it — the caller has already aborted any in-progress merge.
  */
 async function failAttempt(
   input: MergeConflictInput,
@@ -710,6 +820,30 @@ async function failAttempt(
     maxAttempts,
     detail: failureDetail,
   });
+
+  try {
+    await postPrComment(
+      deps,
+      repo,
+      prNumber,
+      buildFailedComment(
+        attemptNumber,
+        maxAttempts,
+        input.baseBranch,
+        failureDetail,
+        conflictedFiles,
+      ),
+    );
+  } catch (err) {
+    // The attempt then reads as disrupted on the next scan and is retried —
+    // the safe direction, and bounded by the disruption budget. Say so.
+    logger.error("Failed to post the merge-conflict failure conclusion", {
+      repo,
+      prNumber,
+      attempt: attemptNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   if (attemptNumber < maxAttempts) {
     return {

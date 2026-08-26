@@ -1233,3 +1233,38 @@ Deno.test("ensureFleetHealthRepo - an existing checkout is still refreshed below
     "an existing checkout must still be fetched",
   );
 });
+
+// ---------------------------------------------------------------------------
+// The gate must read the HOST, not the guest (Issue #410, follow-up)
+//
+// The first cut of this gate ran `df` on WORK_DIR. In container mode that
+// path is the work volume — a thin-provisioned image that reports plenty of
+// free space while the host it lives on is full — so the gate answered a
+// different question from the one the reclaimer acts on and never fired.
+// GRQ-23 kept the livelock with the "fix" deployed: 5 prunes, 5 re-clones,
+// host at 43.5 GB against a 46.0 GB floor, and zero deferral lines.
+//
+// That is the same guest-versus-host category error Issue #384 documents.
+// The predicate is now injected from the run's HostDiskMonitor, which knows
+// the host figure (launch baseline minus volume growth).
+// ---------------------------------------------------------------------------
+
+Deno.test("createProductionFleetHealthDeps - omitting the host-disk predicate leaves the clone ungated (Issue #410)", () => {
+  const deps = createProductionFleetHealthDeps();
+  assertEquals(
+    deps.isBelowDiskFloor,
+    undefined,
+    "no predicate must mean no gate, not a gate that guesses",
+  );
+});
+
+Deno.test("createProductionFleetHealthDeps - the injected host predicate is the one the gate uses (Issue #410)", async () => {
+  let asked = 0;
+  const deps = createProductionFleetHealthDeps(undefined, () => {
+    asked++;
+    return Promise.resolve(true);
+  });
+  assertEquals(typeof deps.isBelowDiskFloor, "function");
+  assertEquals(await deps.isBelowDiskFloor!(), true);
+  assertEquals(asked, 1, "the gate must consult the injected host signal");
+});

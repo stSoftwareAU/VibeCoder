@@ -23,6 +23,29 @@ import { pinWriteRepo, unpinWriteRepo } from "./write_repo_allowlist.ts";
 /** Default heartbeat interval in milliseconds (60 seconds). */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 
+/**
+ * What the number a heartbeat carries refers to (Issue #391).
+ *
+ * An issue slot beats for a claimed **issue**; the maintenance lane beats for
+ * a **PR** it is servicing. Both put their number in `issueNumber`, so keying
+ * the registry by number alone let `#4408`-the-PR and `#4408`-the-issue alias:
+ * one start could satisfy the other's key, and one stop could clear it.
+ */
+export type HeartbeatKind = "issue" | "pr";
+
+/** Default when a caller does not say — every pre-#391 heartbeat is an issue's. */
+const DEFAULT_HEARTBEAT_KIND: HeartbeatKind = "issue";
+
+/**
+ * A heartbeat's identity in the live set the sweep is told to protect
+ * (Issue #391). `kind` is optional so existing callers keep meaning `issue`.
+ */
+export interface HeartbeatLiveKey {
+  repo: string;
+  issueNumber: number;
+  kind?: HeartbeatKind;
+}
+
 /** Function signature for recording a heartbeat. */
 export type RecordFn = (
   workDir: string,
@@ -41,8 +64,10 @@ export type ClearFn = (
 export interface HeartbeatOptions {
   /** Repository in "owner/repo" format. */
   repo: string;
-  /** Issue number being worked on. */
+  /** Issue number being worked on — a PR number when `kind` is `"pr"`. */
   issueNumber: number;
+  /** What that number refers to (Issue #391). Defaults to `"issue"`. */
+  kind?: HeartbeatKind;
   /** Working directory for heartbeat files. */
   workDir: string;
   /** Interval between heartbeat updates in milliseconds (default: 60000). */
@@ -55,12 +80,14 @@ export interface HeartbeatOptions {
 
 /** Handle returned by startHeartbeat for stopping later. */
 export interface HeartbeatHandle {
-  /** Unique identifier for this heartbeat (repo + issue). */
+  /** Unique identifier for this heartbeat (repo + kind + number). */
   id: string;
   /** Repository in "owner/repo" format. */
   repo: string;
-  /** Issue number. */
+  /** Issue number — a PR number when `kind` is `"pr"`. */
   issueNumber: number;
+  /** What that number refers to (Issue #391). */
+  kind: HeartbeatKind;
 }
 
 /** Internal state for an active heartbeat. */
@@ -75,11 +102,19 @@ interface ActiveHeartbeat {
 const activeHeartbeats = new Map<string, ActiveHeartbeat>();
 
 /**
- * Generate a unique handle ID for a repo/issue combination.
+ * Generate a unique handle ID for a repo/kind/number combination.
+ *
+ * The kind is part of the key (Issue #391) so a PR's heartbeat and an issue's
+ * heartbeat of the same number cannot alias — `owner_repo_pr:4408` is not
+ * `owner_repo_issue:4408`.
  */
-function makeHandleId(repo: string, issueNumber: number): string {
+function makeHandleId(
+  repo: string,
+  issueNumber: number,
+  kind: HeartbeatKind = DEFAULT_HEARTBEAT_KIND,
+): string {
   const safeRepo = repo.replace("/", "_");
-  return `${safeRepo}_${issueNumber}`;
+  return `${safeRepo}_${kind}:${issueNumber}`;
 }
 
 /**
@@ -104,13 +139,14 @@ function makeHandleId(repo: string, issueNumber: number): string {
 export async function startHeartbeat(
   options: HeartbeatOptions,
 ): Promise<Result<HeartbeatHandle>> {
-  const id = makeHandleId(options.repo, options.issueNumber);
+  const kind = options.kind ?? DEFAULT_HEARTBEAT_KIND;
+  const id = makeHandleId(options.repo, options.issueNumber, kind);
 
   // Idempotent: if already running, return existing handle
   if (activeHeartbeats.has(id)) {
     return {
       ok: true,
-      value: { id, repo: options.repo, issueNumber: options.issueNumber },
+      value: { id, repo: options.repo, issueNumber: options.issueNumber, kind },
     };
   }
 
@@ -224,7 +260,7 @@ export async function startHeartbeat(
 
   return {
     ok: true,
-    value: { id, repo: options.repo, issueNumber: options.issueNumber },
+    value: { id, repo: options.repo, issueNumber: options.issueNumber, kind },
   };
 }
 
@@ -297,6 +333,7 @@ export async function stopAllHeartbeats(): Promise<HeartbeatHandle[]> {
       id,
       repo: state.options.repo,
       issueNumber: state.options.issueNumber,
+      kind: state.options.kind ?? DEFAULT_HEARTBEAT_KIND,
     }),
   );
   for (const handle of leaked) {
@@ -316,19 +353,27 @@ export async function stopAllHeartbeats(): Promise<HeartbeatHandle[]> {
  * currently holds; a genuinely leaked heartbeat — no owning slot — is
  * still stopped.
  *
- * @param live - The `(repo, issueNumber)` pairs live slots own.
+ * The live set must name every hold that owns a heartbeat, the maintenance
+ * lane's included (Issue #391) — the question this sweep asks is "is anything
+ * on this host still using this heartbeat?", and the lane takes heartbeats.
+ *
+ * @param live - The `(repo, issueNumber, kind)` keys live holds own; an
+ *   entry without a `kind` means the issue namespace.
  * @returns The handles that were stopped (the leaks).
  */
 export async function stopHeartbeatsExcept(
-  live: ReadonlyArray<{ repo: string; issueNumber: number }>,
+  live: ReadonlyArray<HeartbeatLiveKey>,
 ): Promise<HeartbeatHandle[]> {
-  const keep = new Set(live.map((l) => makeHandleId(l.repo, l.issueNumber)));
+  const keep = new Set(
+    live.map((l) => makeHandleId(l.repo, l.issueNumber, l.kind)),
+  );
   const leaked: HeartbeatHandle[] = [...activeHeartbeats.entries()]
     .filter(([id]) => !keep.has(id))
     .map(([id, state]) => ({
       id,
       repo: state.options.repo,
       issueNumber: state.options.issueNumber,
+      kind: state.options.kind ?? DEFAULT_HEARTBEAT_KIND,
     }));
   for (const handle of leaked) {
     await stopHeartbeat(handle);
@@ -337,9 +382,14 @@ export async function stopHeartbeatsExcept(
 }
 
 /**
- * Check whether a heartbeat is currently running for the given repo/issue.
+ * Check whether a heartbeat is currently running for the given repo/number,
+ * in the given namespace (Issue #391 — `"issue"` by default).
  */
-export function isHeartbeatRunning(repo: string, issueNumber: number): boolean {
-  const id = makeHandleId(repo, issueNumber);
+export function isHeartbeatRunning(
+  repo: string,
+  issueNumber: number,
+  kind: HeartbeatKind = DEFAULT_HEARTBEAT_KIND,
+): boolean {
+  const id = makeHandleId(repo, issueNumber, kind);
   return activeHeartbeats.has(id);
 }

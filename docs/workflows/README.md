@@ -189,7 +189,7 @@ flowchart TD
 | 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
 | 1.55 | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs |
 | 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
-| 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick; labels the PR `merge-conflict`, bounded to two attempts before `needs-human` |
+| 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick; labels the PR `merge-conflict`, bounded to two **concluded** attempts before `needs-human`. An attempt disrupted before it concluded is re-attempted rather than counted, bounded at 3 |
 | 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |
 | 1.63 | Blocking-PR stall watchdog | Detect and escalate PRs that block `work-on` issues; the fixes stay with 1.55 and 1 |
 | 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
@@ -257,10 +257,65 @@ registry before it touches the clone:
 
 The lane logs under an `[m1]` prefix and appears in the status line as
 `m1 owner/repo#<pr>` — that number is a **PR**, not a claimed issue, so the
-heartbeat sweep and the shutdown drain both skip it. A shutdown bounds the lane
+finder's claim-shaped views and the shutdown drain both skip it. The
+leaked-heartbeat sweep does **not** skip it (Issue #391): the lane takes a real
+heartbeat for the PR it is servicing, so the sweep reads `heldHeartbeatKeys()`
+— every hold that owns a heartbeat, keyed `issue:<n>` or `pr:<n>` so the two
+namespaces cannot alias — and a live merge-conflict resolution keeps its
+heartbeat while an issue slot claims elsewhere. A shutdown bounds the lane
 exactly as it bounds the pool: no new pass starts once SIGTERM lands, and a pass
 still running after `slot_drain_grace_seconds` is abandoned with its agent
 terminated rather than holding the exit open.
+
+### Per-lane worktrees (Issue #394)
+
+The lease covers the passes that lease. The **Priority-1.6 branch-update pass**
+does not: it is a cheap `gh`-plus-git pass in the serial ladder, and it used to
+call the same destructive repo setup on `${WORK_DIR}/<repo>` while a slot or the
+lane was working there. Live, that produced two failures 15 seconds apart — an
+OPEN PR whose branch sat healthily on origin reported as
+`pathspec … did not match any file(s) known to git`, and a PR that could not be
+updated at all because an issue slot had left two unpushed commits on its branch
+in the shared clone.
+
+That pass now works in its **own linked worktree**,
+`${WORK_DIR}/worktrees/pr-branch-update/<repo>`, added detached off the shared
+clone. It shares the object store — no re-clone, no extra objects — and gets its
+own `HEAD`, index and checkout, so no other lane can move the tree underneath
+it. It no longer runs `reset --hard` / `clean -fd` on the shared clone at all:
+the clone is created only when genuinely missing.
+
+```mermaid
+flowchart LR
+  Objects[["Shared object store<br/>${WORK_DIR}/&lt;repo&gt;/.git"]]
+  Clone["Shared clone<br/>issue slots + m1 lane<br/>own HEAD · index · tree"]
+  WT["Lane worktree<br/>worktrees/pr-branch-update/&lt;repo&gt;<br/>own HEAD · index · tree"]
+  Objects --- Clone
+  Objects --- WT
+  Refs[["refs/heads/* — shared:<br/>git refuses to move a branch<br/>another worktree holds"]]
+  Clone --- Refs
+  WT --- Refs
+  style Objects fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Clone fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style WT fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Refs fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+```
+
+Refs stay shared, and that is deliberate: git refuses to move a branch another
+worktree has checked out rather than pulling it out from under that lane. Those
+refusals — and the Issue #211 refusal to judge a PR from a local branch carrying
+unpushed commits — are **clone contention**, not PR faults. The pass names them
+as such: they are logged at INFO saying the clone changed under the operation
+and the PR was left exactly as it is, counted as `deferred (clone held by
+another lane)` rather than `failed`, kept out of the Issue #335 failure streak
+so they can never escalate an issue against a healthy PR, and retried next
+cycle.
+
+`${WORK_DIR}/worktrees` is a reserved work-root name, so the stale-work-dir
+sweep never mistakes it for a disposable clone. The startup orphan-worktree
+sweep may still reclaim a lane worktree that has sat untouched for
+`WORKTREE_MAX_AGE_HOURS` (24h) — it runs before any lane starts, and the next
+pass recreates the worktree on demand.
 
 Agent passes that run from the work-dir root rather than a repo clone —
 refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80), questions

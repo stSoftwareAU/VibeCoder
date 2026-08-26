@@ -14,6 +14,10 @@
  */
 
 import { isPrBranchConflictError } from "./git_pull.ts";
+import {
+  classifyCloneContention,
+  describeCloneContention,
+} from "./clone_contention.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import type { Logger, Result } from "../types.ts";
 import type { BranchUpdateLockResult } from "./pr_branch_lock.ts";
@@ -77,10 +81,11 @@ export interface PrBranchUpdateDetail {
   /** Feature branch name. */
   branchName: string;
   /**
-   * Whether the update succeeded, failed, conflicted, or had nothing left to
-   * do because the PR merged or closed mid-cycle (Issue #386).
+   * Whether the update succeeded, failed, conflicted, had nothing left to do
+   * because the PR merged or closed mid-cycle (Issue #386), or could not run
+   * because another lane held this host's clone (Issue #394).
    */
-  status: "updated" | "failed" | "conflict" | "merged";
+  status: "updated" | "failed" | "conflict" | "merged" | "contended";
   /** Human-readable description of the outcome. */
   message: string;
 }
@@ -145,6 +150,13 @@ export interface PrBranchUpdateExecutionResult {
   mergedCount?: number;
   /** Number of PRs skipped because another worker holds the lock (Issue #1281). */
   lockedCount: number;
+  /**
+   * PRs left alone because another lane on this host held the clone
+   * (Issue #394) — a branch it had checked out, a git lock, unpushed commits
+   * it has not published yet. Nothing about the PR failed, so these are
+   * counted apart from `failedCount` and retried next cycle.
+   */
+  contendedCount?: number;
   /**
    * PRs skipped because their branch has already been escalated after
    * repeated failures (Issue #335) — retrying them every cycle changed
@@ -602,6 +614,7 @@ export async function executePrBranchUpdates(
   let failedCount = 0;
   let conflictCount = 0;
   let lockedCount = 0;
+  let contendedCount = 0;
   let suppressedCount = 0;
   let mergedCount = 0;
   const details: PrBranchUpdateDetail[] = [];
@@ -762,6 +775,33 @@ export async function executePrBranchUpdates(
     // Set up the repository
     const setupResult = await deps.setupRepo(action.repo, deps.workDir);
     if (!setupResult.ok) {
+      // Issue #394: a setup that lost a race with another lane — a held git
+      // lock, a worktree that could not be positioned — says nothing about
+      // the PR. Named as contention and retried, never counted as a failure.
+      const setupContention = classifyCloneContention(setupResult.error);
+      if (setupContention) {
+        contendedCount++;
+        deps.logger.info(
+          `PR #${action.prNumber} (${action.branchName}) branch update ` +
+            `deferred — ${describeCloneContention(setupContention)}`,
+          { repo: action.repo, prNumber: action.prNumber },
+        );
+        details.push({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          branchName: action.branchName,
+          status: "contended",
+          message: describeCloneContention(setupContention),
+        });
+        if (lockCommentId !== undefined) {
+          await doReleaseLock({
+            repo: action.repo,
+            prNumber: action.prNumber,
+            lockCommentId,
+          });
+        }
+        continue;
+      }
       failedCount++;
       // Issue #231: name the PR and the reason — the summary line only
       // carried the count, so a PR failing every pass was invisible.
@@ -860,6 +900,33 @@ export async function executePrBranchUpdates(
         message: `PR ${verb} mid-update — no-op; git reported: ` +
           updateResult.error.message,
       });
+    } else if (
+      !isPrBranchConflictError(updateResult.error) &&
+      classifyCloneContention(updateResult.error) !== null
+    ) {
+      // Issue #394: another lane on this host moved the clone under the
+      // operation — a branch it holds checked out, a git lock, unpushed
+      // commits origin has never seen. `pathspec … did not match any file(s)
+      // known to git` reads as "your branch is gone" and sends an operator to
+      // GitHub to look for a branch that is sitting right there, so the line
+      // says what actually happened. Nothing about the PR failed: it is left
+      // exactly as it is, counted apart from `failedCount`, kept out of the
+      // failure streak, and retried next cycle.
+      const contention = classifyCloneContention(updateResult.error)!;
+      contendedCount++;
+      const explanation = describeCloneContention(contention);
+      deps.logger.info(
+        `PR #${action.prNumber} (${action.branchName}) branch update against ` +
+          `${action.baseBranch} deferred — ${explanation}`,
+        { repo: action.repo, prNumber: action.prNumber },
+      );
+      details.push({
+        repo: action.repo,
+        prNumber: action.prNumber,
+        branchName: action.branchName,
+        status: "contended",
+        message: explanation,
+      });
     } else if (isPrBranchConflictError(updateResult.error)) {
       // Issue #4373: the PR's changes collide with the base and the worker
       // will not pick a side. Distinct status and a loud line — this PR
@@ -948,6 +1015,7 @@ export async function executePrBranchUpdates(
     lockedCount,
     suppressedCount,
     mergedCount,
+    contendedCount,
   });
 
   return {
@@ -959,6 +1027,7 @@ export async function executePrBranchUpdates(
       lockedCount,
       suppressedCount,
       mergedCount,
+      contendedCount,
       details,
     },
   };

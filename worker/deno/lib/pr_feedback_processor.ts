@@ -288,6 +288,8 @@ export async function processPrFeedback(
   const heartbeatStart = await startHeartbeat({
     repo,
     issueNumber: prNumber,
+    // A PR, not an issue (Issue #391) — see pr_merge_conflict_processor.
+    kind: "pr",
     workDir: processorDeps.workDir,
     recordFn: deps.crashHandling.recordHeartbeat,
     clearFn: deps.crashHandling.clearHeartbeat,
