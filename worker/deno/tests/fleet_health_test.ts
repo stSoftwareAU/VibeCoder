@@ -12,6 +12,7 @@ import type {
   FleetHealthConfig,
   FleetHealthDeps,
 } from "../lib/fleet_health.ts";
+import { withCleanEnv, withEnv } from "./support/env.ts";
 import {
   ACCESS_FAILURE_THRESHOLD,
   recordRepoProbe,
@@ -911,61 +912,51 @@ Deno.test(
   },
 );
 
-Deno.test("buildFleetHealthConfig - container mode clones under the work-dir mount", () => {
+Deno.test("buildFleetHealthConfig - container mode clones under the work-dir mount", async () => {
   // Issue #4165: the sibling default resolves to the root-owned "/" inside
   // the container ("could not create work tree dir '/workspace/../private-repo-6'"
   // observed live). The work-dir mount is writable and the remote is the
   // repository of record, so a disposable clone belongs there.
-  const savedDir = Deno.env.get("FLEET_HEALTH_DIR");
-  const savedStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
-  const savedWork = Deno.env.get("WORK_DIR");
-  try {
-    Deno.env.delete("FLEET_HEALTH_DIR");
-    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
-    Deno.env.set("WORK_DIR", "/home/vibe/auto-issue-work");
-    const config = buildFleetHealthConfig("/workspace");
-    assertEquals(config.healthDir, "/home/vibe/auto-issue-work/private-repo-6");
-  } finally {
-    restoreEnvVar("FLEET_HEALTH_DIR", savedDir);
-    restoreEnvVar("VIBE_IMAGE_AGENT_PROVIDERS", savedStamp);
-    restoreEnvVar("WORK_DIR", savedWork);
-  }
+  //
+  // Issue #378: the outer withEnv pins a hostile ambient FLEET_HEALTH_REPO —
+  // exactly what the worker container exports — so the assertion proves
+  // withCleanEnv hides it rather than merely passing on a bare host.
+  await withEnv(
+    { FLEET_HEALTH_REPO: "git@github.com:org/GRQ-health.git" },
+    () =>
+      withCleanEnv({
+        VIBE_IMAGE_AGENT_PROVIDERS: "claude",
+        WORK_DIR: "/home/vibe/auto-issue-work",
+      }, () => {
+        const config = buildFleetHealthConfig("/workspace");
+        assertEquals(
+          config.healthDir,
+          "/home/vibe/auto-issue-work/private-repo-6",
+        );
+      }),
+  );
 });
 
-Deno.test("buildFleetHealthConfig - an explicit FLEET_HEALTH_DIR wins even in container mode", () => {
-  const savedDir = Deno.env.get("FLEET_HEALTH_DIR");
-  const savedStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
-  try {
-    Deno.env.set("FLEET_HEALTH_DIR", "/mnt/telemetry/private-repo-6");
-    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
+Deno.test("buildFleetHealthConfig - an explicit FLEET_HEALTH_DIR wins even in container mode", async () => {
+  await withCleanEnv({
+    FLEET_HEALTH_DIR: "/mnt/telemetry/private-repo-6",
+    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
+  }, () => {
     const config = buildFleetHealthConfig("/workspace");
     assertEquals(config.healthDir, "/mnt/telemetry/private-repo-6");
-  } finally {
-    restoreEnvVar("FLEET_HEALTH_DIR", savedDir);
-    restoreEnvVar("VIBE_IMAGE_AGENT_PROVIDERS", savedStamp);
-  }
+  });
 });
 
-/** Restore an env var to its saved value (delete when it was unset). */
-function restoreEnvVar(name: string, value: string | undefined): void {
-  if (value === undefined) Deno.env.delete(name);
-  else Deno.env.set(name, value);
-}
-
-Deno.test("buildFleetHealthConfig - VIBE_HOST_ID names the real host from inside the container", () => {
+Deno.test("buildFleetHealthConfig - VIBE_HOST_ID names the real host from inside the container", async () => {
   // The container's own hostname is the ephemeral container name
   // (observed live: "Reporting health as Vibe Coder:vibe-coder-66770"),
   // which would leave the real host permanently "dead" on the private-repo-6
   // board and register a phantom host per cycle. The launcher passes the
   // host's identity through VIBE_HOST_ID.
-  const savedHost = Deno.env.get("VIBE_HOST_ID");
-  try {
-    Deno.env.set("VIBE_HOST_ID", "host-23.local");
+  await withCleanEnv({ VIBE_HOST_ID: "host-23.local" }, () => {
     const config = buildFleetHealthConfig("/workspace");
     assertEquals(config.hostId, "host-23");
-  } finally {
-    restoreEnvVar("VIBE_HOST_ID", savedHost);
-  }
+  });
 });
 
 // ---------------------------------------------------------------------------
