@@ -50,11 +50,15 @@ flowchart TD
     style Loud fill:#e0a050,stroke:#8b4500,color:#1a1a1a
 ```
 
-Test run for the five PR-branch-update suites:
+The five PR-branch-update suites, then the whole gate:
 
 ```text
-$ deno test --allow-all tests/pr_branch_update*_test.ts
+$ deno test --no-check --allow-all tests/pr_branch_update*_test.ts
 ok | 96 passed | 0 failed (1s)
+
+$ ./quality.sh < /dev/null
+ok | 16028 passed | 0 failed | 34 ignored (11m13s)
+Result: PASSED (with skipped checks)
 ```
 
 ## Test Plan
