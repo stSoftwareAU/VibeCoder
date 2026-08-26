@@ -15,11 +15,6 @@ import {
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
 import {
-  classifyHostDisk,
-  probeDiskReading,
-  resolveDiskFloors,
-} from "./host_disk.ts";
-import {
   EXTENDED_SUBPROCESS_TIMEOUT_MS,
   runWithTimeout,
 } from "./subprocess_timeout.ts";
@@ -274,8 +269,23 @@ export function buildCommandFailureError(
  */
 export function createProductionFleetHealthDeps(
   logger?: Logger,
+  /**
+   * Is the **host** below its disk floor (Issue #410)?
+   *
+   * Injected rather than computed here, and the distinction is the whole
+   * point. In container mode `df` inside the guest describes the work
+   * volume — a thin-provisioned image that reports plenty of room while the
+   * host is full — so a `df` taken here would answer a different question
+   * from the one the reclaimer is acting on. Only the run's
+   * `HostDiskMonitor` knows the host figure: the launcher's launch-time
+   * baseline minus the volume's growth since (`estimateHostFree`).
+   *
+   * Omitted → never gated, exactly as before the gate existed.
+   */
+  isBelowDiskFloor?: () => Promise<boolean>,
 ): FleetHealthDeps {
   return {
+    ...(isBelowDiskFloor ? { isBelowDiskFloor } : {}),
     log: logger
       ? (message: string) => logger.info(message)
       : (message: string) => console.log(message),
@@ -290,26 +300,6 @@ export function createProductionFleetHealthDeps(
       } catch {
         return false;
       }
-    },
-
-    /**
-     * Issue #410: the same floor the work-volume reclaimer acts on, read the
-     * same way (`df -kP` plus the env-configurable floors), so the two sides
-     * cannot disagree about whether the host is short of disk. Unreadable
-     * disk is treated as *not* low: a probe failure must not silently switch
-     * health reporting off.
-     */
-    async isBelowDiskFloor(): Promise<boolean> {
-      const workDir = Deno.env.get("WORK_DIR");
-      if (!workDir) return false;
-      const reading = await probeDiskReading(workDir);
-      if (reading === null) return false;
-      const floors = resolveDiskFloors((name: string) => Deno.env.get(name));
-      return classifyHostDisk(
-        reading.availableBytes,
-        reading.totalBytes,
-        floors,
-      ).level === "low";
     },
 
     async fileIsExecutable(path: string): Promise<boolean> {

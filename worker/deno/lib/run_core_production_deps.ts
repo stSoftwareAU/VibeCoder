@@ -775,7 +775,17 @@ export async function createProductionRunCoreDeps(
     if (quotaOutageNote !== null) notes.push(quotaOutageNote);
     return notes;
   };
-  const fleetHealthDeps = createProductionFleetHealthDeps(logger);
+  // Issue #410: the health checkout is gated on the host figure this monitor
+  // already maintains — never on a `df` taken inside the guest, which
+  // describes the thin-provisioned work volume and reports plenty of room
+  // while the host is full. `status` is the last sampled verdict, so the gate
+  // costs nothing and cannot disagree with the reclaimer acting on the same
+  // monitor. `unknown` is not `low`: an unprobed host must not silently
+  // switch health reporting off.
+  const fleetHealthDeps = createProductionFleetHealthDeps(
+    logger,
+    () => Promise.resolve(hostDisk.status.level === "low"),
+  );
 
   /**
    * Helper: wrap find-by-label + process into PriorityHandlerResult.
