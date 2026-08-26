@@ -24,7 +24,7 @@ import {
   formatIdleDecisionCensus,
   type RepoCensusInput,
 } from "../lib/idle_decision_census.ts";
-import type { OpenPR } from "../lib/issue_query.ts";
+import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 
 function issue(
   number: number,
@@ -54,6 +54,7 @@ function repoInput(
     skipReason: partial.skipReason,
     issues: partial.issues ?? [],
     openPRs: partial.openPRs,
+    mergedPRs: partial.mergedPRs,
   };
 }
 
@@ -531,6 +532,147 @@ Deno.test("formatter - per-repo line carries the stream_occupied count (Issue #3
     l.includes("repo=org/neat")
   )!;
   assert(line.includes("stream_occupied=1"));
+  assert(line.includes("work_on=0"));
+  assert(line.includes("inversion_signal=false"));
+});
+
+// ---------------------------------------------------------------------------
+// Merged-PR permanent block (GRQ#4419 / VibeCoder#429)
+// ---------------------------------------------------------------------------
+
+function mergedPR(number: number, title: string): ClosedPR {
+  return {
+    number,
+    title,
+    closedAt: "2026-08-23T07:52:58Z",
+    merged: true,
+  };
+}
+
+Deno.test("census - a merged fleet PR permanently blocks the issue it names (GRQ#4419)", () => {
+  // GRQ#4326: open, `work-on`, no assignee, no blocking label, no open PR —
+  // yet merged PR #4336 names it, so the scan refuses it under
+  // `merged-pr-permanent` on every cycle, for ever.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ",
+        issues: [issue(4326, ["work-on", "bug"])],
+        mergedPRs: [
+          mergedPR(
+            4336,
+            "bug: Learn threw away most of its seeds — the #4326 collapses " +
+              "(Issue #4326) (#4336)",
+          ),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.mergedPrBlocked, 1);
+  assert(!entry.inversionSignal);
+  assert(!census.inversionDetected);
+});
+
+Deno.test("census - a merged PR naming a different issue does not block (GRQ#4419)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ",
+        issues: [issue(4405, ["work-on"])],
+        mergedPRs: [mergedPR(4415, "Something else entirely (Issue #4406)")],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.mergedPrBlocked, 0);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - a closed-unmerged PR does not raise mergedPrBlocked (GRQ#4419)", () => {
+  // Closed-unmerged is a cooldown-windowed retry path, not a permanent
+  // strand — it clears itself, so the census keeps counting the issue.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ",
+        issues: [issue(4405, ["work-on"])],
+        mergedPRs: [{
+          number: 4415,
+          title: "Retry later (Issue #4405)",
+          closedAt: "2026-08-26T07:00:00Z",
+          merged: false,
+        }],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.mergedPrBlocked, 0);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - stream occupancy is attributed ahead of a merged PR (GRQ#4419)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ",
+        issues: [
+          issue(60, ["work-on"], ["vibe-bot"], "M1"),
+          issue(61, ["work-on"], [], "M1"),
+        ],
+        mergedPRs: [mergedPR(62, "Done (Issue #61)")],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.streamOccupied, 1);
+  assertEquals(entry.mergedPrBlocked, 0);
+});
+
+Deno.test("census - idle-task counts ignore the merged-PR gate (GRQ#4419)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ",
+        issues: [issue(70, ["idle-task"])],
+        mergedPRs: [mergedPR(71, "Done (Issue #70)")],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.idleTask, 1);
+  assertEquals(entry.mergedPrBlocked, 0);
+});
+
+Deno.test("formatter - per-repo line carries the merged_pr_blocked count (GRQ#4419)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ",
+        issues: [issue(4326, ["work-on"])],
+        mergedPRs: [mergedPR(4336, "Fixed (Issue #4326)")],
+      }),
+    ],
+  });
+  const line = formatIdleDecisionCensus(census).find((l) =>
+    l.includes("repo=stSoftwareAU/GRQ")
+  )!;
+  assert(line.includes("merged_pr_blocked=1"));
   assert(line.includes("work_on=0"));
   assert(line.includes("inversion_signal=false"));
 });
