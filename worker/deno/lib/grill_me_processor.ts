@@ -1272,7 +1272,11 @@ async function _processGrillMeWithHeartbeat(
   });
 
   // 5) Build the prompt.
-  const guidelinesResult = await buildCodingGuidelines();
+  // The active provider keys the per-model guidelines overlay (Issue #374);
+  // without one authored for it the block is the agnostic baseline.
+  const guidelinesResult = await buildCodingGuidelines(false, undefined, {
+    provider: config.agentProvider,
+  });
   const codingGuidelines = guidelinesResult.ok ? guidelinesResult.value : "";
   const verbosityInstructions = buildVerbosityBlock(config.verbosity);
 
