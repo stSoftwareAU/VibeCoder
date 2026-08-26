@@ -525,7 +525,9 @@ flowchart TD
     A -->|yes| L["remove largest first<br/>until the floor is cleared"]
     A -->|no| G{"idle > 3 days?"}
     G -->|yes| L
-    G -->|no| K["kept — a gate is still using it"]
+    G -->|no| R{".git over the cap?<br/>(2 GiB — Issue #387)"}
+    R -->|yes| L
+    R -->|no| K["kept — a gate is still using it"]
     style T1 fill:#2d6a4f,stroke:#1b4332,color:#fff
     style L fill:#c9184a,stroke:#800f2f,color:#fff
 ```
@@ -542,6 +544,39 @@ clone, not a failed gate.
 Both paths log the split before anything goes, e.g.
 `work volume: monitored 2.1 GB in 15 repos; side/data 15.2 GB in 8 dirs;
 removed 2 (11.0 GB, disk-low)`.
+
+### A warm clone's object store is capped too (Issue #387)
+
+Neither path above reaches a data repo a gate refreshes **every** cycle: it is
+never idle, and the disk-low reclaim only fires once the host is already below
+the floor. That is how `side/data` climbed 0.7 GB → 10.8 GB in one afternoon
+on an otherwise idle GRQ-23 — one directory, roughly 0.2 GB per cycle. The
+writer is the refresh itself: `GRQ/quality.sh` → `worker/repos.sh` →
+`model_fetch.sh` running `git fetch` + `git reset --hard origin/Develop` in
+`GRQ-shareprices2026Q2`.
+
+The refresh is legitimate; what it leaves behind is not. In a **blobless**
+partial clone the hard reset lazily backfills a whole tree of blobs into a new
+`.promisor` pack, and git never prunes those — `git repack` deliberately
+leaves promisor packs alone, so `git gc --prune=now` reclaims nothing.
+Measured on the host: a 1.5 GB `.git` holding an 871 MB pack (24 Aug) and a
+650 MB pack (25 Aug), one per refresh, on a 6.5 GB working tree.
+
+So the age sweep also takes a tier-2 clone whose `.git` exceeds
+**`WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES`** (default 2 GiB; `0` disables the
+guard), warm or not — bounding the object store the way `deno-cache-guard`
+bounds the Deno cache. The next gate run re-clones it blobless and backfills
+one tree, which is about what a single refresh already cost, so the disk is
+bounded without multiplying the download. Every existing protection still
+applies: nothing goes while a slot is mid-execute, unpushed commits are
+rescued first, and tier 1 is never a candidate. The removal names its reason:
+
+```text
+work volume: removed disposable GRQ-shareprices2026Q2 (7.9 GB, 0.0 days idle,
+age, .git 1.5 GB over the 2.0 GB cap — blobless re-fetch ratchet (Issue #387))
+```
+
+and the summary line carries `git-ratchet: GRQ-shareprices2026Q2`.
 
 ### Side/data repo clones are blobless (Issue #243)
 

@@ -25,7 +25,10 @@ import {
   sweepVolatileCliState,
 } from "../lib/run_housekeeping.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { DEFAULT_SIDE_REPO_MAX_AGE_DAYS } from "../lib/work_volume_tiers.ts";
+import {
+  DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
+  DEFAULT_SIDE_REPO_MAX_GIT_BYTES,
+} from "../lib/work_volume_tiers.ts";
 import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
@@ -428,6 +431,29 @@ Deno.test("buildHousekeepingSteps - ages the work root's disposable tier out", (
   assertEquals(step?.args["work-dir"], "/w");
   assertEquals(step?.args["mode"], "age");
   assertEquals(step?.args["max-age-days"], DEFAULT_SIDE_REPO_MAX_AGE_DAYS);
+  // The object-store cap rides the same step (Issue #387) — a warm clone
+  // whose blobless `.git` ratchets is never reached by the age limit.
+  assertEquals(
+    step?.args["max-git-bytes"],
+    DEFAULT_SIDE_REPO_MAX_GIT_BYTES,
+  );
+});
+
+Deno.test("buildHousekeepingSteps - work-volume-tiers honours the git cap override (Issue #387)", () => {
+  const previous = Deno.env.get("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES");
+  Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES", "0");
+  try {
+    const step = buildHousekeepingSteps(baseOptions())
+      .find((s) => s.id === "work-volume-tiers");
+    // Zero is a deliberate opt-out, not a fall back to the default.
+    assertEquals(step?.args["max-git-bytes"], 0);
+  } finally {
+    if (previous === undefined) {
+      Deno.env.delete("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES");
+    } else {
+      Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES", previous);
+    }
+  }
 });
 
 Deno.test("buildHousekeepingSteps - work-volume-tiers honours its env override", () => {
