@@ -13,9 +13,18 @@ import {
 } from "../lib/config_defaults.ts";
 import {
   attemptModelFallback,
+  clearModelLadderWarnings,
+  type ModelFallbackResult,
   resolveCurrentModel,
+  warnNoModelLadder,
 } from "../lib/model_fallback.ts";
 import { setActiveRepoModelEffortOverrides } from "../lib/claude_executor.ts";
+import { resolveCodexModel } from "../lib/codex_executor.ts";
+import { resolveGeminiModel } from "../lib/gemini_executor.ts";
+import {
+  AGENT_PROVIDER_ENV,
+  IMAGE_AGENT_PROVIDERS_ENV,
+} from "../lib/agent_provider.ts";
 
 // =============================================================================
 // MODEL_FALLBACK_MAP structure
@@ -210,4 +219,197 @@ Deno.test("model_fallback - grill_me phase resolves to fable then degrades to op
     if (originalPhase) Deno.env.set("CLAUDE_MODEL_GRILL_ME", originalPhase);
     else Deno.env.delete("CLAUDE_MODEL_GRILL_ME");
   }
+});
+
+// =============================================================================
+// Provider-aware fallback (Issue #365)
+//
+// The fallback used to resolve the current model through the Claude chain and
+// take the Claude tier ladder whatever provider was running, so a rate-limited
+// Codex or Gemini run reasoned about a Claude model id and reported
+// "already-cheapest" for a ladder it never had.
+// =============================================================================
+
+/**
+ * Run `body` with every provider marked installed, optionally forcing the
+ * active one.
+ *
+ * The image these tests run under installs Claude alone, and
+ * `selectAgentProvider` refuses a provider the image did not install, so a
+ * Codex/Gemini scenario has to stamp the set it describes.
+ */
+function withProviders(
+  body: () => void,
+  activeId?: string,
+): void {
+  const originalImage = Deno.env.get(IMAGE_AGENT_PROVIDERS_ENV);
+  const originalActive = Deno.env.get(AGENT_PROVIDER_ENV);
+  Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, "claude,codex,gemini");
+  if (activeId) Deno.env.set(AGENT_PROVIDER_ENV, activeId);
+  try {
+    body();
+  } finally {
+    if (originalImage) Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, originalImage);
+    else Deno.env.delete(IMAGE_AGENT_PROVIDERS_ENV);
+    if (originalActive) Deno.env.set(AGENT_PROVIDER_ENV, originalActive);
+    else Deno.env.delete(AGENT_PROVIDER_ENV);
+  }
+}
+
+Deno.test("model_fallback - resolveCurrentModel uses the Codex chain under Codex (Issue #365)", () => {
+  withProviders(() => {
+    const resolved = resolveCurrentModel(undefined, "issue", "codex");
+    assertEquals(resolved, resolveCodexModel("issue"));
+    // The bug: the Claude chain answered for every provider.
+    assertEquals(
+      resolved === resolveCurrentModel(undefined, "issue", "claude"),
+      false,
+    );
+  });
+});
+
+Deno.test("model_fallback - resolveCurrentModel uses the Gemini chain under Gemini (Issue #365)", () => {
+  withProviders(() => {
+    const resolved = resolveCurrentModel(undefined, "planning", "gemini");
+    assertEquals(resolved, resolveGeminiModel("planning"));
+    assertEquals(
+      resolved === resolveCurrentModel(undefined, "planning", "claude"),
+      false,
+    );
+  });
+});
+
+Deno.test("model_fallback - resolveCurrentModel follows the active provider from the environment (Issue #365)", () => {
+  withProviders(() => {
+    assertEquals(
+      resolveCurrentModel(undefined, "issue"),
+      resolveCodexModel("issue"),
+    );
+  }, "codex");
+});
+
+Deno.test("model_fallback - an explicit model still wins under any provider (Issue #365)", () => {
+  withProviders(() => {
+    assertEquals(
+      resolveCurrentModel("gpt-5.1-codex", "issue", "codex"),
+      "gpt-5.1-codex",
+    );
+    assertEquals(resolveCurrentModel("opus", "issue", "claude"), "opus");
+  });
+});
+
+Deno.test("model_fallback - Codex reports no-ladder-for-provider, not already-cheapest (Issue #365)", () => {
+  withProviders(() => {
+    const result = attemptModelFallback(
+      resolveCurrentModel(undefined, "issue", "codex"),
+      true,
+      "codex",
+    );
+    const expected: ModelFallbackResult = {
+      ok: false,
+      reason: "no-ladder-for-provider",
+      provider: "codex",
+    };
+    assertEquals(result, expected);
+  });
+});
+
+Deno.test("model_fallback - Gemini reports no-ladder-for-provider, not already-cheapest (Issue #365)", () => {
+  withProviders(() => {
+    const result = attemptModelFallback(
+      resolveCurrentModel(undefined, "planning", "gemini"),
+      true,
+      "gemini",
+    );
+    const expected: ModelFallbackResult = {
+      ok: false,
+      reason: "no-ladder-for-provider",
+      provider: "gemini",
+    };
+    assertEquals(result, expected);
+  });
+});
+
+Deno.test("model_fallback - disabled still beats the missing ladder (Issue #365)", () => {
+  withProviders(() => {
+    const result = attemptModelFallback("gpt-5.1-codex", false, "codex");
+    assertEquals(result, { ok: false, reason: "disabled" });
+  });
+});
+
+// Regression guard: the Claude path keeps its existing reasons exactly.
+Deno.test("model_fallback - Claude reasons are unchanged by the provider seam (Issue #365)", () => {
+  assertEquals(attemptModelFallback("opus", true, "claude"), {
+    ok: true,
+    cheaperModel: "sonnet",
+  });
+  assertEquals(attemptModelFallback("haiku", true, "claude"), {
+    ok: false,
+    reason: "already-cheapest",
+  });
+  assertEquals(attemptModelFallback("gpt-5.1-codex", true, "claude"), {
+    ok: false,
+    reason: "already-cheapest",
+  });
+});
+
+Deno.test("model_fallback - the missing ladder is warned about once, naming the provider (Issue #365)", () => {
+  clearModelLadderWarnings();
+  const captured: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    captured.push(args.map(String).join(" "));
+  };
+  try {
+    withProviders(() => {
+      const result = attemptModelFallback("gpt-5.1-codex", true, "codex");
+      warnNoModelLadder(result, "gpt-5.1-codex");
+      // A rate-limited run reaches the same branch on every retry: still once.
+      warnNoModelLadder(result, "gpt-5.1-codex");
+    });
+  } finally {
+    console.warn = originalWarn;
+    clearModelLadderWarnings();
+  }
+
+  assertEquals(captured.length, 1);
+  assertEquals(captured[0]!.includes("codex"), true);
+  assertEquals(captured[0]!.includes("gpt-5.1-codex"), true);
+});
+
+Deno.test("model_fallback - warnNoModelLadder is silent for every other outcome (Issue #365)", () => {
+  clearModelLadderWarnings();
+  const captured: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    captured.push(args.map(String).join(" "));
+  };
+  try {
+    warnNoModelLadder({ ok: true, cheaperModel: "sonnet" }, "opus");
+    warnNoModelLadder({ ok: false, reason: "already-cheapest" }, "haiku");
+    warnNoModelLadder({ ok: false, reason: "disabled" }, "opus");
+  } finally {
+    console.warn = originalWarn;
+    clearModelLadderWarnings();
+  }
+
+  assertEquals(captured.length, 0);
+});
+
+Deno.test("model_fallback - the warning goes to the run logger when one is supplied (Issue #365)", () => {
+  clearModelLadderWarnings();
+  const messages: string[] = [];
+  try {
+    withProviders(() => {
+      const result = attemptModelFallback("gemini-3-pro", true, "gemini");
+      warnNoModelLadder(result, "gemini-3-pro", {
+        warn: (message: string) => messages.push(message),
+      });
+    });
+  } finally {
+    clearModelLadderWarnings();
+  }
+
+  assertEquals(messages.length, 1);
+  assertEquals(messages[0]!.includes("gemini"), true);
 });

@@ -87,6 +87,9 @@ provider also means building the image with it in the `AGENT_PROVIDERS` set.
   vendor's credentials.
 - [Quorum](docs/QUORUM.md) — running several providers at once, so two agents
   draft a plan and a third judges it.
+- [Model Selection, Sessions & Caching — provider applicability](docs/MODEL-AND-CACHING.md#provider-applicability)
+  — which documented model, session and caching behaviours you still get under
+  each provider, and what the others do instead.
 
 ## ✨ Key Features
 

@@ -74,7 +74,7 @@ import {
 import { applyJitter } from "./rate_limit_jitter.ts";
 import { writeRateLimitSignal } from "./rate_limit_signal.ts";
 import { logInvocation } from "./credit_tracker.ts";
-import { extractTokenUsage } from "./token_usage.ts";
+import { extractProviderTokenUsage } from "./provider_token_usage.ts";
 import {
   cacheHitRateWarning,
   computeCacheHitRate,
@@ -103,7 +103,11 @@ import {
   buildTimeoutKillMessage,
   type ExtensionTelemetry,
 } from "./timeout_extension_telemetry.ts";
-import { attemptModelFallback, resolveCurrentModel } from "./model_fallback.ts";
+import {
+  attemptModelFallback,
+  resolveCurrentModel,
+  warnNoModelLadder,
+} from "./model_fallback.ts";
 import { selectModelForLargeInput } from "./phase_model_escalation.ts";
 import type { SessionResumeState } from "./session_resume.ts";
 import {
@@ -1631,9 +1635,23 @@ export async function runClaudeWithTimeout(
       ? runStats.servedModels[0] ?? UNRESOLVED_MODEL_SENTINEL
       : resolvedModel;
 
+    // Token usage for this run (Issue #366). Extraction is Claude-shaped, so a
+    // non-Claude provider whose output it cannot parse is marked UNKNOWN and
+    // warned about once — never recorded as a silent zero (Issue #3234). The
+    // warning fires whether or not credit logging is configured, because the
+    // run stats under-report just the same.
+    const providerUsage = extractProviderTokenUsage(rawOutput, {
+      provider: provider.id,
+      displayName: provider.displayName,
+      ...(repo ? { repo } : {}),
+      ...(phase ? { phase } : {}),
+      ...(billedModel ? { model: billedModel } : {}),
+    });
+    if (providerUsage.warning) logger?.warn(providerUsage.warning);
+
     // Log credit usage (Issue #1074) — fire-and-forget, never block execution
     if (creditLogDir && workerName) {
-      const tokenUsage = extractTokenUsage(rawOutput) ?? undefined;
+      const tokenUsage = providerUsage.usage;
       logInvocation({
         logDir: creditLogDir,
         workerName,
@@ -1645,6 +1663,7 @@ export async function runClaudeWithTimeout(
         provider: provider.id,
         ...(options.fallbackFrom ? { fallbackFrom: options.fallbackFrom } : {}),
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
+        ...(providerUsage.usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
       }).catch(() => {/* Credit logging must never fail the main flow */});
     }
@@ -2241,10 +2260,12 @@ export async function runClaudeWithRetry(
         const currentModel = resolveCurrentModel(
           currentOptions.model,
           currentOptions.phase,
+          currentOptions.agentProvider,
         );
         const fallbackResult = attemptModelFallback(
           currentModel,
           enableFallback,
+          currentOptions.agentProvider,
         );
 
         if (fallbackResult.ok) {
@@ -2273,7 +2294,10 @@ export async function runClaudeWithRetry(
         }
 
         // No cheaper model available — give up rather than re-run an
-        // unavailable model.
+        // unavailable model. Name the provider when it has no ladder at all
+        // (Issue #365), so "no downgrade attempted" is visible rather than
+        // inferred.
+        warnNoModelLadder(fallbackResult, currentModel, currentOptions.logger);
         currentOptions.logger?.error(
           `Model "${currentModel}" unavailable and no cheaper fallback available (${fallbackResult.reason}). Giving up.`,
         );
@@ -2389,10 +2413,12 @@ export async function runClaudeWithRetry(
           const currentModel = resolveCurrentModel(
             currentOptions.model,
             currentOptions.phase,
+            currentOptions.agentProvider,
           );
           const fallbackResult = attemptModelFallback(
             currentModel,
             enableFallback,
+            currentOptions.agentProvider,
           );
 
           if (fallbackResult.ok) {
@@ -2415,12 +2441,19 @@ export async function runClaudeWithRetry(
             continue;
           }
 
-          // No fallback available — give up
+          // No fallback available — give up. A provider with no ladder is
+          // named once (Issue #365) rather than left to look like a run that
+          // was already on the cheapest tier.
+          warnNoModelLadder(
+            fallbackResult,
+            currentModel,
+            currentOptions.logger,
+          );
           const reason = retryCount > maxRetries
             ? `Rate limit retry count exceeded (${retryCount} > ${maxRetries}).`
             : `Rate limit wait time exceeded (${totalWaitTime}s >= ${maxWaitSeconds}s).`;
           currentOptions.logger?.error(
-            `${reason} No cheaper model available. Giving up.`,
+            `${reason} No cheaper model available (${fallbackResult.reason}). Giving up.`,
           );
           return {
             ok: true,

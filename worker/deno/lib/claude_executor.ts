@@ -19,6 +19,7 @@ import {
   PHASE_MODEL_DEFAULTS,
 } from "./config_defaults.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
+import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
@@ -930,17 +931,17 @@ function isRecognisedModel(value: string): boolean {
 }
 
 /**
- * Build the `["--model", value]` arg pair for a resolved model value, warning
- * once when the value is neither a known alias nor a `claude-*` id (Issue
- * #2711, audit #2702 F3). The value is still forwarded verbatim — full model
- * ids must keep working and the CLI is the authority — but a typo at any
- * precedence level is now visible in the logs rather than silently producing
- * a wrong `--model`.
+ * Return a resolved model value, warning once when it is neither a known alias
+ * nor a `claude-*` id (Issue #2711, audit #2702 F3). The value is still
+ * forwarded verbatim — full model ids must keep working and the CLI is the
+ * authority — but a typo at any precedence level is now visible in the logs
+ * rather than silently producing a wrong `--model`.
  *
  * @param level - Human-readable precedence level (named for the log message).
- * @param value - The resolved model value to forward to `--model`.
+ * @param value - The resolved model value.
+ * @returns The value, unchanged.
  */
-function modelArg(level: string, value: string): string[] {
+function checkedModel(level: string, value: string): string {
   if (!isRecognisedModel(value)) {
     console.warn(
       `[claude-executor] Model "${value}" resolved from ${level} is not a ` +
@@ -948,11 +949,16 @@ function modelArg(level: string, value: string): string[] {
         `id; forwarding to --model verbatim. Check for a typo.`,
     );
   }
-  return ["--model", value];
+  return value;
 }
 
 /**
- * Build the model arguments for the Claude CLI.
+ * Resolve the model Claude runs a phase on — the value behind `--model`.
+ *
+ * The provider seam in `agent_provider.ts` reaches routing through here
+ * (Issue #362), and {@link buildClaudeModelArgs} is a thin argv wrapper over
+ * it. The six steps themselves live once in `phase_routing.ts` (Issue #363);
+ * this function supplies Claude's names, tables and override state.
  *
  * Priority order (most specific wins — Issue #1265, #1270, #2625):
  *   1. Phase-specific env var (e.g. CLAUDE_MODEL_REFINEMENT) — operator escape hatch
@@ -967,72 +973,42 @@ function modelArg(level: string, value: string): string[] {
  *
  * A resolved value that is neither a known alias nor a `claude-*` id emits a
  * single warning naming the level and value (Issue #2711) — the value is still
- * forwarded verbatim so full model ids keep working.
+ * returned verbatim so full model ids keep working.
+ *
+ * @param phase - Optional phase name (e.g., "planning")
+ * @returns The resolved model value, or undefined when no step supplies one —
+ *   the CLI's own default then stands.
+ */
+export function resolveClaudeModel(phase?: string): string | undefined {
+  return resolvePhaseRoutedValue({
+    logPrefix: "claude-executor",
+    what: "model",
+    flag: "--model",
+    envVar: "CLAUDE_MODEL",
+    repoPhaseOverrides: _repoPhaseModelOverrides,
+    repoPhaseOverridesKey: "phase_model_overrides",
+    repoBase: _repoClaudeModel,
+    repoBaseKey: "claude_model",
+    globalPhaseOverrides: _phaseModelConfigOverrides,
+    globalPhaseOverridesKey: "phase_model_overrides",
+    phaseDefaults: PHASE_MODEL_DEFAULTS,
+    phaseDefaultsName: "PHASE_MODEL_DEFAULTS",
+    check: checkedModel,
+  }, phase);
+}
+
+/**
+ * Build the model arguments for the Claude CLI.
+ *
+ * A thin argv wrapper over {@link resolveClaudeModel}, which states the
+ * precedence chain.
  *
  * @param phase - Optional phase name (e.g., "planning")
  * @returns Array of CLI args (e.g., ["--model", "claude-sonnet-4-6"]) or empty
  */
 export function buildClaudeModelArgs(phase?: string): string[] {
-  if (phase) {
-    // 1. Phase-specific env var (explicit operator override for this phase)
-    const phaseVar = `CLAUDE_MODEL_${phase.toUpperCase()}`;
-    const phaseModel = Deno.env.get(phaseVar) ?? "";
-    if (phaseModel) {
-      return modelArg(`${phaseVar} env var`, phaseModel);
-    }
-
-    // 2. Per-repo phase_model_overrides (Issue #2625)
-    if (phase in _repoPhaseModelOverrides && _repoPhaseModelOverrides[phase]) {
-      return modelArg(
-        `per-repo phase_model_overrides["${phase}"]`,
-        _repoPhaseModelOverrides[phase] as string,
-      );
-    }
-  }
-
-  // 3. Per-repo claude_model base tier (Issue #2625) — overrides the global
-  //    base for every phase in this repo, including phase-less calls.
-  if (_repoClaudeModel) {
-    return modelArg("per-repo claude_model base tier", _repoClaudeModel);
-  }
-
-  if (phase) {
-    // 4. Global config phase_model_overrides (Issue #1265)
-    if (
-      phase in _phaseModelConfigOverrides && _phaseModelConfigOverrides[phase]
-    ) {
-      return modelArg(
-        `global phase_model_overrides["${phase}"]`,
-        _phaseModelConfigOverrides[phase] as string,
-      );
-    }
-
-    // 5. Phase-specific default from config_defaults (Issue #1071)
-    const phaseDefault = PHASE_MODEL_DEFAULTS[phase];
-    if (phaseDefault) {
-      return modelArg(`PHASE_MODEL_DEFAULTS["${phase}"]`, phaseDefault);
-    }
-  }
-
-  // 6. Base CLAUDE_MODEL env var (global fallback)
-  const model = Deno.env.get("CLAUDE_MODEL") ?? "";
-  if (model) {
-    return modelArg("CLAUDE_MODEL env var", model);
-  }
-
-  // A non-empty phase that reaches here has no resolvable model and will run on
-  // the CLI default with no observability (Issue #2712, audit #2702 F4). Warn so
-  // a missing PHASE_MODEL_DEFAULTS entry — a typo or a new phase whose author
-  // forgot to add a default — is caught rather than shipping silently.
-  // Phase-less calls are intentional and stay quiet.
-  if (phase) {
-    console.warn(
-      `[claude-executor] Phase "${phase}" resolved to no --model arg; ` +
-        `falling back to the CLI default. Add a PHASE_MODEL_DEFAULTS entry ` +
-        `for "${phase}" or set CLAUDE_MODEL to make the model explicit.`,
-    );
-  }
-  return [];
+  const model = resolveClaudeModel(phase);
+  return model ? ["--model", model] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,7 +1040,13 @@ export function setPhaseEffortConfigOverrides(
 }
 
 /**
- * Build the effort arguments for the Claude CLI.
+ * Resolve the reasoning effort Claude runs a phase at — the value behind
+ * `--effort`.
+ *
+ * The provider seam in `agent_provider.ts` reaches routing through here
+ * (Issue #362), and {@link buildClaudeEffortArgs} is a thin argv wrapper over
+ * it. The six steps themselves live once in `phase_routing.ts` (Issue #363);
+ * this function supplies Claude's names, tables and override state.
  *
  * Priority order (most specific wins — Issue #1403, #2625):
  *   1. Phase-specific env var (e.g. CLAUDE_EFFORT_PLANNING) — operator escape hatch
@@ -1081,46 +1063,37 @@ export function setPhaseEffortConfigOverrides(
  * DEFAULT_EFFORT constant are checked.
  *
  * @param phase - Optional phase name (e.g., "planning")
- * @returns Array of CLI args (e.g., ["--effort", "max"]) or empty
+ * @returns The resolved effort value; step 6 guarantees one.
+ */
+export function resolveClaudeEffort(phase?: string): string {
+  return resolvePhaseRoutedValue({
+    logPrefix: "claude-executor",
+    what: "effort",
+    flag: "--effort",
+    envVar: "CLAUDE_EFFORT",
+    repoPhaseOverrides: _repoPhaseEffortOverrides,
+    repoPhaseOverridesKey: "phase_effort_overrides",
+    // Effort has no per-repo base equivalent of `claude_model`.
+    globalPhaseOverrides: _phaseEffortConfigOverrides,
+    globalPhaseOverridesKey: "phase_effort_overrides",
+    phaseDefaults: PHASE_EFFORT_DEFAULTS,
+    phaseDefaultsName: "PHASE_EFFORT_DEFAULTS",
+    // Step 6: the hardcoded fallback, so effort always resolves to something.
+    fallback: DEFAULT_EFFORT,
+  }, phase);
+}
+
+/**
+ * Build the effort arguments for the Claude CLI.
+ *
+ * A thin argv wrapper over {@link resolveClaudeEffort}, which states the
+ * precedence chain.
+ *
+ * @param phase - Optional phase name (e.g., "planning")
+ * @returns Array of CLI args (e.g., ["--effort", "max"])
  */
 export function buildClaudeEffortArgs(phase?: string): string[] {
-  if (phase) {
-    // 1. Phase-specific env var (explicit operator override for this phase)
-    const phaseVar = `CLAUDE_EFFORT_${phase.toUpperCase()}`;
-    const phaseEffort = Deno.env.get(phaseVar) ?? "";
-    if (phaseEffort) {
-      return ["--effort", phaseEffort];
-    }
-
-    // 2. Per-repo phase_effort_overrides (Issue #2625)
-    if (
-      phase in _repoPhaseEffortOverrides && _repoPhaseEffortOverrides[phase]
-    ) {
-      return ["--effort", _repoPhaseEffortOverrides[phase] as string];
-    }
-
-    // 3. Global config phase_effort_overrides (Issue #1403)
-    if (
-      phase in _phaseEffortConfigOverrides && _phaseEffortConfigOverrides[phase]
-    ) {
-      return ["--effort", _phaseEffortConfigOverrides[phase] as string];
-    }
-
-    // 4. Phase-specific default from config_defaults (Issue #1402)
-    const phaseDefault = PHASE_EFFORT_DEFAULTS[phase];
-    if (phaseDefault) {
-      return ["--effort", phaseDefault];
-    }
-  }
-
-  // 5. Base CLAUDE_EFFORT env var (global fallback)
-  const effort = Deno.env.get("CLAUDE_EFFORT") ?? "";
-  if (effort) {
-    return ["--effort", effort];
-  }
-
-  // 6. DEFAULT_EFFORT constant
-  return ["--effort", DEFAULT_EFFORT];
+  return ["--effort", resolveClaudeEffort(phase)];
 }
 
 // ---------------------------------------------------------------------------

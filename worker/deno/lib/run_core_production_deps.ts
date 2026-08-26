@@ -38,6 +38,11 @@ import {
   setPhaseEffortConfigOverrides,
   setPhaseModelConfigOverrides,
 } from "./claude_executor.ts";
+import {
+  setCodexPhaseEffortConfigOverrides,
+  setCodexPhaseModelConfigOverrides,
+} from "./codex_executor.ts";
+import { setGeminiPhaseModelConfigOverrides } from "./gemini_executor.ts";
 
 // Health checks
 import {
@@ -353,6 +358,11 @@ export async function createProductionRunCoreDeps(
   setPhaseModelConfigOverrides(config.phaseModelOverrides);
   // Apply phase effort config overrides (Issue #1403)
   setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
+  // Apply the Codex phase model/effort config overrides (Issue #363)
+  setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+  setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
+  // Apply the Gemini phase model config overrides (Issue #364)
+  setGeminiPhaseModelConfigOverrides(config.geminiPhaseModelOverrides);
   // Wire the suppression author allowlist from the trusted-author snapshot
   // (Issue #253). Unconfigured, the suppression gate fails closed
   // (Issue #3941). Re-applied on every refresh so a later source flip

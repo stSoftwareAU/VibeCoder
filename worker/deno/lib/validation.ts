@@ -152,6 +152,9 @@ export interface ConfigFileJson {
   stale_planning_warning_days?: number;
   phase_model_overrides?: Record<string, string>;
   phase_effort_overrides?: Record<string, string>;
+  codex_phase_model_overrides?: Record<string, string>;
+  codex_phase_effort_overrides?: Record<string, string>;
+  gemini_phase_model_overrides?: Record<string, string>;
   enable_session_resume?: boolean;
   /** Global verbosity level override (Issue #1330) */
   verbosity?: string;
@@ -656,38 +659,26 @@ export function validateConfigFileJson(
     );
   }
 
-  // phase_model_overrides is optional Record<string, string> (Issue #1265)
-  if (data.phase_model_overrides !== undefined) {
-    if (!isObject(data.phase_model_overrides)) {
-      return fail(
-        "phase_model_overrides",
-        `Expected object, got ${typeof data.phase_model_overrides}`,
-      );
-    }
-    for (const [key, val] of Object.entries(data.phase_model_overrides)) {
-      if (typeof val !== "string") {
-        return fail(
-          `phase_model_overrides.${key}`,
-          `Expected string, got ${typeof val}`,
-        );
-      }
-    }
-  }
+  // Per-phase routing overrides are optional Record<string, string> maps —
+  // Claude's (Issues #1265, #1403), Codex's (Issue #363) and Gemini's
+  // (Issue #364, model only).
+  const phaseOverrideFields = [
+    "phase_model_overrides",
+    "phase_effort_overrides",
+    "codex_phase_model_overrides",
+    "codex_phase_effort_overrides",
+    "gemini_phase_model_overrides",
+  ] as const;
 
-  // phase_effort_overrides is optional Record<string, string> (Issue #1403)
-  if (data.phase_effort_overrides !== undefined) {
-    if (!isObject(data.phase_effort_overrides)) {
-      return fail(
-        "phase_effort_overrides",
-        `Expected object, got ${typeof data.phase_effort_overrides}`,
-      );
+  for (const field of phaseOverrideFields) {
+    const value = data[field];
+    if (value === undefined) continue;
+    if (!isObject(value)) {
+      return fail(field, `Expected object, got ${typeof value}`);
     }
-    for (const [key, val] of Object.entries(data.phase_effort_overrides)) {
+    for (const [key, val] of Object.entries(value)) {
       if (typeof val !== "string") {
-        return fail(
-          `phase_effort_overrides.${key}`,
-          `Expected string, got ${typeof val}`,
-        );
+        return fail(`${field}.${key}`, `Expected string, got ${typeof val}`);
       }
     }
   }
