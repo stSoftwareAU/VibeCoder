@@ -118,6 +118,7 @@ import { emitSelfHealEventAuto } from "./self_heal_events.ts";
 import {
   executePrBranchUpdates,
   isWorkerPr,
+  makeGhPrStateFetcher,
   type PrBranchEntry,
   type PrBranchStateEntry,
   scanPrBranchUpdates,
@@ -1553,6 +1554,10 @@ export async function createProductionRunCoreDeps(
             cycleId: resolveRunId(),
             ghFn: (args: string[]) => runGhCommand(args),
           },
+          // Issue #386: re-check the PR is still open at the point of the
+          // push. A PR that merged inside the scan→push window is a no-op,
+          // not the `(stale info)` push failure it used to be reported as.
+          getPrState: makeGhPrStateFetcher(runGhCommand),
           setupRepo: async (repo: string, wd: string) => {
             const cmdResult = await setupRepo(repo, wd);
             if (!cmdResult.success) {
@@ -1612,12 +1617,13 @@ export async function createProductionRunCoreDeps(
           return { ok: false, error: execResult.error };
         }
 
-        const { updatedCount, failedCount } = execResult.value;
+        const { updatedCount, failedCount, mergedCount = 0 } = execResult.value;
         // Issue #1799: invalidate the iteration-scoped open-PR cache for
         // every repo we touched — branch updates may have closed/changed
         // PRs, so the next reader inside the same iteration must see
-        // current state.
-        if (updatedCount > 0) {
+        // current state. Issue #386: a PR that merged mid-cycle makes the
+        // cache stale in exactly the same way.
+        if (updatedCount > 0 || mergedCount > 0) {
           const touchedRepos = new Set(actions.map((a) => a.repo));
           await Promise.all(
             [...touchedRepos].map((repo) =>
@@ -1625,8 +1631,13 @@ export async function createProductionRunCoreDeps(
             ),
           );
         }
+        // Issue #386: mid-cycle merges are named separately so a genuine
+        // push failure is the only thing counted as failed.
+        const mergedSuffix = mergedCount > 0
+          ? `, ${mergedCount} merged mid-update`
+          : "";
         logger.info(
-          `PR branch update complete: ${updatedCount} updated, ${failedCount} failed`,
+          `PR branch update complete: ${updatedCount} updated, ${failedCount} failed${mergedSuffix}`,
         );
         return { ok: true, value: undefined };
       } catch (err) {

@@ -27,6 +27,7 @@ import {
 import {
   executePrBranchUpdates,
   isWorkerPr,
+  makeGhPrStateFetcher,
   type PrBranchEntry,
   type PrBranchStateEntry,
   scanPrBranchUpdates,
@@ -433,6 +434,10 @@ export const prMaintenanceCommand: Command = {
           cycleId: resolveRunId(),
           ghFn: (args: string[]) => runGhCommand(args),
         },
+        // Issue #386: re-check the PR is still open at the point of the push,
+        // so a PR that merged inside the scan→push window is a no-op rather
+        // than a `(stale info)` push failure.
+        getPrState: makeGhPrStateFetcher(runGhCommand),
         setupRepo: async (repo: string, wd: string) => {
           const cmdResult = await setupRepo(repo, wd);
           if (!cmdResult.success) {
@@ -498,22 +503,33 @@ export const prMaintenanceCommand: Command = {
         return { success: false, message: execResult.error.message };
       }
 
-      const { updatedCount, failedCount, lockedCount, details } =
-        execResult.value;
+      const {
+        updatedCount,
+        failedCount,
+        lockedCount,
+        mergedCount = 0,
+        details,
+      } = execResult.value;
       const totalSkipped = scanSkipped;
 
       const lockedSuffix = lockedCount > 0
         ? `, ${lockedCount} locked by another worker`
         : "";
+      // Issue #386: a PR that merged mid-cycle is reported on its own, never
+      // folded into "failed" — a real push failure has to stay visible.
+      const mergedSuffix = mergedCount > 0
+        ? `, ${mergedCount} merged mid-update`
+        : "";
       return {
         success: true,
         message:
-          `PR branch update complete: ${updatedCount} updated, ${totalSkipped} already current, ${failedCount} failed${lockedSuffix} (Issue #379)`,
+          `PR branch update complete: ${updatedCount} updated, ${totalSkipped} already current, ${failedCount} failed${lockedSuffix}${mergedSuffix} (Issue #379)`,
         data: {
           updatedCount,
           skippedCount: totalSkipped,
           failedCount,
           lockedCount,
+          mergedCount,
           details,
         } as unknown as PrCommentToFix,
       };
