@@ -76,10 +76,53 @@ export interface PrBranchUpdateDetail {
   prNumber: number;
   /** Feature branch name. */
   branchName: string;
-  /** Whether the update succeeded or failed. */
-  status: "updated" | "failed" | "conflict";
+  /**
+   * Whether the update succeeded, failed, conflicted, or had nothing left to
+   * do because the PR merged or closed mid-cycle (Issue #386).
+   */
+  status: "updated" | "failed" | "conflict" | "merged";
   /** Human-readable description of the outcome. */
   message: string;
+}
+
+/**
+ * A PR's live state at the moment of action (Issue #386).
+ *
+ * `UNKNOWN` means the lookup was unavailable or failed — never "fine to
+ * skip". The update proceeds and any failure stays loud.
+ */
+export type PrLiveState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
+
+/** Map a raw `gh pr view --json state` value onto {@link PrLiveState}. */
+export function classifyPrLiveState(raw: string): PrLiveState {
+  const state = raw.trim().toUpperCase();
+  if (state === "OPEN" || state === "MERGED" || state === "CLOSED") {
+    return state;
+  }
+  return "UNKNOWN";
+}
+
+/**
+ * Build the `getPrState` dependency from a `gh` runner (Issue #386).
+ *
+ * Kept here so both wiring sites (the `pr-maintenance` command and the main
+ * loop's production deps) ask the same question the same way.
+ */
+export function makeGhPrStateFetcher(
+  ghFn: (args: string[]) => Promise<string>,
+): (repo: string, prNumber: number) => Promise<string> {
+  return (repo: string, prNumber: number) =>
+    ghFn([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "state",
+      "--jq",
+      ".state",
+    ]);
 }
 
 /** Overall result of executing PR branch updates (Issue #1233). */
@@ -93,6 +136,13 @@ export interface PrBranchUpdateExecutionResult {
    * (Issue #4373) — they need a real merge, not a side-pick.
    */
   conflictCount?: number;
+  /**
+   * PRs that merged or closed between the scan and the push (Issue #386).
+   * Nothing failed and nothing was left to do, so these are counted apart
+   * from `failedCount` — a real push rejection must stay distinguishable
+   * from a mid-cycle merge.
+   */
+  mergedCount?: number;
   /** Number of PRs skipped because another worker holds the lock (Issue #1281). */
   lockedCount: number;
   /**
@@ -157,6 +207,15 @@ export interface PrBranchExecutionDeps {
    * the pass behaves exactly as before — every failure is retried next cycle.
    */
   failureStreak?: PrBranchFailureStreakDeps;
+  /**
+   * Live PR-state lookup, returning a raw `gh` state string (Issue #386).
+   *
+   * Called immediately before the push, and again when the update fails, so
+   * a PR that merged inside the scan→push window is reported as a no-op
+   * instead of a push failure. Omit it and the pass behaves exactly as
+   * before — every failure is counted and warned about.
+   */
+  getPrState?: (repo: string, prNumber: number) => Promise<string>;
 }
 
 /**
@@ -477,6 +536,40 @@ export async function scanPrBranchUpdates(
 // ---------------------------------------------------------------------------
 
 /**
+ * Read a PR's live state, or `UNKNOWN` when it cannot be established
+ * (Issue #386).
+ *
+ * A lookup that fails is warned about and returns `UNKNOWN`, which never
+ * excuses anything: the caller proceeds with the update and still counts a
+ * genuine failure as a failure.
+ */
+async function resolvePrLiveState(
+  deps: PrBranchExecutionDeps,
+  action: PrBranchUpdateAction,
+): Promise<PrLiveState> {
+  if (!deps.getPrState) return "UNKNOWN";
+  try {
+    return classifyPrLiveState(
+      await deps.getPrState(action.repo, action.prNumber),
+    );
+  } catch (err) {
+    deps.logger.warn(
+      `PR #${action.prNumber} (${action.branchName}) state lookup failed — ` +
+        `proceeding with the branch update: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      { repo: action.repo, prNumber: action.prNumber },
+    );
+    return "UNKNOWN";
+  }
+}
+
+/** True when the PR is finished, so its branch update has nothing left to do. */
+function isFinishedPrState(state: PrLiveState): boolean {
+  return state === "MERGED" || state === "CLOSED";
+}
+
+/**
  * Execute PR branch updates for the given actions.
  *
  * For each action: set up the repo, perform the branch update (fetch,
@@ -485,6 +578,14 @@ export async function scanPrBranchUpdates(
  * Issue #1281: When workerId is provided, acquires a distributed lock
  * before each update and releases it afterwards. PRs that are locked
  * by another worker are skipped.
+ *
+ * Issue #386: the scan decides from a snapshot and the push happens up to a
+ * minute later, so a PR can merge inside that window and `--force-with-lease`
+ * then refuses the push with `(stale info)` — the lease working, not a
+ * failure. When `getPrState` is wired, the PR's freshness is re-checked
+ * immediately before the push and again after a failed update; a PR that has
+ * merged or closed is counted as `mergedCount` at INFO. Every rejection
+ * against a PR that is *still open* stays a `failedCount` WARNING.
  *
  * This replaces the shell-based git orchestration that previously parsed
  * pipe-delimited output from the scan phase.
@@ -502,6 +603,7 @@ export async function executePrBranchUpdates(
   let conflictCount = 0;
   let lockedCount = 0;
   let suppressedCount = 0;
+  let mergedCount = 0;
   const details: PrBranchUpdateDetail[] = [];
 
   const doAcquireLock = deps.acquireLock ?? acquireBranchUpdateLock;
@@ -633,6 +735,36 @@ export async function executePrBranchUpdates(
       defaultBranch = "main"; // allow-hardcoded-branch — fallback after dynamic detection
     }
 
+    // Issue #386: freshness re-check at the point of action, as Issue #352
+    // taught the claim path to do. The scan read this PR as behind up to a
+    // minute ago; if it has merged since, the push would be refused by the
+    // lease and reported as a failure it never was.
+    const preState = await resolvePrLiveState(deps, action);
+    if (isFinishedPrState(preState)) {
+      mergedCount++;
+      const verb = preState === "MERGED" ? "merged" : "closed";
+      deps.logger.info(
+        `PR #${action.prNumber} (${action.branchName}) ${verb} between the ` +
+          `scan and the push — nothing to do (Issue #386)`,
+        { repo: action.repo, prNumber: action.prNumber },
+      );
+      details.push({
+        repo: action.repo,
+        prNumber: action.prNumber,
+        branchName: action.branchName,
+        status: "merged",
+        message: `PR ${verb} before the branch update ran — no update needed`,
+      });
+      if (lockCommentId !== undefined) {
+        await doReleaseLock({
+          repo: action.repo,
+          prNumber: action.prNumber,
+          lockCommentId,
+        });
+      }
+      continue;
+    }
+
     // Perform the branch update (fetch, checkout, rebase, push, restore)
     // Issue #1313: Pass the reason so the update function can handle
     // "conflicting" PRs that are not behind (behindBy == 0).
@@ -643,6 +775,14 @@ export async function executePrBranchUpdates(
       defaultBranch,
       reason: action.reason,
     });
+
+    // Issue #386: the PR can also merge while the update itself is in flight,
+    // which is what the observed `(stale info)` rejection was — the lease
+    // refusing a push nobody needed any more. Only asked for on failure, so a
+    // clean pass costs no extra API call.
+    const postState = updateResult.ok
+      ? "UNKNOWN"
+      : await resolvePrLiveState(deps, action);
 
     if (updateResult.ok) {
       updatedCount++;
@@ -662,6 +802,27 @@ export async function executePrBranchUpdates(
         branchName: action.branchName,
         status: "updated",
         message: updateResult.value,
+      });
+    } else if (isFinishedPrState(postState)) {
+      // Issue #386: nothing failed. The PR finished while the update ran, so
+      // the rejection (or the conflict against a base that has since taken
+      // this PR's commits) describes work that no longer exists. INFO, and
+      // counted apart from failedCount / conflictCount so a genuine push
+      // failure is still the only thing that shows up as one.
+      mergedCount++;
+      const verb = postState === "MERGED" ? "merged" : "closed";
+      deps.logger.info(
+        `PR #${action.prNumber} (${action.branchName}) ${verb} while its ` +
+          `branch update was in flight — nothing to do (Issue #386)`,
+        { repo: action.repo, prNumber: action.prNumber },
+      );
+      details.push({
+        repo: action.repo,
+        prNumber: action.prNumber,
+        branchName: action.branchName,
+        status: "merged",
+        message: `PR ${verb} mid-update — no-op; git reported: ` +
+          updateResult.error.message,
       });
     } else if (isPrBranchConflictError(updateResult.error)) {
       // Issue #4373: the PR's changes collide with the base and the worker
@@ -750,6 +911,7 @@ export async function executePrBranchUpdates(
     conflictCount,
     lockedCount,
     suppressedCount,
+    mergedCount,
   });
 
   return {
@@ -760,6 +922,7 @@ export async function executePrBranchUpdates(
       conflictCount,
       lockedCount,
       suppressedCount,
+      mergedCount,
       details,
     },
   };
