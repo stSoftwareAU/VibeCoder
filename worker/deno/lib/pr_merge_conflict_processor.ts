@@ -43,7 +43,9 @@ import {
 } from "./heartbeat.ts";
 import {
   acquireBranchUpdateLock,
+  type BranchLockRenewalHandle,
   releaseBranchUpdateLock,
+  startBranchUpdateLockRenewal,
 } from "./pr_branch_lock.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
@@ -125,6 +127,13 @@ export interface MergeConflictProcessorDeps {
   acquireLockFn?: typeof acquireBranchUpdateLock;
   /** Injectable lock release. Defaults to {@link releaseBranchUpdateLock}. */
   releaseLockFn?: typeof releaseBranchUpdateLock;
+  /**
+   * Injectable lock renewal. Defaults to
+   * {@link startBranchUpdateLockRenewal}.
+   */
+  startLockRenewalFn?: typeof startBranchUpdateLockRenewal;
+  /** Renewal interval in milliseconds (tests). */
+  lockRenewalIntervalMs?: number;
 }
 
 const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
@@ -407,9 +416,35 @@ export async function processMergeConflict(
     });
   }
 
+  // The lock TTL is five minutes; a resolution runs for as long as the agent
+  // takes (Issue #395). Without renewal a second host cleans this lock as
+  // stale and starts a competing attempt on the same branch — which races
+  // this one's push and leaves this attempt looking disrupted.
+  let renewal: BranchLockRenewalHandle | undefined;
+  if (lockCommentId !== undefined && workerId) {
+    const startRenewal = processorDeps.startLockRenewalFn ??
+      startBranchUpdateLockRenewal;
+    renewal = startRenewal({
+      repo,
+      lockCommentId,
+      workerId,
+      ghCommandFn: processorDeps.deps.github.runGhCommand,
+      note: `🔀 Resolving this PR's merge conflict (worker \`${workerId}\`).`,
+      ...(processorDeps.lockRenewalIntervalMs !== undefined
+        ? { intervalMs: processorDeps.lockRenewalIntervalMs }
+        : {}),
+      onError: (message: string) =>
+        logger.error(`merge_conflict_lock=renew-failed ${message}`, {
+          repo,
+          prNumber,
+        }),
+    });
+  }
+
   try {
     return await resolveConflict(input, processorDeps);
   } finally {
+    renewal?.stop();
     if (heartbeatHandle) await stopHeartbeat(heartbeatHandle);
     if (lockCommentId !== undefined) {
       await releaseLock({ repo, prNumber, lockCommentId });

@@ -144,6 +144,11 @@ actually used.
   applies `needs-human` with a comment pointing at the worker, not the conflict.
   That escalation runs from the scan, not the resolution pass, precisely
   because the resolution pass may be what cannot finish.
+- One disruption source is closed outright: the cross-host PR lock is now
+  **refreshed while the attempt runs**. The lock TTL is five minutes and a
+  resolution runs for as long as the agent takes, so without renewal a second
+  host cleaned the lock as stale and started a competing attempt on the same
+  branch — racing the first one's push and leaving it looking disrupted.
 
 ## 👀 Seeing the queue
 
