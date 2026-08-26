@@ -67,7 +67,11 @@ import {
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
 import type { DiagnosticSummary } from "./issue_finder_logger.ts";
-import { fetchAllOpenPRs, fetchOpenPRsByUser } from "./issue_query.ts";
+import {
+  fetchAllOpenPRs,
+  fetchOpenPRsByUser,
+  fetchRecentlyClosedPRsForFleet,
+} from "./issue_query.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
 import { clearCommentCache } from "./comment_cache.ts";
@@ -226,6 +230,7 @@ import {
 } from "./resume_state_store.ts";
 import {
   type FleetAuthorSetInput,
+  resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
 } from "./fleet_authors.ts";
 import {
@@ -716,6 +721,29 @@ export async function createProductionRunCoreDeps(
   };
 
   const repos = config.repos ?? [];
+
+  /**
+   * A repo's closed/merged fleet PRs, read through the same iteration-scoped
+   * `prs_closed_*` cache the Priority 2 scan populates (GRQ#4419).
+   *
+   * The idle-detect audit and the idle-decision census both need it to model
+   * the scan's *permanent* `merged-pr-permanent` gate (Issue #3151). Whichever
+   * of the scan, the audit and the census runs first pays for the fetch, so
+   * the gate adds no API call on a warm iteration. Best-effort — both callers
+   * treat a rejection as "no merged-PR data" and fall back to the pre-GRQ#4419
+   * over-count rather than reporting a repo as having nothing to do.
+   */
+  const fetchMergedPRsForCensus = (repo: string) =>
+    fetchRecentlyClosedPRsForFleet(
+      repo,
+      resolveFleetPrAuthorSet({
+        githubUser,
+        allowedAuthors: config.allowedAuthors,
+        fleetPrAuthors: config.fleetPrAuthors ?? [],
+      }),
+      config.closedPrCooldownSeconds ?? 3600,
+      issueCache,
+    );
 
   // Issue #1935: build the private-repo-6 config + deps once so the
   // per-iteration heartbeat does not re-resolve env vars / hostname on
@@ -3123,6 +3151,10 @@ export async function createProductionRunCoreDeps(
           // `auditClaimableState` catches a rejection itself and falls back to
           // no PR blocking.
           openPRsFn: (repo: string) => fetchAllOpenPRs(repo, issueCache),
+          // GRQ#4419: an issue named by a merged fleet PR is refused
+          // permanently by the scan, so counting it as claimable kept the
+          // `mis_classification` ALERT firing against a scan that was right.
+          mergedPRsFn: fetchMergedPRsForCensus,
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -3168,6 +3200,19 @@ export async function createProductionRunCoreDeps(
             } catch {
               openPRs = [];
             }
+            // GRQ#4419: read the repo's merged fleet PRs so an issue the scan
+            // refuses permanently (`merged-pr-permanent`, Issue #3151) stops
+            // holding `inversion_signal=true` for ever — the exact strand that
+            // filed GRQ#4419 and VibeCoder#429. Same best-effort contract as
+            // the open-PR fetch above.
+            let mergedPRs: Awaited<
+              ReturnType<typeof fetchRecentlyClosedPRsForFleet>
+            > = [];
+            try {
+              mergedPRs = await fetchMergedPRsForCensus(repo);
+            } catch {
+              mergedPRs = [];
+            }
             return {
               repo,
               monitored: true,
@@ -3180,6 +3225,7 @@ export async function createProductionRunCoreDeps(
                 milestone: i.milestone,
               })),
               openPRs,
+              mergedPRs,
             };
           }),
         );

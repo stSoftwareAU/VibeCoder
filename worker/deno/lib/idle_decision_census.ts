@@ -65,6 +65,27 @@
  * done, and suppressed the idle-task filer while it did. Issues excluded
  * solely by occupancy are surfaced per repo as `stream_occupied=<n>`.
  *
+ * A **merged** fleet PR that names the issue matters for exactly the same
+ * reason (GRQ#4419). Since Issue #3151 that block is *permanent* — the scan
+ * skips the issue as `merged-pr-permanent` on every cycle until a trusted
+ * author re-applies the pickup label with a date after the merge. The census
+ * did not model it, so a single such issue held `inversion_signal=true` for
+ * ever: on 2026-08-26 `stSoftwareAU/GRQ` logged `work_on=10 low_priority=1
+ * inversion_signal=true` on cycle after cycle because GRQ#4326 — `work-on`
+ * since 23 August, unassigned, unlabelled by any blocker — is named by merged
+ * PR #4336. The scan was right; the census escalated it under Issue #321 as
+ * "the claim scan keeps refusing", which cost a human a `work-on` label and a
+ * whole worker run. Issues excluded solely by a merged PR are surfaced per
+ * repo as `merged_pr_blocked=<n>`.
+ *
+ * The re-label escape hatch (`wasLabelReappliedAfterClosedPR`) is
+ * deliberately **not** modelled: it needs a per-issue timeline call the
+ * census must not pay for. Omitting it makes the census *under*-count, which
+ * at worst files an idle-task while work exists — the bounded-harm direction
+ * this module already prefers. Only *merged* PRs are counted; a
+ * closed-unmerged PR blocks for a cooldown window that clears itself, so
+ * counting it would hide genuinely returning work.
+ *
  * PR-blocking matters because the inversion verdict suppresses the
  * idle-task filer (Issue #2813): counting PR-blocked issues as available
  * starved the filer for hours in the host-23 incident (one open PR in one
@@ -85,7 +106,12 @@
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { BLOCKING_LABELS } from "./idle_detect_diagnostics.ts";
-import { getBlockingPRForIssue, type OpenPR } from "./issue_query.ts";
+import {
+  type ClosedPR,
+  getBlockingPRForIssue,
+  isBlockedByRecentlyClosedPR,
+  type OpenPR,
+} from "./issue_query.ts";
 import {
   checkRepoAvailability,
   type RepoIssueInfo,
@@ -148,6 +174,14 @@ export interface RepoCensusInput {
    * applied, preserving the pre-#3526 behaviour.
    */
   openPRs?: OpenPR[];
+  /**
+   * Closed/merged fleet PRs for the repo, read through the per-iteration
+   * cache (GRQ#4419). Only entries with `merged: true` are honoured — they
+   * are the ones the scan refuses *permanently* under `merged-pr-permanent`.
+   * Omitted (e.g. the fetch failed) → no merged-PR blocking is applied,
+   * preserving the pre-GRQ#4419 behaviour.
+   */
+  mergedPRs?: ClosedPR[];
 }
 
 /** Per-priority unblocked counts for a repo. */
@@ -186,6 +220,15 @@ export interface RepoCensusEntry {
    * line.
    */
   streamOccupied: number;
+  /**
+   * Count of priority (`top-priority` / `work-on` / `low-priority`) issues
+   * that passed every other check but are named by a **merged** fleet PR,
+   * which the scan refuses permanently as `merged-pr-permanent`
+   * (Issue #3151, GRQ#4419). Kept separate from `unblocked` so the
+   * permanent strand stays observable in the `[idle-census]` line rather
+   * than being silently dropped.
+   */
+  mergedPrBlocked: number;
   /**
    * `true` when the repo holds ≥1 unblocked `top-priority` / `work-on` /
    * `low-priority` issue — the idle-vs-work-on inversion symptom.
@@ -250,6 +293,18 @@ function isPrBlocked(issue: CensusIssue, openPRs: OpenPR[]): boolean {
 }
 
 /**
+ * True when a **merged** fleet PR names `issue`, which the Priority 2 scan
+ * refuses permanently under `merged-pr-permanent` (Issue #3151, GRQ#4419).
+ *
+ * Closed-unmerged entries are filtered out: their block is cooldown-windowed
+ * and self-clearing, so counting them would hide work that is about to return.
+ */
+function isMergedPrBlocked(issue: CensusIssue, mergedPRs: ClosedPR[]): boolean {
+  const merged = mergedPRs.filter((pr) => pr.merged === true);
+  return isBlockedByRecentlyClosedPR(merged, issue.number) !== null;
+}
+
+/**
  * Work streams the worker already occupies — milestones (or `""` for the
  * default-branch stream) hosting an open issue assigned to `workerUser`.
  *
@@ -278,8 +333,14 @@ function occupiedStreamsFor(
 function countUnblocked(
   issues: CensusIssue[],
   openPRs: OpenPR[],
+  mergedPRs: ClosedPR[],
   workerUser: string,
-): { counts: UnblockedCounts; prBlocked: number; streamOccupied: number } {
+): {
+  counts: UnblockedCounts;
+  prBlocked: number;
+  streamOccupied: number;
+  mergedPrBlocked: number;
+} {
   const counts: UnblockedCounts = {
     topPriority: 0,
     workOn: 0,
@@ -289,6 +350,7 @@ function countUnblocked(
   const occupiedStreams = occupiedStreamsFor(issues, workerUser);
   let prBlocked = 0;
   let streamOccupied = 0;
+  let mergedPrBlocked = 0;
   for (const issue of issues) {
     // Idle-task claiming is gated by repo busyness, not by
     // getBlockingPRForIssue, so its count ignores PR blocking.
@@ -311,6 +373,13 @@ function countUnblocked(
       prBlocked += 1;
       continue;
     }
+    // GRQ#4419: applied last, so an issue refused for a more fundamental
+    // reason keeps that reason — `merged_pr_blocked` marks only issues that
+    // would otherwise be claimable right now but are stranded permanently.
+    if (isMergedPrBlocked(issue, mergedPRs)) {
+      mergedPrBlocked += 1;
+      continue;
+    }
     if (isUnblockedFor(issue, LABEL_DEFAULTS.topPriorityLabel)) {
       counts.topPriority += 1;
     }
@@ -321,7 +390,7 @@ function countUnblocked(
       counts.lowPriority += 1;
     }
   }
-  return { counts, prBlocked, streamOccupied };
+  return { counts, prBlocked, streamOccupied, mergedPrBlocked };
 }
 
 /** Derive the availability verdict from a repo's open issues. */
@@ -363,11 +432,13 @@ export function buildIdleDecisionCensus(opts: {
 }): IdleDecisionCensus {
   const perRepo: RepoCensusEntry[] = [];
   for (const input of opts.repos) {
-    const { counts: unblocked, prBlocked, streamOccupied } = countUnblocked(
-      input.issues,
-      input.openPRs ?? [],
-      opts.workerUser,
-    );
+    const { counts: unblocked, prBlocked, streamOccupied, mergedPrBlocked } =
+      countUnblocked(
+        input.issues,
+        input.openPRs ?? [],
+        input.mergedPRs ?? [],
+        opts.workerUser,
+      );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,
       opts.workerUser,
@@ -387,6 +458,7 @@ export function buildIdleDecisionCensus(opts: {
       unblocked,
       prBlocked,
       streamOccupied,
+      mergedPrBlocked,
       inversionSignal,
     });
   }
@@ -442,6 +514,7 @@ export function formatIdleDecisionCensus(
         `work_on=${r.unblocked.workOn} low_priority=${r.unblocked.lowPriority} ` +
         `idle_task=${r.unblocked.idleTask} pr_blocked=${r.prBlocked} ` +
         `stream_occupied=${r.streamOccupied} ` +
+        `merged_pr_blocked=${r.mergedPrBlocked} ` +
         `inversion_signal=${r.inversionSignal}`,
     );
   }
