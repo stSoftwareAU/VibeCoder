@@ -26,9 +26,9 @@ import {
  * Environment variables the `gemini` child must never inherit.
  *
  * The worker-only secrets (see {@link WORKER_ONLY_SECRET_ENV_VARS}) plus every
- * Anthropic and OpenAI credential: Gemini authenticates with its own key, so
- * another vendor's credential in its environment is only ever an exfiltration
- * target.
+ * Anthropic, OpenAI and DeepSeek credential (the last since Issue #412):
+ * Gemini authenticates with its own key, so another vendor's credential in its
+ * environment is only ever an exfiltration target.
  */
 export const GEMINI_ENV_DENYLIST: readonly string[] = [
   ...WORKER_ONLY_SECRET_ENV_VARS,
@@ -37,6 +37,7 @@ export const GEMINI_ENV_DENYLIST: readonly string[] = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
+  "DEEPSEEK_API_KEY",
 ];
 
 /**
