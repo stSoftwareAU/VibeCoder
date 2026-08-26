@@ -132,7 +132,7 @@ Added / updated:
 
 - Input validation: no new external input — the change removes a computation
   and reads an already-validated config value.
-- Secrets: none staged; no hidden files touched.
+- Secrets: no credentials, tokens or hidden files are in the staged set.
 - Injection surface: no new SQL, shell, filesystem or HTTP calls.
 - Output encoding: only worker log lines and a git commit subject, both built
   from numbers and fixed strings.
