@@ -325,6 +325,10 @@ export async function processMergeConflict(
   const heartbeatStart = await startHeartbeat({
     repo,
     issueNumber: prNumber,
+    // A PR, not an issue (Issue #391): the kind keys this heartbeat apart
+    // from an issue of the same number, and matches the maintenance hold the
+    // sweep's live set reports.
+    kind: "pr",
     workDir: processorDeps.workDir,
     recordFn: processorDeps.deps.crashHandling.recordHeartbeat,
     clearFn: processorDeps.deps.crashHandling.clearHeartbeat,

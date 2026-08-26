@@ -14,6 +14,7 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
 import { reportRunDeadline } from "../lib/slot_context.ts";
 import {
   _resetWriteRepoAllowlistSinks,
@@ -415,6 +416,43 @@ Deno.test("slot pool - the pool calls the slot-aware sweep with the live holds, 
   assert(
     liveSets.length >= 2 && liveSets.every((n) => n >= 1),
     `live sets: ${liveSets}`,
+  );
+});
+
+Deno.test("slot pool - the live set handed to the sweep names a live maintenance hold, so its heartbeat is never swept (Issue #391)", async () => {
+  const registry = new InFlightRepoRegistry();
+  // The maintenance lane is mid-run on a PR in its own repository.
+  registry.tryAcquire("o/grq", 4408, "m1", { maintenance: true });
+  const liveSets: string[][] = [];
+  let now = 0;
+  const config = createDefaultRunCoreConfig();
+  const deps = createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    inFlightRepos: registry,
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    processIssue: async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      now += config.runDurationSeconds * 400;
+      return { ok: true, value: { success: true } };
+    },
+    sweepLeakedHeartbeatsExcept: (live) => {
+      liveSets.push(
+        live.map((l) => `${l.repo}#${l.issueNumber}:${l.kind ?? "issue"}`),
+      );
+      return Promise.resolve();
+    },
+  });
+  await runOneCycle(deps, 2);
+  assert(liveSets.length >= 1, "the pool swept at least once");
+  assert(
+    liveSets.every((set) => set.includes("o/grq#4408:pr")),
+    `every sweep must protect the maintenance hold: ${
+      JSON.stringify(liveSets)
+    }`,
   );
 });
 

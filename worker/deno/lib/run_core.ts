@@ -42,6 +42,7 @@ import {
   recordStepDuration,
   startCycleTimings,
 } from "./cycle_timings.ts";
+import type { HeartbeatLiveKey } from "./heartbeat.ts";
 import { formatInFlightHold, InFlightRepoRegistry } from "./in_flight_repos.ts";
 import type {
   ProcessedIssueReason,
@@ -529,12 +530,13 @@ export interface RunCoreDeps {
   sweepLeakedHeartbeats?: () => Promise<void>;
   /**
    * Slot-aware variant (Issue #4178): stop only heartbeats that none of the
-   * given live `(repo, issue)` pairs owns. The pool calls this instead of
+   * given live keys owns. The pool calls this instead of
    * `sweepLeakedHeartbeats`, so a sibling slot's healthy heartbeat is never
-   * mistaken for a leak.
+   * mistaken for a leak. The live set names every hold that owns a
+   * heartbeat, the maintenance lane's PRs included (Issue #391).
    */
   sweepLeakedHeartbeatsExcept?: (
-    live: ReadonlyArray<{ repo: string; issueNumber: number }>,
+    live: ReadonlyArray<HeartbeatLiveKey>,
   ) => Promise<void>;
   /**
    * Host-local registry of repositories held by slots (Issue #4176). The
@@ -2937,11 +2939,14 @@ async function runSlotIssue(
   };
 
   // Leaked-heartbeat sweep, slot-aware (Issue #4178): only heartbeats no
-  // live slot owns may be stopped, so a sibling's healthy heartbeat is
-  // never mistaken for a leak. Production supplies the slot-aware sweep;
-  // the legacy whole-process sweep is NOT called from the pool.
+  // live hold owns may be stopped, so a sibling's healthy heartbeat is
+  // never mistaken for a leak. `heldHeartbeatKeys()` — not `heldIssues()` —
+  // because the maintenance lane takes heartbeats too, and sweeping a live
+  // merge-conflict resolution's heartbeat hands its work to another worker
+  // mid-edit (Issue #391). Production supplies the slot-aware sweep; the
+  // legacy whole-process sweep is NOT called from the pool.
   if (deps.sweepLeakedHeartbeatsExcept) {
-    await deps.sweepLeakedHeartbeatsExcept(pool.registry.heldIssues());
+    await deps.sweepLeakedHeartbeatsExcept(pool.registry.heldHeartbeatKeys());
   }
 
   const processResult = await deps.processIssue(issue, endTime);

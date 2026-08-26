@@ -188,6 +188,8 @@ export async function processSpellingFailure(
   const heartbeatStart = await startHeartbeat({
     repo,
     issueNumber: prNumber,
+    // A PR, not an issue (Issue #391) — see pr_merge_conflict_processor.
+    kind: "pr",
     workDir,
     recordFn: deps.crashHandling.recordHeartbeat,
     clearFn: deps.crashHandling.clearHeartbeat,

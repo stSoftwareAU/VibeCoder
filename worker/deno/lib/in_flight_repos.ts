@@ -21,6 +21,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { HeartbeatKind } from "./heartbeat.ts";
 import { describeRunDeadline, type RunDeadlineState } from "./run_deadline.ts";
 
 /** What a slot holds. */
@@ -44,9 +45,13 @@ export interface InFlightHold {
    * The lane holds a repository so no slot writes the clone its CI fix /
    * PR-feedback / merge-conflict agent is working in, but it is servicing a
    * **PR**, not a claimed issue: `issueNumber` is that PR's number. Anything
-   * that treats a hold as an issue claim — the heartbeat sweep's live-slot
-   * set, the shutdown drain's claim release — must skip it, or it would
-   * unassign a PR number as though it were an issue.
+   * that treats a hold as an issue claim — the finder's exclusion set, the
+   * shutdown drain's claim release — must skip it, or it would unassign a PR
+   * number as though it were an issue.
+   *
+   * The heartbeat sweep is **not** one of those (Issue #391): it asks whether
+   * anything on this host still uses a heartbeat, and the lane takes
+   * heartbeats, so it reads `heldHeartbeatKeys()` instead.
    */
   maintenance?: boolean;
 }
@@ -113,13 +118,34 @@ export class InFlightRepoRegistry {
     return new Set(this.#held.keys());
   }
 
-  /** The `(repo, issue)` pairs currently held — the live-slot set the
-   * heartbeat sweep must not touch (Issue #4178). Maintenance-lane holds
-   * are excluded (Issue #213): their number is a PR, not a claimed issue. */
+  /** The `(repo, issue)` pairs currently claimed, for a finder's exclusion
+   * set and the drain's claim release. Maintenance-lane holds are excluded
+   * (Issue #213): their number is a PR, not a claimed issue. */
   heldIssues(): ReadonlyArray<{ repo: string; issueNumber: number }> {
     return [...this.#held.values()]
       .filter((hold) => hold.maintenance !== true)
       .map(({ repo, issueNumber }) => ({ repo, issueNumber }));
+  }
+
+  /**
+   * Every hold that owns a heartbeat — the live set the heartbeat sweep must
+   * not touch (Issue #4178, corrected by Issue #391).
+   *
+   * Maintenance-lane holds are **included** here, unlike `heldIssues()`: the
+   * lane takes a real heartbeat for the PR it is servicing, so sweeping it
+   * would clear a live pass's heartbeat and let the
+   * assigned-without-heartbeat recovery hand its work to another worker
+   * mid-edit. The kind rides along so a PR's heartbeat and an issue's
+   * heartbeat of the same number cannot alias.
+   */
+  heldHeartbeatKeys(): ReadonlyArray<
+    { repo: string; issueNumber: number; kind: HeartbeatKind }
+  > {
+    return [...this.#held.values()].map(({ repo, issueNumber, maintenance }) => ({
+      repo,
+      issueNumber,
+      kind: maintenance === true ? "pr" as const : "issue" as const,
+    }));
   }
 
   /** Every hold, for status rendering (Issue #4181). */

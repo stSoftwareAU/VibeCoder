@@ -257,7 +257,12 @@ registry before it touches the clone:
 
 The lane logs under an `[m1]` prefix and appears in the status line as
 `m1 owner/repo#<pr>` — that number is a **PR**, not a claimed issue, so the
-heartbeat sweep and the shutdown drain both skip it. A shutdown bounds the lane
+finder's claim-shaped views and the shutdown drain both skip it. The
+leaked-heartbeat sweep does **not** skip it (Issue #391): the lane takes a real
+heartbeat for the PR it is servicing, so the sweep reads `heldHeartbeatKeys()`
+— every hold that owns a heartbeat, keyed `issue:<n>` or `pr:<n>` so the two
+namespaces cannot alias — and a live merge-conflict resolution keeps its
+heartbeat while an issue slot claims elsewhere. A shutdown bounds the lane
 exactly as it bounds the pool: no new pass starts once SIGTERM lands, and a pass
 still running after `slot_drain_grace_seconds` is abandoned with its agent
 terminated rather than holding the exit open.
