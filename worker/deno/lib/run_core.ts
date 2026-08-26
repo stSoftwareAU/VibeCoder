@@ -923,9 +923,20 @@ export interface RunCoreDeps {
    * `top-priority`/`work-on`/`low-priority` issue — even one merely
    * *deferred* this cycle by `nice`/rotation/cooldown. A `void` return (or
    * a throw) is treated as "no inversion detected" so the filer still runs.
+   *
+   * Issue #437: `claimScanCompleted` states whether the Priority 2 scan
+   * actually finished an eligibility pass this cycle — i.e. a scan returned
+   * "no eligible work" — as opposed to stopping before its next claim for
+   * the cycle deadline / claim-runway floor, a shutdown, or a pool drain.
+   * Only a completed pass is evidence that the scan *refused* the census's
+   * claimable work, so it gates the Issue #321 escalation (never the filer
+   * suppression: work the scan did not reach is still work).
    */
   runIdleDecisionCensus?: (
-    info: { decisionPoint: "filing" | "selection" },
+    info: {
+      decisionPoint: "filing" | "selection";
+      claimScanCompleted: boolean;
+    },
   ) => Promise<{ inversionDetected: boolean } | void>;
 
   /**
@@ -1611,6 +1622,14 @@ async function runIssueScanLoop(
     spendCeilingReached?: boolean;
     hostDiskLow?: boolean;
     workVolumeFaulted?: boolean;
+    /**
+     * Whether a scan completed an eligibility pass — `findNextIssue`
+     * returned `null` after considering the backlog (Issue #437). `false`
+     * means the loop stopped before its next claim (deadline, runway floor,
+     * shutdown, drain) without ever evaluating the work, so nothing refused
+     * it and the idle-inversion escalation must not fire.
+     */
+    eligibilityScanCompleted?: boolean;
   }
 > {
   // Concurrent slots (Issue #4177, part of #4168): above one slot the pool
@@ -1648,6 +1667,12 @@ async function runIssueScanLoop(
   const deferredClaims = new Set<string>();
   /** Consecutive scans that re-offered an already-deferred issue. */
   let reofferedDeferred = 0;
+  /**
+   * Set once a scan has considered the whole backlog and come up empty
+   * (Issue #437) — the only state in which "the claim scan refused this
+   * work" is a claim the idle-inversion escalation may make.
+   */
+  let eligibilityScanCompleted = false;
 
   while (true) {
     // Deadline gate (Issue #3648): never claim another billed issue run once
@@ -1696,7 +1721,8 @@ async function runIssueScanLoop(
 
     const issue = findResult.value;
     if (issue === null) {
-      // No more issues
+      // No more issues — the backlog was evaluated and refused (Issue #437).
+      eligibilityScanCompleted = true;
       break;
     }
 
@@ -1819,7 +1845,7 @@ async function runIssueScanLoop(
     // Check exit threshold
     const shouldExit = await deps.shouldExitOnFailures();
     if (shouldExit) {
-      return { exitOuterLoop: true };
+      return { exitOuterLoop: true, eligibilityScanCompleted };
     }
 
     // Issue #2670 (root cause of incident #2648): the failure path used to
@@ -1856,7 +1882,7 @@ async function runIssueScanLoop(
             `. Stopping claims for this cycle; the next cycle's health ` +
             `gate re-checks automatically.`,
         );
-        return { exitOuterLoop: true };
+        return { exitOuterLoop: true, eligibilityScanCompleted };
       }
     }
 
@@ -1872,7 +1898,7 @@ async function runIssueScanLoop(
     continue;
   }
 
-  return { exitOuterLoop: false };
+  return { exitOuterLoop: false, eligibilityScanCompleted };
 }
 
 // ---------------------------------------------------------------------------
@@ -2263,6 +2289,13 @@ interface SlotPoolState {
    * path runs exactly as it does for the serial loop.
    */
   rateLimitError?: Error;
+  /**
+   * Set once any slot's scan considered the backlog and found nothing
+   * eligible (Issue #437). A pool that only ever stopped on the deadline,
+   * a shutdown or a drain leaves this `false` — it refused nothing, so the
+   * idle-inversion escalation has no evidence to escalate.
+   */
+  eligibilityScanCompleted: boolean;
 }
 
 /**
@@ -2312,6 +2345,8 @@ async function runIssueScanPool(
     spendCeilingReached: boolean;
     hostDiskLow: boolean;
     workVolumeFaulted: boolean;
+    /** See the serial loop's field of the same name (Issue #437). */
+    eligibilityScanCompleted: boolean;
   }
 > {
   await deps.resetRepoFailures();
@@ -2334,6 +2369,7 @@ async function runIssueScanPool(
     shouldShutdown,
     claimFloorSeconds: poolRunwayFloor.floorSeconds,
     deferredClaims: new Set<string>(),
+    eligibilityScanCompleted: false,
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
   // #4179): under pressure the pool STARTS fewer slots; it never cancels
@@ -2363,6 +2399,7 @@ async function runIssueScanPool(
     spendCeilingReached: pool.spendCeilingReached,
     hostDiskLow: pool.hostDiskLow === true,
     workVolumeFaulted: pool.workVolumeFaulted === true,
+    eligibilityScanCompleted: pool.eligibilityScanCompleted,
   };
 }
 
@@ -2534,6 +2571,10 @@ async function runSlot(
     }
     const issue = findResult.value;
     if (issue === null) {
+      // The backlog was evaluated and refused (Issue #437) — the pool-wide
+      // record the idle-inversion escalation reads to tell "the scan said
+      // no" from "the scan never looked".
+      pool.eligibilityScanCompleted = true;
       // Issue #219: an empty scan is reported with its counts, and the slot
       // retires only when nothing else is running. Returning on the first
       // null parked the slot until the whole pool drained — a two-slot pool
@@ -3772,7 +3813,8 @@ export async function runCoreLoop(
           const scanTask = (async () => {
             try {
               return skipScanForHostDisk
-                ? { exitOuterLoop: false }
+                // A scan that never ran refused nothing (Issue #437).
+                ? { exitOuterLoop: false, eligibilityScanCompleted: false }
                 : await withPriorityContext(
                   "Issue Scanning",
                   () =>
@@ -3911,11 +3953,21 @@ export async function runCoreLoop(
             // verdict (cache-backed — no extra issue-list call) so it can
             // suppress the filer below when real work exists anywhere in
             // the monitored set, even when it was only deferred this cycle.
+            //
+            // Issue #437: the census is also told whether the scan
+            // completed an eligibility pass this cycle. Every VibeCoder
+            // inversion alert on 2026-08-26 followed a `stop reason=deadline`
+            // line by about a minute — the scan had stopped before its next
+            // claim and never evaluated the backlog — yet three such cycles
+            // escalated to a human as "the claim scan keeps refusing" work
+            // nothing had refused.
             let censusInversionDetected = false;
             if (deps.runIdleDecisionCensus) {
               try {
                 const censusResult = await deps.runIdleDecisionCensus({
                   decisionPoint: "filing",
+                  claimScanCompleted:
+                    scanResult.eligibilityScanCompleted === true,
                 });
                 if (
                   censusResult !== undefined &&
