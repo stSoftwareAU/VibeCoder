@@ -1073,7 +1073,7 @@ construction and the containment boundary do not change.
 | `claude` | `claude` | `container/providers/claude.sh` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build |
 | `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; add it to `AGENT_PROVIDERS` to install it |
 | `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, add it to `AGENT_PROVIDERS` to install it |
-| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | — (image-side pin only so far) | Carried on the Claude CLI under its own command and its own pin; add it to `AGENT_PROVIDERS` to install it |
+| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY` | Carried on the Claude CLI under its own command and its own pin; add it to `AGENT_PROVIDERS` to install it |
 
 Each vendor's credential is provisioned into its own
 `<credential dir>/<id>/provider.env` by `setup.sh` — the variables per vendor
@@ -1130,11 +1130,15 @@ about that entry are deliberate and must not be "de-duplicated" away:
   `deepseek` on a known-good CLI version while `claude` moves ahead is the
   point of the second pin.
 
-Selecting `codex` or `gemini` needs that provider's credential in
+Selecting `codex`, `gemini` or `deepseek` needs that provider's credential in
 `<credential dir>/<id>/provider.env` — `setup.sh` offers every registered
 provider its own variables and writes only the files it has
-credentials for. The default image still installs Claude alone, so a run using
-another provider also needs it in the image's `AGENT_PROVIDERS` set.
+credentials for. DeepSeek's is the case worth stating outright: the binary is
+Anthropic's, but `deepseek/provider.env` holds a **DeepSeek** key
+(`DEEPSEEK_API_KEY`, provisioned from `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`), and
+Anthropic's own credentials are denied to the DeepSeek child. The default image
+still installs Claude alone, so a run using another provider also needs it in
+the image's `AGENT_PROVIDERS` set.
 
 Each fragment reads its pins from `container/tools.json` with `jq`, verifies
 the download against the pinned SHA-256 (per architecture, or one `noarch`
@@ -1155,9 +1159,9 @@ list of provider ids, defaulting to `container/tools.json`'s
 always was.
 
 ```bash
-# One image carrying three agent CLIs
+# One image carrying all four agent CLIs
 docker build -f container/Containerfile \
-  --build-arg AGENT_PROVIDERS="claude,codex,gemini" \
+  --build-arg AGENT_PROVIDERS="claude,codex,gemini,deepseek" \
   -t vibe-coder:quorum container/
 ```
 
@@ -1184,7 +1188,7 @@ Two invariants keep the set honest:
 
 ```mermaid
 flowchart LR
-    A["ARG AGENT_PROVIDERS<br/>&quot;claude,codex,gemini&quot;"] --> S["install-providers.sh"]
+    A["ARG AGENT_PROVIDERS<br/>&quot;claude,codex,gemini,deepseek&quot;"] --> S["install-providers.sh"]
     S -->|per id, in order| F["container/providers/&lt;id&gt;.sh"]
     S -->|empty, duplicate,<br/>unknown, or failing| X["❌ build aborts,<br/>naming the fragments"]
     A --> V["ENV VIBE_IMAGE_AGENT_PROVIDERS"]
@@ -1195,9 +1199,9 @@ flowchart LR
     style S fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-### Adding a fourth provider
+### Adding a further provider
 
-Three providers are registered today; a fourth is four files and no redesign —
+Four providers are registered today; a further one is four files and no redesign —
 neither the Containerfile nor `container/install-providers.sh` names a provider.
 
 1. **Pin it** — add a `providers` entry to `container/tools.json`: the `id`, the
@@ -1223,8 +1227,8 @@ neither the Containerfile nor `container/install-providers.sh` names a provider.
 
 The image tag follows the set, so the new provider produces a new
 `vibe-coder:<hash>` rather than reusing a tag whose contents differ. A trio in
-`quorum_planners` / `quorum_judge` can then name it — see
-Quorum.
+`quorum_planners` / `quorum_judge` can then name it — as `deepseek` already
+does — see Quorum.
 
 ## Deployer-supplied build-time tools
 
