@@ -19,6 +19,7 @@ import {
 } from "../lib/pr_merge_conflict_processor.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
@@ -391,6 +392,62 @@ Deno.test("processMergeConflict - the final failed attempt escalates to a human"
   assertStringIncludes(escalation, "**Why:**");
   assertStringIncludes(escalation, "**Next step:**");
   assertStringIncludes(escalation, "SECURITY.md");
+});
+
+// ---------------------------------------------------------------------------
+// Disruption robustness (Issue #395)
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - a failed attempt posts an explicit conclusion", async () => {
+  // Without this conclusion the attempt is indistinguishable from one a
+  // dying worker abandoned — the GRQ#4408/#4409 silence.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ markersAfterAgent: true }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+
+  const conclusion = captured.comments.at(-1) ?? "";
+  assertStringIncludes(conclusion, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(conclusion, "attempt 1 of 2 failed");
+  assertStringIncludes(conclusion, "conflict markers");
+  assertStringIncludes(conclusion, "SECURITY.md");
+});
+
+Deno.test("processMergeConflict - the escalating attempt also posts its conclusion", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 1 }),
+    makeGitScript({ markersAfterAgent: true }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.escalated, true);
+  assert(
+    captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)),
+    `a failure conclusion must be posted; got ${captured.comments.length} comments`,
+  );
+});
+
+Deno.test("processMergeConflict - a disrupted earlier attempt is surfaced on the PR", async () => {
+  const { captured } = await runProcessor(
+    makeInput({ attemptCount: 0, disruptedCount: 2 }),
+    makeGitScript(),
+  );
+
+  const attempt = captured.comments[0] ?? "";
+  assertStringIncludes(attempt, CONFLICT_ATTEMPT_MARKER);
+  assertStringIncludes(attempt, "attempt 1 of 2");
+  assertStringIncludes(attempt, "2 earlier attempt(s) were disrupted");
+  assertStringIncludes(attempt, "does not spend");
+});
+
+Deno.test("processMergeConflict - a clean history says nothing about disruption", async () => {
+  const { captured } = await runProcessor(makeInput(), makeGitScript());
+  const attempt = captured.comments[0] ?? "";
+  assertEquals(attempt.includes("disrupted"), false);
 });
 
 Deno.test("processMergeConflict - a PR locked by another worker is left alone", async () => {
