@@ -132,7 +132,9 @@ Added / updated:
 
 - Input validation: no new external input — the change removes a computation
   and reads an already-validated config value.
-- Secrets: no credentials, tokens or hidden files are in the staged set.
+- Credential exposure: no keys, tokens or hidden files are in the staged set
+  (the masker treats a `Secrets:` label as a key/value pair and redacts
+  whatever follows it, hence the wording).
 - Injection surface: no new SQL, shell, filesystem or HTTP calls.
 - Output encoding: only worker log lines and a git commit subject, both built
   from numbers and fixed strings.
