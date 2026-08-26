@@ -70,7 +70,12 @@
  */
 
 import { runGhCommand } from "./github.ts";
-import { getBlockingPRForIssue, type OpenPR } from "./issue_query.ts";
+import {
+  type ClosedPR,
+  getBlockingPRForIssue,
+  isBlockedByRecentlyClosedPR,
+  type OpenPR,
+} from "./issue_query.ts";
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 // Issue #4037: the audit's per-repo probe also feeds the access store.
@@ -120,6 +125,8 @@ export type ClaimableSkipReason =
   | "blocking_label"
   | "stream_occupied"
   | "pr_blocked"
+  /** Every candidate is named by a merged fleet PR (GRQ#4419). */
+  | "merged_pr_blocked"
   | "probe_error";
 
 /**
@@ -241,6 +248,28 @@ function isPrBlocked(
 }
 
 /**
+ * True when a **merged** fleet PR names `issue` (GRQ#4419).
+ *
+ * Since Issue #3151 that block is permanent — the Priority 2 scan refuses the
+ * issue as `merged-pr-permanent` on every cycle until a trusted author
+ * re-applies the pickup label with a date after the merge. The audit did not
+ * model it, so a permanently stranded issue kept the `mis_classification`
+ * ALERT firing for ever against a scan that was right.
+ *
+ * Closed-unmerged entries are filtered out: their block is cooldown-windowed
+ * and self-clearing. The re-label escape hatch is not modelled either — it
+ * needs a per-issue timeline call this cheap probe must not make — so the
+ * gate under-counts rather than inventing claimable work.
+ */
+function isMergedPrBlocked(
+  issue: { number: number },
+  mergedPRs: readonly ClosedPR[],
+): boolean {
+  const merged = mergedPRs.filter((pr) => pr.merged === true);
+  return isBlockedByRecentlyClosedPR(merged, issue.number) !== null;
+}
+
+/**
  * Probe verdict for a single issue. `claimable=true` means every gate
  * in {@link auditClaimableState}'s docstring passes. `excludedBy` is
  * populated only when `claimable=false`.
@@ -250,7 +279,9 @@ export type IssueExclusionReason =
   | "assignee_filter"
   | "blocking_label"
   | "stream_occupied"
-  | "pr_blocked";
+  | "pr_blocked"
+  /** Named by a merged fleet PR — a permanent skip (GRQ#4419). */
+  | "merged_pr_blocked";
 
 export interface IssueVerdict {
   number: number;
@@ -272,6 +303,13 @@ export interface ClassifyOptions {
    * to catch.
    */
   openPRs?: readonly OpenPR[];
+  /**
+   * The repo's closed/merged fleet PRs, so the classifier can apply the
+   * scan's permanent `merged-pr-permanent` gate (GRQ#4419). Only entries
+   * with `merged: true` are honoured. Omitted or empty means "no data" and
+   * no issue is excluded by this gate — the same fail-safe as `openPRs`.
+   */
+  mergedPRs?: readonly ClosedPR[];
 }
 
 /**
@@ -292,6 +330,7 @@ export function classifyIssues(
   const claimableSet = new Set(CLAIMABLE_LABELS);
   const blockingSet = new Set(BLOCKING_LABELS);
   const openPRs = opts.openPRs ?? [];
+  const mergedPRs = opts.mergedPRs ?? [];
 
   // Streams occupied by the worker = milestones (or "" for the default
   // branch stream) that already host a worker-assigned open issue.
@@ -360,6 +399,19 @@ export function classifyIssues(
       });
       continue;
     }
+    // GRQ#4419: a merged fleet PR naming this issue is a *permanent* skip
+    // (Issue #3151), so counting it as claimable made the audit disagree with
+    // a scan that was right on every tick, for ever. Applied last for the
+    // same reason as `pr_blocked` — a more fundamental exclusion wins.
+    if (mergedPRs.length > 0 && isMergedPrBlocked(issue, mergedPRs)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "merged_pr_blocked",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
     // No wrapper-title gate: `idle-task` is just the lowest work-trigger
     // priority, so any unblocked, unassigned idle-task issue is
     // claimable here — matching the collector
@@ -394,6 +446,10 @@ export function pickDominantReason(
   // Issue #4223: `pr_blocked` outranks the rest. It is only ever set on an
   // issue that passed every other gate, so "the work is waiting on an open
   // PR" is the most actionable answer to "why was nothing picked up".
+  // GRQ#4419: a permanent strand outranks even `pr_blocked` — an open PR
+  // clears itself when it merges, a merged one never does without a human
+  // re-labelling the issue, so it is the more actionable answer.
+  if (seen.has("merged_pr_blocked")) return "merged_pr_blocked";
   if (seen.has("pr_blocked")) return "pr_blocked";
   if (seen.has("stream_occupied")) return "stream_occupied";
   if (seen.has("assignee_filter")) return "assignee_filter";
@@ -489,6 +545,17 @@ export interface AuditClaimableStateOptions {
    * before this option existed.
    */
   openPRsFn?: (repo: string) => Promise<readonly OpenPR[]>;
+  /**
+   * Supplies a repo's closed/merged fleet PRs so the audit can exclude work
+   * the Priority 2 scan refuses permanently as `merged-pr-permanent`
+   * (GRQ#4419).
+   *
+   * Production wires this to the iteration-scoped `prs_closed_*` cache the
+   * scan already populates, so the gate costs no extra API call. Omit it —
+   * or let it reject — and the audit falls back to no merged-PR blocking,
+   * exactly as before this option existed.
+   */
+  mergedPRsFn?: (repo: string) => Promise<readonly ClosedPR[]>;
   /** Progress log sink. Defaults to `console.log`. */
   log?: (line: string) => void;
   /** Hostname source — exposed for tests. Defaults to `Deno.hostname()`. */
@@ -601,9 +668,23 @@ export async function auditClaimableState(
       }
     }
 
+    // GRQ#4419: read the repo's merged fleet PRs so a permanently stranded
+    // issue is not counted as claimable. Best-effort by the same rule as the
+    // open-PR fetch above — a failure restores the old over-count rather than
+    // silently reporting a repo as having nothing to do.
+    let mergedPRs: readonly ClosedPR[] = [];
+    if (opts.mergedPRsFn) {
+      try {
+        mergedPRs = await opts.mergedPRsFn(repo);
+      } catch {
+        mergedPRs = [];
+      }
+    }
+
     const verdicts = classifyIssues(issues, {
       workerUser: opts.workerUser,
       openPRs,
+      mergedPRs,
     });
     const claimableCount = verdicts.filter((v) => v.claimable).length;
     const reason: ClaimableSkipReason = claimableCount > 0
