@@ -1469,7 +1469,7 @@ The claim handler now publishes an **idle-task run context** —
 
 | Fact                  | Effect on the scan                                                                                                                                            |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cycleDeadlineEpochMs` | Timeout becomes `min(requested, runway + claude_kill_after)`, floored at 60 s — the same `resolveExecuteTimeoutSeconds` rule the execute phase uses (Issue #4254). |
+| `cycleDeadlineEpochMs` | Timeout becomes `min(requested, runway + claude_kill_after)`, floored at 60 s — the `resolveExecuteTimeoutSeconds` rule first written for the execute phase (Issue #4254). Issue work stopped applying it in Issue #420 (a claim keeps its full budget); a scan holds no WIP and is discretionary, so this route keeps it. |
 | `cycleDeadlineEpochMs` | Retries are suppressed for that run: the timeout is resolved once, so a retry after a back-off would start from past the deadline. A scan has no WIP to protect. |
 | `logger`              | The worker logger reaches the runner, so its per-minute `[agent-progress] <phase>: …` lines land in `worker-*.log` instead of nowhere.                          |
 

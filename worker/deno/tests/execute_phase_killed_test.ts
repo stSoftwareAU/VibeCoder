@@ -420,7 +420,7 @@ Deno.test("hasRunwayForInfraRetry - threshold and no-deadline cases (VibeCoder#1
   );
 });
 
-Deno.test("execute_phase - a deadline-bound timeout whose checkpoint already landed reports the preserved work, not 'without creating changes' (VibeCoder#174)", async () => {
+Deno.test("execute_phase - a timeout whose checkpoint already landed reports the preserved work, not 'without creating changes' (VibeCoder#174)", async () => {
   const result = await runPhaseWithContext(
     [WATCHDOG_TIMEOUT_143],
     { cycleDeadlineEpochMs: Date.now() + 800_000 },
@@ -439,7 +439,10 @@ Deno.test("execute_phase - a deadline-bound timeout whose checkpoint already lan
   );
   assert(reason.includes("work preserved on the branch"), reason);
   assert(reason.includes("1 checkpoint commit pushed"), reason);
-  assert(reason.includes("at the cycle deadline"), reason);
+  // The cycle deadline no longer truncates a claim (Issue #420), so a timeout
+  // taken with runway left is an ordinary full-budget timeout and carries no
+  // deadline note.
+  assertEquals(reason.includes("at the cycle deadline"), false, reason);
   assertEquals(detectFailureCategory(reason), "timeout");
   assertEquals(result.runnerCalls, 1);
 });
