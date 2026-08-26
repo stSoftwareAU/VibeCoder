@@ -8,12 +8,13 @@ the worker.
 ## Table of Contents
 
 - [Provider Applicability](#provider-applicability) — which behaviours apply
-  under `claude`, `codex` and `gemini`
+  under `claude`, `codex`, `gemini` and `deepseek`
 - [Model Selection](#model-selection)
   - [Phase-Specific Defaults](#phase-specific-defaults)
   - [Model/effort precedence chain](#-modeleffort-precedence-chain)
   - [Codex per-phase routing](#-codex-per-phase-routing)
   - [Gemini per-phase routing](#-gemini-per-phase-routing)
+  - [DeepSeek per-phase routing](#-deepseek-per-phase-routing)
   - [Model Fallback on Rate Limit](#model-fallback-on-rate-limit)
   - [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow)
   - [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection)
@@ -50,10 +51,24 @@ the worker.
 ## Provider Applicability
 
 This page is the **behaviour** reference for whichever coding agent a run uses.
-The worker supports three providers — `claude`, `codex` and `gemini` — and most
+The worker supports four providers — `claude`, `codex`, `gemini` and
+`deepseek` — and most
 of what follows was designed around Claude, so a reader running
 `agent_provider: codex` needs to know, behaviour by behaviour, what they still
-get. That is what this section is for. For **how to select** a provider (the
+get. That is what this section is for.
+
+`deepseek` is the one entry a reader cannot infer from its id: DeepSeek ships
+no CLI of its own, so the provider is the **Anthropic CLI pointed at DeepSeek's
+Anthropic-compatible endpoint** (`https://api.deepseek.com/anthropic`). That
+single fact explains most of its column — why its credential is a DeepSeek key
+and not an Anthropic one, why Anthropic's own credentials are *withheld* from
+its child environment even though the binary is Anthropic's, why its command is
+`deepseek` rather than `claude`, and why the CLI-shaped behaviours below
+(`--system-prompt`, `--session-id`, `stream-json` usage) apply to it while the
+Anthropic-*service* behaviours (the Fable tier, the tier ladder, server-side
+prompt caching, Claude pricing) do not.
+
+For **how to select** a provider (the
 `agent_provider` / `agent_providers` keys, credentials, the container image),
 see [Choose your coding agent (README)](../README.md#-choose-your-coding-agent),
 [Configuration Reference](CONFIGURATION.md#-configuration-defaults) and
@@ -72,7 +87,7 @@ this page does not repeat them.
 Every behaviour section below — every `##` and `###` heading outside this one —
 also carries a one-line `> **Applies to:** …` marker, so a reader who lands
 mid-document on an anchor is never misled. `worker/deno/tests/docs_provider_matrix_test.ts` asserts that the
-markers and this matrix stay complete: registering a fourth provider, or adding
+markers and this matrix stay complete: registering a further provider, or adding
 a section without a marker, fails `deno test`.
 
 ### Matrix
@@ -138,7 +153,7 @@ post-fix behaviour.
 
 ## Model Selection
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — all three route each phase to a model through their own tables, but only Claude and Codex carry a reasoning-effort lever, and the Fable tier, its rate-limit ladder and the degraded-model machinery below are Claude's alone.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — all four route each phase to a model through their own tables, but only Claude and Codex carry a reasoning-effort lever, and the Fable tier, its rate-limit ladder and the degraded-model machinery below are Claude's alone. DeepSeek routes every phase through `DEEPSEEK_PHASE_MODEL_DEFAULTS` and carries no effort lever at all, because its endpoint implements none.
 
 VibeCoder uses **effort-first cost routing**: the worker varies
 **effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
@@ -156,7 +171,7 @@ with no per-release config change.
 
 ### Phase-Specific Defaults
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — this table is `PHASE_MODEL_DEFAULTS`/`PHASE_EFFORT_DEFAULTS`, Claude tiers only; Codex and Gemini route the same phase keys through their own tables in [Codex per-phase routing](#-codex-per-phase-routing) and [Gemini per-phase routing](#-gemini-per-phase-routing).
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — this table is `PHASE_MODEL_DEFAULTS`/`PHASE_EFFORT_DEFAULTS`, Claude tiers only; Codex and Gemini route the same phase keys through their own tables in [Codex per-phase routing](#-codex-per-phase-routing) and [Gemini per-phase routing](#-gemini-per-phase-routing). DeepSeek does the same through `DEEPSEEK_PHASE_MODEL_DEFAULTS` — see [DeepSeek per-phase routing](#-deepseek-per-phase-routing).
 
 Each phase has a hardcoded default model **and** a default effort level. The
 guiding rule: **wherever the Vibe Coder interprets the user's words
@@ -205,7 +220,7 @@ them.
 
 ### Design note — effort-first vs tier-first
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ❌ — Codex applies the same effort-first design over its own four reasoning-effort levels (no `xhigh`/`max`); the Gemini CLI has no effort option at all, so its routing varies tier only and a resolved effort is warned about rather than applied.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ❌ · `deepseek` ❌ — Codex applies the same effort-first design over its own four reasoning-effort levels (no `xhigh`/`max`); the Gemini CLI has no effort option at all, so its routing varies tier only and a resolved effort is warned about rather than applied. DeepSeek is the Gemini case with one rung fewer: no effort control on its endpoint, and two model tiers rather than three.
 
 Earlier routing was **tier-first**: each phase was assigned a different model
 family (Opus / Sonnet / Haiku) and effort was a secondary tweak. Two changes
@@ -243,7 +258,7 @@ pin any phase to a different tier without code changes.
 
 ### Per-phase decision log
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the log records the Claude tier/effort decisions and the prices behind them; the Codex and Gemini tables mirror its *shape* (top / base / cheap tier per phase) with their own model ids, re-pinned through configuration rather than through this log.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the log records the Claude tier/effort decisions and the prices behind them; the Codex and Gemini tables mirror its *shape* (top / base / cheap tier per phase) with their own model ids, re-pinned through configuration rather than through this log. DeepSeek's table copies the shape too — `deepseek-reasoner` over `deepseek-chat`, with no cheap rung to copy.
 
  asked, after the Opus↔Sonnet premium collapsed from ~5× to ~1.7×,
 whether the phases previously parked on Sonnet for cost should move to
@@ -335,7 +350,7 @@ and [Pre-flight Fable reroute](#pre-flight-fable-reroute).
 
 ### 🎚️ Model/effort precedence chain
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ⚠️ — all three share the same six-step chain in `phase_routing.ts` with `CLAUDE_`/`CODEX_`/`GEMINI_`-named keys; Gemini has a model chain only, because an effort key its CLI could never apply would be dead surface.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ⚠️ · `deepseek` ⚠️ — all four share the same six-step chain in `phase_routing.ts` with `CLAUDE_`/`CODEX_`/`GEMINI_`-named keys; Gemini has a model chain only, because an effort key its CLI could never apply would be dead surface. `DEEPSEEK_`-named keys run the same six steps, and like Gemini it is a model chain only.
 
 Model **and** effort selection follow a strict precedence chain (most specific
 wins). Per-repo overrides slot between the operator escape-hatch
@@ -414,7 +429,7 @@ override is visible in the cost logs. The resolution logic lives in
 
 ### 🤖 Codex per-phase routing
 
-> **Applies to:** `claude` ❌ · `codex` ✅ · `gemini` ❌ — this is Codex's own chain: Claude's is the precedence chain above and Gemini's is the section below.
+> **Applies to:** `claude` ❌ · `codex` ✅ · `gemini` ❌ · `deepseek` ❌ — this is Codex's own chain: Claude's is the precedence chain above and Gemini's is the section below. DeepSeek uses its own section below.
 
 The Codex CLI has both levers Claude has — `--model` and
 `-c model_reasoning_effort="…"` — so the same effort-first cost design applies to
@@ -482,7 +497,7 @@ flowchart LR
 
 ### ✨ Gemini per-phase routing
 
-> **Applies to:** `claude` ❌ · `codex` ❌ · `gemini` ✅ — this is Gemini's own chain: Claude's is the precedence chain above and Codex's is the section directly above it.
+> **Applies to:** `claude` ❌ · `codex` ❌ · `gemini` ✅ · `deepseek` ❌ — this is Gemini's own chain: Claude's is the precedence chain above and Codex's is the section directly above it. DeepSeek's is the section directly below.
 
 The Gemini CLI has **one** of the two levers: `--model`, but no
 reasoning-effort option at all. Until Issue #364 the Gemini descriptor
@@ -557,7 +572,7 @@ flowchart LR
 
 ### Model Fallback on Rate Limit
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — only Claude's descriptor defines `cheaperModel()`, so under Codex or Gemini no downgrade is attempted; the attempt returns `no-ladder-for-provider` and the worker warns once, naming the provider.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — only Claude's descriptor defines `cheaperModel()`, so under Codex or Gemini no downgrade is attempted; the attempt returns `no-ladder-for-provider` and the worker warns once, naming the provider. DeepSeek defines no `cheaperModel()` either — `deepseek-chat` is a different model, not a cheaper rung of `deepseek-reasoner` — so it takes the same `no-ladder-for-provider` path.
 
 When the worker is rate-limited after exhausting retries, it automatically
 downgrades to a cheaper model instead of failing:
@@ -599,7 +614,7 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
 
 ### Two-stage planning self-critique flow
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ — both turns are ordinary phase invocations, so they run on whichever provider is active; only the continuity between them differs (see [Session Resume](#session-resume)).
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — both turns are ordinary phase invocations, so they run on whichever provider is active; only the continuity between them differs (see [Session Resume](#session-resume)).
 
 Planning runs **attack their own answer** before publishing. Rather than a
 single agentic Claude call that creates sub-issues directly, a planning run is
@@ -660,7 +675,7 @@ version at runtime.
 
 ### Planning-run stats + degraded-model detection
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — the stats comment is still posted, but the served model is read from Claude's `stream-json` assistant lines and the expected model from the Claude chain, so a Codex or Gemini run observes no served model and reports `❓ unknown` rather than a degraded verdict.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the stats comment is still posted, but the served model is read from Claude's `stream-json` assistant lines and the expected model from the Claude chain, so a Codex or Gemini run observes no served model and reports `❓ unknown` rather than a degraded verdict. DeepSeek is the opposite failure: it runs the Claude CLI, so a served model **is** observed, but the expected model is still derived from Claude's chain, so `deepseek-reasoner` is compared against `fable` and the run is wrongly reported degraded ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)).
 
 Every planning run posts a short model-usage stats block on the parent issue
 and computes a **degradation verdict**. The block reports the requested model,
@@ -1015,7 +1030,7 @@ dashboard.
 
 ### Fable-unavailable auto-fallback + self-heal
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — Fable is an Anthropic tier with no Codex or Gemini equivalent; under those providers the probe runs their own CLI with `--model fable`, fails, and is classified optimistically as `available`, so nothing is rerouted or flagged.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — Fable is an Anthropic tier with no Codex or Gemini equivalent; under those providers the probe runs their own CLI with `--model fable`, fails, and is classified optimistically as `available`, so nothing is rerouted or flagged. DeepSeek has no Fable tier either — its endpoint cannot resolve the alias, so the probe fails there too and is read optimistically as `available`.
 
 The eight **Fable-preferring** planning-shaped phases — `planning`, `grill_me`,
 `refinement`, `revision`, `question`, `clarification`, `quorum` and
@@ -1142,7 +1157,7 @@ flowchart TD
 
 ### Pre-flight Fable reroute
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — neither has a Fable tier to reroute off, and since [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) the chokepoint is **provider-gated**: a Codex or Gemini invocation keeps its own routing under a Fable outage, is never flagged `preflightDegraded`, and the skipped reroute is logged once per provider.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — neither has a Fable tier to reroute off, and since [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) the chokepoint is **provider-gated**: a Codex or Gemini invocation keeps its own routing under a Fable outage, is never flagged `preflightDegraded`, and the skipped reroute is logged once per provider. The gate matters most for DeepSeek: `--model opus` is a well-formed flag to the Anthropic CLI it runs, so an ungated reroute would reach DeepSeek's endpoint as a mid-run unresolvable-model error ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)).
 
 The mid-run fallback above self-corrects **after** a wasted first Fable call. A
 **pre-flight** reroute avoids even that wasted call: when the cached Fable
@@ -1219,7 +1234,7 @@ flowchart TD
 
 ## Session Management
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — the per-repo session store holds `.claude/` only, so persistence, allowlisting, milestone branching and compaction are Claude's; Codex and Gemini keep their own CLI state in their own home directories and get CLI-level continuity through their own resume flags.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the per-repo session store holds `.claude/` only, so persistence, allowlisting, milestone branching and compaction are Claude's; Codex and Gemini keep their own CLI state in their own home directories and get CLI-level continuity through their own resume flags. DeepSeek runs the Claude CLI, so the per-repo `.claude/` store applies to it as written; its transcripts sit in its own `CLAUDE_CONFIG_DIR`, kept apart from Claude's so `--resume` cannot cross the two.
 
 VibeCoder maintains persistent Claude sessions per repository and per
 work stream. Each phase invocation is a subprocess call to the Claude CLI,
@@ -1229,7 +1244,7 @@ carries forward.
 
 ### Per-Repository Session Persistence
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the store saves and restores `${repoPath}/.claude` alone; no Codex or Gemini state is copied per repository, so those agents carry only whatever their own CLI persists in the container home.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the store saves and restores `${repoPath}/.claude` alone; no Codex or Gemini state is copied per repository, so those agents carry only whatever their own CLI persists in the container home. DeepSeek writes the same `${repoPath}/.claude`, so its session state is saved and restored unchanged.
 
 Claude session state (the `.claude/` directory) is stored in a per-repo
 session store, isolated so that sessions are never shared across
@@ -1266,7 +1281,7 @@ Implementation:
 
 ### Session Persistence Allowlist
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the allowlist filters the `.claude/` copy on both legs; nothing of Codex's or Gemini's state is copied by the worker, so there is nothing for it to filter.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the allowlist filters the `.claude/` copy on both legs; nothing of Codex's or Gemini's state is copied by the worker, so there is nothing for it to filter. The same copy, and the same filter, apply to a DeepSeek run.
 
 `.claude/` sits inside the working tree the Claude CLI runs in, so the model
 can write anything there — including `settings.json`, whose `hooks` entries
@@ -1301,7 +1316,7 @@ Implementation:
 
 ### Milestone-Aware Session Branching
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the per-milestone directories hold Claude sessions; a Codex or Gemini run has no milestone branch and no copy-on-first-use, keeping one CLI state per container instead.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the per-milestone directories hold Claude sessions; a Codex or Gemini run has no milestone branch and no copy-on-first-use, keeping one CLI state per container instead. DeepSeek shares the same per-milestone directories.
 
 Each work stream gets its own session directory. This ensures milestone
 work does not pollute the default branch session with milestone-specific
@@ -1325,7 +1340,7 @@ migrated to the new `default/` location on first access.
 
 ### Session Compaction
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the size and age limits are enforced over the `.claude-sessions/` store; Codex and Gemini state sits outside it and is bounded only by the container's own lifetime.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the size and age limits are enforced over the `.claude-sessions/` store; Codex and Gemini state sits outside it and is bounded only by the container's own lifetime. DeepSeek's copy is bounded by the same size and age limits.
 
 Session stores grow over time as Claude accumulates context. To prevent
 unbounded growth, VibeCoder implements a **three-tier progressive
@@ -1382,7 +1397,7 @@ Implementation:
 
 ### Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — one worker-level switch and phase count drives all three, but the mechanism differs: Claude takes `--session-id <uuid>` plus `--resume`, Codex resumes with `codex exec resume --last`, and Gemini with `--resume latest`.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude takes `--session-id <uuid>` plus `--resume`, Codex resumes with `codex exec resume --last`, and Gemini with `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` plus `--resume` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
 
 While [per-repository session persistence](#per-repository-session-persistence)
 preserves the `.claude/` directory between invocations (file-system-level
@@ -1403,7 +1418,7 @@ flags:
 
 #### Session ID — a UUID (Issue #204)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the worker supplies a session id to Claude only; Codex and Gemini name their own sessions, so there is no id for the worker to generate, validate or have rejected.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the worker supplies a session id to Claude only; Codex and Gemini name their own sessions, so there is no id for the worker to generate, validate or have rejected. DeepSeek is handed the same worker-generated id: it is the same CLI.
 
 `generateSessionId()` returns a `crypto.randomUUID()`. The Claude CLI
 validates `--session-id` as a UUID and refuses anything else:
@@ -1480,7 +1495,7 @@ Implementation:
 
 ### Issue Claiming
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ — claiming is GitHub work the worker does itself, with no agent CLI involved.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — claiming is GitHub work the worker does itself, with no agent CLI involved.
 
 When the worker finds an eligible issue:
 
@@ -1495,7 +1510,7 @@ Implementation:
 
 ### Heartbeat Tracking
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ — the worker writes heartbeats around whichever agent is running.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the worker writes heartbeats around whichever agent is running.
 
 While working on an issue, the worker writes periodic heartbeat updates:
 
@@ -1511,7 +1526,7 @@ Implementation:
 
 ### Processing Phases
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — the phase pipeline itself is provider-agnostic, but the `--system-prompt` channel and the restored `.claude/` session are Claude's; the other agents receive the same guidance folded into one prompt string by `composeAgentPrompt`.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the phase pipeline itself is provider-agnostic, but the `--system-prompt` channel and the restored `.claude/` session are Claude's; the other agents receive the same guidance folded into one prompt string by `composeAgentPrompt`. DeepSeek takes the `--system-prompt` channel and the restored `.claude/` session too, because it is the same CLI.
 
 Each issue moves through a pipeline of phases. Each phase invokes Claude
 as a subprocess, with the restored session providing continuity between
@@ -1530,14 +1545,14 @@ Clarification → Planning (if needed) → Implementation → Quality checks →
 
 ## Prompt Caching
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — Layer 1 (the worker's own disk cache) is provider-agnostic; Layer 2 is Anthropic's server-side cache, which neither other CLI exposes or reports on.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Layer 1 (the worker's own disk cache) is provider-agnostic; Layer 2 is Anthropic's server-side cache, which neither other CLI exposes or reports on. DeepSeek gets Layer 1; Layer 2 is Anthropic's server-side cache and its requests go to DeepSeek's endpoint, so no Layer 2 saving is requested of it or measured.
 
 VibeCoder uses a two-layer caching strategy to minimise costs and
 latency.
 
 ### Layer 1: Prompt Compilation Cache (Disk)
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ — the cache stores the compiled prompt before any CLI is invoked, so every provider is served from it.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the cache stores the compiled prompt before any CLI is invoked, so every provider is served from it.
 
 Static prompt components (coding guidelines, issue templates, per-repo
 instructions) are assembled once and cached on disk, keyed by SHA-256
@@ -1571,7 +1586,7 @@ Key files:
 
 ### Layer 2: Claude Built-in Prompt Caching
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — neither CLI takes a separate system prompt, so `composeAgentPrompt` folds it into the single prompt string; whatever caching a vendor does server-side is neither requested nor measured by the worker.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — neither CLI takes a separate system prompt, so `composeAgentPrompt` folds it into the single prompt string; whatever caching a vendor does server-side is neither requested nor measured by the worker. DeepSeek does carry a separate `--system-prompt`, but the 70–90% saving is Anthropic's server-side cache, which a third-party endpoint neither promises nor reports.
 
 The Claude API caches system prompts that are byte-identical across
 consecutive requests. VibeCoder maximises cache hits by:
@@ -1608,7 +1623,7 @@ Implementation:
 
 ### Stable Prefix Ordering
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — `orderStablePrefix()` runs before the provider is chosen, so every agent gets the same ordered prompt, but no non-Anthropic prefix cache rewards that ordering; only the volatile-token warnings carry across.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — `orderStablePrefix()` runs before the provider is chosen, so every agent gets the same ordered prompt, but no non-Anthropic prefix cache rewards that ordering; only the volatile-token warnings carry across. Same for DeepSeek — the ordering is free, the Anthropic prefix cache that would reward it is not.
 
 Anthropic prompt caching reuses the **longest byte-identical prefix** of a
 request. Everything from the first differing byte onwards is re-read at
@@ -1663,7 +1678,7 @@ of `-p`, and identical requests produce byte-identical argument lists.
 
 ### Cache Hit-Rate Telemetry
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the read/write/uncached counts come from Anthropic usage reporting, and a Codex or Gemini run reports no parseable usage, so no hit rate is computed or logged for them.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — the read/write/uncached counts come from Anthropic usage reporting, and a Codex or Gemini run reports no parseable usage, so no hit rate is computed or logged for them. DeepSeek's output is the Claude CLI's, so the usage block parses; the read/write counts a hit rate is computed from are Anthropic-cache fields, so a DeepSeek run reports a rate only over whatever its endpoint populates.
 
 The API reports, per invocation, how many prompt tokens were read from the
 cache, written to it, and charged as plain input. The cached share of those
@@ -1690,7 +1705,7 @@ Implementation:
 
 ### SHA-256 Invalidation
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ — the hash keys the Layer 1 disk cache, which every provider reads.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the hash keys the Layer 1 disk cache, which every provider reads.
 
 The prompt hash includes:
 
@@ -1711,7 +1726,7 @@ Prompt SHA changed for org/repo: abc123... → def456... (cache invalidated)
 
 ### Codebase Map
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ — the map is generated from the repository and injected into the prompt before invocation, so every agent receives it.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the map is generated from the repository and injected into the prompt before invocation, so every agent receives it.
 
 Every session used to start with no memory of the repository. The
 agent-progress telemetry from
@@ -1768,7 +1783,7 @@ off. Implementation:
 
 ## Batch API
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ — nothing is submitted to any batch API under any provider; the path evaluated here was Anthropic's and was never wired in.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — nothing is submitted to any batch API under any provider; the path evaluated here was Anthropic's and was never wired in.
 
 > **Status: considered and NOT wired in.** The worker runs on the Claude CLI
 > exclusively. It does **not** submit any work to the Anthropic Batch API, and
@@ -1785,7 +1800,7 @@ as dead code. No batch function is called from the worker.
 
 ### Why it was rejected
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ — the async/bounded-run mismatch is the worker's, not a vendor's, so the rejection stands whichever provider runs.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — the async/bounded-run mismatch is the worker's, not a vendor's, so the rejection stands whichever provider runs.
 
 The Batch API is asynchronous with an up-to-24h turnaround. VibeCoder processes
 each issue inside a **bounded, interactive ~1h run**: every phase's output feeds
@@ -1807,7 +1822,7 @@ effort (see [Effort-First Routing by Phase](#8-effort-first-routing-by-phase)).
 
 ### What remains in the code
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ — the retained helpers are offline, Anthropic-shaped estimators; no provider calls them at run time.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — the retained helpers are offline, Anthropic-shaped estimators; no provider calls them at run time.
 
 [`worker/deno/lib/batch_api.ts`](../worker/deno/lib/batch_api.ts) now exports
 only **pure, offline helpers** — request/response builders, NDJSON parsers,
@@ -1822,11 +1837,11 @@ which only *reports* what a hypothetical discount would be. No
 
 ## Token Usage & Cost Tracking
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — every invocation is credit-logged with its provider id, but extraction and pricing are Claude-shaped, so non-Claude usage is recorded UNKNOWN (never zero) and non-Claude model ids are charged at a conservative upper bound.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — every invocation is credit-logged with its provider id, but extraction and pricing are Claude-shaped, so non-Claude usage is recorded UNKNOWN (never zero) and non-Claude model ids are charged at a conservative upper bound. DeepSeek's counts do parse — same CLI, same `stream-json` — but its model ids are unpriced, so its cost is an upper bound rather than a measured one.
 
 ### Token Extraction
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — Codex's `--json` JSONL and Gemini's stream events do not parse, so `extractProviderTokenUsage()` warns once and flags the entry `usageUnknown` instead of recording a silent zero.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — Codex's `--json` JSONL and Gemini's stream events do not parse, so `extractProviderTokenUsage()` warns once and flags the entry `usageUnknown` instead of recording a silent zero. DeepSeek emits the Claude CLI's `stream-json`, so the shared extractor parses it and no `usageUnknown` flag is raised.
 
 After each Claude CLI invocation, the worker extracts token usage from the
 stream-json output:
@@ -1876,7 +1891,7 @@ flowchart LR
 
 ### Model Pricing
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — `MODEL_PRICING` holds Claude rows only, so a `gpt-5-codex` or `gemini-2.5-pro` id is charged at the dearest known rate and named in `unpricedModels` rather than costed at zero.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — `MODEL_PRICING` holds Claude rows only, so a `gpt-5-codex` or `gemini-2.5-pro` id is charged at the dearest known rate and named in `unpricedModels` rather than costed at zero. `MODEL_PRICING` has no `deepseek-reasoner` or `deepseek-chat` row either, so a DeepSeek run is charged at the dearest known rate and named in `unpricedModels`.
 
 Approximate list prices (USD per million tokens, as of July 2026):
 
@@ -2000,7 +2015,7 @@ tokens — this is why prompt caching delivers such large savings.
 
 ### Credit Logging
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — an entry is written for every invocation and carries the `provider` id, but its token fields read `usageUnknown` and its cost is an upper-bound estimate whenever the vendor's output cannot be parsed.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id, but its token fields read `usageUnknown` and its cost is an upper-bound estimate whenever the vendor's output cannot be parsed. A DeepSeek entry carries real token fields and an upper-bound cost.
 
 Every Claude invocation is logged to a daily credit log file (newline-
 delimited JSON):
@@ -2074,7 +2089,7 @@ Implementation:
 
 ### Context Window Budget Monitoring
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — the chars ÷ 4 estimate and the thresholds run for every provider, but a non-Claude model id has no row in `MODEL_CONTEXT_WINDOWS`, so it is measured against the 200,000-token default ceiling rather than its real window.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the chars ÷ 4 estimate and the thresholds run for every provider, but a non-Claude model id has no row in `MODEL_CONTEXT_WINDOWS`, so it is measured against the 200,000-token default ceiling rather than its real window. `deepseek-reasoner` and `deepseek-chat` have no `MODEL_CONTEXT_WINDOWS` row either, so they are measured against the same 200,000-token default.
 
 VibeCoder monitors how much of each model's context window is consumed
 by the assembled prompt, providing early warning when prompts grow too
@@ -2169,14 +2184,14 @@ Implementation:
 
 ## Token Saving Strategies
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — the prompt-level strategies (Layer 1 cache, codebase map, verbosity) apply to every provider; the session-store and Anthropic-cache strategies do not.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the prompt-level strategies (Layer 1 cache, codebase map, verbosity) apply to every provider; the session-store and Anthropic-cache strategies do not. DeepSeek keeps the session-store strategies — it is the Claude CLI — and loses the Anthropic-cache ones.
 
 VibeCoder employs multiple complementary strategies to minimise token
 usage and cost. Each targets a different layer of the token lifecycle:
 
 ### 1. Prompt Caching (Two-Layer)
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — Layer 1 saves re-assembly for every provider; the 70–90% Layer 2 saving is Anthropic-only.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Layer 1 saves re-assembly for every provider; the 70–90% Layer 2 saving is Anthropic-only. DeepSeek likewise earns Layer 1 only.
 
 Static prompt components are cached on disk (keyed by SHA-256 hash) so
 they are assembled once and reused. Claude's built-in prompt caching then
@@ -2187,7 +2202,7 @@ input tokens. See [Prompt Caching](#prompt-caching) for details.
 
 ### 2. Session Persistence
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — the worker stores no Codex or Gemini state per repository, so neither earns this cold-start saving.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the worker stores no Codex or Gemini state per repository, so neither earns this cold-start saving. DeepSeek earns the same cold-start saving from the same store.
 
 Per-repository session directories (`.claude/`) are preserved between
 invocations, so Claude retains learned codebase conventions and context
@@ -2198,7 +2213,7 @@ phase.
 
 ### 3. Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — both resume their own most recent session (`codex exec resume --last`, `--resume latest`) rather than one the worker names, so continuity is per-container rather than per-issue.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — both resume their own most recent session (`codex exec resume --last`, `--resume latest`) rather than one the worker names, so continuity is per-container rather than per-issue. DeepSeek resumes a worker-named session as Claude does, but out of its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
 
 CLI-level session continuity uses `--session-id` and `--resume` flags to
 carry conversation context across phases of the same issue. Later phases
@@ -2209,7 +2224,7 @@ implementation → quality phases.
 
 ### 4. Session Compaction
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ — there is no Codex or Gemini session store for the worker to compact.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — there is no Codex or Gemini session store for the worker to compact. DeepSeek's store is compacted by the same rules.
 
 Progressive three-tier compaction prevents session directories from
 growing unbounded (50 MB default limit). By keeping sessions lean,
@@ -2219,7 +2234,7 @@ subsequent restores are faster and avoid wasting tokens on stale context.
 
 ### 5. Verbosity Configuration
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ — verbosity is injected into the prompt template, so every agent receives the same instruction.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — verbosity is injected into the prompt template, so every agent receives the same instruction.
 
 Output verbosity is configurable per phase, reducing output tokens for
 phases that don't require detailed explanations (e.g., health checks,
@@ -2293,7 +2308,7 @@ Implementation:
 
 ### 6. Batch API (considered, not wired)
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ — no provider submits batch work, so the saving is zero for all three.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — no provider submits batch work, so the saving is zero for all four.
 
 The Anthropic Batch API was evaluated as a cost lever but **deliberately not
 wired in** — its up-to-24h async turnaround is incompatible with the worker's
@@ -2304,7 +2319,7 @@ earned. See [Batch API](#batch-api) for the full negative-result note.
 
 ### 7. Context Budget Monitoring
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — monitoring runs for every provider, but against the 200,000-token default ceiling whenever the model id is not a Claude one.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — monitoring runs for every provider, but against the 200,000-token default ceiling whenever the model id is not a Claude one. DeepSeek is measured against the default ceiling too.
 
 Real-time monitoring of context window usage alerts the system when
 prompts grow too large. This enables proactive prompt trimming and
@@ -2315,7 +2330,7 @@ composition.
 
 ### 8. Effort-First Routing by Phase
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ❌ — Codex varies effort over its own four levels; the Gemini CLI has no effort option, so it varies model tier alone and warns once per phase that the requested effort cannot be applied.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ❌ · `deepseek` ❌ — Codex varies effort over its own four levels; the Gemini CLI has no effort option, so it varies model tier alone and warns once per phase that the requested effort cannot be applied. DeepSeek has no effort lever at all: it varies model tier alone, over two rungs, and warns once per phase.
 
 Under effort-first routing the worker stays on one top tier
 (Opus) and varies **effort** as the primary cost lever; tier is the secondary
@@ -2330,7 +2345,7 @@ phase; the trivial phases retain the ~5× Haiku-vs-Opus per-token saving.
 
 ## Configuration
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ — the keys listed here are Claude-named; Codex and Gemini take the `codex_*` / `gemini_*` equivalents from their routing sections and [CONFIGURATION.md](CONFIGURATION.md), and the session-store keys apply to Claude alone.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the keys listed here are Claude-named; Codex and Gemini take the `codex_*` / `gemini_*` equivalents from their routing sections and [CONFIGURATION.md](CONFIGURATION.md), and the session-store keys apply to Claude alone. DeepSeek takes the `deepseek_*` keys — model only, with no effort counterpart.
 
 Model selection and caching behaviour can be customised in `.config.json`:
 
