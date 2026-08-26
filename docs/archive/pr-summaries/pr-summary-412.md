@@ -7,8 +7,8 @@ Anthropic-compatible endpoint (parent #396), so the default child environment is
 exactly the wrong one: the binary reads Anthropic's variables, but the host on
 the other end belongs to a third party. This adds
 `worker/deno/lib/deepseek_env.ts` — DeepSeek's own three lists on the shared
-`agent_env.ts` filter — and closes the isolation in both directions. Closes
-#412.
+`agent_env.ts` filter — and closes the isolation in both directions.
+Closes #412.
 
 - **Anthropic's credentials never reach DeepSeek's endpoint.**
   `DEEPSEEK_ENV_DENYLIST` names `ANTHROPIC_API_KEY` and
