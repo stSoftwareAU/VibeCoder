@@ -38,6 +38,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { scanDirectoriesForHomeWorkDir } from "../lib/home_workdir_check.ts";
 import { buildFleetHealthConfig } from "../lib/fleet_health.ts";
+import { withCleanEnv } from "./support/env.ts";
 
 /** worker/deno/, resolved from this test file. */
 const DENO_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
@@ -290,27 +291,21 @@ Deno.test("host workdir guard - buildFleetHealthConfig only builds strings, neve
   const home = `${root}/home`;
   await Deno.mkdir(home, { recursive: true });
 
-  const savedHome = Deno.env.get("HOME");
-  const savedWorkDir = Deno.env.get("WORK_DIR");
-  const savedHealthDir = Deno.env.get("FLEET_HEALTH_DIR");
   try {
-    Deno.env.set("HOME", home);
-    Deno.env.delete("WORK_DIR");
-    Deno.env.delete("FLEET_HEALTH_DIR");
+    // Issue #378: the worker container exports VIBE_IMAGE_AGENT_PROVIDERS
+    // (and FLEET_HEALTH_REPO), which would put buildFleetHealthConfig on its
+    // container branch and make this assertion depend on where the suite
+    // runs. withCleanEnv hides everything the test did not name, so the
+    // host-side branch is exercised on host and in container alike.
+    await withCleanEnv({ HOME: home }, async () => {
+      const config = buildFleetHealthConfig(`${root}/repo`);
 
-    const config = buildFleetHealthConfig(`${root}/repo`);
-
-    // Host-side (not in a container) the healthDir is the repo sibling —
-    // the HOME-derived workDir string is never used, let alone created.
-    assertEquals(config.healthDir.startsWith(`${root}/repo/..`), true);
-    await assertNoStrayWorkDir(home, "buildFleetHealthConfig");
+      // Host-side (not in a container) the healthDir is the repo sibling —
+      // the HOME-derived workDir string is never used, let alone created.
+      assertEquals(config.healthDir.startsWith(`${root}/repo/..`), true);
+      await assertNoStrayWorkDir(home, "buildFleetHealthConfig");
+    });
   } finally {
-    if (savedHome === undefined) Deno.env.delete("HOME");
-    else Deno.env.set("HOME", savedHome);
-    if (savedWorkDir === undefined) Deno.env.delete("WORK_DIR");
-    else Deno.env.set("WORK_DIR", savedWorkDir);
-    if (savedHealthDir === undefined) Deno.env.delete("FLEET_HEALTH_DIR");
-    else Deno.env.set("FLEET_HEALTH_DIR", savedHealthDir);
     await Deno.remove(root, { recursive: true });
   }
 });

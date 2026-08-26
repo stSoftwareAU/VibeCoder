@@ -18,29 +18,11 @@ import {
   saveDefaultBranchCache,
   setCachedDefaultBranch,
 } from "../lib/default_branch_cache.ts";
+import { withEnv } from "./support/env.ts";
 
 async function tempCachePath(): Promise<string> {
   const dir = await Deno.makeTempDir({ prefix: "vibe-dbcache-" });
   return `${dir}/default-branch-cache.json`;
-}
-
-/** Run `fn` with env vars temporarily set (undefined = unset), restoring after. */
-function withEnv(
-  values: Record<string, string | undefined>,
-  fn: () => Promise<void> | void,
-): Promise<void> {
-  const saved: Record<string, string | undefined> = {};
-  for (const key of Object.keys(values)) saved[key] = Deno.env.get(key);
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, value);
-  }
-  return Promise.resolve(fn()).finally(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
-  });
 }
 
 Deno.test("default_branch_cache - TTL constant is 7 days", () => {

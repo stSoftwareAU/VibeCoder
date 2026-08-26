@@ -38,33 +38,13 @@ import { validateConfigFileJson } from "../lib/validation.ts";
 import { KNOWN_CONFIG_KEYS } from "../lib/config_unknown_keys.ts";
 import { loadConfig } from "../lib/config.ts";
 import { runWorker } from "../lib/run_worker.ts";
+import { withEnv } from "./support/env.ts";
 
 /** An environment lookup over a fixed map — no process environment involved. */
 function envOf(
   values: Record<string, string>,
 ): (name: string) => string | undefined {
   return (name: string) => values[name];
-}
-
-/** Run `body` with `CONFIG_PATH` / `VIBE_RUN_MODE` set, then restore them. */
-async function withEnv(
-  values: Record<string, string | undefined>,
-  body: () => Promise<void>,
-): Promise<void> {
-  const previous = new Map<string, string | undefined>();
-  for (const [name, value] of Object.entries(values)) {
-    previous.set(name, Deno.env.get(name));
-    if (value === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, value);
-  }
-  try {
-    await body();
-  } finally {
-    for (const [name, value] of previous) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
-  }
 }
 
 /** Write a `.config.json` into a fresh temp directory and return its path. */
