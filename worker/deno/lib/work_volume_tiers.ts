@@ -27,6 +27,29 @@
  * (`if [[ ! -d "${REPO}" ]]` → `git_clone_safe`) and fetches when it is
  * present, so a removed data repo costs one clone, not a failed gate.
  *
+ * ## The third path — a warm clone whose object store ratchets (Issue #387)
+ *
+ * Neither path above touches a directory a gate refreshes every cycle: it is
+ * never idle, and the disk-low reclaim only runs once the host is already
+ * below the floor. That is exactly how `side/data` climbed 0.7 GB → 10.8 GB
+ * in one afternoon on an idle GRQ-23. The writer is the refresh itself —
+ * `GRQ/quality.sh` → `worker/repos.sh` → `model_fetch.sh` running `git fetch`
+ * + `git reset --hard origin/Develop` in `GRQ-shareprices2026Q2`. In a
+ * **blobless** partial clone (Issue #243) that hard reset lazily backfills a
+ * whole tree of blobs into a new `.promisor` pack, and git never prunes those:
+ * `git repack` deliberately leaves promisor packs alone, so `git gc
+ * --prune=now` reclaims nothing. Every refresh of a data repo whose files
+ * change wholesale therefore adds a full tree of dead blobs for ever — two
+ * refreshes left an 871 MB and a 650 MB pack in a 1.5 GB `.git` on the host.
+ *
+ * The refresh is legitimate; the accumulation is not, and no git-side
+ * maintenance can bound it. So the object store gets a cap, the way
+ * `deno-cache-guard` caps the durable Deno cache: a disposable clone whose
+ * `.git` exceeds `maxGitBytes` is removed by the age sweep even though it is
+ * warm. The next gate run re-clones it blobless and backfills one tree —
+ * about what a single refresh already costs — so the disk is bounded and the
+ * download is not multiplied.
+ *
  * ## Protections
  *
  * 1. Nothing is removed while a slot is mid-execute — a gate may be reading
@@ -48,6 +71,14 @@ import { duBytes, formatGb } from "./work_volume_prune.ts";
 
 /** Days a tier-2 directory may sit untouched before it is aged out. */
 export const DEFAULT_SIDE_REPO_MAX_AGE_DAYS = 3;
+
+/**
+ * Bytes a tier-2 clone's `.git` may reach before the clone is dropped as
+ * ratcheted (Issue #387) — 2 GiB, the same order as the Deno cache cap, and
+ * comfortably above the ~0.9 GB a single blobless backfill of the largest
+ * observed data repo costs. Zero disables the guard.
+ */
+export const DEFAULT_SIDE_REPO_MAX_GIT_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** How recent a heartbeat must be for its slot to count as mid-execute. */
 export const DEFAULT_ACTIVE_HEARTBEAT_WINDOW_SECONDS = 900;
@@ -109,6 +140,13 @@ export interface WorkRootDir {
   tier: WorkRootTier;
   /** Size in bytes; 0 when it could not be measured. */
   bytes: number;
+  /**
+   * Size of the clone's `.git` in bytes; 0 when there is none or it could
+   * not be measured. Measured separately from {@link bytes} because the
+   * blobless re-fetch ratchet (Issue #387) lands entirely in the object
+   * store — the working tree stays the size the data genuinely is.
+   */
+  gitBytes: number;
   /** Days since the newest modification found; `Infinity` when unknown. */
   ageDays: number;
   /** Whether the directory carries a `.git` — a clone worth rescuing. */
@@ -128,6 +166,11 @@ export interface WorkVolumeTierResult {
   bytesReclaimed: number;
   /** Names kept because their unpushed commits could not be pushed. */
   keptRescueFailed: string[];
+  /**
+   * Names removed because their `.git` was over the cap rather than because
+   * they were idle — the blobless re-fetch ratchet (Issue #387).
+   */
+  removedGitRatchet: string[];
   /** True when a slot was mid-execute, so nothing was removed. */
   skippedSlotActive: boolean;
   errors: string[];
@@ -142,6 +185,11 @@ export interface WorkVolumeTierOptions {
   mode: "age" | "disk-low";
   /** Age limit for `age` mode (default {@link DEFAULT_SIDE_REPO_MAX_AGE_DAYS}). */
   maxAgeDays?: number;
+  /**
+   * Object-store cap for `age` mode (default
+   * {@link DEFAULT_SIDE_REPO_MAX_GIT_BYTES}); 0 disables the guard.
+   */
+  maxGitBytes?: number;
   /** Bytes the host needs back in `disk-low` mode. */
   bytesNeeded?: number;
   /** Epoch seconds, injectable. */
@@ -266,13 +314,15 @@ export async function scanWorkRootTiers(
     }
     const bytes = (await sizeOf(path)) ?? 0;
     const newest = readable ? await newestTouch(path) : null;
+    const hasGit = readable && await pathExists(`${path}/.git`);
     dirs.push({
       name: entry.name,
       path,
       tier,
       bytes,
+      gitBytes: hasGit ? ((await sizeOf(`${path}/.git`)) ?? 0) : 0,
       ageDays: newest === null ? Infinity : (now - newest) / 86400,
-      hasGit: readable && await pathExists(`${path}/.git`),
+      hasGit,
       readable,
     });
   }
@@ -290,6 +340,24 @@ export function selectAgedOutDirs(
   return dirs.filter((d) =>
     d.tier === "disposable" &&
     (!d.readable || !d.hasGit || d.ageDays > maxAgeDays)
+  );
+}
+
+/**
+ * Tier-2 clones whose git object store is over the cap (Issue #387).
+ *
+ * These are typically the *warmest* directories on the volume — a data repo
+ * a gate refreshes every cycle — so the age sweep above never reaches them
+ * while their `.git` grows by a whole tree of blobs per refresh. A
+ * non-positive cap disables the guard.
+ */
+export function selectRatchetedGitDirs(
+  dirs: readonly WorkRootDir[],
+  maxGitBytes: number,
+): WorkRootDir[] {
+  if (!(maxGitBytes > 0)) return [];
+  return dirs.filter((d) =>
+    d.tier === "disposable" && d.hasGit && d.gitBytes > maxGitBytes
   );
 }
 
@@ -355,16 +423,30 @@ export async function reclaimWorkVolumeTiers(
     removed: [],
     bytesReclaimed: 0,
     keptRescueFailed: [],
+    removedGitRatchet: [],
     skippedSlotActive: false,
     errors,
   };
 
-  const candidates = options.mode === "disk-low"
+  // The age sweep also takes a warm clone whose object store has ratcheted
+  // past the cap (Issue #387) — nothing else on the volume bounds it.
+  const maxGitBytes = options.maxGitBytes ?? DEFAULT_SIDE_REPO_MAX_GIT_BYTES;
+  const ratcheted = options.mode === "disk-low"
+    ? []
+    : selectRatchetedGitDirs(dirs, maxGitBytes);
+  const ratchetedNames = new Set(ratcheted.map((d) => d.name));
+
+  const selected = options.mode === "disk-low"
     ? selectLargestFirst(dirs, options.bytesNeeded ?? 0)
     : selectAgedOutDirs(
       dirs,
       options.maxAgeDays ?? DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
     );
+  const seen = new Set(selected.map((d) => d.name));
+  const candidates = [
+    ...selected,
+    ...ratcheted.filter((d) => !seen.has(d.name)),
+  ];
   if (candidates.length === 0) return result;
 
   // A gate may be reading one of these clones right now (Issue #242).
@@ -410,11 +492,17 @@ export async function reclaimWorkVolumeTiers(
     }
     result.removed.push(dir);
     result.bytesReclaimed += dir.bytes;
+    if (ratchetedNames.has(dir.name)) result.removedGitRatchet.push(dir.name);
+    const why = ratchetedNames.has(dir.name)
+      ? `, .git ${formatGb(dir.gitBytes)} over the ${
+        formatGb(maxGitBytes)
+      } cap — blobless re-fetch ratchet (Issue #387)`
+      : "";
     log(
       `work volume: removed disposable ${dir.name} (${formatGb(dir.bytes)}, ` +
         `${
           Number.isFinite(dir.ageDays) ? dir.ageDays.toFixed(1) : "unknown"
-        } days idle, ${options.mode})`,
+        } days idle, ${options.mode}${why})`,
     );
     recordFaultEvent(
       "disk_space_cleanup",
@@ -439,6 +527,9 @@ export function summariseWorkVolumeTiers(r: WorkVolumeTierResult): string {
     parts.push(
       `removed ${r.removed.length} (${formatGb(r.bytesReclaimed)}, ${r.mode})`,
     );
+  }
+  if (r.removedGitRatchet.length > 0) {
+    parts.push(`git-ratchet: ${r.removedGitRatchet.join(", ")}`);
   }
   if (r.keptRescueFailed.length > 0) {
     parts.push(`kept unpushed: ${r.keptRescueFailed.join(", ")}`);

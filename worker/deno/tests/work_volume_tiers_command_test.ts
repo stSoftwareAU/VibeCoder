@@ -86,6 +86,46 @@ Deno.test("work-volume-tiers - ages out a side clone and keeps the monitored one
   }
 });
 
+Deno.test("work-volume-tiers - a warm side clone over the git cap goes (Issue #387)", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    // Warm — refreshed moments ago, so the age limit alone never reaches it.
+    await makeClone(workDir, "GRQ-shareprices2026Q2", 0);
+    await makeClone(workDir, "VibeCoder", 0);
+
+    // A generous cap leaves the real (tiny) object store alone.
+    const under = await workVolumeTiersCommand.execute(
+      {
+        "work-dir": workDir,
+        "mode": "age",
+        "max-age-days": 3,
+        "max-git-bytes": 10 * GIB,
+      },
+      config(),
+    );
+    assertEquals(under.success, true);
+    assertEquals(await exists(`${workDir}/GRQ-shareprices2026Q2`), true);
+
+    // A cap the measured `.git` exceeds takes the warm clone — and only the
+    // disposable one; tier 1 is never a candidate.
+    const over = await workVolumeTiersCommand.execute(
+      {
+        "work-dir": workDir,
+        "mode": "age",
+        "max-age-days": 3,
+        "max-git-bytes": 1,
+      },
+      config(),
+    );
+    assertEquals(over.success, true);
+    assert(over.message.includes("git-ratchet"), over.message);
+    assertEquals(await exists(`${workDir}/GRQ-shareprices2026Q2`), false);
+    assertEquals(await exists(`${workDir}/VibeCoder`), true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 Deno.test("work-volume-tiers - disk-low mode needs the bytes it must free", async () => {
   const workDir = await Deno.makeTempDir();
   try {
@@ -126,6 +166,13 @@ Deno.test("work-volume-tiers - rejects an unknown mode and negative knobs", asyn
     );
     assertEquals(knob.success, false);
     assert(knob.message.includes("max-age-days"), knob.message);
+
+    const gitKnob = await workVolumeTiersCommand.execute(
+      { "work-dir": workDir, "max-git-bytes": -1 },
+      config(),
+    );
+    assertEquals(gitKnob.success, false);
+    assert(gitKnob.message.includes("max-git-bytes"), gitKnob.message);
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }

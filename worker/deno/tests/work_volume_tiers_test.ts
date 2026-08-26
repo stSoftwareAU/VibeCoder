@@ -20,6 +20,7 @@ import {
   scanWorkRootTiers,
   selectAgedOutDirs,
   selectLargestFirst,
+  selectRatchetedGitDirs,
   summariseWorkVolumeTiers,
   type WorkRootDir,
 } from "../lib/work_volume_tiers.ts";
@@ -157,6 +158,28 @@ Deno.test("scanWorkRootTiers - measures and ages each tier", async () => {
   }
 });
 
+Deno.test("scanWorkRootTiers - measures the git object store separately (Issue #387)", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    await makeDir(workDir, "GRQ-shareprices2026Q2", { ageDays: 0 });
+    await makeDir(workDir, "scratch", { ageDays: 0, git: false });
+
+    const { dirs } = await scanWorkRootTiers(workDir, MONITORED, {
+      nowFn: () => NOW,
+      sizeOf: (path) =>
+        Promise.resolve(path.endsWith("/.git") ? 3 * GIB : 8 * GIB),
+    });
+
+    const byName = new Map(dirs.map((d) => [d.name, d]));
+    assertEquals(byName.get("GRQ-shareprices2026Q2")!.bytes, 8 * GIB);
+    assertEquals(byName.get("GRQ-shareprices2026Q2")!.gitBytes, 3 * GIB);
+    // No `.git` to measure — never guessed from the directory total.
+    assertEquals(byName.get("scratch")!.gitBytes, 0);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 Deno.test("scanWorkRootTiers - a fetch into .git keeps a data repo warm", async () => {
   const workDir = await Deno.makeTempDir();
   try {
@@ -190,6 +213,7 @@ function record(
     tier: "disposable",
     bytes,
     ageDays,
+    gitBytes: 0,
     hasGit: true,
     readable: true,
     ...extra,
@@ -208,6 +232,25 @@ Deno.test("selectAgedOutDirs - past the age limit, plus broken and unreadable di
     selectAgedOutDirs(dirs, 3).map((d) => d.name),
     ["cold", "broken", "unreadable"],
   );
+});
+
+Deno.test("selectRatchetedGitDirs - disposable clones whose object store is over the cap (Issue #387)", () => {
+  const dirs = [
+    // Warm, refreshed every cycle — the age sweep will never reach it.
+    record("GRQ-shareprices2026Q2", 8 * GIB, 0, { gitBytes: 3 * GIB }),
+    record("GRQ-listing", 4 * GIB, 0, { gitBytes: GIB }),
+    record("scratch", 10, 0, { hasGit: false, gitBytes: 0 }),
+    record("VibeCoder", 20 * GIB, 0, { tier: "monitored", gitBytes: 9 * GIB }),
+  ];
+  assertEquals(
+    selectRatchetedGitDirs(dirs, 2 * GIB).map((d) => d.name),
+    ["GRQ-shareprices2026Q2"],
+  );
+  // Exactly at the cap is not over it.
+  assertEquals(selectRatchetedGitDirs(dirs, 3 * GIB), []);
+  // Zero (or negative) disables the guard entirely.
+  assertEquals(selectRatchetedGitDirs(dirs, 0), []);
+  assertEquals(selectRatchetedGitDirs(dirs, -1), []);
 });
 
 Deno.test("selectLargestFirst - takes the fewest dirs that free the space", () => {
@@ -302,6 +345,130 @@ Deno.test("reclaimWorkVolumeTiers - age mode drops idle side repos and keeps war
     assertEquals(await exists(`${workDir}/VibeCoder`), true);
     assertEquals(await exists(`${workDir}/GRQ-listing`), true);
     assertEquals(await exists(`${workDir}/GRQ-companyreports`), false);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("reclaimWorkVolumeTiers - age mode removes a warm side repo whose object store has ratcheted (Issue #387)", async () => {
+  // The observed leak: a gate refreshes the data repo every cycle with
+  // `git fetch` + `git reset --hard`, and in a blobless partial clone each
+  // refresh lazily backfills a whole tree of blobs into a new promisor pack
+  // that git never prunes. The directory is never idle, so the age sweep
+  // never reaches it — the cap on `.git` is what bounds it.
+  const workDir = await Deno.makeTempDir();
+  try {
+    await makeDir(workDir, "GRQ-shareprices2026Q2", { ageDays: 0 });
+    await makeDir(workDir, "GRQ-listing", { ageDays: 0 });
+
+    const logged: string[] = [];
+    const result = await reclaimWorkVolumeTiers({
+      workDir,
+      monitoredRepos: MONITORED,
+      mode: "age",
+      maxAgeDays: 3,
+      maxGitBytes: 2 * GIB,
+      nowFn: () => NOW,
+      sizeOf: (path) => {
+        const name = path.replace(/\/\.git$/, "");
+        const isGit = path.endsWith("/.git");
+        if (name.endsWith("GRQ-shareprices2026Q2")) {
+          return Promise.resolve(isGit ? 3 * GIB : 8 * GIB);
+        }
+        return Promise.resolve(isGit ? GIB : 4 * GIB);
+      },
+      anySlotActive: NEVER_ACTIVE,
+      rescue: RESCUE_OK,
+      log: (m) => logged.push(m),
+    });
+
+    assertEquals(result.removed.map((d) => d.name), ["GRQ-shareprices2026Q2"]);
+    assertEquals(result.removedGitRatchet, ["GRQ-shareprices2026Q2"]);
+    assertEquals(await exists(`${workDir}/GRQ-shareprices2026Q2`), false);
+    // A warm clone under the cap is still left alone.
+    assertEquals(await exists(`${workDir}/GRQ-listing`), true);
+    // The log says why it went, not just that it did.
+    assert(
+      logged.some((l) => l.includes(".git 3.0 GB") && l.includes("2.0 GB cap")),
+      logged.join("\n"),
+    );
+    assert(
+      summariseWorkVolumeTiers(result).includes(
+        "git-ratchet: GRQ-shareprices2026Q2",
+      ),
+      summariseWorkVolumeTiers(result),
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("reclaimWorkVolumeTiers - the git cap honours every existing protection (Issue #387)", async () => {
+  // A ratcheted clone is still a clone: a live slot may be reading it, and
+  // its unpushed commits are rescued first like any other removal.
+  const workDir = await Deno.makeTempDir();
+  try {
+    await makeDir(workDir, "GRQ-shareprices2026Q2", { ageDays: 0 });
+    const sizeOf = (path: string) =>
+      Promise.resolve(path.endsWith("/.git") ? 3 * GIB : 8 * GIB);
+
+    const held = await reclaimWorkVolumeTiers({
+      workDir,
+      monitoredRepos: MONITORED,
+      mode: "age",
+      maxAgeDays: 3,
+      maxGitBytes: 2 * GIB,
+      nowFn: () => NOW,
+      sizeOf,
+      anySlotActive: () => Promise.resolve(true),
+      rescue: RESCUE_OK,
+    });
+    assertEquals(held.skippedSlotActive, true);
+    assertEquals(held.removed, []);
+    assertEquals(held.removedGitRatchet, []);
+    assertEquals(await exists(`${workDir}/GRQ-shareprices2026Q2`), true);
+
+    const kept = await reclaimWorkVolumeTiers({
+      workDir,
+      monitoredRepos: MONITORED,
+      mode: "age",
+      maxAgeDays: 3,
+      maxGitBytes: 2 * GIB,
+      nowFn: () => NOW,
+      sizeOf,
+      anySlotActive: NEVER_ACTIVE,
+      rescue: () =>
+        Promise.resolve({
+          ok: false,
+          pushedBranches: [],
+          detail: "push of 'fix-1' failed",
+        }),
+    });
+    assertEquals(kept.keptRescueFailed, ["GRQ-shareprices2026Q2"]);
+    assertEquals(kept.removedGitRatchet, []);
+    assertEquals(await exists(`${workDir}/GRQ-shareprices2026Q2`), true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("reclaimWorkVolumeTiers - the git cap never reaches tier 1 (Issue #387)", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    await makeDir(workDir, "VibeCoder", { ageDays: 0 });
+    const result = await reclaimWorkVolumeTiers({
+      workDir,
+      monitoredRepos: MONITORED,
+      mode: "age",
+      maxAgeDays: 3,
+      maxGitBytes: GIB,
+      nowFn: () => NOW,
+      sizeOf: () => Promise.resolve(9 * GIB),
+      anySlotActive: NEVER_ACTIVE,
+      rescue: RESCUE_OK,
+    });
+    assertEquals(result.removed, []);
+    assertEquals(await exists(`${workDir}/VibeCoder`), true);
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -465,6 +632,7 @@ Deno.test("summariseWorkVolumeTiers - names both tiers and what went", () => {
     removed: [record("GRQ-listing", 4 * GIB, 0)],
     bytesReclaimed: 4 * GIB,
     keptRescueFailed: [],
+    removedGitRatchet: [],
     skippedSlotActive: false,
     errors: [],
   });
