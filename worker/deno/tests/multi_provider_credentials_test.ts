@@ -523,19 +523,48 @@ Deno.test("setup.sh - the provider credential table matches the registered descr
   const rows = output.split("\n").filter((line) => line.trim() !== "").map(
     (line) => line.split("|"),
   );
+
+  // Every registered descriptor must be provisionable (Issue #416):
+  // registering a provider without a table row fails here, rather than
+  // failing its credential preflight at first run on a live deployment.
+  const bySubdir = new Map(rows.map((row) => [row[0], row]));
+  for (const provider of ALL_PROVIDERS) {
+    const row = bySubdir.get(provider.credentials.subdir);
+    assert(
+      row,
+      `setup.sh offers no credential directory for ${provider.id}`,
+    );
+    assertEquals(
+      row[1],
+      provider.credentials.provisionEnvVar,
+      `${provider.id} provisions from the descriptor's provisioning variable`,
+    );
+    assertEquals(
+      row[2],
+      provider.credentials.envVars.join(","),
+      `${provider.id} lists the descriptor's credential variables`,
+    );
+  }
+
+  // The reverse direction is deliberately looser: a row may land before its
+  // descriptor is registered, so a provider is provisionable from the first
+  // deployment that enables it. Such a row still has to be well formed —
+  // a typo must not sit in the table waiting for a descriptor to meet it.
   assertEquals(
-    rows.map((row) => row[0]),
-    ALL_PROVIDERS.map((p) => p.credentials.subdir),
-    "setup.sh offers every registered provider a credential directory",
+    rows.length,
+    bySubdir.size,
+    "no provider is listed twice",
   );
-  assertEquals(
-    rows.map((row) => row[1]),
-    ALL_PROVIDERS.map((p) => p.credentials.provisionEnvVar),
-    "each row provisions from the descriptor's provisioning variable",
-  );
-  assertEquals(
-    rows.map((row) => row[2]),
-    ALL_PROVIDERS.map((p) => p.credentials.envVars.join(",")),
-    "each row lists the descriptor's credential variables",
-  );
+  for (const row of rows) {
+    assertEquals(row.length, 3, `malformed row: ${row.join("|")}`);
+    assert(/^[a-z][a-z0-9-]*$/.test(row[0]!), `bad sub-directory: ${row[0]}`);
+    assert(
+      /^VIBE_LAUNCHAGENT_[A-Z0-9]+_API_KEY$/.test(row[1]!),
+      `bad provisioning variable: ${row[1]}`,
+    );
+    assert(
+      row[2]!.split(",").every((name) => /^[A-Z][A-Z0-9_]*$/.test(name)),
+      `bad credential variables: ${row[2]}`,
+    );
+  }
 });
