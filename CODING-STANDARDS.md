@@ -122,7 +122,7 @@ the test files your change touches. Run `./quality.sh < /dev/null` **once, in
 the foreground**, before raising the PR and fix what it reports; re-run it after
 a fix, never on a timer. Never background it behind a `sleep`/`pgrep` poll loop
 — that spends the whole budget waiting (Issue #399). It streams one line per
-check to stderr as each settles, so a slow run is visibly alive rather than
+check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented
 in Deno TypeScript (`worker/deno/quality.ts`) and runs prompt-immutability,
 benchmark-audit, pages-liquid, markdownlint, `deno test`, `deno lint`,

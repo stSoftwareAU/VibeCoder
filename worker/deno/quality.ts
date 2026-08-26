@@ -54,13 +54,18 @@ async function main(): Promise<void> {
   // until every check had finished — up to 16 minutes — so an agent driving
   // it could not tell a slow run from a hung one, and backgrounded it behind
   // a `sleep`/`pgrep` poll loop that ate the rest of its execute budget.
-  // Progress goes to stderr so stdout stays exactly the machine-readable
-  // detail-then-summary stream that callers already parse.
+  //
+  // Progress goes to stdout, deliberately: the worker captures a failing run
+  // as `stdout + stderr` and quotes the TAIL of it into the remediation
+  // prompt and the failure comment. On stderr the progress block would land
+  // at the very end and crowd out the failing detail those tails exist to
+  // carry; on stdout it precedes the detail-then-summary dump, which is
+  // where a reader wants it anyway.
   const config: QualityGateConfig = {
     scriptDir,
     denoDir,
     options,
-    onProgress: (line) => console.error(line),
+    onProgress: (line) => console.log(line),
     ...(cacheDir ? { cacheDir } : {}),
   };
 

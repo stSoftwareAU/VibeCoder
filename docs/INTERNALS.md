@@ -121,8 +121,12 @@ linting is **not** run by the worker — it is delegated to each target repo's o
 CI.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
-line to **stderr** the moment it settles (Issue #399), while the detailed output
-and the summary table still go to stdout at the end. Before that, the gate
+line to stdout the moment it settles (Issue #399), ahead of the detailed output
+and the summary table that are still printed at the end. Progress goes to
+stdout rather than stderr on purpose — the worker captures a failing run as
+`stdout + stderr` and quotes the **tail** of it into the remediation prompt and
+the failure comment, so a progress block on stderr would crowd out the failing
+detail those tails exist to carry. Before that, the gate
 printed nothing for up to sixteen minutes, so an agent driving it could not tell
 a slow run from a hung one and backgrounded it behind a `sleep`/`pgrep` poll
 loop that consumed the rest of its execute budget. Callers embedding the gate
