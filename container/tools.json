@@ -70,6 +70,18 @@
         "noarch": "4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e"
       },
       "notes": "The third registered coding-agent provider (Issue #4107) — Quorum's judge rather than a planner. The checksum is of the published package @google/gemini-cli-<version>.tgz, which declares no dependencies and ships the whole CLI as a JavaScript bundle: one artefact for every architecture, hence a single noarch checksum. That bundle runs on Node, which is why the Node toolchain layer is built before the provider layer. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex,gemini\"` is what puts all three CLIs in one image."
+    },
+    {
+      "id": "deepseek",
+      "binary": "deepseek",
+      "fragment": "providers/deepseek.sh",
+      "version": "2.1.223",
+      "source": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases",
+      "sha256": {
+        "amd64": "98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7",
+        "arm64": "60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac"
+      },
+      "notes": "The fourth registered coding-agent provider (Issue #415, parent #396). DeepSeek serves an Anthropic-compatible API, so it is carried on the *same upstream artefact* as the claude entry — this duplication is deliberate and must not be collapsed into the claude pin. Two things depend on it: the CLI is installed as `deepseek`, because both fragments run in an AGENT_PROVIDERS=\"claude,deepseek\" image and a shared binary name would mean one provider silently overwriting the other; and the version is pinned independently, because DeepSeek's endpoint is a third party tracking Anthropic's API surface and holding `deepseek` on a known-good CLI version while `claude` moves ahead is the point of the second pin. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,deepseek\"` is what puts both CLIs in one image."
     }
   ],
   "installedProviders": ["claude"],
