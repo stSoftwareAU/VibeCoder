@@ -485,8 +485,9 @@ every monitored repo the census records:
 "Unblocked" means the issue carries the priority label, carries **no** blocking
 label (`failed`, `needs-revision`, `refine-issue`, `planning`, `question`,
 `needs-human`), has **no assignees**, is not blocked by an open PR in its work
-stream, and sits in a work stream this worker has **not** already occupied —
-i.e. work the Priority 2 scan could hand a worker right now. Crucially, neither
+stream, is not named by a **merged** fleet PR, and sits in a work stream this
+worker has **not** already occupied — i.e. work the Priority 2 scan could hand a
+worker right now. Crucially, neither
 `degraded-model` nor `lang:*` is a blocking label, so an issue carrying them
 still counts: the census exists precisely to refute the "a `degraded-model`
 filter is hiding the work" hypothesis.
@@ -508,7 +509,9 @@ flowchart LR
     S -- yes --> SO["stream_occupied+1"]
     S -- no --> P{Open PR blocks<br/>its stream?}
     P -- yes --> PB["pr_blocked+1"]
-    P -- no --> U["unblocked+1<br/>→ inversion signal"]
+    P -- no --> M{Named by a<br/>merged fleet PR?}
+    M -- yes --> MB["merged_pr_blocked+1"]
+    M -- no --> U["unblocked+1<br/>→ inversion signal"]
 ```
 
 Before Issue #3852 the census skipped the occupancy gate, so every sibling of an
@@ -517,6 +520,26 @@ in-flight claim counted as claimable. `stSoftwareAU/NEAT-AI` logged
 `milestone-occupied=4` and the audit logged `claimable=0 reason=stream_occupied`
 — the scan was right, and the false signal both suppressed the idle-task filer
 and escalated to a filed issue.
+
+The **merged-PR** gate closes the same hole for the one deferral that never
+clears by itself. Since Issue #3151 a merged fleet PR naming issue `#N` makes
+the scan skip `#N` permanently (`merged-pr-permanent`); only a trusted author
+re-applying the pickup label with a date after the merge lifts it. The census
+did not model that, so a single such issue held `inversion_signal=true` for
+ever. On 2026-08-26 `stSoftwareAU/GRQ` logged
+`work_on=10 low_priority=1 inversion_signal=true` cycle after cycle because
+GRQ#4326 — `work-on` since 23 August, unassigned, carrying no blocking label —
+is named by merged PR #4336. The scan was right; the census escalated it as
+"the claim scan keeps refusing" (GRQ#4419, VibeCoder#429). Excluded issues are
+now reported as `merged_pr_blocked=<n>` so the permanent strand stays visible
+rather than being silently dropped.
+
+Two deliberate limits keep both instruments cheap probes rather than a second
+scan: only **merged** PRs count (a closed-unmerged PR blocks for a cooldown
+window that clears itself), and the re-label escape hatch is **not** modelled,
+because it needs a per-issue timeline call. Both make the census _under_-count,
+which at worst files an idle-task while work exists — the bounded-harm
+direction.
 
 Any monitored repo holding ≥1 unblocked `top-priority` / `work-on` /
 `low-priority` issue at this moment is the **inversion signal**; `idle-task` is

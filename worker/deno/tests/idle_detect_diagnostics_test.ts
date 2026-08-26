@@ -28,7 +28,7 @@ import {
   pickDominantReason,
   type ProbeFailureKind,
 } from "../lib/idle_detect_diagnostics.ts";
-import type { OpenPR } from "../lib/issue_query.ts";
+import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 
 // ---------------------------------------------------------------------------
 // Pure classifier — exclusion branches
@@ -919,6 +919,100 @@ Deno.test("auditClaimableState - a failing PR fetch never blocks the audit", asy
       ])),
     openPRsFn: () => Promise.reject(new Error("rate limited")),
     log: (line) => logs.push(line),
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  assertEquals(result.claimableTotal, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Merged-PR permanent block (GRQ#4419 / VibeCoder#429)
+// ---------------------------------------------------------------------------
+
+/** Merged fleet PR naming GRQ#4326, the live permanent strand. */
+const MERGED_PR_4336: ClosedPR = {
+  number: 4336,
+  title: "bug: Learn threw away most of its seeds (Issue #4326) (#4336)",
+  closedAt: "2026-08-23T07:52:58Z",
+  merged: true,
+};
+
+Deno.test("classifyIssues - a merged fleet PR excludes the issue it names (GRQ#4419)", () => {
+  const verdicts = classifyIssues(
+    [{ number: 4326, labels: ["work-on"], assignees: [], milestone: "" }],
+    { workerUser: "vibe", mergedPRs: [MERGED_PR_4336] },
+  );
+
+  assertEquals(verdicts[0]?.claimable, false);
+  assertEquals(verdicts[0]?.excludedBy, "merged_pr_blocked");
+});
+
+Deno.test("classifyIssues - a closed-unmerged PR does not exclude (GRQ#4419)", () => {
+  const verdicts = classifyIssues(
+    [{ number: 4326, labels: ["work-on"], assignees: [], milestone: "" }],
+    {
+      workerUser: "vibe",
+      mergedPRs: [{ ...MERGED_PR_4336, merged: false }],
+    },
+  );
+
+  assertEquals(verdicts[0]?.claimable, true);
+});
+
+Deno.test("pickDominantReason - merged_pr_blocked outranks pr_blocked (GRQ#4419)", () => {
+  const reason = pickDominantReason([
+    { number: 1, claimable: false, excludedBy: "pr_blocked", milestone: "" },
+    {
+      number: 2,
+      claimable: false,
+      excludedBy: "merged_pr_blocked",
+      milestone: "",
+    },
+  ]);
+
+  // A permanent strand is the most actionable answer to "why nothing".
+  assertEquals(reason, "merged_pr_blocked");
+});
+
+Deno.test("auditClaimableState - a merged-PR-stranded backlog raises no ALERT (GRQ#4419)", async () => {
+  const logs: string[] = [];
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/GRQ"],
+    workerUser: "vibe",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        { number: 4326, labels: [{ name: "work-on" }], assignees: [] },
+      ])),
+    openPRsFn: () => Promise.resolve([]),
+    mergedPRsFn: () => Promise.resolve([MERGED_PR_4336]),
+    log: (line) => logs.push(line),
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  assertEquals(result.claimableTotal, 0);
+  assertEquals(result.misClassification, false);
+  assert(
+    logs.some((l) => l.includes("reason=merged_pr_blocked")),
+    `the per-repo line must say why; got:\n${logs.join("\n")}`,
+  );
+});
+
+Deno.test("auditClaimableState - a failing merged-PR fetch never blocks the audit (GRQ#4419)", async () => {
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/GRQ"],
+    workerUser: "vibe",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        { number: 4326, labels: [{ name: "work-on" }], assignees: [] },
+      ])),
+    mergedPRsFn: () => Promise.reject(new Error("rate limited")),
+    log: () => {},
     hostnameFn: () => "host",
     pidFn: () => 1,
   });
