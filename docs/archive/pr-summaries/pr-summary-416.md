@@ -54,7 +54,7 @@ The provisioning path each acceptance criterion exercises:
 flowchart TD
     A["VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY set?"] -->|yes| B["provision_provider_credential<br/>deepseek row"]
     B --> C["mkdir 0700 &lt;dir&gt;/deepseek"]
-    C --> D["umask 077 → provider.env 0600<br/>DEEPSEEK_API_KEY=…"]
+    C --> D["umask 077 → provider.env 0600<br/>one DEEPSEEK_API_KEY line"]
     D --> E["credential preflight:<br/>sub-dir permitted by the descriptor"]
     A -->|no| F["warn: name VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY<br/>+ where the key is issued"]
     F --> G["no interactive login suggested<br/>(DeepSeek has none)"]
@@ -70,7 +70,8 @@ the real `setup.sh` and calls `provision_vibe_credentials` against a temporary
 `HOME`):
 
 - **`provisions the DeepSeek API key`** — asserts `deepseek/provider.env`
-  contains `DEEPSEEK_API_KEY=<key>`, mode `0600` under a `0700` directory, the
+  holds a single `DEEPSEEK_API_KEY` line carrying the provisioned key, mode
+  `0600` under a `0700` directory, the
   key is absent from stdout, and a second run is idempotent (same contents, same
   mode, no duplicate line).
 - **`a claude+deepseek run passes the preflight unchanged`** — with only Claude
