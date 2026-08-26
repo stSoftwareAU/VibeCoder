@@ -22,7 +22,9 @@ const STARTED_EPOCH_SECONDS = 1_700_000_000;
 const STARTED_MS = STARTED_EPOCH_SECONDS * 1000;
 
 /** An env reader over a fixed map, as the launcher would supply. */
-function env(values: Record<string, string>): (name: string) => string | undefined {
+function env(
+  values: Record<string, string>,
+): (name: string) => string | undefined {
   return (name) => values[name];
 }
 
@@ -35,7 +37,10 @@ Deno.test("resolveRunHardCap - a real cap yields a ceiling with the shutdown res
     killAfterSeconds: 30,
   });
 
-  assert(resolution.capped, `expected a cap, got: ${JSON.stringify(resolution)}`);
+  assert(
+    resolution.capped,
+    `expected a cap, got: ${JSON.stringify(resolution)}`,
+  );
   if (!resolution.capped) return;
   const { cap } = resolution;
   assertEquals(cap.supervisorDeadlineMs, STARTED_MS + 10800 * 1000);

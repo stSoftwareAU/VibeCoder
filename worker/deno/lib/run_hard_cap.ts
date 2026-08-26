@@ -139,7 +139,8 @@ export function resolveRunHardCap(
     // Documented as "disabled" in loop.sh — never "cap at zero".
     return {
       capped: false,
-      reason: `${RUN_MAX_SECONDS_ENV}=0 disables the supervisor cap — no ceiling`,
+      reason:
+        `${RUN_MAX_SECONDS_ENV}=0 disables the supervisor cap — no ceiling`,
     };
   }
 
@@ -160,7 +161,10 @@ export function resolveRunHardCap(
   }
 
   const reserveSeconds = Math.max(0, input.killAfterSeconds) +
-    Math.max(0, input.checkpointReserveSeconds ?? WIP_CHECKPOINT_RESERVE_SECONDS);
+    Math.max(
+      0,
+      input.checkpointReserveSeconds ?? WIP_CHECKPOINT_RESERVE_SECONDS,
+    );
   const startedMs = startedSeconds * 1000;
   const supervisorDeadlineMs = startedMs + maxSeconds * 1000;
   return {

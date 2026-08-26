@@ -283,8 +283,7 @@ export function decideProgressExtension(
     if (runwayMs <= 0) {
       return {
         action: "kill",
-        reason:
-          `run hard cap reached — no runway left before the supervisor ` +
+        reason: `run hard cap reached — no runway left before the supervisor ` +
           `terminates this run, so stopping now to preserve work in progress`,
       };
     }
