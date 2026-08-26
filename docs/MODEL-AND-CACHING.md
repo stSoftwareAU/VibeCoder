@@ -1164,6 +1164,18 @@ that one invocation, and the run is flagged **degraded** with the reason
   on the provider id, so a fourth provider carrying a Fable tier needs no edit.
   Skipping the reroute is logged once per provider per worker process
   (`[fable-routing] …`), never in silence.
+- **The gate, not the CLI, is the defence** (Issue #417). Codex and Gemini
+  reject an unresolvable `--model` at their own CLI's argument layer, which
+  masks how much the gate carries. A provider carried on the **Anthropic CLI**
+  pointed at another vendor's endpoint — DeepSeek (Issue #396) — has no such
+  backstop: `--model opus` is a well-formed flag that the CLI forwards happily,
+  so an ungated reroute would surface as a remote unresolvable-model error
+  mid-run, attributed to a tier the operator never requested. The
+  descriptor-derived gate is therefore exercised once per registered provider
+  in
+  [`fable_preflight_deepseek_gate_test.ts`](../worker/deno/tests/fable_preflight_deepseek_gate_test.ts),
+  so a provider registered without it fails `deno test` rather than the next
+  Fable outage.
 - **Effort semantics.** The pre-flight reroute bumps effort to `max` ("request
   the higher effort"). This is distinct from the mid-run fallback, whose effort
   is left **unchanged** — the two paths never interfere.
