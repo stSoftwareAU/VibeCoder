@@ -508,6 +508,7 @@ export const prMaintenanceCommand: Command = {
         failedCount,
         lockedCount,
         mergedCount = 0,
+        contendedCount = 0,
         details,
       } = execResult.value;
       const totalSkipped = scanSkipped;
@@ -520,16 +521,22 @@ export const prMaintenanceCommand: Command = {
       const mergedSuffix = mergedCount > 0
         ? `, ${mergedCount} merged mid-update`
         : "";
+      // Issue #394: a PR left alone because another lane held this host's
+      // clone is reported as deferred, never as failed.
+      const contendedSuffix = contendedCount > 0
+        ? `, ${contendedCount} deferred (clone held by another lane)`
+        : "";
       return {
         success: true,
         message:
-          `PR branch update complete: ${updatedCount} updated, ${totalSkipped} already current, ${failedCount} failed${lockedSuffix}${mergedSuffix} (Issue #379)`,
+          `PR branch update complete: ${updatedCount} updated, ${totalSkipped} already current, ${failedCount} failed${lockedSuffix}${mergedSuffix}${contendedSuffix} (Issue #379)`,
         data: {
           updatedCount,
           skippedCount: totalSkipped,
           failedCount,
           lockedCount,
           mergedCount,
+          contendedCount,
           details,
         } as unknown as PrCommentToFix,
       };
