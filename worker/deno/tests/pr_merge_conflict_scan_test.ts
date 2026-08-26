@@ -9,14 +9,17 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
+  countDisruptedAttempts,
   DEFAULT_CONFLICT_COOLDOWN_HOURS,
   findConflictingPr,
   type FindConflictingPrOptions,
   hasExhaustedConflictAttempts,
+  hasExhaustedDisruptedAttempts,
   isConflictAttemptDue,
   MERGE_CONFLICT_LABEL,
   parseConflictAttempts,
@@ -56,12 +59,14 @@ interface FakeRepoState {
 interface FakeGh {
   ghCommandFn: (args: string[]) => Promise<string>;
   labelsAdded: Array<{ prNumber: number; label: string }>;
+  commentsPosted: Array<{ prNumber: number; body: string }>;
   calls: string[][];
 }
 
 /** A `gh` stub that answers exactly the calls this scan issues. */
 function makeFakeGh(state: FakeRepoState): FakeGh {
   const labelsAdded: Array<{ prNumber: number; label: string }> = [];
+  const commentsPosted: Array<{ prNumber: number; body: string }> = [];
   const calls: string[][] = [];
 
   const ghCommandFn = (args: string[]): Promise<string> => {
@@ -96,7 +101,7 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
       return Promise.resolve(JSON.stringify(state.comments[prNumber] ?? []));
     }
 
-    // Label creation and the guarded label add.
+    // Label creation, the guarded label add, and escalation comments.
     if (args[0] === "api" && args.includes("POST")) {
       const endpoint = String(args[args.indexOf("-X") + 2] ?? "");
       const labelMatch = /issues\/(\d+)\/labels/.exec(endpoint);
@@ -107,6 +112,14 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
           label: String(flag).replace("labels[]=", ""),
         });
       }
+      const commentMatch = /issues\/(\d+)\/comments/.exec(endpoint);
+      if (commentMatch) {
+        const flag = String(args[args.indexOf("-f") + 1] ?? "");
+        commentsPosted.push({
+          prNumber: Number(commentMatch[1]),
+          body: flag.startsWith("body=") ? flag.slice("body=".length) : flag,
+        });
+      }
       return Promise.resolve("");
     }
 
@@ -115,7 +128,7 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
     return Promise.resolve("");
   };
 
-  return { ghCommandFn, labelsAdded, calls };
+  return { ghCommandFn, labelsAdded, commentsPosted, calls };
 }
 
 function makeOptions(
@@ -147,7 +160,10 @@ function makeState(overrides?: Partial<FakeRepoState>): FakeRepoState {
 // Attempt history
 // ---------------------------------------------------------------------------
 
-Deno.test("parseConflictAttempts - counts marker comments and tracks the latest", () => {
+Deno.test("parseConflictAttempts - counts concluded attempts and tracks the latest", () => {
+  // Issue #395 changed what "an attempt" means: only an attempt that reached
+  // a conclusion spends the budget, so each opening marker is paired with a
+  // failure conclusion here.
   const history = parseConflictAttempts([
     { body: "unrelated chatter", created_at: "2026-08-19T10:00:00Z" },
     {
@@ -155,17 +171,69 @@ Deno.test("parseConflictAttempts - counts marker comments and tracks the latest"
       created_at: "2026-08-19T11:00:00Z",
     },
     {
+      body: `${CONFLICT_FAILED_MARKER} n="1" -->\nfailed`,
+      created_at: "2026-08-19T11:30:00Z",
+    },
+    {
       body: `${CONFLICT_ATTEMPT_MARKER} n="2" -->\nattempt 2`,
       created_at: "2026-08-19T15:00:00Z",
+    },
+    {
+      body: `${CONFLICT_FAILED_MARKER} n="2" -->\nfailed`,
+      created_at: "2026-08-19T15:30:00Z",
     },
   ]);
 
   assertEquals(history.count, 2);
+  assertEquals(history.disruptedCount, 0);
+  assertEquals(history.pendingAttempt, false);
   assertEquals(history.lastAttemptAt, "2026-08-19T15:00:00Z");
 });
 
-Deno.test("parseConflictAttempts - a resolved marker resets the budget", () => {
+Deno.test("parseConflictAttempts - an attempt with no conclusion is disrupted, not spent", () => {
+  // The GRQ#4408/#4409 shape: "attempt 1 of 2" and then silence.
   const history = parseConflictAttempts([
+    {
+      body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->\nattempt 1`,
+      created_at: "2026-08-19T11:00:00Z",
+    },
+  ]);
+
+  assertEquals(history.count, 0);
+  assertEquals(history.pendingAttempt, true);
+  assertEquals(countDisruptedAttempts(history), 1);
+});
+
+Deno.test("parseConflictAttempts - a new attempt marks an unconcluded one disrupted", () => {
+  const history = parseConflictAttempts([
+    {
+      body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
+      created_at: "2026-08-19T11:00:00Z",
+    },
+    {
+      body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
+      created_at: "2026-08-19T16:00:00Z",
+    },
+    {
+      body: `${CONFLICT_FAILED_MARKER} n="1" -->\nfailed`,
+      created_at: "2026-08-19T16:30:00Z",
+    },
+  ]);
+
+  assertEquals(history.count, 1);
+  assertEquals(history.disruptedCount, 1);
+  assertEquals(history.pendingAttempt, false);
+  assertEquals(countDisruptedAttempts(history), 1);
+});
+
+Deno.test("parseConflictAttempts - a resolved marker resets both budgets", () => {
+  // Issue #395: the trailing attempt is open, not spent — count is 0 until it
+  // concludes, and the pre-merge history is discarded entirely.
+  const history = parseConflictAttempts([
+    {
+      body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
+      created_at: "2026-06-01T09:00:00Z",
+    },
     {
       body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
       created_at: "2026-06-01T10:00:00Z",
@@ -180,46 +248,54 @@ Deno.test("parseConflictAttempts - a resolved marker resets the budget", () => {
     },
   ]);
 
-  assertEquals(history.count, 1);
+  assertEquals(history.count, 0);
+  assertEquals(history.disruptedCount, 0);
+  assertEquals(history.pendingAttempt, true);
   assertEquals(history.lastAttemptAt, "2026-08-19T11:00:00Z");
 });
 
 Deno.test("parseConflictAttempts - ignores malformed comment entries", () => {
   const history = parseConflictAttempts([null, 42, { body: 7 }, "text"]);
   assertEquals(history.count, 0);
+  assertEquals(history.disruptedCount, 0);
+  assertEquals(history.pendingAttempt, false);
   assertEquals(history.lastAttemptAt, undefined);
 });
 
 Deno.test("isConflictAttemptDue - no history is always due", () => {
-  assertEquals(isConflictAttemptDue({ count: 0 }, Date.now()), true);
+  assertEquals(
+    isConflictAttemptDue(
+      { count: 0, disruptedCount: 0, pendingAttempt: false },
+      Date.now(),
+    ),
+    true,
+  );
 });
 
 Deno.test("isConflictAttemptDue - honours the cooldown window", () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
   const oneHourAgo = new Date(now - 3600_000).toISOString();
   const sixHoursAgo = new Date(now - 6 * 3600_000).toISOString();
+  const history = (lastAttemptAt: string) => ({
+    count: 1,
+    disruptedCount: 0,
+    pendingAttempt: false,
+    lastAttemptAt,
+  });
 
-  assertEquals(
-    isConflictAttemptDue({ count: 1, lastAttemptAt: oneHourAgo }, now),
-    false,
-  );
-  assertEquals(
-    isConflictAttemptDue({ count: 1, lastAttemptAt: sixHoursAgo }, now),
-    true,
-  );
-  assertEquals(
-    isConflictAttemptDue(
-      { count: 1, lastAttemptAt: oneHourAgo },
-      now,
-      0.5,
-    ),
-    true,
-  );
+  assertEquals(isConflictAttemptDue(history(oneHourAgo), now), false);
+  assertEquals(isConflictAttemptDue(history(sixHoursAgo), now), true);
+  assertEquals(isConflictAttemptDue(history(oneHourAgo), now, 0.5), true);
 });
 
 Deno.test("isConflictAttemptDue - an unparseable timestamp holds the PR back", () => {
   assertEquals(
-    isConflictAttemptDue({ count: 1, lastAttemptAt: "not-a-date" }, Date.now()),
+    isConflictAttemptDue({
+      count: 1,
+      disruptedCount: 0,
+      pendingAttempt: false,
+      lastAttemptAt: "not-a-date",
+    }, Date.now()),
     false,
   );
 });
@@ -228,6 +304,31 @@ Deno.test("hasExhaustedConflictAttempts - binds at the configured budget", () =>
   assertEquals(hasExhaustedConflictAttempts(1, 2), false);
   assertEquals(hasExhaustedConflictAttempts(2, 2), true);
   assertEquals(hasExhaustedConflictAttempts(3, 2), true);
+});
+
+Deno.test("hasExhaustedDisruptedAttempts - binds disrupted retries separately", () => {
+  assertEquals(hasExhaustedDisruptedAttempts(2, 3), false);
+  assertEquals(hasExhaustedDisruptedAttempts(3, 3), true);
+  assertEquals(hasExhaustedDisruptedAttempts(4, 3), true);
+});
+
+Deno.test("countDisruptedAttempts - an open attempt counts as disrupted", () => {
+  assertEquals(
+    countDisruptedAttempts({
+      count: 1,
+      disruptedCount: 1,
+      pendingAttempt: true,
+    }),
+    2,
+  );
+  assertEquals(
+    countDisruptedAttempts({
+      count: 1,
+      disruptedCount: 1,
+      pendingAttempt: false,
+    }),
+    1,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -307,14 +408,17 @@ Deno.test("findConflictingPr - holds a PR back inside its cooldown", async () =>
 
 Deno.test("findConflictingPr - returns a PR whose cooldown has elapsed, carrying its attempt count", async () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
+  // Issue #395: the attempt only counts once it concluded, so the fixture
+  // carries the failure conclusion the processor now posts.
+  const elapsed = new Date(
+    now - (DEFAULT_CONFLICT_COOLDOWN_HOURS + 1) * 3600_000,
+  ).toISOString();
   const state = makeState({
     comments: {
-      48: [{
-        body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-        created_at: new Date(
-          now - (DEFAULT_CONFLICT_COOLDOWN_HOURS + 1) * 3600_000,
-        ).toISOString(),
-      }],
+      48: [
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: elapsed },
+        { body: `${CONFLICT_FAILED_MARKER} n="1" -->`, created_at: elapsed },
+      ],
     },
   });
   const fake = makeFakeGh(state);
@@ -323,16 +427,22 @@ Deno.test("findConflictingPr - returns a PR whose cooldown has elapsed, carrying
 
   assert(result.ok);
   assertEquals(result.value?.attemptCount, 1);
+  assertEquals(result.value?.disruptedCount, 0);
 });
 
 Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", async () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
+    // Issue #395: a spent budget is only a quiet skip once the PR is visibly
+    // a human's — the escalation the last attempt posted is in the thread.
+    labels: { 48: ["needs-human"] },
     comments: {
       48: [
         { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_FAILED_MARKER} n="1" -->`, created_at: old },
         { body: `${CONFLICT_ATTEMPT_MARKER} n="2" -->`, created_at: old },
+        { body: `${CONFLICT_FAILED_MARKER} n="2" -->`, created_at: old },
       ],
     },
   });
@@ -342,6 +452,122 @@ Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", 
 
   assert(result.ok);
   assertEquals(result.value, null);
+  assertEquals(fake.commentsPosted.length, 0);
+});
+
+Deno.test("findConflictingPr - a spent budget with no needs-human is escalated, not stalled", async () => {
+  // Issue #395: the last attempt escalates from the processor, so a failure
+  // there (or a run cut short between the conclusion and the escalation)
+  // left the PR conflicting, out of budget, and owned by nobody — skipped
+  // silently on every scan for ever. The scan is the backstop.
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const old = new Date(now - 48 * 3600_000).toISOString();
+  const state = makeState({
+    comments: {
+      48: [
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_FAILED_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="2" -->`, created_at: old },
+        { body: `${CONFLICT_FAILED_MARKER} n="2" -->`, created_at: old },
+      ],
+    },
+  });
+  const fake = makeFakeGh(state);
+
+  const result = await findConflictingPr(makeOptions(fake));
+
+  assert(result.ok);
+  assertEquals(result.value, null);
+  assertEquals(
+    fake.labelsAdded.some((l) =>
+      l.prNumber === 48 && l.label === "needs-human"
+    ),
+    true,
+  );
+
+  const escalation = fake.commentsPosted.at(-1)?.body ?? "";
+  assertStringIncludes(escalation, "2");
+  assertStringIncludes(escalation, "**Next step:**");
+});
+
+Deno.test("findConflictingPr - a disrupted attempt is re-attempted, not counted as spent", async () => {
+  // The GRQ#4408/#4409 regression: two attempts posted their marker and went
+  // silent. Under the old rule the PR was out of budget and stalled with no
+  // conclusion on it; it must now be handed back for another attempt.
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const old = new Date(now - 48 * 3600_000).toISOString();
+  const state = makeState({
+    comments: {
+      48: [
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+      ],
+    },
+  });
+  const fake = makeFakeGh(state);
+
+  const result = await findConflictingPr(makeOptions(fake));
+
+  assert(result.ok);
+  assertEquals(result.value?.prNumber, 48);
+  assertEquals(result.value?.attemptCount, 0);
+  assertEquals(result.value?.disruptedCount, 2);
+  assertEquals(
+    fake.labelsAdded.some((l) => l.label === "needs-human"),
+    false,
+  );
+});
+
+Deno.test("findConflictingPr - repeated disruption escalates loudly instead of stalling", async () => {
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const old = new Date(now - 48 * 3600_000).toISOString();
+  const state = makeState({
+    comments: {
+      48: [
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+      ],
+    },
+  });
+  const fake = makeFakeGh(state);
+
+  const result = await findConflictingPr(makeOptions(fake));
+
+  assert(result.ok);
+  assertEquals(result.value, null);
+  assertEquals(
+    fake.labelsAdded.some((l) =>
+      l.prNumber === 48 && l.label === "needs-human"
+    ),
+    true,
+  );
+
+  const escalation = fake.commentsPosted.at(-1)?.body ?? "";
+  assertStringIncludes(escalation, "disrupted");
+  assertStringIncludes(escalation, "**Next step:**");
+});
+
+Deno.test("findConflictingPr - the disruption bound is configurable", async () => {
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const old = new Date(now - 48 * 3600_000).toISOString();
+  const state = makeState({
+    comments: {
+      48: [{ body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old }],
+    },
+  });
+  const fake = makeFakeGh(state);
+
+  const result = await findConflictingPr(
+    makeOptions(fake, { maxDisruptedAttempts: 1 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, null);
+  assertEquals(
+    fake.labelsAdded.some((l) => l.label === "needs-human"),
+    true,
+  );
 });
 
 Deno.test("findConflictingPr - a disallowed repo is never listed", async () => {

@@ -18,6 +18,13 @@
  * escalates with `needs-human` — so a genuinely unresolvable conflict
  * cannot loop forever.
  *
+ * Only an attempt that reached a **conclusion** spends that budget (Issue
+ * #395). An attempt marker with no conclusion means the run was disrupted —
+ * a worker restart, a heartbeat sweep, an execute-budget cut — and the
+ * conflict was never actually judged. Those attempts are counted separately,
+ * re-attempted, and bounded by {@link DEFAULT_MAX_DISRUPTED_ATTEMPTS} so a
+ * host that keeps dying escalates loudly instead of retrying forever.
+ *
  * Attempt history lives in marker comments on the PR itself rather than in
  * host-local state, so the bound holds across hosts and worker restarts.
  *
@@ -31,6 +38,8 @@ import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
+import { escalateToHuman } from "./needs_human_escalation.ts";
+import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import {
   getLabelColour,
   getLabelDescription,
@@ -68,6 +77,13 @@ export const CONFLICT_ATTEMPT_MARKER = "<!-- vibe-coder:merge-conflict-attempt";
 export const CONFLICT_RESOLVED_MARKER =
   "<!-- vibe-coder:merge-conflict-resolved -->";
 
+/**
+ * Marker posted when an attempt reached a merge conclusion and failed
+ * (Issue #395). It is what turns an opened attempt into a *spent* one — an
+ * attempt marker with no conclusion after it was disrupted, not judged.
+ */
+export const CONFLICT_FAILED_MARKER = "<!-- vibe-coder:merge-conflict-failed";
+
 /** Hours a PR waits after a failed attempt before another is made. */
 export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 4;
 
@@ -76,6 +92,16 @@ export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 4;
  * Two: the first attempt, and one retry against a moved base.
  */
 export const DEFAULT_MAX_CONFLICT_ATTEMPTS = 2;
+
+/**
+ * Disrupted attempts allowed before the PR is escalated (Issue #395).
+ *
+ * A disrupted attempt never judged the conflict, so it must not spend the
+ * merge budget — but retrying it forever is the unbounded loop Issue #84
+ * closed. Three disruptions on one PR means the disruption, not the
+ * conflict, is the problem, and a human is told so.
+ */
+export const DEFAULT_MAX_DISRUPTED_ATTEMPTS = 3;
 
 /** Label whose presence means a human already owns the conflict. */
 const NEEDS_HUMAN_LABEL = "needs-human";
@@ -97,14 +123,20 @@ export interface ConflictingPr {
   branchName: string;
   /** Base branch the PR targets. */
   baseBranch: string;
-  /** Attempts already recorded against this PR. */
+  /** Concluded attempts already recorded against this PR. */
   attemptCount: number;
+  /** Attempts disrupted before they reached a conclusion (Issue #395). */
+  disruptedCount: number;
 }
 
 /** Attempt history read back from a PR's comment thread. */
 export interface ConflictAttemptHistory {
-  /** Number of recorded attempts. */
+  /** Attempts that reached a conclusion — the ones that spend the budget. */
   count: number;
+  /** Attempts abandoned without any conclusion (Issue #395). */
+  disruptedCount: number;
+  /** True when the most recent attempt has recorded no conclusion yet. */
+  pendingAttempt: boolean;
   /** ISO timestamp of the most recent attempt, when known. */
   lastAttemptAt?: string;
 }
@@ -133,6 +165,10 @@ export interface FindConflictingPrOptions {
   cooldownHours?: number;
   /** Attempts allowed before the PR is left to a human. */
   maxAttempts?: number;
+  /** Disrupted attempts allowed before the PR is escalated (Issue #395). */
+  maxDisruptedAttempts?: number;
+  /** Label applied on escalation. Defaults to `needs-human`. */
+  needsHumanLabel?: string;
   /** Clock override (epoch milliseconds). */
   nowMs?: () => number;
 }
@@ -142,24 +178,33 @@ export interface FindConflictingPrOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Count the conflict-resolution attempts recorded in a comment thread.
+ * Read the conflict-resolution attempt history out of a comment thread.
  *
- * Attempts are recorded as comments carrying {@link CONFLICT_ATTEMPT_MARKER}
- * — posted *before* the attempt runs, so a worker that dies mid-merge still
- * spends its attempt rather than looping. A {@link CONFLICT_RESOLVED_MARKER}
- * comment resets the count: attempts before a successful merge belong to a
- * conflict that is already over.
+ * An attempt **opens** with a {@link CONFLICT_ATTEMPT_MARKER} comment posted
+ * before the merge runs, and **concludes** with either a
+ * {@link CONFLICT_RESOLVED_MARKER} (merged) or a
+ * {@link CONFLICT_FAILED_MARKER} (judged and failed). Only a concluded
+ * attempt spends the budget (Issue #395): an attempt that opened and never
+ * concluded was disrupted — the run was killed before the merge was judged —
+ * and burning the budget on it left PRs like GRQ#4408/#4409 stalled at
+ * "attempt 1 of 2" with no conclusion and no retry.
  *
- * The history lives on the PR rather than in host-local state, so the bound
- * holds across worker restarts and across hosts.
+ * A resolved marker resets everything: attempts before a successful merge
+ * belong to a conflict that is already over.
+ *
+ * The history lives on the PR rather than in host-local state, so the bounds
+ * hold across worker restarts and across hosts.
  *
  * @param comments - Raw comment objects from the GitHub REST API, oldest first.
- * @returns Attempt count and the timestamp of the most recent attempt.
+ * @returns Concluded and disrupted counts, whether an attempt is still open,
+ *   and the timestamp of the most recent attempt.
  */
 export function parseConflictAttempts(
   comments: readonly unknown[],
 ): ConflictAttemptHistory {
   let count = 0;
+  let disruptedCount = 0;
+  let pendingAttempt = false;
   let lastAttemptAt: string | undefined;
 
   for (const raw of comments) {
@@ -169,13 +214,27 @@ export function parseConflictAttempts(
 
     if (comment.body.includes(CONFLICT_RESOLVED_MARKER)) {
       count = 0;
+      disruptedCount = 0;
+      pendingAttempt = false;
       lastAttemptAt = undefined;
+      continue;
+    }
+
+    if (comment.body.includes(CONFLICT_FAILED_MARKER)) {
+      // A conclusion always spends an attempt, even if its opening marker is
+      // no longer in the thread — the conservative direction.
+      count++;
+      pendingAttempt = false;
       continue;
     }
 
     if (!comment.body.includes(CONFLICT_ATTEMPT_MARKER)) continue;
 
-    count++;
+    // A new attempt opening while one is still open means the earlier one
+    // never reached a conclusion.
+    if (pendingAttempt) disruptedCount++;
+    pendingAttempt = true;
+
     const createdAt = typeof comment.created_at === "string"
       ? comment.created_at
       : undefined;
@@ -188,8 +247,92 @@ export function parseConflictAttempts(
     }
   }
 
-  return { count, lastAttemptAt };
+  return { count, disruptedCount, pendingAttempt, lastAttemptAt };
 }
+
+/**
+ * Disrupted attempts on this PR, counting a still-open attempt as disrupted
+ * (Issue #395).
+ *
+ * Only meaningful once the cooldown has elapsed: before that, an open attempt
+ * is more likely in flight on another host than disrupted, which is exactly
+ * what the cooldown gate is for.
+ */
+export function countDisruptedAttempts(
+  history: ConflictAttemptHistory,
+): number {
+  return history.disruptedCount + (history.pendingAttempt ? 1 : 0);
+}
+
+/**
+ * Whether disruption — not the conflict — is what is blocking this PR, and a
+ * human should be told (Issue #395).
+ *
+ * @param disruptedCount - From {@link countDisruptedAttempts}.
+ * @param maxDisrupted - Bound.
+ */
+export function hasExhaustedDisruptedAttempts(
+  disruptedCount: number,
+  maxDisrupted: number = DEFAULT_MAX_DISRUPTED_ATTEMPTS,
+): boolean {
+  return disruptedCount >= maxDisrupted;
+}
+
+/** Why a repeatedly disrupted conflict is being handed to a human. */
+export function buildDisruptionEscalationReason(
+  prNumber: number,
+  disruptedCount: number,
+): string {
+  return [
+    `${disruptedCount} merge-conflict resolution attempts on PR #${prNumber} ` +
+    "were disrupted before they reached a conclusion — each posted an " +
+    "attempt comment and then went silent, so the conflict itself was never " +
+    "judged.",
+    "",
+    "That points at the worker running the attempt (a restart, a swept " +
+    "heartbeat, a timeout or an exhausted run budget), not at the conflict. " +
+    "The branch was left exactly as its author pushed it, so no change has " +
+    "been lost.",
+  ].join("\n");
+}
+
+/** What the human must do about a repeatedly disrupted conflict. */
+export const DISRUPTED_CONFLICT_NEXT_STEP =
+  "Check the worker logs for why the resolution runs are being cut short, " +
+  "then either merge the base branch into the PR branch by hand — keeping " +
+  "both sides' changes — or remove the `needs-human` label to let the " +
+  "worker try again.";
+
+/**
+ * Why a PR that is out of attempts but owned by nobody is being handed over
+ * (Issue #395).
+ *
+ * The last concluded attempt escalates from the resolution pass — but that
+ * escalation can itself fail, or the run can end between the failure
+ * conclusion and the escalation. The PR is then conflicting, out of budget
+ * and unowned, which every later scan skips in silence. This is the backstop.
+ */
+export function buildExhaustedEscalationReason(
+  prNumber: number,
+  attemptCount: number,
+): string {
+  return [
+    `PR #${prNumber} has spent all ${attemptCount} of its merge-conflict ` +
+    "resolution attempts and still conflicts with its base, but was never " +
+    "handed to a human — the escalation on the final attempt did not land.",
+    "",
+    "The failure comments above say what each attempt tripped on. The " +
+    "branch was left exactly as its author pushed it, so no change has been " +
+    "lost.",
+  ].join("\n");
+}
+
+/** What the human must do about a conflict the worker is out of attempts for. */
+export const EXHAUSTED_CONFLICT_NEXT_STEP =
+  "Merge the base branch into the PR branch by hand — keeping both sides' " +
+  "changes, never side-picking — or close the PR if it is obsolete. " +
+  "Removing the `needs-human` label alone will not restart the worker: its " +
+  "attempt budget only resets once the conflict is resolved.";
 
 /**
  * Whether another attempt on this PR is due.
@@ -217,7 +360,8 @@ export function isConflictAttemptDue(
 /**
  * Whether the PR has spent its attempt budget.
  *
- * @param attemptCount - Attempts already recorded.
+ * @param attemptCount - Attempts that reached a conclusion (Issue #395);
+ *   disrupted attempts are counted by {@link countDisruptedAttempts} instead.
  * @param maxAttempts - Budget.
  */
 export function hasExhaustedConflictAttempts(
@@ -357,6 +501,62 @@ async function fetchMergeableStates(
   return states;
 }
 
+/**
+ * Hand a conflicting PR the scan will not act on to a human (Issue #395).
+ *
+ * Runs from the scan rather than the processor on purpose: both cases it
+ * covers — repeated disruption, and a budget spent without the processor's
+ * escalation landing — are cases where the processor could not finish, so the
+ * escalation must not depend on getting a clone and reaching it. Best-effort
+ * — a failure here is logged loudly and the PR stays in the queue.
+ */
+async function escalateConflictingPr(args: {
+  repo: string;
+  prNumber: number;
+  heading: string;
+  reason: string;
+  nextStep: string;
+  dedupKey: string;
+  needsHumanLabel: string;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}): Promise<void> {
+  const { repo, prNumber, logger } = args;
+
+  const escalation = await escalateToHuman({
+    ghClient: createGhEscalationClient(args.ghCommandFn),
+    repo,
+    target: { kind: "pr", number: prNumber },
+    needsHumanLabel: args.needsHumanLabel,
+    heading: args.heading,
+    reason: args.reason,
+    nextStep: args.nextStep,
+    dedupKey: args.dedupKey,
+    deps: {
+      github: {
+        ensureLabelExists: (
+          labelRepo: string,
+          labelName: string,
+          colour?: string,
+          description?: string,
+        ) =>
+          ensureLabelExists(labelRepo, labelName, colour, description, {
+            ghCommandFn: args.ghCommandFn,
+          }),
+      },
+    },
+    logger,
+  });
+  if (!escalation.ok) {
+    logger.error("Failed to escalate a conflicting PR from the scan", {
+      repo,
+      prNumber,
+      heading: args.heading,
+      error: escalation.error.message,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Scan
 // ---------------------------------------------------------------------------
@@ -368,6 +568,10 @@ async function fetchMergeableStates(
  * whether or not it is selected, so the queue is visible immediately. A PR
  * already carrying `needs-human`, already at its attempt cap, or still
  * inside its cooldown is labelled but not returned.
+ *
+ * A PR whose attempts keep being disrupted before they conclude is escalated
+ * here rather than handed on (Issue #395) — the processor may be exactly what
+ * cannot finish, so the escalation must not depend on reaching it.
  *
  * Per-repo failures are logged and skipped so one unreachable repo cannot
  * stall the scan.
@@ -389,6 +593,8 @@ export async function findConflictingPr(
     shuffleRepos,
     cooldownHours = DEFAULT_CONFLICT_COOLDOWN_HOURS,
     maxAttempts = DEFAULT_MAX_CONFLICT_ATTEMPTS,
+    maxDisruptedAttempts = DEFAULT_MAX_DISRUPTED_ATTEMPTS,
+    needsHumanLabel = NEEDS_HUMAN_LABEL,
     nowMs = () => Date.now(),
   } = options;
 
@@ -462,7 +668,7 @@ export async function findConflictingPr(
         });
       }
 
-      if (labels.includes(NEEDS_HUMAN_LABEL)) {
+      if (labels.includes(needsHumanLabel)) {
         logger.debug("Conflicting PR already escalated to a human — skipping", {
           repo,
           prNumber: pr.number,
@@ -484,12 +690,28 @@ export async function findConflictingPr(
         continue;
       }
 
+      // A spent budget is only a quiet skip once the PR is visibly a human's
+      // (Issue #395). Reaching here means it is not: the label check above
+      // already let it through, so the processor's final escalation never
+      // landed and the PR would stall unowned for ever.
       if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
-        logger.debug("Conflicting PR has spent its attempt budget", {
+        logger.warn(
+          `PR #${pr.number} has spent its ${maxAttempts} merge-conflict ` +
+            "attempts without being handed to a human — escalating",
+          { repo, prNumber: pr.number, attempts: history.count, maxAttempts },
+        );
+        await escalateConflictingPr({
           repo,
           prNumber: pr.number,
-          attempts: history.count,
-          maxAttempts,
+          heading: "Merge conflict needs human attention",
+          reason: buildExhaustedEscalationReason(pr.number, history.count),
+          nextStep: EXHAUSTED_CONFLICT_NEXT_STEP,
+          // The key the resolution pass uses, so a landed escalation is not
+          // duplicated — only its missing label is re-applied.
+          dedupKey: `merge-conflict-${pr.number}`,
+          needsHumanLabel,
+          ghCommandFn,
+          logger,
         });
         continue;
       }
@@ -504,10 +726,49 @@ export async function findConflictingPr(
         continue;
       }
 
+      // Past the cooldown, an attempt that never concluded is a disrupted
+      // attempt, not one in flight (Issue #395). It does not spend the merge
+      // budget — but repeated disruption is its own failure, and it is
+      // escalated rather than retried silently forever.
+      const disruptedCount = countDisruptedAttempts(history);
+      if (hasExhaustedDisruptedAttempts(disruptedCount, maxDisruptedAttempts)) {
+        logger.warn(
+          `PR #${pr.number} has had ${disruptedCount} merge-conflict attempts ` +
+            "disrupted before any conclusion — escalating to a human",
+          { repo, prNumber: pr.number, disruptedCount },
+        );
+        await escalateConflictingPr({
+          repo,
+          prNumber: pr.number,
+          heading: "Merge-conflict resolution keeps being disrupted",
+          reason: buildDisruptionEscalationReason(pr.number, disruptedCount),
+          nextStep: DISRUPTED_CONFLICT_NEXT_STEP,
+          dedupKey: `merge-conflict-disrupted-${pr.number}`,
+          needsHumanLabel,
+          ghCommandFn,
+          logger,
+        });
+        continue;
+      }
+
+      if (disruptedCount > 0) {
+        logger.warn(
+          `PR #${pr.number} has ${disruptedCount} disrupted merge-conflict ` +
+            "attempt(s) with no conclusion — re-attempting",
+          {
+            repo,
+            prNumber: pr.number,
+            disruptedCount,
+            maxDisruptedAttempts,
+          },
+        );
+      }
+
       logger.info("Found a conflicting PR that needs a real merge", {
         repo,
         prNumber: pr.number,
         attempts: history.count,
+        disruptedCount,
       });
 
       return {
@@ -519,6 +780,7 @@ export async function findConflictingPr(
           // allow-hardcoded-branch — safe fallback when the listing omits it
           baseBranch: pr.baseRefName || "main",
           attemptCount: history.count,
+          disruptedCount,
         },
       };
     }
