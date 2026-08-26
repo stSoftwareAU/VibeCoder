@@ -184,3 +184,107 @@ Deno.test("checkoutPrBranchAtRemoteHead - refuses a refspec-breaking branch name
     assertStringIncludes(result.error.message, "not a valid ref component");
   }
 });
+
+// ---------------------------------------------------------------------------
+// Unusable local refs (Issue #411)
+//
+// The branch-update pass read `refs/heads/<branch>` with `rev-parse --verify`,
+// then ran `git checkout <branch>` as a separate command. Anything that makes
+// the local ref unusable between — or simply unusable full stop — failed the
+// PR every cycle, for ever, while the branch sat healthy on origin:
+//
+//   Failed to checkout branch 'issue-387-side-data-…': error: pathspec
+//   'issue-387-side-data-…' did not match any file(s) known to git
+//
+// Corrupt refs are real on these hosts — the same clone logged
+// `fatal: bad object refs/heads/milestone/357-…` the night before. A PR is
+// defined by its remote head, so the local ref is never the truth; positioning
+// the branch with a single `checkout -B` from the tracking ref repairs it
+// instead of reading it.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkoutPrBranchAtRemoteHead - repairs a corrupt local ref instead of failing every cycle (Issue #411)", async () => {
+  const branch = "issue-411-corrupt";
+  const { tmp, sibling, worker } = await makeFixture("prco_corrupt_", branch);
+  try {
+    // Adopt the branch, step off it, then corrupt the ref — a ref that
+    // resolves for `rev-parse --verify` but names an object that is not there.
+    const first = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assert(first.ok, first.ok ? "" : first.error.message);
+    await runGit(["checkout", "Develop"], worker);
+    await Deno.writeTextFile(
+      `${worker}/.git/refs/heads/${branch}`,
+      `${"0".repeat(40)}\n`,
+    );
+
+    // Precondition: the plain checkout the old code used cannot recover.
+    const plain = await runGit(["checkout", branch], worker);
+    assert(
+      plain.code !== 0,
+      "precondition: a plain checkout must fail on the corrupt ref",
+    );
+
+    const result = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assert(result.ok, result.ok ? "" : result.error.message);
+
+    const remote = await runGit(["rev-parse", `refs/heads/${branch}`], sibling);
+    const local = await runGit(["rev-parse", "HEAD"], worker);
+    assertEquals(local.stdout.trim(), remote.stdout.trim());
+    assertEquals(
+      (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], worker)).stdout
+        .trim(),
+      branch,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("checkoutPrBranchAtRemoteHead - a vanished local ref is created from the remote, not reported missing (Issue #411)", async () => {
+  const branch = "issue-411-vanished";
+  const { tmp, sibling, worker } = await makeFixture("prco_vanished_", branch);
+  try {
+    const first = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assert(first.ok);
+    await runGit(["checkout", "Develop"], worker);
+    // A sibling lane in the shared clone deleted the local branch.
+    await runGit(["branch", "-D", branch], worker);
+
+    const result = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assert(result.ok, result.ok ? "" : result.error.message);
+
+    const remote = await runGit(["rev-parse", `refs/heads/${branch}`], sibling);
+    const local = await runGit(["rev-parse", "HEAD"], worker);
+    assertEquals(local.stdout.trim(), remote.stdout.trim());
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("checkoutPrBranchAtRemoteHead - unpushed commits are still refused, never repaired away (Issue #411)", async () => {
+  const branch = "issue-411-unpushed";
+  const { tmp, worker } = await makeFixture("prco_unpushed_", branch);
+  try {
+    const first = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assert(first.ok);
+    await Deno.writeTextFile(`${worker}/local-only.txt`, "unpushed\n");
+    await runGit(["add", "."], worker);
+    await runGit(["commit", "-m", "unpushed work"], worker);
+    const before = (await runGit(["rev-parse", "HEAD"], worker)).stdout.trim();
+
+    // The repair must not become a licence to discard somebody's work: the
+    // Issue #211 refusal is the whole point of the ahead-check.
+    const result = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assertEquals(result.ok, false);
+    if (!result.ok) assertStringIncludes(result.error.message, "Issue #211");
+
+    assertEquals(
+      (await runGit(["rev-parse", `refs/heads/${branch}`], worker)).stdout
+        .trim(),
+      before,
+      "the unpushed commit must still be on the branch",
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
