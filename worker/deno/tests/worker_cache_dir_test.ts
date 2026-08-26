@@ -12,24 +12,7 @@ import {
   workerCachePath,
 } from "../lib/worker_cache_dir.ts";
 import { loadDefaultBranchCache } from "../lib/default_branch_cache.ts";
-
-function withEnv(
-  values: Record<string, string | undefined>,
-  fn: () => Promise<void> | void,
-): Promise<void> {
-  const saved: Record<string, string | undefined> = {};
-  for (const key of Object.keys(values)) saved[key] = Deno.env.get(key);
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, value);
-  }
-  return Promise.resolve(fn()).finally(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
-  });
-}
+import { withEnv } from "./support/env.ts";
 
 Deno.test("worker_cache_dir - WORK_DIR set: `${WORK_DIR}/.vibe-cache` exactly", async () => {
   await withEnv({ WORK_DIR: "/vol/work", HOME: "/Users/op" }, () => {

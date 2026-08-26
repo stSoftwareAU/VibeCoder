@@ -409,3 +409,41 @@ Deno.test("module - behaviour description", async () => {
   assertEquals(result, expected);
 });
 ```
+
+### Stubbing the environment (Issue #378)
+
+The suite runs both on a developer host and inside the worker container, and
+the container exports its own runtime configuration — `WORK_DIR`,
+`VIBE_IMAGE_AGENT_PROVIDERS`, `FLEET_HEALTH_REPO`, `UPDATE_GH_USER_STATUS` — into
+every `deno test` invocation. A test that saves and restores only *some* of the
+variables its code path reads inherits the rest from the machine running it, so
+it passes on a host and fails in the container (or worse, hides a genuine
+regression). Never hand-roll a per-variable save/restore; use
+`tests/support/env.ts`:
+
+- `withEnv(values, body)` — snapshot, replace and restore the named variables
+  (`undefined` deletes one for the duration).
+- `withCleanEnv(values, body)` — the same, plus every *other* variable the
+  process carries is hidden for the duration, so the code path can only see
+  what the test declared. Reach for this whenever the code path reads the
+  environment directly.
+
+```typescript
+import { withCleanEnv } from "./support/env.ts";
+
+Deno.test("buildFleetHealthConfig - container mode clones under the work dir", async () => {
+  await withCleanEnv({
+    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
+    WORK_DIR: "/home/vibe/auto-issue-work",
+  }, () => {
+    assertEquals(
+      buildFleetHealthConfig("/workspace").healthDir,
+      "/home/vibe/auto-issue-work/private-repo-6",
+    );
+  });
+});
+```
+
+Tests that spawn a subprocess have the same trap: `Deno.Command`'s `env` option
+**merges** into the parent environment. Pass `clearEnv: true` alongside it so
+the child sees exactly the variables listed and nothing else.

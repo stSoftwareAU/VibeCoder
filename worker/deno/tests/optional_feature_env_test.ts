@@ -9,6 +9,7 @@ import {
   applyOptionalFeatureEnv,
   resolveOptionalFeatureEnv,
 } from "../lib/optional_feature_env.ts";
+import { withCleanEnv, withEnv } from "./support/env.ts";
 
 Deno.test("resolveOptionalFeatureEnv - maps the config keys to the variables their consumers read", () => {
   const out = resolveOptionalFeatureEnv({
@@ -62,23 +63,34 @@ Deno.test("applyOptionalFeatureEnv - reads the file and sets what is missing; an
       path,
       JSON.stringify({ fleet_health_repo: "git@github.com:org/h.git" }),
     );
-    const set: Record<string, string> = {};
-    const applied = await applyOptionalFeatureEnv(
-      path,
-      (name, value) => set[name] = value,
-    );
-    assertEquals(applied.FLEET_HEALTH_REPO, "git@github.com:org/h.git");
-    assertEquals(set.FLEET_HEALTH_REPO, "git@github.com:org/h.git");
+    // Issue #378: this reads the real process environment (the environment
+    // wins over the config), and the worker container already exports
+    // FLEET_HEALTH_REPO and UPDATE_GH_USER_STATUS. The outer withEnv pins
+    // hostile ambient values so the assertion proves withCleanEnv hides
+    // them, rather than passing only on a bare developer host.
+    await withEnv({
+      FLEET_HEALTH_REPO: "git@github.com:org/ambient.git",
+      UPDATE_GH_USER_STATUS: "false",
+    }, () =>
+      withCleanEnv({}, async () => {
+        const set: Record<string, string> = {};
+        const applied = await applyOptionalFeatureEnv(
+          path,
+          (name, value) => set[name] = value,
+        );
+        assertEquals(applied.FLEET_HEALTH_REPO, "git@github.com:org/h.git");
+        assertEquals(set.FLEET_HEALTH_REPO, "git@github.com:org/h.git");
 
-    const none: Record<string, string> = {};
-    assertEquals(
-      await applyOptionalFeatureEnv(
-        `${tmp}/missing.json`,
-        (n, v) => none[n] = v,
-      ),
-      {},
-    );
-    assertEquals(none, {});
+        const none: Record<string, string> = {};
+        assertEquals(
+          await applyOptionalFeatureEnv(
+            `${tmp}/missing.json`,
+            (n, v) => none[n] = v,
+          ),
+          {},
+        );
+        assertEquals(none, {});
+      }));
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
