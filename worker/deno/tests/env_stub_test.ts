@@ -12,11 +12,7 @@
  */
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import {
-  RUNTIME_ENV_KEEP,
-  withCleanEnv,
-  withEnv,
-} from "./support/env.ts";
+import { RUNTIME_ENV_KEEP, withCleanEnv, withEnv } from "./support/env.ts";
 
 const PROBE = "VIBE_TEST_ENV_PROBE_378";
 const ABSENT = "VIBE_TEST_ENV_ABSENT_378";
