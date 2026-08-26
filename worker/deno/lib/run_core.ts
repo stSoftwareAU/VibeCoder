@@ -43,6 +43,8 @@ import {
   startCycleTimings,
 } from "./cycle_timings.ts";
 import type { HeartbeatLiveKey } from "./heartbeat.ts";
+// Issue #3897: the audit's live issue snapshot, forwarded to the census.
+import type { ProbedIssue } from "./idle_detect_diagnostics.ts";
 import { formatInFlightHold, InFlightRepoRegistry } from "./in_flight_repos.ts";
 import type {
   ProcessedIssueReason,
@@ -895,10 +897,20 @@ export interface RunCoreDeps {
    * Best-effort — any throw is caught by the loop and logged so an
    * audit failure never aborts the main loop. Optional so test deps
    * can omit it.
+   *
+   * Issue #3897: the hook may also return `issuesByRepo` — the live issue
+   * snapshot the audit just probed, keyed by repo. The loop forwards it to
+   * `runIdleDecisionCensus` so both instruments classify the same list; see
+   * that hook's docs for why.
    */
   runIdleDetectAudit?: (
     info: { tick: number; scanFoundClaimable: boolean },
-  ) => Promise<{ claimableTotal: number } | void>;
+  ) => Promise<
+    {
+      claimableTotal: number;
+      issuesByRepo?: Readonly<Record<string, readonly ProbedIssue[]>>;
+    } | void
+  >;
 
   /**
    * Idle-decision claimable-work census hook (Issue #2811).
@@ -923,9 +935,20 @@ export interface RunCoreDeps {
    * `top-priority`/`work-on`/`low-priority` issue — even one merely
    * *deferred* this cycle by `nice`/rotation/cooldown. A `void` return (or
    * a throw) is treated as "no inversion detected" so the filer still runs.
+   *
+   * Issue #3897: `issuesByRepo` carries the idle-detect audit's live probe
+   * from this same gate, keyed by repo. The census classifies that snapshot
+   * in preference to its own cached read, because the two instruments
+   * disagreeing on *timing* looks identical in the log to them disagreeing
+   * on *gates* — and the latter is the only disagreement worth alerting on.
+   * Repos the audit could not probe are absent from the record, and the
+   * census falls back to the cache for them.
    */
   runIdleDecisionCensus?: (
-    info: { decisionPoint: "filing" | "selection" },
+    info: {
+      decisionPoint: "filing" | "selection";
+      issuesByRepo?: Readonly<Record<string, readonly ProbedIssue[]>>;
+    },
   ) => Promise<{ inversionDetected: boolean } | void>;
 
   /**
@@ -3882,6 +3905,11 @@ export async function runCoreLoop(
             // makes its decision. Best-effort — any throw is caught
             // and logged so an audit failure never aborts the loop.
             let auditClaimableTotal: number | null = null;
+            // Issue #3897: the audit's live per-repo issue snapshot, handed
+            // to the census below so both instruments classify one list.
+            let auditIssuesByRepo:
+              | Readonly<Record<string, readonly ProbedIssue[]>>
+              | undefined;
             if (deps.runIdleDetectAudit) {
               idleDetectTick += 1;
               try {
@@ -3894,6 +3922,9 @@ export async function runCoreLoop(
                   typeof auditResult.claimableTotal === "number"
                 ) {
                   auditClaimableTotal = auditResult.claimableTotal;
+                }
+                if (auditResult !== undefined && auditResult.issuesByRepo) {
+                  auditIssuesByRepo = auditResult.issuesByRepo;
                 }
               } catch (auditErr) {
                 const msg = auditErr instanceof Error
@@ -3916,6 +3947,7 @@ export async function runCoreLoop(
               try {
                 const censusResult = await deps.runIdleDecisionCensus({
                   decisionPoint: "filing",
+                  issuesByRepo: auditIssuesByRepo,
                 });
                 if (
                   censusResult !== undefined &&

@@ -393,6 +393,31 @@ function countUnblocked(
   return { counts, prBlocked, streamOccupied, mergedPrBlocked };
 }
 
+/**
+ * Choose which issue list a repo's census entry is built from (Issue #3897).
+ *
+ * `probed` is the idle-detect audit's **live** snapshot from this same
+ * decision gate; `readCached` falls back to the 600 s `issues_all` cache the
+ * census has always used. The audit fetched fresh and the census read the
+ * cache, so a sibling host's claim was visible to one instrument and not the
+ * other: on 2026-08-26 `stSoftwareAU/NEAT-AI#3871` was assigned at 20:31:05Z,
+ * the audit saw it 3 s later (`claimable=1`) and the census still did not
+ * 87 s after that (`work_on=3 stream_occupied=0`), so `inversion_signal=true`
+ * held against a scan that was right and the streak escalated into
+ * NEAT-AI#3897. Sharing one snapshot makes a timing disagreement impossible;
+ * only a genuine difference of *gates* can raise the signal now.
+ *
+ * A repo the audit could not probe has **no** entry (never an empty one), so
+ * a failed probe falls back to the cache instead of being silently reported
+ * as a repo with nothing to do.
+ */
+export async function resolveCensusIssues<T>(
+  probed: readonly T[] | undefined,
+  readCached: () => Promise<readonly T[]>,
+): Promise<readonly T[]> {
+  return probed ?? await readCached();
+}
+
 /** Derive the availability verdict from a repo's open issues. */
 function availabilityFor(
   issues: CensusIssue[],

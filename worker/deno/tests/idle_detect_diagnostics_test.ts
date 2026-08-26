@@ -1019,3 +1019,64 @@ Deno.test("auditClaimableState - a failing merged-PR fetch never blocks the audi
 
   assertEquals(result.claimableTotal, 1);
 });
+
+Deno.test("auditClaimableState - publishes the live snapshot it classified (Issue #3897)", async () => {
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/NEAT-AI"],
+    workerUser: "stservice",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        {
+          number: 3871,
+          labels: [{ name: "work-on" }],
+          assignees: [{ login: "stservice" }],
+          milestone: { title: "#3861" },
+        },
+        {
+          number: 3866,
+          labels: [{ name: "work-on" }],
+          assignees: [],
+          milestone: { title: "#3861" },
+        },
+      ])),
+    log: () => {},
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  const snapshot = result.perRepo[0];
+  assert(snapshot !== undefined, "the audit must report the probed repo");
+  // The census reads this snapshot instead of its own cache, so it must
+  // carry every field the census classifies on.
+  assertEquals(snapshot.issues, [
+    {
+      number: 3871,
+      labels: ["work-on"],
+      assignees: ["stservice"],
+      milestone: "#3861",
+    },
+    { number: 3866, labels: ["work-on"], assignees: [], milestone: "#3861" },
+  ]);
+});
+
+Deno.test("auditClaimableState - a failed probe publishes no snapshot (Issue #3897)", async () => {
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/NEAT-AI"],
+    workerUser: "stservice",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () => Promise.reject(new Error("gh: rate limited")),
+    log: () => {},
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  const snapshot = result.perRepo[0];
+  assert(snapshot !== undefined, "the audit must report the probed repo");
+  assertEquals(snapshot.reason, "probe_error");
+  // Absent, never `[]` — an empty list would tell the census this repo has
+  // no open issues, which is exactly the silent failure to avoid.
+  assertEquals(snapshot.issues, undefined);
+});

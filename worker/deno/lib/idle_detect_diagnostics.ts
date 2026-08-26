@@ -130,6 +130,20 @@ export type ClaimableSkipReason =
   | "probe_error";
 
 /**
+ * An open issue exactly as the audit's live probe saw it (Issue #3897).
+ *
+ * Deliberately the same shape the idle-decision census classifies, so the
+ * census can be handed this snapshot instead of reading its own — see
+ * {@link RepoClaimableSnapshot.issues}.
+ */
+export interface ProbedIssue {
+  number: number;
+  labels: string[];
+  assignees: string[];
+  milestone: string;
+}
+
+/**
  * Audit verdict for a single repo. `total_open` counts every open issue
  * gh reports (capped at the probe's `--limit`); `claimable` is the
  * subset that passes every gate. `reason` is `"has_claimable"` when
@@ -140,6 +154,20 @@ export interface RepoClaimableSnapshot {
   totalOpen: number;
   claimable: number;
   reason: ClaimableSkipReason;
+  /**
+   * The issues this probe classified (Issue #3897).
+   *
+   * The audit fetches live; the census reads the 600 s `issues_all` cache,
+   * so a claim made by a sibling host mid-cycle was visible to one and not
+   * the other and the two instruments contradicted each other for up to ten
+   * minutes. Publishing the probed list lets the caller feed the census the
+   * *same* snapshot, so a disagreement can only ever be a difference of
+   * gates, never of timing.
+   *
+   * Absent when `reason === "probe_error"` — there is no snapshot to share,
+   * and an empty list would read as "this repo has no open issues".
+   */
+  issues?: ProbedIssue[];
   /** When `reason === "probe_error"`, the gh / parse error message. */
   errorMessage?: string;
   /**
@@ -696,6 +724,14 @@ export async function auditClaimableState(
       totalOpen: issues.length,
       claimable: claimableCount,
       reason,
+      // Issue #3897: publish the live snapshot so the census can classify
+      // exactly what the audit classified.
+      issues: issues.map((i) => ({
+        number: i.number,
+        labels: i.labels,
+        assignees: i.assignees,
+        milestone: i.milestone,
+      })),
     });
     // Issue #4037: gh answered for this repo, so the identity can still
     // see it — the one outcome that clears a prior denial count.

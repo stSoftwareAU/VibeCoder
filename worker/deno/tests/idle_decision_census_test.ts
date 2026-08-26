@@ -23,6 +23,7 @@ import {
   type CensusIssue,
   formatIdleDecisionCensus,
   type RepoCensusInput,
+  resolveCensusIssues,
 } from "../lib/idle_decision_census.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 
@@ -676,3 +677,37 @@ Deno.test("formatter - per-repo line carries the merged_pr_blocked count (GRQ#44
   assert(line.includes("work_on=0"));
   assert(line.includes("inversion_signal=false"));
 });
+
+Deno.test(
+  "resolveCensusIssues - the audit's live snapshot wins over the cache (Issue #3897)",
+  async () => {
+    let cacheReads = 0;
+    const live = [{ number: 3871, assignees: ["stservice"] }];
+
+    const chosen = await resolveCensusIssues(live, () => {
+      cacheReads += 1;
+      // The stale entry that held the inversion open: same issue, still
+      // showing unassigned 87 s after the claim landed.
+      return Promise.resolve([{ number: 3871, assignees: [] }]);
+    });
+
+    assertEquals(chosen, live);
+    assertEquals(cacheReads, 0, "a live snapshot must not re-read the cache");
+  },
+);
+
+Deno.test(
+  "resolveCensusIssues - a repo the audit could not probe falls back to the cache (Issue #3897)",
+  async () => {
+    const cached = [{ number: 3866, assignees: [] }];
+
+    const chosen = await resolveCensusIssues(
+      undefined,
+      () => Promise.resolve(cached),
+    );
+
+    // Absent means "no snapshot", never "no open issues" — reporting the
+    // repo as empty would hide real work behind a failed probe.
+    assertEquals(chosen, cached);
+  },
+);

@@ -20,6 +20,7 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import type { ProbedIssue } from "../lib/idle_detect_diagnostics.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -240,5 +241,84 @@ Deno.test(
     assert(
       logs.some((l) => l.includes("Idle-decision census failed (continuing)")),
     );
+  },
+);
+
+Deno.test(
+  "run_core - the audit's live issue snapshot reaches the census (Issue #3897)",
+  async () => {
+    let cycleCount = 0;
+    let nowValue = 0;
+    const received: Array<
+      Readonly<Record<string, readonly ProbedIssue[]>> | undefined
+    > = [];
+    const probed: ProbedIssue[] = [{
+      number: 3871,
+      labels: ["work-on"],
+      assignees: ["stservice"],
+      milestone: "#3861",
+    }];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      runIdleDetectAudit: () =>
+        Promise.resolve({
+          claimableTotal: 0,
+          issuesByRepo: { "stSoftwareAU/NEAT-AI": probed },
+        }),
+      runIdleDecisionCensus: ({ issuesByRepo }) => {
+        received.push(issuesByRepo);
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(received.length, 1);
+    // Same snapshot, not a same-shaped one read a minute later from a cache:
+    // that timing gap is what held `inversion_signal=true` on NEAT-AI while
+    // the scan was right.
+    assertEquals(received[0], { "stSoftwareAU/NEAT-AI": probed });
+  },
+);
+
+Deno.test(
+  "run_core - an audit with no snapshot leaves the census on its own read (Issue #3897)",
+  async () => {
+    let cycleCount = 0;
+    let nowValue = 0;
+    const received: Array<
+      Readonly<Record<string, readonly ProbedIssue[]>> | undefined
+    > = [];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      // A worker built before #3897 — and every probe_error repo — returns
+      // no snapshot. The census must still run, from the cache.
+      runIdleDetectAudit: () => Promise.resolve({ claimableTotal: 0 }),
+      runIdleDecisionCensus: ({ issuesByRepo }) => {
+        received.push(issuesByRepo);
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(received.length, 1);
+    assertEquals(received[0], undefined);
   },
 );

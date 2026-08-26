@@ -547,7 +547,42 @@ excluded by design (it _is_ the idle work). The formatter emits a header line,
 one `[idle-census] … repo=<owner/repo> …` line per repo, and — when the signal
 fired — a single greppable `[idle-census] … ALERT inversion repos=<csv>` line.
 
-The census reads through the iteration-scoped `IssueCache` / `fetchAllIssues`,
+#### One snapshot, two instruments (Issue #3897)
+
+Modelling the same gates is not enough while the two instruments read
+**different snapshots**. The idle-detect audit probes each repo live; the census
+read the shared `issues_all` cache, whose TTL is 600 s and which no sibling
+host's claim invalidates. So a claim landing mid-cycle was visible to one and
+not the other, and the log showed a contradiction that looked exactly like a
+gate bug:
+
+```text
+20:31:05Z  NEAT-AI#3871 assigned to stservice
+20:31:08Z  [idle-detect] repo=stSoftwareAU/NEAT-AI total_open=4 claimable=1 reason=has_claimable
+20:32:32Z  [idle-census] repo=stSoftwareAU/NEAT-AI work_on=3 stream_occupied=0 … inversion_signal=true
+20:32:32Z  [idle-detect] ALERT mis_classification repos=…,stSoftwareAU/NEAT-AI
+```
+
+The audit runs immediately before the census at the same gate, so it now hands
+the census the issue list it just probed and the census classifies that:
+
+```mermaid
+sequenceDiagram
+    participant Audit as idle-detect audit
+    participant Census as idle census
+    Audit->>Audit: live gh issue list per repo
+    Audit-->>Census: issuesByRepo (the probed snapshot)
+    Census->>Census: classify that snapshot — no cache read
+    Note over Audit,Census: a repo whose probe failed is absent,<br/>so the census falls back to the cache
+```
+
+A disagreement between the two can now only mean a difference of *gates* —
+which is the only thing the inversion signal was ever meant to report. A repo
+the audit could not probe carries **no** entry (never an empty one), so a failed
+probe falls back to the cache instead of being reported as a repo with nothing
+to do.
+
+The census falls back to the iteration-scoped `IssueCache` / `fetchAllIssues`,
 so a quiet cycle adds **no** extra issue-list API call (whichever of the census,
 the recovery scan, and the Priority 2 scan runs first populates the shared
 `issues_all` cache). It is fully best-effort: any throw is caught and logged

@@ -154,7 +154,10 @@ import { fetchAllIssues } from "./issue_query.ts";
 import {
   buildIdleDecisionCensus,
   formatIdleDecisionCensus,
+  resolveCensusIssues,
 } from "./idle_decision_census.ts";
+// Issue #3897: the audit's live issue snapshot, shared with the census.
+import type { ProbedIssue } from "./idle_detect_diagnostics.ts";
 
 // Label-based processors
 import { processIssueRefinement } from "./refinement_processor.ts";
@@ -3164,7 +3167,18 @@ export async function createProductionRunCoreDeps(
         // the idle-task filer this iteration when the audit already
         // sees claimable work (Issue #2106 + private-repo-10 #45-#48
         // budget guard).
-        return { claimableTotal: result.claimableTotal };
+        //
+        // Issue #3897: also hand back the live issue snapshot this probe
+        // classified, keyed by repo, so the census at the same gate reads
+        // it instead of the 600 s `issues_all` cache. Repos whose probe
+        // failed carry no `issues` and are simply absent, so the census
+        // falls back to the cache for them rather than being told the repo
+        // is empty.
+        const issuesByRepo: Record<string, readonly ProbedIssue[]> = {};
+        for (const snapshot of result.perRepo) {
+          if (snapshot.issues) issuesByRepo[snapshot.repo] = snapshot.issues;
+        }
+        return { claimableTotal: result.claimableTotal, issuesByRepo };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn("Idle-detect audit failed (continuing)", { error: msg });
@@ -3184,12 +3198,23 @@ export async function createProductionRunCoreDeps(
     // Logs route through `logger.info` for the same visibility reason as
     // the filer and audit above. Best-effort — any throw is caught here
     // and logged so a census failure never reaches the loop's catch.
-    runIdleDecisionCensus: async ({ decisionPoint }) => {
+    runIdleDecisionCensus: async ({ decisionPoint, issuesByRepo }) => {
       try {
         const host = `${Deno.hostname()}:${Deno.pid}`;
         const perRepo = await Promise.all(
           repos.map(async (repo) => {
-            const issues = await fetchAllIssues(repo, issueCache);
+            // Issue #3897: classify the idle-detect audit's live probe from
+            // this same gate when it has one, so the two instruments cannot
+            // disagree on timing — see `resolveCensusIssues`.
+            const issues = await resolveCensusIssues<{
+              number: number;
+              labels: string[];
+              assignees: string[];
+              milestone: string;
+            }>(
+              issuesByRepo?.[repo],
+              () => fetchAllIssues(repo, issueCache),
+            );
             // Issue #3526: read the repo's open PRs (through the shared
             // `prs_open_all` cache) so the census can exclude issues the
             // Priority 2 scan would refuse under getBlockingPRForIssue —
