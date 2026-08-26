@@ -163,6 +163,7 @@ Deno.test("heartbeat - stopHeartbeat is safe to call when not started", async ()
     id: "nonexistent_org_repo_999",
     repo: "org/repo",
     issueNumber: 999,
+    kind: "issue",
   };
   await stopHeartbeat(fakeHandle);
 });

@@ -2412,15 +2412,17 @@ export async function createProductionRunCoreDeps(
         (message: string) => logger.warn(message),
       ),
 
-    // Slot-aware sweep (Issue #4178): only heartbeats no live slot owns are
-    // stopped, so a sibling slot's healthy heartbeat is never mistaken for
-    // a leak. The pool calls this; the serial loop keeps the variant below.
+    // Slot-aware sweep (Issue #4178): only heartbeats no live hold owns are
+    // stopped, so a sibling slot's — or the maintenance lane's (Issue #391) —
+    // healthy heartbeat is never mistaken for a leak. The pool calls this;
+    // the serial loop keeps the variant below.
     async sweepLeakedHeartbeatsExcept(live) {
       const leaked = await stopHeartbeatsExcept(live);
       for (const handle of leaked) {
         logger.warn(
-          `Swept leaked heartbeat before next claim: ${handle.repo}#${handle.issueNumber} — ` +
-            `its owning processor failed to stop it (Issue #3760); live slots: ${live.length}`,
+          `Swept leaked heartbeat before next claim: ${handle.kind} ` +
+            `${handle.repo}#${handle.issueNumber} — its owning processor ` +
+            `failed to stop it (Issue #3760); live holds: ${live.length}`,
         );
       }
     },
