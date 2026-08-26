@@ -13,9 +13,19 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { CONTAINER_IMAGE_INPUTS } from "../lib/container_image_hash.ts";
+import {
+  assertImageInstalledProvider,
+  IMAGE_AGENT_PROVIDERS_ENV,
+  imageAgentProviderIds,
+} from "../lib/agent_provider.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 const FRAGMENT = `${REPO_ROOT}container/providers/deepseek.sh`;
@@ -237,4 +247,37 @@ Deno.test("install-providers.sh - an unknown provider in the set is still reject
   assertStringIncludes(result.stderr, "Unsupported coding-agent provider");
   // The error names the fragments that do exist, deepseek among them.
   assertStringIncludes(result.stderr, "deepseek");
+});
+
+// ---------------------------------------------------------------------------
+// The image stamp tells the worker which CLIs it actually carries
+// ---------------------------------------------------------------------------
+
+/** An environment lookup holding only the image's provider-set stamp. */
+function stamped(set: string): (name: string) => string | undefined {
+  return (name) => name === IMAGE_AGENT_PROVIDERS_ENV ? set : undefined;
+}
+
+Deno.test("deepseek provider - a claude,deepseek image stamps both ids", () => {
+  assertEquals(
+    imageAgentProviderIds({ env: stamped("claude,deepseek") }),
+    ["claude", "deepseek"],
+  );
+  // The stamp is the Containerfile's AGENT_PROVIDERS verbatim, so the set the
+  // build installed is the set the worker checks against.
+  assertImageInstalledProvider("deepseek", { env: stamped("claude,deepseek") });
+  assertImageInstalledProvider("claude", { env: stamped("claude,deepseek") });
+});
+
+Deno.test("deepseek provider - a Claude-only image refuses a deepseek run", () => {
+  const error = assertThrows(
+    () => assertImageInstalledProvider("deepseek", { env: stamped("claude") }),
+    Error,
+    "deepseek",
+  );
+  // Fail loud (Issue #3234): it names the set the image does carry and how to
+  // get the missing one, rather than silently falling back to claude — which
+  // would run the wrong agent under the right id.
+  assertStringIncludes(error.message, "Installed: claude");
+  assertStringIncludes(error.message, "AGENT_PROVIDERS");
 });

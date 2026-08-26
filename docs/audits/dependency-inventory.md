@@ -37,6 +37,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | --- | --- | --- | --- | --- |
 | claude | provider | 2.1.223 | amd64: 98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7<br>arm64: 60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac | exact version + SHA-256 verified |
 | codex | provider | 0.147.0 | amd64: 0246e2e773834e07f0fb5249ed6ebad12e4591e608f8c7bb97dd6a9690544c36<br>arm64: eb677c80f666b1ab8b4b1d083b66e8d614b1281d960bb6f9fd8ca98f58b38b90 | exact version + SHA-256 verified |
+| deepseek | provider | 2.1.223 | amd64: 98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7<br>arm64: 60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac | exact version + SHA-256 verified |
 | gemini | provider | 0.55.1 | noarch: 4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e | exact version + SHA-256 verified |
 | gh | tool | 2.97.0 | amd64: a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112<br>arm64: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 | exact version + SHA-256 verified |
 | jq | tool | 1.8.2 | amd64: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f<br>arm64: 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 | exact version + SHA-256 verified |
