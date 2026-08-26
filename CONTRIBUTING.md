@@ -93,6 +93,12 @@ additionally runs shellcheck over the repo's shell scripts — the gate
 itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.
 
+Run it in the **foreground** and let it finish — each check reports to stderr as
+it settles, so you can watch progress. Never background it and poll with a
+`sleep`/`pgrep` wait loop (Issue #399). While iterating, prefer the fast checks
+(`deno fmt`, `deno lint`, `deno check`, and the test files you touched); the
+full gate is the last step before the PR.
+
 CI-enforced workflows live under `.github/workflows/`, including
 `validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
 `semgrep.yml`. A green local `./quality.sh` is the best predictor of a

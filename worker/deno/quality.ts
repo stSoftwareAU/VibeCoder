@@ -50,10 +50,17 @@ async function main(): Promise<void> {
   const workDir = Deno.env.get("WORK_DIR");
   const cacheDir = workDir ? `${workDir}/.vibe-cache` : undefined;
 
+  // Issue #399: stream each check as it settles. The gate printed nothing
+  // until every check had finished — up to 16 minutes — so an agent driving
+  // it could not tell a slow run from a hung one, and backgrounded it behind
+  // a `sleep`/`pgrep` poll loop that ate the rest of its execute budget.
+  // Progress goes to stderr so stdout stays exactly the machine-readable
+  // detail-then-summary stream that callers already parse.
   const config: QualityGateConfig = {
     scriptDir,
     denoDir,
     options,
+    onProgress: (line) => console.error(line),
     ...(cacheDir ? { cacheDir } : {}),
   };
 
