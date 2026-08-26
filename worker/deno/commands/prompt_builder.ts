@@ -17,6 +17,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import type { AgentIdentity } from "../lib/coding_guidelines_overlay.ts";
 import {
   buildCiFixPrompt,
   buildCodingGuidelines,
@@ -34,7 +35,7 @@ export const promptBuilderCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
-    _config: WorkerConfig,
+    config: WorkerConfig,
   ): Promise<CommandResult> {
     const operation = String(args["operation"] ?? "");
     const promptsDir = args["prompts-dir"]
@@ -191,9 +192,19 @@ export const promptBuilderCommand: Command = {
       case "build-coding-guidelines": {
         const skipScreenshots = args["skip-screenshots"] === true ||
           args["skip-screenshots"] === "true";
+        // Identity for the per-model overlay (Issue #374): explicit
+        // --provider/--model win, else the configured active provider. With
+        // no overlay authored for it the output is the agnostic baseline.
+        const identity: AgentIdentity = {
+          provider: args["provider"]
+            ? String(args["provider"])
+            : config?.agentProvider,
+          model: args["model"] ? String(args["model"]) : undefined,
+        };
         const result = await buildCodingGuidelines(
           skipScreenshots,
           promptsDir,
+          identity,
         );
         if (!result.ok) {
           return { success: false, message: result.error.message };

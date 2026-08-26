@@ -366,6 +366,55 @@ graph TD
 
 > **⚠️ Existing versions are immutable:** Do NOT modify an existing `v*.md` file. Once committed, a prompt version is frozen. This is enforced by `quality.sh`.
 
+### Per-model coding-guidelines overlays
+
+The shared `coding_guidelines` template is model-agnostic, so genuinely
+model-specific working-style guidance lives in an **overlay** prompt type
+(Issue #374). An overlay is an ordinary versioned prompt directory named after
+the agent identity it applies to:
+
+| Directory | Applies to |
+|-----------|------------|
+| `prompts/coding_guidelines_<provider>/` | Every run of that provider (`claude`, `codex`, `gemini`) |
+| `prompts/coding_guidelines_<provider>_<model>/` | That provider running that model (e.g. `..._claude_opus`) |
+
+`buildCodingGuidelines()` takes an optional identity, resolves the
+model-specific directory first and the provider-wide one second, and appends
+the winning overlay **behind** the agnostic baseline inside the single
+`<coding_guidelines>` wrapper. Rules:
+
+- **No identity, or no directory for it → the baseline, byte for byte.** That
+  is the default and the common path; an unknown identity never throws and
+  never emits an empty heading.
+- **A directory that exists but carries no `vN.md` fails loud** — it was
+  authored deliberately, so "no overlay" would mask the mistake.
+- Identity ids are slugged to a single path segment (`[a-z0-9-]`), so a
+  malformed provider id cannot escape `prompts/`.
+- `skip_screenshot_check` repositories strip Playwright guidance from the
+  overlay as well as the baseline.
+- **The issue-prompt cache is not identity-aware.** `computeStaticPromptHash()`
+  (`lib/prompt_builder_cache.ts`) keys the cached system prompt on the repo and
+  the static templates alone, so `buildIssuePrompt()` is deliberately called
+  with no identity — an overlay must never ride that path until the identity is
+  folded into that hash, or one provider's cached system prompt would be served
+  to another's run.
+
+The shipped worked example is
+[`prompts/coding_guidelines_claude/`](https://github.com/stSoftwareAU/VibeCoder/tree/main/prompts/coding_guidelines_claude).
+Which observed behaviour justifies a given overlay is recorded in
+[MODEL-AND-CACHING.md § Model-generation prompt tuning](MODEL-AND-CACHING.md#model-generation-prompt-tuning).
+
+```mermaid
+flowchart LR
+    B["prompts/coding_guidelines/<br/>latest vN.md — agnostic baseline"] --> W
+    I["identity<br/>provider (+ model)"] --> O
+    O["prompts/coding_guidelines_&lt;id&gt;/<br/>latest vN.md — optional overlay"] -.appended when present.-> W
+    W["&lt;coding_guidelines&gt; … &lt;/coding_guidelines&gt;"]
+    style B fill:#40916c,stroke:#2d6a4f,color:#fff
+    style O fill:#3a86ff,stroke:#023e8a,color:#fff
+    style W fill:#5c4d7d,stroke:#3c2f5a,color:#fff
+```
+
 **CI fix enrichment**: The latest `ci_fix` template carries a
 `{{PR_FAILURE_ACTIONS}}` placeholder. The worker substitutes an authoritative
 CI log excerpt into that placeholder before invoking Claude — from a

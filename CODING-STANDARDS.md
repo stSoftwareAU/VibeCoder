@@ -151,6 +151,47 @@ genuinely need to name a specific version, use the wording **"from vN onward"**
 rather than a literal `prompts/<type>/vN.md` filename. The `docs prompt versions`
 quality check enforces this.
 
+## Language-Agnostic Standards vs Per-Language Buckets
+
+This document and the injected `prompts/coding_guidelines/` template carry the
+**language-agnostic** rules — fail-loud, security, commit safety, TDD, quality
+gates. They apply to every run in every repository.
+
+**Language-specific** rules live in per-language best-practice buckets under
+[`prompts/best_practices/buckets/`](prompts/best_practices/buckets/) and are
+injected only when the repository uses that language, so a Rust repo receives
+the Rust rules and a TypeScript repo does not.
+[`worker/deno/lib/best_practices_bucket_picker.ts`](worker/deno/lib/best_practices_bucket_picker.ts)
+selects the bucket from the languages detected in the repository
+([`language_detector.ts`](worker/deno/lib/language_detector.ts)). The operator
+manual is [docs/BEST-PRACTICES-SCAN.md](docs/BEST-PRACTICES-SCAN.md).
+
+| Bucket | Covers |
+| --- | --- |
+| [`rust`](prompts/best_practices/buckets/rust.md) | Error handling, ownership and lifetimes, `unsafe`, Cargo build profiles |
+| [`typescript`](prompts/best_practices/buckets/typescript.md) | Type safety, `tsconfig` strictness, lint rules, module structure |
+| [`java`](prompts/best_practices/buckets/java.md) | Effective Java items, style guide conformance, API design |
+| [`react`](prompts/best_practices/buckets/react.md) | Hooks rules, rendering and state, component accessibility |
+| [`html`](prompts/best_practices/buckets/html.md) | Living-standard markup, WCAG and ARIA accessibility |
+| [`terraform`](prompts/best_practices/buckets/terraform.md) | Module composition, state handling, provider/version pinning |
+| [`aws-cloudformation`](prompts/best_practices/buckets/aws-cloudformation.md) | Well-Architected pillars, template structure, stack safety |
+| [`general`](prompts/best_practices/buckets/general.md) | Repo-level hygiene only — never language-specific code quality |
+
+**Which surface does a new rule belong on?** If it holds regardless of language,
+it belongs here. If it names a language, a framework, or their tooling, it
+belongs in that language's bucket.
+
+**Worked example.** "Never `unwrap()`" is a Rust rule, so it is not in this
+document: [`buckets/rust.md`](prompts/best_practices/buckets/rust.md) carries
+"prefer `?` propagation and `Result` over `unwrap()` / `expect()` outside tests,
+examples, and clearly unreachable branches". Searching here for "unwrap" or
+"Rust" should land you on that file in one hop — that is the whole point of this
+section.
+
+Every bucket file must be listed above, and every link must resolve:
+`worker/deno/tests/bucket_docs_test.ts` fails CI when a ninth bucket is added
+without documenting it here.
+
 ## Deno / TypeScript Conventions
 
 All business logic lives in `worker/deno/` as type-safe TypeScript. New logic
@@ -263,15 +304,17 @@ proactively:
 
 ## Prompt Engineering Guidance
 
-The top-tier reasoning phases route to the current top model generation —
-**Fable 5**, with automatic fallback to **Opus 5** when Fable is unavailable
-(see [docs/MODEL-AND-CACHING.md](docs/MODEL-AND-CACHING.md) for the per-phase
-routing chain and the Fable-unavailable self-heal). The guidance below is
-model-generation-agnostic good practice for authoring prompt templates and
-agent instructions; it is not tied to any superseded model. Where a rule does
+The guidance below is model-generation-agnostic good practice for authoring
+prompt templates and agent instructions; it names no model generation by
+design. Which generation runs which phase — the per-phase routing chain and
+the self-heal that reroutes when the top-tier generation is unavailable — is
+recorded once, in
+[Model Selection](docs/MODEL-AND-CACHING.md#model-selection). Where a rule does
 depend on the model generation, it defers to
 [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning),
 which records what each generation needs and what was tried and reversed.
+`worker/deno/tests/coding_standards_model_agnostic_test.ts` fails the quality
+gate if a model-generation name reappears in this document.
 
 - **Write precise, unambiguous instructions.** State exactly what you want done
   and to which items. Avoid vague qualitative language such as "appropriate" or
@@ -282,9 +325,10 @@ which records what each generation needs and what was tried and reversed.
   force longer output.
 - **Match verification scaffolding to the model generation.** An explicit
   self-verification checkpoint ("After generating code, review your output for
-  correctness before proceeding") helps a generation that does not self-verify;
-  on a generation that already does — Opus 5 — it is redundant and encourages
-  over-work, which is why the current templates omit it. Check
+  correctness before proceeding") helps a generation that does not self-verify.
+  Add it only for such a generation and omit it for one that self-verifies
+  unprompted, where the ritual re-check is redundant and encourages over-work —
+  the reason the current templates omit it. Check
   [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning)
   before adding or removing such scaffolding.
 - **State when and why a tool should be used** rather than assuming the model

@@ -1938,6 +1938,35 @@ result — do **not** re-add the 4.8-era delegation encouragement or the
 self-verification checkpoint while Opus 5 (or a later generation with the same
 behaviours) serves those phases.
 
+##### Where the framing lives (v42 onward)
+
+`coding_guidelines` v34–v41 carried the four responses above under a section
+headed **`Opus 5 Working Style`**, opening "You self-verify as you work,
+delegate readily, and tend to write at length." `buildCodingGuidelines()` loads
+the latest version for **every** run, including the Codex and Gemini providers,
+so that framing asserted one generation's traits to models that do not share
+them. From v42 the shared `coding_guidelines` template is model-agnostic: the
+section is titled `Working Style` and states the four directives as rules, with
+"Trust the quality gate" replacing the "you already check your work as you go"
+premise. The behaviours themselves are prior tuning results and are retained in
+the table above — this section, not the template, is where a generation's
+observed behaviour is recorded.
+
+##### Where tuning is applied (Issue #374)
+
+This section records a generation's observed behaviour; the **overlay prompts**
+are where a tuning derived from it is applied. `buildCodingGuidelines()` takes
+an optional agent identity — the active provider from `lib/agent_provider.ts`
+and, where the caller knows it, the resolved model — and appends
+`prompts/coding_guidelines_<provider>[_<model>]/` behind the agnostic baseline,
+inside the one `<coding_guidelines>` wrapper. The worked example is
+`prompts/coding_guidelines_claude/`, which restates the four directives'
+premise for Claude runs. A caller with no identity, or an identity with no
+overlay authored, gets the agnostic baseline unchanged — so a Claude tuning
+can never reach a Codex or Gemini run. The mechanics (naming, precedence,
+immutability, the `skip_screenshot_check` interaction) are documented in
+[EXTENDING.md § Per-model coding-guidelines overlays](EXTENDING.md#per-model-coding-guidelines-overlays).
+
 Prompt-authoring guidance in
 [CODING-STANDARDS.md](../CODING-STANDARDS.md#prompt-engineering-guidance) is
 model-generation-agnostic by design; anything that depends on the generation
