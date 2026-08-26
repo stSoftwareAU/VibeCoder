@@ -189,7 +189,7 @@ flowchart TD
 | 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
 | 1.55 | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs |
 | 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
-| 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick; labels the PR `merge-conflict`, bounded to two attempts before `needs-human` |
+| 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick; labels the PR `merge-conflict`, bounded to two **concluded** attempts before `needs-human`. An attempt disrupted before it concluded is re-attempted rather than counted, bounded at 3 |
 | 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |
 | 1.63 | Blocking-PR stall watchdog | Detect and escalate PRs that block `work-on` issues; the fixes stay with 1.55 and 1 |
 | 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
