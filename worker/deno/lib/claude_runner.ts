@@ -1305,6 +1305,10 @@ export async function runClaudeWithTimeout(
           : {}),
         treeState: combinedTreeState,
         extensionsGranted,
+        // The supervisor's wall-clock cap (Issue #421): a grant that would
+        // cross it is clamped to it, and a run with no runway left is
+        // refused so the worker's own kill lands first.
+        ...(opts.ceilingMs !== undefined ? { ceilingMs: opts.ceilingMs } : {}),
       }, opts.policy);
 
       const elapsedSeconds = Math.round((nowMs - startMs) / 1000);

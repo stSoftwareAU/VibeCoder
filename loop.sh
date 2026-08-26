@@ -143,8 +143,17 @@ export VIBE_SUPERVISOR_RECORDS_OUTCOME=1
 #
 # Default 5400 s: the 3600 s run duration plus a wide margin for a slow but
 # genuinely progressing shutdown. Set VIBE_RUN_MAX_SECONDS=0 to disable.
+#
+# The cap is exported (Issue #421) because the worker has to see it: progress
+# extensions re-arm the run deadline for as long as the agent keeps making
+# progress, and a policy that cannot see this cap would let a genuinely
+# progressing run walk into the `timeout` SIGTERM below — no orderly WIP
+# commit window, and a launcher failure recorded against the host. The worker
+# reads it with VIBE_RUN_STARTED_EPOCH (exported per iteration, just before
+# the run starts) and stops itself first. `0` is carried through as "disabled"
+# and never as "cap at zero".
 ################################################################################
-VIBE_RUN_MAX_SECONDS="${VIBE_RUN_MAX_SECONDS:-5400}"
+export VIBE_RUN_MAX_SECONDS="${VIBE_RUN_MAX_SECONDS:-5400}"
 VIBE_RUN_KILL_GRACE_SECONDS="${VIBE_RUN_KILL_GRACE_SECONDS:-120}"
 
 # `timeout` exits 124 on expiry; 137 when its own SIGKILL was what stopped the
@@ -308,6 +317,11 @@ while true; do
     # stopped below when the run ends.
     probe_control_plane &
     probe_pid=$!
+    # Anchor the cap for the worker (Issue #421): epoch-seconds captured here,
+    # immediately before `timeout` starts counting, so the ceiling the worker
+    # computes and the deadline the supervisor enforces describe the same run.
+    VIBE_RUN_STARTED_EPOCH="$(date +%s)"
+    export VIBE_RUN_STARTED_EPOCH
     run_under_deadline ./run.sh || run_status=$?
     kill "${probe_pid}" 2>/dev/null || true
     wait "${probe_pid}" 2>/dev/null || true

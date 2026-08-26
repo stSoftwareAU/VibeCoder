@@ -197,6 +197,56 @@ Deno.test("run.sh - passes the real host identity into the container (VIBE_HOST_
   }
 });
 
+Deno.test("run.sh - passes the supervisor run cap into the container (Issue #421)", async () => {
+  // The bound the worker's progress-extension policy applies. If a launcher
+  // refactor drops this passthrough the worker silently applies no ceiling
+  // and a progressing run walks into loop.sh's `timeout` SIGTERM — no
+  // orderly WIP commit window, and a launcher failure against the host.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    VIBE_RUN_MAX_SECONDS: "10800",
+    VIBE_RUN_STARTED_EPOCH: "1700000000",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "run");
+    assert(args, `no container run was recorded: ${outcome.stderr}`);
+    for (
+      const expected of [
+        "VIBE_RUN_MAX_SECONDS=10800",
+        "VIBE_RUN_STARTED_EPOCH=1700000000",
+      ]
+    ) {
+      assert(
+        args.includes(expected),
+        `container run must carry ${expected}; got: ${args.join(" ")}`,
+      );
+    }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - no supervisor cap in the environment leaves the worker uncapped (Issue #421)", async () => {
+  // A launcher invoked outside loop.sh publishes nothing, and the worker
+  // extends exactly as it did before the cap existed.
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const args = await recorded(harness, "run");
+    assert(args, `no container run was recorded: ${outcome.stderr}`);
+    assert(
+      !args.some((arg) => arg.startsWith("VIBE_RUN_")),
+      `no run-cap env should be passed; got: ${args.join(" ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - never mounts the host home, a runtime socket, or opens the container up", async () => {
   const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
   try {

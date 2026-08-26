@@ -38,6 +38,7 @@ import {
 } from "../lib/containerfile_strip.ts";
 import { detectContainerRuntime } from "../lib/container_runtime.ts";
 import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
+import { readRunCapPassthrough } from "../lib/run_hard_cap.ts";
 import { formatGb, probeDiskReading } from "../lib/host_disk.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
 import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
@@ -244,6 +245,12 @@ export async function buildLaunchPlanForCommand(
     hostDisk = undefined;
   }
 
+  // The supervisor's wall-clock cap (Issue #421), forwarded so the worker's
+  // progress-extension policy can stop the run before loop.sh's `timeout`
+  // does. Absent — run.sh invoked outside loop.sh — means no ceiling inside
+  // the container, exactly as before.
+  const runCap = readRunCapPassthrough((name) => Deno.env.get(name));
+
   // Host-aware VM sizing. systemMemoryInfo needs its --allow-sys entry in
   // the launchers; an unreadable value falls back to the floor (with a
   // stderr note), never to the runtime's 1 GiB default.
@@ -298,6 +305,7 @@ export async function buildLaunchPlanForCommand(
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),
+    ...(runCap ? { runCap } : {}),
     resources,
     ...(containerfile ? { containerfile } : {}),
   });

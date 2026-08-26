@@ -391,6 +391,90 @@ Deno.test({
 });
 
 // ===========================================================================
+// Issue #421 — the cap is published to the worker, not just enforced
+// ===========================================================================
+
+/** The `VIBE_RUN_*` environment the stub run.sh actually received. */
+async function readRunEnv(tmpDir: string): Promise<Record<string, string>> {
+  const text = await Deno.readTextFile(join(tmpDir, "run-env.log"))
+    .catch(() => "");
+  const env: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const eq = line.indexOf("=");
+    if (eq > 0) env[line.slice(0, eq)] = line.slice(eq + 1);
+  }
+  return env;
+}
+
+/** A run.sh stub that records the run-cap environment it was given. */
+const ENV_RECORDING_RUN_STUB = [
+  "#!/bin/bash",
+  'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+  'env | grep "^VIBE_RUN_" >> "$(dirname "$0")/run-env.log" || true',
+  "exit 0",
+].join("\n");
+
+Deno.test({
+  name:
+    "loop.sh #421 - the wall-clock cap and the run's start epoch reach run.sh",
+  // Without this passthrough the worker cannot see the cap, so progress
+  // extensions are unbounded and a progressing run is SIGTERMed by the
+  // supervisor with no orderly WIP commit window.
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: ENV_RECORDING_RUN_STUB });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "10800",
+      VIBE_RUN_KILL_GRACE_SECONDS: "5",
+    });
+    try {
+      const before = Math.floor(Date.now() / 1000);
+      await delay(3000);
+      const env = await readRunEnv(harness.tmpDir);
+      assertEquals(
+        env["VIBE_RUN_MAX_SECONDS"],
+        "10800",
+        `run.sh must see the supervisor cap; got ${JSON.stringify(env)}`,
+      );
+      const started = Number(env["VIBE_RUN_STARTED_EPOCH"]);
+      assert(
+        Number.isInteger(started) && Math.abs(started - before) < 120,
+        `run.sh must see this run's start epoch in seconds; got ${
+          JSON.stringify(env)
+        }`,
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #421 - the default cap is published too, so an unconfigured host is still bounded",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: ENV_RECORDING_RUN_STUB });
+    const child = spawnLoop(harness.tmpDir);
+    try {
+      await delay(3000);
+      const env = await readRunEnv(harness.tmpDir);
+      assertEquals(env["VIBE_RUN_MAX_SECONDS"], "5400");
+      assert(
+        (env["VIBE_RUN_STARTED_EPOCH"] ?? "").length > 0,
+        `the start epoch must be exported; got ${JSON.stringify(env)}`,
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+// ===========================================================================
 // Issue #323 — the control-plane probe
 // ===========================================================================
 
