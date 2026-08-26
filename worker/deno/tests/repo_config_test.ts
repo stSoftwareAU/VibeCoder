@@ -203,6 +203,69 @@ Deno.test("repo_config - buildQualityInstructions uses default quality.sh when r
   assertEquals(result.includes("./quality.sh"), true);
 });
 
+// Issue #399 — the gate must not be the agent's inner loop. An agent that
+// re-runs a multi-minute gate after every edit, or backgrounds it and polls,
+// spends its execute budget waiting instead of working.
+
+Deno.test("repo_config - buildQualityInstructions points the inner loop at the fast checks (Issue #399)", () => {
+  const result = buildQualityInstructions(undefined, "org/any-repo");
+  const lower = result.toLowerCase();
+  assertEquals(
+    lower.includes("fast checks"),
+    true,
+    `guidance must name the cheap inner loop:\n${result}`,
+  );
+  for (const fastCheck of ["formatter", "linter", "type check"]) {
+    assertEquals(
+      lower.includes(fastCheck),
+      true,
+      `guidance must name ${fastCheck} as part of the inner loop:\n${result}`,
+    );
+  }
+  // The old wording sent the agent back to the full gate after every edit.
+  assertEquals(
+    lower.includes("keep running"),
+    false,
+    `guidance must not ask for repeated full-gate runs:\n${result}`,
+  );
+});
+
+Deno.test("repo_config - buildQualityInstructions requires one foreground gate run and forbids poll loops (Issue #399)", () => {
+  const result = buildQualityInstructions(undefined, "org/any-repo");
+  const lower = result.toLowerCase();
+  assertEquals(
+    lower.includes("once, in the foreground"),
+    true,
+    `guidance must ask for a single foreground gate run:\n${result}`,
+  );
+  assertEquals(
+    lower.includes("never start ./quality.sh in the background"),
+    true,
+    `guidance must forbid backgrounding the gate:\n${result}`,
+  );
+  assertEquals(
+    lower.includes("poll"),
+    true,
+    `guidance must name polling as the thing not to do:\n${result}`,
+  );
+});
+
+Deno.test("repo_config - buildQualityInstructions applies the same no-polling rule to a custom command (Issue #399)", () => {
+  const repoConfigs = createRepoConfigMap();
+  // org/repo-b configures `yarn test` as its quality command.
+  const result = buildQualityInstructions(repoConfigs, "org/repo-b");
+  assertEquals(
+    result.includes("Never start yarn test in the background"),
+    true,
+    `the custom command must carry the same guidance:\n${result}`,
+  );
+  assertEquals(
+    result.includes("run yarn test < /dev/null once, in the foreground"),
+    true,
+    `the custom command must be run once in the foreground:\n${result}`,
+  );
+});
+
 // =============================================================================
 // buildReviewerFlags tests
 // =============================================================================

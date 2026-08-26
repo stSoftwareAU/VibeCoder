@@ -120,6 +120,19 @@ plus mermaid, markdownlint, and the docs prompt-version checks. Shell-script
 linting is **not** run by the worker — it is delegated to each target repo's own
 CI.
 
+Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
+line to stdout the moment it settles (Issue #399), ahead of the detailed output
+and the summary table that are still printed at the end. Progress goes to
+stdout rather than stderr on purpose — the worker captures a failing run as
+`stdout + stderr` and quotes the **tail** of it into the remediation prompt and
+the failure comment, so a progress block on stderr would crowd out the failing
+detail those tails exist to carry. Before that, the gate
+printed nothing for up to sixteen minutes, so an agent driving it could not tell
+a slow run from a hung one and backgrounded it behind a `sleep`/`pgrep` poll
+loop that consumed the rest of its execute budget. Callers embedding the gate
+pass `onProgress` on `QualityGateConfig`; omitting it keeps the gate silent
+until it finishes.
+
 ### Testing
 
 All tests use Deno's built-in test framework with `@std/assert`. There are no
