@@ -141,7 +141,9 @@ export class InFlightRepoRegistry {
   heldHeartbeatKeys(): ReadonlyArray<
     { repo: string; issueNumber: number; kind: HeartbeatKind }
   > {
-    return [...this.#held.values()].map(({ repo, issueNumber, maintenance }) => ({
+    return [...this.#held.values()].map((
+      { repo, issueNumber, maintenance },
+    ) => ({
       repo,
       issueNumber,
       kind: maintenance === true ? "pr" as const : "issue" as const,
