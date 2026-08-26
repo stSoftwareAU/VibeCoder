@@ -44,8 +44,14 @@ async function remind(
     source "${setupPath}"
     remind_obsolete_host_work_dirs
   `;
+  // Issue #378: `env` MERGES into the parent environment unless clearEnv is
+  // set, so inside the worker container the real WORK_DIR was inherited and
+  // `${WORK_DIR:-${HOME}/auto-issue-work}` probed the host's actual work dir
+  // instead of the temp fixture — ten tests red on every in-container run.
+  // The child gets exactly what is listed here and nothing else.
   const { code, stdout, stderr } = await new Deno.Command("bash", {
     args: ["-c", script],
+    clearEnv: true,
     env: {
       PATH: `${stubDir}:/usr/bin:/bin`,
       HOME: tmp,
