@@ -151,6 +151,47 @@ genuinely need to name a specific version, use the wording **"from vN onward"**
 rather than a literal `prompts/<type>/vN.md` filename. The `docs prompt versions`
 quality check enforces this.
 
+## Language-Agnostic Standards vs Per-Language Buckets
+
+This document and the injected `prompts/coding_guidelines/` template carry the
+**language-agnostic** rules — fail-loud, security, commit safety, TDD, quality
+gates. They apply to every run in every repository.
+
+**Language-specific** rules live in per-language best-practice buckets under
+[`prompts/best_practices/buckets/`](prompts/best_practices/buckets/) and are
+injected only when the repository uses that language, so a Rust repo receives
+the Rust rules and a TypeScript repo does not.
+[`worker/deno/lib/best_practices_bucket_picker.ts`](worker/deno/lib/best_practices_bucket_picker.ts)
+selects the bucket from the languages detected in the repository
+([`language_detector.ts`](worker/deno/lib/language_detector.ts)). The operator
+manual is [docs/BEST-PRACTICES-SCAN.md](docs/BEST-PRACTICES-SCAN.md).
+
+| Bucket | Covers |
+| --- | --- |
+| [`rust`](prompts/best_practices/buckets/rust.md) | Error handling, ownership and lifetimes, `unsafe`, Cargo build profiles |
+| [`typescript`](prompts/best_practices/buckets/typescript.md) | Type safety, `tsconfig` strictness, lint rules, module structure |
+| [`java`](prompts/best_practices/buckets/java.md) | Effective Java items, style guide conformance, API design |
+| [`react`](prompts/best_practices/buckets/react.md) | Hooks rules, rendering and state, component accessibility |
+| [`html`](prompts/best_practices/buckets/html.md) | Living-standard markup, WCAG and ARIA accessibility |
+| [`terraform`](prompts/best_practices/buckets/terraform.md) | Module composition, state handling, provider/version pinning |
+| [`aws-cloudformation`](prompts/best_practices/buckets/aws-cloudformation.md) | Well-Architected pillars, template structure, stack safety |
+| [`general`](prompts/best_practices/buckets/general.md) | Repo-level hygiene only — never language-specific code quality |
+
+**Which surface does a new rule belong on?** If it holds regardless of language,
+it belongs here. If it names a language, a framework, or their tooling, it
+belongs in that language's bucket.
+
+**Worked example.** "Never `unwrap()`" is a Rust rule, so it is not in this
+document: [`buckets/rust.md`](prompts/best_practices/buckets/rust.md) carries
+"prefer `?` propagation and `Result` over `unwrap()` / `expect()` outside tests,
+examples, and clearly unreachable branches". Searching here for "unwrap" or
+"Rust" should land you on that file in one hop — that is the whole point of this
+section.
+
+Every bucket file must be listed above, and every link must resolve:
+`worker/deno/tests/bucket_docs_test.ts` fails CI when a ninth bucket is added
+without documenting it here.
+
 ## Deno / TypeScript Conventions
 
 All business logic lives in `worker/deno/` as type-safe TypeScript. New logic
