@@ -55,17 +55,18 @@ export const WIP_CHECKPOINT_COMMIT_MESSAGE =
  * (Issue #47). Built here rather than inline at the call site so the
  * completion phase's WIP-only gate (Issue #148) recognises the same
  * subjects this worker writes — see `wip_commit_marker.ts`.
+ *
+ * The old " at the cycle deadline" variant is gone with the truncation that
+ * produced it (Issue #420); the gate matches on the `wip:` prefix, so
+ * branches still carrying the older subject are recognised unchanged.
  */
 export function buildTimedOutWipCommitMessage(options: {
   /** Seconds the execute ran before the watchdog fired. */
   elapsedSeconds: number;
-  /** True when the kill was the cycle deadline rather than the budget. */
-  deadlineBound: boolean;
   /** Uncommitted files the timeout left behind. */
   dirtyFiles: number;
 }): string {
   return `wip: execute timed out after ${options.elapsedSeconds}s` +
-    (options.deadlineBound ? " at the cycle deadline" : "") +
     ` — preserving ${options.dirtyFiles} uncommitted file(s) (Issue #47)`;
 }
 

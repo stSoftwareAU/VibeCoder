@@ -20,21 +20,22 @@ Deno.test("wip_commit_marker - recognises both worker-authored WIP subjects", ()
   assertEquals(isWipCommitSubject(WIP_CHECKPOINT_COMMIT_MESSAGE), true);
   assertEquals(
     isWipCommitSubject(
-      buildTimedOutWipCommitMessage({
-        elapsedSeconds: 1800,
-        deadlineBound: true,
-        dirtyFiles: 7,
-      }),
+      buildTimedOutWipCommitMessage({ elapsedSeconds: 1800, dirtyFiles: 7 }),
     ),
     true,
   );
   assertEquals(
     isWipCommitSubject(
-      buildTimedOutWipCommitMessage({
-        elapsedSeconds: 900,
-        deadlineBound: false,
-        dirtyFiles: 1,
-      }),
+      buildTimedOutWipCommitMessage({ elapsedSeconds: 900, dirtyFiles: 1 }),
+    ),
+    true,
+  );
+  // Branches cut before Issue #420 still carry the truncated-run subject, and
+  // the completion gate must keep recognising it as parked work.
+  assertEquals(
+    isWipCommitSubject(
+      "wip: execute timed out after 900s at the cycle deadline — preserving " +
+        "1 uncommitted file(s) (Issue #47)",
     ),
     true,
   );

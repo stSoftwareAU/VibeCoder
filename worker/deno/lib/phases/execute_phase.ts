@@ -61,10 +61,7 @@ import {
   MIN_INFRA_RETRY_RUNWAY_SECONDS,
   shouldRetryInfrastructureFailure,
 } from "../infra_retry.ts";
-import {
-  DEADLINE_BOUND_TIMEOUT_MARKER,
-  detectFailureCategory,
-} from "../failure_diagnosis.ts";
+import { detectFailureCategory } from "../failure_diagnosis.ts";
 import { describeMemoryPressure } from "../memory_pressure.ts";
 import {
   checkContextBudget,
@@ -76,10 +73,6 @@ import {
   CONTEXT_BUDGET_NEXT_STEP,
 } from "../context_budget_guard.ts";
 import { escalateToHuman } from "../needs_human_escalation.ts";
-import {
-  resolveExecuteTimeoutSeconds,
-  resolveExtensionRegime,
-} from "../execute_timeout.ts";
 import { reportRunDeadline } from "../slot_context.ts";
 
 /**
@@ -409,55 +402,48 @@ async function executeClaudeBody(
     });
   }
 
-  // Deadline-aware execute timeout (Issue #4254): a claim taken late in the
-  // cycle must not run a full claudeTimeout past the planned shutdown — one
-  // stuck run stretched a 3 h 46 m cycle to 11 h 30 m. Bound the timeout to
-  // the time left until the cycle deadline (plus the kill grace) when a
-  // deadline is known; the CLI single-issue path leaves it unset.
-  const executeTimeout = resolveExecuteTimeoutSeconds(
-    config.claudeTimeout,
-    config.claudeKillAfter,
-    ctx.cycleDeadlineEpochMs,
-    Date.now(),
+  // The whole configured budget, cycle deadline or not (Issue #420, parent
+  // #397). Issue #4254 used to truncate a claim to the runway left in the
+  // cycle, so a claim taken 16 minutes before the hour was killed mid-task
+  // and could not extend even while demonstrably progressing (GRQ#4398). The
+  // deadline now stops *new* claims only — `slotShouldStop` in the scan loop
+  // — while the run itself is bounded by the supervisor hard cap.
+  const executeTimeoutSeconds = config.claudeTimeout;
+
+  // Re-armable deadline for issue work only (Issue #4296, part of #4290):
+  // while the agent shows both recent tool activity and a working tree that
+  // is actually advancing, the hard deadline moves instead of killing. With
+  // truncation gone the operator's flag is the only gate (Issue #420);
+  // `undefined` leaves the timeout exactly as it was, which is what every
+  // other phase gets.
+  const progressExtension = await buildProgressExtension(
+    config,
+    state.repoPath,
+    (deadline) => {
+      reportRunDeadline(deadline);
+    },
   );
-  // Which regime this run is in (Issue #4297) — logged at run start either
-  // way, so an operator reading the log knows whether progress extensions
-  // were on the table at all, and (deadline-bound) that this claim was taken
-  // late in the cycle. A deadline-bound run is never extended: the cycle
-  // deadline is an external commitment and #4254 exists precisely because a
-  // busy-looking run overran it.
-  const regime = resolveExtensionRegime(executeTimeout, config.claudeTimeout);
+
+  // The run-start line an operator reads to know which budget applies. It
+  // replaces the #4297 regime sentence, retired with the regime it named.
   logger.info(
-    `Execute timeout regime: ${regime.regime} — ${regime.reason}.`,
+    `Execute budget: ${executeTimeoutSeconds}s — the full configured ` +
+      `claude_timeout, never truncated by the cycle deadline (Issue #420); ` +
+      `progress extensions ${progressExtension ? "on" : "off"}.`,
   );
 
   // The deadline this run is working to, published to the slot's in-flight
   // hold (Issue #4297) so the shutdown drain accounts for the run — and, if
   // it is extended below, for the deadline it actually ends up with.
   reportRunDeadline({
-    deadlineMs: Date.now() + executeTimeout.timeoutSeconds * 1000,
+    deadlineMs: Date.now() + executeTimeoutSeconds * 1000,
     extensionsGranted: 0,
   });
 
-  // Re-armable deadline for issue work only (Issue #4296, part of #4290):
-  // while the agent shows both recent tool activity and a working tree that
-  // is actually advancing, the hard deadline moves instead of killing. Off
-  // unless the operator enabled it, and off outright for a deadline-bound
-  // run; `undefined` leaves the timeout exactly as it was, which is what
-  // every other phase gets.
-  const progressExtension = regime.extensionsAllowed
-    ? await buildProgressExtension(
-      config,
-      state.repoPath,
-      (deadline) => {
-        reportRunDeadline(deadline);
-      },
-    )
-    : undefined;
   if (progressExtension) {
     logger.info(
       `Progress-extension deadline enabled (Issue #4290): ` +
-        `${executeTimeout.timeoutSeconds}s budget, extended by ` +
+        `${executeTimeoutSeconds}s budget, extended by ` +
         `${progressExtension.policy.grantSeconds}s while tool activity is ` +
         `within ${progressExtension.policy.activityStallSeconds}s and the ` +
         `working tree advances.`,
@@ -519,7 +505,7 @@ async function executeClaudeBody(
         // repository in the credit log and cache-hit lines.
         phase: "issue",
         repo,
-        timeoutSeconds: executeTimeout.timeoutSeconds,
+        timeoutSeconds: executeTimeoutSeconds,
         killAfterSeconds: config.claudeKillAfter,
         model: config.claudeModel || undefined,
         cwd: state.repoPath,
@@ -592,11 +578,7 @@ async function executeClaudeBody(
       // is its work — leave the tree alone, as before.
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
-        buildTimedOutWipCommitMessage({
-          elapsedSeconds,
-          deadlineBound: executeTimeout.deadlineBound === true,
-          dirtyFiles,
-        }),
+        buildTimedOutWipCommitMessage({ elapsedSeconds, dirtyFiles }),
       // Refresh the durable resume state so resume-on-reclaim (#4170) finds
       // the checkpoint when session resume is enabled.
       onPreserved: () => saveCheckpointState(),
@@ -623,27 +605,26 @@ async function executeClaudeBody(
     // failure as zero_output (infrastructure) so the infra-retry wrapper
     // fires. Pure timeouts with partial output remain in the generic
     // `timeout` category and are not retried.
-    // A deadline-bound run timed out because the cycle ended, not because
-    // the issue defeated a full budget: say so (the marker also keeps it out
-    // of the escalating timeout cooldown, VibeCoder#174).
-    const deadlineNote = executeTimeout.deadlineBound
-      ? ` ${DEADLINE_BOUND_TIMEOUT_MARKER}`
-      : "";
+    //
+    // Every issue-work timeout now means the same thing — the run burned its
+    // whole configured budget — because the cycle deadline no longer
+    // truncates a claim (Issue #420), so there is no shortened-budget note to
+    // add.
     const baseReason = (state.claudeOutput.length === 0
-      ? `Claude timed out${deadlineNote} with zero output and made no changes`
+      ? `Claude timed out with zero output and made no changes`
       : dirtyFiles > 0
-      ? `Claude timed out${deadlineNote} with uncommitted changes (${dirtyFiles} file${
+      ? `Claude timed out with uncommitted changes (${dirtyFiles} file${
         dirtyFiles === 1 ? "" : "s"
       })`
       : wipCommits > 0
-      ? `Claude timed out${deadlineNote} with its work preserved on the branch`
-      : `Claude timed out${deadlineNote} without creating changes`) +
+      ? `Claude timed out with its work preserved on the branch`
+      : `Claude timed out without creating changes`) +
       (wipNote ? ` — ${wipNote}` : "");
     const reason = formatDetailedFailureMessage(baseReason, {
       elapsedSeconds,
       timedOut: true,
       outputSize: state.claudeOutput.length,
-      timeoutSeconds: executeTimeout.timeoutSeconds,
+      timeoutSeconds: executeTimeoutSeconds,
       clarityStatus: state.clarityStatus,
       lastOutputSnippet: snippet || undefined,
       // The evidence must survive (Issue #4202): which watchdog fired, and
@@ -683,11 +664,7 @@ async function executeClaudeBody(
       deps,
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
-        buildTimedOutWipCommitMessage({
-          elapsedSeconds,
-          deadlineBound: executeTimeout.deadlineBound === true,
-          dirtyFiles,
-        }),
+        buildTimedOutWipCommitMessage({ elapsedSeconds, dirtyFiles }),
       onPreserved: () => saveCheckpointState(),
     });
 
@@ -745,11 +722,7 @@ async function executeClaudeBody(
       deps,
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
-        buildTimedOutWipCommitMessage({
-          elapsedSeconds,
-          deadlineBound: executeTimeout.deadlineBound === true,
-          dirtyFiles,
-        }),
+        buildTimedOutWipCommitMessage({ elapsedSeconds, dirtyFiles }),
       onPreserved: () => saveCheckpointState(),
     });
     const disposition = await classifyExistingPr(ctx, deps);
