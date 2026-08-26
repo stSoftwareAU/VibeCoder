@@ -43,6 +43,7 @@ import {
   setCodexPhaseModelConfigOverrides,
 } from "./codex_executor.ts";
 import { setGeminiPhaseModelConfigOverrides } from "./gemini_executor.ts";
+import { setDeepSeekPhaseModelConfigOverrides } from "./deepseek_executor.ts";
 
 // Health checks
 import {
@@ -364,6 +365,8 @@ export async function createProductionRunCoreDeps(
   setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
   // Apply the Gemini phase model config overrides (Issue #364)
   setGeminiPhaseModelConfigOverrides(config.geminiPhaseModelOverrides);
+  // Apply the DeepSeek phase model config overrides (Issue #413)
+  setDeepSeekPhaseModelConfigOverrides(config.deepseekPhaseModelOverrides);
   // Wire the suppression author allowlist from the trusted-author snapshot
   // (Issue #253). Unconfigured, the suppression gate fails closed
   // (Issue #3941). Re-applied on every refresh so a later source flip

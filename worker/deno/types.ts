@@ -317,6 +317,8 @@ export interface WorkerConfig {
   codexPhaseEffortOverrides: Record<string, string>;
   /** Per-phase Gemini model overrides from .config.json (Issue #364) */
   geminiPhaseModelOverrides: Record<string, string>;
+  /** Per-phase DeepSeek model overrides from .config.json (Issue #413) */
+  deepseekPhaseModelOverrides: Record<string, string>;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -849,6 +851,22 @@ export interface RepoConfig {
    * reported loudly rather than configured.
    */
   geminiPhaseModelOverrides?: Record<string, string>;
+  /**
+   * Per-repo base DeepSeek model tier (Issue #413) — the DeepSeek counterpart
+   * of `claudeModel`. Overrides {@link DEEPSEEK_PHASE_MODEL_DEFAULTS} for every
+   * phase in this repo, and is itself overridden by
+   * `deepseekPhaseModelOverrides` and by a phase-specific
+   * `DEEPSEEK_MODEL_<PHASE>` env var. Operator-only.
+   */
+  deepseekModel?: string;
+  /**
+   * Per-repo per-phase DeepSeek model overrides (Issue #413). Same shape as the
+   * global `deepseek_phase_model_overrides` key, but scoped to this repo.
+   * Operator-only. There is no DeepSeek effort counterpart: DeepSeek's
+   * Anthropic-compatible endpoint has no effort control, and an effort
+   * requested for a DeepSeek phase is reported loudly rather than configured.
+   */
+  deepseekPhaseModelOverrides?: Record<string, string>;
 }
 
 /**
@@ -1038,6 +1056,8 @@ export interface ConfigFile {
   codex_phase_effort_overrides?: Record<string, string>;
   /** Per-phase Gemini model overrides (Issue #364) */
   gemini_phase_model_overrides?: Record<string, string>;
+  /** Per-phase DeepSeek model overrides (Issue #413) */
+  deepseek_phase_model_overrides?: Record<string, string>;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */
