@@ -16,7 +16,9 @@ import {
   credentialPreflightMessage,
 } from "../lib/credential_preflight.ts";
 import {
+  type AgentProviderDescriptor,
   agentProviderIds,
+  CLAUDE_PROVIDER_ID,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 
@@ -134,6 +136,21 @@ Deno.test("provision_vibe_credentials - no credential variables leaves nothing b
       output.includes("VIBE_LAUNCHAGENT_GH_TOKEN"),
       `expected an actionable warning, got: ${output}`,
     );
+    // Issue #416: DeepSeek has no interactive login of its own, so the
+    // warning must name the variable that provisions it and where the key
+    // comes from — never a provider login suggestion that cannot help.
+    assert(
+      output.includes("VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY"),
+      `expected the DeepSeek variable to be named, got: ${output}`,
+    );
+    assert(
+      output.includes("platform.deepseek.com"),
+      `expected the warning to say where a DeepSeek key comes from: ${output}`,
+    );
+    assert(
+      !/deepseek[^\n]*\b(login|setup-token)\b/i.test(output),
+      `DeepSeek must not be pointed at an interactive login: ${output}`,
+    );
     assert(output.includes("PROVISIONED_GH_DIR=\n"), output);
 
     // Nothing was created, so the preflight fails loudly — as it must.
@@ -229,6 +246,119 @@ Deno.test("provision_vibe_credentials - an unset variable leaves that vendor unt
       await Deno.readTextFile(`${dir}/codex/provider.env`),
       "OPENAI_API_KEY=sk-openai-second\n",
     );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+/**
+ * The DeepSeek provider as the credential surfaces see it (Issue #416).
+ *
+ * Registering the descriptor is a sibling issue; the preflight reads only a
+ * provider's id, name and credential facets, so an active descriptor carrying
+ * DeepSeek's facets exercises the real round trip today — setup.sh writes the
+ * file and the unmodified preflight accepts it.
+ */
+function deepseekDescriptor(): AgentProviderDescriptor {
+  return {
+    ...resolveAgentProvider(CLAUDE_PROVIDER_ID),
+    id: "deepseek",
+    displayName: "DeepSeek",
+    credentials: {
+      subdir: "deepseek",
+      file: "provider.env",
+      envVars: ["DEEPSEEK_API_KEY"],
+      provisionEnvVar: "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY",
+    },
+  };
+}
+
+Deno.test("provision_vibe_credentials - provisions the DeepSeek API key", async () => {
+  // Issue #416: DeepSeek is an API-key-only vendor, so the non-interactive
+  // path is the only way it is ever provisioned.
+  const tmp = await Deno.makeTempDir();
+  try {
+    const key = "sk-deepseek-provisioned";
+    const { code, output } = await provision(tmp, {
+      VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
+      VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY: key,
+    });
+    assertEquals(code, 0, output);
+
+    const dir = `${tmp}/.vibe-coder/credentials`;
+    const file = `${dir}/deepseek/provider.env`;
+    assertEquals(await Deno.readTextFile(file), `DEEPSEEK_API_KEY=${key}\n`);
+    // The key never reaches stdout or a log.
+    assert(!output.includes(key), output);
+
+    if (Deno.build.os !== "windows") {
+      assertEquals(await modeOf(dir), 0o700);
+      assertEquals(await modeOf(`${dir}/deepseek`), 0o700);
+      assertEquals(await modeOf(file), 0o600);
+    }
+
+    // Re-running with the same variable rewrites nothing new: one line, same
+    // contents, same owner-only mode.
+    const repeat = await provision(tmp, {
+      VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
+      VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY: key,
+    });
+    assertEquals(repeat.code, 0, repeat.output);
+    assertEquals(await Deno.readTextFile(file), `DEEPSEEK_API_KEY=${key}\n`);
+    if (Deno.build.os !== "windows") {
+      assertEquals(await modeOf(file), 0o600);
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("provision_vibe_credentials - a claude+deepseek run passes the preflight unchanged", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const providers = [
+      resolveAgentProvider(CLAUDE_PROVIDER_ID),
+      deepseekDescriptor(),
+    ];
+    const dir = `${tmp}/.vibe-coder/credentials`;
+
+    // Claude alone: the preflight names the vendor that lacks a credential
+    // and the variable that provisions it.
+    await provision(tmp, {
+      VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
+      VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
+    });
+    const partial = await checkCredentialPreflight({
+      dir,
+      env: () => undefined,
+      providers,
+    });
+    assertEquals(partial.ok, false);
+    const missing = partial.failures.filter(
+      (f) => f.code === "provider-credentials-missing",
+    );
+    assertEquals(missing.map((f) => f.provider), ["deepseek"]);
+    assert(
+      missing[0]!.message.includes("VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY"),
+      missing[0]!.message,
+    );
+
+    // Both provisioned: the preflight accepts the directory with no edit of
+    // its own — the sub-directory it permits comes from the descriptor.
+    const { code, output } = await provision(tmp, {
+      VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY: "sk-deepseek-provisioned",
+    });
+    assertEquals(code, 0, output);
+    const result = await checkCredentialPreflight({
+      dir,
+      env: () => undefined,
+      providers,
+    });
+    assertEquals(result.ok, true, credentialPreflightMessage(result));
+    assertEquals(result.providers.map((p) => p.source), [
+      "directory",
+      "directory",
+    ]);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
