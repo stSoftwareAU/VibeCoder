@@ -10,8 +10,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CheckExecutionResult,
+  formatCheckProgress,
   type QualityGateConfig,
   runChecksParallel,
+  runChecksSequential,
   runDenoCheck,
   runDenoFmtCheck,
   runQualityGate,
@@ -679,6 +681,150 @@ Deno.test("runQualityGate - never records a shellcheck check (Issue #3129)", asy
       shellcheckCheck,
       undefined,
       "the gate must not run or record any shellcheck check",
+    );
+  }
+
+  try {
+    Deno.removeSync(config.scriptDir, { recursive: true });
+  } catch { /* ignore */ }
+});
+
+// =============================================================================
+// Streamed progress (Issue #399)
+//
+// The gate printed nothing until every check had finished — up to 16 minutes
+// on a busy container — so an agent driving it could not tell a slow run from
+// a hung one. That is why the `sleep`/`pgrep` poll loops existed. Each check
+// must be reported the moment it settles.
+// =============================================================================
+
+Deno.test("formatCheckProgress - names the check, its status and its duration (Issue #399)", () => {
+  const line = formatCheckProgress({
+    name: "deno tests",
+    status: "PASSED",
+    output: "irrelevant",
+    durationMs: 12_300,
+  });
+  assertStringIncludes(line, "deno tests");
+  assertStringIncludes(line, "PASSED");
+  assertStringIncludes(line, "12.3s");
+});
+
+Deno.test("formatCheckProgress - a check with no measured duration still reports (Issue #399)", () => {
+  const line = formatCheckProgress({
+    name: "prompt immutability",
+    status: "SKIPPED",
+    output: "",
+  });
+  assertStringIncludes(line, "prompt immutability");
+  assertStringIncludes(line, "SKIPPED");
+  assertEquals(line.includes("undefined"), false);
+});
+
+Deno.test("runChecksSequential - reports each check before the next one starts (Issue #399)", async () => {
+  const events: string[] = [];
+  const checks: Array<() => Promise<CheckExecutionResult>> = [
+    async () => {
+      events.push("start:alpha");
+      return { name: "alpha", status: "PASSED" as const, output: "a" };
+    },
+    async () => {
+      events.push("start:beta");
+      return { name: "beta", status: "FAILED" as const, output: "b" };
+    },
+  ];
+
+  const results = await runChecksSequential(checks, (line) => {
+    events.push(`progress:${line}`);
+  });
+
+  assertEquals(results.length, 2);
+  assertEquals(events[0], "start:alpha");
+  // The alpha progress line must land BEFORE beta starts — that is what
+  // makes a long run observable rather than silent.
+  assertStringIncludes(events[1]!, "progress:");
+  assertStringIncludes(events[1]!, "alpha");
+  assertEquals(events[2], "start:beta");
+  assertStringIncludes(events[3]!, "beta");
+  assertStringIncludes(events[3]!, "FAILED");
+});
+
+Deno.test("runChecksParallel - a fast check is reported while a slow one is still running (Issue #399)", async () => {
+  let releaseSlow: () => void = () => {};
+  const slowGate = new Promise<void>((resolve) => {
+    releaseSlow = resolve;
+  });
+  const reported: string[] = [];
+  let fastReported: () => void = () => {};
+  const fastSeen = new Promise<void>((resolve) => {
+    fastReported = resolve;
+  });
+
+  const checks: Array<() => Promise<CheckExecutionResult>> = [
+    async () => {
+      await slowGate;
+      return { name: "slow", status: "PASSED" as const, output: "s" };
+    },
+    async () => ({ name: "fast", status: "PASSED" as const, output: "f" }),
+  ];
+
+  const run = runChecksParallel(checks, (line) => {
+    reported.push(line);
+    if (line.includes("fast")) fastReported();
+  });
+
+  // The fast check reports while the slow one is still blocked — no waiting
+  // for the whole set to settle.
+  await fastSeen;
+  assertEquals(reported.length, 1);
+  assertStringIncludes(reported[0]!, "fast");
+
+  releaseSlow();
+  const results = await run;
+  assertEquals(results.length, 2);
+  assertEquals(reported.length, 2);
+  assertStringIncludes(reported[1]!, "slow");
+});
+
+Deno.test("runChecksParallel - a throwing check is still reported (Issue #399)", async () => {
+  const reported: string[] = [];
+  const checks: Array<() => Promise<CheckExecutionResult>> = [
+    () => Promise.reject(new Error("boom")),
+  ];
+
+  const results = await runChecksParallel(checks, (line) => {
+    reported.push(line);
+  });
+
+  assertEquals(results.length, 1);
+  assertEquals(results[0]!.status, "FAILED");
+  assertEquals(reported.length, 1, "a failure must never be silent");
+  assertStringIncludes(reported[0]!, "FAILED");
+});
+
+Deno.test("runQualityGate - streams its pre-checks through onProgress (Issue #399)", async () => {
+  const lines: string[] = [];
+  const config = createTestConfig({ onProgress: (line) => lines.push(line) });
+
+  const result = await runQualityGate(config);
+  assertEquals(result.ok, true);
+
+  assertEquals(
+    lines.length > 0,
+    true,
+    "the gate must report progress while it runs, not only at the end",
+  );
+  if (result.ok) {
+    // Every check the gate recorded must have been streamed as it settled,
+    // except the tool-missing placeholders recorded after the run.
+    const streamed = lines.join("\n");
+    const streamedNames = result.value.checks
+      .map((c) => c.name)
+      .filter((name) => streamed.includes(name));
+    assertEquals(
+      streamedNames.length > 0,
+      true,
+      `no recorded check appeared in the progress stream:\n${streamed}`,
     );
   }
 

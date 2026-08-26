@@ -106,6 +106,15 @@ export function getRepoNice(
  * - If quality_command is set: uses the custom command
  * - Otherwise: uses the default ./quality.sh
  *
+ * The guidance deliberately points the inner loop at the repo's *fast*
+ * checks and reserves the full gate for one foreground run at the end
+ * (Issue #399). The old "keep running it until it passes" wording sent
+ * agents back to a multi-minute gate after every edit, and — because a gate
+ * that prints nothing until it finishes looks indistinguishable from a hung
+ * one — they backgrounded it and burned the rest of the execute budget in
+ * `sleep`/`pgrep` poll loops. One agent sat at 38 tool calls for over seven
+ * minutes doing exactly that.
+ *
  * @param repoConfigs - The repo_config map from ConfigFile
  * @param repo - Repository in "owner/repo" format
  * @returns Quality instruction text for inclusion in prompts
@@ -123,8 +132,9 @@ export function buildQualityInstructions(
   const command = customCommand || "./quality.sh";
 
   return [
-    `   - After implementing, run ${command} < /dev/null and fix any issues it reports.`,
-    `   - Keep running ${command} < /dev/null until it passes cleanly with your new test cases.`,
+    `   - While you iterate, use the repository's fast checks — formatter, linter, type check, and only the test files your change touches. Seconds, not minutes.`,
+    `   - Before you finish, run ${command} < /dev/null once, in the foreground, and fix whatever it reports. Re-run it after a fix — never on a timer.`,
+    `   - Never start ${command} in the background and poll for it. A \`sleep\`/\`pgrep\` wait loop spends the execute budget without making progress; run it in the foreground and watch each check report as it completes.`,
     `   - IMPORTANT: Always redirect stdin from /dev/null (< /dev/null) when running tests, quality checks, or build commands to prevent hanging on unattended machines.`,
   ].join("\n");
 }

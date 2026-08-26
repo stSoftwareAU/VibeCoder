@@ -64,6 +64,43 @@ async function timed(
   return { ...result, durationMs: Date.now() - start };
 }
 
+/**
+ * Called as each check settles so a caller can show progress while the gate
+ * is still running (Issue #399).
+ */
+export type QualityProgressReporter = (line: string) => void;
+
+/** Status glyphs for the streamed progress line. */
+const PROGRESS_GLYPHS: Record<CheckStatus, string> = {
+  PASSED: "✓",
+  FAILED: "✗",
+  SKIPPED: "-",
+};
+
+/**
+ * Format the one-line progress record for a settled check (Issue #399).
+ *
+ * The gate used to print nothing at all until every check had finished, so an
+ * agent driving it could not tell a slow run from a hung one — which is why
+ * the `sleep`/`pgrep` poll loops existed. One line per settled check makes a
+ * live run observable without waiting for the summary table.
+ */
+export function formatCheckProgress(result: CheckExecutionResult): string {
+  const glyph = PROGRESS_GLYPHS[result.status] ?? "?";
+  const duration = result.durationMs === undefined
+    ? ""
+    : ` (${(result.durationMs / 1000).toFixed(1)}s)`;
+  return `  ${glyph} ${result.name}: ${result.status}${duration}`;
+}
+
+/** Report a settled check, swallowing nothing — a throwing reporter fails loud. */
+function report(
+  onProgress: QualityProgressReporter | undefined,
+  result: CheckExecutionResult,
+): void {
+  onProgress?.(formatCheckProgress(result));
+}
+
 /** Result of the full quality gate run. */
 export interface QualityGateResult {
   checks: CheckResult[];
@@ -86,6 +123,12 @@ export interface QualityGateConfig {
    * two expensive dimensions (deno test, deno check) run every time.
    */
   cacheDir?: string;
+  /**
+   * Called with one line per check as it settles (Issue #399), so a caller
+   * can stream progress instead of printing nothing for minutes. Omitted,
+   * the gate is silent until it finishes, exactly as before.
+   */
+  onProgress?: QualityProgressReporter;
 }
 
 /**
@@ -1087,12 +1130,27 @@ function isoNow(): string {
  *
  * Uses Promise.allSettled() so that a single throwing check does not
  * abort all other checks (Issue #1168). Rejected checks are recorded
- * as FAILED with the error message.
+ * as FAILED with the error message. Each check is reported to `onProgress`
+ * the moment it settles, not when the slowest one does (Issue #399).
  */
 export async function runChecksParallel(
   checks: Array<() => Promise<CheckExecutionResult>>,
+  onProgress?: QualityProgressReporter,
 ): Promise<CheckExecutionResult[]> {
-  const settled = await Promise.allSettled(checks.map((check) => timed(check)));
+  const settled = await Promise.allSettled(checks.map(async (check, index) => {
+    try {
+      const result = await timed(check);
+      report(onProgress, result);
+      return result;
+    } catch (err) {
+      report(onProgress, {
+        name: `check-${index + 1}`,
+        status: "FAILED",
+        output: "",
+      });
+      throw err;
+    }
+  }));
   return settled.map((outcome, index) => {
     if (outcome.status === "fulfilled") {
       return outcome.value;
@@ -1113,14 +1171,18 @@ export async function runChecksParallel(
 }
 
 /**
- * Run a set of checks sequentially.
+ * Run a set of checks sequentially, reporting each one as it finishes
+ * (Issue #399) rather than only when the whole set is done.
  */
-async function runChecksSequential(
+export async function runChecksSequential(
   checks: Array<() => Promise<CheckExecutionResult>>,
+  onProgress?: QualityProgressReporter,
 ): Promise<CheckExecutionResult[]> {
   const results: CheckExecutionResult[] = [];
   for (const check of checks) {
-    results.push(await timed(check));
+    const result = await timed(check);
+    report(onProgress, result);
+    results.push(result);
   }
   return results;
 }
@@ -1139,7 +1201,15 @@ export async function runQualityGate(
   const checks: CheckResult[] = [];
   const allOutput: string[] = [];
 
+  /** Keep a settled check's output, record it, and stream it (Issue #399). */
+  const note = (result: CheckExecutionResult): void => {
+    allOutput.push(result.output);
+    recordCheck(checks, result.name, result.status);
+    report(config.onProgress, result);
+  };
+
   allOutput.push("=== Running Quality Checks ===");
+  config.onProgress?.("=== Running Quality Checks ===");
 
   // Detect tools
   const denoResult = await detectTool("deno");
@@ -1170,8 +1240,7 @@ export async function runQualityGate(
       config,
       denoCmd,
     );
-    allOutput.push(immutabilityResult.output);
-    recordCheck(checks, immutabilityResult.name, immutabilityResult.status);
+    note(immutabilityResult);
     if (immutabilityResult.status === "FAILED") {
       const summary = formatSummary(checks, config.options.strict);
       return {
@@ -1186,61 +1255,41 @@ export async function runQualityGate(
   // Prompt placeholders (only with --validate-prompts)
   if (config.options.validatePrompts && config.denoDir) {
     const placeholderResult = await runPromptPlaceholderCheck(config, denoCmd);
-    allOutput.push(placeholderResult.output);
-    recordCheck(checks, placeholderResult.name, placeholderResult.status);
+    note(placeholderResult);
   }
 
   // Benchmark audit
-  const benchmarkResult = await runBenchmarkAudit(config);
-  allOutput.push(benchmarkResult.output);
-  recordCheck(checks, benchmarkResult.name, benchmarkResult.status);
+  note(await runBenchmarkAudit(config));
 
   // Hardcoded branch names (Issue #1182)
-  const branchCheckResult = await runHardcodedBranchCheck(config);
-  allOutput.push(branchCheckResult.output);
-  recordCheck(checks, branchCheckResult.name, branchCheckResult.status);
+  note(await runHardcodedBranchCheck(config));
 
   // needs-human chokepoint (Issue #2689) — every `needs-human` label
   // application must route through the `escalateToHuman` helper.
-  const needsHumanResult = await runNeedsHumanHelperCheck(config);
-  allOutput.push(needsHumanResult.output);
-  recordCheck(checks, needsHumanResult.name, needsHumanResult.status);
+  note(await runNeedsHumanHelperCheck(config));
 
   // gh spawn chokepoint (Issue #3703) — every `gh` subprocess must be
   // spawned by `gh_spawn.ts` so the write-repo allowlist and the audit
   // journal are unavoidable.
-  const ghSpawnResult = await runGhSpawnChokepointCheck(config);
-  allOutput.push(ghSpawnResult.output);
-  recordCheck(checks, ghSpawnResult.name, ghSpawnResult.status);
+  note(await runGhSpawnChokepointCheck(config));
 
   // host work-dir guard (Issue #135, parent #118) — no source file may build
   // a work-dir path from HOME/USERPROFILE outside the commented allowlist,
   // so a host-side entry point can never grow back a ~/auto-issue-work
   // default.
-  const homeWorkDirResult = await runHomeWorkDirGuardCheck(config);
-  allOutput.push(homeWorkDirResult.output);
-  recordCheck(checks, homeWorkDirResult.name, homeWorkDirResult.status);
+  note(await runHomeWorkDirGuardCheck(config));
 
   // git ref chokepoint (Issue #12) — a PR head branch name must reach git
   // only through the ref-arg builders, never as an inline positional.
-  const gitRefResult = await runGitRefArgvCheck(config);
-  allOutput.push(gitRefResult.output);
-  recordCheck(checks, gitRefResult.name, gitRefResult.status);
+  note(await runGitRefArgvCheck(config));
 
   // Workflow hygiene (Issue #3716) — strict-mode `run:` blocks and
   // consistent SHA/version pin comments across .github/workflows.
-  const workflowHygieneResult = await runWorkflowHygieneCheck(config);
-  allOutput.push(workflowHygieneResult.output);
-  recordCheck(
-    checks,
-    workflowHygieneResult.name,
-    workflowHygieneResult.status,
-  );
+  note(await runWorkflowHygieneCheck(config));
 
   // Config integration smoke test
   const configResult = await runConfigSmokeTest(config, denoCmd);
-  allOutput.push(configResult.output);
-  recordCheck(checks, configResult.name, configResult.status);
+  note(configResult);
   if (configResult.status === "FAILED") {
     const summary = formatSummary(checks, config.options.strict);
     return {
@@ -1321,13 +1370,14 @@ export async function runQualityGate(
   // Execute checks
   let mainResults: CheckExecutionResult[];
   if (config.options.sequential) {
-    mainResults = await runChecksSequential(mainChecks);
+    mainResults = await runChecksSequential(mainChecks, config.onProgress);
   } else {
     allOutput.push("");
     allOutput.push(
       "Running independent checks in parallel (Issue #625)...",
     );
-    mainResults = await runChecksParallel(mainChecks);
+    config.onProgress?.("Running independent checks in parallel...");
+    mainResults = await runChecksParallel(mainChecks, config.onProgress);
   }
 
   // Record results, with a per-check duration line so the gate's cost is

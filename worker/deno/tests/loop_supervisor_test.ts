@@ -18,6 +18,8 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { getDescendants, isRunning } from "../lib/pid_guard.ts";
+import { killProcessTree } from "./fixtures/process_tree.ts";
 
 // Resolve <repo-root>/loop.sh from this test file's location, without
 // depending on @std/path. The test lives at
@@ -114,20 +116,14 @@ async function readInvocationCount(tmpDir: string): Promise<number> {
   }
 }
 
+/**
+ * Stop a spawned loop.sh and everything it started (Issue #399).
+ *
+ * SIGKILL to loop.sh alone left its background control-plane probe and its
+ * run.sh behind: re-parented to PID 1, looping on `sleep 120` for ever.
+ */
 async function killTree(child: Deno.ChildProcess): Promise<void> {
-  try {
-    child.kill("SIGKILL");
-  } catch { /* already dead */ }
-  try {
-    await child.status;
-  } catch { /* ignore */ }
-  // Drain pipes so the test runner does not leak file descriptors.
-  try {
-    await child.stdout.cancel();
-  } catch { /* ignore */ }
-  try {
-    await child.stderr.cancel();
-  } catch { /* ignore */ }
+  await killProcessTree(child);
 }
 
 async function delay(ms: number): Promise<void> {
@@ -304,10 +300,7 @@ Deno.test({
         `run.sh should have been re-launched after the deadline; ran ${count} time(s)`,
       );
     } finally {
-      try {
-        child.kill("SIGKILL");
-        await child.status;
-      } catch { /* best-effort */ }
+      await killTree(child);
       await harness.cleanup();
     }
   },
@@ -339,10 +332,7 @@ Deno.test({
         `expected repeated clean cycles; ran ${count} time(s)`,
       );
     } finally {
-      try {
-        child.kill("SIGKILL");
-        await child.status;
-      } catch { /* best-effort */ }
+      await killTree(child);
       await harness.cleanup();
     }
   },
@@ -381,10 +371,7 @@ Deno.test({
         "with the cap disabled the 4s run must reach its own exit, not be killed",
       );
     } finally {
-      try {
-        child.kill("SIGKILL");
-        await child.status;
-      } catch { /* best-effort */ }
+      await killTree(child);
       await harness.cleanup();
     }
   },
@@ -523,10 +510,7 @@ Deno.test({
         `the probe must recover the container; container calls were:\n${out}`,
       );
     } finally {
-      try {
-        child.kill("SIGKILL");
-        await child.status;
-      } catch { /* best-effort */ }
+      await killTree(child);
       await harness.cleanup();
     }
   },
@@ -571,10 +555,76 @@ Deno.test({
         `a healthy container must be left alone; got:\n${out}`,
       );
     } finally {
-      try {
-        child.kill("SIGKILL");
-        await child.status;
-      } catch { /* best-effort */ }
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+// ===========================================================================
+// Issue #399 — the supervisor's tree must not outlive the test
+//
+// loop.sh forks a background control-plane probe and a run.sh of its own.
+// SIGKILL to loop.sh alone left both behind, re-parented to PID 1 and looping
+// on `sleep 120`: around twenty such trees had accumulated on one fleet host,
+// the oldest over two days old.
+// ===========================================================================
+
+Deno.test({
+  name: "loop.sh #399 - killing the supervisor leaves no orphaned descendants",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: [
+        "#!/bin/bash",
+        'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+        // Long-lived, exactly like a real cycle mid-run.
+        "sleep 300",
+      ].join("\n"),
+      // A `container` stub keeps the control-plane probe running beside it.
+      containerStub: [
+        "#!/bin/bash",
+        'case "$1" in',
+        "  ls) exit 0;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n"),
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "0",
+      VIBE_PROBE_INTERVAL_SECONDS: "1",
+    });
+    try {
+      // Wait — bounded — for the supervisor to have forked its tree.
+      let descendants: number[] = [];
+      for (
+        let attempt = 0;
+        attempt < 60 && descendants.length === 0;
+        attempt++
+      ) {
+        await delay(100);
+        descendants = await getDescendants(child.pid);
+      }
+      assert(
+        descendants.length > 0,
+        "the supervisor never forked anything — the test proves nothing",
+      );
+
+      await killTree(child);
+
+      const survivors: number[] = [];
+      for (const pid of descendants) {
+        if (await isRunning(pid)) survivors.push(pid);
+      }
+      assertEquals(
+        survivors,
+        [],
+        `orphaned descendants survived the supervisor: ${survivors.join(",")}`,
+      );
+    } finally {
+      await killTree(child);
       await harness.cleanup();
     }
   },
