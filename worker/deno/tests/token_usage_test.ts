@@ -7,6 +7,7 @@
 import { assertAlmostEquals, assertEquals } from "@std/assert";
 import {
   estimateCost,
+  estimateCostWithUpperBound,
   extractTokenUsage,
   lookupModelPricing,
   type TokenUsage,
@@ -368,4 +369,29 @@ Deno.test("token_usage - budget fallback does not trip prematurely for Opus 4.8 
   // The legacy rate would have been 2M*15 + 0.4M*75 = 30 + 30 = 60 > 25.
   const legacyCost = estimateCost(usage, "claude-opus-4-20250514");
   assertEquals(legacyCost!.totalCost > representativeBudget, true);
+});
+
+// =============================================================================
+// Non-Claude model ids are unpriced, not free (Issue #366)
+// =============================================================================
+
+Deno.test("token_usage - non-Claude model ids have no pricing row", () => {
+  assertEquals(lookupModelPricing("gpt-5-codex"), null);
+  assertEquals(lookupModelPricing("gemini-2.5-pro"), null);
+});
+
+Deno.test("token_usage - non-Claude ids are charged at the unpriced upper bound", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+
+  for (const model of ["gpt-5-codex", "gemini-2.5-pro"]) {
+    const estimate = estimateCostWithUpperBound(usage, model);
+    assertEquals(estimate.priced, false, `${model} must read as unpriced`);
+    // The tokens carry a visible upper-bound cost rather than a silent $0.
+    assertEquals(estimate.cost.totalCost > 0, true);
+  }
 });
