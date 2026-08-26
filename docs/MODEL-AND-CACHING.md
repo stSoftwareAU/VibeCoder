@@ -69,9 +69,9 @@ this page does not repeat them.
 | ❌ | Does not apply to that provider; the row says what happens instead |
 | ➖ | Not applicable to any provider (the behaviour is not wired for anyone) |
 
-Every `##`/`###` section below also carries a one-line
-`> **Applies to:** …` marker, so a reader who lands mid-document on an anchor is
-never misled. `worker/deno/tests/docs_provider_matrix_test.ts` asserts that the
+Every behaviour section below — every `##` and `###` heading outside this one —
+also carries a one-line `> **Applies to:** …` marker, so a reader who lands
+mid-document on an anchor is never misled. `worker/deno/tests/docs_provider_matrix_test.ts` asserts that the
 markers and this matrix stay complete: registering a fourth provider, or adding
 a section without a marker, fails `deno test`.
 
