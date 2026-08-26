@@ -392,6 +392,12 @@ the winning overlay **behind** the agnostic baseline inside the single
   malformed provider id cannot escape `prompts/`.
 - `skip_screenshot_check` repositories strip Playwright guidance from the
   overlay as well as the baseline.
+- **The issue-prompt cache is not identity-aware.** `computeStaticPromptHash()`
+  (`lib/prompt_builder_cache.ts`) keys the cached system prompt on the repo and
+  the static templates alone, so `buildIssuePrompt()` is deliberately called
+  with no identity — an overlay must never ride that path until the identity is
+  folded into that hash, or one provider's cached system prompt would be served
+  to another's run.
 
 The shipped worked example is
 [`prompts/coding_guidelines_claude/`](https://github.com/stSoftwareAU/VibeCoder/tree/main/prompts/coding_guidelines_claude).
