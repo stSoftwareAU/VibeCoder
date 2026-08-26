@@ -434,6 +434,9 @@ Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", 
   const now = Date.parse("2026-08-20T12:00:00Z");
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
+    // Issue #395: a spent budget is only a quiet skip once the PR is visibly
+    // a human's — the escalation the last attempt posted is in the thread.
+    labels: { 48: ["needs-human"] },
     comments: {
       48: [
         { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
@@ -449,6 +452,42 @@ Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", 
 
   assert(result.ok);
   assertEquals(result.value, null);
+  assertEquals(fake.commentsPosted.length, 0);
+});
+
+Deno.test("findConflictingPr - a spent budget with no needs-human is escalated, not stalled", async () => {
+  // Issue #395: the last attempt escalates from the processor, so a failure
+  // there (or a run cut short between the conclusion and the escalation)
+  // left the PR conflicting, out of budget, and owned by nobody — skipped
+  // silently on every scan for ever. The scan is the backstop.
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const old = new Date(now - 48 * 3600_000).toISOString();
+  const state = makeState({
+    comments: {
+      48: [
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_FAILED_MARKER} n="1" -->`, created_at: old },
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="2" -->`, created_at: old },
+        { body: `${CONFLICT_FAILED_MARKER} n="2" -->`, created_at: old },
+      ],
+    },
+  });
+  const fake = makeFakeGh(state);
+
+  const result = await findConflictingPr(makeOptions(fake));
+
+  assert(result.ok);
+  assertEquals(result.value, null);
+  assertEquals(
+    fake.labelsAdded.some((l) =>
+      l.prNumber === 48 && l.label === "needs-human"
+    ),
+    true,
+  );
+
+  const escalation = fake.commentsPosted.at(-1)?.body ?? "";
+  assertStringIncludes(escalation, "2");
+  assertStringIncludes(escalation, "**Next step:**");
 });
 
 Deno.test("findConflictingPr - a disrupted attempt is re-attempted, not counted as spent", async () => {
@@ -498,7 +537,9 @@ Deno.test("findConflictingPr - repeated disruption escalates loudly instead of s
   assert(result.ok);
   assertEquals(result.value, null);
   assertEquals(
-    fake.labelsAdded.some((l) => l.prNumber === 48 && l.label === "needs-human"),
+    fake.labelsAdded.some((l) =>
+      l.prNumber === 48 && l.label === "needs-human"
+    ),
     true,
   );
 

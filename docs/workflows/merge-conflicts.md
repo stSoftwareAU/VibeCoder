@@ -27,8 +27,10 @@ flowchart TD
     Scan["Scan open worker PRs"] --> Conflicting{"mergeable == CONFLICTING?"}
     Conflicting -->|No| Sleep["Next priority"]
     Conflicting -->|Yes| Label["Apply merge-conflict label"]
-    Label --> Budget{"Attempt due and<br/>concluded budget left?"}
-    Budget -->|No| Sleep
+    Label --> Spent{"Concluded budget spent?"}
+    Spent -->|Yes — and no needs-human| Human
+    Spent -->|No| Budget{"Attempt due?"}
+    Budget -->|No — inside cooldown| Sleep
     Budget -->|Yes| Disrupted{"3+ attempts disrupted<br/>with no conclusion?"}
     Disrupted -->|Yes| Human
     Disrupted -->|No| Lock{"PR lock acquired?"}
@@ -53,6 +55,7 @@ flowchart TD
     style Label fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style Budget fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Budget2 fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style Spent fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Disrupted fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Lock fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Record fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
@@ -118,6 +121,11 @@ Any failure aborts the merge, leaving the branch untouched.
   that conflicts again months later starts from a full budget.
 - The final *concluded* failure applies `needs-human` and posts one summary
   naming the conflicted files and why the merge failed.
+- **Nothing stalls unowned.** If that final escalation never landed — the label
+  add failed, or the run ended between the failure comment and the escalation —
+  the next scan finds a PR that is out of budget and carries no `needs-human`,
+  and escalates it itself. A spent budget is a quiet skip only once the PR is
+  visibly a human's.
 
 ### 💥 When the attempt itself is disrupted
 

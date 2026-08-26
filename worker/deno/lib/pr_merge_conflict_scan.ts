@@ -304,6 +304,37 @@ export const DISRUPTED_CONFLICT_NEXT_STEP =
   "worker try again.";
 
 /**
+ * Why a PR that is out of attempts but owned by nobody is being handed over
+ * (Issue #395).
+ *
+ * The last concluded attempt escalates from the resolution pass — but that
+ * escalation can itself fail, or the run can end between the failure
+ * conclusion and the escalation. The PR is then conflicting, out of budget
+ * and unowned, which every later scan skips in silence. This is the backstop.
+ */
+export function buildExhaustedEscalationReason(
+  prNumber: number,
+  attemptCount: number,
+): string {
+  return [
+    `PR #${prNumber} has spent all ${attemptCount} of its merge-conflict ` +
+    "resolution attempts and still conflicts with its base, but was never " +
+    "handed to a human — the escalation on the final attempt did not land.",
+    "",
+    "The failure comments above say what each attempt tripped on. The " +
+    "branch was left exactly as its author pushed it, so no change has been " +
+    "lost.",
+  ].join("\n");
+}
+
+/** What the human must do about a conflict the worker is out of attempts for. */
+export const EXHAUSTED_CONFLICT_NEXT_STEP =
+  "Merge the base branch into the PR branch by hand — keeping both sides' " +
+  "changes, never side-picking — or close the PR if it is obsolete. " +
+  "Removing the `needs-human` label alone will not restart the worker: its " +
+  "attempt budget only resets once the conflict is resolved.";
+
+/**
  * Whether another attempt on this PR is due.
  *
  * False while the cooldown since the last recorded attempt has not
@@ -471,38 +502,36 @@ async function fetchMergeableStates(
 }
 
 /**
- * Hand a repeatedly disrupted conflict to a human (Issue #395).
+ * Hand a conflicting PR the scan will not act on to a human (Issue #395).
  *
- * Runs from the scan rather than the processor on purpose: the whole failure
- * mode is that the processor's run keeps being cut short, so the escalation
- * must not depend on getting a clone and reaching it. Best-effort — a failure
- * here is logged loudly and the PR stays in the queue.
+ * Runs from the scan rather than the processor on purpose: both cases it
+ * covers — repeated disruption, and a budget spent without the processor's
+ * escalation landing — are cases where the processor could not finish, so the
+ * escalation must not depend on getting a clone and reaching it. Best-effort
+ * — a failure here is logged loudly and the PR stays in the queue.
  */
-async function escalateDisruptedConflict(args: {
+async function escalateConflictingPr(args: {
   repo: string;
   prNumber: number;
-  disruptedCount: number;
+  heading: string;
+  reason: string;
+  nextStep: string;
+  dedupKey: string;
   needsHumanLabel: string;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
 }): Promise<void> {
-  const { repo, prNumber, disruptedCount, logger } = args;
-
-  logger.warn(
-    `PR #${prNumber} has had ${disruptedCount} merge-conflict attempts ` +
-      "disrupted before any conclusion — escalating to a human",
-    { repo, prNumber, disruptedCount },
-  );
+  const { repo, prNumber, logger } = args;
 
   const escalation = await escalateToHuman({
     ghClient: createGhEscalationClient(args.ghCommandFn),
     repo,
     target: { kind: "pr", number: prNumber },
     needsHumanLabel: args.needsHumanLabel,
-    heading: "Merge-conflict resolution keeps being disrupted",
-    reason: buildDisruptionEscalationReason(prNumber, disruptedCount),
-    nextStep: DISRUPTED_CONFLICT_NEXT_STEP,
-    dedupKey: `merge-conflict-disrupted-${prNumber}`,
+    heading: args.heading,
+    reason: args.reason,
+    nextStep: args.nextStep,
+    dedupKey: args.dedupKey,
     deps: {
       github: {
         ensureLabelExists: (
@@ -519,9 +548,10 @@ async function escalateDisruptedConflict(args: {
     logger,
   });
   if (!escalation.ok) {
-    logger.error("Failed to escalate a repeatedly disrupted merge conflict", {
+    logger.error("Failed to escalate a conflicting PR from the scan", {
       repo,
       prNumber,
+      heading: args.heading,
       error: escalation.error.message,
     });
   }
@@ -660,12 +690,28 @@ export async function findConflictingPr(
         continue;
       }
 
+      // A spent budget is only a quiet skip once the PR is visibly a human's
+      // (Issue #395). Reaching here means it is not: the label check above
+      // already let it through, so the processor's final escalation never
+      // landed and the PR would stall unowned for ever.
       if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
-        logger.debug("Conflicting PR has spent its attempt budget", {
+        logger.warn(
+          `PR #${pr.number} has spent its ${maxAttempts} merge-conflict ` +
+            "attempts without being handed to a human — escalating",
+          { repo, prNumber: pr.number, attempts: history.count, maxAttempts },
+        );
+        await escalateConflictingPr({
           repo,
           prNumber: pr.number,
-          attempts: history.count,
-          maxAttempts,
+          heading: "Merge conflict needs human attention",
+          reason: buildExhaustedEscalationReason(pr.number, history.count),
+          nextStep: EXHAUSTED_CONFLICT_NEXT_STEP,
+          // The key the resolution pass uses, so a landed escalation is not
+          // duplicated — only its missing label is re-applied.
+          dedupKey: `merge-conflict-${pr.number}`,
+          needsHumanLabel,
+          ghCommandFn,
+          logger,
         });
         continue;
       }
@@ -686,10 +732,18 @@ export async function findConflictingPr(
       // escalated rather than retried silently forever.
       const disruptedCount = countDisruptedAttempts(history);
       if (hasExhaustedDisruptedAttempts(disruptedCount, maxDisruptedAttempts)) {
-        await escalateDisruptedConflict({
+        logger.warn(
+          `PR #${pr.number} has had ${disruptedCount} merge-conflict attempts ` +
+            "disrupted before any conclusion — escalating to a human",
+          { repo, prNumber: pr.number, disruptedCount },
+        );
+        await escalateConflictingPr({
           repo,
           prNumber: pr.number,
-          disruptedCount,
+          heading: "Merge-conflict resolution keeps being disrupted",
+          reason: buildDisruptionEscalationReason(pr.number, disruptedCount),
+          nextStep: DISRUPTED_CONFLICT_NEXT_STEP,
+          dedupKey: `merge-conflict-disrupted-${pr.number}`,
           needsHumanLabel,
           ghCommandFn,
           logger,
