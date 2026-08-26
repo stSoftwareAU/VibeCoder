@@ -24,11 +24,17 @@
  *     effort is left unchanged — this module is not involved there.
  *   - An explicit per-repo / env model or effort override for the phase wins:
  *     an operator who pinned the phase is not second-guessed by the probe.
+ *   - **Provider-gated** (Issue #398): the reroute is a move down the Anthropic
+ *     tier ladder, so it fires only for an invocation whose coding-agent
+ *     provider routes the phase to the Fable tier. A Codex or Gemini
+ *     invocation — which cannot resolve `opus` at all — stays on its own
+ *     routing and is never flagged degraded for a tier it never requested.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
 import type { FableCacheRead } from "./health_check_cache.ts";
+import { modelFamily } from "./planning_run_stats.ts";
 
 /**
  * The eight "Fable-preferring" planning-shaped phases (Issues #3217, #4429).
@@ -65,6 +71,38 @@ export function isFablePreferringPhase(phase: string | undefined): boolean {
   return phase !== undefined && FABLE_PREFERRING_SET.has(phase);
 }
 
+/**
+ * The minimum a coding-agent provider must expose for the reroute gate.
+ *
+ * Structural rather than an `AgentProviderDescriptor` import, so this module
+ * stays free of the provider registry (and of any import cycle through it) and
+ * a caller can gate on a descriptor it constructed itself.
+ */
+export interface FableRoutingProvider {
+  /** Provider id, named in the log line when the reroute is skipped. */
+  id: string;
+  /** The model this provider routes `phase` to, if any. */
+  resolveModel(phase?: string): string | undefined;
+}
+
+/**
+ * Whether `provider` routes `phase` to the Fable tier (Issue #398).
+ *
+ * The tier — not the provider id — is the gate, so registering a fourth
+ * provider that carries a Fable tier needs no edit here, and a provider whose
+ * routing is moved off the tier stops being rerouted for free.
+ *
+ * @param provider - The provider this invocation will run on.
+ * @param phase - The phase name.
+ * @returns true when the provider's routing for `phase` is a Fable-tier model.
+ */
+export function providerRoutesToFableTier(
+  provider: FableRoutingProvider,
+  phase: string | undefined,
+): boolean {
+  return modelFamily(provider.resolveModel(phase) ?? "") === "fable";
+}
+
 /** Model the pre-flight reroute selects when Fable is unavailable. */
 export const FABLE_PREFLIGHT_MODEL = "opus" as const;
 
@@ -97,25 +135,33 @@ export interface FablePreflightRouting {
  *
  * Reroutes (Opus @ `max`, degraded) **only** when all of:
  *   - `phase` is Fable-preferring;
+ *   - `provider` routes that phase to the Fable tier (Issue #398);
  *   - no explicit operator override is present; and
  *   - the cached verdict is a fresh `"unavailable"`.
  *
- * Every other combination — a non-Fable-preferring phase, an `available` /
- * `unknown` (missing/expired) verdict, or an explicit override — returns the
- * no-op `{ degraded: false }`.
+ * Every other combination — a non-Fable-preferring phase, a provider with no
+ * Fable tier, an `available` / `unknown` (missing/expired) verdict, or an
+ * explicit override — returns the no-op `{ degraded: false }`.
  *
  * @param phase - The phase name.
  * @param fableVerdict - Cached verdict: `available` / `unavailable` / `unknown`.
  * @param hasExplicitOverride - Whether the phase has an explicit per-repo / env
  *   / call-site model or effort override that should suppress the reroute.
+ * @param provider - The provider this invocation will run on. Required: the
+ *   reroute names an Anthropic tier alias, so it cannot be decided without
+ *   knowing which agent would receive it.
  * @returns The routing decision.
  */
 export function resolveFablePreflightRouting(
   phase: string | undefined,
   fableVerdict: FableCacheRead,
   hasExplicitOverride: boolean,
+  provider: FableRoutingProvider,
 ): FablePreflightRouting {
   if (!isFablePreferringPhase(phase)) {
+    return { degraded: false };
+  }
+  if (!providerRoutesToFableTier(provider, phase)) {
     return { degraded: false };
   }
   if (hasExplicitOverride) {
@@ -147,6 +193,7 @@ export function resolveFablePreflightRouting(
  * @param options - The run options (must carry `phase`; may carry `model`/`effort`).
  * @param fableVerdict - Cached Fable-availability verdict.
  * @param hasExplicitOverride - Whether an explicit operator override is present.
+ * @param provider - The provider this invocation will run on (Issue #398).
  * @returns The (possibly rerouted) options and the routing verdict.
  */
 export function applyFablePreflightRouting<
@@ -155,11 +202,13 @@ export function applyFablePreflightRouting<
   options: T,
   fableVerdict: FableCacheRead,
   hasExplicitOverride: boolean,
+  provider: FableRoutingProvider,
 ): { options: T; routing: FablePreflightRouting } {
   const routing = resolveFablePreflightRouting(
     options.phase,
     fableVerdict,
     hasExplicitOverride,
+    provider,
   );
   if (routing.model) {
     return {
@@ -168,4 +217,72 @@ export function applyFablePreflightRouting<
     };
   }
   return { options, routing };
+}
+
+/** The minimum a caller must supply to receive the warning. */
+interface FableRoutingWarnLogger {
+  warn(message: string): void;
+}
+
+/**
+ * Providers already warned about a missing Fable tier, once per worker process.
+ *
+ * One warning per provider: a Quorum round dispatching three invocations under
+ * a Fable outage states the gap once for each agent rather than on every call.
+ */
+const _noFableTierWarnedProviders = new Set<string>();
+
+/**
+ * Clear the per-process no-Fable-tier warning state (Issue #398).
+ *
+ * Exposed so a test — or any caller deliberately re-running a scenario from
+ * scratch — can observe the first warning again.
+ */
+export function clearFableTierWarnings(): void {
+  _noFableTierWarnedProviders.clear();
+}
+
+/**
+ * Report, once per provider, that a Fable outage rerouted nothing (Issue #398).
+ *
+ * Fail loud, do not fail the run (Issue #3234): the outage is real and the
+ * invocation still proceeds on its own routing, but an operator must be able to
+ * *see* that the documented Opus @ `max` reroute did not apply — and therefore
+ * that this run is not flagged degraded — rather than infer it from silence.
+ * Both ways a phase can end up off the tier are reported: a provider with no
+ * Fable tier (Codex, Gemini) and an operator pin that moved the phase off it.
+ * A no-op for every other combination, so callers can hand it any invocation.
+ *
+ * @param provider - The provider this invocation runs on.
+ * @param phase - The phase name.
+ * @param fableVerdict - Cached Fable-availability verdict.
+ * @param logger - Run logger; defaults to `console.warn`.
+ */
+export function warnProviderHasNoFableTier(
+  provider: FableRoutingProvider,
+  phase: string | undefined,
+  fableVerdict: FableCacheRead,
+  logger?: FableRoutingWarnLogger,
+): void {
+  if (!isFablePreferringPhase(phase)) return;
+  if (fableVerdict !== "unavailable") return;
+  if (providerRoutesToFableTier(provider, phase)) return;
+  if (_noFableTierWarnedProviders.has(provider.id)) return;
+  _noFableTierWarnedProviders.add(provider.id);
+
+  const routed = provider.resolveModel(phase);
+  const on = routed
+    ? `model ${JSON.stringify(routed)}`
+    : "its configured default model";
+  const message =
+    `[fable-routing] The cached probe reports Fable unavailable, but phase ` +
+    `${JSON.stringify(phase)} resolves to ${on} under the ${provider.id} ` +
+    `coding-agent provider — not the Fable tier — so NO pre-flight reroute ` +
+    `to ${FABLE_PREFLIGHT_MODEL} @ ${FABLE_PREFLIGHT_EFFORT} was applied and ` +
+    `the run is NOT flagged degraded. The reroute documented in ` +
+    `docs/MODEL-AND-CACHING.md fires only where the phase's resolved routing ` +
+    `is a Fable-tier model.`;
+
+  if (logger) logger.warn(message);
+  else console.warn(message);
 }

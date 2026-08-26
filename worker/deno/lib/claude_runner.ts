@@ -25,7 +25,6 @@ import {
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
 import {
-  buildClaudeModelArgs,
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
   detectInvalidSessionId,
@@ -45,6 +44,7 @@ import {
 import {
   applyFablePreflightRouting,
   isFablePreferringPhase,
+  warnProviderHasNoFableTier,
 } from "./fable_routing.ts";
 import {
   type GhGuardShim,
@@ -1911,9 +1911,18 @@ export async function runClaudeWithRetry(
   // degraded. The override is applied at the invocation layer only — it never
   // rewrites PHASE_MODEL_DEFAULTS, so `buildClaudeModelArgs(phase)` still
   // resolves to `fable` and the #2720 served-vs-expected check keeps working.
+  //
+  // Provider-gated since Issue #398: `opus` is an Anthropic tier alias, so the
+  // reroute fires only for an invocation whose provider routes the phase to the
+  // Fable tier. Without the gate a Quorum draft naming `agentProvider: "codex"`
+  // was handed `--model opus --effort max` — a model that CLI cannot resolve —
+  // and flagged degraded for a tier it never requested.
   let preflightDegraded = false;
   let preflightDegradedReason: string | undefined;
   if (isFablePreferringPhase(options.phase)) {
+    // The provider for *this* invocation (Issue #4109), not the process-wide
+    // active one: a Quorum round drives three invocations naming their own.
+    const preflightProvider = selectAgentProvider(options.agentProvider);
     // Detect a genuine operator override so the probe never second-guesses a
     // pinned phase. Model overrides cannot be detected by env-var presence:
     // `load_config` exports the *default* fable routing as `CLAUDE_MODEL_<PHASE>`,
@@ -1922,7 +1931,7 @@ export async function runClaudeWithRetry(
     // no default env export, so a call-site or env/config effort value is a
     // genuine pin.
     const effectiveModel = options.model ??
-      buildClaudeModelArgs(options.phase)[1] ?? "";
+      preflightProvider.resolveModel(options.phase) ?? "";
     const routedToFable = modelFamily(effectiveModel) === "fable";
     const hasExplicitOverride = !routedToFable ||
       options.effort != null ||
@@ -1932,6 +1941,7 @@ export async function runClaudeWithRetry(
       options,
       fableVerdict,
       hasExplicitOverride,
+      preflightProvider,
     );
     options = applied.options;
     preflightDegraded = applied.routing.degraded;
@@ -1943,6 +1953,14 @@ export async function runClaudeWithRetry(
           `(run flagged degraded).`,
       );
     }
+    // Loud about the gap rather than silent (Issue #3234): under an agent with
+    // no Fable tier the outage reroutes nothing, once per provider per process.
+    warnProviderHasNoFableTier(
+      preflightProvider,
+      options.phase,
+      fableVerdict,
+      options.logger,
+    );
   }
 
   /**

@@ -139,8 +139,13 @@ so the run takes one draft plus one judgement.
 ### Degraded-model reporting
 
 Both Quorum phases prefer Fable 5, so when the pre-flight probe
-says Fable is unavailable the plan-off runs on **Opus @ `max`** instead. That
-substitution is reported the same way the six single-call planning-shaped
+says Fable is unavailable a **Claude** invocation runs on **Opus @ `max`**
+instead. A draft or judgement running under Codex or Gemini has no Fable tier
+to leave: it keeps its own provider routing, is never rerouted onto an
+Anthropic tier alias it cannot resolve, and is not reported degraded
+(Issue #398).
+
+The Opus substitution is reported the same way the six single-call planning-shaped
 phases report theirs: the `degraded-model` label on the issue, paired with a
 `## Quorum run model stats` comment giving the requested and served models,
 effort, tokens and estimated cost.
