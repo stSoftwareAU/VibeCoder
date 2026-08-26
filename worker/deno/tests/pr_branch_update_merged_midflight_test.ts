@@ -27,6 +27,7 @@ import {
 import {
   loadPrBranchFailureStreaks,
   prBranchFailureKey,
+  savePrBranchFailureStreaks,
 } from "../lib/pr_branch_update_failure_streak.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -401,6 +402,121 @@ Deno.test("executePrBranchUpdates - a mid-cycle merge does not count towards the
       undefined,
       "a mid-cycle merge leaves no failure recorded",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// =============================================================================
+// A settled PR clears its escalated streak (Issue #409)
+//
+// Suppression (Issue #335) short-circuits the loop before the finished-PR
+// check Issue #386 added, so a branch whose streak had already escalated never
+// reached it. Nothing else clears a streak — only a successful update does,
+// and no update ever succeeds on a merged PR. The escalation issue therefore
+// stayed open for ever describing work nobody could do. #409 is exactly that,
+// filed against PR #405's branch, which had already merged and whose branch
+// origin no longer has.
+// =============================================================================
+
+Deno.test("executePrBranchUpdates - a merged PR clears an already-escalated failure streak (Issue #409)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "pr-branch-409-" });
+  try {
+    const statePath = `${dir}/pr-branch-failures.json`;
+    const action = makeAction();
+    const key = prBranchFailureKey(action.repo, action.branchName);
+
+    // Seed the state this host was actually in: escalated and suppressed.
+    await savePrBranchFailureStreaks(statePath, {
+      [key]: {
+        count: 3,
+        lastCycleId: "cycle-0",
+        skippedCycles: 0,
+        issueNumber: 409,
+      },
+    });
+
+    const ghCalls: string[][] = [];
+    const captured: CapturedLogs = { info: [], warn: [] };
+    const deps = makeExecDeps({
+      logger: makeCapturingLogger(captured),
+      getPrState: async () => "MERGED",
+      // If this ran, the PR was not recognised as settled.
+      performBranchUpdate: async () => {
+        throw new Error("must not attempt an update on a merged PR");
+      },
+      failureStreak: {
+        statePath,
+        cycleId: "cycle-1",
+        ghFn: async (args: string[]) => {
+          ghCalls.push(args);
+          return "";
+        },
+      },
+    });
+
+    const result = await executePrBranchUpdates([action], deps);
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.mergedCount, 1);
+    assertEquals(result.value.failedCount, 0);
+    assertEquals(result.value.suppressedCount, 0);
+    assertEquals(ghCalls.length, 0, "a settled PR escalates nothing");
+
+    const streaks = await loadPrBranchFailureStreaks(statePath);
+    assertEquals(
+      streaks[key],
+      undefined,
+      "the streak must be cleared once the PR is settled",
+    );
+    assertEquals(
+      captured.info.some((m) => m.includes("Issue #409")),
+      true,
+      captured.info.join(" | "),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("executePrBranchUpdates - an open PR keeps its escalated streak suppressed (Issue #409)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "pr-branch-409-open-" });
+  try {
+    const statePath = `${dir}/pr-branch-failures.json`;
+    const action = makeAction();
+    const key = prBranchFailureKey(action.repo, action.branchName);
+    await savePrBranchFailureStreaks(statePath, {
+      [key]: {
+        count: 3,
+        lastCycleId: "cycle-0",
+        skippedCycles: 0,
+        issueNumber: 411,
+      },
+    });
+
+    const deps = makeExecDeps({
+      getPrState: async () => "OPEN",
+      performBranchUpdate: async () => {
+        throw new Error("suppressed branches must not be updated");
+      },
+      failureStreak: {
+        statePath,
+        cycleId: "cycle-1",
+        ghFn: async () => "",
+      },
+    });
+
+    const result = await executePrBranchUpdates([action], deps);
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    // Still suppressed, streak intact — Issue #335's behaviour is unchanged
+    // for a PR that is genuinely still open.
+    assertEquals(result.value.suppressedCount, 1);
+    assertEquals(result.value.mergedCount, 0);
+    const streaks = await loadPrBranchFailureStreaks(statePath);
+    assertEquals(streaks[key]?.count, 3);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

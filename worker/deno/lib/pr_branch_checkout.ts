@@ -21,10 +21,9 @@ import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import {
   assertSafeRefComponent,
-  buildCheckoutNewBranchArgs,
+  buildCheckoutResetBranchArgs,
   buildFetchTrackingRefArgs,
 } from "./git_ref_args.ts";
-import { buildCheckoutArgs } from "./git_ref_args.ts";
 
 /** What the checkout had to do to put the local branch on the remote head. */
 export type BranchAlignment =
@@ -94,108 +93,112 @@ export async function checkoutPrBranchAtRemoteHead(
 
   const localSha = await readSha(`refs/heads/${branchName}`, options);
 
+  // What the local branch is, before anything is moved. The ahead-check has
+  // to happen here — before the branch is touched — because it is the only
+  // thing standing between somebody's unpushed work and a hard reset.
+  let alignment: BranchAlignment;
   if (localSha === null) {
-    const created = await runGitCommand(
-      buildCheckoutNewBranchArgs(branchName, trackingRef),
+    alignment = "created-from-remote";
+  } else if (localSha === remoteSha) {
+    alignment = "already-at-remote";
+  } else if (!(await isReadableCommit(localSha, options))) {
+    // The ref resolves but names an object this clone does not have — the
+    // `fatal: bad object` / `unable to read tree` shape (Issue #411). There
+    // is no reachable work to protect, and the ref cannot be read, only
+    // replaced. The remote head is the PR, so take it.
+    alignment = "reset-to-remote";
+  } else {
+    const aheadResult = await runGitCommand(
+      ["rev-list", "--count", `${trackingRef}..refs/heads/${branchName}`],
       options,
     );
-    if (!created.ok || created.value.code !== 0) {
-      const stderr = created.ok ? created.value.stderr.trim() : "";
+    if (!aheadResult.ok || aheadResult.value.code !== 0) {
+      const stderr = aheadResult.ok ? aheadResult.value.stderr.trim() : "";
       return {
         ok: false,
         error: new Error(
-          `Failed to create branch '${branchName}' from its remote head: ` +
+          `Could not compare '${branchName}' with its remote head: ` +
             `${
-              stderr || (created.ok
-                ? `exit ${created.value.code}`
-                : created.error.message)
+              stderr || (aheadResult.ok
+                ? `exit ${aheadResult.value.code}`
+                : aheadResult.error.message)
             }`,
         ),
       };
     }
-    return { ok: true, value: "created-from-remote" };
+    const ahead = Number.parseInt(aheadResult.value.stdout.trim(), 10);
+    if (!Number.isFinite(ahead)) {
+      return {
+        ok: false,
+        error: new Error(
+          `Could not compare '${branchName}' with its remote head: git printed ` +
+            `'${aheadResult.value.stdout.trim()}'`,
+        ),
+      };
+    }
+    if (ahead > 0) {
+      return {
+        ok: false,
+        error: new Error(
+          `Local branch '${branchName}' holds ${ahead} commit(s) that ` +
+            `origin/${branchName} does not — refusing to evaluate or update a ` +
+            `PR from a stale local branch (Issue #211). Push or discard them ` +
+            `first.`,
+        ),
+      };
+    }
+    alignment = "reset-to-remote";
   }
 
-  const checkedOut = await runGitCommand(
-    buildCheckoutArgs(branchName),
+  // One mutating command for every case (Issue #411). `checkout -B` creates
+  // the branch when it is absent, resets it when it is stale, and overwrites
+  // it when it is corrupt — so the local ref is never *read* to get there.
+  //
+  // The old shape read the ref with `rev-parse` and then ran a separate
+  // `git checkout <branch>`, which failed permanently on a ref that resolved
+  // but could not be checked out, and left a window in which another lane
+  // sharing the clone could delete the branch between the two commands:
+  //
+  //   Failed to checkout branch 'issue-387-side-data-…': error: pathspec
+  //   'issue-387-side-data-…' did not match any file(s) known to git
+  //
+  // — while the branch sat healthy on origin the whole time. PR #408 failed
+  // that way on three consecutive cycles.
+  const aligned = await runGitCommand(
+    buildCheckoutResetBranchArgs(branchName, trackingRef),
     options,
   );
-  if (!checkedOut.ok || checkedOut.value.code !== 0) {
-    const stderr = checkedOut.ok ? checkedOut.value.stderr.trim() : "";
+  if (!aligned.ok || aligned.value.code !== 0) {
+    const stderr = aligned.ok ? aligned.value.stderr.trim() : "";
     return {
       ok: false,
       error: new Error(
-        `Failed to checkout branch '${branchName}': ` +
-          `${
-            stderr || (checkedOut.ok
-              ? `exit ${checkedOut.value.code}`
-              : checkedOut.error.message)
-          }`,
-      ),
-    };
-  }
-
-  if (localSha === remoteSha) {
-    return { ok: true, value: "already-at-remote" };
-  }
-
-  const aheadResult = await runGitCommand(
-    ["rev-list", "--count", `${trackingRef}..refs/heads/${branchName}`],
-    options,
-  );
-  if (!aheadResult.ok || aheadResult.value.code !== 0) {
-    const stderr = aheadResult.ok ? aheadResult.value.stderr.trim() : "";
-    return {
-      ok: false,
-      error: new Error(
-        `Could not compare '${branchName}' with its remote head: ` +
-          `${
-            stderr || (aheadResult.ok
-              ? `exit ${aheadResult.value.code}`
-              : aheadResult.error.message)
-          }`,
-      ),
-    };
-  }
-  const ahead = Number.parseInt(aheadResult.value.stdout.trim(), 10);
-  if (!Number.isFinite(ahead)) {
-    return {
-      ok: false,
-      error: new Error(
-        `Could not compare '${branchName}' with its remote head: git printed ` +
-          `'${aheadResult.value.stdout.trim()}'`,
-      ),
-    };
-  }
-
-  if (ahead > 0) {
-    return {
-      ok: false,
-      error: new Error(
-        `Local branch '${branchName}' holds ${ahead} commit(s) that ` +
-          `origin/${branchName} does not — refusing to evaluate or update a ` +
-          `PR from a stale local branch (Issue #211). Push or discard them ` +
-          `first.`,
-      ),
-    };
-  }
-
-  const reset = await runGitCommand(
-    ["reset", "--hard", trackingRef],
-    options,
-  );
-  if (!reset.ok || reset.value.code !== 0) {
-    const stderr = reset.ok ? reset.value.stderr.trim() : "";
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to reset '${branchName}' onto its remote head: ` +
+        `Failed to position '${branchName}' on its remote head: ` +
           `${
             stderr ||
-            (reset.ok ? `exit ${reset.value.code}` : reset.error.message)
+            (aligned.ok ? `exit ${aligned.value.code}` : aligned.error.message)
           }`,
       ),
     };
   }
-  return { ok: true, value: "reset-to-remote" };
+  return { ok: true, value: alignment };
+}
+
+/**
+ * Is `sha` a commit this clone can actually read?
+ *
+ * A ref can resolve while the object it names is missing — the shape behind
+ * `fatal: bad object` and `unable to read tree`. Such a branch has no
+ * reachable work on it, so it is safe to overwrite; a readable one must go
+ * through the ahead-check first.
+ */
+async function isReadableCommit(
+  sha: string,
+  options: GitCommandOptions,
+): Promise<boolean> {
+  const result = await runGitCommand(
+    ["cat-file", "-e", `${sha}^{commit}`],
+    options,
+  );
+  return result.ok && result.value.code === 0;
 }

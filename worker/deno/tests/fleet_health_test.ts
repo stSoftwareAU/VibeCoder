@@ -1152,3 +1152,84 @@ Deno.test("buildFleetHealthConfig - with a repository configured, the default di
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// Disk-floor gating of the clone (Issue #410)
+//
+// On GRQ-23 the work-volume reclaimer tiered the health checkout as
+// disposable and removed it at `0.0 days idle` while the host sat below its
+// disk floor; `ensureFleetHealthRepo` saw an absent directory and cloned it
+// straight back. Clone and prune chased each other every ~4.5 minutes,
+// indefinitely — and because the volume image only grows, each lap added
+// 47 MB the host could never get back.
+//
+// Neither side is wrong alone. The clone is the side that yields: fleet
+// health is optional reporting, and a host already declining work for want
+// of disk has better uses for what it has left.
+// ---------------------------------------------------------------------------
+
+Deno.test("ensureFleetHealthRepo - does not clone while the host is below its disk floor (Issue #410)", async () => {
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(false),
+  });
+  const gated = { ...deps, isBelowDiskFloor: () => Promise.resolve(true) };
+  const config = createTestConfig();
+
+  const result = await ensureFleetHealthRepo(config, gated);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    // Same shape as "not configured": a deliberate skip, never a warning.
+    assertEquals(result.error instanceof FleetHealthNotConfiguredError, true);
+  }
+  assertEquals(deps.commands.length, 0, "no clone may run below the floor");
+  assertEquals(deps.warnings.length, 0, "a deliberate skip is not a warning");
+  assertStringIncludes(deps.logs[0]!, "below its disk floor");
+  assertStringIncludes(deps.logs[0]!, config.healthDir);
+  assertStringIncludes(deps.logs[0]!, "Issue #410");
+});
+
+Deno.test("ensureFleetHealthRepo - clones normally when the host is above its disk floor (Issue #410)", async () => {
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(false),
+  });
+  const gated = { ...deps, isBelowDiskFloor: () => Promise.resolve(false) };
+
+  const result = await ensureFleetHealthRepo(createTestConfig(), gated);
+
+  assertEquals(result.ok, true);
+  assertEquals(deps.commands.length, 1);
+  assertEquals(deps.commands[0]![1], "clone");
+});
+
+Deno.test("ensureFleetHealthRepo - a host that supplies no disk probe behaves exactly as before (Issue #410)", async () => {
+  // The dependency is optional: existing callers and tests must not change
+  // behaviour merely because the gate exists.
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(false),
+  });
+
+  const result = await ensureFleetHealthRepo(createTestConfig(), deps);
+
+  assertEquals(result.ok, true);
+  assertEquals(deps.commands.length, 1);
+  assertEquals(deps.commands[0]![1], "clone");
+});
+
+Deno.test("ensureFleetHealthRepo - an existing checkout is still refreshed below the floor (Issue #410)", async () => {
+  // Only the clone is gated. A checkout that already exists costs no new
+  // disk to update, and health reporting from a low-disk host is exactly
+  // when an operator most wants to hear from it.
+  const deps = createMockDeps({
+    directoryExists: () => Promise.resolve(true),
+  });
+  const gated = { ...deps, isBelowDiskFloor: () => Promise.resolve(true) };
+
+  const result = await ensureFleetHealthRepo(createTestConfig(), gated);
+
+  assertEquals(result.ok, true);
+  assert(
+    deps.commands.some((c) => c.includes("fetch")),
+    "an existing checkout must still be fetched",
+  );
+});
