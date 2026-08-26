@@ -19,6 +19,7 @@ import {
 } from "../lib/pr_merge_conflict_processor.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
@@ -58,6 +59,8 @@ interface Captured {
   gitArgs: string[][];
   commitAndPushCalls: number;
   agentRuns: number;
+  /** Lock-comment refreshes (Issue #395). */
+  lockRenewals: number[];
 }
 
 interface GitScript {
@@ -190,6 +193,12 @@ function makeGithub(captured: Captured): Partial<GitHubDeps> {
             }
           }
         }
+        if (verb === "PATCH" && endpoint.includes("/issues/comments/")) {
+          captured.lockRenewals.push(
+            Number(endpoint.split("/issues/comments/")[1] ?? 0),
+          );
+          captured.events.push("gh:lock-renew");
+        }
         if (verb === "DELETE" && endpoint.includes("/labels/")) {
           captured.labelsRemoved.push(endpoint.split("/labels/")[1] ?? "");
           captured.events.push("gh:label-remove");
@@ -203,15 +212,20 @@ function makeGithub(captured: Captured): Partial<GitHubDeps> {
   };
 }
 
-function makeClaude(captured: Captured): Partial<ClaudeDeps> {
+function makeClaude(captured: Captured, delayMs = 0): Partial<ClaudeDeps> {
   return {
-    runClaudeWithRetry: (() => {
+    runClaudeWithRetry: (async () => {
       captured.agentRuns++;
       captured.events.push("agent:run");
-      return Promise.resolve({
+      // A real resolution runs for minutes; a few milliseconds is enough for
+      // a test to observe what happens *while* it runs (Issue #395).
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      return {
         ok: true,
         value: { output: "resolved", exitCode: 0, timedOut: false },
-      });
+      };
     }) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
 }
@@ -233,6 +247,7 @@ async function runProcessor(
   input: MergeConflictInput,
   script: GitScript,
   depOverrides?: Partial<MergeConflictProcessorDeps>,
+  opts?: { claudeDelayMs?: number },
 ): Promise<{
   captured: Captured;
   result: Awaited<
@@ -247,12 +262,13 @@ async function runProcessor(
     gitArgs: [],
     commitAndPushCalls: 0,
     agentRuns: 0,
+    lockRenewals: [],
   };
 
   const deps = createMockDeps({
     git: makeGit(script, captured),
     github: makeGithub(captured),
-    claude: makeClaude(captured),
+    claude: makeClaude(captured, opts?.claudeDelayMs ?? 0),
   });
 
   const result = await processMergeConflict(input, {
@@ -391,6 +407,101 @@ Deno.test("processMergeConflict - the final failed attempt escalates to a human"
   assertStringIncludes(escalation, "**Why:**");
   assertStringIncludes(escalation, "**Next step:**");
   assertStringIncludes(escalation, "SECURITY.md");
+});
+
+// ---------------------------------------------------------------------------
+// Disruption robustness (Issue #395)
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - a failed attempt posts an explicit conclusion", async () => {
+  // Without this conclusion the attempt is indistinguishable from one a
+  // dying worker abandoned — the GRQ#4408/#4409 silence.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ markersAfterAgent: true }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+
+  const conclusion = captured.comments.at(-1) ?? "";
+  assertStringIncludes(conclusion, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(conclusion, "attempt 1 of 2 failed");
+  assertStringIncludes(conclusion, "conflict markers");
+  assertStringIncludes(conclusion, "SECURITY.md");
+});
+
+Deno.test("processMergeConflict - the escalating attempt also posts its conclusion", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 1 }),
+    makeGitScript({ markersAfterAgent: true }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.escalated, true);
+  assert(
+    captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)),
+    `a failure conclusion must be posted; got ${captured.comments.length} comments`,
+  );
+});
+
+Deno.test("processMergeConflict - a disrupted earlier attempt is surfaced on the PR", async () => {
+  const { captured } = await runProcessor(
+    makeInput({ attemptCount: 0, disruptedCount: 2 }),
+    makeGitScript(),
+  );
+
+  const attempt = captured.comments[0] ?? "";
+  assertStringIncludes(attempt, CONFLICT_ATTEMPT_MARKER);
+  assertStringIncludes(attempt, "attempt 1 of 2");
+  assertStringIncludes(attempt, "2 earlier attempt(s) were disrupted");
+  assertStringIncludes(attempt, "does not spend");
+});
+
+Deno.test("processMergeConflict - a clean history says nothing about disruption", async () => {
+  const { captured } = await runProcessor(makeInput(), makeGitScript());
+  const attempt = captured.comments[0] ?? "";
+  assertEquals(attempt.includes("disrupted"), false);
+});
+
+Deno.test("processMergeConflict - the PR lock is refreshed while the agent works", async () => {
+  // Issue #395: the lock TTL is 5 minutes and a resolution runs for up to
+  // the agent timeout, so without renewal a second host cleans the lock as
+  // stale and starts a competing attempt on the same branch — which reads
+  // as a disruption on the first attempt and races its push.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    {
+      workerId: "worker-a",
+      acquireLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { acquired: true, lockCommentId: 4242 },
+        })) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+      releaseLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: undefined,
+        })) as unknown as MergeConflictProcessorDeps["releaseLockFn"],
+      lockRenewalIntervalMs: 10,
+    },
+    { claudeDelayMs: 80 },
+  );
+
+  assert(result.ok);
+  assert(
+    captured.lockRenewals.length >= 2,
+    `the lock must be refreshed while the agent runs; got ${captured.lockRenewals.length} renewals`,
+  );
+  assertEquals(captured.lockRenewals[0], 4242);
+
+  // And renewal stops with the run — a timer outliving it would refresh a
+  // lock the worker no longer holds.
+  const afterRun = captured.lockRenewals.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEquals(captured.lockRenewals.length, afterRun);
 });
 
 Deno.test("processMergeConflict - a PR locked by another worker is left alone", async () => {

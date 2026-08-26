@@ -1732,6 +1732,9 @@ export async function createProductionRunCoreDeps(
         // repo×author serves every Priority-1.x scan this cycle.
         cache: issueCache,
         shuffleRepos: shuffleArray,
+        // Issue #395: the scan escalates a repeatedly disrupted conflict
+        // itself, so it needs the configured escalation label.
+        needsHumanLabel: config.needsHumanLabel,
       });
 
       if (!scan.ok || scan.value === null) {
