@@ -95,10 +95,13 @@ function aheadOfRemoteError(): Error {
 
 Deno.test("executePrBranchUpdates - a branch that vanished from the clone is contention, not a failure", async () => {
   const captured: CapturedLogs = { info: [], warn: [] };
-  const result = await executePrBranchUpdates([makeAction()], makeExecDeps({
-    logger: makeCapturingLogger(captured),
-    performBranchUpdate: async () => ({ ok: false, error: PATHSPEC_ERROR }),
-  }));
+  const result = await executePrBranchUpdates(
+    [makeAction()],
+    makeExecDeps({
+      logger: makeCapturingLogger(captured),
+      performBranchUpdate: async () => ({ ok: false, error: PATHSPEC_ERROR }),
+    }),
+  );
 
   assertEquals(result.ok, true);
   if (!result.ok) return;
@@ -143,19 +146,25 @@ Deno.test("executePrBranchUpdates - contention never counts towards the escalati
   try {
     const ghCalls: string[][] = [];
     for (let cycle = 1; cycle <= 4; cycle++) {
-      const result = await executePrBranchUpdates([makeAction()], makeExecDeps({
-        getPrState: async () => "OPEN",
-        performBranchUpdate: async () => ({ ok: false, error: PATHSPEC_ERROR }),
-        failureStreak: {
-          statePath,
-          cycleId: `cycle-${cycle}`,
-          ghFn: async (args: string[]) => {
-            ghCalls.push(args);
-            return "https://github.com/org/repo/issues/999";
+      const result = await executePrBranchUpdates(
+        [makeAction()],
+        makeExecDeps({
+          getPrState: async () => "OPEN",
+          performBranchUpdate: async () => ({
+            ok: false,
+            error: PATHSPEC_ERROR,
+          }),
+          failureStreak: {
+            statePath,
+            cycleId: `cycle-${cycle}`,
+            ghFn: async (args: string[]) => {
+              ghCalls.push(args);
+              return "https://github.com/org/repo/issues/999";
+            },
+            threshold: 3,
           },
-          threshold: 3,
-        },
-      }));
+        }),
+      );
       assertEquals(result.ok, true);
       if (result.ok) assertEquals(result.value.contendedCount, 1);
     }
@@ -171,15 +180,18 @@ Deno.test("executePrBranchUpdates - contention never counts towards the escalati
 
 Deno.test("executePrBranchUpdates - a repository setup lost to another lane is contention", async () => {
   const captured: CapturedLogs = { info: [], warn: [] };
-  const result = await executePrBranchUpdates([makeAction()], makeExecDeps({
-    logger: makeCapturingLogger(captured),
-    setupRepo: async () => ({
-      ok: false,
-      error: new Error(
-        "fatal: Unable to create '/work/repo/.git/index.lock': File exists.",
-      ),
+  const result = await executePrBranchUpdates(
+    [makeAction()],
+    makeExecDeps({
+      logger: makeCapturingLogger(captured),
+      setupRepo: async () => ({
+        ok: false,
+        error: new Error(
+          "fatal: Unable to create '/work/repo/.git/index.lock': File exists.",
+        ),
+      }),
     }),
-  }));
+  );
 
   assertEquals(result.ok, true);
   if (!result.ok) return;
@@ -193,16 +205,19 @@ Deno.test("executePrBranchUpdates - a repository setup lost to another lane is c
 
 Deno.test("executePrBranchUpdates - a genuine push failure is still a loud failure", async () => {
   const captured: CapturedLogs = { info: [], warn: [] };
-  const result = await executePrBranchUpdates([makeAction()], makeExecDeps({
-    logger: makeCapturingLogger(captured),
-    performBranchUpdate: async () => ({
-      ok: false,
-      error: new Error(
-        "Failed to push updated branch 'issue-373-prompts-coding-guidelines': " +
-          "! [remote rejected] (protected branch hook declined)",
-      ),
+  const result = await executePrBranchUpdates(
+    [makeAction()],
+    makeExecDeps({
+      logger: makeCapturingLogger(captured),
+      performBranchUpdate: async () => ({
+        ok: false,
+        error: new Error(
+          "Failed to push updated branch 'issue-373-prompts-coding-guidelines': " +
+            "! [remote rejected] (protected branch hook declined)",
+        ),
+      }),
     }),
-  }));
+  );
 
   assertEquals(result.ok, true);
   if (!result.ok) return;
@@ -214,16 +229,19 @@ Deno.test("executePrBranchUpdates - a genuine push failure is still a loud failu
 
 Deno.test("executePrBranchUpdates - a real merge conflict is still a conflict, not contention", async () => {
   resetPrConflictWarnings();
-  const result = await executePrBranchUpdates([makeAction()], makeExecDeps({
-    performBranchUpdate: async () => ({
-      ok: false,
-      error: prBranchConflictError(
-        "issue-373-prompts-coding-guidelines",
-        "milestone/358-model-agnostic",
-        "rebase",
-      ),
+  const result = await executePrBranchUpdates(
+    [makeAction()],
+    makeExecDeps({
+      performBranchUpdate: async () => ({
+        ok: false,
+        error: prBranchConflictError(
+          "issue-373-prompts-coding-guidelines",
+          "milestone/358-model-agnostic",
+          "rebase",
+        ),
+      }),
     }),
-  }));
+  );
 
   assertEquals(result.ok, true);
   if (!result.ok) return;
@@ -234,21 +252,26 @@ Deno.test("executePrBranchUpdates - a real merge conflict is still a conflict, n
 
 Deno.test("executePrBranchUpdates - the distributed lock is released when the clone is contended", async () => {
   const released: number[] = [];
-  const result = await executePrBranchUpdates([makeAction()], makeExecDeps({
-    workerId: "worker-a",
-    acquireLock: async () => ({
-      ok: true,
-      value: { acquired: true, lockCommentId: 77 },
+  const result = await executePrBranchUpdates(
+    [makeAction()],
+    makeExecDeps({
+      workerId: "worker-a",
+      acquireLock: async () => ({
+        ok: true,
+        value: { acquired: true, lockCommentId: 77 },
+      }),
+      releaseLock: async (options: { lockCommentId: number }) => {
+        released.push(options.lockCommentId);
+        return { ok: true, value: undefined };
+      },
+      setupRepo: async () => ({
+        ok: false,
+        error: new Error(
+          "fatal: Unable to create '.git/index.lock': File exists.",
+        ),
+      }),
     }),
-    releaseLock: async (options: { lockCommentId: number }) => {
-      released.push(options.lockCommentId);
-      return { ok: true, value: undefined };
-    },
-    setupRepo: async () => ({
-      ok: false,
-      error: new Error("fatal: Unable to create '.git/index.lock': File exists."),
-    }),
-  }));
+  );
 
   assertEquals(result.ok, true);
   assertEquals(released, [77]);

@@ -112,7 +112,9 @@ Deno.test("updatePrBranch - a PR branch that exists only on origin is updated, n
 
     assert(
       result.ok,
-      `expected the update to succeed, got: ${!result.ok && result.error.message}`,
+      `expected the update to succeed, got: ${
+        !result.ok && result.error.message
+      }`,
     );
 
     // The rebase really was published: the author's clone sees the PR branch
@@ -158,7 +160,10 @@ Deno.test("updatePrBranch - runs in a lane worktree while the shared clone holds
     );
 
     // The slot's uncommitted edit survived untouched.
-    assertEquals(await Deno.readTextFile(`${clonePath}/base.txt`), "slot edit\n");
+    assertEquals(
+      await Deno.readTextFile(`${clonePath}/base.txt`),
+      "slot edit\n",
+    );
 
     // And the PR really was rebased onto the published base.
     await runGitCommand(["fetch", "origin"], { cwd: authorPath });

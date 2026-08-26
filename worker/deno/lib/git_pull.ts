@@ -26,7 +26,6 @@ import {
   buildPushArgs,
   buildRebaseArgs,
 } from "./git_ref_args.ts";
-import { syncBranchToRemoteHead } from "./git_branch_sync.ts";
 import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";

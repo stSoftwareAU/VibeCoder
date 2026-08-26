@@ -252,7 +252,8 @@ Deno.test("#335 - one escalated branch does not suppress its siblings", async ()
     });
     const h = makeHarness(
       dir,
-      () => ({ ok: false, error: new Error(PERMANENT_FAILURE) }) as Result<string>,
+      () =>
+        ({ ok: false, error: new Error(PERMANENT_FAILURE) }) as Result<string>,
     );
 
     // The bad branch alone fails its way to escalation.

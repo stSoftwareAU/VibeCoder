@@ -143,7 +143,10 @@ Deno.test("ensureLaneWorktree - reuses an existing worktree instead of recreatin
     assert(second.ok);
     if (!second.ok) return;
     assertEquals(second.value, first.value);
-    assertEquals(await Deno.readTextFile(`${first.value}/.lane-marker`), "kept\n");
+    assertEquals(
+      await Deno.readTextFile(`${first.value}/.lane-marker`),
+      "kept\n",
+    );
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
