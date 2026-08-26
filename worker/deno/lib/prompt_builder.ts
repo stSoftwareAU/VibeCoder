@@ -12,6 +12,10 @@
 
 import type { Result, VerbosityLevel } from "../types.ts";
 import { loadPrompt } from "./prompt_manager.ts";
+import {
+  type AgentIdentity,
+  loadCodingGuidelinesOverlay,
+} from "./coding_guidelines_overlay.ts";
 import { formatCodebaseMapSection } from "./codebase_map.ts";
 import { formatRepoContextSection } from "./repo_context_reader.ts";
 import {
@@ -74,6 +78,10 @@ export interface PromptParts {
 // here for callers that already import it from this module.
 export { stripPlaywrightSection, stripScreenshotInstructions };
 
+// The overlay seam lives in coding_guidelines_overlay.ts (Issue #374); the
+// identity type is re-exported so callers building prompts need one import.
+export type { AgentIdentity };
+
 /**
  * Build coding guidelines from versioned template.
  *
@@ -83,18 +91,33 @@ export { stripPlaywrightSection, stripScreenshotInstructions };
  * `{{CODING_GUIDELINES}}` — instead of its `##` headings colliding with the
  * host's.
  *
+ * The baseline template is model-agnostic (Issue #373). When the caller knows
+ * which agent will run the prompt, a per-model working-style overlay is
+ * appended behind the baseline, inside the same wrapper (Issue #374). With no
+ * identity — or no overlay authored for it — the output is exactly the
+ * baseline, which is the common path.
+ *
  * @param skipScreenshots - If true, strip Playwright/screenshot instructions
  * @param promptsDir - Path to the prompts directory
+ * @param identity - Active provider and, where known, model (Issue #374)
  * @returns Coding guidelines text, XML-delimited
  */
 export async function buildCodingGuidelines(
   skipScreenshots: boolean = false,
   promptsDir?: string,
+  identity?: AgentIdentity,
 ): Promise<Result<string>> {
   const result = await loadPrompt("coding_guidelines", undefined, promptsDir);
   if (!result.ok) return result;
 
+  const overlay = await loadCodingGuidelinesOverlay(identity, promptsDir);
+  if (!overlay.ok) return overlay;
+
   let guidelines = result.value;
+  const overlayText = overlay.value?.trim();
+  if (overlayText) {
+    guidelines = `${guidelines.trim()}\n\n${overlayText}`;
+  }
   if (skipScreenshots) {
     guidelines = stripPlaywrightSection(guidelines);
   }
@@ -353,6 +376,8 @@ export interface IssuePromptOptions {
   skipScreenshotCheck?: boolean;
   milestoneBranch?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /** Recent repository activity summary to include in the dynamic prompt (Issue #1326). */
   recentActivity?: string;
   /**
@@ -430,6 +455,7 @@ export async function buildIssuePrompt(
   const guidelinesResult = await buildCodingGuidelines(
     skipScreenshotCheck,
     promptsDir,
+    options.agentIdentity,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -626,6 +652,8 @@ export interface PlanningPromptOptions {
   /** Milestone title for sub-issue assignment (Issue #1300) */
   milestoneTitle?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -662,7 +690,11 @@ export async function buildPlanningPrompt(
   const templateResult = await loadPrompt("planning", undefined, promptsDir);
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   // Build complexity context section (Issue #863)
@@ -779,6 +811,8 @@ export interface PlanningCritiquePromptOptions {
   /** Milestone title for sub-issue assignment (Issue #1300). */
   milestoneTitle?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -837,7 +871,11 @@ export async function buildPlanningCritiquePrompt(
   );
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   // Generate randomised delimiters per invocation (Issue #1343) and sanitise
@@ -959,6 +997,8 @@ export interface QuestionPromptOptions {
   commentBoundaryId?: string;
   questionLabel?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -993,7 +1033,11 @@ export async function buildQuestionPrompt(
   const templateResult = await loadPrompt("question", undefined, promptsDir);
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   const questionSubstitution = substitute(templateResult.value, {
@@ -1078,6 +1122,8 @@ export interface PrFeedbackPromptOptions {
   qualityInstructions?: string;
   customInstructions?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -1216,7 +1262,11 @@ export async function buildPrFeedbackPrompt(
   const templateResult = await loadPrompt("pr_feedback", undefined, promptsDir);
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   const qualityBlock = qualityInstructions ? `${qualityInstructions}\n` : "";
@@ -1290,6 +1340,8 @@ export interface SpellingFixPromptOptions {
   qualityInstructions?: string;
   customInstructions?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -1326,7 +1378,11 @@ export async function buildSpellingFixPrompt(
   );
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   const qualityBlock = qualityInstructions ? `\n\n${qualityInstructions}` : "";
@@ -1396,6 +1452,8 @@ export interface WorkflowSetupPromptOptions {
   defaultBranch: string;
   existingWorkflows: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -1433,7 +1491,11 @@ export async function buildWorkflowSetupPrompt(
   );
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   // Both workflow summaries describe the *target* repository's own
@@ -1513,6 +1575,8 @@ export interface CiFixPromptOptions {
   qualityInstructions?: string;
   customInstructions?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -1586,7 +1650,11 @@ export async function buildCiFixPrompt(
   const templateResult = await loadPrompt("ci_fix", undefined, promptsDir);
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   const qualityBlock = qualityInstructions ? `\n\n${qualityInstructions}` : "";
@@ -1699,6 +1767,8 @@ export interface MergeConflictPromptOptions {
   qualityInstructions?: string;
   customInstructions?: string;
   promptsDir?: string;
+  /** Active agent identity for the per-model guidelines overlay (Issue #374). */
+  agentIdentity?: AgentIdentity;
   /**
    * CLAUDE.md/AGENTS.md content (Issue #1325). Injected into the user turn
    * behind an untrusted fence, not the system prompt (Issue #3706).
@@ -1740,7 +1810,11 @@ export async function buildMergeConflictPrompt(
   );
   if (!templateResult.ok) return templateResult;
 
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir);
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    options.agentIdentity,
+  );
   if (!guidelinesResult.ok) return guidelinesResult;
 
   const qualityBlock = qualityInstructions ? `\n\n${qualityInstructions}` : "";

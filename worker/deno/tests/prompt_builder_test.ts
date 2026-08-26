@@ -69,6 +69,130 @@ Deno.test("prompt builder - the wrapper survives the screenshot strip (Issue #37
   }
 });
 
+// --- per-model overlay (Issue #374) ---
+
+/**
+ * A throwaway prompts directory carrying a baseline `coding_guidelines`
+ * template plus whatever overlay files the test needs.
+ */
+async function withOverlayPromptsDir(
+  overlays: Record<string, string>,
+  run: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "cg_overlay_builder_" });
+  try {
+    await Deno.mkdir(`${dir}/coding_guidelines`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/coding_guidelines/v1.md`,
+      "# Baseline\n\nAgnostic rules.\n\n### Playwright MCP (Container Headless Browser)\n\nDrive the headless browser.\n",
+    );
+    for (const [name, body] of Object.entries(overlays)) {
+      await Deno.mkdir(`${dir}/${name}`, { recursive: true });
+      await Deno.writeTextFile(`${dir}/${name}/v1.md`, body);
+    }
+    await run(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("prompt builder - no identity is byte-identical to the un-overlaid baseline (Issue #374)", async () => {
+  const template = await loadPrompt(
+    "coding_guidelines",
+    undefined,
+    PROMPTS_DIR,
+  );
+  assertEquals(template.ok, true);
+  if (!template.ok) return;
+  const expected =
+    `<coding_guidelines>\n${template.value.trim()}\n</coding_guidelines>`;
+
+  const noIdentity = await buildCodingGuidelines(false, PROMPTS_DIR);
+  assertEquals(noIdentity.ok, true);
+  if (noIdentity.ok) assertEquals(noIdentity.value, expected);
+
+  // An empty identity object is the same "no identity available" case.
+  const emptyIdentity = await buildCodingGuidelines(false, PROMPTS_DIR, {});
+  assertEquals(emptyIdentity.ok, true);
+  if (emptyIdentity.ok) assertEquals(emptyIdentity.value, expected);
+});
+
+Deno.test("prompt builder - the overlay rides behind the baseline for its identity only (Issue #374)", async () => {
+  await withOverlayPromptsDir(
+    { coding_guidelines_claude: "## Working Style — Claude\n\nClaude only." },
+    async (dir) => {
+      const claude = await buildCodingGuidelines(false, dir, {
+        provider: "claude",
+      });
+      assertEquals(claude.ok, true);
+      if (claude.ok) {
+        assertStringIncludes(claude.value, "Agnostic rules.");
+        assertStringIncludes(claude.value, "Claude only.");
+        // Baseline first, overlay second, one wrapper.
+        assert(
+          claude.value.indexOf("Agnostic rules.") <
+            claude.value.indexOf("Claude only."),
+        );
+        assertEquals(claude.value.match(/<coding_guidelines>/g)?.length, 1);
+      }
+
+      // The exact regression this seam exists to prevent: one model's overlay
+      // leaking into another provider's run.
+      for (const provider of ["codex", "gemini"]) {
+        const other = await buildCodingGuidelines(false, dir, { provider });
+        assertEquals(other.ok, true);
+        if (other.ok) {
+          assertEquals(other.value.includes("Claude only."), false);
+          assertStringIncludes(other.value, "Agnostic rules.");
+        }
+      }
+    },
+  );
+});
+
+Deno.test("prompt builder - an unknown identity falls back to the baseline (Issue #374)", async () => {
+  await withOverlayPromptsDir(
+    { coding_guidelines_claude: "## Claude\n\nClaude only." },
+    async (dir) => {
+      const result = await buildCodingGuidelines(false, dir, {
+        provider: "not-a-registered-agent",
+        model: "not-a-model",
+      });
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertStringIncludes(result.value, "Agnostic rules.");
+        assertEquals(result.value.includes("Claude only."), false);
+        // No empty overlay heading is emitted when there is nothing to append.
+        assertEquals(
+          result.value,
+          "<coding_guidelines>\n# Baseline\n\nAgnostic rules.\n\n" +
+            "### Playwright MCP (Container Headless Browser)\n\n" +
+            "Drive the headless browser.\n</coding_guidelines>",
+        );
+      }
+    },
+  );
+});
+
+Deno.test("prompt builder - skipScreenshots still strips Playwright with an overlay present (Issue #374)", async () => {
+  await withOverlayPromptsDir({
+    coding_guidelines_claude:
+      "## Claude\n\nClaude only.\n\n### Playwright MCP (overlay copy)\n\nOverlay browser guidance.\n",
+  }, async (dir) => {
+    const result = await buildCodingGuidelines(true, dir, {
+      provider: "claude",
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertStringIncludes(result.value, "Claude only.");
+      assertEquals(result.value.includes("### Playwright MCP"), false);
+      assertEquals(result.value.includes("Overlay browser guidance."), false);
+      assertEquals(result.value.startsWith("<coding_guidelines>\n"), true);
+      assertEquals(result.value.endsWith("\n</coding_guidelines>"), true);
+    }
+  });
+});
+
 // --- stripScreenshotInstructions tests ---
 
 // The "## Screenshot Generation with Playwright MCP" section rule was deleted
