@@ -181,22 +181,29 @@ A trio naming a provider the running image did not install fails loudly at the
 call, listing what the image does carry — it never falls back to Claude, which
 would quietly turn a three-vendor plan-off into three Claude runs.
 
-A three-vendor deployment therefore needs all three parts to agree:
+A multi-vendor deployment therefore needs all three parts to agree. Enabling
+every registered provider leaves the trio free to name any of them — here two
+planners from different vendors, judged by a third:
 
 ```jsonc
 {
   "agent_provider": "claude",
-  "agent_providers": ["claude", "codex", "gemini"],
-  "quorum_planners": ["claude", "codex"],
+  "agent_providers": ["claude", "codex", "gemini", "deepseek"],
+  "quorum_planners": ["claude", "deepseek"],
   "quorum_judge": "gemini"
 }
 ```
+
+`deepseek` is a planner like any other here, even though its binary is the
+Claude Code CLI: it runs under its own command, against DeepSeek's endpoint,
+with its own credential, so a `claude` + `deepseek` pair is a genuine
+two-vendor plan-off rather than two Claude runs.
 
 …built from an image that carries the same set:
 
 ```bash
 docker build -f container/Containerfile \
-  --build-arg AGENT_PROVIDERS="claude,codex,gemini" \
+  --build-arg AGENT_PROVIDERS="claude,codex,gemini,deepseek" \
   -t vibe-coder:quorum container/
 ```
 
@@ -217,11 +224,12 @@ Each vendor authenticates with its own credential, provisioned once by
 ~/.vibe-coder/credentials/
 ├── claude/provider.env    0600   from VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY
 ├── codex/provider.env     0600   from VIBE_LAUNCHAGENT_OPENAI_API_KEY
-└── gemini/provider.env    0600   from VIBE_LAUNCHAGENT_GEMINI_API_KEY
+├── gemini/provider.env    0600   from VIBE_LAUNCHAGENT_GEMINI_API_KEY
+└── deepseek/provider.env  0600   from VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY
 ```
 
 The full variable list per vendor, including the plain `ANTHROPIC_API_KEY` /
-`OPENAI_API_KEY` / `GEMINI_API_KEY` fallbacks, is in
+`OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` fallbacks, is in
 [Deployment](DEPLOYMENT.md#-credential-provisioning-non-interactive). Provisioning one vendor
 never touches another's file, so adding Codex to an existing deployment cannot
 disturb the Claude credential.

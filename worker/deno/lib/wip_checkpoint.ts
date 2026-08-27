@@ -51,23 +51,56 @@ export const WIP_CHECKPOINT_COMMIT_MESSAGE =
   `${WIP_CHECKPOINT_COMMIT_PREFIX} periodic agent progress snapshot (Issue #4170)`;
 
 /**
- * Commit message for the one-shot preservation of a timed-out execute
+ * What actually stopped the execute run whose work is being preserved
+ * (Issue #424, parent #397).
+ *
+ * Every one of these paths used to write "execute timed out", including the
+ * OOM kill and the scheduled handover — a subject that was simply untrue for
+ * three of the four.
+ */
+export type WipPreservationCause =
+  /** The agent's own budget expired — a genuine per-issue timeout (Issue #47). */
+  | "timed-out"
+  /** SIGKILLed with no watchdog firing, typically the VM's OOM killer (Issue #4202). */
+  | "killed"
+  /** A SIGTERM the worker never requested (Issue #46). */
+  | "external-sigterm"
+  /** The cycle ended or the supervisor's hard cap was reached (Issue #424). */
+  | "scheduled-release";
+
+/** Subject phrase for each cause — the tail of the `wip:` commit subject. */
+const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
+  "timed-out": "timed out",
+  "killed": "was killed (SIGKILL, no watchdog)",
+  "external-sigterm": "was killed by an external SIGTERM",
+  "scheduled-release":
+    "was released on schedule (cycle ended or run hard cap reached)",
+};
+
+/**
+ * Commit message for the one-shot preservation of an interrupted execute
  * (Issue #47). Built here rather than inline at the call site so the
  * completion phase's WIP-only gate (Issue #148) recognises the same
  * subjects this worker writes — see `wip_commit_marker.ts`.
  *
- * The old " at the cycle deadline" variant is gone with the truncation that
- * produced it (Issue #420); the gate matches on the `wip:` prefix, so
- * branches still carrying the older subject are recognised unchanged.
+ * The subject names the cause (Issue #424): a scheduled handover is not a
+ * timeout, and saying so on the commit is the only record the next claimant
+ * reads. The old " at the cycle deadline" variant is gone with the
+ * truncation that produced it (Issue #420); the gate matches on the `wip:`
+ * prefix, so branches still carrying either older subject are recognised
+ * unchanged.
  */
-export function buildTimedOutWipCommitMessage(options: {
-  /** Seconds the execute ran before the watchdog fired. */
+export function buildInterruptedWipCommitMessage(options: {
+  /** What stopped the run. */
+  cause: WipPreservationCause;
+  /** Seconds the execute ran before it was stopped. */
   elapsedSeconds: number;
-  /** Uncommitted files the timeout left behind. */
+  /** Uncommitted files the interruption left behind. */
   dirtyFiles: number;
 }): string {
-  return `wip: execute timed out after ${options.elapsedSeconds}s` +
-    ` — preserving ${options.dirtyFiles} uncommitted file(s) (Issue #47)`;
+  return `wip: execute ${WIP_CAUSE_PHRASE[options.cause]} after ` +
+    `${options.elapsedSeconds}s — preserving ${options.dirtyFiles} ` +
+    `uncommitted file(s) (Issue #47)`;
 }
 
 /**

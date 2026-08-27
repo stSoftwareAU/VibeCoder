@@ -20,6 +20,11 @@
 import { assert, assertEquals } from "@std/assert";
 import { getDescendants, isRunning } from "../lib/pid_guard.ts";
 import { killProcessTree } from "./fixtures/process_tree.ts";
+import {
+  resolveWatchdogSeconds,
+  WATCHDOG_MARGIN_SECONDS,
+} from "../lib/container_watchdog.ts";
+import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
 
 // Resolve <repo-root>/loop.sh from this test file's location, without
 // depending on @std/path. The test lives at
@@ -449,11 +454,86 @@ Deno.test({
     try {
       await delay(3000);
       const env = await readRunEnv(harness.tmpDir);
-      assertEquals(env["VIBE_RUN_MAX_SECONDS"], "5400");
+      assertEquals(env["VIBE_RUN_MAX_SECONDS"], "10800");
       assert(
         (env["VIBE_RUN_STARTED_EPOCH"] ?? "").length > 0,
         `the start epoch must be exported; got ${JSON.stringify(env)}`,
       );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+// ===========================================================================
+// Issue #423 — the default cap is 3 h, and the container watchdog clears it
+// ===========================================================================
+
+Deno.test({
+  name:
+    "loop.sh #423 - the default cap is 10800s and the container watchdog clears it by the documented margin",
+  // Under #397 a claim taken at the hour runs its full budget with progress
+  // extensions on, so the old 5400 s cap became the thing that killed
+  // in-progress work. Two numbers have to move together: raising the cap past
+  // the launcher's watchdog would have the host reap a container the
+  // supervisor would still allow to run. Asserting the relation — rather than
+  // each constant alone — is what makes raising one without the other fail
+  // here instead of on a host.
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: ENV_RECORDING_RUN_STUB });
+    const child = spawnLoop(harness.tmpDir);
+    try {
+      await delay(3000);
+      const env = await readRunEnv(harness.tmpDir);
+      const capSeconds = Number(env["VIBE_RUN_MAX_SECONDS"]);
+      assertEquals(
+        capSeconds,
+        10_800,
+        `an unset VIBE_RUN_MAX_SECONDS must yield the 3 h cap; got ${
+          JSON.stringify(env)
+        }`,
+      );
+
+      const watchdogSeconds = resolveWatchdogSeconds({
+        env: () => undefined,
+        maxRunSeconds: DEFAULT_MAX_RUN_SECONDS,
+      });
+      assertEquals(
+        watchdogSeconds,
+        capSeconds + WATCHDOG_MARGIN_SECONDS,
+        "the launcher's watchdog deadline must be the supervisor cap plus " +
+          "the documented margin, or a healthy run is reaped by the host",
+      );
+      assert(
+        watchdogSeconds > capSeconds,
+        `the watchdog (${watchdogSeconds}s) must outlast the cap ` +
+          `(${capSeconds}s)`,
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "loop.sh #423 - an explicitly set VIBE_RUN_MAX_SECONDS still wins over the default",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({ runStub: ENV_RECORDING_RUN_STUB });
+    const child = spawnLoop(harness.tmpDir, {
+      VIBE_RUN_MAX_SECONDS: "1800",
+      VIBE_RUN_KILL_GRACE_SECONDS: "5",
+    });
+    try {
+      await delay(3000);
+      const env = await readRunEnv(harness.tmpDir);
+      assertEquals(env["VIBE_RUN_MAX_SECONDS"], "1800");
     } finally {
       await killTree(child);
       await harness.cleanup();

@@ -60,6 +60,9 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   "container/providers/claude.sh",
   "container/providers/codex.sh",
   "container/providers/gemini.sh",
+  // DeepSeek rides the Claude CLI under its own command name and its own pin
+  // (Issue #415), so it is its own fragment and its own hash input.
+  "container/providers/deepseek.sh",
   "worker/deno/deno.lock",
 ];
 

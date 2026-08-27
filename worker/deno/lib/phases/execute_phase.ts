@@ -38,7 +38,7 @@ import {
   saveResumeState,
 } from "../resume_state_store.ts";
 import {
-  buildTimedOutWipCommitMessage,
+  buildInterruptedWipCommitMessage,
   startWipCheckpoints,
 } from "../wip_checkpoint.ts";
 import {
@@ -62,7 +62,10 @@ import {
   MIN_INFRA_RETRY_RUNWAY_SECONDS,
   shouldRetryInfrastructureFailure,
 } from "../infra_retry.ts";
-import { detectFailureCategory } from "../failure_diagnosis.ts";
+import {
+  buildScheduledReleaseReason,
+  detectFailureCategory,
+} from "../failure_diagnosis.ts";
 import { describeMemoryPressure } from "../memory_pressure.ts";
 import {
   checkContextBudget,
@@ -564,7 +567,22 @@ async function executeClaudeBody(
 
   // Check for timeout (Issue #1188 — detailed failure messages)
   if (claudeResult.value.timedOut) {
-    logger.warn("Claude timed out", { exitCode: claudeResult.value.exitCode });
+    // A hard-cap release fires the same watchdog and exits with the same
+    // status as a genuine timeout (Issue #424, parent #397). Only the runner
+    // knows which happened, so read its flag rather than the exit status.
+    const scheduled = claudeResult.value.scheduledRelease;
+    if (scheduled) {
+      logger.warn(
+        "Claude released on schedule — the supervisor's run hard cap was " +
+          "reached while the run was still progressing; preserving its work " +
+          "for the next claim (Issue #424)",
+        { exitCode: claudeResult.value.exitCode },
+      );
+    } else {
+      logger.warn("Claude timed out", {
+        exitCode: claudeResult.value.exitCode,
+      });
+    }
 
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
@@ -593,7 +611,11 @@ async function executeClaudeBody(
       // is its work — leave the tree alone, as before.
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
-        buildTimedOutWipCommitMessage({ elapsedSeconds, dirtyFiles }),
+        buildInterruptedWipCommitMessage({
+          cause: scheduled ? "scheduled-release" : "timed-out",
+          elapsedSeconds,
+          dirtyFiles,
+        }),
       // Refresh the durable resume state so resume-on-reclaim (#4170) finds
       // the checkpoint when session resume is enabled.
       onPreserved: () => saveCheckpointState(),
@@ -625,7 +647,13 @@ async function executeClaudeBody(
     // whole configured budget — because the cycle deadline no longer
     // truncates a claim (Issue #420), so there is no shortened-budget note to
     // add.
-    const baseReason = (state.claudeOutput.length === 0
+    //
+    // A scheduled release says so instead (Issue #424): the run did not run
+    // out of time on this issue, the fleet stopped it, and the wording must
+    // not send a human off to split the issue into sub-issues.
+    const baseReason = (scheduled
+      ? buildScheduledReleaseReason(scheduled)
+      : state.claudeOutput.length === 0
       ? `Claude timed out with zero output and made no changes`
       : dirtyFiles > 0
       ? `Claude timed out with uncommitted changes (${dirtyFiles} file${
@@ -679,7 +707,11 @@ async function executeClaudeBody(
       deps,
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
-        buildTimedOutWipCommitMessage({ elapsedSeconds, dirtyFiles }),
+        buildInterruptedWipCommitMessage({
+          cause: "killed",
+          elapsedSeconds,
+          dirtyFiles,
+        }),
       onPreserved: () => saveCheckpointState(),
     });
 
@@ -720,6 +752,64 @@ async function executeClaudeBody(
     return { status: "failure", reason };
   }
 
+  // The worker's own shutdown ended the agent run (Issue #4369): the cycle is
+  // over. That is a scheduled release, not a failure of the issue (Issue
+  // #424, parent #397) — preserve the work, name the handover, and let the
+  // next claim resume the branch. Without this arm the result fell through to
+  // change detection, which ran the quality gate and the completion phase
+  // over a half-done tree exactly as the external-SIGTERM path did before
+  // Issue #46 fixed it.
+  if (claudeResult.value.terminated) {
+    const elapsedSeconds = Math.round(
+      (Date.now() - state.executeStartTime) / 1000,
+    );
+    logger.warn(
+      "Claude was stopped by the worker's own shutdown — releasing the claim " +
+        "on schedule with the work preserved (Issue #424)",
+      { rawExitCode: claudeResult.value.rawExitCode },
+    );
+    const wip = await preserveRunWip({
+      state,
+      deps,
+      inspectWorkingTree: state.claudeOutput.length > 0,
+      buildMessage: (dirtyFiles) =>
+        buildInterruptedWipCommitMessage({
+          cause: "scheduled-release",
+          elapsedSeconds,
+          dirtyFiles,
+        }),
+      onPreserved: () => saveCheckpointState(),
+    });
+    // Same ordering as every other stop path (#218): the work is safe before
+    // anything decides this run is finished with.
+    const disposition = await classifyExistingPr(ctx, deps);
+    if (disposition.kind === "open") {
+      logger.info(
+        "PR already exists despite the shutdown, treating as success",
+        {
+          prUrl: disposition.prUrl,
+          ...(wip.wipNote ? { wip: wip.wipNote } : {}),
+        },
+      );
+      return { status: "continue" };
+    }
+    if (disposition.kind === "superseded") {
+      return supersededResult("execute", disposition, wip, deps);
+    }
+    const reason = formatDetailedFailureMessage(
+      buildScheduledReleaseReason("cycle-ended") +
+        (wip.wipNote ? ` — ${wip.wipNote}` : ""),
+      {
+        elapsedSeconds,
+        outputSize: state.claudeOutput.length,
+        clarityStatus: state.clarityStatus,
+        lastOutputSnippet: state.claudeOutput.slice(-500) || undefined,
+        rawExitCode: claudeResult.value.rawExitCode ?? 143,
+      },
+    );
+    return { status: "failure", reason };
+  }
+
   // Issue #46: a SIGTERM the worker never requested — an external kill (a tool
   // the agent ran, the CLI, the container, a stray signal). The old code let
   // this `terminated` result fall through to change detection and `continue`,
@@ -737,7 +827,11 @@ async function executeClaudeBody(
       deps,
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
-        buildTimedOutWipCommitMessage({ elapsedSeconds, dirtyFiles }),
+        buildInterruptedWipCommitMessage({
+          cause: "external-sigterm",
+          elapsedSeconds,
+          dirtyFiles,
+        }),
       onPreserved: () => saveCheckpointState(),
     });
     const disposition = await classifyExistingPr(ctx, deps);

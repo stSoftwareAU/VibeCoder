@@ -668,10 +668,9 @@ order they appear:
    ```
 
    ```text
-   Run hard cap: VIBE_RUN_MAX_SECONDS=<cap>s from run start; progress
-   extensions may not push the deadline past <cap − reserve>s elapsed
-   (<reserve>s reserved for the kill grace and the WIP commit-and-push),
-   leaving <n>s of runway
+   Run hard cap: VIBE_RUN_MAX_SECONDS=10800s from run start; progress
+   extensions may not push the deadline past 10650s elapsed (150s reserved
+   for the kill grace and the WIP commit-and-push), leaving 10500s of runway
    ```
 
 2. **A clamped grant**, normally the last one granted. The cap does not refuse
@@ -691,7 +690,7 @@ order they appear:
    itself:
 
    ```text
-   [progress-extension] not extending after <elapsed>s (extensions granted 5):
+   [progress-extension] not extending after 10650s (extensions granted 5):
    run hard cap reached — no runway left before the supervisor terminates this
    run, so stopping now to preserve work in progress
    ```
@@ -699,6 +698,14 @@ order they appear:
 If the `Run hard cap:` line instead says the cap is not set, the run was
 uncapped and no ceiling applied: `VIBE_RUN_MAX_SECONDS` is `0`, or the worker
 was started outside `loop.sh`.
+
+On the issue side such a run reads as a **scheduled release**, not a timeout
+(Issue #424): the release comment says
+`Released on schedule: … — WIP preserved, resumes next cycle` under the
+`scheduled-release` category, no `failed-once` label is applied, and the next
+claim resumes the branch. If you see "Claude ran out of time" instead, the run
+really did exhaust its own `claude_timeout` — that is the case worth
+re-scoping.
 
 ## 🎞️ Capturing a full agent transcript
 

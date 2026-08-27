@@ -1698,3 +1698,217 @@ Deno.test("slot pool - a claim's heartbeat pin stays inside its own allowlist co
   assertEquals(snapshot.get("o/a"), ["o/reseeded"]);
   assertEquals(snapshot.get("o/b"), ["o/reseeded"]);
 });
+
+// ---------------------------------------------------------------------------
+// Claim-runway floors, re-tuned for the untruncated regime (Issue #425)
+// ---------------------------------------------------------------------------
+
+Deno.test("slot pool #425 - a claim 20 minutes before the cycle deadline proceeds when the hard cap has hours left", async () => {
+  // The acceptance case: a 3600 s execute budget is no longer truncated at the
+  // cycle deadline (Issue #420), so 20 minutes of cycle runway with two hours
+  // to the supervisor hard cap is a claim, not a deferral.
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  const twentyMinutesOut = cycleMs - 20 * 60 * 1000;
+  let now = twentyMinutesOut;
+  const claimed: number[] = [];
+  const logs: string[] = [];
+
+  const deps = createMockDeps({
+    log: (m) => logs.push(m),
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    minClaimRunwaySeconds: 300,
+    executeBudgetSeconds: 3600,
+    claimHardCap: {
+      ceilingMs: twentyMinutesOut + 2 * 3600 * 1000,
+      windowSeconds: 10800,
+    },
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: (i) => {
+      claimed.push(i.issueNumber);
+      now = cycleMs + 1; // the claim carries the cycle past its deadline
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(claimed, [1], `the claim must be taken, got ${claimed}`);
+  assert(
+    !logs.some((m) => m.includes("stop reason=hard-cap")),
+    `no slot may refuse this claim, got: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("slot pool #425 - zero hard-cap runway stops the slot with reason=hard-cap, and it is logged", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = cycleMs * 0.5;
+  let claims = 0;
+  const logs: string[] = [];
+
+  const deps = createMockDeps({
+    log: (m) => logs.push(m),
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    minClaimRunwaySeconds: 300,
+    // The ceiling is already behind us: no runway at all, half a cycle early.
+    claimHardCap: { ceilingMs: now - 60_000, windowSeconds: 10800 },
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    processIssue: () => {
+      claims++;
+      now = cycleMs + 1;
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(claims, 0, "no claim may be taken past the hard-cap ceiling");
+  const stop = logs.find((m) => m.includes("stop reason=hard-cap"));
+  assert(
+    stop !== undefined,
+    `expected the stop line, got: ${logs.join(" | ")}`,
+  );
+  assertStringIncludes(stop!, "0s of runway left to the supervisor hard cap");
+  assertStringIncludes(stop!, "300s claim floor");
+});
+
+Deno.test("slot pool #397 - past the cycle deadline the slot still stops with reason=deadline", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  let claims = 0;
+  const logs: string[] = [];
+
+  const deps = createMockDeps({
+    log: (m) => logs.push(m),
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    minClaimRunwaySeconds: 300,
+    // Hours of hard-cap runway: only the cycle deadline can stop this slot.
+    claimHardCap: { ceilingMs: 3 * cycleMs, windowSeconds: 10800 },
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    processIssue: () => {
+      claims++;
+      now = cycleMs + 1; // the first claim runs past the deadline
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assert(claims >= 1, "the first claim is taken before the deadline");
+  const stop = logs.find((m) => m.includes("stop reason=deadline"));
+  assert(
+    stop !== undefined,
+    `expected the stop line, got: ${logs.join(" | ")}`,
+  );
+  assertStringIncludes(stop!, "reached the cycle deadline");
+});
+
+Deno.test("slot pool #425 - an issue with long-job evidence is claimed late in the cycle when the hard cap can host it", async () => {
+  // The surviving justification for the #245 adaptive floor is the hard cap,
+  // not the cycle deadline: with hours of cap runway the evidence no longer
+  // defers anything.
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  const lateInCycle = cycleMs - 20 * 60 * 1000;
+  let now = lateInCycle;
+  const claimed: number[] = [];
+  const logs: string[] = [];
+
+  const deps = createMockDeps({
+    log: (m) => logs.push(m),
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    minClaimRunwaySeconds: 300,
+    executeBudgetSeconds: 3600,
+    claimHardCap: {
+      ceilingMs: lateInCycle + 2 * 3600 * 1000,
+      windowSeconds: 10800,
+    },
+    gatherIssueClaimEvidence: () =>
+      Promise.resolve({
+        evidence: { preservedWip: true, previousExecuteTimeout: true },
+      }),
+    findNextIssue: issueQueue([issue("o/a", 222)]),
+    processIssue: (i) => {
+      claimed.push(i.issueNumber);
+      now = cycleMs + 1;
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  assertEquals(claimed, [222], `the long job must be claimed, got ${claimed}`);
+  assert(
+    !logs.some((m) => m.includes("adaptive floor")),
+    `the adaptive floor must not defer here, got: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("slot pool #245/#425 - a long job is still deferred when the hard cap cannot host an execute", async () => {
+  // The floor survives on its own justification: 900 s to the supervisor
+  // ceiling genuinely cannot host a 3600 s execute, so the evidenced issue is
+  // left and the slot takes the fresh candidate instead (the #219 rule).
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  const claimed: number[] = [];
+  const logs: string[] = [];
+
+  const deps = createMockDeps({
+    log: (m) => logs.push(m),
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    minClaimRunwaySeconds: 300,
+    executeBudgetSeconds: 3600,
+    claimHardCap: { ceilingMs: 900_000, windowSeconds: 10800 },
+    gatherIssueClaimEvidence: (i) =>
+      Promise.resolve({
+        evidence: i.issueNumber === 222 ? { preservedWip: true } : {},
+      }),
+    findNextIssue: issueQueue([issue("o/a", 222), issue("o/b", 9)]),
+    processIssue: (i) => {
+      claimed.push(i.issueNumber);
+      now = cycleMs + 1;
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runOneCycle(deps, 1);
+
+  assert(
+    !claimed.includes(222),
+    `the long job must be deferred, got ${claimed}`,
+  );
+  assertEquals(
+    claimed,
+    [9],
+    `the fresh candidate must be claimed, got ${claimed}`,
+  );
+  const skip = logs.find((m) => m.includes("adaptive floor"));
+  assert(
+    skip !== undefined,
+    `expected the skip line, got: ${logs.join(" | ")}`,
+  );
+  assertStringIncludes(skip!, "hard-cap runway");
+});

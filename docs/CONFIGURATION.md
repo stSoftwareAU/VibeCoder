@@ -258,7 +258,7 @@ explicitly overridden.
 | `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
 | `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
 | `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
-| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex` or `gemini`. The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
+| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in — Java and Maven are the first expected use. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or `JAVA_HOME` at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked Java + Maven example](CONTAINER.md#deployer-supplied-build-time-tools). |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
@@ -268,6 +268,7 @@ explicitly overridden.
 | `codex_phase_model_overrides` | `{}` | Per-phase **Codex** model overrides, applied when `agent_provider` is `codex`. Same shape as `phase_model_overrides`, with Codex model ids. See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
+| `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-reasoner` for the planning-shaped phases, `deepseek-chat` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
@@ -764,15 +765,14 @@ unless explicitly overridden.
 | FLEET health repository          | `fleet_health_repo`                | _(empty)_  | Git URL of the FLEET health repository — the one setting health tracking needs. `setup.sh` / `setup.ps1` ask for it (optional); the worker clones it on its first run, natively and in the container. Never assumed: unset, the worker logs that health tracking is off |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
-| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of cycle runway a new implementation claim must have; `0` disables the floor. The floor is what keeps the cycle's tail cheap: a claim taken on the last sliver of runway is not killed at the deadline (Issue #420) — it overruns the cycle and delays the restart. See [The cycle-deadline model](#-the-cycle-deadline-model) (Issue #289). |
-| Require a full execute budget | `claim_require_full_execute_budget` | `false` | When `true`, a claim is refused once the remaining runway cannot fit a full `claude_timeout` execute — the floor is raised to that budget and the cycle tail goes to cheap maintenance. Only takes effect where the cycle is longer than `claude_timeout`; where it is not, raising the floor would refuse every claim the host could ever make, so the plain floor stands, logged once as a documented exception (Issue #289). |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 
-> **`MIN_CLAIM_RUNWAY_SECONDS` and `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET` are
-> fallbacks for a native run only.** `container_launch.ts` forwards only the
+> **`MIN_CLAIM_RUNWAY_SECONDS` is a fallback for a native run only.**
+> `container_launch.ts` forwards only the
 > variables it sets itself (the base directory, the config path, the host id,
 > the host-disk reading and — when `loop.sh` published them — the run cap pair
-> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`), so neither reaches a
+> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`), so it does not reach a
 > containerised worker —
 > the default run mode. Use the `.config.json` keys above, which are read from
 > the config mounted at `CONFIG_PATH`. A config key always wins over the
@@ -799,9 +799,14 @@ unless explicitly overridden.
 
 `min_claim_runway_seconds` is the same floor for every issue, which is right
 for a fresh one-file fix and wrong for an issue already known to be a long job.
-VibeCoder#222 (a 21-file change) was claimed with 933 s of cycle runway left:
-a near-certain timeout the moment it was taken, costing a claim cycle and a
+VibeCoder#222 (a 21-file change) was claimed with 933 s of runway left: a
+near-certain timeout the moment it was taken, costing a claim cycle and a
 whole billed run that produced nothing the next attempt did not redo.
+
+Both floors measure the same runway — the runway left to the **supervisor hard
+cap** (Issue #425). The cycle deadline still stops new claims on its own
+(Issue #397), but it no longer truncates the execute of a claim already taken,
+so it is not what decides whether a claim can fit.
 
 So the floor adapts to what the issue already carries (Issue #245). Evidence
 is any one of: preserved WIP on the issue branch, a previous attempt whose
@@ -814,7 +819,7 @@ so a marker cannot be forged to keep an issue from being claimed.
 flowchart TD
     A[Scan offers a candidate] --> B{Evidence it is<br/>not a short job?}
     B -- no --> C[Claim — the plain floor decides]
-    B -- yes --> D{Runway ≥ 75% of<br/>min claude_timeout, cycle?}
+    B -- yes --> D{Hard-cap runway ≥ 75% of<br/>min claude_timeout, cap window?}
     D -- yes --> C
     D -- no --> G{Deferred on the last<br/>3 cycles running?}
     G -- yes --> H[ALERT starvation:<br/>claim on the runway left]
@@ -823,20 +828,23 @@ flowchart TD
 ```
 
 An issue with evidence needs three quarters of the best execute budget the
-host can offer — `claude_timeout`, or the cycle's own equivalent where the
-cycle can never fit that budget (the documented #47 exception). Requiring the
-whole budget would leave such a host claiming nothing at all; three quarters
-refuses the doomed slice (933 s of 3600 s) while leaving the runs that made
-progress on #222 — 56 min and 49 min — untouched. A deferral never parks the
-slot: it is logged once per cycle and the scan moves to the next candidate.
+host can offer — `claude_timeout`, or the hard-cap window's own equivalent
+where the cap can never fit that budget. Requiring the whole budget would leave
+such a host claiming nothing at all; three quarters refuses the doomed slice
+(933 s of 3600 s) while leaving the runs that made progress on #222 — 56 min
+and 49 min — untouched. A deferral never parks the slot: it is logged once per
+cycle and the scan moves to the next candidate. A run with no hard cap has no
+adaptive floor at all: nothing will cut its execute short, so evidence of a
+long job is not evidence of a doomed claim.
 
 #### The deferral is bounded (Issue #375)
 
 Three quarters is only safe while the requirement stays *satisfiable*, and on a
-host whose cycle length equals its `claude_timeout` it is not. There the
-requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a claim gate
-is first reached after startup, the maintenance passes and the scan have run —
-about twenty minutes in, so the best runway ever offered was 2430 s.
+host whose hard-cap window is no longer than its `claude_timeout` it is not.
+There the requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a
+claim gate is first reached after startup, the maintenance passes and the scan
+have run — about twenty minutes in, so the best runway ever offered was
+2430 s.
 VibeCoder #355 was refused on six consecutive cycles under the wording
 "leaving it for the next cycle", while the idle-decision census counted it as
 claimable and `[idle-census] ALERT inversion` fired every cycle. A permanent
@@ -846,12 +854,10 @@ Issue #319.
 So the deferral has a memory. The worker counts the consecutive **cycles**
 (not scans — a slot re-scans every 30 s) that the floor deferred one issue in
 `adaptive_floor_deferrals.json` under the work directory. On the third it
-yields: the issue is claimed on whatever runway is left. The claim then keeps
-its full `claude_timeout` and overruns the cycle deadline — the deadline stops
-*new* claims, not this one (see
-[The cycle-deadline model](#-the-cycle-deadline-model)) — and WIP preservation
-carries anything still unfinished at the run hard cap into the next cycle. The
-override is logged as
+yields: the issue is claimed on whatever runway is left, and the hard-cap kill
+commits and pushes its WIP for the next run to resume — the last stage of
+[The cycle-deadline model](#-the-cycle-deadline-model). The override is logged
+as
 
 ```text
 [adaptive-floor] ALERT starvation issue=owner/repo#355 deferred_cycles=3 limit=3 runway=2360s required=2700s — …
@@ -1040,12 +1046,17 @@ but there is one on wall clock, below.
 
 #### The run hard cap bounds every grant
 
-`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` and exports that
-cap with the run's start epoch, so the worker can see the deadline it is
-running towards (Issue #421). [`loop.sh`](../loop.sh) owns the default and `0`
-disables the cap; the value **this** run is under is printed at run start on
-the `Run hard cap:` line, so read that rather than a number copied into prose.
-Extensions are bounded by it:
+`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 10800 s —
+3 h — `0` disables it) and now exports that cap with the run's start epoch, so
+the worker can see the deadline it is running towards (Issue #421). The cap is
+the outer bound on a cycle that *finishes* the work it started rather than "one
+run plus a margin": with claims no longer truncated at the cycle deadline
+(Issue #397), a claim taken at minute 59 runs its full budget and its progress
+extensions inside it (Issue #423). It sits 600 s under the launcher's container
+watchdog (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host
+never reaps a container this supervisor would still allow to run. The cap is
+the last stage of [The cycle-deadline model](#-the-cycle-deadline-model): the
+only place a still-progressing agent is stopped. Extensions are bounded by it:
 
 - The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
   `claude_kill_after` plus 120 s for the WIP commit-and-push. The worker's own
@@ -1061,6 +1072,28 @@ Extensions are bounded by it:
   run, or `run.sh` invoked outside `loop.sh`), there is **no ceiling** and
   extensions behave exactly as they did before. The run-start `Run hard cap:`
   line says which of the two applies.
+
+#### A capped run is released, not failed (Issue #424)
+
+A run stopped by the cap — or by the worker's own shutdown at cycle end — was
+progressing when the fleet stopped it, so it is reported as a **scheduled
+release**, not as the issue defeating the agent:
+
+- The failure reason opens with
+  `Released on schedule: … — WIP preserved, resumes next cycle`, which
+  `detectFailureCategory` classifies as `scheduled_release`
+  (category display `scheduled-release`).
+- The release comment therefore never says "Claude ran out of time" and never
+  advises splitting the issue into sub-issues — that diagnosis is reserved for
+  a run that genuinely exhausted its own `claude_timeout`.
+- A scheduled release does **not** enter the `failed-once` → `failed` ladder,
+  does **not** feed the escalating timeout cooldown, and is **not** auto-filed
+  as a worker fault. It is also not classed as an infrastructure failure: the
+  bounded in-process retry exists to re-run a transient blip, and a run
+  released at the cap has no runway to retry into.
+- The preserved work lands in a `wip:` commit whose subject names the real
+  cause (`wip: execute was released on schedule (cycle ended or run hard cap
+  reached) after …`), so the next claimant reads what actually happened.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
@@ -1935,6 +1968,8 @@ when nothing else is queued) avoids burning premium tokens.
 | `codex_phase_effort_overrides`| object | Per-repo per-phase **Codex** effort map (e.g. `{ "issue": "medium" }`). Same shape as the global `codex_phase_effort_overrides`. |
 | `gemini_model`          | string | Per-repo base **Gemini** model tier overriding the Gemini phase defaults for every phase in this repo — the Gemini counterpart of `claude_model`. |
 | `gemini_phase_model_overrides` | object | Per-repo per-phase **Gemini** model map (e.g. `{ "issue": "gemini-2.5-flash-lite" }`). Same shape as the global `gemini_phase_model_overrides`. |
+| `deepseek_model`        | string | Per-repo base **DeepSeek** model tier overriding the DeepSeek phase defaults for every phase in this repo — the DeepSeek counterpart of `claude_model`. |
+| `deepseek_phase_model_overrides` | object | Per-repo per-phase **DeepSeek** model map (e.g. `{ "issue": "deepseek-chat" }`). Same shape as the global `deepseek_phase_model_overrides`. |
 
 The Codex keys mirror the Claude ones step for step — including the caveat that
 a per-repo `codex_model` base tier beats the built-in Codex phase defaults, so it
@@ -2088,6 +2123,8 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `codex_phase_effort_overrides`| object | Per-repo per-phase Codex reasoning-effort overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `gemini_model`          | string  | Per-repo base Gemini model tier overriding the Gemini phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `gemini_phase_model_overrides` | object | Per-repo per-phase Gemini model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `deepseek_model`        | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
+| `deepseek_phase_model_overrides` | object | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 
 **Use cases:**
 

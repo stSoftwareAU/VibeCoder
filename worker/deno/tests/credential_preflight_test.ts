@@ -29,7 +29,12 @@ import {
 } from "../lib/credential_preflight.ts";
 // Issue #4067: the provider's credential variables and its auth predicate
 // come from the provider seam, not from a second list in the preflight.
-import { activeAgentProvider } from "../lib/agent_provider.ts";
+import {
+  activeAgentProvider,
+  CLAUDE_PROVIDER_ID,
+  DEEPSEEK_PROVIDER_ID,
+  enabledAgentProviders,
+} from "../lib/agent_provider.ts";
 import { isGhAuthError } from "../lib/gh_auth.ts";
 
 const PROVIDER_CREDENTIAL_ENV_VARS = activeAgentProvider().credentials.envVars;
@@ -323,6 +328,73 @@ Deno.test("checkCredentialPreflight - macOS metadata files are not treated as cr
     const result = await checkCredentialPreflight({ dir, env: envOf() });
     assertEquals(result.failures, []);
     assertEquals(result.ok, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A DeepSeek-enabled run (Issue #414) — the preflight derives the provider's
+// sub-directory, credential variables and provisioning variable from its
+// descriptor, so registering DeepSeek needs no edit to this module.
+// ---------------------------------------------------------------------------
+
+Deno.test("checkCredentialPreflight - a deepseek-enabled run reports the provider by name", async () => {
+  const providers = enabledAgentProviders({
+    configured: CLAUDE_PROVIDER_ID,
+    configuredProviders: [CLAUDE_PROVIDER_ID, DEEPSEEK_PROVIDER_ID],
+    env: envOf(),
+  });
+  assertEquals(providers.map((p) => p.id), [
+    CLAUDE_PROVIDER_ID,
+    DEEPSEEK_PROVIDER_ID,
+  ]);
+
+  await withCredentialDir(async (dir) => {
+    const missing = await checkCredentialPreflight({
+      dir,
+      env: envOf(),
+      providers,
+    });
+    assertEquals(missing.ok, false);
+    const failure = missing.failures.find(
+      (f) => f.provider === DEEPSEEK_PROVIDER_ID,
+    );
+    assert(failure, "the missing DeepSeek credential is reported");
+    assertEquals(failure.code, "provider-credentials-missing");
+    assertEquals(failure.path, `${dir}/deepseek/provider.env`);
+    // Named vendor, named variable, named fix — not an anonymous "provider".
+    assert(failure.message.includes("DeepSeek"), failure.message);
+    assert(failure.message.includes("DEEPSEEK_API_KEY"), failure.message);
+    assert(
+      failure.message.includes("VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY"),
+      failure.message,
+    );
+    assertEquals(classifyCredentialFailure(failure), "provider-auth");
+
+    // Claude's own credential is unaffected: one vendor's gap is reported as
+    // that vendor's, not as the run's.
+    assertEquals(
+      missing.providers.map((p) => `${p.id}=${p.source ?? "none"}`),
+      ["claude=directory", "deepseek=none"],
+    );
+
+    // Provisioning the file the descriptor names is the whole fix, and the
+    // deepseek sub-directory is permitted material rather than unexpected.
+    await Deno.mkdir(`${dir}/deepseek`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/deepseek/provider.env`,
+      "DEEPSEEK_API_KEY=sk-deepseek-test\n",
+    );
+    if (Deno.build.os !== "windows") {
+      await Deno.chmod(`${dir}/deepseek/provider.env`, 0o600);
+    }
+
+    const passing = await checkCredentialPreflight({
+      dir,
+      env: envOf(),
+      providers,
+    });
+    assertEquals(passing.ok, true, JSON.stringify(passing.failures));
+    assert(credentialPreflightMessage(passing).includes("deepseek=directory"));
   });
 });
 

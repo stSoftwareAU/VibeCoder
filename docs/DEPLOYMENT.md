@@ -448,6 +448,7 @@ Set only the variables for the vendors you use: an unset provisioning variable l
 | `VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` | Claude credential written to `claude/provider.env` |
 | `VIBE_LAUNCHAGENT_OPENAI_API_KEY` / `OPENAI_API_KEY` / `CODEX_API_KEY` | Codex credential written to `codex/provider.env` |
 | `VIBE_LAUNCHAGENT_GEMINI_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini credential written to `gemini/provider.env` |
+| `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY` / `DEEPSEEK_API_KEY` | DeepSeek credential written to `deepseek/provider.env`. DeepSeek has no interactive login, so this variable is the only way to provision it; the agent binary is Anthropic's, but the key is DeepSeek's |
 
 When these variables are set, `setup.sh` writes the files with owner-only permissions, points `gh_config_dir` at `<credential dir>/gh`, and never offers the interactive `gh auth login` prompt for that directory. The prompt remains available only for an operator-chosen gh config directory at a terminal — never on the runtime path.
 
@@ -721,6 +722,8 @@ For environments without Task Scheduler (e.g., containers), use the convenience 
 .\loop.ps1
 ```
 
+> **⚠️ `loop.ps1` has no wall-clock cap.** `loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 10800 s) and exports that cap to the worker; `loop.ps1` invokes `run.ps1` in-process and does neither, so a wedged `run.ps1` blocks the loop until an operator intervenes (Issue #423). The container watchdog (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s) and the worker's own run-duration limit still apply, but neither bounds a host-side `run.ps1` that never returns. Prefer Task Scheduler on Windows — it owns the wall clock there. `loop.ps1` documents the divergence in the file itself.
+
 > **📝 Note:** `run.ps1` is a thin launcher that locates Deno, asks the `container-launch-plan` Deno command what to run, and launches the worker container — the same contract `run.sh` follows, with the same mounts and privilege flags. Container is the only run mode on every platform (Issue #4; Windows always was,): with neither Docker nor Podman available `run.ps1` exits non-zero with an actionable message rather than running the worker on the host, and a configuration naming a removed mode (`native`, `seatbelt`) exits non-zero with the removal explained. It exits with the container's exit status, so Task Scheduler and `loop.ps1` observe real failures.
 
 ## 🧰 Changing `container_tools` forces an image rebuild
@@ -782,8 +785,8 @@ Recoveries, backoffs, escalations, quota pauses and forced reaps are structured 
 | `VIBE_STATE_DIR` | State directory holding the launch-phase marker (default: `~/.vibe-coder`) |
 | `VIBE_QUOTA_PAUSE_SLEEP_SECONDS` | Fixed re-probe interval while this host is out of quota (default: 3600) |
 | `CRASH_WEBHOOK_URL` | Optional webhook the escalation also posts to |
-| `VIBE_CONTAINER_WATCHDOG_SECONDS` | Launcher deadline before a container is reaped as wedged (default: the worker's max run duration + 600, so it is derived from `VIBE_RUN_MAX_SECONDS` and never drifts from it) |
-| `VIBE_RUN_MAX_SECONDS` | The supervisor's wall-clock cap on one run (`0` disables it); `loop.sh` owns the default and exports it with `VIBE_RUN_STARTED_EPOCH` so the worker stops itself first. It is the only place a still-progressing agent is killed — see [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) |
+| `VIBE_CONTAINER_WATCHDOG_SECONDS` | Launcher deadline before a container is reaped as wedged (default: the worker's max run duration + 600 — 10800 + 600 = **11400 s**, which is `loop.sh`'s `VIBE_RUN_MAX_SECONDS` cap plus the same 10-minute margin, so the launcher never reaps a container the supervisor would still allow to run) |
+| `VIBE_RUN_MAX_SECONDS` | The supervisor's wall-clock cap on one run (default 10800 s, `0` disables it). `loop.sh` owns the default and exports it with `VIBE_RUN_STARTED_EPOCH` so the worker stops itself first. It is the only place a still-progressing agent is killed — see [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) |
 | `VIBE_CONTAINER_REAP_GRACE_SECONDS` | Grace after `<runtime> kill` before the reaper escalates to SIGKILL (default: 30) |
 
 ## 📝 Logs

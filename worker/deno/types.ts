@@ -173,21 +173,13 @@ export interface WorkerConfig {
   /** Timeout in seconds for Claude CLI (default: 3600 = 1 hour, Issue #1824) */
   claudeTimeout: number;
   /**
-   * Seconds of cycle runway a new implementation claim must have
-   * (`.config.json` `min_claim_runway_seconds`, Issue #289). `0` disables the
-   * floor. Environment variable `MIN_CLAIM_RUNWAY_SECONDS` is the fallback
-   * when the key is absent — it does not cross the container boundary, so
-   * only a native run can set it. See `lib/claim_runway.ts`.
+   * Seconds of runway to the supervisor hard cap a new implementation claim
+   * must have (`.config.json` `min_claim_runway_seconds`, Issues #289/#425).
+   * `0` disables the floor. Environment variable `MIN_CLAIM_RUNWAY_SECONDS`
+   * is the fallback when the key is absent — it does not cross the container
+   * boundary, so only a native run can set it. See `lib/claim_runway.ts`.
    */
   minClaimRunwaySeconds: number;
-  /**
-   * Refuse a claim whose remaining runway cannot fit a full `claudeTimeout`
-   * execute (`.config.json` `claim_require_full_execute_budget`, Issue #289).
-   * Off by default. Environment variable
-   * `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1` is the fallback when the key is
-   * absent, with the same container caveat as above.
-   */
-  claimRequireFullExecuteBudget: boolean;
   /**
    * Labels marking an issue as a long job for the adaptive claim floor
    * (`.config.json` `claim_long_job_labels`, Issue #245). An issue carrying
@@ -317,6 +309,8 @@ export interface WorkerConfig {
   codexPhaseEffortOverrides: Record<string, string>;
   /** Per-phase Gemini model overrides from .config.json (Issue #364) */
   geminiPhaseModelOverrides: Record<string, string>;
+  /** Per-phase DeepSeek model overrides from .config.json (Issue #413) */
+  deepseekPhaseModelOverrides: Record<string, string>;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -849,6 +843,22 @@ export interface RepoConfig {
    * reported loudly rather than configured.
    */
   geminiPhaseModelOverrides?: Record<string, string>;
+  /**
+   * Per-repo base DeepSeek model tier (Issue #413) — the DeepSeek counterpart
+   * of `claudeModel`. Overrides {@link DEEPSEEK_PHASE_MODEL_DEFAULTS} for every
+   * phase in this repo, and is itself overridden by
+   * `deepseekPhaseModelOverrides` and by a phase-specific
+   * `DEEPSEEK_MODEL_<PHASE>` env var. Operator-only.
+   */
+  deepseekModel?: string;
+  /**
+   * Per-repo per-phase DeepSeek model overrides (Issue #413). Same shape as the
+   * global `deepseek_phase_model_overrides` key, but scoped to this repo.
+   * Operator-only. There is no DeepSeek effort counterpart: DeepSeek's
+   * Anthropic-compatible endpoint has no effort control, and an effort
+   * requested for a DeepSeek phase is reported loudly rather than configured.
+   */
+  deepseekPhaseModelOverrides?: Record<string, string>;
 }
 
 /**
@@ -929,7 +939,6 @@ export interface ConfigFile {
   /** Operational settings (Issue #277) — only overrides stored */
   claude_timeout?: number;
   min_claim_runway_seconds?: number;
-  claim_require_full_execute_budget?: boolean;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];
   /** Extend the issue-work deadline while progress holds (Issue #4296) */
@@ -1038,6 +1047,8 @@ export interface ConfigFile {
   codex_phase_effort_overrides?: Record<string, string>;
   /** Per-phase Gemini model overrides (Issue #364) */
   gemini_phase_model_overrides?: Record<string, string>;
+  /** Per-phase DeepSeek model overrides (Issue #413) */
+  deepseek_phase_model_overrides?: Record<string, string>;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */

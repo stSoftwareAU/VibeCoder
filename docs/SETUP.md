@@ -484,6 +484,15 @@ ANTHROPIC_API_KEY=sk-ant-your_key
 | Claude Code | `claude/provider.env` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
 | Codex CLI | `codex/provider.env` | `OPENAI_API_KEY`, `CODEX_API_KEY` |
 | Gemini CLI | `gemini/provider.env` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| DeepSeek (on the Claude Code CLI) | `deepseek/provider.env` | `DEEPSEEK_API_KEY` |
+
+DeepSeek has no interactive login, so its file is the only way to authenticate
+it: `setup.sh` writes it from `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY` (or a plain
+`DEEPSEEK_API_KEY` in the environment), using a key issued at
+<https://platform.deepseek.com/api_keys>. The binary it runs is Anthropic's,
+but the credential is DeepSeek's — an `ANTHROPIC_API_KEY` in
+`deepseek/provider.env` is not accepted, and Anthropic's credentials are
+withheld from the DeepSeek subprocess.
 
 Any of the listed names works; the first is the one `setup.sh` writes. This
 table mirrors `vibe_provider_credential_table` in `setup.sh` and the
@@ -701,8 +710,11 @@ explained beneath the block, never inside it.
 ### Choosing the coding agent
 
 The worker is provider agnostic: `claude` (Claude Code) is the default, and
-`codex` (the OpenAI Codex CLI) and `gemini` (the Gemini CLI) are registered
-alongside it. Nothing else in the configuration changes with the choice —
+`codex` (the OpenAI Codex CLI), `gemini` (the Gemini CLI) and `deepseek` are
+registered alongside it. `deepseek` is the Claude Code CLI installed under its
+own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it
+authenticates with a **DeepSeek** key rather than an Anthropic one. Nothing
+else in the configuration changes with the choice —
 `agent_provider` names the agent a run uses, and `agent_providers` names every
 vendor whose credentials are provisioned, preflighted and mounted:
 

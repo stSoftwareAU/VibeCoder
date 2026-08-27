@@ -53,6 +53,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Gemini per-phase model overrides (Issue #364). Model only — the Gemini
   // CLI has no reasoning-effort option to override.
   "gemini_phase_model_overrides",
+  // DeepSeek per-phase model overrides (Issue #413). Model only — DeepSeek's
+  // Anthropic-compatible endpoint has no effort control to override.
+  "deepseek_phase_model_overrides",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both
@@ -70,7 +73,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Timeout and interval fields
   "claude_timeout",
   "min_claim_runway_seconds",
-  "claim_require_full_execute_budget",
+  // Issue #425: `claim_require_full_execute_budget` removed — the #47 rule it
+  // switched on was retired with the deadline truncation that justified it.
   // Adaptive claim floor (Issue #245)
   "claim_long_job_labels",
   // Re-armable issue-work deadline (Issue #4296, part of #4290)

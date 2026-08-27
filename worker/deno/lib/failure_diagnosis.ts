@@ -31,6 +31,14 @@ export type FailureCategory =
    * retried, never escalated to a human as analysis-only (Issue #108).
    */
   | "interrupted"
+  /**
+   * The run was released on schedule (Issue #424, parent #397) — the cycle
+   * ended, or the supervisor's wall-clock hard cap (Issue #421) left no
+   * runway — with the agent's work in progress committed and pushed to the
+   * issue branch. A handover, not the issue defeating a full budget: the
+   * next claim resumes the branch.
+   */
+  | "scheduled_release"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -46,6 +54,7 @@ export type CategoryDisplay =
   | "missing-tools"
   | "infrastructure-error"
   | "task-not-understood"
+  | "scheduled-release"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -69,6 +78,37 @@ export interface DiagnosticContext {
 }
 
 /**
+ * Why a run stopped on schedule rather than failing (Issue #424, parent #397).
+ *
+ * - `"cycle-ended"` — the worker's own shutdown ended the agent run.
+ * - `"hard-cap"` — the supervisor's wall-clock cap left no runway, so the
+ *   worker stopped itself first to preserve the work (Issue #421).
+ */
+export type ScheduledReleaseReason = "cycle-ended" | "hard-cap";
+
+/**
+ * Phrase that opens a scheduled-release failure reason (Issue #424).
+ *
+ * The kill path is the only place that knows a release was scheduled, so it
+ * writes this marker into the reason and every downstream reader — the
+ * category detector, the cooldown classifier, the failure ladder — keys off
+ * it rather than re-deriving the answer from an exit status a genuine
+ * timeout shares.
+ */
+export const SCHEDULED_RELEASE_MARKER = "Released on schedule:";
+
+/** The operator-facing reason line for a scheduled release (Issue #424). */
+export function buildScheduledReleaseReason(
+  reason: ScheduledReleaseReason,
+): string {
+  const cause = reason === "hard-cap"
+    ? "the supervisor's run hard cap was reached"
+    : "the cycle ended";
+  return `${SCHEDULED_RELEASE_MARKER} ${cause} — WIP preserved, ` +
+    `resumes next cycle`;
+}
+
+/**
  * Analyse a failure message and return a category.
  *
  * Examines the failure message text for known patterns and returns a category
@@ -78,6 +118,17 @@ export interface DiagnosticContext {
  */
 export function detectFailureCategory(failureMessage: string): FailureCategory {
   if (!failureMessage) return "unknown";
+
+  // A scheduled release outranks every other pattern (Issue #424, parent
+  // #397). Such a message legitimately carries the watchdog line, a
+  // `Timeout: Ns` figure and a SIGTERM exit — the run WAS stopped by the
+  // worker's own kill — so inferring from the exit status alone would
+  // classify a handover as the issue running out of time. The kill path
+  // knows which release it took and says so in the reason; that marker is
+  // the discriminator.
+  if (failureMessage.includes(SCHEDULED_RELEASE_MARKER)) {
+    return "scheduled_release";
+  }
 
   // The worker's OWN watchdog ends a timed-out agent with SIGTERM (then
   // SIGKILL), so a genuine timeout's diagnostics legitimately read
@@ -218,6 +269,12 @@ export const DEADLINE_BOUND_TIMEOUT_MARKER = "at the cycle deadline";
  * (VibeCoder#174) does not.
  */
 export function isTimeoutClassFailureReason(reason: string): boolean {
+  // A scheduled release is never timeout-class (Issue #424): the run was
+  // stopped by the cycle ending or the hard cap with its WIP preserved, so
+  // the next cycle should resume it rather than serve a 2 h cooldown. The
+  // diagnostics it carries do mention the timeout budget, hence the check
+  // must come before the pattern below.
+  if (reason.includes(SCHEDULED_RELEASE_MARKER)) return false;
   if (!/\btim(?:ed[ -]?out|eout)\b/i.test(reason)) return false;
   return !reason.includes(DEADLINE_BOUND_TIMEOUT_MARKER);
 }
@@ -235,6 +292,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "internal_error",
   "missing_tools",
   "interrupted",
+  "scheduled_release",
   "unknown",
 ]);
 
@@ -277,6 +335,13 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // one bounded retry is allowed (Issue #4202).
     case "killed":
       return true;
+    // A scheduled release is NOT infrastructure (Issue #424). The
+    // infrastructure arm exists to trigger the bounded in-process retry
+    // (#1550) and the self-healing re-attempt, and a run released because
+    // the cycle ended or the hard cap was reached has no runway left to
+    // retry into — the next claim resumes the preserved WIP instead.
+    case "scheduled_release":
+      return false;
     default:
       return false;
   }
@@ -311,6 +376,8 @@ export function getFailureCategoryDisplay(
       return "infrastructure-error";
     case "no_changes":
       return "task-not-understood";
+    case "scheduled_release":
+      return "scheduled-release";
     case "unknown":
       return "unknown";
     default:
@@ -488,6 +555,11 @@ export function getFailureDiagnosis(
 - The task may need to be broken into smaller pieces
 - Consider simplifying the issue scope or splitting it into sub-issues`;
 
+    case "scheduled_release":
+      return `- The run was released on schedule — the cycle ended, or the supervisor's run hard cap was reached — while the agent was still progressing
+- WIP preserved: the work in progress was committed and pushed to the issue branch, and the next claim resumes from there
+- Nothing here reflects on the issue: it does not need re-scoping, simplifying or splitting`;
+
     case "rate_limit":
       return `- Claude was rate-limited during processing
 - This is a transient infrastructure issue, not related to issue complexity
@@ -582,6 +654,10 @@ export function getFailureDiagnosisOneliner(
   switch (category) {
     case "timeout":
       return "Likely cause: Claude ran out of time.";
+    // Deliberately not "Likely cause": nothing was diagnosed. The cycle
+    // ended or the hard cap was reached and the work was parked (Issue #424).
+    case "scheduled_release":
+      return "Scheduled release: the cycle ended or the run hard cap was reached — WIP preserved, resumes next cycle.";
     case "rate_limit":
       return "Likely cause: Claude was rate-limited (transient infrastructure issue).";
     case "zero_output":

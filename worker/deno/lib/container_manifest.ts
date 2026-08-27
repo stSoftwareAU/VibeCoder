@@ -379,6 +379,35 @@ function parseProvider(value: unknown, index: number): ContainerProviderPin {
 }
 
 /**
+ * Reject two providers that would install the same command (Issue #415).
+ *
+ * Providers are installed into one image as `/usr/local/bin/<binary>`, so two
+ * entries sharing a `binary` means the second fragment silently overwrites the
+ * first and the image carries one CLI under two provider ids. That is a real
+ * hazard for a provider like `deepseek`, whose artefact *is* the Claude CLI:
+ * setting its binary to `claude` would look like sensible de-duplication and
+ * produce an image where both providers are the same command.
+ *
+ * @param providers - The parsed provider pins, in manifest order.
+ */
+function assertDistinctProviderBinaries(
+  providers: ContainerProviderPin[],
+): void {
+  const owner = new Map<string, string>();
+  providers.forEach((provider, index) => {
+    const first = owner.get(provider.binary);
+    if (first !== undefined) {
+      fail(
+        `providers[${index}].binary`,
+        `installs "${provider.binary}", which "${first}" already installs: ` +
+          "one provider would overwrite the other",
+      );
+    }
+    owner.set(provider.binary, provider.id);
+  });
+}
+
+/**
  * Parse the installed provider set (Issue #4105).
  *
  * The set is what a default image build installs, so an empty list, a
@@ -447,6 +476,7 @@ export function parseContainerManifest(text: string): ContainerManifest {
   const providers = root.providers === undefined
     ? []
     : asArray(root.providers, "providers").map(parseProvider);
+  assertDistinctProviderBinaries(providers);
   // Optional for the same reason; findProviderInstallViolations is what
   // requires the committed manifest to record the set the image installs.
   const installedProviders = root.installedProviders === undefined

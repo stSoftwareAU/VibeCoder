@@ -71,6 +71,21 @@ Deno.test("CLAUDE_ENV_DENYLIST - includes the GitHub App private key variables",
   assertEquals(CLAUDE_ENV_DENYLIST.includes("GITHUB_APP_PRIVATE_KEY"), true);
 });
 
+Deno.test("buildClaudeChildEnv - strips DEEPSEEK_API_KEY (Issue #412)", () => {
+  // DeepSeek runs on this same CLI pointed elsewhere, so the isolation has to
+  // run both ways: the Anthropic child has no use for DeepSeek's credential.
+  const parent = {
+    PATH: "/usr/bin",
+    GH_TOKEN: "gho_test",
+    ANTHROPIC_API_KEY: "sk-ant",
+    DEEPSEEK_API_KEY: "sk-deepseek",
+  };
+  const child = buildClaudeChildEnv(parent);
+  assertEquals(child.DEEPSEEK_API_KEY, undefined);
+  assertEquals(child.ANTHROPIC_API_KEY, "sk-ant");
+  assertEquals(CLAUDE_ENV_DENYLIST.includes("DEEPSEEK_API_KEY"), true);
+});
+
 // ---------------------------------------------------------------------------
 // Durable transcripts inside the container (Issue #4170)
 // ---------------------------------------------------------------------------

@@ -203,12 +203,6 @@ export const OPERATIONAL_DEFAULTS = {
    */
   minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
   /**
-   * Full-execute-budget claim gate (Issue #289). Off by default: on a host
-   * whose cycle is longer than `claudeTimeout` it idles the cycle tail, and
-   * WIP preservation (Issues #47/#148) makes a deadline-bound execute safe.
-   */
-  claimRequireFullExecuteBudget: false,
-  /**
    * Re-armable hard deadline for issue work (Issue #4296, part of #4290).
    *
    * **On by default** (Issue #422, parent #397): killing a claim that is
@@ -1159,6 +1153,77 @@ export const GEMINI_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
   health: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
 } as const;
 
+// ---------------------------------------------------------------------------
+// DeepSeek per-phase routing (Issue #413, parent #396)
+//
+// DeepSeek is carried on the *Claude* CLI, so its argv shape is Claude's — and
+// Claude's routing resolves to tier aliases (`fable`, `opus`, `sonnet`,
+// `haiku`), which DeepSeek's endpoint cannot resolve. A provider with no
+// routing of its own would therefore send an Anthropic tier alias to a
+// third-party endpoint and fail mid-run, so every phase is pinned here to a
+// real DeepSeek model id.
+//
+// The CLI's `--effort` flag is not reachable either: DeepSeek's
+// Anthropic-compatible endpoint does not implement Anthropic's effort control.
+// There is deliberately no DEEPSEEK_PHASE_EFFORT_DEFAULTS and no DeepSeek
+// effort config key — either would be dead configuration. An effort requested
+// for a DeepSeek phase is reported loudly by `deepseek_executor.ts` rather than
+// dropped in silence (Issue #3234), which is the Gemini precedent (Issue #364).
+//
+// Explicit configuration always overrides these — a `DEEPSEEK_MODEL_<PHASE>`
+// env var, a per-repo `deepseek_phase_model_overrides` entry, a per-repo
+// `deepseek_model` base tier, or a global `deepseek_phase_model_overrides`
+// entry — so a deployment on a different line-up re-pins the tier without a
+// code change.
+// ---------------------------------------------------------------------------
+
+/**
+ * Top DeepSeek model tier — the reasoning model (Issue #413).
+ *
+ * Reserved for the planning-shaped phases, where the Vibe Coder interprets the
+ * user's words into an implementable state and a better interpretation
+ * compounds across every downstream sub-issue and PR.
+ */
+export const DEFAULT_DEEPSEEK_MODEL_TOP_TIER = "deepseek-reasoner" as const;
+
+/**
+ * Base DeepSeek model tier (Issue #413) — the general-purpose model every
+ * other phase runs on. DeepSeek has no usable effort lever, so the tier itself
+ * carries the whole routing decision.
+ */
+export const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat" as const;
+
+/**
+ * Per-phase DeepSeek model defaults (Issue #413).
+ *
+ * Same phase keys as {@link PHASE_MODEL_DEFAULTS}: the planning-shaped phases
+ * (planning, grill_me, both Quorum phases, refinement, revision, question,
+ * clarification) take the reasoning model; everything else takes the base
+ * tier.
+ *
+ * There is no cheap rung here, unlike Claude and Gemini: DeepSeek publishes no
+ * third, cheaper tier, so the trivial trio (`spelling_fix`, `summarise`,
+ * `health`) runs on `deepseek-chat` too. That is a deliberate absence, not an
+ * omission.
+ */
+export const DEEPSEEK_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
+  planning: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  grill_me: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  quorum: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  quorum_judge: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  refinement: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  revision: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  question: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  clarification: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+  issue: DEFAULT_DEEPSEEK_MODEL,
+  ci_fix: DEFAULT_DEEPSEEK_MODEL,
+  pr_feedback: DEFAULT_DEEPSEEK_MODEL,
+  quality_fix: DEFAULT_DEEPSEEK_MODEL,
+  spelling_fix: DEFAULT_DEEPSEEK_MODEL,
+  summarise: DEFAULT_DEEPSEEK_MODEL,
+  health: DEFAULT_DEEPSEEK_MODEL,
+} as const;
+
 /**
  * Overrides accepted by {@link buildDefaultWorkerConfig}. Issue #2166: typed as
  * `Partial<WorkerConfig>` so a misspelt key is caught at compile time.
@@ -1226,8 +1291,6 @@ export function buildDefaultWorkerConfig(
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
-    claimRequireFullExecuteBudget:
-      OPERATIONAL_DEFAULTS.claimRequireFullExecuteBudget,
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
     progressExtensionEnabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,
@@ -1286,6 +1349,7 @@ export function buildDefaultWorkerConfig(
     codexPhaseModelOverrides: {},
     codexPhaseEffortOverrides: {},
     geminiPhaseModelOverrides: {},
+    deepseekPhaseModelOverrides: {},
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
       OPERATIONAL_DEFAULTS.recentActivityMergedPrLimit,
