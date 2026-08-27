@@ -34,6 +34,14 @@ function extensionConfig(): WorkerConfig {
   };
 }
 
+/** Config with the operator's explicit opt-out (Issue #422). */
+function disabledExtensionConfig(): WorkerConfig {
+  return {
+    ...buildDefaultWorkerConfig(),
+    progressExtensionEnabled: false,
+  };
+}
+
 function issueState(): PhaseState {
   return {
     branchName: "issue-7-budget",
@@ -128,16 +136,31 @@ Deno.test("execute_phase - a claim taken late in the cycle is still offered prog
   );
 });
 
-Deno.test("execute_phase - extensions stay off when the operator did not enable them (Issue #420)", async () => {
-  const config = buildDefaultWorkerConfig();
-  assertEquals(
-    config.progressExtensionEnabled,
-    false,
-    "this test asserts the disabled default, so it must be disabled",
-  );
+// Issue #422 turned extensions on by default, so the disabled case is no
+// longer reachable through `buildDefaultWorkerConfig()` — the operator's
+// explicit `false` is what this test now exercises. The assertion is the same
+// one #420 made: switched off, the runner gets no option and the flat kill.
+Deno.test("execute_phase - extensions stay off when the operator disabled them (Issues #420, #422)", async () => {
+  const config = disabledExtensionConfig();
   const { runnerOptions } = await runPhase(config, Date.now() + 960_000);
 
   assertEquals(runnerOptions.progressExtension, undefined);
+  assertEquals(runnerOptions.timeoutSeconds, config.claudeTimeout);
+});
+
+Deno.test("execute_phase - an unconfigured worker is offered progress extensions (Issue #422)", async () => {
+  const config = buildDefaultWorkerConfig();
+  assertEquals(
+    config.progressExtensionEnabled,
+    true,
+    "extensions ship on, so a worker with no config keys must get them",
+  );
+  const { runnerOptions } = await runPhase(config, Date.now() + 960_000);
+
+  assert(
+    runnerOptions.progressExtension !== undefined,
+    "nothing was configured, yet the runner must still be able to extend",
+  );
   assertEquals(runnerOptions.timeoutSeconds, config.claudeTimeout);
 });
 
@@ -169,7 +192,7 @@ Deno.test("execute_phase - the run-start log names the budget and whether extens
   );
 
   const withoutExtensions = await runPhase(
-    buildDefaultWorkerConfig(),
+    disabledExtensionConfig(),
     Date.now() + 960_000,
   );
   const disabledLine = withoutExtensions.lines.find((l) =>

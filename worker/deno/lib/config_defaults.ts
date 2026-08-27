@@ -205,12 +205,19 @@ export const OPERATIONAL_DEFAULTS = {
   /**
    * Re-armable hard deadline for issue work (Issue #4296, part of #4290).
    *
-   * Off by default: the change lands dark and is switched on deliberately.
-   * With it on, the `claudeTimeout` kill for **issue work only** is deferred
-   * while the run shows both recent tool activity and a working tree that
-   * actually advanced. Every other phase keeps its unconditional cap.
+   * **On by default** (Issue #422, parent #397): killing a claim that is
+   * demonstrably progressing throws the run's work away, so the
+   * `claudeTimeout` kill for **issue work only** is deferred while the run
+   * shows both recent tool activity and a working tree that actually
+   * advanced. Every other phase keeps its unconditional cap.
+   *
+   * The chain is bounded, not open-ended: every grant is clamped to the
+   * supervisor hard cap `VIBE_RUN_MAX_SECONDS` (Issue #421), the no-output
+   * watchdog still kills a silent run, and a stalled run dies within one
+   * grant. Set `progress_extension_enabled: false` to get the flat one-shot
+   * kill back.
    */
-  progressExtensionEnabled: false,
+  progressExtensionEnabled: true,
   /** Seconds each grant adds to the deadline, measured from now (#4296). */
   progressExtensionGrantSeconds: 900,
   /** A tool call older than this is no longer evidence of activity (#4296). */

@@ -713,7 +713,7 @@ unless explicitly overridden.
 | Setting                        | Config Key                       | Default    | Description                                                                                                                                                                                          |
 | ------------------------------ | -------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
-| Progress extension enabled | `progress_extension_enabled` | `false` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. Off by default. See [Progress-extended deadline](#-progress-extended-deadline). |
+| Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | A tool call older than this is no longer evidence of activity. Must be at least `progress_extension_check_seconds`. |
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between working-tree samples while a run is inside its budget, so a stalled checkout is noticed within a check interval rather than a whole grant. Must be positive. |
@@ -915,9 +915,10 @@ Timeline: 0 ──────────────────────�
           └──────────────────────────────────────────────────────────┘
 ```
 
-With `progress_extension_enabled` on, the hard ceiling becomes a *deadline*
-for **issue work only**. The no-output watchdog above is
-untouched — it still kills a silent run however many extensions were granted:
+Because `progress_extension_enabled` defaults to on (Issue #422), the hard
+ceiling is a *deadline* for **issue work only** rather than a kill. The
+no-output watchdog above is untouched — it still kills a silent run however
+many extensions were granted:
 
 ```
 Issue work,  0 ──── deadline (1h) ──── deadline+15m ──── deadline+30m ─── …
@@ -946,10 +947,11 @@ Example — override just the Claude timeout to 2 hours:
 
 ### ⏳ Progress-extended deadline
 
-`claude_timeout` is unconditional: at the hour the process dies, however much
-useful work it was doing. With `progress_extension_enabled` switched on, the
-hard deadline for **issue work only** becomes re-armable — when it expires the
-worker asks two independent questions and only kills if either answer is no:
+`claude_timeout` on its own is unconditional: at the hour the process dies,
+however much useful work it was doing. That is not the shipped behaviour —
+`progress_extension_enabled` defaults to `true` (Issue #422), so the hard
+deadline for **issue work only** is re-armable: when it expires the worker asks
+two independent questions and only kills if either answer is no:
 
 - **Is the agent still calling tools?** The stream-json progress tracker
   reports the last tool call; older than `progress_extension_stall_seconds`
@@ -969,10 +971,16 @@ but there is one on wall clock, below.
 
 #### The run hard cap bounds every grant
 
-`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 5400 s,
-`0` disables it) and now exports that cap with the run's start epoch, so the
-worker can see the deadline it is running towards (Issue #421). Extensions are
-bounded by it:
+`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 10800 s —
+3 h — `0` disables it) and now exports that cap with the run's start epoch, so
+the worker can see the deadline it is running towards (Issue #421). The cap is
+the outer bound on a cycle that *finishes* the work it started rather than "one
+run plus a margin": with claims no longer truncated at the cycle deadline
+(Issue #397), a claim taken at minute 59 runs its full budget and its progress
+extensions inside it (Issue #423). It sits 600 s under the launcher's container
+watchdog (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host
+never reaps a container this supervisor would still allow to run. Extensions
+are bounded by it:
 
 - The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
   `claude_kill_after` plus 120 s for the WIP commit-and-push. The worker's own
@@ -1023,6 +1031,9 @@ flowchart TD
     G --> W
 ```
 
+These are the shipped defaults — an operator who wants them does not need to
+write anything. Set a key only to change it:
+
 ```json
 {
   "progress_extension_enabled": true,
@@ -1032,10 +1043,27 @@ flowchart TD
 }
 ```
 
+#### Turning it off
+
+Extensions are on by default (Issue #422). One key restores the pre-#4290
+behaviour — a single unconditional `claude_timeout` kill for issue work, with
+no tree sampling and no grants:
+
+```json
+{
+  "progress_extension_enabled": false
+}
+```
+
+The other three keys are then ignored. `loadConfig` still validates them, so a
+non-positive value or a stall window shorter than the check interval is
+rejected whether or not the feature is on.
+
 #### Why did this run take three hours?
 
-With the feature on, a run may legitimately outlive `claude_timeout`, so every
-message says what actually happened rather than quoting the configured budget:
+Because the feature is on, a run may legitimately outlive `claude_timeout`, so
+every message says what actually happened rather than quoting the configured
+budget:
 
 - **The worker log** — one `[progress-extension]` line per grant, naming the
   reason, the elapsed time, the extension count and the new deadline. Count
