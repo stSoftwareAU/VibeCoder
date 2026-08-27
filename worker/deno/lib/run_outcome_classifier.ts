@@ -56,6 +56,7 @@ export interface RunFailureClassification {
 export const RUN_FAILURE_CLASSES = [
   "usage-limit",
   "interrupted",
+  "scheduled-release",
   "out-of-credit",
   "oom",
   "killed-unknown",
@@ -198,6 +199,20 @@ export function classifyRunFailure(
       failureClass: "interrupted",
       rationale:
         "The run was cut off before finishing (still working, not concluding) — transient, retried rather than filed.",
+    };
+  }
+  // A scheduled release is the fleet working as designed (Issue #424): the
+  // cycle ended or the supervisor's hard cap was reached, the WIP is on the
+  // branch and the next claim resumes it. Never a worker defect, so never
+  // auto-filed — and checked before the message-pattern rules, whose
+  // "timed out" and stack-trace signals appear in the agent output such a
+  // release quotes.
+  if (category === "scheduled_release") {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "scheduled-release",
+      rationale:
+        "The run was released on schedule (cycle ended or run hard cap reached) with its work preserved — not a worker defect.",
     };
   }
   if (OUT_OF_CREDIT_RE.test(message)) {

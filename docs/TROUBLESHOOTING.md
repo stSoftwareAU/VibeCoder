@@ -661,6 +661,14 @@ cap: 200s of runway left, not the full 900s`). If the `Run hard cap:` line
 instead says the cap is not set, the run was uncapped: `VIBE_RUN_MAX_SECONDS`
 is `0`, or the worker was started outside `loop.sh`.
 
+On the issue side such a run reads as a **scheduled release**, not a timeout
+(Issue #424): the release comment says
+`Released on schedule: … — WIP preserved, resumes next cycle` under the
+`scheduled-release` category, no `failed-once` label is applied, and the next
+claim resumes the branch. If you see "Claude ran out of time" instead, the run
+really did exhaust its own `claude_timeout` — that is the case worth
+re-scoping.
+
 ## 🎞️ Capturing a full agent transcript
 
 The default observability for a long agent phase is the periodic

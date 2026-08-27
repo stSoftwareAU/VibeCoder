@@ -169,6 +169,29 @@ Deno.test("progress extension #421 - no runway left refuses, naming the cap", ()
     decision.reason.includes("hard cap"),
     `the refusal must name the hard cap: ${decision.reason}`,
   );
+  // Issue #424: the kill must declare itself a scheduled release, so the
+  // issue comment says "hard cap reached — WIP preserved" instead of
+  // blaming the issue for running out of time.
+  if (decision.action !== "kill") return;
+  assertEquals(decision.cause, "hard-cap");
+});
+
+Deno.test("progress extension #424 - a stalled run's kill carries no scheduled-release cause", () => {
+  const nowMs = START_MS + 3600 * 1000;
+  const decision = decideProgressExtension({
+    nowMs,
+    startMs: START_MS,
+    deadlineMs: nowMs,
+    // Tool activity well outside the stall window: a genuine timeout.
+    lastToolCallAtMs: nowMs - 900_000,
+    treeState: "advanced",
+    extensionsGranted: 2,
+    ceilingMs: nowMs + 5_000_000,
+  }, POLICY);
+
+  assertEquals(decision.action, "kill");
+  if (decision.action !== "kill") return;
+  assertEquals(decision.cause, undefined);
 });
 
 Deno.test("progress extension #421 - an undefined ceiling reproduces the unbounded sequence", () => {

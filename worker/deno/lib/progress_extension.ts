@@ -133,7 +133,20 @@ export interface ProgressExtensionOptions {
 /** What the watchdog should do when the deadline expires. */
 export type ProgressExtensionDecision =
   | { action: "extend"; newDeadlineMs: number; reason: string }
-  | { action: "kill"; reason: string };
+  | {
+    action: "kill";
+    reason: string;
+    /**
+     * Set when the kill is a scheduled release rather than a stall
+     * (Issue #424, parent #397): the run was progressing and the
+     * supervisor's hard cap simply left no runway. The runner carries this
+     * to the failure reason so the issue comment says "cycle ended / hard
+     * cap reached — WIP preserved" instead of blaming the issue for running
+     * out of time. Absent means the run stalled inside its own budget: a
+     * genuine timeout.
+     */
+    cause?: "hard-cap";
+  };
 
 /** Whole seconds, for operator-facing reason strings. */
 function seconds(ms: number): number {
@@ -283,6 +296,9 @@ export function decideProgressExtension(
     if (runwayMs <= 0) {
       return {
         action: "kill",
+        // A scheduled release, not a stall (Issue #424): both progress
+        // signals held and only the wall clock stopped the run.
+        cause: "hard-cap",
         reason: `run hard cap reached — no runway left before the supervisor ` +
           `terminates this run, so stopping now to preserve work in progress`,
       };
