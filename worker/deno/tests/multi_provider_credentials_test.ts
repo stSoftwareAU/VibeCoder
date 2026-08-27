@@ -487,17 +487,23 @@ Deno.test("provider child environments carry only their own vendor's secret", ()
       );
     }
 
-    // Every other vendor's does not.
-    for (const other of ALL_PROVIDERS) {
-      if (other.id === provider.id) continue;
-      for (const name of other.credentials.envVars) {
-        if (provider.credentials.envVars.includes(name)) continue;
-        assertEquals(
-          childEnv[name],
-          undefined,
-          `${provider.id} must not inherit ${other.id}'s ${name}`,
-        );
-      }
+    // Every other vendor's does not — asserted by VALUE rather than by
+    // variable name (Issue #414). A provider carried on another vendor's CLI
+    // legitimately sets that CLI's variable from its own key: DeepSeek runs
+    // the Anthropic binary, so its child holds `ANTHROPIC_AUTH_TOKEN` — with
+    // DeepSeek's secret in it. What must never appear, under any name, is
+    // another vendor's secret.
+    const owners = new Map(
+      ALL_PROVIDERS.map((p) => [`secret-for-${p.id}`, p.id]),
+    );
+    for (const [name, value] of Object.entries(childEnv)) {
+      const owner = owners.get(value);
+      if (owner === undefined) continue;
+      assertEquals(
+        owner,
+        provider.id,
+        `${provider.id} must not carry ${owner}'s secret in ${name}`,
+      );
     }
   }
 });

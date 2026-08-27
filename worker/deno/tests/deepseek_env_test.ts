@@ -102,7 +102,11 @@ Deno.test("isDeniedDeepSeekEnvVar - denies Anthropic's key and allows DeepSeek's
   assertEquals(isDeniedDeepSeekEnvVar("ANTHROPIC_API_KEY"), true);
   assertEquals(isDeniedDeepSeekEnvVar("CLAUDE_CODE_OAUTH_TOKEN"), true);
   assertEquals(isDeniedDeepSeekEnvVar("DEEPSEEK_API_KEY"), false);
-  assertEquals(isDeniedDeepSeekEnvVar("ANTHROPIC_AUTH_TOKEN"), false);
+  // Issue #414: an INHERITED ANTHROPIC_AUTH_TOKEN is Anthropic's own — the
+  // preflight exports claude/provider.env into the worker's environment in a
+  // claude+deepseek run — so it is denied on the way in and set from
+  // DEEPSEEK_API_KEY instead.
+  assertEquals(isDeniedDeepSeekEnvVar("ANTHROPIC_AUTH_TOKEN"), true);
   assertEquals(isDeniedDeepSeekEnvVar("PATH"), false);
   // An unknown secret-shaped name is still dropped by the shape rule.
   assertEquals(isDeniedDeepSeekEnvVar("SOME_SECRET"), true);
@@ -110,7 +114,6 @@ Deno.test("isDeniedDeepSeekEnvVar - denies Anthropic's key and allows DeepSeek's
 
 Deno.test("DEEPSEEK_ENV_SECRET_ALLOWLIST - carries only the credentials this child needs", () => {
   assertEquals([...DEEPSEEK_ENV_SECRET_ALLOWLIST].sort(), [
-    "ANTHROPIC_AUTH_TOKEN",
     "DEEPSEEK_API_KEY",
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -153,11 +156,26 @@ Deno.test("buildDeepSeekChildEnv - DEEPSEEK_API_KEY surfaces as ANTHROPIC_AUTH_T
   assertEquals(env.ANTHROPIC_AUTH_TOKEN, "sk-deepseek");
 });
 
-Deno.test("buildDeepSeekChildEnv - an already-set ANTHROPIC_AUTH_TOKEN is left alone", () => {
+Deno.test("buildDeepSeekChildEnv - an inherited ANTHROPIC_AUTH_TOKEN never reaches DeepSeek's endpoint", () => {
+  // Issue #414: this test previously asserted an inherited value was left
+  // alone. Registering the provider made the leak reachable — in a
+  // claude+deepseek run the preflight exports claude/provider.env into the
+  // worker's own environment, so the inherited value is *Anthropic's* token
+  // and honouring it would send a live first-party credential to
+  // api.deepseek.com. It is now denied on the way in and replaced by
+  // DeepSeek's own key.
   const parent = everyVendorParent();
-  parent.ANTHROPIC_AUTH_TOKEN = "sk-operator-chosen";
+  parent.ANTHROPIC_AUTH_TOKEN = "sk-ant-inherited";
   const env = buildDeepSeekChildEnv(parent);
-  assertEquals(env.ANTHROPIC_AUTH_TOKEN, "sk-operator-chosen");
+  assertEquals(env.ANTHROPIC_AUTH_TOKEN, "sk-deepseek");
+});
+
+Deno.test("buildDeepSeekChildEnv - with no DeepSeek key an inherited Anthropic token is simply dropped", () => {
+  const env = buildDeepSeekChildEnv({
+    PATH: "/usr/bin",
+    ANTHROPIC_AUTH_TOKEN: "sk-ant-inherited",
+  });
+  assertEquals(env.ANTHROPIC_AUTH_TOKEN, undefined);
 });
 
 Deno.test("buildDeepSeekChildEnv - no DEEPSEEK_API_KEY means no invented auth token", () => {

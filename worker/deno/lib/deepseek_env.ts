@@ -53,10 +53,18 @@ const DEEPSEEK_CONFIG_DIR_NAME = ".claude-config-deepseek";
  *
  * The worker-only secrets (see {@link WORKER_ONLY_SECRET_ENV_VARS}) plus every
  * *other* vendor's credential — including **Anthropic's**, whose CLI this is.
- * `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` are first-party Anthropic
- * credentials and the request goes to DeepSeek, so they are named here rather
- * than left to the secret-shape rule: no future allowlist edit can hand them
- * to this child.
+ * `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`
+ * are first-party Anthropic credentials and the request goes to DeepSeek, so
+ * they are named here rather than left to the secret-shape rule: no future
+ * allowlist edit can hand them to this child.
+ *
+ * `ANTHROPIC_AUTH_TOKEN` is denied even though it is the variable the CLI
+ * reads the credential under (Issue #414). In a `claude,deepseek` run the
+ * preflight exports Claude's `claude/provider.env` into the worker's own
+ * environment, so an *inherited* `ANTHROPIC_AUTH_TOKEN` is Anthropic's token —
+ * inheriting it would send a live first-party credential to
+ * `api.deepseek.com`. The child still gets the variable, but only as
+ * {@link buildDeepSeekChildEnv} sets it, from `DEEPSEEK_API_KEY`.
  *
  * `GH_TOKEN` is deliberately not denied — it is the short-lived installation
  * token the model legitimately uses via `gh`, constrained by the `gh` PATH shim
@@ -65,6 +73,7 @@ const DEEPSEEK_CONFIG_DIR_NAME = ".claude-config-deepseek";
 export const DEEPSEEK_ENV_DENYLIST: readonly string[] = [
   ...WORKER_ONLY_SECRET_ENV_VARS,
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
@@ -75,16 +84,18 @@ export const DEEPSEEK_ENV_DENYLIST: readonly string[] = [
 /**
  * Secret-shaped names the DeepSeek child genuinely needs.
  *
- * `GH_TOKEN` / `GITHUB_TOKEN` authenticate the agent's `gh` calls;
- * `DEEPSEEK_API_KEY` is the credential the provisioned file supplies and
- * `ANTHROPIC_AUTH_TOKEN` is the variable the Claude CLI reads it under (see
- * {@link buildDeepSeekChildEnv}). Everything else secret-shaped is dropped.
+ * `GH_TOKEN` / `GITHUB_TOKEN` authenticate the agent's `gh` calls, and
+ * `DEEPSEEK_API_KEY` is the credential the provisioned file supplies.
+ * Everything else secret-shaped is dropped — including
+ * `ANTHROPIC_AUTH_TOKEN`, the variable the CLI reads the credential under:
+ * that value is *set* from `DEEPSEEK_API_KEY` by
+ * {@link buildDeepSeekChildEnv}, never inherited, because an inherited one is
+ * Anthropic's (Issue #414).
  */
 export const DEEPSEEK_ENV_SECRET_ALLOWLIST: readonly string[] = [
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "DEEPSEEK_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
 ];
 
 /**
@@ -118,7 +129,10 @@ export function isDeniedDeepSeekEnvVar(
  *   Anthropic's default host carrying DeepSeek's key.
  * - `ANTHROPIC_AUTH_TOKEN` → `DEEPSEEK_API_KEY`, so the credential file
  *   provisioned under the `deepseek` sub-directory reaches the CLI without a
- *   second variable name to configure.
+ *   second variable name to configure. Unlike the other two pins this one has
+ *   no operator-value escape hatch: the variable is denied on the way in
+ *   (Issue #414), because an inherited value is Anthropic's own token and the
+ *   request goes to DeepSeek.
  * - `CLAUDE_CONFIG_DIR` → a DeepSeek-specific directory under `WORK_DIR` (or
  *   under `HOME` when the run driver exported no work dir), so `--resume`
  *   cannot cross providers. Unlike Claude's pin this is not container-only: on
@@ -147,7 +161,9 @@ export function buildDeepSeekChildEnv(
     env["ANTHROPIC_BASE_URL"] = DEEPSEEK_ANTHROPIC_BASE_URL;
   }
 
-  if (!env["ANTHROPIC_AUTH_TOKEN"] && env["DEEPSEEK_API_KEY"]) {
+  // The filter above denied any inherited ANTHROPIC_AUTH_TOKEN, so this is the
+  // only way the variable is ever set for this child: from DeepSeek's own key.
+  if (env["DEEPSEEK_API_KEY"]) {
     env["ANTHROPIC_AUTH_TOKEN"] = env["DEEPSEEK_API_KEY"];
   }
 

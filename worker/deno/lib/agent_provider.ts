@@ -13,10 +13,11 @@
  * — Claude from `claude_executor.ts` / `claude_env.ts` / `claude_auth.ts` /
  * `session_resume.ts`, Codex from `codex_executor.ts` / `codex_env.ts` /
  * `codex_auth.ts` (Issue #4106), Gemini from `gemini_executor.ts` /
- * `gemini_env.ts` / `gemini_auth.ts` (Issue #4107) — rather than restating
- * any of it, so the
- * invocation the seam produces is the invocation the worker used before the
- * seam existed and no CLI knowledge accumulates in this registry.
+ * `gemini_env.ts` / `gemini_auth.ts` (Issue #4107), DeepSeek from
+ * `deepseek_executor.ts` / `deepseek_env.ts` / `deepseek_auth.ts`
+ * (Issue #414) — rather than restating any of it, so the invocation the seam
+ * produces is the invocation the worker used before the seam existed and no
+ * CLI knowledge accumulates in this registry.
  *
  * Fail loud (Issue #3234): an unknown provider id throws with the supported
  * ids named — never a silent fall back to the default, which would run the
@@ -82,6 +83,21 @@ import {
   geminiAuthActionableMessage,
   isGeminiAuthError,
 } from "./gemini_auth.ts";
+import {
+  resolveDeepSeekEffort,
+  resolveDeepSeekModel,
+  warnDeepSeekEffortUnsupported,
+} from "./deepseek_executor.ts";
+import {
+  buildDeepSeekChildEnv,
+  DEEPSEEK_ENV_DENYLIST,
+  DEEPSEEK_ENV_SECRET_ALLOWLIST,
+} from "./deepseek_env.ts";
+import {
+  DEEPSEEK_CREDENTIAL_ENV_VARS,
+  deepSeekAuthActionableMessage,
+  isDeepSeekAuthError,
+} from "./deepseek_auth.ts";
 
 /** Directory, relative to `container/`, holding the per-provider fragments. */
 export const PROVIDER_FRAGMENT_DIR = "providers";
@@ -122,6 +138,15 @@ export const CODEX_PROVIDER_ID = "codex";
 
 /** The provider id the Gemini CLI is registered under (Issue #4107). */
 export const GEMINI_PROVIDER_ID = "gemini";
+
+/**
+ * The provider id DeepSeek is registered under (Issue #414, parent #396).
+ *
+ * DeepSeek ships no CLI of its own: it is carried on the Claude Code CLI
+ * pointed at DeepSeek's Anthropic-compatible endpoint, installed under its own
+ * command name so a `claude,deepseek` image carries both.
+ */
+export const DEEPSEEK_PROVIDER_ID = "deepseek";
 
 /** The provider used when neither configuration nor environment selects one. */
 export const DEFAULT_AGENT_PROVIDER_ID = CLAUDE_PROVIDER_ID;
@@ -278,6 +303,74 @@ export function resolveInvocationRouting(
 }
 
 /**
+ * The Claude Code CLI's argument list, shared by every provider carried on
+ * that binary (Issue #414).
+ *
+ * Claude and DeepSeek run the *same* executable — DeepSeek's is the same
+ * upstream artefact installed under its own command name and pointed at
+ * DeepSeek's Anthropic-compatible endpoint — so they take the same argv shape.
+ * It is built here once rather than copied into each descriptor: a second
+ * verbatim copy is how the two drift, and a flag added for one provider but
+ * not the other is a mid-run CLI failure rather than a compile error.
+ *
+ * The routing is a parameter rather than resolved here, because the two
+ * providers do not carry the same levers: Claude passes both model and effort,
+ * while DeepSeek's endpoint implements no effort control and passes the model
+ * alone (Issue #364's precedent). An absent value emits no flag, leaving the
+ * CLI on its own default.
+ *
+ * @param request - The invocation being built.
+ * @param routing - The model and effort this invocation may carry as flags.
+ * @returns The CLI argument list, prompt last.
+ */
+function buildClaudeCliArgs(
+  request: AgentInvocationRequest,
+  routing: AgentInvocationRouting,
+): string[] {
+  const args: string[] = [];
+
+  // Model (Issue #260, #2625) and effort (Issue #1403) selection, through
+  // the provider-agnostic seam.
+  if (routing.model) args.push("--model", routing.model);
+  if (routing.effort) args.push("--effort", routing.effort);
+
+  args.push("--dangerously-skip-permissions");
+  const disallowed = request.disallowedTools ?? [];
+  if (disallowed.length > 0) {
+    args.push("--disallowed-tools", disallowed.join(","));
+  }
+  args.push("--verbose");
+  args.push("--output-format", "stream-json");
+
+  // The headless browser the guidelines promise (Issue #4355): handed to
+  // the agent explicitly, so it does not depend on a `.mcp.json` in a
+  // directory the agent never runs from.
+  if (request.mcpConfigPath) {
+    args.push("--mcp-config", request.mcpConfigPath);
+  }
+
+  // Static content passed separately so the CLI caches it (Issue #1262).
+  if (request.systemPrompt) {
+    args.push("--system-prompt", request.systemPrompt);
+  }
+
+  // Session continuity across phases of one issue (Issue #1324).
+  if (request.sessionResumeState) {
+    args.push(
+      ...buildSessionResumeArgs(
+        buildSessionResumeFlags(request.sessionResumeState),
+      ),
+    );
+  }
+
+  // The prompt itself: on stdin when the runner pipes it (Issue #4385) —
+  // a bare `-p` tells the CLI to read it there — otherwise as before.
+  if (request.promptViaStdin) args.push("-p");
+  else args.push("-p", request.prompt);
+  return args;
+}
+
+/**
  * Claude Code, the first registered provider.
  *
  * Every field delegates to the module that already owns that behaviour, so
@@ -322,48 +415,7 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {
-    const args: string[] = [];
-
-    // Model (Issue #260, #2625) and effort (Issue #1403) selection, through
-    // the provider-agnostic seam.
-    const routing = resolveInvocationRouting(this, request);
-    if (routing.model) args.push("--model", routing.model);
-    if (routing.effort) args.push("--effort", routing.effort);
-
-    args.push("--dangerously-skip-permissions");
-    const disallowed = request.disallowedTools ?? [];
-    if (disallowed.length > 0) {
-      args.push("--disallowed-tools", disallowed.join(","));
-    }
-    args.push("--verbose");
-    args.push("--output-format", "stream-json");
-
-    // The headless browser the guidelines promise (Issue #4355): handed to
-    // the agent explicitly, so it does not depend on a `.mcp.json` in a
-    // directory the agent never runs from.
-    if (request.mcpConfigPath) {
-      args.push("--mcp-config", request.mcpConfigPath);
-    }
-
-    // Static content passed separately so the CLI caches it (Issue #1262).
-    if (request.systemPrompt) {
-      args.push("--system-prompt", request.systemPrompt);
-    }
-
-    // Session continuity across phases of one issue (Issue #1324).
-    if (request.sessionResumeState) {
-      args.push(
-        ...buildSessionResumeArgs(
-          buildSessionResumeFlags(request.sessionResumeState),
-        ),
-      );
-    }
-
-    // The prompt itself: on stdin when the runner pipes it (Issue #4385) —
-    // a bare `-p` tells the CLI to read it there — otherwise as before.
-    if (request.promptViaStdin) args.push("-p");
-    else args.push("-p", request.prompt);
-    return args;
+    return buildClaudeCliArgs(request, resolveInvocationRouting(this, request));
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
@@ -512,11 +564,94 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   },
 };
 
+/**
+ * DeepSeek, the fourth registered provider (Issue #414, parent #396).
+ *
+ * The one provider that ships no CLI of its own: it is the **Claude Code CLI**
+ * pointed at DeepSeek's Anthropic-compatible endpoint, which decides three of
+ * this descriptor's fields.
+ *
+ * - `binary` is `deepseek`, **not** `claude`. Both fragments install to
+ *   `/usr/local/bin/<binary>`, so an image built with
+ *   `AGENT_PROVIDERS="claude,deepseek"` — the Quorum deployment this provider
+ *   exists for — would otherwise have the second fragment clobber the first.
+ *   A distinct command name also makes the process table say which provider is
+ *   running.
+ * - The argv is Claude's, built by {@link buildClaudeCliArgs} rather than
+ *   copied, because it is literally the same CLI parsing it.
+ * - No `--effort` is ever emitted: the endpoint does not implement Anthropic's
+ *   effort control, so the effort the phase was *asked* to run at is warned
+ *   about once rather than passed (Issue #364's Gemini treatment). There is no
+ *   `cheaperModel` either — DeepSeek publishes no cheaper rung, and the
+ *   optional method being absent is what makes the rate-limit fallback report
+ *   `no-ladder-for-provider` instead of a silent no-op (Issue #365).
+ *
+ * Everything else delegates to the DeepSeek-owned modules
+ * (`deepseek_executor.ts`, `deepseek_env.ts`, `deepseek_auth.ts`).
+ */
+const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
+  id: DEEPSEEK_PROVIDER_ID,
+  displayName: "DeepSeek",
+  binary: "deepseek",
+  credentials: {
+    subdir: "deepseek",
+    file: "provider.env",
+    envVars: DEEPSEEK_CREDENTIAL_ENV_VARS,
+    provisionEnvVar: "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY",
+  },
+  environment: {
+    secretAllowlist: DEEPSEEK_ENV_SECRET_ALLOWLIST,
+    denylist: DEEPSEEK_ENV_DENYLIST,
+  },
+  install: { fragment: `${PROVIDER_FRAGMENT_DIR}/deepseek.sh` },
+  // The same CLI as Claude, so a bare `-p` reads the prompt from stdin
+  // (Issue #4385).
+  promptTransport: "stdin",
+
+  // Every phase is pinned to a real DeepSeek model id: Claude's routing
+  // resolves to Anthropic tier aliases the endpoint cannot resolve, and a
+  // provider with no routing of its own would send one (Issue #413).
+  resolveModel(phase?: string): string | undefined {
+    return resolveDeepSeekModel(phase);
+  },
+
+  resolveEffort(phase?: string): string | undefined {
+    return resolveDeepSeekEffort(phase);
+  },
+
+  buildInvocation(request: AgentInvocationRequest): string[] {
+    const routing = resolveInvocationRouting(this, request);
+    // The effort resolver reports what the phase was asked to run at; no flag
+    // can carry it here, so it is stated loudly once per phase rather than
+    // dropped in silence (Issue #3234) — and never reaches the argv, where the
+    // Anthropic CLI would happily forward it to an endpoint that rejects it.
+    if (routing.effort) {
+      warnDeepSeekEffortUnsupported(routing.effort, request.phase);
+    }
+    return buildClaudeCliArgs(request, { model: routing.model });
+  },
+
+  buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
+    return parentEnv
+      ? buildDeepSeekChildEnv(parentEnv)
+      : buildDeepSeekChildEnv();
+  },
+
+  isAuthError(output: string): boolean {
+    return isDeepSeekAuthError(output);
+  },
+
+  authActionableMessage(): string {
+    return deepSeekAuthActionableMessage();
+  },
+};
+
 /** Every registered provider, keyed by id. */
 const AGENT_PROVIDERS = new Map<string, AgentProviderDescriptor>([
   [CLAUDE_PROVIDER.id, CLAUDE_PROVIDER],
   [CODEX_PROVIDER.id, CODEX_PROVIDER],
   [GEMINI_PROVIDER.id, GEMINI_PROVIDER],
+  [DEEPSEEK_PROVIDER.id, DEEPSEEK_PROVIDER],
 ]);
 
 /**
