@@ -11,6 +11,7 @@ overview, see the [main README](../README.md).
 - [Multiple PR (Pull Request) Reviewers](#multiple-pr-reviewers)
 - [Configuration Defaults](#configuration-defaults)
 - [Effort Level Configuration](#-effort-level-configuration)
+- [The cycle-deadline model](#-the-cycle-deadline-model)
 - [Session Resume](#-session-resume)
 - [Session Compaction](#-session-compaction)
 - [Context Budget Monitoring](#-context-budget-monitoring)
@@ -763,8 +764,8 @@ unless explicitly overridden.
 | FLEET health repository          | `fleet_health_repo`                | _(empty)_  | Git URL of the FLEET health repository — the one setting health tracking needs. `setup.sh` / `setup.ps1` ask for it (optional); the worker clones it on its first run, natively and in the container. Never assumed: unset, the worker logs that health tracking is off |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
-| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of cycle runway a new implementation claim must have; `0` disables the floor. A claim taken below it would run deadline-bound, be killed at the cycle deadline, and rely on WIP preservation to carry its progress into the next run (Issue #289). |
-| Require a full execute budget | `claim_require_full_execute_budget` | `false` | When `true`, a claim is refused once the remaining runway cannot fit a full `claude_timeout` execute — the floor is raised to that budget and the cycle tail goes to cheap maintenance. Only takes effect where the cycle is longer than `claude_timeout`; where it is not, every execute is deadline-bound by design and the plain floor stands, logged once as a documented exception (Issue #289). |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of cycle runway a new implementation claim must have; `0` disables the floor. The floor is what keeps the cycle's tail cheap: a claim taken on the last sliver of runway is not killed at the deadline (Issue #420) — it overruns the cycle and delays the restart. See [The cycle-deadline model](#-the-cycle-deadline-model) (Issue #289). |
+| Require a full execute budget | `claim_require_full_execute_budget` | `false` | When `true`, a claim is refused once the remaining runway cannot fit a full `claude_timeout` execute — the floor is raised to that budget and the cycle tail goes to cheap maintenance. Only takes effect where the cycle is longer than `claude_timeout`; where it is not, raising the floor would refuse every claim the host could ever make, so the plain floor stands, logged once as a documented exception (Issue #289). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 
 > **`MIN_CLAIM_RUNWAY_SECONDS` and `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET` are
@@ -816,7 +817,7 @@ flowchart TD
     B -- yes --> D{Runway ≥ 75% of<br/>min claude_timeout, cycle?}
     D -- yes --> C
     D -- no --> G{Deferred on the last<br/>3 cycles running?}
-    G -- yes --> H[ALERT starvation:<br/>claim deadline-bound]
+    G -- yes --> H[ALERT starvation:<br/>claim on the runway left]
     G -- no --> E[Defer: log once, skip this cycle]
     E --> F[Scan the next candidate]
 ```
@@ -845,10 +846,12 @@ Issue #319.
 So the deferral has a memory. The worker counts the consecutive **cycles**
 (not scans — a slot re-scans every 30 s) that the floor deferred one issue in
 `adaptive_floor_deferrals.json` under the work directory. On the third it
-yields: the issue is claimed on whatever runway is left, and the run is
-deadline-bound with WIP preservation carrying its progress into the next cycle
-— the regime Issue #47 already documents for this class of host. The override
-is logged as
+yields: the issue is claimed on whatever runway is left. The claim then keeps
+its full `claude_timeout` and overruns the cycle deadline — the deadline stops
+*new* claims, not this one (see
+[The cycle-deadline model](#-the-cycle-deadline-model)) — and WIP preservation
+carries anything still unfinished at the run hard cap into the next cycle. The
+override is logged as
 
 ```text
 [adaptive-floor] ALERT starvation issue=owner/repo#355 deferred_cycles=3 limit=3 runway=2360s required=2700s — …
@@ -857,6 +860,78 @@ is logged as
 and the streak resets as soon as the floor accepts the issue, so an issue that
 genuinely fits a later cycle is never claimed on a doomed slice. Entries expire
 after seven days.
+
+### 🕰️ The cycle-deadline model
+
+This is the canonical description of what the cycle deadline does (Issue #397).
+Every other page links here rather than restating it — the model used to be
+paraphrased on five pages, which is the drift
+[`DUPLICATED-KNOWLEDGE-SCAN.md`](DUPLICATED-KNOWLEDGE-SCAN.md) exists to stop.
+
+**The cycle deadline is a freshness restart, not a kill switch.** A cycle runs
+for `runDurationSeconds` (1 hour) so the *next* one starts clean: a fresh clone,
+the worker code and configuration that landed in the meantime, and a re-read
+backlog. Nothing about that goal requires killing work already under way, and
+killing it was expensive — a claim taken 16 minutes before the hour used to be
+given a 16-minute budget, killed mid-task, and refused an extension while
+demonstrably progressing.
+
+Five stages, in the order a claim meets them:
+
+1. **The claim gate is soft.** Past the deadline — or inside the
+   [claim-runway floor](#-adaptive-claim-floor) before it — a slot takes **no
+   new claim** (`slotShouldStop` returns `deadline`). Nothing already running
+   is touched.
+2. **An in-flight claim keeps its full budget.** The execute phase does **not**
+   truncate `claude_timeout` to the runway left (Issue #420). A claim taken at
+   any point inside the cycle gets the whole budget, and the cycle overruns to
+   let it finish.
+3. **Extensions re-arm that budget while the run is progressing.** On by
+   default (Issue #422) — see
+   [Progress-extended deadline](#-progress-extended-deadline) for the two
+   signals and the grant size.
+4. **The supervisor's wall-clock cap is the only place a progressing agent is
+   killed.** `VIBE_RUN_MAX_SECONDS` is the ceiling every grant is measured
+   against, less a reserve for the kill grace and the WIP commit-and-push, so
+   the worker's own kill lands *before* the supervisor's SIGTERM — see
+   [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).
+   Work in progress is committed and pushed, and the next cycle resumes it.
+5. **The drain waits.** `drainSlots` lets a slot that started before the
+   deadline finish, however long that takes. Only a SIGTERM *shutdown* bounds
+   the wait; a deadline drain does not.
+
+```mermaid
+flowchart TD
+    S[Slot wants a claim] --> G{Past the deadline,<br/>or inside the runway floor?}
+    G -->|yes| D[No new claim — drain]
+    G -->|no| C[Claim taken:<br/>full claude_timeout, never truncated]
+    C --> P{Budget expired?}
+    P -->|no| C
+    P -->|yes| E{Still progressing?}
+    E -->|no| K[Kill — the run ends here]
+    E -->|yes| H{Runway left before<br/>the run hard cap?}
+    H -->|yes| X[Extend and keep going] --> C
+    H -->|no| W[Commit and push WIP,<br/>stop before the supervisor does]
+    W --> R[Next cycle resumes the work]
+    D --> R
+    style W fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+**What the deadline still bounds.** Two routes hold no work-in-progress, so
+stopping them at the hour loses nothing and letting them run delays the
+restart:
+
+- **Idle-task scans** — bounded to the runway left plus the kill grace, and
+  their retries suppressed. See
+  [Idle-Task Framework](IDLE-TASK-FRAMEWORK.md#the-cycle-deadline-bounds-a-scan-too-issue-186).
+- **The maintenance lane** — starts no further agent-backed PR pass once the
+  deadline is reached; the pass defers to the next cycle.
+
+> **Relationship to Issue #399.** #397 removes the *deadline-truncation*
+> symptom #399 cites — an issue claim is no longer killed at the hour with a
+> partial budget. It does **not** address what #399 is actually about: the cost
+> of a slow `./quality.sh` gate inside the execute budget. Both were true at
+> once; only the first is fixed here.
 
 ### ⏱️ How timeouts interact
 
@@ -965,10 +1040,12 @@ but there is one on wall clock, below.
 
 #### The run hard cap bounds every grant
 
-`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 5400 s,
-`0` disables it) and now exports that cap with the run's start epoch, so the
-worker can see the deadline it is running towards (Issue #421). Extensions are
-bounded by it:
+`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` and exports that
+cap with the run's start epoch, so the worker can see the deadline it is
+running towards (Issue #421). [`loop.sh`](../loop.sh) owns the default and `0`
+disables the cap; the value **this** run is under is printed at run start on
+the `Run hard cap:` line, so read that rather than a number copied into prose.
+Extensions are bounded by it:
 
 - The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
   `claude_kill_after` plus 120 s for the WIP commit-and-push. The worker's own

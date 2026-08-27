@@ -606,11 +606,15 @@ you can tell whether an operation hung or genuinely failed.
 
 ## ⏳ Why did this run take three hours?
 
-`claude_timeout` is a one-hour ceiling, so a run that lasted longer means the
-deadline was re-armed while the run kept making progress —
-`progress_extension_enabled` is on by default (see
-[Progress-extended deadline](CONFIGURATION.md#-progress-extended-deadline)).
-Reconstruct what happened from three places:
+Nothing is wrong. The cycle deadline stops *new* claims; it does not kill work
+already in flight, and `progress_extension_enabled` is **on by default**
+(Issue #422), so a claim that keeps progressing keeps running. The whole model
+— soft claim gate, untruncated budget, extensions, hard-cap kill with the work
+in progress preserved — is on one page:
+[The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model).
+
+So a run past `claude_timeout` means the deadline was re-armed while the run
+kept making progress. Reconstruct what happened from three places:
 
 1. **The grants** — one line per extension in `worker-*.log`:
 
@@ -643,23 +647,58 @@ If the count looks unreasonable, lower `progress_extension_grant_seconds` (each
 grant is shorter, so a stall is caught sooner), tighten
 `progress_extension_stall_seconds`, or set `progress_extension_enabled` to
 `false` to restore the unconditional one-hour kill. There is deliberately no
-ceiling on the number of grants — the concurrency slot pool bounds the blast
-radius to one slot — but every grant is bounded by the supervisor's wall-clock
-cap (Issue #421). Two lines tell you the cap was what stopped the run:
+ceiling on the *number* of grants — the concurrency slot pool bounds the blast
+radius to one slot — but there is one on wall clock: every grant is bounded by
+the supervisor's cap (Issue #421).
 
-```text
-Run hard cap: VIBE_RUN_MAX_SECONDS=5400s from run start; progress extensions
-may not push the deadline past 5250s elapsed (150s reserved for the kill grace
-and the WIP commit-and-push), leaving 5100s of runway
-[progress-extension] not extending after 5250s (extensions granted 5): run
-hard cap reached — no runway left before the supervisor terminates this run,
-so stopping now to preserve work in progress
-```
+### The hard cap was what stopped it
 
-The grant before it is normally a clamped one (`grant clamped to the run hard
-cap: 200s of runway left, not the full 900s`). If the `Run hard cap:` line
-instead says the cap is not set, the run was uncapped: `VIBE_RUN_MAX_SECONDS`
-is `0`, or the worker was started outside `loop.sh`.
+The cap is the **only** place a still-progressing agent is killed, and it is an
+orderly stop: the ceiling holds back a reserve for the kill grace and the WIP
+commit-and-push, so the work in progress is committed and pushed before the
+supervisor's SIGTERM and the next cycle resumes it. Three log lines, in the
+order they appear:
+
+1. **The ceiling, at run start.** Grep `Run hard cap:` — it reports the cap
+   *this* run is under, which is the number to trust rather than any figure
+   copied into documentation:
+
+   ```bash
+   grep 'Run hard cap:' ~/logs/worker-*.log
+   ```
+
+   ```text
+   Run hard cap: VIBE_RUN_MAX_SECONDS=<cap>s from run start; progress
+   extensions may not push the deadline past <cap − reserve>s elapsed
+   (<reserve>s reserved for the kill grace and the WIP commit-and-push),
+   leaving <n>s of runway
+   ```
+
+2. **A clamped grant**, normally the last one granted. The cap does not refuse
+   a grant that would cross it — it shortens it, so the run uses the runway it
+   has:
+
+   ```bash
+   grep 'grant clamped to the run hard cap' ~/logs/worker-*.log
+   ```
+
+   ```text
+   [progress-extension] extending after <elapsed>s (extensions granted 4):
+   grant clamped to the run hard cap: 200s of runway left, not the full 900s
+   ```
+
+3. **The refusal.** With no runway left the check refuses and the run stops
+   itself:
+
+   ```text
+   [progress-extension] not extending after <elapsed>s (extensions granted 5):
+   run hard cap reached — no runway left before the supervisor terminates this
+   run, so stopping now to preserve work in progress
+   ```
+
+If the `Run hard cap:` line instead says the cap is not set, the run was
+uncapped and no ceiling applied: `VIBE_RUN_MAX_SECONDS` is `0`, or the worker
+was started outside `loop.sh`.
 
 ## 🎞️ Capturing a full agent transcript
 
