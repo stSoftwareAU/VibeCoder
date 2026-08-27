@@ -422,14 +422,16 @@ Deno.test(
 );
 
 Deno.test(
-  "Issue #4304 - the minimum-runway floor stops claiming before the deadline",
+  "Issues #4304/#425 - the runway floor stops claiming once the hard cap is close",
   async () => {
     const logs: string[] = [];
     let now = 0;
     let claims = 0;
     const config = createDefaultRunCoreConfig();
     const cycleMs = config.runDurationSeconds * 1000;
-    // Each run leaves 40% of the cycle: past halfway, under the huge floor.
+    // The first run ends 60% into the cycle, inside the 300 s floor of a
+    // supervisor ceiling that sits at 65% — so the second claim is refused
+    // even though the cycle deadline itself has not passed.
     const perRunMs = cycleMs * 0.6;
 
     const deps = createMockDeps({
@@ -441,9 +443,8 @@ Deno.test(
         now += ms ?? 30_000;
         return Promise.resolve();
       },
-      // Floor bigger than the remaining 40%: the second claim is refused
-      // even though the deadline itself has not passed.
-      minClaimRunwaySeconds: config.runDurationSeconds * 0.5,
+      minClaimRunwaySeconds: 300,
+      claimHardCap: { ceilingMs: cycleMs * 0.65, windowSeconds: 10800 },
       findNextIssue: () =>
         Promise.resolve({
           ok: true,
@@ -469,33 +470,36 @@ Deno.test(
       `floor must refuse the second claim, got ${claims}`,
     );
     assert(
-      logs.some((m) => m.includes("claim floor")),
-      `expected a claim-floor log line, got: ${logs.join(" | ")}`,
+      logs.some((m) =>
+        m.includes("claim floor") && m.includes("supervisor hard cap")
+      ),
+      `expected a hard-cap claim-floor log line, got: ${logs.join(" | ")}`,
     );
   },
 );
 
 Deno.test(
-  "Issue #47 - the claim floor is raised to the full execute budget when the cycle fits one",
+  "Issue #425 - the retired #47 full-budget rule no longer refuses a late claim",
   async () => {
-    const logs: string[] = [];
     let now = 0;
     let claims = 0;
     const config = createDefaultRunCoreConfig();
     const cycleMs = config.runDurationSeconds * 1000;
-    // Each run leaves 35% of the cycle — above the plain 10% floor, but
-    // below the 40%-of-cycle execute budget: only the #47 gate refuses it.
+    // Each run leaves 35% of the cycle — which the #47 rule refused, because
+    // the remaining runway could not fit a full execute budget. Nothing
+    // truncates that budget any more (Issue #420), and the hard cap is hours
+    // away, so the second claim is taken.
     const perRunMs = cycleMs * 0.65;
 
     const deps = createMockDeps({
-      log: (m) => logs.push(m),
       now: () => now,
       sleep: (ms?: number) => {
         now += ms ?? 30_000;
         return Promise.resolve();
       },
-      minClaimRunwaySeconds: config.runDurationSeconds * 0.1,
-      fullExecuteBudgetSeconds: config.runDurationSeconds * 0.4,
+      minClaimRunwaySeconds: 300,
+      executeBudgetSeconds: config.runDurationSeconds,
+      claimHardCap: { ceilingMs: 3 * cycleMs, windowSeconds: 10800 },
       findNextIssue: () =>
         Promise.resolve({
           ok: true,
@@ -517,26 +521,20 @@ Deno.test(
 
     assertEquals(
       claims,
-      1,
-      `the full-budget gate must refuse the second claim, got ${claims}`,
-    );
-    assert(
-      logs.some((m) => m.includes("no longer fits this cycle (Issue #47)")),
-      `expected the #47 refusal log line, got: ${logs.join(" | ")}`,
+      2,
+      `a late claim with hard-cap runway must be taken, got ${claims}`,
     );
   },
 );
 
 Deno.test(
-  "Issue #47 - a cycle shorter than the budget keeps the plain floor and logs the exception",
+  "Issue #425 - an uncapped run states the inert floor and keeps claiming",
   async () => {
     const logs: string[] = [];
     let now = 0;
     let claims = 0;
     const config = createDefaultRunCoreConfig();
     const cycleMs = config.runDurationSeconds * 1000;
-    // Two half-cycle runs fit under the plain 10% floor; the budget being
-    // twice the cycle must NOT refuse them — it is the documented exception.
     const perRunMs = cycleMs * 0.5;
 
     const deps = createMockDeps({
@@ -546,8 +544,9 @@ Deno.test(
         now += ms ?? 30_000;
         return Promise.resolve();
       },
-      minClaimRunwaySeconds: config.runDurationSeconds * 0.1,
-      fullExecuteBudgetSeconds: config.runDurationSeconds * 2,
+      // A floor is configured, but there is no supervisor cap to measure it
+      // against, so it can refuse nothing — and says so once.
+      minClaimRunwaySeconds: 300,
       findNextIssue: () =>
         Promise.resolve({
           ok: true,
@@ -567,13 +566,17 @@ Deno.test(
 
     await runCoreLoop(config, deps);
 
-    assert(
-      claims >= 1,
-      `claims must not be blocked outright on a short-cycle host, got ${claims}`,
+    assertEquals(
+      claims,
+      2,
+      `an uncapped run must keep claiming until the deadline, got ${claims}`,
     );
     assert(
-      logs.some((m) => m.includes("can never offer")),
-      `expected the documented-exception log line, got: ${logs.join(" | ")}`,
+      logs.some((m) =>
+        m.includes("Claim-runway floor:") &&
+        m.includes("VIBE_RUN_MAX_SECONDS")
+      ),
+      `expected the inert-floor reason, got: ${logs.join(" | ")}`,
     );
   },
 );

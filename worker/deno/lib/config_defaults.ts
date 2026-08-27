@@ -203,12 +203,6 @@ export const OPERATIONAL_DEFAULTS = {
    */
   minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
   /**
-   * Full-execute-budget claim gate (Issue #289). Off by default: on a host
-   * whose cycle is longer than `claudeTimeout` it idles the cycle tail, and
-   * WIP preservation (Issues #47/#148) makes a deadline-bound execute safe.
-   */
-  claimRequireFullExecuteBudget: false,
-  /**
    * Re-armable hard deadline for issue work (Issue #4296, part of #4290).
    *
    * **On by default** (Issue #422, parent #397): killing a claim that is
@@ -1226,8 +1220,6 @@ export function buildDefaultWorkerConfig(
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
-    claimRequireFullExecuteBudget:
-      OPERATIONAL_DEFAULTS.claimRequireFullExecuteBudget,
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
     progressExtensionEnabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,

@@ -452,11 +452,6 @@ export async function loadConfig(
   const minClaimRunwaySeconds = file.min_claim_runway_seconds ??
     readNonNegativeNumberEnv("MIN_CLAIM_RUNWAY_SECONDS") ??
     OPERATIONAL_DEFAULTS.minClaimRunwaySeconds;
-  const claimRequireFullExecuteBudget =
-    file.claim_require_full_execute_budget ??
-      (Deno.env.get("CLAIM_REQUIRE_FULL_EXECUTE_BUDGET") === "1"
-        ? true
-        : OPERATIONAL_DEFAULTS.claimRequireFullExecuteBudget);
   // Adaptive claim floor (Issue #245): labels that mark an issue as a long
   // job, alongside the preserved-WIP and prior-execute-timeout evidence.
   const claimLongJobLabels = file.claim_long_job_labels ??
@@ -751,7 +746,6 @@ export async function loadConfig(
     bestPlanningModel,
     claudeTimeout,
     minClaimRunwaySeconds,
-    claimRequireFullExecuteBudget,
     claimLongJobLabels,
     progressExtensionEnabled,
     progressExtensionGrantSeconds,
