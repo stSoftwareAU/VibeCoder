@@ -106,7 +106,7 @@ Modified — business-logic change, documented as required:
 
 - Input validation: unchanged — the existing `config.ts` validation still
   rejects non-positive grant/stall/check and `stall < check`.
-- Credentials: nothing sensitive is staged; `git diff --cached --name-only`
-  shows only the seven files above.
+- No API keys, tokens, credentials or `.config*.json` files are staged;
+  `git diff --cached --name-only` shows only the seven files above.
 - Injection / output encoding / authn / error handling / dependencies: no new
   surface — this change moves one boolean literal and its documentation.
