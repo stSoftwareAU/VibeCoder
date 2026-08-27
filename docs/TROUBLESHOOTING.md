@@ -648,10 +648,10 @@ radius to one slot — but every grant is bounded by the supervisor's wall-clock
 cap (Issue #421). Two lines tell you the cap was what stopped the run:
 
 ```text
-Run hard cap: VIBE_RUN_MAX_SECONDS=5400s from run start; progress extensions
-may not push the deadline past 5250s elapsed (150s reserved for the kill grace
-and the WIP commit-and-push), leaving 5100s of runway
-[progress-extension] not extending after 5250s (extensions granted 5): run
+Run hard cap: VIBE_RUN_MAX_SECONDS=10800s from run start; progress extensions
+may not push the deadline past 10650s elapsed (150s reserved for the kill grace
+and the WIP commit-and-push), leaving 10500s of runway
+[progress-extension] not extending after 10650s (extensions granted 5): run
 hard cap reached — no runway left before the supervisor terminates this run,
 so stopping now to preserve work in progress
 ```

@@ -141,8 +141,17 @@ export VIBE_SUPERVISOR_RECORDS_OUTCOME=1
 # the grace, and the expiry is reported to the backoff recorder as a launcher
 # failure so a host that does this repeatedly escalates (Issue #4072).
 #
-# Default 5400 s: the 3600 s run duration plus a wide margin for a slow but
-# genuinely progressing shutdown. Set VIBE_RUN_MAX_SECONDS=0 to disable.
+# Default 10800 s (3 h, Issue #423): the outer bound on a cycle that finishes
+# the work it started, not "one run plus a margin". Under Issue #397 a claim is
+# no longer truncated at the cycle deadline, so a claim taken at minute 59
+# legitimately runs its full budget with progress extensions on — and the cap
+# has to sit past the end of that, or the supervisor becomes the thing that
+# kills work that is still progressing. It must also stay under the launcher's
+# container watchdog (WATCHDOG_MARGIN_SECONDS in
+# worker/deno/lib/container_watchdog.ts adds 600 s to the worker's own
+# DEFAULT_MAX_RUN_SECONDS), so the host never reaps a container this supervisor
+# would still allow to run; loop_supervisor_test.ts asserts that relation.
+# Set VIBE_RUN_MAX_SECONDS=0 to disable.
 #
 # The cap is exported (Issue #421) because the worker has to see it: progress
 # extensions re-arm the run deadline for as long as the agent keeps making
@@ -153,7 +162,7 @@ export VIBE_SUPERVISOR_RECORDS_OUTCOME=1
 # the run starts) and stops itself first. `0` is carried through as "disabled"
 # and never as "cap at zero".
 ################################################################################
-export VIBE_RUN_MAX_SECONDS="${VIBE_RUN_MAX_SECONDS:-5400}"
+export VIBE_RUN_MAX_SECONDS="${VIBE_RUN_MAX_SECONDS:-10800}"
 VIBE_RUN_KILL_GRACE_SECONDS="${VIBE_RUN_KILL_GRACE_SECONDS:-120}"
 
 # `timeout` exits 124 on expiry; 137 when its own SIGKILL was what stopped the
