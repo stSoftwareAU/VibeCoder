@@ -448,6 +448,7 @@ Set only the variables for the vendors you use: an unset provisioning variable l
 | `VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` | Claude credential written to `claude/provider.env` |
 | `VIBE_LAUNCHAGENT_OPENAI_API_KEY` / `OPENAI_API_KEY` / `CODEX_API_KEY` | Codex credential written to `codex/provider.env` |
 | `VIBE_LAUNCHAGENT_GEMINI_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini credential written to `gemini/provider.env` |
+| `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY` / `DEEPSEEK_API_KEY` | DeepSeek credential written to `deepseek/provider.env`. DeepSeek has no interactive login, so this variable is the only way to provision it; the agent binary is Anthropic's, but the key is DeepSeek's |
 
 When these variables are set, `setup.sh` writes the files with owner-only permissions, points `gh_config_dir` at `<credential dir>/gh`, and never offers the interactive `gh auth login` prompt for that directory. The prompt remains available only for an operator-chosen gh config directory at a terminal — never on the runtime path.
 
