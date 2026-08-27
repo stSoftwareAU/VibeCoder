@@ -676,3 +676,135 @@ Deno.test("formatter - per-repo line carries the merged_pr_blocked count (GRQ#44
   assert(line.includes("work_on=0"));
   assert(line.includes("inversion_signal=false"));
 });
+
+// ---------------------------------------------------------------------------
+// Issue #437: escalation needs a scan that actually refused the work
+// ---------------------------------------------------------------------------
+// The claim scan stops before its next claim whenever the cycle deadline /
+// claim-runway floor is reached, a shutdown is requested, or the pool is
+// draining. It never evaluated the backlog on such a cycle, so "the claim
+// scan keeps refusing this work" is not a conclusion the census may draw.
+
+Deno.test("census - an unscanned repo's inversion is deferred, not escalated (Issue #437)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/VibeCoder",
+        scannedThisCycle: false,
+        skipReason: "cycle_deadline",
+        issues: [issue(426, ["work-on"]), issue(425, ["work-on"])],
+      }),
+    ],
+  });
+  // The work is real, so the filer must still be suppressed (Issue #2813).
+  assertEquals(census.inversionDetected, true);
+  assertEquals(census.inversionRepos, ["stSoftwareAU/VibeCoder"]);
+  // But nothing refused it, so it is not evidence for the Issue #321 streak.
+  assertEquals(census.escalationRepos, []);
+  assertEquals(census.deferredInversionRepos, ["stSoftwareAU/VibeCoder"]);
+});
+
+Deno.test("census - a scanned repo's inversion is escalation-worthy (Issue #437)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/scanned",
+        scannedThisCycle: true,
+        issues: [issue(1, ["work-on"])],
+      }),
+    ],
+  });
+  assertEquals(census.escalationRepos, ["org/scanned"]);
+  assertEquals(census.deferredInversionRepos, []);
+});
+
+Deno.test("census - escalation is decided per repo, not per cycle (Issue #437)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/scanned",
+        scannedThisCycle: true,
+        issues: [issue(1, ["work-on"])],
+      }),
+      repoInput({
+        repo: "org/deadline",
+        scannedThisCycle: false,
+        skipReason: "cycle_deadline",
+        issues: [issue(2, ["top-priority"])],
+      }),
+      // Unscanned but with nothing claimable: neither list may name it.
+      repoInput({
+        repo: "org/quiet",
+        scannedThisCycle: false,
+        skipReason: "cycle_deadline",
+        issues: [issue(3, ["idle-task"])],
+      }),
+    ],
+  });
+  assertEquals(census.inversionRepos, ["org/scanned", "org/deadline"]);
+  assertEquals(census.escalationRepos, ["org/scanned"]);
+  assertEquals(census.deferredInversionRepos, ["org/deadline"]);
+});
+
+Deno.test("census - a non-monitored unscanned repo appears in neither list (Issue #437)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/external",
+        monitored: false,
+        scannedThisCycle: false,
+        skipReason: "cycle_deadline",
+        issues: [issue(1, ["work-on"])],
+      }),
+    ],
+  });
+  assertEquals(census.inversionDetected, false);
+  assertEquals(census.escalationRepos, []);
+  assertEquals(census.deferredInversionRepos, []);
+});
+
+Deno.test("formatter - reports a deferred inversion instead of dropping it (Issue #437)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/VibeCoder",
+        scannedThisCycle: false,
+        skipReason: "cycle_deadline",
+        issues: [issue(426, ["work-on"])],
+      }),
+    ],
+  });
+  const lines = formatIdleDecisionCensus(census, "host1:42");
+  const repoLine = lines.find((l) =>
+    l.includes("repo=stSoftwareAU/VibeCoder")
+  )!;
+  assert(repoLine.includes("scanned=false"));
+  assert(repoLine.includes("skip_reason=cycle_deadline"));
+  const note = lines.find((l) => l.includes("NOTE inversion_not_escalated"))!;
+  assert(note.includes("repos=stSoftwareAU/VibeCoder"));
+  assert(note.includes("host=host1:42"));
+  // The inversion itself is still alerted — the work is real.
+  assert(lines.some((l) => l.includes("ALERT inversion")));
+});
+
+Deno.test("formatter - no deferral note when every inverted repo was scanned (Issue #437)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({ repo: "org/scanned", issues: [issue(1, ["work-on"])] }),
+    ],
+  });
+  const lines = formatIdleDecisionCensus(census);
+  assert(!lines.some((l) => l.includes("NOTE inversion_not_escalated")));
+});
