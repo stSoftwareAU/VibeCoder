@@ -94,6 +94,36 @@
  * The `idle-task` count deliberately ignores PR blocking — idle-task
  * claiming is gated by repo busyness, not by `getBlockingPRForIssue`.
  *
+ * # Escalation needs a scan that actually refused the work (Issue #437)
+ *
+ * The inversion signal answers "is there claimable work while an idle-task
+ * is about to be filed?". Issue #321 then escalates a *sustained* signal as
+ * "the claim scan keeps refusing this work" — which is only true when the
+ * claim scan reached the end of its eligibility pass and came up empty. It
+ * frequently does not: the pool stops before its next claim when the cycle
+ * deadline / claim-runway floor is reached, on shutdown, or while draining,
+ * and the census then runs at the filing gate having never been contradicted
+ * by anything. On 2026-08-26 every VibeCoder inversion alert followed a
+ * `stop reason=deadline` (or `drain`) line by about a minute — the backlog
+ * was real, the scan simply never looked at it — and three such cycles filed
+ * VibeCoder#437 against a human under a headline that named a bug nobody had.
+ *
+ * So the census separates the two verdicts:
+ *
+ *   - {@link IdleDecisionCensus.inversionRepos} / `inversionDetected` — work
+ *     exists somewhere in the monitored set. Unchanged, and still what
+ *     suppresses the idle-task filer (Issue #2813): work the scan merely did
+ *     not reach this cycle is still work, and filing an idle-task beside it
+ *     inverts priority just the same.
+ *   - {@link IdleDecisionCensus.escalationRepos} — the subset the claim scan
+ *     actually evaluated this cycle (`scannedThisCycle`). Only these are
+ *     evidence of a refusal, so only these feed the Issue #321 streak.
+ *
+ * Inverted repos the scan never reached are reported as
+ * {@link IdleDecisionCensus.deferredInversionRepos} and surfaced by
+ * {@link formatIdleDecisionCensus} as a `NOTE inversion_not_escalated` line,
+ * so a deferral stays visible in the log instead of being silently dropped.
+ *
  * The builder is **pure** — it takes already-fetched issues (read through
  * the existing per-iteration `IssueCache` so a quiet cycle costs no extra
  * `gh issue list` call) and returns a structured census. The caller wraps
@@ -138,6 +168,13 @@ export type RepoCensusSkipReason =
   | "cooldown_local"
   | "cooldown_cross_worker"
   | "fair_rotation_deferral"
+  /**
+   * The claim scan stopped for a lifecycle reason — the cycle deadline or
+   * claim-runway floor, a shutdown request, or a pool drain — before it
+   * completed an eligibility pass (Issue #437). The backlog was never
+   * evaluated, so nothing refused it.
+   */
+  | "cycle_deadline"
   | "unknown";
 
 /** Availability verdict for a repo, derived from its open issues. */
@@ -249,6 +286,19 @@ export interface IdleDecisionCensus {
   inversionRepos: string[];
   /** `true` when at least one monitored repo carries the inversion signal. */
   inversionDetected: boolean;
+  /**
+   * The subset of {@link inversionRepos} the claim scan actually evaluated
+   * this cycle (`scannedThisCycle`), in input order — the only repos whose
+   * signal is evidence that the scan *refused* the work (Issue #437). The
+   * Issue #321 streak counts these and no others.
+   */
+  escalationRepos: string[];
+  /**
+   * The rest of {@link inversionRepos}: repos holding claimable work that
+   * the claim scan never reached this cycle (Issue #437). Reported so the
+   * deferral is visible in the log, never escalated.
+   */
+  deferredInversionRepos: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -465,8 +515,16 @@ export function buildIdleDecisionCensus(opts: {
 
   // The inversion signal only matters for repos the worker is supposed to
   // be serving. A non-monitored repo with work is expected to be skipped.
-  const inversionRepos = perRepo
-    .filter((r) => r.monitored && r.inversionSignal)
+  const inverted = perRepo.filter((r) => r.monitored && r.inversionSignal);
+  const inversionRepos = inverted.map((r) => r.repo);
+  // Issue #437: only a repo the claim scan actually evaluated this cycle can
+  // be said to have had its work *refused*. A repo the scan never reached —
+  // the cycle deadline, a shutdown, a drain — is deferred, not refused.
+  const escalationRepos = inverted
+    .filter((r) => r.scannedThisCycle)
+    .map((r) => r.repo);
+  const deferredInversionRepos = inverted
+    .filter((r) => !r.scannedThisCycle)
     .map((r) => r.repo);
 
   return {
@@ -475,6 +533,8 @@ export function buildIdleDecisionCensus(opts: {
     perRepo,
     inversionRepos,
     inversionDetected: inversionRepos.length > 0,
+    escalationRepos,
+    deferredInversionRepos,
   };
 }
 
@@ -522,6 +582,17 @@ export function formatIdleDecisionCensus(
     lines.push(
       `[idle-census]${hostField} decision_point=${census.decisionPoint} ` +
         `ALERT inversion repos=${census.inversionRepos.join(",")}`,
+    );
+  }
+  // Issue #437: a repo the claim scan never reached this cycle holds work
+  // nobody refused, so it is reported and not escalated.
+  if (census.deferredInversionRepos.length > 0) {
+    lines.push(
+      `[idle-census]${hostField} decision_point=${census.decisionPoint} ` +
+        `NOTE inversion_not_escalated ` +
+        `repos=${census.deferredInversionRepos.join(",")} — the claim scan ` +
+        `did not complete an eligibility pass this cycle, so nothing ` +
+        `refused this work`,
     );
   }
   return lines;

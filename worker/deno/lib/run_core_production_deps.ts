@@ -3184,7 +3184,7 @@ export async function createProductionRunCoreDeps(
     // Logs route through `logger.info` for the same visibility reason as
     // the filer and audit above. Best-effort — any throw is caught here
     // and logged so a census failure never reaches the loop's catch.
-    runIdleDecisionCensus: async ({ decisionPoint }) => {
+    runIdleDecisionCensus: async ({ decisionPoint, claimScanCompleted }) => {
       try {
         const host = `${Deno.hostname()}:${Deno.pid}`;
         const perRepo = await Promise.all(
@@ -3219,7 +3219,15 @@ export async function createProductionRunCoreDeps(
             return {
               repo,
               monitored: true,
-              scannedThisCycle: true,
+              // Issue #437: honest about what the claim scan actually did.
+              // The pool stops before its next claim on the cycle deadline /
+              // runway floor, a shutdown or a drain — on such a cycle the
+              // backlog was never evaluated, so the repo was not scanned and
+              // its claimable work was deferred rather than refused.
+              scannedThisCycle: claimScanCompleted,
+              ...(claimScanCompleted
+                ? {}
+                : { skipReason: "cycle_deadline" as const }),
               nice: getRepoNice(config.repoConfig, repo),
               issues: issues.map((i) => ({
                 number: i.number,
@@ -3249,11 +3257,16 @@ export async function createProductionRunCoreDeps(
         // *cycles* (the census runs several times per cycle) and file one
         // issue against a repo whose inversion persists. Best-effort: the
         // idle path must never fail because its own reporting did.
+        //
+        // Issue #437: count only the repos the claim scan actually evaluated
+        // this cycle. A cycle that ended on the deadline refused nothing, so
+        // it is neither evidence for the streak nor a clean cycle that clears
+        // it — such a repo is left exactly as it was.
         try {
           const statePath = idleInversionStatePath(workDir);
           const cycleId = resolveRunId();
-          const inverted = new Set(census.inversionRepos);
-          for (const repo of census.inversionRepos) {
+          const escalating = new Set(census.escalationRepos);
+          for (const repo of census.escalationRepos) {
             const snapshot = census.perRepo.find((r) => r.repo === repo);
             const decision = await recordIdleInversion({
               statePath,
@@ -3288,8 +3301,10 @@ export async function createProductionRunCoreDeps(
             }
           }
           // A repo that scanned cleanly this cycle has nothing to escalate.
+          // An unscanned repo is left untouched (Issue #437): the cycle
+          // proves neither a refusal nor a clean pass.
           for (const snapshot of census.perRepo) {
-            if (!inverted.has(snapshot.repo)) {
+            if (snapshot.scannedThisCycle && !escalating.has(snapshot.repo)) {
               await clearIdleInversion(
                 statePath,
                 snapshot.repo,

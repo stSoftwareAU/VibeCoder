@@ -24,6 +24,14 @@
  * than the title (as `run_failure_issue.ts` does), so two hosts watching the
  * same repo converge on one issue.
  *
+ * **Only a refusal counts (Issue #437).** A cycle escalates a repo only when
+ * the claim scan completed an eligibility pass and still claimed nothing.
+ * Cycles that ended on the deadline — the pool stops before its next claim
+ * and never evaluates the backlog — are neither counted nor treated as clean,
+ * so a busy fleet with a real backlog no longer escalates "the claim scan
+ * keeps refusing" work nothing refused. `idle_decision_census.ts` decides
+ * which repos qualify (`escalationRepos`).
+ *
  * The issue is filed with no label. The worker cannot self-apply `work-on`
  * (`worker_label_guard.ts` strips a worker-applied pickup label on the next
  * scan), so the body asks a human to apply it.
@@ -166,6 +174,11 @@ export function formatIdleInversionBody(
     "",
     "The two disagree. One of them is wrong, and until this is resolved that " +
     "work is not being done by anyone.",
+    "",
+    "Every cycle counted here is one in which the claim scan **completed an " +
+    "eligibility pass** and still claimed nothing — a cycle that ended on the " +
+    "deadline (or drained) before the scan looked is not counted, because " +
+    "nothing refused the work (Issue #437).",
     "",
     "## What the census saw",
     "",

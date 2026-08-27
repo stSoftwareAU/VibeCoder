@@ -10,6 +10,11 @@
  *      census hook is NOT invoked — it only runs at the idle gate.
  *   3. A throw from the census hook is caught and logged so the main loop
  *      continues uninterrupted.
+ *   4. Issue #437: the hook is told whether the claim scan actually
+ *      completed an eligibility pass. A scan that came up empty reports
+ *      `claimScanCompleted: true`; a loop that stopped before its next claim
+ *      (cycle deadline / claim-runway floor) reports `false`, so the
+ *      idle-inversion escalation cannot blame a scan that never looked.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -240,5 +245,108 @@ Deno.test(
     assert(
       logs.some((l) => l.includes("Idle-decision census failed (continuing)")),
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #437: the census must know whether the scan actually refused the work
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "run_core - an empty scan reports claimScanCompleted=true (Issue #437)",
+  async () => {
+    let cycleCount = 0;
+    let nowValue = 0;
+    const calls: boolean[] = [];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      // The scan considers the backlog and finds nothing eligible.
+      findNextIssue: () => Promise.resolve({ ok: true as const, value: null }),
+      runIdleDecisionCensus: ({ claimScanCompleted }) => {
+        calls.push(claimScanCompleted);
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(calls, [true]);
+  },
+);
+
+Deno.test(
+  "run_core - a claim-runway stop reports claimScanCompleted=false (Issue #437)",
+  async () => {
+    let nowValue = 0;
+    let findCalls = 0;
+    const calls: boolean[] = [];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: (ms?: number) => {
+        nowValue += ms ?? 4000 * 1000;
+        return Promise.resolve();
+      },
+      // A floor as long as the whole cycle: the loop stops before its first
+      // claim, so the backlog is never evaluated.
+      minClaimRunwaySeconds: 3600,
+      findNextIssue: () => {
+        findCalls += 1;
+        return Promise.resolve({ ok: true as const, value: null });
+      },
+      runIdleDecisionCensus: ({ claimScanCompleted }) => {
+        calls.push(claimScanCompleted);
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(findCalls, 0, "the scan must not have evaluated the backlog");
+    assert(calls.length >= 1, "the census must still run at the idle gate");
+    assert(
+      calls.every((c) => c === false),
+      `every census call must report an incomplete scan, got: ${calls}`,
+    );
+  },
+);
+
+Deno.test(
+  "run_core - a concurrent pool's empty scan reports claimScanCompleted=true (Issue #437)",
+  async () => {
+    let cycleCount = 0;
+    let nowValue = 0;
+    const calls: boolean[] = [];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      findNextIssue: () => Promise.resolve({ ok: true as const, value: null }),
+      runIdleDecisionCensus: ({ claimScanCompleted }) => {
+        calls.push(claimScanCompleted);
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    config.maxConcurrentIssues = 2;
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(calls, [true]);
   },
 );

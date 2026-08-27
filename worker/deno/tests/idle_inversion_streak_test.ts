@@ -290,3 +290,14 @@ Deno.test("#321 - census detail cannot forge a marker or close the fence", () =>
     "only the fence this body opens and closes",
   );
 });
+
+Deno.test("#437 - the body states that only completed scans were counted", () => {
+  const body = formatIdleInversionBody({
+    repo: REPO,
+    consecutiveCycles: 3,
+    claimable: 8,
+    detail: "work_on=8 pr_blocked=0",
+  });
+  assertStringIncludes(body, "completed an eligibility pass");
+  assertStringIncludes(body, "Issue #437");
+});
