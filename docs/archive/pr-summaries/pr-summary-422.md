@@ -11,8 +11,9 @@ still killed on the clock.
 
 This flips the default to `true` in `OPERATIONAL_DEFAULTS` — the single source
 both config readers (`lib/config.ts` and `commands/load_config.ts`) resolve
-through, so there is no path where the CLI and the main loop disagree. Closes
-#422.
+through, so there is no path where the CLI and the main loop disagree.
+
+Closes #422.
 
 What did **not** change:
 
