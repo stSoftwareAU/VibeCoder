@@ -1524,6 +1524,11 @@ template bypasses the wrapper.
 
 ### The cycle deadline bounds a scan too (Issue #186)
 
+> The cycle deadline does **not** bound an issue claim's budget — it stops new
+> claims and lets in-flight work finish. That model is stated once, in
+> [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model).
+> This section covers the one route it deliberately still bounds: a scan.
+
 The hour-long budget above is a **ceiling**, not an entitlement. A wrapper
 claimed five minutes before the cycle deadline used to receive the full hour
 and ran ~15 minutes past the planned shutdown with the worker log silent — the
@@ -1536,7 +1541,7 @@ The claim handler now publishes an **idle-task run context** —
 
 | Fact                  | Effect on the scan                                                                                                                                            |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cycleDeadlineEpochMs` | Timeout becomes `min(requested, runway + claude_kill_after)`, floored at 60 s — the `resolveExecuteTimeoutSeconds` rule first written for the execute phase (Issue #4254). Issue work stopped applying it in Issue #420 (a claim keeps its full budget); a scan holds no WIP and is discretionary, so this route keeps it. |
+| `cycleDeadlineEpochMs` | Timeout becomes `min(requested, runway + claude_kill_after)`, floored at 60 s. The justification is the scan's own: it holds no work-in-progress and is discretionary, so nothing is lost by stopping it at the hour and letting it run only delays the restart. Issue work is bounded by no such rule (Issue #420) — a claim keeps its full budget. |
 | `cycleDeadlineEpochMs` | Retries are suppressed for that run: the timeout is resolved once, so a retry after a back-off would start from past the deadline. A scan has no WIP to protect. |
 | `logger`              | The worker logger reaches the runner, so its per-minute `[agent-progress] <phase>: …` lines land in `worker-*.log` instead of nowhere.                          |
 

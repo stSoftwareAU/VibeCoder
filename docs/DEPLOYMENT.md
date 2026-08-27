@@ -786,6 +786,7 @@ Recoveries, backoffs, escalations, quota pauses and forced reaps are structured 
 | `VIBE_QUOTA_PAUSE_SLEEP_SECONDS` | Fixed re-probe interval while this host is out of quota (default: 3600) |
 | `CRASH_WEBHOOK_URL` | Optional webhook the escalation also posts to |
 | `VIBE_CONTAINER_WATCHDOG_SECONDS` | Launcher deadline before a container is reaped as wedged (default: the worker's max run duration + 600 — 10800 + 600 = **11400 s**, which is `loop.sh`'s `VIBE_RUN_MAX_SECONDS` cap plus the same 10-minute margin, so the launcher never reaps a container the supervisor would still allow to run) |
+| `VIBE_RUN_MAX_SECONDS` | The supervisor's wall-clock cap on one run (default 10800 s, `0` disables it). `loop.sh` owns the default and exports it with `VIBE_RUN_STARTED_EPOCH` so the worker stops itself first. It is the only place a still-progressing agent is killed — see [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) |
 | `VIBE_CONTAINER_REAP_GRACE_SECONDS` | Grace after `<runtime> kill` before the reaper escalates to SIGKILL (default: 30) |
 
 ## 📝 Logs
