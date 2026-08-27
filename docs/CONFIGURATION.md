@@ -965,10 +965,16 @@ but there is one on wall clock, below.
 
 #### The run hard cap bounds every grant
 
-`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 5400 s,
-`0` disables it) and now exports that cap with the run's start epoch, so the
-worker can see the deadline it is running towards (Issue #421). Extensions are
-bounded by it:
+`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 10800 s —
+3 h — `0` disables it) and now exports that cap with the run's start epoch, so
+the worker can see the deadline it is running towards (Issue #421). The cap is
+the outer bound on a cycle that *finishes* the work it started rather than "one
+run plus a margin": with claims no longer truncated at the cycle deadline
+(Issue #397), a claim taken at minute 59 runs its full budget and its progress
+extensions inside it (Issue #423). It sits 600 s under the launcher's container
+watchdog (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host
+never reaps a container this supervisor would still allow to run. Extensions
+are bounded by it:
 
 - The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
   `claude_kill_after` plus 120 s for the WIP commit-and-push. The worker's own
