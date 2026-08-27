@@ -763,15 +763,14 @@ unless explicitly overridden.
 | FLEET health repository          | `fleet_health_repo`                | _(empty)_  | Git URL of the FLEET health repository — the one setting health tracking needs. `setup.sh` / `setup.ps1` ask for it (optional); the worker clones it on its first run, natively and in the container. Never assumed: unset, the worker logs that health tracking is off |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
-| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of cycle runway a new implementation claim must have; `0` disables the floor. A claim taken below it would run deadline-bound, be killed at the cycle deadline, and rely on WIP preservation to carry its progress into the next run (Issue #289). |
-| Require a full execute budget | `claim_require_full_execute_budget` | `false` | When `true`, a claim is refused once the remaining runway cannot fit a full `claude_timeout` execute — the floor is raised to that budget and the cycle tail goes to cheap maintenance. Only takes effect where the cycle is longer than `claude_timeout`; where it is not, every execute is deadline-bound by design and the plain floor stands, logged once as a documented exception (Issue #289). |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit. On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 
-> **`MIN_CLAIM_RUNWAY_SECONDS` and `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET` are
-> fallbacks for a native run only.** `container_launch.ts` forwards only the
+> **`MIN_CLAIM_RUNWAY_SECONDS` is a fallback for a native run only.**
+> `container_launch.ts` forwards only the
 > variables it sets itself (the base directory, the config path, the host id,
 > the host-disk reading and — when `loop.sh` published them — the run cap pair
-> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`), so neither reaches a
+> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`), so it does not reach a
 > containerised worker —
 > the default run mode. Use the `.config.json` keys above, which are read from
 > the config mounted at `CONFIG_PATH`. A config key always wins over the
@@ -798,9 +797,14 @@ unless explicitly overridden.
 
 `min_claim_runway_seconds` is the same floor for every issue, which is right
 for a fresh one-file fix and wrong for an issue already known to be a long job.
-VibeCoder#222 (a 21-file change) was claimed with 933 s of cycle runway left:
-a near-certain timeout the moment it was taken, costing a claim cycle and a
+VibeCoder#222 (a 21-file change) was claimed with 933 s of runway left: a
+near-certain timeout the moment it was taken, costing a claim cycle and a
 whole billed run that produced nothing the next attempt did not redo.
+
+Both floors measure the same runway — the runway left to the **supervisor hard
+cap** (Issue #425). The cycle deadline still stops new claims on its own
+(Issue #397), but it no longer truncates the execute of a claim already taken,
+so it is not what decides whether a claim can fit.
 
 So the floor adapts to what the issue already carries (Issue #245). Evidence
 is any one of: preserved WIP on the issue branch, a previous attempt whose
@@ -813,29 +817,32 @@ so a marker cannot be forged to keep an issue from being claimed.
 flowchart TD
     A[Scan offers a candidate] --> B{Evidence it is<br/>not a short job?}
     B -- no --> C[Claim — the plain floor decides]
-    B -- yes --> D{Runway ≥ 75% of<br/>min claude_timeout, cycle?}
+    B -- yes --> D{Hard-cap runway ≥ 75% of<br/>min claude_timeout, cap window?}
     D -- yes --> C
     D -- no --> G{Deferred on the last<br/>3 cycles running?}
-    G -- yes --> H[ALERT starvation:<br/>claim deadline-bound]
+    G -- yes --> H[ALERT starvation:<br/>claim on the runway left]
     G -- no --> E[Defer: log once, skip this cycle]
     E --> F[Scan the next candidate]
 ```
 
 An issue with evidence needs three quarters of the best execute budget the
-host can offer — `claude_timeout`, or the cycle's own equivalent where the
-cycle can never fit that budget (the documented #47 exception). Requiring the
-whole budget would leave such a host claiming nothing at all; three quarters
-refuses the doomed slice (933 s of 3600 s) while leaving the runs that made
-progress on #222 — 56 min and 49 min — untouched. A deferral never parks the
-slot: it is logged once per cycle and the scan moves to the next candidate.
+host can offer — `claude_timeout`, or the hard-cap window's own equivalent
+where the cap can never fit that budget. Requiring the whole budget would leave
+such a host claiming nothing at all; three quarters refuses the doomed slice
+(933 s of 3600 s) while leaving the runs that made progress on #222 — 56 min
+and 49 min — untouched. A deferral never parks the slot: it is logged once per
+cycle and the scan moves to the next candidate. A run with no hard cap has no
+adaptive floor at all: nothing will cut its execute short, so evidence of a
+long job is not evidence of a doomed claim.
 
 #### The deferral is bounded (Issue #375)
 
 Three quarters is only safe while the requirement stays *satisfiable*, and on a
-host whose cycle length equals its `claude_timeout` it is not. There the
-requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a claim gate
-is first reached after startup, the maintenance passes and the scan have run —
-about twenty minutes in, so the best runway ever offered was 2430 s.
+host whose hard-cap window is no longer than its `claude_timeout` it is not.
+There the requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a
+claim gate is first reached after startup, the maintenance passes and the scan
+have run — about twenty minutes in, so the best runway ever offered was
+2430 s.
 VibeCoder #355 was refused on six consecutive cycles under the wording
 "leaving it for the next cycle", while the idle-decision census counted it as
 claimable and `[idle-census] ALERT inversion` fired every cycle. A permanent
@@ -845,10 +852,9 @@ Issue #319.
 So the deferral has a memory. The worker counts the consecutive **cycles**
 (not scans — a slot re-scans every 30 s) that the floor deferred one issue in
 `adaptive_floor_deferrals.json` under the work directory. On the third it
-yields: the issue is claimed on whatever runway is left, and the run is
-deadline-bound with WIP preservation carrying its progress into the next cycle
-— the regime Issue #47 already documents for this class of host. The override
-is logged as
+yields: the issue is claimed on whatever runway is left, and the hard-cap kill
+commits and pushes its WIP for the next run to resume. The override is logged
+as
 
 ```text
 [adaptive-floor] ALERT starvation issue=owner/repo#355 deferred_cycles=3 limit=3 runway=2360s required=2700s — …

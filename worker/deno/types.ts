@@ -173,21 +173,13 @@ export interface WorkerConfig {
   /** Timeout in seconds for Claude CLI (default: 3600 = 1 hour, Issue #1824) */
   claudeTimeout: number;
   /**
-   * Seconds of cycle runway a new implementation claim must have
-   * (`.config.json` `min_claim_runway_seconds`, Issue #289). `0` disables the
-   * floor. Environment variable `MIN_CLAIM_RUNWAY_SECONDS` is the fallback
-   * when the key is absent — it does not cross the container boundary, so
-   * only a native run can set it. See `lib/claim_runway.ts`.
+   * Seconds of runway to the supervisor hard cap a new implementation claim
+   * must have (`.config.json` `min_claim_runway_seconds`, Issues #289/#425).
+   * `0` disables the floor. Environment variable `MIN_CLAIM_RUNWAY_SECONDS`
+   * is the fallback when the key is absent — it does not cross the container
+   * boundary, so only a native run can set it. See `lib/claim_runway.ts`.
    */
   minClaimRunwaySeconds: number;
-  /**
-   * Refuse a claim whose remaining runway cannot fit a full `claudeTimeout`
-   * execute (`.config.json` `claim_require_full_execute_budget`, Issue #289).
-   * Off by default. Environment variable
-   * `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1` is the fallback when the key is
-   * absent, with the same container caveat as above.
-   */
-  claimRequireFullExecuteBudget: boolean;
   /**
    * Labels marking an issue as a long job for the adaptive claim floor
    * (`.config.json` `claim_long_job_labels`, Issue #245). An issue carrying
@@ -929,7 +921,6 @@ export interface ConfigFile {
   /** Operational settings (Issue #277) — only overrides stored */
   claude_timeout?: number;
   min_claim_runway_seconds?: number;
-  claim_require_full_execute_budget?: boolean;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];
   /** Extend the issue-work deadline while progress holds (Issue #4296) */

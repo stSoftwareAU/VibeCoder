@@ -7,13 +7,12 @@
  * the host's best execute budget still to run. Its module doc states the
  * invariant that makes it safe: *the requirement must stay satisfiable*.
  *
- * On a host whose cycle length equals its `claude_timeout` (the Issue #47
- * exception host: 3600 s cycle, 3600 s budget) that invariant does not hold.
- * The requirement is 0.75 × 3600 = 2700 s of **remaining** runway, but a claim
- * gate is only reached after the cycle has paid for startup, the maintenance
- * passes and the scan — around twenty minutes on the observed host. The best
- * runway ever offered to a claim gate there was 2430 s, so the floor could
- * never be met:
+ * On a host whose runway window is no longer than its `claude_timeout` that
+ * invariant does not hold. The requirement is 0.75 × 3600 = 2700 s of
+ * **remaining** runway, but a claim gate is only reached after the run has
+ * paid for startup, the maintenance passes and the scan — around twenty
+ * minutes on the observed host. The best runway ever offered to a claim gate
+ * there was 2430 s, so the floor could never be met:
  *
  * ```
  * 06:03  VibeCoder#355 … 2360s of runway left, below the 2700s adaptive floor
@@ -32,10 +31,12 @@
  * This module gives the deferral a memory so it is **bounded**. It counts the
  * consecutive cycles the adaptive floor deferred one issue, and at
  * {@link ADAPTIVE_FLOOR_STARVATION_LIMIT} the caller stops deferring and claims
- * the issue on whatever runway is left. That is the regime Issue #47 already
- * documents for this class of host: the execute is deadline-bound and WIP
- * preservation carries the progress into the next cycle. A bounded
- * deadline-bound run beats work nobody ever does.
+ * the issue on whatever runway is left. The floor it protects survives the
+ * post-#397 regime — re-based on the supervisor hard cap (Issue #425) — and so
+ * does the way it can be unsatisfiable, so this bound survives with it: the
+ * claim proceeds on the runway that is left and the hard-cap kill commits and
+ * pushes its WIP, which the next run resumes. A bounded cap-bound run beats
+ * work nobody ever does.
  *
  * **Cycles, not scans.** A slot re-scans every 30 s, so a per-scan count would
  * exhaust the limit inside one cycle and defeat the floor entirely. Each entry
@@ -249,6 +250,6 @@ export function formatAdaptiveFloorStarvation(options: {
     `deferred_cycles=${options.consecutiveCycles} limit=${options.limit} ` +
     `runway=${options.remainingRunwaySeconds}s ` +
     `required=${options.requiredRunwaySeconds}s — the floor can never be met ` +
-    `on this host, so the claim proceeds deadline-bound and WIP preservation ` +
-    `carries the progress (Issue #375).`;
+    `on this host, so the claim proceeds on the runway left to the supervisor ` +
+    `hard cap and WIP preservation carries the progress (Issue #375).`;
 }
