@@ -606,9 +606,9 @@ you can tell whether an operation hung or genuinely failed.
 
 ## ⏳ Why did this run take three hours?
 
-`claude_timeout` is a one-hour ceiling, so a run that lasted longer means
-`progress_extension_enabled` is on and the deadline was re-armed while the run
-kept making progress (see
+`claude_timeout` is a one-hour ceiling, so a run that lasted longer means the
+deadline was re-armed while the run kept making progress —
+`progress_extension_enabled` is on by default (see
 [Progress-extended deadline](CONFIGURATION.md#-progress-extended-deadline)).
 Reconstruct what happened from three places:
 
