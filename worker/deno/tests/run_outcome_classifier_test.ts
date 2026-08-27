@@ -304,6 +304,19 @@ Deno.test("classifyRunFailure - interrupted is not_code_fixable and classed 'int
   assert(RUN_FAILURE_CLASSES.includes("interrupted"));
 });
 
+// Issue #424 — a scheduled release is a handover, never an auto-filed fault.
+Deno.test("classifyRunFailure - a scheduled release is not_code_fixable and classed 'scheduled-release'", () => {
+  const c = classifyRunFailure(
+    "scheduled_release",
+    "Released on schedule: the supervisor's run hard cap was reached — WIP " +
+      "preserved, resumes next cycle\n\n### Diagnostics\n- Elapsed: 10800s\n" +
+      "- Timeout: 3600s\n- Watchdog: hard-timeout\n- Raw exit code: 143 (SIGTERM)",
+  );
+  assertEquals(c.fixability, "not_code_fixable");
+  assertEquals(c.failureClass, "scheduled-release");
+  assert(RUN_FAILURE_CLASSES.includes("scheduled-release"));
+});
+
 // ===========================================================================
 // Issue #249 — agent narration is not worker crash evidence
 // ===========================================================================

@@ -983,6 +983,28 @@ bounded by it:
   extensions behave exactly as they did before. The run-start `Run hard cap:`
   line says which of the two applies.
 
+#### A capped run is released, not failed (Issue #424)
+
+A run stopped by the cap — or by the worker's own shutdown at cycle end — was
+progressing when the fleet stopped it, so it is reported as a **scheduled
+release**, not as the issue defeating the agent:
+
+- The failure reason opens with
+  `Released on schedule: … — WIP preserved, resumes next cycle`, which
+  `detectFailureCategory` classifies as `scheduled_release`
+  (category display `scheduled-release`).
+- The release comment therefore never says "Claude ran out of time" and never
+  advises splitting the issue into sub-issues — that diagnosis is reserved for
+  a run that genuinely exhausted its own `claude_timeout`.
+- A scheduled release does **not** enter the `failed-once` → `failed` ladder,
+  does **not** feed the escalating timeout cooldown, and is **not** auto-filed
+  as a worker fault. It is also not classed as an infrastructure failure: the
+  bounded in-process retry exists to re-run a transient blip, and a run
+  released at the cap has no runway to retry into.
+- The preserved work lands in a `wip:` commit whose subject names the real
+  cause (`wip: execute was released on schedule (cycle ended or run hard cap
+  reached) after …`), so the next claimant reads what actually happened.
+
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
 describes the last check interval rather than the whole grant. An interim

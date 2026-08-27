@@ -23,6 +23,7 @@ import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
+import type { ScheduledReleaseReason } from "./failure_diagnosis.ts";
 
 /** Exit code returned when a process times out. */
 export const TIMEOUT_EXIT_CODE = 124;
@@ -91,6 +92,14 @@ export interface ClaudeExecutionResult {
    * diagnostics can record the correct reason.
    */
   timeoutReason?: ClaudeTimeoutReason;
+  /**
+   * The run was stopped on schedule, not because it failed (Issue #424,
+   * parent #397) — the supervisor's hard cap left no runway while the run
+   * was still progressing. A hard-cap release fires the same watchdog and
+   * exits with the same status as a genuine timeout, so this flag is the
+   * only thing that tells the two apart downstream.
+   */
+  scheduledRelease?: ScheduledReleaseReason;
   /**
    * Seconds the hard watchdog fired past its configured budget
    * (Issue #4254) — a starved VM delays Deno timers, and host-25 saw the
