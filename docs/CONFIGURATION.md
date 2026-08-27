@@ -768,8 +768,11 @@ unless explicitly overridden.
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 
 > **`MIN_CLAIM_RUNWAY_SECONDS` and `CLAIM_REQUIRE_FULL_EXECUTE_BUDGET` are
-> fallbacks for a native run only.** `container_launch.ts` forwards just the
-> five variables it sets itself, so neither reaches a containerised worker —
+> fallbacks for a native run only.** `container_launch.ts` forwards only the
+> variables it sets itself (the base directory, the config path, the host id,
+> the host-disk reading and — when `loop.sh` published them — the run cap pair
+> `VIBE_RUN_MAX_SECONDS` / `VIBE_RUN_STARTED_EPOCH`), so neither reaches a
+> containerised worker —
 > the default run mode. Use the `.config.json` keys above, which are read from
 > the config mounted at `CONFIG_PATH`. A config key always wins over the
 > variable (Issue #289).
@@ -955,8 +958,30 @@ Both must hold. Each grant moves the deadline `progress_extension_grant_seconds`
 from *now*, so a run that stalls dies within one grant of stalling, and each
 grant logs one `[progress-extension]` line naming the reason, the elapsed time,
 the extension count and the new deadline. There is deliberately no ceiling on
-the number of grants — the concurrency slot pool bounds the blast
-radius — so operators who need one should keep the feature off.
+the *number* of grants — the concurrency slot pool bounds the blast radius —
+but there is one on wall clock, below.
+
+#### The run hard cap bounds every grant
+
+`loop.sh` wraps each run in `timeout <VIBE_RUN_MAX_SECONDS>` (default 5400 s,
+`0` disables it) and now exports that cap with the run's start epoch, so the
+worker can see the deadline it is running towards (Issue #421). Extensions are
+bounded by it:
+
+- The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
+  `claude_kill_after` plus 120 s for the WIP commit-and-push. The worker's own
+  kill therefore lands before the supervisor's SIGTERM, leaving
+  work-in-progress committed and pushed for the next cycle to resume.
+- A grant that would cross the ceiling is **clamped to it**, not refused: a run
+  with 200 s of runway left gets 200 s, and the line says so
+  (`grant clamped to the run hard cap: 200s of runway left, not the full
+  900s`).
+- With no runway left the check refuses and the run is killed with
+  `run hard cap reached`.
+- With `VIBE_RUN_MAX_SECONDS=0`, or the variables absent (a CLI single-issue
+  run, or `run.sh` invoked outside `loop.sh`), there is **no ceiling** and
+  extensions behave exactly as they did before. The run-start `Run hard cap:`
+  line says which of the two applies.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
@@ -984,8 +1009,12 @@ flowchart TD
     C -->|no| K
     C -->|yes| D{Working tree advanced<br/>this check or last?}
     D -->|unchanged or unknown| K
-    D -->|advanced| E[Extend deadline by the grant<br/>re-arm the watchdog, log the line]
+    D -->|advanced| F{Runway left before<br/>the run hard cap?}
+    F -->|none| K
+    F -->|less than a grant| G[Extend to the ceiling — clamped<br/>re-arm the watchdog, log the line]
+    F -->|a full grant, or no cap| E[Extend deadline by the grant<br/>re-arm the watchdog, log the line]
     E --> W
+    G --> W
 ```
 
 ```json

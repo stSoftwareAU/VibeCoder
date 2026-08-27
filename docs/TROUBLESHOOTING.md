@@ -644,7 +644,22 @@ grant is shorter, so a stall is caught sooner), tighten
 `progress_extension_stall_seconds`, or set `progress_extension_enabled` to
 `false` to restore the unconditional one-hour kill. There is deliberately no
 ceiling on the number of grants — the concurrency slot pool bounds the blast
-radius to one slot.
+radius to one slot — but every grant is bounded by the supervisor's wall-clock
+cap (Issue #421). Two lines tell you the cap was what stopped the run:
+
+```text
+Run hard cap: VIBE_RUN_MAX_SECONDS=5400s from run start; progress extensions
+may not push the deadline past 5250s elapsed (150s reserved for the kill grace
+and the WIP commit-and-push), leaving 5100s of runway
+[progress-extension] not extending after 5250s (extensions granted 5): run
+hard cap reached — no runway left before the supervisor terminates this run,
+so stopping now to preserve work in progress
+```
+
+The grant before it is normally a clamped one (`grant clamped to the run hard
+cap: 200s of runway left, not the full 900s`). If the `Run hard cap:` line
+instead says the cap is not set, the run was uncapped: `VIBE_RUN_MAX_SECONDS`
+is `0`, or the worker was started outside `loop.sh`.
 
 ## 🎞️ Capturing a full agent transcript
 

@@ -56,6 +56,7 @@ import {
   formatStaleClaimReason,
 } from "../claim_freshness.ts";
 import { buildProgressExtension } from "../progress_extension_runtime.ts";
+import { describeRunHardCap, resolveRunHardCap } from "../run_hard_cap.ts";
 import {
   hasRunwayForInfraRetry,
   MIN_INFRA_RETRY_RUNWAY_SECONDS,
@@ -410,6 +411,16 @@ async function executeClaudeBody(
   // — while the run itself is bounded by the supervisor hard cap.
   const executeTimeoutSeconds = config.claudeTimeout;
 
+  // The supervisor's wall-clock cap, published by loop.sh (Issue #421).
+  // Extensions may re-arm the deadline only up to this ceiling, which holds
+  // back the kill grace and the WIP commit-and-push window so the worker
+  // stops itself before `timeout` SIGTERMs the whole launcher. Absent env —
+  // a CLI run, a host with the cap disabled — means no ceiling.
+  const hardCap = resolveRunHardCap({
+    killAfterSeconds: config.claudeKillAfter,
+  });
+  logger.info(`Run hard cap: ${describeRunHardCap(hardCap, Date.now())}`);
+
   // Re-armable deadline for issue work only (Issue #4296, part of #4290):
   // while the agent shows both recent tool activity and a working tree that
   // is actually advancing, the hard deadline moves instead of killing. With
@@ -422,6 +433,7 @@ async function executeClaudeBody(
     (deadline) => {
       reportRunDeadline(deadline);
     },
+    hardCap.capped ? hardCap.cap.ceilingMs : undefined,
   );
 
   // The run-start line an operator reads to know which budget applies. It
@@ -446,7 +458,10 @@ async function executeClaudeBody(
         `${executeTimeoutSeconds}s budget, extended by ` +
         `${progressExtension.policy.grantSeconds}s while tool activity is ` +
         `within ${progressExtension.policy.activityStallSeconds}s and the ` +
-        `working tree advances.`,
+        `working tree advances` +
+        (progressExtension.ceilingMs !== undefined
+          ? `, bounded by the run hard cap (Issue #421).`
+          : `, unbounded — this run has no supervisor cap (Issue #421).`),
     );
   }
 

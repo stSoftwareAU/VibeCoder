@@ -24,6 +24,14 @@
  *   - There is no cap on `extensionsGranted` — #4290 accepted that
  *     deliberately, because the slot pool (#4177) bounds the blast radius to
  *     one slot. The counter is carried for logging and telemetry only.
+ *   - There **is** a cap on wall-clock: the optional `ceilingMs` input
+ *     (Issue #421) is the absolute epoch-ms the supervisor's own cap allows,
+ *     less the shutdown reserve. A grant that would cross it is clamped to
+ *     it — a run with 200 s of runway gets 200 s, not a full increment and
+ *     not zero — and a run with no runway left is refused, so the worker's
+ *     kill lands before `timeout` SIGTERMs the whole launcher. An undefined
+ *     ceiling (CLI runs, tests, `VIBE_RUN_MAX_SECONDS=0`) is unbounded, as
+ *     before. `run_hard_cap.ts` resolves it; the policy only reads it.
  *   - Every decision names the signal that decided it, because the operator
  *     reads that string in the worker log.
  *   - The tree is sampled every `checkSeconds` between deadline checks
@@ -74,6 +82,16 @@ export interface ProgressExtensionInput {
   treeState: TreeProgressState;
   /** Extensions already granted on this run. */
   extensionsGranted: number;
+  /**
+   * Absolute epoch-ms past which no grant may move the deadline (Issue #421).
+   *
+   * The supervisor's wall-clock cap (`VIBE_RUN_MAX_SECONDS`) less the
+   * shutdown reserve, resolved by `run_hard_cap.ts`. Undefined means the run
+   * is uncapped — the CLI single-issue path, tests, and any host that
+   * disabled the supervisor cap — and extensions behave exactly as they did
+   * before this input existed.
+   */
+  ceilingMs?: number;
 }
 
 /**
@@ -102,6 +120,14 @@ export interface ProgressExtensionOptions {
    * and ignored: telemetry must never decide whether a run lives.
    */
   onExtension?: RunDeadlineReporter;
+  /**
+   * Absolute epoch-ms ceiling for every grant on this run (Issue #421).
+   *
+   * Resolved once at run start from the supervisor's published cap
+   * (`run_hard_cap.ts`). Absent means uncapped, which is what the CLI
+   * single-issue path and the tests get.
+   */
+  ceilingMs?: number;
 }
 
 /** What the watchdog should do when the deadline expires. */
@@ -242,13 +268,39 @@ export function decideProgressExtension(
     };
   }
 
+  // From now, not from the original start: a run that stalls after this
+  // grant dies within one increment of stalling.
+  const grantedDeadlineMs = input.nowMs + policy.grantSeconds * 1000;
+  const progressing =
+    `working tree advanced and tool activity ${idleSeconds}s ago (within ` +
+    `the ${policy.activityStallSeconds}s window)`;
+
+  // The supervisor's cap bounds the wall clock (Issue #421). Applied last:
+  // the two progress signals decide *whether* to extend, and the ceiling only
+  // decides *how far*, so a stalled run is never rescued by having runway.
+  if (input.ceilingMs !== undefined) {
+    const runwayMs = input.ceilingMs - Math.max(input.nowMs, input.deadlineMs);
+    if (runwayMs <= 0) {
+      return {
+        action: "kill",
+        reason: `run hard cap reached — no runway left before the supervisor ` +
+          `terminates this run, so stopping now to preserve work in progress`,
+      };
+    }
+    if (grantedDeadlineMs > input.ceilingMs) {
+      return {
+        action: "extend",
+        newDeadlineMs: input.ceilingMs,
+        reason: `${progressing} — grant clamped to the run hard cap: ` +
+          `${seconds(runwayMs)}s of runway left, not the full ` +
+          `${policy.grantSeconds}s`,
+      };
+    }
+  }
+
   return {
     action: "extend",
-    // From now, not from the original start: a run that stalls after this
-    // grant dies within one increment of stalling.
-    newDeadlineMs: input.nowMs + policy.grantSeconds * 1000,
-    reason:
-      `working tree advanced and tool activity ${idleSeconds}s ago (within ` +
-      `the ${policy.activityStallSeconds}s window)`,
+    newDeadlineMs: grantedDeadlineMs,
+    reason: progressing,
   };
 }

@@ -97,6 +97,32 @@ Deno.test("buildProgressExtension - enabled config carries the policy and a live
   }
 });
 
+Deno.test("buildProgressExtension - carries the run hard cap ceiling when one is given (Issue #421)", async () => {
+  const dir = await makeRepo();
+  const config = {
+    progressExtensionEnabled: true,
+    progressExtensionGrantSeconds: 900,
+    progressExtensionStallSeconds: 300,
+  };
+  try {
+    const capped = await buildProgressExtension(
+      config,
+      dir,
+      undefined,
+      1_700_000_000_000,
+    );
+    assert(capped, "an enabled config must produce the option");
+    assertEquals(capped.ceilingMs, 1_700_000_000_000);
+
+    // Omitted, the option carries no ceiling and extensions stay unbounded.
+    const uncapped = await buildProgressExtension(config, dir);
+    assert(uncapped);
+    assertEquals(uncapped.ceilingMs, undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("createRollingTreeProbe - compares against the previous check, not the baseline", async () => {
   const dir = await makeRepo();
   try {

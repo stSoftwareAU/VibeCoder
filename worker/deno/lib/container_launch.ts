@@ -181,6 +181,15 @@ export interface ContainerLaunchInputs {
    */
   hostDisk?: { availableBytes: number; totalBytes: number };
   /**
+   * The supervisor's wall-clock cap and the epoch-seconds this run started
+   * (Issue #421), passed in as VIBE_RUN_MAX_SECONDS / VIBE_RUN_STARTED_EPOCH
+   * so the worker's progress-extension policy can stop the run before
+   * `loop.sh`'s `timeout` does. Optional: absent — a launcher invoked outside
+   * loop.sh, or a host that disabled the cap — means the worker applies no
+   * ceiling, which is the behaviour that shipped before this issue.
+   */
+  runCap?: { maxSeconds: number; startedEpochSeconds: number };
+  /**
    * VM sizing for the worker container. Optional: absent falls back to the
    * built-in floor (8g / 6 cpus) — never to the runtime's 1 GiB default,
    * which memory-stalled real work (the agent CLI plus a cargo-build
@@ -806,6 +815,20 @@ export function buildContainerLaunchPlan(
     runArgs.push(
       "--env",
       `VIBE_HOST_DISK_TOTAL_BYTES=${Math.floor(inputs.hostDisk.totalBytes)}`,
+    );
+  }
+  // The supervisor's cap (Issue #421): inside the container the worker cannot
+  // see loop.sh's `timeout`, so the cap and the run's start epoch are handed
+  // over explicitly. Without them the progress-extension policy applies no
+  // ceiling and a progressing run walks into the SIGTERM.
+  if (inputs.runCap) {
+    runArgs.push(
+      "--env",
+      `VIBE_RUN_MAX_SECONDS=${Math.floor(inputs.runCap.maxSeconds)}`,
+    );
+    runArgs.push(
+      "--env",
+      `VIBE_RUN_STARTED_EPOCH=${Math.floor(inputs.runCap.startedEpochSeconds)}`,
     );
   }
   // Last, so the launcher can append the worker's own arguments after it.
