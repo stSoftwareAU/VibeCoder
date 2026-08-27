@@ -19,6 +19,7 @@ import {
   type AgentProviderDescriptor,
   agentProviderIds,
   CLAUDE_PROVIDER_ID,
+  DEEPSEEK_PROVIDER_ID,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 
@@ -177,6 +178,9 @@ Deno.test("provision_vibe_credentials - provisions one credential per vendor", a
       VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
       VIBE_LAUNCHAGENT_OPENAI_API_KEY: "sk-openai-provisioned",
       VIBE_LAUNCHAGENT_GEMINI_API_KEY: "gemini-provisioned",
+      // Issue #414: DeepSeek is a registered provider too, so "every vendor"
+      // now includes it.
+      VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY: "sk-deepseek-provisioned",
     });
     assertEquals(code, 0, output);
 
@@ -193,28 +197,37 @@ Deno.test("provision_vibe_credentials - provisions one credential per vendor", a
       await Deno.readTextFile(`${dir}/gemini/provider.env`),
       "GEMINI_API_KEY=gemini-provisioned\n",
     );
+    assertEquals(
+      await Deno.readTextFile(`${dir}/deepseek/provider.env`),
+      "DEEPSEEK_API_KEY=sk-deepseek-provisioned\n",
+    );
 
+    // Every registered provider's sub-directory, derived from the descriptors
+    // rather than listed, so a fifth vendor is covered without an edit here.
+    const providers = agentProviderIds().map(resolveAgentProvider);
     if (Deno.build.os !== "windows") {
-      for (const subdir of ["claude", "codex", "gemini"]) {
+      for (const provider of providers) {
+        const subdir = provider.credentials.subdir;
         assertEquals(await modeOf(`${dir}/${subdir}`), 0o700);
-        assertEquals(await modeOf(`${dir}/${subdir}/provider.env`), 0o600);
+        assertEquals(
+          await modeOf(`${dir}/${subdir}/${provider.credentials.file}`),
+          0o600,
+        );
       }
     }
 
-    // The preflight accepts the multi-vendor directory when all three are
+    // The preflight accepts the multi-vendor directory when all of them are
     // enabled — no vendor's file is unrelated material to the others.
-    const providers = agentProviderIds().map(resolveAgentProvider);
     const result = await checkCredentialPreflight({
       dir,
       env: () => undefined,
       providers,
     });
     assertEquals(result.ok, true, credentialPreflightMessage(result));
-    assertEquals(result.providers.map((p) => p.source), [
-      "directory",
-      "directory",
-      "directory",
-    ]);
+    assertEquals(
+      result.providers.map((p) => p.source),
+      providers.map(() => "directory" as const),
+    );
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
@@ -256,23 +269,12 @@ Deno.test("provision_vibe_credentials - an unset variable leaves that vendor unt
 /**
  * The DeepSeek provider as the credential surfaces see it (Issue #416).
  *
- * Registering the descriptor is a sibling issue; the preflight reads only a
- * provider's id, name and credential facets, so an active descriptor carrying
- * DeepSeek's facets exercises the real round trip today — setup.sh writes the
- * file and the unmodified preflight accepts it.
+ * The registered descriptor since Issue #414 — no local stand-in, so this
+ * exercises the real round trip: setup.sh writes the file the descriptor names
+ * and the unmodified preflight accepts it.
  */
 function deepseekDescriptor(): AgentProviderDescriptor {
-  return {
-    ...resolveAgentProvider(CLAUDE_PROVIDER_ID),
-    id: "deepseek",
-    displayName: "DeepSeek",
-    credentials: {
-      subdir: "deepseek",
-      file: "provider.env",
-      envVars: ["DEEPSEEK_API_KEY"],
-      provisionEnvVar: "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY",
-    },
-  };
+  return resolveAgentProvider(DEEPSEEK_PROVIDER_ID);
 }
 
 Deno.test("provision_vibe_credentials - provisions the DeepSeek API key", async () => {
