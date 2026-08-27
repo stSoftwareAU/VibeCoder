@@ -1773,7 +1773,10 @@ Deno.test("slot pool #425 - zero hard-cap runway stops the slot with reason=hard
 
   assertEquals(claims, 0, "no claim may be taken past the hard-cap ceiling");
   const stop = logs.find((m) => m.includes("stop reason=hard-cap"));
-  assert(stop !== undefined, `expected the stop line, got: ${logs.join(" | ")}`);
+  assert(
+    stop !== undefined,
+    `expected the stop line, got: ${logs.join(" | ")}`,
+  );
   assertStringIncludes(stop!, "0s of runway left to the supervisor hard cap");
   assertStringIncludes(stop!, "300s claim floor");
 });
@@ -1807,7 +1810,10 @@ Deno.test("slot pool #397 - past the cycle deadline the slot still stops with re
 
   assert(claims >= 1, "the first claim is taken before the deadline");
   const stop = logs.find((m) => m.includes("stop reason=deadline"));
-  assert(stop !== undefined, `expected the stop line, got: ${logs.join(" | ")}`);
+  assert(
+    stop !== undefined,
+    `expected the stop line, got: ${logs.join(" | ")}`,
+  );
   assertStringIncludes(stop!, "reached the cycle deadline");
 });
 
@@ -1894,8 +1900,15 @@ Deno.test("slot pool #245/#425 - a long job is still deferred when the hard cap 
     !claimed.includes(222),
     `the long job must be deferred, got ${claimed}`,
   );
-  assertEquals(claimed, [9], `the fresh candidate must be claimed, got ${claimed}`);
+  assertEquals(
+    claimed,
+    [9],
+    `the fresh candidate must be claimed, got ${claimed}`,
+  );
   const skip = logs.find((m) => m.includes("adaptive floor"));
-  assert(skip !== undefined, `expected the skip line, got: ${logs.join(" | ")}`);
+  assert(
+    skip !== undefined,
+    `expected the skip line, got: ${logs.join(" | ")}`,
+  );
   assertStringIncludes(skip!, "hard-cap runway");
 });
