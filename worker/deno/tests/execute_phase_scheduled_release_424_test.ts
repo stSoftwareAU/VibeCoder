@@ -28,6 +28,8 @@ import {
   isInfrastructureFailure,
   isTimeoutClassFailureReason,
 } from "../lib/failure_diagnosis.ts";
+import { deriveRunOutcome } from "../lib/run_outcome.ts";
+import { renderRunOutcomeClause } from "../lib/heartbeat_storage.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -169,4 +171,33 @@ Deno.test("execute_phase #424 - a run that exhausted its own budget keeps today'
   // actually for.
   assertStringIncludes(getFailureDiagnosis("timeout"), "ran out of time");
   assertStringIncludes(getFailureDiagnosis("timeout"), "sub-issues");
+});
+
+Deno.test("execute_phase #424 - the release comment states the handover, not a timeout", async () => {
+  // End to end over the operator-facing path: the reason the phase returns
+  // becomes the run outcome, and the outcome is what the claim-release
+  // comment renders. That comment is the only thing a human reads.
+  const result = await runPhaseWith({
+    output: "Wiring the production side; tests next",
+    exitCode: 124,
+    rawExitCode: 143,
+    timedOut: true,
+    timeoutReason: "hard-timeout",
+    scheduledRelease: "hard-cap",
+  });
+
+  const outcome = deriveRunOutcome({
+    success: false,
+    phase: "execute",
+    reason: result.reason ?? "",
+    elapsedSeconds: 10_800,
+  });
+  assert(outcome.kind === "no_pr");
+  assertEquals(outcome.category, "scheduled_release");
+
+  const clause = renderRunOutcomeClause(outcome);
+  assertStringIncludes(clause, "no PR raised — `scheduled-release`");
+  assertStringIncludes(clause, "WIP preserved");
+  assertStringIncludes(clause, "resumes next cycle");
+  assertNoTimeoutBlame(clause);
 });
