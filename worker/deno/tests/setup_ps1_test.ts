@@ -255,20 +255,41 @@ pwshTest(
         resolveAgentProvider(id)
       );
 
+      // Every registered descriptor must be provisionable on Windows too
+      // (Issue #416); a row may precede its descriptor, so the reverse
+      // direction is not asserted here.
+      const bySubdir = new Map(rows.map((row) => [row[0], row]));
+      for (const provider of descriptors) {
+        const row = bySubdir.get(provider.credentials.subdir);
+        assert(
+          row,
+          `setup.ps1 offers no credential directory for ${provider.id}`,
+        );
+        assertEquals(
+          row[1],
+          provider.credentials.provisionEnvVar,
+          `${provider.id} provisions from the descriptor's provisioning variable`,
+        );
+        assertEquals(
+          row[2],
+          provider.credentials.envVars.join(","),
+          `${provider.id} lists the descriptor's credential variables`,
+        );
+      }
+
+      // setup.sh and setup.ps1 must offer the same vendors — a row added to
+      // one script and forgotten in the other leaves a platform unable to
+      // provision that provider at all.
+      const setupSh = await Deno.readTextFile(
+        new URL("../../../setup.sh", import.meta.url).pathname,
+      );
+      const shSubdirs = [
+        ...setupSh.matchAll(/^([a-z][a-z0-9-]*)\|VIBE_LAUNCHAGENT_/gm),
+      ].map((match) => match[1]);
       assertEquals(
         rows.map((row) => row[0]),
-        descriptors.map((p) => p.credentials.subdir),
-        "setup.ps1 must offer every registered provider a credential directory",
-      );
-      assertEquals(
-        rows.map((row) => row[1]),
-        descriptors.map((p) => p.credentials.provisionEnvVar),
-        "each row provisions from the descriptor's provisioning variable",
-      );
-      assertEquals(
-        rows.map((row) => row[2]),
-        descriptors.map((p) => p.credentials.envVars.join(",")),
-        "each row lists the descriptor's credential variables",
+        shSubdirs,
+        "setup.ps1 lists the same providers, in the same order, as setup.sh",
       );
     } finally {
       await Deno.remove(tmp, { recursive: true });

@@ -15,9 +15,9 @@ and opens pull requests — all without you touching a keyboard.
 
 It is **provider agnostic**: `claude`
 ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)) is the default,
-and `codex` (the OpenAI Codex CLI) and `gemini` (the Gemini CLI) are built in
-and chosen by configuration — see
-[Choose your coding agent](#-choose-your-coding-agent).
+and `codex` (the OpenAI Codex CLI), `gemini` (the Gemini CLI) and `deepseek`
+(DeepSeek, served through the Claude Code CLI) are built in and chosen by
+configuration — see [Choose your coding agent](#-choose-your-coding-agent).
 
 ## 🔄 How It Works
 
@@ -48,13 +48,20 @@ sequenceDiagram
 
 The coding agent is a **separable layer** — every workflow above is the worker's,
 not the vendor's, so swapping the agent changes which CLI writes the code and
-nothing else. Three providers are built in:
+nothing else. Four providers are built in:
 
-| Provider id        | Agent       | Credential file       |
-| ------------------ | ----------- | --------------------- |
-| `claude` (default) | Claude Code | `claude/provider.env` |
-| `codex`            | Codex CLI   | `codex/provider.env`  |
-| `gemini`           | Gemini CLI  | `gemini/provider.env` |
+| Provider id        | Agent       | Credential file         |
+| ------------------ | ----------- | ----------------------- |
+| `claude` (default) | Claude Code | `claude/provider.env`   |
+| `codex`            | Codex CLI   | `codex/provider.env`    |
+| `gemini`           | Gemini CLI  | `gemini/provider.env`   |
+| `deepseek`         | DeepSeek (Claude Code CLI) — Anthropic's CLI pointed at DeepSeek's Anthropic-compatible endpoint | `deepseek/provider.env` |
+
+`deepseek` is the one row that needs a word of explanation: DeepSeek ships no
+CLI of its own, so the provider installs Anthropic's CLI under the `deepseek`
+command and points it at `https://api.deepseek.com/anthropic`. Its credential
+is therefore a **DeepSeek** key, and Anthropic's own credentials are withheld
+from it — no vendor's secret reaches another vendor's agent.
 
 Select one with the `agent_provider` key in `.config.json`:
 
@@ -79,7 +86,7 @@ The default container image installs Claude Code alone, so choosing another
 provider also means building the image with it in the `AGENT_PROVIDERS` set.
 
 - [Container Image — the coding-agent provider layer](docs/CONTAINER.md#the-coding-agent-provider-layer)
-  — how the seam works, what the image installs, and how to add a fourth
+  — how the seam works, what the image installs, and how to add the next
   provider.
 - [Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults) —
   the `agent_provider` and `agent_providers` keys in full.

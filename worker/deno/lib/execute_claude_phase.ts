@@ -49,6 +49,7 @@ import {
 import { setActiveRepoModelEffortOverrides } from "./claude_executor.ts";
 import { setActiveRepoCodexModelEffortOverrides } from "./codex_executor.ts";
 import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
+import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
 import type { ProgressExtensionOptions } from "./progress_extension.ts";
 import {
@@ -735,6 +736,8 @@ export async function runExecuteClaudePhase(
   setActiveRepoCodexModelEffortOverrides(repoConfigs?.[repo]);
   // And the same for Gemini's model routing (Issue #364).
   setActiveRepoGeminiModelOverrides(repoConfigs?.[repo]);
+  // And the same for DeepSeek's model routing (Issue #413).
+  setActiveRepoDeepSeekModelOverrides(repoConfigs?.[repo]);
 
   // Build a Logger instance from the log function for APIs that require it
   const logger: Logger = buildLoggerFromFn(deps.log);

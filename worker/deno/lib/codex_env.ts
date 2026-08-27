@@ -25,9 +25,10 @@ import {
  * Environment variables the `codex` child must never inherit.
  *
  * The worker-only secrets (see {@link WORKER_ONLY_SECRET_ENV_VARS}) plus every
- * other vendor's credential — Anthropic's, and Google's since Issue #4107:
- * Codex authenticates with its own key, so another vendor's credential in its
- * environment is only ever an exfiltration target.
+ * other vendor's credential — Anthropic's, Google's since Issue #4107 and
+ * DeepSeek's since Issue #412: Codex authenticates with its own key, so
+ * another vendor's credential in its environment is only ever an exfiltration
+ * target.
  */
 export const CODEX_ENV_DENYLIST: readonly string[] = [
   ...WORKER_ONLY_SECRET_ENV_VARS,
@@ -36,6 +37,7 @@ export const CODEX_ENV_DENYLIST: readonly string[] = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
+  "DEEPSEEK_API_KEY",
 ];
 
 /**

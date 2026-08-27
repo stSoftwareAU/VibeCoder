@@ -53,6 +53,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Gemini per-phase model overrides (Issue #364). Model only — the Gemini
   // CLI has no reasoning-effort option to override.
   "gemini_phase_model_overrides",
+  // DeepSeek per-phase model overrides (Issue #413). Model only — DeepSeek's
+  // Anthropic-compatible endpoint has no effort control to override.
+  "deepseek_phase_model_overrides",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both

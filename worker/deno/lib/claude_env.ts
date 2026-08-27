@@ -33,10 +33,10 @@ import {
  * The worker-only secrets (the GitHub App private-key material, the Jenkins
  * API credentials and the ImgBB key — see
  * {@link WORKER_ONLY_SECRET_ENV_VARS}), plus every *other* vendor's agent
- * credential — OpenAI's (Issue #4106) and Google's (Issue #4107). The
- * cross-vendor names are denied explicitly rather than left to the
- * secret-shape pattern, so no future allowlist edit can hand the Anthropic
- * child another vendor's key.
+ * credential — OpenAI's (Issue #4106), Google's (Issue #4107) and DeepSeek's
+ * (Issue #412). The cross-vendor names are denied explicitly rather than left
+ * to the secret-shape pattern, so no future allowlist edit can hand the
+ * Anthropic child another vendor's key.
  *
  * `GH_TOKEN` is deliberately NOT denied — it is the short-lived installation
  * token the model legitimately uses via `gh`. What that token may *do* is
@@ -49,6 +49,7 @@ export const CLAUDE_ENV_DENYLIST: readonly string[] = [
   "CODEX_API_KEY",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
+  "DEEPSEEK_API_KEY",
 ];
 
 /**

@@ -155,6 +155,7 @@ export interface ConfigFileJson {
   codex_phase_model_overrides?: Record<string, string>;
   codex_phase_effort_overrides?: Record<string, string>;
   gemini_phase_model_overrides?: Record<string, string>;
+  deepseek_phase_model_overrides?: Record<string, string>;
   enable_session_resume?: boolean;
   /** Global verbosity level override (Issue #1330) */
   verbosity?: string;
@@ -660,14 +661,15 @@ export function validateConfigFileJson(
   }
 
   // Per-phase routing overrides are optional Record<string, string> maps —
-  // Claude's (Issues #1265, #1403), Codex's (Issue #363) and Gemini's
-  // (Issue #364, model only).
+  // Claude's (Issues #1265, #1403), Codex's (Issue #363), Gemini's
+  // (Issue #364, model only) and DeepSeek's (Issue #413, model only).
   const phaseOverrideFields = [
     "phase_model_overrides",
     "phase_effort_overrides",
     "codex_phase_model_overrides",
     "codex_phase_effort_overrides",
     "gemini_phase_model_overrides",
+    "deepseek_phase_model_overrides",
   ] as const;
 
   for (const field of phaseOverrideFields) {

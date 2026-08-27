@@ -236,6 +236,11 @@ function Get-VibeProviderCredentialTable {
             Subdir       = "gemini"
             ProvisionVar = "VIBE_LAUNCHAGENT_GEMINI_API_KEY"
             Vars         = @("GEMINI_API_KEY", "GOOGLE_API_KEY")
+        },
+        [pscustomobject]@{
+            Subdir       = "deepseek"
+            ProvisionVar = "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY"
+            Vars         = @("DEEPSEEK_API_KEY")
         }
     )
 }
@@ -372,6 +377,12 @@ function Invoke-VibeCredentialProvisioning {
                 "VIBE_LAUNCHAGENT_GH_TOKEN and one of " +
                 "$($provisionVars -join ' / ') to provision $dir " +
                 "non-interactively")
+            # DeepSeek authenticates with an API key and has no login of its
+            # own (Issue #416), so the interactive Claude fallback cannot
+            # help it — name the key source instead.
+            Write-VibeInfo ("DeepSeek has no interactive login - set " +
+                "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY from a key issued at " +
+                "https://platform.deepseek.com/api_keys")
         }
         return
     }

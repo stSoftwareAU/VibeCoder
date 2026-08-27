@@ -105,6 +105,10 @@ set -euo pipefail
 #   VIBE_LAUNCHAGENT_DIR    - LaunchAgents directory (default: ~/Library/LaunchAgents)
 #   VIBE_LAUNCHAGENT_GH_TOKEN - GitHub token for LaunchAgent environment
 #   VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY - Anthropic API key for LaunchAgent environment
+#   VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY - DeepSeek API key (from
+#                             https://platform.deepseek.com/api_keys); DeepSeek
+#                             has no interactive login, so this variable is the
+#                             only way its credential is ever provisioned
 #   VIBE_LAUNCHAGENT_FALLBACK_PATHS - PATH fallback for LaunchAgent (e.g., /opt/homebrew/bin)
 #   VIBE_LOGS_DIR           - Logs directory (default: ~/logs)
 #   VIBE_SKIP_LAUNCHCTL     - Set to "true" to skip launchctl commands (for testing)
@@ -202,6 +206,9 @@ is_macos() {
 #   ~/.vibe-coder/credentials/        0700
 #   ├── gh/hosts.yml                  0600  the worker's GH_CONFIG_DIR material
 #   └── <provider>/provider.env       0600  one credential per agent vendor
+#                                           (claude, codex, gemini, deepseek —
+#                                           from the provisioning variable each
+#                                           row of the table below names)
 #
 # Each vendor gets its own sub-directory (Issue #4108) so a run can authenticate
 # more than one agent CLI without any vendor seeing another's secret: only the
@@ -223,12 +230,15 @@ credential_dir() {
 #
 # This mirrors the descriptors in worker/deno/lib/agent_provider.ts, which stay
 # the single source of truth; worker/deno/tests/multi_provider_credentials_test.ts
-# calls this function and fails the quality gate when the two drift.
+# calls this function and fails the quality gate when a registered descriptor
+# has no row here. A row may land before its descriptor is registered (Issue
+# #416) so the provider is provisionable from the first deployment enabling it.
 vibe_provider_credential_table() {
     cat <<'PROVIDER_TABLE'
 claude|VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY|ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN
 codex|VIBE_LAUNCHAGENT_OPENAI_API_KEY|OPENAI_API_KEY,CODEX_API_KEY
 gemini|VIBE_LAUNCHAGENT_GEMINI_API_KEY|GEMINI_API_KEY,GOOGLE_API_KEY
+deepseek|VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY|DEEPSEEK_API_KEY
 PROVIDER_TABLE
 }
 
@@ -305,6 +315,11 @@ provision_vibe_credentials() {
             print_info "Credential directory ${dir} left unchanged (no credential variables set)"
         else
             print_warning "No credential variables set — set VIBE_LAUNCHAGENT_GH_TOKEN and one of ${provision_vars} to provision ${dir} non-interactively"
+            # DeepSeek authenticates with an API key and has no login of its
+            # own (Issue #416): the interactive fallback below is Claude's, so
+            # say where a DeepSeek key comes from rather than leaving an
+            # operator with a suggestion that cannot help them.
+            print_info "DeepSeek has no interactive login — set VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY from a key issued at https://platform.deepseek.com/api_keys"
         fi
         return 0
     fi
