@@ -884,10 +884,12 @@ demonstrably progressing.
 
 Five stages, in the order a claim meets them:
 
-1. **The claim gate is soft.** Past the deadline — or inside the
-   [claim-runway floor](#-adaptive-claim-floor) before it — a slot takes **no
-   new claim** (`slotShouldStop` returns `deadline`). Nothing already running
-   is touched.
+1. **The claim gate is soft.** Past the deadline a slot takes **no new claim**
+   (`slotShouldStop` returns `deadline`); nothing already running is touched.
+   The [claim-runway floor](#-adaptive-claim-floor) refuses a claim for the
+   other reason, and it now measures runway to the supervisor hard cap rather
+   than to the deadline (`hard-cap`, Issue #425) — a claim the cap would kill
+   before it finished setup is the only claim worth refusing early.
 2. **An in-flight claim keeps its full budget.** The execute phase does **not**
    truncate `claude_timeout` to the runway left (Issue #420). A claim taken at
    any point inside the cycle gets the whole budget, and the cycle overruns to
@@ -901,10 +903,12 @@ Five stages, in the order a claim meets them:
    against, less a reserve for the kill grace and the WIP commit-and-push, so
    the worker's own kill lands *before* the supervisor's SIGTERM — see
    [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).
-   Work in progress is committed and pushed, and the next cycle resumes it.
+   Work in progress is committed and pushed, the next cycle resumes it, and the
+   issue is reported as a **scheduled release** rather than a failure
+   (Issue #424) — the fleet stopped the agent, not the other way round.
 5. **The drain waits.** `drainSlots` lets a slot that started before the
    deadline finish, however long that takes. Only a SIGTERM *shutdown* bounds
-   the wait; a deadline drain does not.
+   the wait with a grace; a deadline drain does not.
 
 ```mermaid
 flowchart TD

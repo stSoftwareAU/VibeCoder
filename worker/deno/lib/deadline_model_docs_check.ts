@@ -4,16 +4,19 @@
  *
  * The deadline model was documented across five pages, each describing the
  * pre-#397 regime: the cycle deadline killed in-flight issue work, progress
- * extensions were opt-in, and the supervisor cap's default was quoted inline
- * in prose. A stale number of that kind survives review — nobody re-derives
- * it — so it is a check rather than a reader's responsibility.
+ * extensions were opt-in, and the supervisor cap was quoted as 5400 s long
+ * after `loop.sh` had stopped saying so. A stale number of that kind survives
+ * review — nobody re-derives it — so it is a check rather than a reader's
+ * responsibility.
  *
  * Four rules, each anchored to a fact #397 changed:
  *
- *  1. `stale-run-cap` — no published page may quote a seconds value for
- *     `VIBE_RUN_MAX_SECONDS`. The default is owned by `loop.sh` and printed
- *     at run start on the `Run hard cap:` line; a copy in prose can only
- *     drift.
+ *  1. `stale-run-cap` — a seconds figure quoted for the supervisor cap or its
+ *     derived container watchdog must agree with the source that sets it:
+ *     `loop.sh`'s `VIBE_RUN_MAX_SECONDS` default and
+ *     `container_watchdog.ts`'s `WATCHDOG_MARGIN_SECONDS`. The retired 5400 s
+ *     fails because the source says 10800 s — and the next raise fails the
+ *     same way, without anyone having to remember to re-grep the docs.
  *  2. `extensions-off-by-default` — no page may describe progress extensions
  *     as off/disabled by default. They are on by default (Issue #422).
  *  3. `execute-deadline-rule` — no page may cite `resolveExecuteTimeoutSeconds`
@@ -86,11 +89,66 @@ export const LINKING_MODEL_FILES = [
 /** `docs/archive/` is a historical record — it may describe the old regime. */
 const EXCLUDED_PREFIXES = ["docs/archive/"];
 
+/** The supervisor script that owns the cap's default. */
+const LOOP_SCRIPT = "loop.sh";
+
+/** The module that owns the launcher watchdog's margin over that cap. */
+const WATCHDOG_SOURCE = "worker/deno/lib/container_watchdog.ts";
+
 /**
  * Seconds values below this are units of the model's own machinery (a `0`
  * that disables the cap, a small grace), not a restatement of the cap.
  */
 const CAP_SECONDS_FLOOR = 60;
+
+/** The figures a page may quote for the cap, read from the code that sets them. */
+export interface CapFacts {
+  /** `loop.sh`'s `VIBE_RUN_MAX_SECONDS` default, in seconds. */
+  capSeconds: number;
+  /** `container_watchdog.ts`'s margin over that cap, in seconds. */
+  marginSeconds: number;
+}
+
+/** Where `loop.sh`'s cap default is set. */
+const LOOP_CAP_DEFAULT = /VIBE_RUN_MAX_SECONDS:-(\d+)\}/;
+
+/** Where the launcher's watchdog margin is set. */
+const WATCHDOG_MARGIN = /WATCHDOG_MARGIN_SECONDS\s*=\s*(\d+)/;
+
+/** Environment variables whose seconds figures this rule checks. */
+const CAP_VARIABLES = [
+  "VIBE_RUN_MAX_SECONDS",
+  "VIBE_CONTAINER_WATCHDOG_SECONDS",
+];
+
+/**
+ * Read the cap figures from the source that sets them.
+ *
+ * Returns `null` — never a guess — when either figure has moved, so the
+ * caller can fail loudly rather than validate the docs against a default it
+ * invented.
+ *
+ * @param loopSh - Contents of `loop.sh`.
+ * @param watchdogTs - Contents of `worker/deno/lib/container_watchdog.ts`.
+ */
+export function parseCapFacts(
+  loopSh: string,
+  watchdogTs: string,
+): CapFacts | null {
+  const cap = LOOP_CAP_DEFAULT.exec(loopSh);
+  const margin = WATCHDOG_MARGIN.exec(watchdogTs);
+  if (!cap || !margin) return null;
+  return { capSeconds: Number(cap[1]), marginSeconds: Number(margin[1]) };
+}
+
+/** The seconds figures a page may legitimately quote beside the cap. */
+function allowedCapSeconds(facts: CapFacts): Set<number> {
+  return new Set([
+    facts.capSeconds,
+    facts.marginSeconds,
+    facts.capSeconds + facts.marginSeconds,
+  ]);
+}
 
 /** Issue/PR references — `#421` is not a seconds value. */
 const ISSUE_REFERENCE = /#\d+/g;
@@ -100,12 +158,15 @@ const SECONDS_LITERAL = /\b(\d+)\s*(?:s\b|seconds\b)/g;
 
 /**
  * Progress extensions, however the prose spells them — "progress extension",
- * "progress-extended deadline", `progress_extension_enabled`.
+ * "progress-extended deadline", `progress_extension_enabled`. Matching the
+ * "exten" stem covers both the verb ("extend", "extended") and the noun
+ * ("extension", "extensions"), which no single spelling would.
  */
-const PROGRESS_EXTENSION = /progress[-_ ]?extend/i;
+const PROGRESS_EXTENSION = /progress[-_ ]?exten/i;
 
 /** "off by default", "disabled by default", "`false` by default". */
-const OFF_BY_DEFAULT = /\b(?:off|disabled|not enabled|`?false`?)\s+by\s+default/i;
+const OFF_BY_DEFAULT =
+  /\b(?:off|disabled|not enabled|`?false`?)\s+by\s+default/i;
 
 /** The execute-phase rule that retired with truncation (Issue #420). */
 const EXECUTE_RULE_SYMBOL = "resolveExecuteTimeoutSeconds";
@@ -120,33 +181,38 @@ const WINDOW_LINES = 3;
  *
  * @param relPath - Repo-relative path, used in the violation records.
  * @param content - The whole file.
+ * @param facts - Cap figures read from the source that sets them.
  * @returns Every violation found, in line order.
  */
 export function scanDeadlineModelContent(
   relPath: string,
   content: string,
+  facts: CapFacts,
 ): DeadlineModelViolation[] {
   const violations: DeadlineModelViolation[] = [];
   const lines = content.split("\n");
+  const allowed = allowedCapSeconds(facts);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
 
-    if (line.includes("VIBE_RUN_MAX_SECONDS")) {
+    if (CAP_VARIABLES.some((name) => line.includes(name))) {
       const stripped = line.replace(ISSUE_REFERENCE, "");
       SECONDS_LITERAL.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = SECONDS_LITERAL.exec(stripped)) !== null) {
         const seconds = Number(match[1]);
-        if (seconds < CAP_SECONDS_FLOOR) continue;
+        if (seconds < CAP_SECONDS_FLOOR || allowed.has(seconds)) continue;
         violations.push({
           file: relPath,
           line: i + 1,
           rule: "stale-run-cap",
           detail:
-            `quotes ${seconds}s as the supervisor cap. loop.sh owns that ` +
-            `default and the run-start "Run hard cap:" line reports the ` +
-            `value in force — describe it, do not copy it.`,
+            `quotes ${seconds}s, which the source does not set. loop.sh caps ` +
+            `a run at ${facts.capSeconds}s and container_watchdog.ts adds ` +
+            `${facts.marginSeconds}s for the launcher watchdog ` +
+            `(${facts.capSeconds + facts.marginSeconds}s) — quote one of ` +
+            `those, or describe the figure instead of copying it.`,
           content: line.trim(),
         });
         break;
@@ -200,8 +266,7 @@ export function checkCanonicalModel(
       file: CANONICAL_MODEL_FILE,
       line: 0,
       rule: "canonical-model",
-      detail:
-        `is the canonical home of the cycle-deadline model but has no ` +
+      detail: `is the canonical home of the cycle-deadline model but has no ` +
         `"${CANONICAL_MODEL_HEADING}" section. The model must be stated ` +
         `end to end in exactly one place.`,
       content: "",
@@ -216,8 +281,7 @@ export function checkCanonicalModel(
       file: relPath,
       line: 0,
       rule: "canonical-model",
-      detail:
-        `does not link to the canonical model ` +
+      detail: `does not link to the canonical model ` +
         `(${CANONICAL_MODEL_ANCHOR}). Link to it rather than paraphrasing it.`,
       content: "",
     });
@@ -240,6 +304,15 @@ export async function collectDeadlineModelFiles(
   await walk(`${rootDir}/docs`, "docs", files);
   files.sort();
   return files;
+}
+
+/** Read a file, or `null` when it is not there. */
+async function readOrNull(absPath: string): Promise<string | null> {
+  try {
+    return await Deno.readTextFile(absPath);
+  } catch {
+    return null;
+  }
 }
 
 async function walk(
@@ -287,6 +360,42 @@ export async function runDeadlineModelDocsCheck(
     };
   }
 
+  // The model is this repository's own: only the supervisor that sets the cap
+  // has these pages. Elsewhere the check has nothing to say.
+  const loopSh = await readOrNull(`${rootDir}/${LOOP_SCRIPT}`);
+  const watchdogTs = await readOrNull(`${rootDir}/${WATCHDOG_SOURCE}`);
+  if (loopSh === null || watchdogTs === null) {
+    return {
+      status: "SKIPPED",
+      output: `cycle-deadline docs: SKIPPED (no ${LOOP_SCRIPT} — not the ` +
+        `supervisor repository)`,
+      violations: [],
+      filesScanned: 0,
+    };
+  }
+
+  const facts = parseCapFacts(loopSh, watchdogTs);
+  if (facts === null) {
+    const violation: DeadlineModelViolation = {
+      file: LOOP_SCRIPT,
+      line: 0,
+      rule: "stale-run-cap",
+      detail: `no VIBE_RUN_MAX_SECONDS default in ${LOOP_SCRIPT}, or no ` +
+        `WATCHDOG_MARGIN_SECONDS in ${WATCHDOG_SOURCE}. The check validates ` +
+        `the documented figures against those two, so it fails rather than ` +
+        `pass the docs against a default it invented.`,
+      content: "",
+    };
+    return {
+      status: "FAILED",
+      output: `cycle-deadline docs: FAILED (the cap figures are no longer ` +
+        `derivable)\n\n  [${violation.rule}] ${violation.file} ` +
+        `${violation.detail}`,
+      violations: [violation],
+      filesScanned: 0,
+    };
+  }
+
   const contents = new Map<string, string>();
   const violations: DeadlineModelViolation[] = [];
   for (const relPath of paths) {
@@ -297,7 +406,7 @@ export async function runDeadlineModelDocsCheck(
       continue;
     }
     contents.set(relPath, content);
-    violations.push(...scanDeadlineModelContent(relPath, content));
+    violations.push(...scanDeadlineModelContent(relPath, content, facts));
   }
   violations.push(...checkCanonicalModel(contents));
 
