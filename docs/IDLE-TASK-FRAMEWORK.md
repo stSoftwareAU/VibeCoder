@@ -547,6 +547,50 @@ excluded by design (it _is_ the idle work). The formatter emits a header line,
 one `[idle-census] … repo=<owner/repo> …` line per repo, and — when the signal
 fired — a single greppable `[idle-census] … ALERT inversion repos=<csv>` line.
 
+#### Only a refusal escalates
+
+The inversion signal answers "is there claimable work right now?". Escalating it
+as _"the claim scan keeps refusing this work"_ needs a second fact: that the
+claim scan actually **completed an eligibility pass** and still claimed nothing.
+It frequently has not. The pool stops before its next claim whenever the cycle
+deadline or the claim-runway floor is reached, a shutdown arrives, or the pool
+is draining — on such a cycle the backlog was never evaluated, so nothing
+refused it.
+
+The loop therefore passes `claimScanCompleted` into the census hook: `true` only
+when a scan returned "no eligible work", `false` for every lifecycle stop. The
+census records it as `scanned=<bool>` (with `skip_reason=cycle_deadline`) and
+splits the inverted repos in two:
+
+```mermaid
+flowchart TD
+    S["Inversion signal on repo"] --> C{"Claim scan completed<br/>an eligibility pass?"}
+    C -- yes --> E["escalationRepos<br/>→ Issue #321 streak +1"]
+    C -- no --> D["deferredInversionRepos<br/>→ NOTE inversion_not_escalated"]
+    E --> F["3 consecutive cycles → file an issue"]
+    D --> H["streak held: neither counted nor cleared"]
+    S --> I["inversionDetected → idle-task filer suppressed<br/>(unchanged: the work is real either way)"]
+```
+
+An unscanned repo is **held**, not cleared: the cycle proves neither a refusal
+nor a clean pass, so a genuine streak survives a busy cycle and a busy fleet
+never manufactures one. Filer suppression is deliberately untouched — work the
+scan did not reach is still work, and filing an idle-task beside it inverts
+priority just the same.
+
+This is the VibeCoder#437 failure: on 2026-08-26 every `ALERT inversion` naming
+`stSoftwareAU/VibeCoder` followed a `stop reason=deadline` (or `drain`) line by
+about a minute — 22:34:05 → 22:35:14, 20:59:06 → 21:01:01, 17:46:24 → 17:47:41 —
+with eight to nine genuinely claimable `work-on` issues in the repo. Three such
+cycles filed an issue asking a human to find a scan bug that did not exist; the
+scan had simply run out of cycle. The deferral is now logged instead:
+
+```text
+[idle-census] … NOTE inversion_not_escalated repos=stSoftwareAU/VibeCoder — the
+claim scan did not complete an eligibility pass this cycle, so nothing refused
+this work
+```
+
 The census reads through the iteration-scoped `IssueCache` / `fetchAllIssues`,
 so a quiet cycle adds **no** extra issue-list API call (whichever of the census,
 the recovery scan, and the Priority 2 scan runs first populates the shared
