@@ -502,7 +502,10 @@ The worker **never** self-applies the reserved workflow labels (`top-priority`,
 pickup-priority order is
 `top-priority` > `work-on` > `low-priority` > `idle-task`, all meaning
 _work on this issue_ and differing only in priority; **only `idle-task` is
-self-appliable by the Vibe Coder**. See
+self-appliable by the Vibe Coder**. The worker can nonetheless schedule its
+**own auto-filed diagnostics** without a label — provenance, not a label,
+makes them claimable, one at a time, audited and announced
+(tier 2b, Issue #505). See
 [Issue selection priority](docs/workflows/issue-processing.md#-issue-selection-priority)
 for the full ordering.
 

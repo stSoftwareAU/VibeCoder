@@ -38,14 +38,14 @@ flowchart TD
 
 ## 🎭 Actors and triggers
 
-- **Trigger:** An issue exists in a configured repo with the `top-priority` label, the `work-on` label (added by an allowed author), or — when both higher tiers are globally empty — the `low-priority` label (added by an allowed author), or — when every other tier is empty — an `idle-task` issue filed by the worker itself. Tiers are evaluated in order; the globally oldest eligible issue within the highest non-empty tier is selected. See [Issue selection priority](#-issue-selection-priority). The issue must be unassigned or assigned to this worker and not blocked (no `failed`, `needs-human`, dependency issues, or open sub-issues; repo/milestone PR blocking applies — see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
+- **Trigger:** An issue exists in a configured repo with the `top-priority` label, the `work-on` label (added by an allowed author), or — when both higher tiers are globally empty — an auto-filed worker diagnostic the worker schedules itself (tier 2b, no label) or the `low-priority` label (added by an allowed author), or — when every other tier is empty — an `idle-task` issue filed by the worker itself. Tiers are evaluated in order; the globally oldest eligible issue within the highest non-empty tier is selected. See [Issue selection priority](#-issue-selection-priority). The issue must be unassigned or assigned to this worker and not blocked (no `failed`, `needs-human`, dependency issues, or open sub-issues; repo/milestone PR blocking applies — see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
 - **Actors:** The worker (single process per machine); GitHub API (Application Programming Interface); optional Deno/Claude.
 
 ## 📏 Preconditions / invariants
 
 - Configuration is valid; repos are in allowlist; the trusted-author set and labels are set (`allowed_authors` under `author_source: "config"`, or GitHub-derived collaborators minus exclusions under `"github"`).
 - The worker has not already chosen a higher-priority work item in this loop iteration.
-- **Label priority:** A four-tier order — `top-priority` → `work-on` → `low-priority` → `idle-task`. A lower tier is only considered when the higher tier yields **no eligible candidate in any scanned repo**. If a configured-label search fails (API error), the worker waits for the API to recover rather than falling back to `work-on` or `low-priority` — this prevents accidentally processing a lower-priority issue when higher-priority ones may exist but were invisible due to API errors. Among candidates of the same tier, the worker selects the **globally oldest** by creation date across all configured repos (after filtering and milestone-aware open-PR blocking). See [Issue selection priority](#-issue-selection-priority) for the full rules. Claim happens **before** any work.
+- **Label priority:** A four-tier order — `top-priority` → `work-on` → `low-priority` → `idle-task`, with the label-less self-scheduled diagnostic tier 2b sitting between `work-on` and `low-priority` (Issue #505). A lower tier is only considered when the higher tier yields **no eligible candidate in any scanned repo**. If a configured-label search fails (API error), the worker waits for the API to recover rather than falling back to `work-on` or `low-priority` — this prevents accidentally processing a lower-priority issue when higher-priority ones may exist but were invisible due to API errors. Among candidates of the same tier, the worker selects the **globally oldest** by creation date across all configured repos (after filtering and milestone-aware open-PR blocking). See [Issue selection priority](#-issue-selection-priority) for the full rules. Claim happens **before** any work.
 
 ## 🥇 Issue selection priority
 
@@ -55,10 +55,11 @@ When the worker scans for eligible issues it groups every candidate into one of 
 |------|--------|-------------|
 | 1 | **`top-priority`** discovery label | Selected before any lower tier. |
 | 2 | **`work-on`** label (added by an allowed author) | Selected only when **no** eligible `top-priority` candidate exists in **any** scanned repo. |
-| 3 | **`low-priority`** label | Selected only when **no** eligible `top-priority` **and** no eligible `work-on` candidate exists in **any** scanned repo. |
+| 2b | **self-scheduled worker diagnostic** (no label — provenance) | An issue the worker auto-filed about itself, in its own repo, carrying a recognised provenance marker. Selected only when **no** eligible `top-priority` or `work-on` candidate exists in **any** scanned repo, and always ahead of the backlog. See [Self-scheduled worker diagnostics](#-self-scheduled-worker-diagnostics-tier-2b). |
+| 3 | **`low-priority`** label | Selected only when **no** eligible `top-priority`, `work-on` **or** self-scheduled diagnostic candidate exists in **any** scanned repo. |
 | 4 | **`idle-task`** label | The lowest-priority "work on this" tier. An `idle-task` issue is worked exactly like any other — it raises a fix PR through the standard pipeline — **except** a registered scan _wrapper_ (identified by title or body) runs its scan template instead of raising a PR. A **fleet-global floor**: selected only when **no** repo in **any** `nice` tier has a selectable `top-priority` / `work-on` / `low-priority` candidate. The single label the Vibe Coder may self-apply. |
 
-The label priority order is therefore: `top-priority` > `work-on` > `low-priority` > `idle-task`. The legacy `help wanted` and `claude` discovery labels were retired in; only `idle-task` is self-appliable by the Vibe Coder.
+The label priority order is therefore: `top-priority` > `work-on` > `low-priority` > `idle-task`. The legacy `help wanted` and `claude` discovery labels were retired in; only `idle-task` is self-appliable by the Vibe Coder. Tier 2b carries **no label at all** — it is claimable on provenance — so it does not change that order.
 
 > [!IMPORTANT]
 > **All four labels mean "work on this issue" — they differ only in priority** (`top-priority` > `work-on` > `low-priority` > `idle-task`). No other logic is attached to any of them.
@@ -77,15 +78,72 @@ flowchart TD
     C -- yes --> D[Tier 1: oldest configured-label]
     C -- no --> E{Any unblocked work-on?}
     E -- yes --> F[Tier 2: oldest work-on]
-    E -- no --> H[Tier 3: oldest low-priority]
+    E -- no --> M{Any self-scheduled<br/>worker diagnostic?}
+    M -- yes --> N[Tier 2b: oldest diagnostic]
+    M -- no --> H[Tier 3: oldest low-priority]
     J -- no --> K{Any idle-task?}
     K -- yes --> L[Tier 4: idle-task<br/>fleet-global floor]
     K -- no --> I[No issue selected]
     style D fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style F fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+    style N fill:#c48a8a,stroke:#6a1d1d,color:#1a1a1a
     style H fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style L fill:#b89a5a,stroke:#6a541d,color:#1a1a1a
     style I fill:#707070,stroke:,color:#fff
+```
+
+### 🩺 Self-scheduled worker diagnostics (tier 2b)
+
+The worker detects its own faults, files them accurately, and states the
+remedy — and until Issue #505 it stopped there, because scheduling a fix
+means applying `work-on`, the one label it must never self-apply. Unattended,
+nobody applied it: `NEAT-AI-Rebase#39` waited two days for a label, and the
+fix took 79 minutes once it arrived.
+
+Tier 2b closes that loop **without weakening any label guard**. Nothing is
+self-labelled; instead an auto-filed diagnostic becomes claimable on its
+provenance, collected by
+[`collect_self_diagnostic_candidates.ts`](../../worker/deno/lib/collect_self_diagnostic_candidates.ts).
+`top-priority` and `work-on` remain human-only, unconditionally.
+
+**Three signals must agree** (`self_diagnostic_provenance.ts`) — author alone
+is not enough, because an injected agent can file issues too:
+
+1. **Repo** — the issue is in the worker's own repo (`stSoftwareAU/VibeCoder`),
+   where the deciding code lives. A worker-filed issue in a **product** repo is
+   never self-scheduled.
+2. **Marker** — its body carries a recognised machine-written marker from a
+   known template family (`<!-- VIBE_IDLE_INVERSION:… -->`,
+   `<!-- VIBE_RUN_FAILURE:… -->`), matched as a whole HTML comment. Marker
+   forgery through a filed body is closed at the source: the filers escape
+   `<!--`/`-->` out of every interpolated field.
+3. **Author** — it was filed by a fleet worker login.
+
+**Bounded, visible and reversible:**
+
+| Property | How |
+|---|---|
+| Bounded | At most `self_schedule_diagnostics_max_in_flight` (default `1`) in flight, counting assigned diagnostics — the assignee is the fleet's claim lock. The surplus is refused and logged, never dropped silently. |
+| Visible | The decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (posted once, deduped by marker). If either fails the diagnostic is **not** scheduled that scan — an untraceable privilege-bearing decision is worse than one more cycle of waiting. |
+| Escalating | A diagnostic blocked **permanently** (a merged fleet PR names it, which never self-clears) gets `needs-human` plus one explanatory comment instead of sitting open as an alarm nobody is obliged to read. |
+| Reversible | `self_schedule_diagnostics_enabled: false` restores the previous behaviour exactly — the diagnostic waits for a human `work-on`. |
+
+A human `work-on` still works, and still wins: tier 2 is evaluated before
+tier 2b, so applying the label schedules a diagnostic *sooner*.
+
+```mermaid
+flowchart LR
+    A["Diagnostic auto-filed<br/>(marker in body)"] --> B{Repo + marker<br/>+ author agree?}
+    B -- no --> W[Waits for a human `work-on`]
+    B -- yes --> C{Under the<br/>in-flight cap?}
+    C -- no --> R[Refused + logged]
+    C -- yes --> D{Gates pass?<br/>milestone / PR / deps}
+    D -- "merged PR<br/>(permanent)" --> E[needs-human + comment]
+    D -- yes --> F[Audit entry + announcement]
+    F --> G[Claimable as tier 2b]
+    style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style E fill:#c48a8a,stroke:#6a1d1d,color:#1a1a1a
+    style R fill:#707070,stroke:,color:#fff
 ```
 
 ### Intra-tier ordering — oldest first, with a small randomisation pool
