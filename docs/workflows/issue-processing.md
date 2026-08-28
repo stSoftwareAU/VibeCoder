@@ -138,6 +138,21 @@ flowchart TD
     style Pick fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
+### Per-repo tier suppression — a suppressing `work-on` issue parks the lower tiers
+
+Alongside the per-candidate filters above there is one **per-repo** gate. A repo that holds a *suppressing* open `work-on` issue contributes **no** `low-priority` or `idle-task` candidate to selection at all, and a repo with any open `low-priority` issue contributes no `idle-task` candidate. [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts) collects the two sets (`reposWithOpenWorkOn`, `reposWithOpenLowPriority`) and [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) filters the lower tiers by them. The intent is serialisation: a repo with higher-tier work pending should wait rather than open a backlog PR beside it.
+
+"Suppressing" is narrower than "open", because a `work-on` issue the worker can **never** action would otherwise deadlock the repo's whole backlog behind it. [`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts) computes `hasSuppressingWorkOn` from the post-`filterAndSort` set minus two carve-outs:
+
+| `work-on` issue is… | Suppresses tier 3/4? | Why |
+|---|---|---|
+| Eligible, or deferred by an open PR / occupied stream / closed-**unmerged** PR cooldown | **Yes** | Every one of these clears by itself, so waiting is correct. |
+| Assigned, carrying a blocking label, or a milestone-tracking tracker | No — dropped by `filterAndSort` | The worker never actions it. |
+| Blocked solely by an open dependency | No | The dependency is often a `low-priority` issue in the same repo; suppressing would deadlock the chain. |
+| Named by a **merged** fleet PR (`merged-pr-permanent`) | No | The block is permanent — only a trusted re-label dated after the merge lifts it. |
+
+The merged-PR carve-out is Issue #499. `stSoftwareAU/NEAT-AI-Rebase#48` carried `work-on` and was named by merged PR #49, so the scan refused it on every cycle while it parked all 28 of the repo's `low-priority` issues indefinitely — neither the suppressing issue nor anything it suppressed could ever be claimed. The idle-decision census, which does model the merged-PR gate, kept reporting those 28 as claimable and escalated the disagreement as "the claim scan keeps refusing this work". The census now mirrors this gate too and reports a suppressed backlog as `low_priority_suppressed=<n>` (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census)).
+
 ### Why was X picked over Y? — diagnostic surfaces
 
 Two diagnostics answer the "why was this issue selected and not that one?" question without reading TypeScript:

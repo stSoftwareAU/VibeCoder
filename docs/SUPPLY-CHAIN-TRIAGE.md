@@ -29,7 +29,7 @@ The order is:
 | ---- | ------------ | ----- |
 | 1    | configured-label (e.g. `top-priority`) | Highest priority. Selected before everything else. |
 | 2    | `work-on`     | Standard worker pickup. |
-| 3    | `low-priority` | Backlog. Suppressed in any repo that has an open work-on issue. |
+| 3    | `low-priority` | Backlog. Suppressed in any repo that has a *suppressing* open work-on issue — one whose blocker clears by itself; a permanently blocked work-on issue does not suppress (see [issue-processing.md](workflows/issue-processing.md#per-repo-tier-suppression-a-suppressing-work-on-issue-parks-the-lower-tiers)). |
 | 4    | `idle-task`   | Worker-filed background work. Suppressed in any repo with an open work-on or low-priority issue. |
 
 A security finding starts unlabelled by any pickup label, so it sits

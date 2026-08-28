@@ -17,6 +17,11 @@
  * dependency are excluded too, leaving only genuine serialisation signals
  * (eligible, PR-blocked, milestone-occupied, closed-PR cooldown).
  *
+ * Issue #499 adds the third carve-out: an issue refused permanently because a
+ * merged fleet PR names it (`merged-pr-permanent`) never becomes claimable on
+ * its own, so it must not suppress either. A closed-**unmerged** PR still
+ * suppresses — its block expires with the cooldown window.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
@@ -103,11 +108,11 @@ async function collect(
   mockGh: (args: string[]) => Promise<string>,
   config: WorkerConfig,
   repoAllIssues: FilterableIssue[] = [],
+  repoClosedPRs: ClosedPR[] = [],
 ) {
   const cache = createTestCache();
   const fetcher = createIssueFetcher(mockGh);
   const repoPRs: OpenPR[] = [];
-  const repoClosedPRs: ClosedPR[] = [];
   return await collectWorkOnCandidates(
     "owner/repo",
     config,
@@ -333,5 +338,165 @@ Deno.test(
     assertEquals(result.hasOpenIssues, true);
     assertEquals(result.hasSuppressingWorkOn, false);
     assertEquals(result.candidates, []);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Criterion 4: a permanently merged-PR-blocked work-on issue does not
+// suppress (Issue #499)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_work_on_candidates - a work-on issue named by a merged PR does not suppress",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 48,
+          title: "Rebase fails on nearly all fleet runs",
+          url: "https://github.com/owner/repo/issues/48",
+          assignees: [],
+          labels: [{ name: "work-on" }],
+          createdAt: "2026-08-27T22:41:27Z",
+          author: { login: "alice" },
+          milestone: null,
+          body: "No dependencies",
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "work-on" },
+          actor: { login: "alice" },
+          created_at: "2026-08-27T22:45:00Z",
+        },
+      ],
+      issueView: {
+        title: "Rebase fails on nearly all fleet runs",
+        body: "No dependencies",
+      },
+    });
+
+    // A merged fleet PR whose title names #48 — the `merged-pr-permanent`
+    // skip, which only a trusted re-label dated after the merge lifts.
+    const closedPRs: ClosedPR[] = [{
+      number: 49,
+      title: "Emit population-candidate.json as a creature (Issue #48)",
+      closedAt: "2026-08-28T04:55:16Z",
+      merged: true,
+    }];
+
+    const result = await collect(mockGh, config, [], closedPRs);
+
+    assertEquals(result.hasOpenIssues, true);
+    // The issue is refused for ever, so it must not strand the repo's
+    // low-priority backlog behind it.
+    assertEquals(result.hasSuppressingWorkOn, false);
+    assertEquals(result.candidates, []);
+  },
+);
+
+Deno.test(
+  "collect_work_on_candidates - a work-on issue in closed-unmerged PR cooldown still suppresses",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 60,
+          title: "Retry after the closed PR cools down",
+          url: "https://github.com/owner/repo/issues/60",
+          assignees: [],
+          labels: [{ name: "work-on" }],
+          createdAt: "2026-08-27T22:41:27Z",
+          author: { login: "alice" },
+          milestone: null,
+          body: "No dependencies",
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "work-on" },
+          actor: { login: "alice" },
+          created_at: "2026-08-27T22:45:00Z",
+        },
+      ],
+      issueView: {
+        title: "Retry after the closed PR cools down",
+        body: "No dependencies",
+      },
+    });
+
+    // Closed, not merged — the block expires with the cooldown window, so
+    // waiting is correct and the lower tiers stay suppressed.
+    const closedPRs: ClosedPR[] = [{
+      number: 61,
+      title: "Attempt at #60",
+      closedAt: "2026-08-28T04:55:16Z",
+      merged: false,
+    }];
+
+    const result = await collect(mockGh, config, [], closedPRs);
+
+    assertEquals(result.hasOpenIssues, true);
+    assertEquals(result.hasSuppressingWorkOn, true);
+    assertEquals(result.candidates, []);
+  },
+);
+
+Deno.test(
+  "collect_work_on_candidates - a merged-PR-blocked issue beside a workable one still suppresses",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 48,
+          title: "Stranded behind a merged PR",
+          url: "https://github.com/owner/repo/issues/48",
+          assignees: [],
+          labels: [{ name: "work-on" }],
+          createdAt: "2026-08-27T22:41:27Z",
+          author: { login: "alice" },
+          milestone: null,
+          body: "No dependencies",
+        },
+        {
+          number: 70,
+          title: "Genuinely workable",
+          url: "https://github.com/owner/repo/issues/70",
+          assignees: [],
+          labels: [{ name: "work-on" }],
+          createdAt: "2026-08-27T23:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+          body: "No dependencies",
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "work-on" },
+          actor: { login: "alice" },
+          created_at: "2026-08-27T22:45:00Z",
+        },
+      ],
+      issueView: { title: "Genuinely workable", body: "No dependencies" },
+    });
+
+    const closedPRs: ClosedPR[] = [{
+      number: 49,
+      title: "Emit population-candidate.json as a creature (Issue #48)",
+      closedAt: "2026-08-28T04:55:16Z",
+      merged: true,
+    }];
+
+    const result = await collect(mockGh, config, [], closedPRs);
+
+    assertEquals(result.hasSuppressingWorkOn, true);
+    assertEquals(result.candidates.length, 1);
+    assertEquals(result.candidates[0]!.number, 70);
   },
 );

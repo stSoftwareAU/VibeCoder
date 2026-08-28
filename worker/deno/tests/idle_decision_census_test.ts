@@ -13,6 +13,12 @@
  *   6. Skip-reason passthrough / default.
  *   7. The formatter emits greppable lines and the `ALERT inversion`
  *      line only when the signal fired.
+ *   8. Tier-3 suppression (Issue #499): a repo holding a suppressing open
+ *      `work-on` issue contributes no `low-priority` candidate to the scan,
+ *      so the census reports that backlog as `low_priority_suppressed`
+ *      rather than claimable — with the same carve-outs the scan applies for
+ *      dependency-blocked (#2610) and permanently merged-PR-blocked (#499)
+ *      `work-on` issues.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -80,7 +86,12 @@ Deno.test("census - counts unblocked issues per priority label", () => {
   const entry = census.perRepo[0]!;
   assertEquals(entry.unblocked.topPriority, 1);
   assertEquals(entry.unblocked.workOn, 2);
-  assertEquals(entry.unblocked.lowPriority, 1);
+  // Issue #499 (business-logic change): #4 carries `low-priority` in a repo
+  // that also holds suppressing `work-on` issues, so `selectHighestPriority`
+  // drops it from the tier-3 pool and the census now reports it as suppressed
+  // rather than claimable. Before #499 this asserted `lowPriority === 1`.
+  assertEquals(entry.unblocked.lowPriority, 0);
+  assertEquals(entry.lowPrioritySuppressed, 1);
   assertEquals(entry.unblocked.idleTask, 1);
   assert(entry.inversionSignal);
 });
@@ -1079,4 +1090,171 @@ Deno.test("#460 - no gate is left unclassified", () => {
     [],
     "an unclassified gate is exactly how #3526, #3852 and GRQ#4419 happened",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Tier-3 suppression (Issue #499)
+// ---------------------------------------------------------------------------
+// `selectHighestPriority` drops every `low-priority` candidate from a repo
+// holding a *suppressing* open `work-on` issue (`reposWithOpenWorkOn`), so a
+// suppressed backlog is not work the scan refused — it is work the scan is
+// deliberately serialising behind higher-tier work. The census must model the
+// same gate or it manufactures an inversion alert against a scan that is right.
+
+Deno.test("census - a suppressing work-on issue removes the low-priority backlog from the claimable count (Issue #499)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["work-on"]),
+          issue(2, ["low-priority"]),
+          issue(3, ["low-priority"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.unblocked.lowPriority, 0);
+  assertEquals(entry.lowPrioritySuppressed, 2);
+  // The work-on issue is itself claimable, so the repo is still inverted —
+  // the signal is now attributed to the issue the scan can actually claim.
+  assertEquals(entry.claimableIssues, [1]);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - with no work-on issue the low-priority backlog stays claimable (Issue #499)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(2, ["low-priority"]), issue(3, ["low-priority"])],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.lowPriority, 2);
+  assertEquals(entry.lowPrioritySuppressed, 0);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - a permanently merged-PR-blocked work-on issue does not suppress the backlog (Issue #499)", () => {
+  // The NEAT-AI-Rebase case: #48 is `work-on` but named by merged PR #49, so
+  // the scan refuses it for ever. It must not strand the 28-issue backlog, and
+  // the census must keep reporting that backlog as claimable so the two agree.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/NEAT-AI-Rebase",
+        issues: [
+          issue(48, ["work-on"]),
+          issue(43, ["low-priority"]),
+          issue(42, ["low-priority"]),
+        ],
+        mergedPRs: [
+          mergedPR(49, "Emit population-candidate.json (Issue #48)"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.mergedPrBlocked, 1);
+  assertEquals(entry.unblocked.lowPriority, 2);
+  assertEquals(entry.lowPrioritySuppressed, 0);
+  assertEquals(entry.claimableIssues, [43, 42]);
+});
+
+Deno.test("census - a purely dependency-blocked work-on issue does not suppress the backlog (Issue #2610)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          { ...issue(1, ["work-on"]), body: "Depends on #2" },
+          issue(2, ["low-priority"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.dependencyBlocked, 1);
+  // The dependency is the low-priority issue itself — suppressing it would
+  // deadlock the chain, which is exactly why #2610 carved it out.
+  assertEquals(entry.unblocked.lowPriority, 1);
+  assertEquals(entry.lowPrioritySuppressed, 0);
+});
+
+Deno.test("census - a stream-occupied work-on issue still suppresses the backlog (Issue #499)", () => {
+  // Occupancy clears by itself once the in-flight claim lands, so waiting is
+  // the scan's correct behaviour (the issue survives `filterAndSort` and keeps
+  // raising `hasSuppressingWorkOn`). The census must agree rather than
+  // counting the backlog as work the scan refused.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["work-on"], ["vibe-bot"], "M1"),
+          issue(2, ["work-on"], [], "M1"),
+          issue(3, ["low-priority"], [], ""),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.streamOccupied, 1);
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.unblocked.lowPriority, 0);
+  assertEquals(entry.lowPrioritySuppressed, 1);
+  assert(!entry.inversionSignal);
+});
+
+Deno.test("census - a blocked-label work-on issue does not suppress the backlog (Issue #2751)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["work-on", "needs-human"]),
+          issue(2, ["low-priority"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.unblocked.lowPriority, 1);
+  assertEquals(entry.lowPrioritySuppressed, 0);
+});
+
+Deno.test("formatter - per-repo line carries the low_priority_suppressed count (Issue #499)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"]), issue(2, ["low-priority"])],
+      }),
+    ],
+  });
+  const line = formatIdleDecisionCensus(census).find((l) =>
+    l.includes("repo=org/a")
+  )!;
+  assert(line.includes("low_priority_suppressed=1"));
+  assert(line.includes("low_priority=0"));
 });

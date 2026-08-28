@@ -227,6 +227,14 @@ export async function collectWorkOnCandidates(
   // its low-priority backlog (see `hasSuppressingWorkOn`).
   let dependencyBlockedCount = 0;
 
+  // Issue #499: count the work-on issues refused *permanently* because a
+  // merged fleet PR names them (`merged-pr-permanent`, Issue #3151). Unlike
+  // every other surviving blocker, that one never clears on its own — only a
+  // trusted re-label dated after the merge lifts it — so letting it raise the
+  // suppression signal strands the repo's whole low-priority backlog behind
+  // work the scan will refuse for ever (see `hasSuppressingWorkOn`).
+  let mergedPrPermanentCount = 0;
+
   issues = await cleanStaleLabels(
     issues,
     repo,
@@ -477,6 +485,9 @@ export async function collectWorkOnCandidates(
           milestoneTitle,
           closedPR.merged ? "merged-pr-permanent" : "closed-pr-cooldown",
         );
+        // Issue #499: a merged PR blocks for ever, so this issue must not
+        // hold the repo's lower tiers hostage.
+        if (closedPR.merged) mergedPrPermanentCount++;
         diag?.logIssueSkipped(
           repo,
           issue.number,
@@ -626,7 +637,18 @@ export async function collectWorkOnCandidates(
   // Issue #2752: dependency-cycle issues are a subset of the
   // dependency-blocked set, so they are already excluded here — escalating
   // them adds no separate suppression adjustment.
-  const hasSuppressingWorkOn = (filtered.length - dependencyBlockedCount) > 0;
+  //
+  // Issue #499: also exclude the issues refused permanently because a merged
+  // fleet PR names them. Every other surviving blocker clears by itself — a
+  // PR merges, a cooldown expires, a stream frees up — so waiting is the right
+  // behaviour. `merged-pr-permanent` never does: only a trusted re-label dated
+  // after the merge lifts it. On `stSoftwareAU/NEAT-AI-Rebase` one such issue
+  // (#48, named by merged PR #49) stranded all 28 of the repo's `low-priority`
+  // issues indefinitely, and the census — which does model the merged-PR gate —
+  // kept reporting them as claimable, filing this issue against a scan whose
+  // suppression rule was the actual fault.
+  const hasSuppressingWorkOn =
+    (filtered.length - dependencyBlockedCount - mergedPrPermanentCount) > 0;
 
   return { candidates, hasOpenIssues, hasSuppressingWorkOn, blockedDetails };
 }
