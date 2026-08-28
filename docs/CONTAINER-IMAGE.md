@@ -41,6 +41,22 @@ version reuses their cache. Within that block the order is least-to-most
 churn — the static analysers move rarely; Rust moves every few weeks and is
 the largest download, so it sits last and a Rust bump rebuilds only itself.
 
+## Node and npm
+
+Node and npm are pinned as two separate toolchains. The Node tarball bundles
+an npm of its own — 11.17.0 for Node 24.19.0 — so before Issue #475 the image
+carried whatever the runtime shipped and every build logged npm's
+"New major version available" notice. `container/tools.json` now gives `npm`
+its own entry, and the build installs that tarball over the bundled copy after
+verifying its checksum, so exactly one pin owns the `npm` command.
+
+The two are still coupled: npm 12 declares
+`engines.node: ^22.22.2 || ^24.15.0 || >=26.0.0`, so a `NODE_VERSION` bump has
+to land a Node that npm's `engines` still accepts. The build fails loud on
+either half — the install step asserts `npm --version` reports `NPM_VERSION`,
+and `.github/workflows/container-build.yml` re-checks every toolchain's pinned
+version against the built image.
+
 ## Coding-agent providers
 
 The providers are a separable layer selected as a comma-separated *set*
