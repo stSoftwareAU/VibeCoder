@@ -62,6 +62,16 @@ export interface MergedPR {
   number: number;
   title: string;
   headRefName: string;
+  /**
+   * ISO-8601 merge timestamp, or `""` when it could not be read — including
+   * from a cache entry written before this field was collected (Issue #482).
+   *
+   * Consumers that act destructively on the PR/issue link must treat `""` as
+   * "ordering unknown" and defer, never as permission to proceed: an issue
+   * filed after the merge cannot be the merge's subject, and that is only
+   * decidable with this timestamp.
+   */
+  mergedAt: string;
 }
 
 /**
@@ -1203,7 +1213,7 @@ export async function fetchMergedPRsByUser(
     "--author",
     githubUser,
     "--json",
-    "number,title,headRefName",
+    "number,title,headRefName,mergedAt",
     "--limit",
     String(limit),
   ]);
@@ -1229,6 +1239,7 @@ export async function fetchMergedPRsByUser(
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
+      mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
     });
   }
 
