@@ -286,6 +286,10 @@ deno task audit-chain-verify \
   --acknowledge-loss audit-worker-2026-08-21.jsonl \
   --reason "pruned by the work-volume housekeeping (Issue #337)" \
   --by nleck                                   # sign for an accounted-for loss
+deno task audit-chain-verify \
+  --acknowledge-damage audit-worker-2026-08-28.jsonl \
+  --reason "cross-process append race (Issue #491)" \
+  --by nleck                                   # sign for accounted-for damage
 ```
 
 **Signing for a loss that has been accounted for (Issue #359).** The roster
@@ -323,6 +327,55 @@ it outright — which trips the complete-erasure alarm instead. What the
 acknowledgement changes is that an accounted-for loss becomes a dated,
 attributed, reviewable record, so a **new** deletion on that host is once
 again the only red line in the sweep.
+
+**Serialising the append (Issue #491).** Every process on a host shares one
+journal — the run driver and each child `deno` command it spawns, all
+carrying the same inherited `VIBE_RUN_ID`. The partition in the filename is
+per *worker*, never per process, so the trail reads in the order the
+mutations happened. What makes that safe is the lock, not the filename:
+`recordMutation` holds a cross-process lock over the whole audit directory
+([`file_lock.ts`](../worker/deno/lib/file_lock.ts)) across **both** journal
+selection and the append, and reads the chain head from disk inside it.
+
+The head is deliberately never cached. It used to be — a module-level `Map`
+seeded on first use — with an in-process promise queue standing in for a
+lock. Neither crosses a process boundary, so a second writer advanced the
+file while the first held a stale head and then chained on top of it. On
+GRQ-23 that orphaned the head hash in 10 of 14 journals, and each quarantine
+segment opened beside the damage broke the same way. A lock file older than
+two minutes whose holder is no longer running is broken as abandoned, loudly
+(`[SECURITY] [AUDIT_LOCK_BROKEN]`); a live holder is never evicted.
+
+**Signing for damage to a journal that is still there (Issue #491).**
+`--acknowledge-loss` refuses a journal that is present but does not verify,
+and that refusal is right — it is exactly the shape tampering takes. But it
+left the ten damaged GRQ-23 journals with no exit at all: fixing the writer
+stops new damage and cannot repair old files, and repairing them is the last
+thing anyone should want, because they are the evidence.
+
+`--acknowledge-damage` is the exit for that case, and it is narrower than
+the loss path:
+
+- the journal must be **on disk**. A journal that is gone is a loss, and
+  `--acknowledge-loss` is where that is signed for;
+- it must **actually fail** verification. A journal that verifies has
+  nothing to sign for — accepting one would let an operator pre-sign a file
+  they were about to damage;
+- the signature is **pinned to the journal's exact bytes**: the roster line
+  records the SHA-256 of the file as signed for, and the sweep honours the
+  signature only while the file still hashes to it. Any later edit — even
+  one leaving the chain just as broken — brings the alarm back, saying the
+  signature no longer applies;
+- a `--reason` is **required**, an operator identity is recorded, and the
+  act is chained **first**, as an `audit-damage-acknowledged` entry written
+  to the currently-writable journal. The damaged one is never appended to,
+  re-anchored, or removed.
+
+Later sweeps name it as `[AUDIT_CHAIN_DAMAGE_ACKNOWLEDGED]` and count it in
+the summary as *acknowledged as damaged*. As with a loss: it stops being a
+failure, not a fact. The two verbs are kept distinct on purpose — signing
+that a journal is corrupt must never silence one that was deleted, and a
+roster line carrying `kind: "damage"` is refused as a loss signature.
 
 **Inspection CLI.** `deno task audit-log-tail` (the
 `audit-log-tail` command,

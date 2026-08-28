@@ -187,12 +187,39 @@ export interface RosterAcknowledgement {
   by: string;
 }
 
+/**
+ * One roster line signing for a journal that is **present but does not
+ * verify** (Issue #491).
+ *
+ * Distinct from {@link RosterAcknowledgement} on purpose, and never
+ * interchangeable with it: signing that a journal is *gone* must not
+ * silence one that is *corrupt*, and vice versa. `kind` is the
+ * discriminator, and a loss line is refused if it carries it.
+ *
+ * The signature is pinned to the bytes it was given. `digest` is the
+ * SHA-256 of the journal at the moment of signing and `entries` its line
+ * count; the sweep only honours the acknowledgement while the file still
+ * hashes to that value. Without the pin, signing for today's damage would
+ * also bless every future edit to the same file — which is laundering, and
+ * is exactly what the loss path already refuses to do.
+ */
+export interface RosterDamageAcknowledgement extends RosterAcknowledgement {
+  /** Discriminator: this line signs for damage, not for a loss. */
+  kind: "damage";
+  /** Lowercase hex SHA-256 of the journal's bytes when it was signed for. */
+  digest: string;
+  /** Number of entries the journal held when it was signed for. */
+  entries: number;
+}
+
 /** Everything one roster file holds, in a single read. */
 export interface RosterContents {
   /** Journal basenames the directory is expected to hold, first-seen order. */
   journals: string[];
   /** Acknowledged losses, keyed by journal basename (last line wins). */
   acknowledged: Map<string, RosterAcknowledgement>;
+  /** Acknowledged damage, keyed by journal basename (last line wins). */
+  damaged: Map<string, RosterDamageAcknowledgement>;
 }
 
 /**
@@ -239,16 +266,40 @@ function isRosterEntry(value: unknown): value is RosterEntry {
     typeof e["addedAt"] === "string";
 }
 
-/** Is `value` a structurally valid acknowledgement line (Issue #359)? */
-function isRosterAcknowledgement(
-  value: unknown,
-): value is RosterAcknowledgement {
+/** The four fields every acknowledgement line carries (Issue #359). */
+function hasAcknowledgementShape(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const e = value as Record<string, unknown>;
   return typeof e["journal"] === "string" && e["journal"].length > 0 &&
     typeof e["acknowledgedAt"] === "string" &&
     typeof e["reason"] === "string" && e["reason"].trim().length > 0 &&
     typeof e["by"] === "string" && e["by"].trim().length > 0;
+}
+
+/**
+ * Is `value` a structurally valid *loss* acknowledgement (Issue #359)?
+ *
+ * A line carrying `kind` is refused here: a damage signature must never be
+ * read as a loss signature, which would silence a genuinely deleted
+ * journal (Issue #491).
+ */
+function isRosterAcknowledgement(
+  value: unknown,
+): value is RosterAcknowledgement {
+  if (!hasAcknowledgementShape(value)) return false;
+  return (value as Record<string, unknown>)["kind"] === undefined;
+}
+
+/** Is `value` a structurally valid *damage* acknowledgement (Issue #491)? */
+function isRosterDamageAcknowledgement(
+  value: unknown,
+): value is RosterDamageAcknowledgement {
+  if (!hasAcknowledgementShape(value)) return false;
+  const e = value as Record<string, unknown>;
+  return e["kind"] === "damage" &&
+    typeof e["digest"] === "string" && /^[0-9a-f]{64}$/.test(e["digest"]) &&
+    typeof e["entries"] === "number" && Number.isInteger(e["entries"]) &&
+    e["entries"] >= 0;
 }
 
 /**
@@ -271,7 +322,7 @@ export async function readRosterContents(
     raw = await Deno.readTextFile(path);
   } catch (error: unknown) {
     if (error instanceof Deno.errors.NotFound) {
-      return { journals: [], acknowledged: new Map() };
+      return { journals: [], acknowledged: new Map(), damaged: new Map() };
     }
     throw new Error(
       `audit roster unreadable: ${path}: ${
@@ -282,6 +333,7 @@ export async function readRosterContents(
   const journals: string[] = [];
   const seen = new Set<string>();
   const acknowledged = new Map<string, RosterAcknowledgement>();
+  const damaged = new Map<string, RosterDamageAcknowledgement>();
   for (const line of raw.split("\n")) {
     if (line.trim().length === 0) continue;
     let parsed: unknown;
@@ -293,6 +345,10 @@ export async function readRosterContents(
     // Acknowledgements are checked first: they carry `journal` too, and a
     // half-formed acknowledgement must be rejected rather than silently
     // read as an expectation line that happens to lack `addedAt`.
+    if (isRosterDamageAcknowledgement(parsed)) {
+      damaged.set(parsed.journal, parsed);
+      continue;
+    }
     if (isRosterAcknowledgement(parsed)) {
       acknowledged.set(parsed.journal, parsed);
       continue;
@@ -307,7 +363,7 @@ export async function readRosterContents(
       journals.push(parsed.journal);
     }
   }
-  return { journals, acknowledged };
+  return { journals, acknowledged, damaged };
 }
 
 /**
@@ -385,6 +441,84 @@ export async function acknowledgeRosterLoss(
       ok: false,
       error: new Error(
         `audit roster acknowledgement could not be appended: ${
+          rosterPath(baseDir)
+        }: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    };
+  }
+  return { ok: true, value: acknowledgement };
+}
+
+/**
+ * Sign for a journal that is present but does not verify (Issue #491).
+ *
+ * Append-only like every other roster write, and pinned to the bytes it
+ * was shown: the sweep honours the signature only while the journal still
+ * hashes to `digest`, so this closes today's alarm without blessing
+ * tomorrow's edit. The journal file itself is never touched.
+ *
+ * The caller is responsible for the checks that make the signature
+ * legitimate — that the journal really is on disk, really does fail, and
+ * that the act has been mirrored into a healthy hash chain. See
+ * `acknowledgeJournalDamage` in `audit_journal.ts`, which is the only
+ * supported way in.
+ *
+ * @param baseDir - Audit directory the roster covers
+ * @param journalName - Basename of the damaged journal
+ * @param reason - Why the damage is accounted for; must not be blank
+ * @param by - Who is signing; must not be blank
+ * @param digest - SHA-256 of the journal's bytes, as signed for
+ * @param entries - Line count of the journal, as signed for
+ * @param now - ISO timestamp override (tests)
+ * @returns Result carrying the appended acknowledgement
+ */
+export async function acknowledgeRosterDamage(
+  baseDir: string,
+  journalName: string,
+  reason: string,
+  by: string,
+  digest: string,
+  entries: number,
+  now?: string,
+): Promise<Result<RosterDamageAcknowledgement>> {
+  if (reason.trim().length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge damage to ${journalName}: a reason is ` +
+          `required`,
+      ),
+    };
+  }
+  if (by.trim().length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge damage to ${journalName}: an operator ` +
+          `identity is required`,
+      ),
+    };
+  }
+  const acknowledgement: RosterDamageAcknowledgement = {
+    kind: "damage",
+    journal: journalName,
+    acknowledgedAt: now ?? new Date().toISOString(),
+    reason: reason.trim(),
+    by: by.trim(),
+    digest,
+    entries,
+  };
+  try {
+    await Deno.writeTextFile(
+      rosterPath(baseDir),
+      `${JSON.stringify(acknowledgement)}\n`,
+      { append: true },
+    );
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: new Error(
+        `audit roster damage acknowledgement could not be appended: ${
           rosterPath(baseDir)
         }: ${error instanceof Error ? error.message : String(error)}`,
       ),

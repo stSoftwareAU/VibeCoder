@@ -58,6 +58,9 @@ if [[ "\${sub}" == "image" || "\${sub}" == "images" ]]; then
   esac
 fi
 printf '%s\\0' "\$@" > "\${record_dir}/\${sub}.args"
+# Which step ran before which is behaviour too (Issue #492): the per-command
+# .args files cannot answer it, so keep an ordered log beside them.
+printf '%s\\n' "\${sub}" >> "\${record_dir}/order.log"
 case "\${sub}" in
   image-prune)
     # The store prune's dangling-layer pass (Issue #227): nothing to reclaim.
@@ -166,6 +169,14 @@ case "\${sub}" in
     ;;
   builder-*)
     printf '%s\\0' "\$@" > "\${record_dir}/\${sub}.args"
+    if [[ "\${sub}" == "builder-stop" ]]; then
+      # Issue #492: the launcher classifies the stop failure by the text the
+      # runtime prints, so the stub has to be able to print one.
+      if [[ -n "\${STUB_BUILDER_STOP_STDERR:-}" ]]; then
+        printf '%s\\n' "\${STUB_BUILDER_STOP_STDERR}" >&2
+      fi
+      exit "\${STUB_BUILDER_STOP_EXIT:-0}"
+    fi
     exit 0
     ;;
   *)
@@ -332,6 +343,21 @@ export async function recorded(
     return text.split("\0").filter((arg) => arg !== "");
   } catch {
     return null;
+  }
+}
+
+/**
+ * Runtime sub-commands in the order the launcher invoked them (Issue #492).
+ *
+ * @param harness - Launcher harness to read from
+ * @returns One entry per runtime invocation, oldest first
+ */
+export async function invocationOrder(harness: Harness): Promise<string[]> {
+  try {
+    const raw = await Deno.readTextFile(`${harness.recordDir}/order.log`);
+    return raw.split("\n").filter((line) => line.trim().length > 0);
+  } catch {
+    return [];
   }
 }
 

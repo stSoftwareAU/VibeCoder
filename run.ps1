@@ -254,6 +254,7 @@ $InitArgs = [System.Collections.Generic.List[string]]::new()
 $ExistsArgs = [System.Collections.Generic.List[string]]::new()
 $BuildArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderStopArgs = [System.Collections.Generic.List[string]]::new()
+$BuilderAbsentPatterns = [System.Collections.Generic.List[string]]::new()
 $RunArgs = [System.Collections.Generic.List[string]]::new()
 
 try {
@@ -311,6 +312,7 @@ try {
             "exists" { $ExistsArgs.Add($value) }
             "build" { $BuildArgs.Add($value) }
             "builder-stop" { $BuilderStopArgs.Add($value) }
+            "builder-absent" { $BuilderAbsentPatterns.Add($value) }
             "run" { $RunArgs.Add($value) }
             default {
                 [Console]::Error.WriteLine(
@@ -541,19 +543,6 @@ if ($pruned.ExitCode -ne 0) {
         "[run.ps1] warning: could not prune superseded $Image tags")
 }
 
-# Stop the runtime's persistent build helper (Issue #4331). The plan carries
-# the arguments only for runtimes that keep one running after a build
-# (Apple container's builder VM); Docker and Podman - what run.ps1 launches -
-# supply none, so this is normally a no-op here and exists for plan parity
-# with run.sh. Best-effort: an idle builder is waste, not a launch failure.
-if ($BuilderStopArgs.Count -gt 0) {
-    $builderStop = Invoke-HostCommand -FilePath $Runtime -Capture -ArgumentList $BuilderStopArgs
-    if ($builderStop.ExitCode -ne 0) {
-        [Console]::Error.WriteLine(
-            "[run.ps1] warning: could not stop the $Runtime builder helper")
-    }
-}
-
 # Reclaim the host container store (Issue #227): leaked `vibe-test-*`
 # volumes, dangling image layers, and the stopped builder when the store is
 # short of room. Mirrors run.sh; best-effort, never blocks a launch.
@@ -569,6 +558,38 @@ if ($storePruned.StdErr) { [Console]::Error.Write($storePruned.StdErr) }
 if ($storePruned.ExitCode -ne 0) {
     [Console]::Error.WriteLine(
         "[run.ps1] warning: could not reclaim the $Runtime store")
+}
+
+# Stop the runtime's persistent build helper (Issue #4331). The plan carries
+# the arguments only for runtimes that keep one running after a build
+# (Apple container's builder VM); Docker and Podman - what run.ps1 launches -
+# supply none, so this is normally a no-op here and exists for plan parity
+# with run.sh.
+#
+# Runs after the store prune, which deletes the builder outright when the
+# host is below the floor, and "nothing to stop" is success (Issue #492):
+# the builder only exists after a build, so most launches find none. A stop
+# that fails for any other reason warns with the runtime's own explanation.
+if ($BuilderStopArgs.Count -gt 0) {
+    $builderStop = Invoke-HostCommand -FilePath $Runtime -Capture -ArgumentList $BuilderStopArgs
+    if ($builderStop.ExitCode -ne 0) {
+        $stopDetail = ($builderStop.StdErr -replace "\s+", " ").Trim()
+        $absent = $false
+        foreach ($pattern in $BuilderAbsentPatterns) {
+            if ($pattern -and $stopDetail.ToLowerInvariant().Contains($pattern.ToLowerInvariant())) {
+                $absent = $true
+                break
+            }
+        }
+        if ($absent) {
+            Write-RunCoreLog "builder-stop: no $Runtime builder to stop"
+        } else {
+            if (-not $stopDetail) { $stopDetail = "no explanation given" }
+            [Console]::Error.WriteLine(
+                "[run.ps1] warning: could not stop the $Runtime builder helper: $stopDetail")
+            Write-RunCoreLog "builder-stop: failed: $stopDetail"
+        }
+    }
 }
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
