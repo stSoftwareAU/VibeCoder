@@ -510,6 +510,39 @@ Deno.test("label manager - handleIssueFailure self-heals infrastructure failures
   }
 });
 
+Deno.test("label manager - handleIssueFailure never labels a scheduled release (Issue #424)", async () => {
+  const dir = await makeTempDir();
+  try {
+    const calls: string[][] = [];
+    const mockGh = async (args: string[]): Promise<string> => {
+      calls.push(args);
+      return "";
+    };
+
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage:
+        "Released on schedule: the supervisor's run hard cap was reached — " +
+        "WIP preserved, resumes next cycle",
+    }, { ghCommandFn: mockGh, cacheDir: dir });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.markedAsFailed, false);
+      assertEquals(result.value.markedAsFailedOnce, false);
+      assertEquals(result.value.failureCategory, "scheduled_release");
+      assertEquals(result.value.isInfrastructure, false);
+    }
+    // A handover writes no comment, adds no label and unassigns nobody: the
+    // ladder is not entered at all, so `gh` is never touched.
+    assertEquals(calls.length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Question Failure
 // ---------------------------------------------------------------------------

@@ -67,7 +67,13 @@ import {
   getInaccessibleRepos,
   logRepoAccessOnce,
 } from "./monitored_repo_access.ts";
-import { resolveClaimRunwayFloor } from "./claim_runway.ts";
+import {
+  belowClaimRunwayFloor,
+  type ClaimHardCap,
+  type ClaimRunwayFloor,
+  hardCapRunwaySeconds,
+  resolveClaimRunwayFloor,
+} from "./claim_runway.ts";
 import {
   decideAdaptiveClaim,
   type IssueClaimEvidence,
@@ -580,28 +586,34 @@ export interface RunCoreDeps {
   ) => Promise<void>;
 
   /**
-   * Minimum seconds of cycle runway required before taking another claim
-   * (Issue #4304). A claim taken with less runway than any plausible
-   * completion time is doomed on arrival — the #4254 timeout bound makes
-   * it fail *faster*, not succeed. Optional: absent keeps the plain
-   * deadline gate.
+   * Minimum seconds of **hard-cap** runway required before taking another
+   * claim (Issues #4304/#425). A claim the supervisor will kill before it
+   * can finish setup is doomed on arrival, so it is not taken.
+   *
+   * Measured against `claimHardCap` below, not against the cycle deadline:
+   * since Issue #420 a claim taken late in the cycle keeps its full execute
+   * budget, so cycle runway no longer says anything about whether a claim can
+   * fit. Optional: absent (or `0`) leaves the floor inert and the cycle
+   * deadline alone stops new claims.
    */
   minClaimRunwaySeconds?: number;
 
   /**
-   * The configured execute budget (`config.claudeTimeout`, Issue #47).
-   * When the cycle is long enough to ever offer this budget, the claim
-   * floor above is raised to it, so a deadline-bound execute is a
-   * documented exception rather than the default tail of every cycle.
-   * Optional: absent keeps the plain #4304 floor.
+   * The supervisor hard cap this run is bounded by (Issues #421/#425):
+   * the absolute ceiling past which no run of this worker survives, and the
+   * whole window from the run's start to it.
+   *
+   * Optional: absent means the run is uncapped (a CLI run, a host with
+   * `VIBE_RUN_MAX_SECONDS=0`, tests). Nothing then truncates a claim's
+   * execute, so both runway floors are inert — logged once, never silent.
    */
-  fullExecuteBudgetSeconds?: number;
+  claimHardCap?: ClaimHardCap;
 
   /**
-   * The configured execute budget (`config.claudeTimeout`), always supplied
-   * — unlike `fullExecuteBudgetSeconds`, which production sets only under
-   * the #47 opt-in. Sizes the adaptive floor an issue with evidence of a
-   * long job must clear (Issue #245). Optional: absent disables that floor.
+   * The configured execute budget (`config.claudeTimeout`). Sizes the
+   * adaptive floor an issue with evidence of a long job must clear against
+   * the hard-cap runway (Issues #245/#425). Optional: absent disables that
+   * floor.
    */
   executeBudgetSeconds?: number;
 
@@ -620,7 +632,7 @@ export interface RunCoreDeps {
    * how many consecutive cycles it has now been deferred (Issue #375). The
    * key is `issueClaimKey(repo, number)`. Optional: absent means the floor
    * defers without a memory, exactly as before #375 — which on a host whose
-   * cycle can never satisfy the floor strands the issue for ever.
+   * hard cap can never satisfy the floor strands the issue for ever.
    */
   recordAdaptiveFloorDeferral?: (key: string) => Promise<number>;
 
@@ -1502,38 +1514,49 @@ function noteIssueProcessed(
 const MAX_DEFERRED_REOFFERS = 3;
 
 /**
- * Adaptive claim floor (Issue #245): should this candidate be left for a
- * cycle that can host a real execute?
+ * Adaptive claim floor (Issues #245/#425): should this candidate be left for a
+ * run that can host a real execute?
  *
- * The plain floor (#4304/#47) knows nothing about the issue; this one reads
- * what the issue already carries — preserved WIP, a prior `timeout` in
- * `execute`, a long-job size label — and refuses a slice that such an issue
- * cannot finish. Deferring records the issue so the next scan offers a
- * *different* candidate (the #219 rule: never park the slot), and logs the
- * reason once, the first and only time the issue is deferred this cycle.
+ * The plain floor (#4304) knows nothing about the issue; this one reads what
+ * the issue already carries — preserved WIP, a prior `timeout` in `execute`,
+ * a long-job size label — and refuses a slice that such an issue cannot
+ * finish. Deferring records the issue so the next scan offers a *different*
+ * candidate (the #219 rule: never park the slot), and logs the reason once,
+ * the first and only time the issue is deferred this cycle.
+ *
+ * Post-#397 the runway it measures is the runway to the **supervisor hard
+ * cap**, not to the cycle deadline: since Issue #420 a claim keeps its full
+ * execute budget however late in the cycle it is taken, so only the hard cap
+ * can still cut a long job short. An uncapped run therefore has no adaptive
+ * floor at all — nothing will kill the execute early, so no evidence makes a
+ * claim doomed.
  *
  * Returns false — claim as before — whenever the gate cannot decide: no
- * evidence lookup wired, no execute budget known, or a lookup that failed
- * (which is logged as an error, never swallowed).
+ * evidence lookup wired, no execute budget known, no hard cap to measure
+ * against, or a lookup that failed (which is logged as an error, never
+ * swallowed).
  *
- * Issue #375: the deferral is **bounded**. On a host whose cycle can never
- * offer the floor's required runway (cycle length == `claude_timeout`, where a
- * claim gate is first reached twenty minutes in), the floor refused the same
- * issue every cycle for ever while wording it "leaving it for the next cycle".
- * After {@link ADAPTIVE_FLOOR_STARVATION_LIMIT} consecutive deferred cycles the
- * floor yields: the claim proceeds deadline-bound and WIP preservation carries
- * the progress, which is the regime Issue #47 already documents for this host.
+ * Issue #375: the deferral is **bounded**. On a host whose hard cap can never
+ * offer the floor's required runway, the floor would refuse the same issue
+ * every cycle for ever while wording it "leaving it for the next cycle". After
+ * {@link ADAPTIVE_FLOOR_STARVATION_LIMIT} consecutive deferred cycles the
+ * floor yields: the claim proceeds on the runway that is left and the
+ * hard-cap kill commits and pushes its WIP for the next run to resume.
  */
 async function deferClaimForAdaptiveFloor(
   deps: RunCoreDeps,
-  config: RunCoreConfig,
   issue: DiscoveredIssue,
-  endTime: number,
+  floor: ClaimRunwayFloor,
   deferredClaims: Set<string>,
   log: (message: string) => void,
 ): Promise<boolean> {
   const budgetSeconds = deps.executeBudgetSeconds ?? 0;
   if (!deps.gatherIssueClaimEvidence || budgetSeconds <= 0) return false;
+  // No hard cap, no adaptive floor: nothing truncates this run's execute, so
+  // evidence of a long job is not evidence of a doomed claim (Issue #425).
+  // The caller has already logged why the floor is inert this cycle.
+  const hardCap = floor.hardCap;
+  if (!hardCap) return false;
 
   const { evidence, lookupError } = await deps.gatherIssueClaimEvidence(issue);
   if (lookupError !== undefined) {
@@ -1545,15 +1568,12 @@ async function deferClaimForAdaptiveFloor(
     return false;
   }
 
-  const remainingRunwaySeconds = Math.max(
-    0,
-    Math.round((endTime - deps.now()) / 1000),
-  );
+  const remainingRunwaySeconds = hardCapRunwaySeconds(floor, deps.now()) ?? 0;
   const decision = decideAdaptiveClaim({
     evidence,
     remainingRunwaySeconds,
     fullExecuteBudgetSeconds: budgetSeconds,
-    cycleSeconds: config.runDurationSeconds,
+    runwayWindowSeconds: hardCap.windowSeconds,
   });
   const key = issueClaimKey(issue.repo, issue.issueNumber);
   if (decision.claim) {
@@ -1651,16 +1671,15 @@ async function runIssueScanLoop(
   let consecutiveFailures = 0;
   let iteration = 0;
 
-  // Claim-runway floor for this cycle (Issue #4304, raised to the full
-  // execute budget by Issue #47 when the cycle can fit one). Resolved once;
+  // Claim-runway floor for this cycle (Issues #4304/#425), measured against
+  // the supervisor hard cap rather than the cycle deadline. Resolved once;
   // applied before every claim below.
   const runwayFloor = resolveClaimRunwayFloor({
     minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
-    fullExecuteBudgetSeconds: deps.fullExecuteBudgetSeconds,
-    cycleSeconds: config.runDurationSeconds,
+    hardCap: deps.claimHardCap,
   });
-  if (runwayFloor.exceptionReason) {
-    deps.log(`Claim-runway floor: ${runwayFloor.exceptionReason}`);
+  if (runwayFloor.inertReason) {
+    deps.log(`Claim-runway floor: ${runwayFloor.inertReason}`);
   }
   // Issues this cycle deferred for the adaptive floor (Issue #245), so the
   // next scan offers a different candidate rather than the same one.
@@ -1675,34 +1694,25 @@ async function runIssueScanLoop(
   let eligibilityScanCompleted = false;
 
   while (true) {
-    // Deadline gate (Issue #3648): never claim another billed issue run once
-    // the cycle's planned shutdown time has passed. Skipped on the first pass,
-    // which the outer loop has already gated on the same deadline.
-    // Minimum-runway floor (Issue #4304): a claim with less runway than any
-    // plausible completion time is doomed on arrival, so it is not taken —
-    // the tail of the cycle goes to cheap maintenance instead. Issue #47
-    // raises the floor to the full execute budget when the cycle can fit one,
-    // so a deadline-bound execute is a documented exception, not the default
-    // tail of every cycle.
-    const minRunwayMs = runwayFloor.floorSeconds * 1000;
+    // Deadline gate (Issues #3648/#397): never claim another billed issue run
+    // once the cycle's planned shutdown time has passed. Skipped on the first
+    // pass, which the outer loop has already gated on the same deadline. It
+    // stops *new claims* only — a claim already taken keeps its full budget
+    // (Issue #420).
     const pastDeadline = iteration > 0 && deps.now() >= endTime;
-    // The floor applies on EVERY pass, including the outer loop's re-entry
-    // after a success — that re-entry is exactly where a doomed late claim
-    // used to be taken. At a fresh cycle start the floor is trivially met.
-    const belowFloor = minRunwayMs > 0 && deps.now() + minRunwayMs >= endTime;
+    // Minimum-runway floor (Issues #4304/#425): a claim the supervisor hard
+    // cap will kill before it can finish setup is doomed on arrival, so it is
+    // not taken. Measured against the hard cap, not the cycle deadline —
+    // cycle runway stopped bounding an execute at #420. Applies on EVERY
+    // pass, including the outer loop's re-entry after a success.
+    const belowFloor = belowClaimRunwayFloor(runwayFloor, deps.now());
     if (pastDeadline || belowFloor) {
-      const remainingSeconds = Math.max(
-        0,
-        Math.round((endTime - deps.now()) / 1000),
-      );
       deps.log(
         !pastDeadline
-          ? `Issue scan loop stopping before the next claim: ${remainingSeconds}s ` +
-            `of cycle runway left, below the ${runwayFloor.floorSeconds}s ` +
-            (runwayFloor.fullBudgetGate
-              ? `claim floor — the full ${runwayFloor.floorSeconds}s execute ` +
-                `budget no longer fits this cycle (Issue #47).`
-              : `claim floor (Issue #4304).`)
+          ? `Issue scan loop stopping before the next claim: ${
+            hardCapRunwaySeconds(runwayFloor, deps.now())
+          }s of runway left to the supervisor hard cap, below the ` +
+            `${runwayFloor.floorSeconds}s claim floor (Issues #4304/#425).`
           : "Issue scan loop reached the cycle deadline — stopping before the next claim.",
       );
       break;
@@ -1747,9 +1757,8 @@ async function runIssueScanLoop(
     if (
       await deferClaimForAdaptiveFloor(
         deps,
-        config,
         issue,
-        endTime,
+        runwayFloor,
         deferredClaims,
         (message) => deps.log(message),
       )
@@ -2274,8 +2283,8 @@ interface SlotPoolState {
   workVolumeFaulted?: boolean;
   /** SIGTERM/SIGINT seen (Issue #4182): no new claims; bounded drain. */
   shouldShutdown: () => boolean;
-  /** Effective claim-runway floor for this cycle (Issues #4304, #47). */
-  claimFloorSeconds: number;
+  /** Effective claim-runway floor for this cycle (Issues #4304/#425). */
+  claimFloor: ClaimRunwayFloor;
   /**
    * Issues deferred this cycle by the adaptive floor (Issue #245), keyed
    * `owner/repo#number`. Pool-wide: an issue one slot judged too big for the
@@ -2304,6 +2313,7 @@ interface SlotPoolState {
  */
 type SlotStop =
   | "deadline"
+  | "hard-cap"
   | "no-work"
   | "find-error"
   | "exit"
@@ -2350,15 +2360,15 @@ async function runIssueScanPool(
   }
 > {
   await deps.resetRepoFailures();
-  // Claim-runway floor for this cycle (Issues #4304, #47) — resolved once,
-  // applied by slotShouldStop before every claim in every slot.
+  // Claim-runway floor for this cycle (Issues #4304/#425) — resolved once,
+  // applied by slotShouldStop before every claim in every slot, and measured
+  // against the supervisor hard cap rather than the cycle deadline.
   const poolRunwayFloor = resolveClaimRunwayFloor({
     minClaimRunwaySeconds: deps.minClaimRunwaySeconds ?? 0,
-    fullExecuteBudgetSeconds: deps.fullExecuteBudgetSeconds,
-    cycleSeconds: config.runDurationSeconds,
+    hardCap: deps.claimHardCap,
   });
-  if (poolRunwayFloor.exceptionReason) {
-    deps.log(`Claim-runway floor: ${poolRunwayFloor.exceptionReason}`);
+  if (poolRunwayFloor.inertReason) {
+    deps.log(`Claim-runway floor: ${poolRunwayFloor.inertReason}`);
   }
   const pool: SlotPoolState = {
     consecutiveFailures: 0,
@@ -2367,7 +2377,7 @@ async function runIssueScanPool(
     registry: deps.inFlightRepos ?? new InFlightRepoRegistry(),
     spendCeilingReached: false,
     shouldShutdown,
-    claimFloorSeconds: poolRunwayFloor.floorSeconds,
+    claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
     eligibilityScanCompleted: false,
   };
@@ -2518,8 +2528,18 @@ async function runSlot(
       if (stop === "deadline") {
         pool.draining = true;
         log(
-          "stop reason=deadline — reached the cycle deadline / runway floor; " +
-            "stopping before the next claim.",
+          "stop reason=deadline — reached the cycle deadline; stopping " +
+            "before the next claim (in-flight claims keep their full " +
+            "budget, Issue #397).",
+        );
+      } else if (stop === "hard-cap") {
+        pool.draining = true;
+        log(
+          `stop reason=hard-cap — ${
+            hardCapRunwaySeconds(pool.claimFloor, deps.now())
+          }s of runway left to the supervisor hard cap, below the ` +
+            `${pool.claimFloor.floorSeconds}s claim floor; stopping before ` +
+            `the next claim (Issues #4304/#425).`,
         );
       } else if (stop === "shutdown") {
         pool.draining = true;
@@ -2627,9 +2647,8 @@ async function runSlot(
     if (
       await deferClaimForAdaptiveFloor(
         deps,
-        config,
         issue,
-        endTime,
+        pool.claimFloor,
         pool.deferredClaims,
         log,
       )
@@ -2916,7 +2935,15 @@ async function effectiveSlotCeiling(
   }
 }
 
-/** Why a slot should not take another claim right now, or undefined. */
+/**
+ * Why a slot should not take another claim right now, or undefined.
+ *
+ * Two distinct refusals, each named in the log (Issue #219): `deadline` is the
+ * cycle's soft gate — the hour is up, so no *new* claim is taken while the
+ * in-flight ones keep their full budget (Issue #397) — and `hard-cap` is the
+ * runway floor, which since Issue #425 refuses a claim the supervisor would
+ * kill before it could finish setup.
+ */
 async function slotShouldStop(
   deps: RunCoreDeps,
   endTime: number,
@@ -2925,11 +2952,9 @@ async function slotShouldStop(
   if (pool.exitOuterLoop) return "exit";
   if (pool.shouldShutdown()) return "shutdown";
   if (pool.draining) return "draining";
-  const minRunwayMs = pool.claimFloorSeconds * 1000;
   const now = deps.now();
-  if (now >= endTime || (minRunwayMs > 0 && now + minRunwayMs >= endTime)) {
-    return "deadline";
-  }
+  if (now >= endTime) return "deadline";
+  if (belowClaimRunwayFloor(pool.claimFloor, now)) return "hard-cap";
   return undefined;
 }
 

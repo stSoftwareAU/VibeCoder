@@ -66,6 +66,9 @@ export function createRollingTreeProbe(
  * @param repoDir - Checkout the agent will work in.
  * @param onExtension - Optional sink for each granted extension (Issue
  *   #4297), so the shutdown drain can account for an extended run.
+ * @param ceilingMs - Absolute epoch-ms past which no grant may be issued
+ *   (Issue #421), from `run_hard_cap.ts`. Omitted means uncapped, exactly as
+ *   before the supervisor published its cap.
  * @returns The option, or `undefined` when the feature is off — in which
  *   case the caller passes nothing and the hard timeout is unchanged.
  */
@@ -73,6 +76,7 @@ export async function buildProgressExtension(
   config: ProgressExtensionConfig,
   repoDir: string,
   onExtension?: RunDeadlineReporter,
+  ceilingMs?: number,
 ): Promise<ProgressExtensionOptions | undefined> {
   if (!config.progressExtensionEnabled) return undefined;
 
@@ -99,5 +103,6 @@ export async function buildProgressExtension(
     },
     treeProbe: createRollingTreeProbe(repoDir, baseline),
     ...(onExtension ? { onExtension } : {}),
+    ...(ceilingMs !== undefined ? { ceilingMs } : {}),
   };
 }

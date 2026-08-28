@@ -104,7 +104,6 @@ export interface ConfigFileJson {
   best_planning_model?: string;
   claude_timeout?: number;
   min_claim_runway_seconds?: number;
-  claim_require_full_execute_budget?: boolean;
   /** Labels marking an issue as a long job (Issue #245). */
   claim_long_job_labels?: string[];
   claude_kill_after?: number;
@@ -640,7 +639,6 @@ export function validateConfigFileJson(
   // Optional boolean fields (Issue #435)
   const booleanFields = [
     "shuffle_repos",
-    "claim_require_full_execute_budget",
     "update_gh_user_status",
     "enable_model_fallback",
     "sync_milestone_branches",

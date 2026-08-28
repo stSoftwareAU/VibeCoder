@@ -73,7 +73,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Timeout and interval fields
   "claude_timeout",
   "min_claim_runway_seconds",
-  "claim_require_full_execute_budget",
+  // Issue #425: `claim_require_full_execute_budget` removed — the #47 rule it
+  // switched on was retired with the deadline truncation that justified it.
   // Adaptive claim floor (Issue #245)
   "claim_long_job_labels",
   // Re-armable issue-work deadline (Issue #4296, part of #4290)

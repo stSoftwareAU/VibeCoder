@@ -185,6 +185,8 @@ import {
   recordAdaptiveFloorDeferral,
 } from "./adaptive_floor_starvation.ts";
 import { issueClaimKey } from "./claim_runway_evidence.ts";
+import type { ClaimHardCap } from "./claim_runway.ts";
+import { resolveRunHardCap } from "./run_hard_cap.ts";
 import {
   type CircuitBreakerConfig,
   getSleepInterval as circuitBreakerGetSleep,
@@ -346,6 +348,28 @@ export interface ProductionDepsOptions {
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
+
+/**
+ * The claim gate's view of the supervisor hard cap (Issues #421/#425).
+ *
+ * A cap smaller than the kill-and-checkpoint reserve puts the ceiling at or
+ * before the run's start, so `windowSeconds` is 0 and every claim is refused —
+ * the fail-safe direction, and loudly: the slot logs `stop reason=hard-cap`.
+ *
+ * @param killAfterSeconds - The worker's own SIGTERM→SIGKILL grace.
+ * @returns The cap, or undefined when this run is uncapped.
+ */
+function resolveClaimHardCap(
+  killAfterSeconds: number,
+): ClaimHardCap | undefined {
+  const resolution = resolveRunHardCap({ killAfterSeconds });
+  if (!resolution.capped) return undefined;
+  const { ceilingMs, startedMs } = resolution.cap;
+  return {
+    ceilingMs,
+    windowSeconds: Math.max(0, Math.round((ceilingMs - startedMs) / 1000)),
+  };
+}
 
 /**
  * Create production RunCoreDeps wired to real implementations.
@@ -2426,11 +2450,11 @@ export async function createProductionRunCoreDeps(
       await terminateActiveAgentRuns(reason, logger, options);
     },
 
-    // Minimum claim runway (Issue #4304, VibeCoder#170): default 5 minutes —
-    // only a claim that cannot even finish setup is refused. The cadence is
-    // "work as many issues as possible per run": a late claim runs
-    // deadline-bound and WIP preservation (Issues #47/#148) carries its
-    // progress into the next run. 0 disables the floor.
+    // Minimum claim runway (Issues #4304/#425, VibeCoder#170): default 5
+    // minutes — only a claim that cannot even finish setup is refused. Since
+    // Issue #420 a claim keeps its full execute budget however late in the
+    // cycle it is taken, so the floor is measured against the supervisor hard
+    // cap below, not the cycle deadline. 0 disables the floor.
     //
     // Resolved by `loadConfig` (Issue #289) from `.config.json`
     // `min_claim_runway_seconds`, falling back to MIN_CLAIM_RUNWAY_SECONDS.
@@ -2440,20 +2464,15 @@ export async function createProductionRunCoreDeps(
     // stayed at its default while the docs said otherwise.
     minClaimRunwaySeconds: config.minClaimRunwaySeconds,
 
-    // Full-budget claim gate (Issue #47): opt-in via `.config.json`
-    // `claim_require_full_execute_budget` (or, on a native run,
-    // CLAIM_REQUIRE_FULL_EXECUTE_BUDGET=1). When set, a claim is refused once
-    // the remaining runway cannot fit a full `claude_timeout` execute. Off by
-    // default (VibeCoder#170): it would idle the whole last hour of every
-    // longer cycle, and WIP preservation makes deadline-bound executes safe.
-    fullExecuteBudgetSeconds: config.claimRequireFullExecuteBudget
-      ? config.claudeTimeout
-      : undefined,
+    // The supervisor cap both runway floors measure against (Issues
+    // #421/#425), published by loop.sh as VIBE_RUN_MAX_SECONDS and anchored
+    // by VIBE_RUN_STARTED_EPOCH. Absent env — a CLI run, a host that disabled
+    // the cap — leaves both floors inert, which the scan loop logs once.
+    claimHardCap: resolveClaimHardCap(config.claudeKillAfter),
 
-    // Adaptive claim floor (Issue #245): the configured execute budget is
-    // always supplied here — unlike the opt-in gate above — because the
-    // adaptive floor applies it only to an issue that already carries
-    // evidence of being a long job.
+    // Adaptive claim floor (Issues #245/#425): the configured execute budget
+    // sizes the runway an issue with evidence of a long job must have to the
+    // hard cap before it is claimed.
     executeBudgetSeconds: config.claudeTimeout,
 
     // The evidence that floor reads: one `gh issue view` per candidate,

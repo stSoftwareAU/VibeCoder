@@ -373,6 +373,26 @@ export async function handleIssueFailure(
   const maxInfraRetries = options.maxInfraRetries ?? 5;
 
   const failureCategory = detectFailureCategory(options.failureMessage);
+
+  // A scheduled release never enters the ladder (Issue #424, parent #397).
+  // The cycle ended, or the supervisor's hard cap was reached, with the WIP
+  // committed and pushed — the attempt did not fail, it handed over. Marking
+  // it `failed-once` pollutes the failure record for a scheduled handover,
+  // and a second one would permanently `failed` an issue nothing is wrong
+  // with. The claim-release comment carries the scheduled-release wording,
+  // so the outcome is still recorded — just not as a fault.
+  if (failureCategory === "scheduled_release") {
+    return {
+      ok: true,
+      value: {
+        markedAsFailed: false,
+        markedAsFailedOnce: false,
+        failureCategory,
+        isInfrastructure: false,
+      },
+    };
+  }
+
   const isInfra = isInfrastructureFailure(failureCategory);
 
   const hasFailedOnce = await checkIssueHasFailedOnce(

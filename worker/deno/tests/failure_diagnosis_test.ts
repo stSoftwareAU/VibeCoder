@@ -209,9 +209,21 @@ Deno.test("failure diagnosis - display for no_changes", () => {
 // getFailureDiagnosis
 // ============================================================================
 
-Deno.test("failure diagnosis - diagnosis for timeout mentions time limit", () => {
+Deno.test("failure diagnosis - diagnosis for a genuine timeout still blames the budget and suggests splitting (Issue #424)", () => {
   const diagnosis = getFailureDiagnosis("timeout");
   assertEquals(diagnosis.includes("ran out of time"), true);
+  assertEquals(diagnosis.includes("sub-issues"), true);
+});
+
+Deno.test("failure diagnosis - diagnosis for a scheduled release blames neither the issue nor the clock (Issue #424)", () => {
+  const diagnosis = getFailureDiagnosis("scheduled_release");
+  assertStringIncludes(diagnosis, "released on schedule");
+  assertStringIncludes(diagnosis, "WIP preserved");
+  assertStringIncludes(diagnosis, "resumes");
+  // The whole point of the category: a handover must not read as the issue
+  // defeating the agent, and must not tell a human to split it up.
+  assertEquals(diagnosis.includes("ran out of time"), false);
+  assertEquals(diagnosis.includes("sub-issues"), false);
 });
 
 Deno.test("failure diagnosis - diagnosis for rate_limit mentions transient", () => {
@@ -255,11 +267,19 @@ Deno.test("failure diagnosis - diagnosis for unknown with clarity omits 'more de
 // getFailureDiagnosisOneliner
 // ============================================================================
 
-Deno.test("failure diagnosis - oneliner for timeout", () => {
+Deno.test("failure diagnosis - oneliner for a genuine timeout (Issue #424)", () => {
   assertEquals(
     getFailureDiagnosisOneliner("timeout"),
     "Likely cause: Claude ran out of time.",
   );
+});
+
+Deno.test("failure diagnosis - oneliner for a scheduled release names the handover, not a fault (Issue #424)", () => {
+  const oneliner = getFailureDiagnosisOneliner("scheduled_release");
+  assertStringIncludes(oneliner, "WIP preserved");
+  assertStringIncludes(oneliner, "resumes next cycle");
+  assertEquals(oneliner.includes("ran out of time"), false);
+  assertEquals(oneliner.includes("Likely cause"), false);
 });
 
 Deno.test("failure diagnosis - oneliner for no_changes with clarity", () => {
@@ -542,10 +562,12 @@ Deno.test("detectFailureCategory - an external SIGTERM classifies as killed (Iss
 // ---------------------------------------------------------------------------
 
 import {
+  buildScheduledReleaseReason,
   DEADLINE_BOUND_TIMEOUT_MARKER,
   isTimeoutClassFailureReason,
   watchdogFiredIn,
 } from "../lib/failure_diagnosis.ts";
+import { formatDetailedFailureMessage } from "../lib/failure_message.ts";
 
 const WATCHDOG_TIMEOUT_143 =
   "Claude timed out without creating changes\n\n### Diagnostics\n" +
@@ -584,4 +606,58 @@ Deno.test("isTimeoutClassFailureReason - a deadline-bound timeout is exempt from
     false,
   );
   assertEquals(isTimeoutClassFailureReason("Quality checks failed"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #424 (parent #397) — a scheduled release is a handover, not a failure
+// of the issue. The kill path names it in the reason; nothing downstream may
+// infer "timeout" from the exit status the two share.
+// ---------------------------------------------------------------------------
+
+/** What the execute phase builds when the supervisor's cap stops a run. */
+const HARD_CAP_RELEASE = formatDetailedFailureMessage(
+  `${buildScheduledReleaseReason("hard-cap")} — WIP preserved: committed and ` +
+    `pushed to 'issue-424' — the next claim resumes from that branch`,
+  {
+    elapsedSeconds: 10800,
+    timedOut: true,
+    outputSize: 91_000,
+    timeoutSeconds: 3600,
+    timeoutReason: "hard-timeout",
+    rawExitCode: 143,
+  },
+);
+
+Deno.test("detectFailureCategory - a hard-cap release is a scheduled release, never a timeout (Issue #424)", () => {
+  // The message legitimately carries every timeout signal — the watchdog
+  // line, "Timeout: 3600s", a SIGTERM exit — so only the marker can tell the
+  // two apart, and it must outrank all of them.
+  assertStringIncludes(HARD_CAP_RELEASE, "Watchdog: hard-timeout");
+  assertStringIncludes(HARD_CAP_RELEASE, "Timeout: 3600s");
+  assertEquals(detectFailureCategory(HARD_CAP_RELEASE), "scheduled_release");
+  assertEquals(
+    getFailureCategoryDisplay("scheduled_release"),
+    "scheduled-release",
+  );
+});
+
+Deno.test("detectFailureCategory - a cycle-ended release is a scheduled release (Issue #424)", () => {
+  const reason = buildScheduledReleaseReason("cycle-ended");
+  assertStringIncludes(reason, "cycle ended");
+  assertStringIncludes(reason, "WIP preserved, resumes next cycle");
+  assertEquals(detectFailureCategory(reason), "scheduled_release");
+});
+
+Deno.test("scheduled release - is not retried in-process and never escalates the cooldown (Issue #424)", () => {
+  // Not infrastructure: the in-process retry exists to re-run a transient
+  // blip, and a run with no runway left has nowhere to retry into.
+  assertEquals(isInfrastructureFailure("scheduled_release"), false);
+  assertEquals(isTimeoutClassFailureReason(HARD_CAP_RELEASE), false);
+});
+
+Deno.test("normaliseFailureCategory - accepts scheduled_release (Issue #424)", () => {
+  assertEquals(
+    normaliseFailureCategory("scheduled_release"),
+    "scheduled_release",
+  );
 });

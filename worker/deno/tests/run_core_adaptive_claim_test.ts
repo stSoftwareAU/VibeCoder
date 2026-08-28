@@ -1,10 +1,14 @@
 /**
- * Tests for the adaptive claim floor in the scan loop (Issue #245).
+ * Tests for the adaptive claim floor in the scan loop (Issues #245/#425).
  *
  * The pure decision lives in `claim_runway_evidence.ts`; these drive the
  * wiring: an evidenced issue offered on a runway that cannot host a real
  * execute is deferred, the slot claims the *next* candidate instead of
  * parking (the #219 rule), and the deferral is logged once per cycle.
+ *
+ * The runway that decides is the runway to the **supervisor hard cap**
+ * (Issue #425), not the runway left in the cycle — since Issue #420 a claim
+ * keeps its full execute budget however late in the cycle it is taken.
  *
  * A minimal RunCoreDeps mock is rebuilt locally so the file is self-contained,
  * matching the convention in the other run_core test files.
@@ -138,16 +142,17 @@ function issue(repo: string, issueNumber: number): DiscoveredIssue {
 }
 
 /**
- * The scan-loop scenario: the cycle is nearly over, the first candidate is a
- * known long job (#222), the second a fresh one-file fix (#9).
+ * The scan-loop scenario: the first candidate is a known long job (#222), the
+ * second a fresh one-file fix (#9).
  *
  * The clock starts at 0 so `runCoreLoop` derives its deadline from the full
- * cycle, then jumps to the point where only `remainingSeconds` are left as
- * soon as the first scan runs. A claim consumes the rest of the cycle, which
- * is what ends the run.
+ * cycle, then jumps to the point where only `remainingSeconds` of **hard-cap**
+ * runway are left as soon as the first scan runs. A claim consumes the rest of
+ * the cycle, which is what ends the run.
  */
 async function runScenario(options: {
   evidenceByIssue: Record<number, IssueClaimEvidence>;
+  /** Seconds of runway left to the supervisor hard cap at scan time. */
   remainingSeconds: number;
   gatherFails?: boolean;
   maxConcurrentIssues?: number;
@@ -155,6 +160,8 @@ async function runScenario(options: {
   deferredCycles?: Record<number, number>;
   adaptiveFloorStarvationLimit?: number;
   cleared?: string[];
+  /** Issue #425: run with no supervisor cap, so both floors are inert. */
+  uncapped?: boolean;
 }): Promise<{ claimed: number[]; logs: string[]; errors: string[] }> {
   const config = createDefaultRunCoreConfig();
   if (options.maxConcurrentIssues !== undefined) {
@@ -174,6 +181,15 @@ async function runScenario(options: {
     logError: (m) => errors.push(m),
     now: () => now,
     executeBudgetSeconds: 3600,
+    minClaimRunwaySeconds: 300,
+    // A three-hour supervisor cap whose ceiling sits `remainingSeconds` past
+    // the moment the scan runs (Issue #425).
+    ...(options.uncapped ? {} : {
+      claimHardCap: {
+        ceilingMs: scanStart + options.remainingSeconds * 1000,
+        windowSeconds: 10800,
+      },
+    }),
     findNextIssue: (findOptions) => {
       now = Math.max(now, scanStart);
       const next = queue.find((candidate) =>
@@ -313,7 +329,7 @@ Deno.test("adaptive claim #245 - the pool defers and claims the next candidate t
 
 Deno.test("adaptive floor #375 - an issue starved for the limit is claimed on the runway that is left", async () => {
   // The floor has already refused #222 on the two previous cycles; this is the
-  // third. On a host whose cycle can never meet the floor, deferring again
+  // third. On a host whose hard cap can never meet the floor, deferring again
   // strands it for ever — so the floor yields.
   const { claimed, logs } = await runScenario({
     evidenceByIssue: {
@@ -403,6 +419,45 @@ Deno.test("adaptive floor #375 - with no streak tracking wired the floor defers 
   );
 });
 
+Deno.test("adaptive claim #425 - a long job 20 minutes before the cycle deadline is claimed when the hard cap has hours left", async () => {
+  // The acceptance case for Issue #425: the cycle is nearly over, but nothing
+  // truncates the execute any more, so the only runway that matters is the
+  // two hours left to the supervisor hard cap.
+  const { claimed, logs } = await runScenario({
+    evidenceByIssue: {
+      222: { preservedWip: true, previousExecuteTimeout: true },
+    },
+    remainingSeconds: 2 * 3600,
+  });
+  assertEquals(claimed[0], 222);
+  assert(
+    !logs.some((m) => m.includes("adaptive floor")),
+    `the floor must not defer with hours of hard-cap runway, got: ${
+      logs.join(" | ")
+    }`,
+  );
+});
+
+Deno.test("adaptive claim #425 - an uncapped run has no adaptive floor at all", async () => {
+  // With no VIBE_RUN_MAX_SECONDS nothing will cut the execute short, so
+  // evidence of a long job is not evidence of a doomed claim. The inert floor
+  // is stated in the log rather than left silent (Issue #219).
+  const { claimed, logs } = await runScenario({
+    evidenceByIssue: {
+      222: { preservedWip: true, previousExecuteTimeout: true },
+    },
+    remainingSeconds: 933,
+    uncapped: true,
+  });
+  assertEquals(claimed[0], 222);
+  assert(
+    logs.some((m) =>
+      m.includes("Claim-runway floor:") && m.includes("VIBE_RUN_MAX_SECONDS")
+    ),
+    `expected the inert-floor reason to be logged, got: ${logs.join(" | ")}`,
+  );
+});
+
 Deno.test("adaptive claim #245 - a scan that keeps re-offering a deferred issue stops the loop loudly", async () => {
   const config = createDefaultRunCoreConfig();
   const cycleMs = config.runDurationSeconds * 1000;
@@ -415,6 +470,7 @@ Deno.test("adaptive claim #245 - a scan that keeps re-offering a deferred issue 
   const deps = createMockDeps({
     logError: (m) => errors.push(m),
     executeBudgetSeconds: 3600,
+    claimHardCap: { ceilingMs: scanStart + 933_000, windowSeconds: 10800 },
     now: () => now,
     // Ignores `excludeIssues` — the wiring fault this guard exists for. The
     // clock advances per scan so the cycle still ends.

@@ -1,89 +1,113 @@
 /**
- * Tests for claim-runway floor resolution (Issue #47).
+ * Tests for claim-runway floor resolution (Issues #4304/#425, parent #397).
  *
- * The floor decides how much cycle runway a new implementation claim must
- * have. Three regimes: no execute budget known (plain #4304 floor), the
- * cycle fits a full budget (floor raised to the budget), and the cycle can
- * never fit the budget (plain floor plus a documented-exception reason).
+ * The floor decides how much runway **to the supervisor hard cap** a new
+ * implementation claim must have. Three regimes: a capped run (the floor
+ * applies), an uncapped run (inert, with the reason stated), and a floor
+ * configured to `0` (inert, with the reason stated).
+ *
+ * The Issue #47 rule that raised the floor to the whole execute budget is
+ * gone: it existed to make deadline-bound executes rare, and Issue #420
+ * retired deadline-bound executes altogether.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  belowClaimRunwayFloor,
   DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
+  hardCapRunwaySeconds,
   resolveClaimRunwayFloor,
 } from "../lib/claim_runway.ts";
 
-Deno.test("claim runway #47 - no budget keeps the plain #4304 floor", () => {
+/** A three-hour cap whose ceiling is `runwaySeconds` away from `nowMs`. */
+function capWithRunway(nowMs: number, runwaySeconds: number) {
+  return { ceilingMs: nowMs + runwaySeconds * 1000, windowSeconds: 10800 };
+}
+
+Deno.test("claim runway #425 - a capped run keeps the configured floor and its cap", () => {
   const floor = resolveClaimRunwayFloor({
-    minClaimRunwaySeconds: 1800,
-    cycleSeconds: 3600,
+    minClaimRunwaySeconds: 300,
+    hardCap: capWithRunway(0, 7200),
   });
-  assertEquals(floor.floorSeconds, 1800);
-  assertEquals(floor.fullBudgetGate, false);
-  assertEquals(floor.exceptionReason, undefined);
+  assertEquals(floor.floorSeconds, 300);
+  assertEquals(floor.hardCap?.ceilingMs, 7_200_000);
+  assertEquals(floor.inertReason, undefined);
 });
 
-Deno.test("claim runway #47 - a non-positive budget keeps the plain floor", () => {
-  const floor = resolveClaimRunwayFloor({
-    minClaimRunwaySeconds: 1800,
-    fullExecuteBudgetSeconds: 0,
-    cycleSeconds: 3600,
-  });
-  assertEquals(floor.floorSeconds, 1800);
-  assertEquals(floor.fullBudgetGate, false);
-});
-
-Deno.test("claim runway #47 - a cycle that fits the budget raises the floor to it", () => {
-  const floor = resolveClaimRunwayFloor({
-    minClaimRunwaySeconds: 1800,
-    fullExecuteBudgetSeconds: 3600,
-    cycleSeconds: 4 * 3600,
-  });
-  assertEquals(floor.floorSeconds, 3600);
-  assertEquals(floor.fullBudgetGate, true);
-  assertEquals(floor.exceptionReason, undefined);
-});
-
-Deno.test("claim runway #47 - a raised floor never drops below the configured floor", () => {
-  const floor = resolveClaimRunwayFloor({
-    minClaimRunwaySeconds: 5400,
-    fullExecuteBudgetSeconds: 3600,
-    cycleSeconds: 4 * 3600,
-  });
-  assertEquals(floor.floorSeconds, 5400);
-  assertEquals(floor.fullBudgetGate, true);
-});
-
-Deno.test("claim runway #47 - a cycle shorter than the budget is the documented exception", () => {
-  // The live case: a 3600 s cycle with a 3600 s claudeTimeout — raising the
-  // floor would refuse every claim the host could ever make.
-  const floor = resolveClaimRunwayFloor({
-    minClaimRunwaySeconds: 1800,
-    fullExecuteBudgetSeconds: 3600,
-    cycleSeconds: 3600,
-  });
-  assertEquals(floor.floorSeconds, 1800);
-  assertEquals(floor.fullBudgetGate, false);
+Deno.test("claim runway #425 - an uncapped run leaves the floor inert, and says so", () => {
+  const floor = resolveClaimRunwayFloor({ minClaimRunwaySeconds: 300 });
+  assertEquals(floor.floorSeconds, 300);
+  assertEquals(floor.hardCap, undefined);
   assert(
-    floor.exceptionReason !== undefined &&
-      floor.exceptionReason.includes("can never offer"),
-    `expected a documented-exception reason, got: ${floor.exceptionReason}`,
+    floor.inertReason !== undefined &&
+      floor.inertReason.includes("VIBE_RUN_MAX_SECONDS"),
+    `expected the uncapped reason, got: ${floor.inertReason}`,
   );
+  // Inert means inert: no claim is refused, however little cycle is left.
+  assertEquals(belowClaimRunwayFloor(floor, 3_599_000), false);
+  assertEquals(hardCapRunwaySeconds(floor, 0), undefined);
+});
+
+Deno.test("claim runway #425 - a floor of 0 is disabled, and says so", () => {
+  const floor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: 0,
+    hardCap: capWithRunway(0, 60),
+  });
+  assertEquals(floor.floorSeconds, 0);
   assert(
-    floor.exceptionReason.includes("Issue #47"),
-    "the exception reason must cite Issue #47",
+    floor.inertReason !== undefined &&
+      floor.inertReason.includes("min_claim_runway_seconds is 0"),
+    `expected the disabled reason, got: ${floor.inertReason}`,
   );
+  assertEquals(belowClaimRunwayFloor(floor, 0), false);
+});
+
+Deno.test("claim runway #425 - the floor is measured against the hard cap, not the cycle", () => {
+  // Twenty minutes before a 3600 s cycle deadline, but hours of hard-cap
+  // runway left: the acceptance case from Issue #425.
+  const now = 2400 * 1000;
+  const floor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
+    hardCap: capWithRunway(now, 2 * 3600),
+  });
+  assertEquals(belowClaimRunwayFloor(floor, now), false);
+  assertEquals(hardCapRunwaySeconds(floor, now), 7200);
+});
+
+Deno.test("claim runway #425 - a claim inside the floor of the hard cap is refused", () => {
+  const now = 1_000_000;
+  const floor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: 300,
+    hardCap: capWithRunway(now, 299),
+  });
+  assertEquals(belowClaimRunwayFloor(floor, now), true);
+  assertEquals(hardCapRunwaySeconds(floor, now), 299);
+  // Exactly at the floor is still refused — the boundary is inclusive.
+  const exact = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: 300,
+    hardCap: capWithRunway(now, 300),
+  });
+  assertEquals(belowClaimRunwayFloor(exact, now), true);
+});
+
+Deno.test("claim runway #425 - a ceiling already passed reports zero runway and refuses", () => {
+  const now = 5_000_000;
+  const floor = resolveClaimRunwayFloor({
+    minClaimRunwaySeconds: 300,
+    hardCap: { ceilingMs: now - 60_000, windowSeconds: 10800 },
+  });
+  assertEquals(hardCapRunwaySeconds(floor, now), 0);
+  assertEquals(belowClaimRunwayFloor(floor, now), true);
 });
 
 Deno.test("DEFAULT_MIN_CLAIM_RUNWAY_SECONDS is five minutes so a run keeps claiming until its last minutes (VibeCoder#170)", () => {
   assertEquals(DEFAULT_MIN_CLAIM_RUNWAY_SECONDS, 300);
-  // A 3600 s cycle with 1200 s left must still admit a claim under the default.
   const floor = resolveClaimRunwayFloor({
     minClaimRunwaySeconds: DEFAULT_MIN_CLAIM_RUNWAY_SECONDS,
-    cycleSeconds: 3600,
+    hardCap: capWithRunway(0, 1200),
   });
   assertEquals(floor.floorSeconds, 300);
-  assertEquals(floor.fullBudgetGate, false);
+  assertEquals(belowClaimRunwayFloor(floor, 0), false);
 });

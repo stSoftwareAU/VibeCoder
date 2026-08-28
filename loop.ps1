@@ -30,6 +30,31 @@ if (-not $LoopSleepSeconds) { $LoopSleepSeconds = "60" }
 # also record it — one failure must be counted once (Issue #4072).
 $env:VIBE_SUPERVISOR_RECORDS_OUTCOME = "1"
 
+################################################################################
+# No wall-clock cap here — a deliberate divergence from loop.sh (Issue #423)
+#
+# loop.sh wraps each run in `timeout --kill-after=<grace> <VIBE_RUN_MAX_SECONDS>`
+# (default 10800 s) and exports that cap with the run's start epoch so the
+# worker can stop itself first (Issues #322/#421). This script has no
+# equivalent: it invokes run.ps1 in-process, so it neither sets
+# VIBE_RUN_MAX_SECONDS nor bounds the call, and a wedged run.ps1 blocks this
+# loop until an operator intervenes.
+#
+# What still bounds a run on a PowerShell host:
+#   - The container watchdog. run.ps1 waits on the runtime client under the
+#     launch plan's `watchdog` deadline (the worker's own maximum run duration
+#     plus a 10-minute margin, VIBE_CONTAINER_WATCHDOG_SECONDS to override),
+#     reaps a container that outlives it and exits 87 (Issue #4173).
+#   - The worker's own run-duration limit inside the container.
+# Neither covers a host-side run.ps1 that never returns.
+#
+# The canonical production supervision model on Windows is Task Scheduler
+# invoking run.ps1 on a fixed interval — the scheduler owns the wall clock
+# there — so this convenience wrapper is left unbounded rather than growing an
+# untested out-of-process supervision path. Said here, plainly, so the gap is
+# a documented choice rather than a silent divergence.
+################################################################################
+
 # The worker's own "I stopped because this host is out of quota" status
 # (QUOTA_PAUSE_EXIT_STATUS in worker/deno/lib/quota_pause.ts, Issue #342).
 $QuotaPauseExit = 75
