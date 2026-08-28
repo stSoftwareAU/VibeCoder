@@ -25,10 +25,18 @@
  *    calls dangling — never `--all`, which would drop the pinned base
  *    images every rebuild pulls.
  * 3. **The builder** is deleted only when the store's filesystem is short
- *    of room (below {@link DEFAULT_BUILDER_FLOOR_PERCENT} free), because
- *    its cache is what keeps a definition-change rebuild cheap; a host with
- *    plenty of disk keeps it. A runtime without a builder container skips
- *    the step.
+ *    of room, because its cache is what keeps a definition-change rebuild
+ *    cheap; a host with plenty of disk keeps it. A runtime without a
+ *    builder container skips the step.
+ *
+ *    "Short of room" is **the floor the worker stops claiming at** — the
+ *    same `lowFloorBytes` from `host_disk.ts`, honouring the same
+ *    `VIBE_HOST_DISK_LOW_FLOOR_GB` / `_PERCENT` overrides (Issue #493).
+ *    It used to be a hardcoded 20 % of its own, which on a 460 GB host sat
+ *    46 GB above the claiming floor: between the two, the worker was
+ *    perfectly happy to claim and run while every launch deleted the
+ *    builder, so every image-definition change paid a full cold rebuild on
+ *    a host that never considered itself short of disk.
  * 4. **Best-effort and loud.** Each step reports what it reclaimed or why
  *    it could not; a failed step never stops the others, and the launchers
  *    treat a non-zero exit as a warning (reclaiming disk must never block
@@ -41,6 +49,11 @@
  */
 
 import { runWithTimeout } from "./subprocess_timeout.ts";
+import {
+  type DiskFloors,
+  lowFloorBytes,
+  resolveDiskFloors,
+} from "./host_disk.ts";
 import { PRUNE_RUNTIME_TIMEOUT_MS } from "./container_image_prune.ts";
 
 /** Volume-name prefix the container tests use for their per-run volumes. */
@@ -49,8 +62,17 @@ export const THROWAWAY_VOLUME_PREFIX = "vibe-test-";
 /** Volume names the runtimes accept — and no argument parser can misread. */
 const VOLUME_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** Below this much free space on the store's filesystem the builder goes. */
-export const DEFAULT_BUILDER_FLOOR_PERCENT = 20;
+/**
+ * Percent-component override for the builder floor, when an operator
+ * deliberately wants it above the worker's claiming floor (Issue #493).
+ *
+ * There is no separate default: unset, the builder goes at exactly the
+ * floor the worker stops claiming at. `run.sh` keeps the same invariant
+ * for the work-volume heal, and for the same reason — deciding at a
+ * different floor than the worker claims at means acting on hosts that are
+ * fine, or never acting on the ones that are not.
+ */
+export const BUILDER_FLOOR_PERCENT_ENV = "VIBE_BUILDER_FLOOR_PERCENT";
 
 /** One runtime invocation's outcome. */
 export interface RuntimeInvocation {
@@ -90,8 +112,11 @@ export interface StorePruneOptions {
   dialect: StorePruneDialect;
   /** Path on the filesystem holding the store, for the free-space gate. */
   storePath?: string;
-  /** Free-space floor (percent) below which the builder is deleted. */
-  builderFloorPercent?: number;
+  /**
+   * Floors below which the builder is deleted. Defaults to the worker's
+   * own claiming floors (Issue #493).
+   */
+  floors?: DiskFloors;
 }
 
 /** What one step achieved. */
@@ -224,17 +249,47 @@ function gb(bytes: number): string {
 /**
  * Decide whether the builder should go, given the free-space reading.
  *
- * @returns `null` to keep it, or the reason to delete it
+ * The floor is the worker's own claiming floor — the larger of the GB and
+ * percent components — so the reason names both the reading and the
+ * threshold it was measured against (Issue #493). `12.2% is below the 20%
+ * floor` read as an emergency on a host the worker considered healthy;
+ * this says which floor, in the same units the worker reports.
+ *
+ * @param free - Free-space reading for the store's filesystem
+ * @param floors - Floors to judge it against
+ * @returns `null` to keep the builder, or the reason to delete it
  */
 export function builderDeleteReason(
   free: FreeSpace | null,
-  floorPercent: number,
+  floors: DiskFloors,
 ): string | null {
   if (free === null) return null;
+  const floor = lowFloorBytes(free.totalBytes, floors);
+  if (free.availableBytes >= floor) return null;
   const percent = (free.availableBytes / free.totalBytes) * 100;
-  if (percent >= floorPercent) return null;
   return `${gb(free.availableBytes)} free (${percent.toFixed(1)}%) is below ` +
-    `the ${floorPercent}% floor`;
+    `the ${gb(floor)} floor the worker stops claiming at (the larger of ` +
+    `${floors.lowFloorGb} GB and ${floors.lowFloorPercent}%)`;
+}
+
+/**
+ * How much the filesystem gained since `before`, as an operator-facing
+ * phrase (Issue #493).
+ *
+ * Best-effort: a reading that cannot be taken says so rather than
+ * reporting a number nobody measured.
+ */
+async function reclaimedSince(
+  deps: StorePruneDeps,
+  storePath: string | undefined,
+  before: FreeSpace | null,
+): Promise<string> {
+  if (!storePath || before === null) return "reclaimed space unknown";
+  const after = await deps.freeSpace(storePath);
+  if (after === null) return "reclaimed space unknown";
+  const delta = after.availableBytes - before.availableBytes;
+  if (delta <= 0) return "reclaimed nothing";
+  return `reclaimed ${gb(delta)}`;
 }
 
 /**
@@ -326,10 +381,9 @@ export async function pruneContainerStore(
     const free = options.storePath
       ? await deps.freeSpace(options.storePath)
       : null;
-    const reason = builderDeleteReason(
-      free,
-      options.builderFloorPercent ?? DEFAULT_BUILDER_FLOOR_PERCENT,
-    );
+    const floors = options.floors ??
+      resolveDiskFloors((name) => Deno.env.get(name));
+    const reason = builderDeleteReason(free, floors);
     if (reason === null) {
       const detail = free === null
         ? "free space unknown — builder kept"
@@ -341,12 +395,17 @@ export async function pruneContainerStore(
     } else {
       const result = await deps.runRuntime(options.dialect.builderDeleteArgs);
       if (result.code === 0) {
-        deps.log(`${tag} deleted the builder: ${reason}`);
+        // Issue #493: say what it reclaimed, not only the reading that
+        // triggered it. A delete that recovered nothing looked exactly
+        // like one that recovered 13 GB.
+        const reclaimed = await reclaimedSince(deps, options.storePath, free);
+        const detail = `deleted: ${reclaimed}, ${reason}`;
+        deps.log(`${tag} deleted the builder: ${reclaimed} — ${reason}`);
         steps.push({
           step: "builder",
           ok: true,
           removed: ["builder"],
-          detail: `deleted: ${reason}`,
+          detail,
         });
       } else {
         const out = firstLine(result.stderr) || firstLine(result.stdout) ||

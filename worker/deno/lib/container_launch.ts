@@ -340,6 +340,11 @@ export interface ContainerLaunchPlan {
    * image exists (Issue #4331) — empty for runtimes that have none.
    */
   builderStopArgs: string[];
+  /**
+   * Error-text fragments meaning "there is no builder to stop" (Issue
+   * #492) — empty for runtimes with no builder helper.
+   */
+  builderAbsentPatterns: string[];
   /** Arguments that run the worker container. */
   runArgs: string[];
 }
@@ -901,6 +906,7 @@ export function buildContainerLaunchPlan(
     imageInspectArgs: [...dialect.imageInspectArgs, image],
     buildArgs,
     builderStopArgs: [...dialect.builderStopArgs],
+    builderAbsentPatterns: [...dialect.builderAbsentPatterns],
     runArgs,
   };
 }
@@ -958,6 +964,7 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.imageInspectArgs.map((arg) => `exists=${arg}`),
     ...plan.buildArgs.map((arg) => `build=${arg}`),
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
+    ...plan.builderAbsentPatterns.map((p) => `builder-absent=${p}`),
     ...plan.runArgs.map((arg) => `run=${arg}`),
   ];
 

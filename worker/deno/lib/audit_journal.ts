@@ -42,6 +42,7 @@
 
 import type { Result } from "../types.ts";
 import {
+  acknowledgeRosterDamage,
   acknowledgeRosterLoss,
   addToRoster,
   anchorPath,
@@ -50,9 +51,11 @@ import {
   readAnchor,
   readRosterContents,
   type RosterAcknowledgement,
+  type RosterDamageAcknowledgement,
   rosterWasSeen,
   writeAnchor,
 } from "./audit_anchor.ts";
+import { withFileLock } from "./file_lock.ts";
 
 /**
  * Raised when the journal on disk disagrees with its chain anchor —
@@ -164,12 +167,22 @@ export interface ChainSweep {
   acknowledged: AcknowledgedLoss[];
 }
 
-/** One accounted-for journal loss within a sweep (Issue #359). */
+/**
+ * One accounted-for finding within a sweep.
+ *
+ * Either a journal that is gone and whose loss was signed for (Issue
+ * #359), or one that is present but does not verify and whose damage was
+ * signed for against its exact bytes (Issue #491). Both are reported on
+ * every sweep and neither fails it; `kind` says which, because "we deleted
+ * this" and "this is corrupt and we know why" are different admissions.
+ */
 export interface AcknowledgedLoss {
-  /** Journal file path the loss covers. */
+  /** Journal file path the acknowledgement covers. */
   path: string;
-  /** Why the journal is gone, and who signed for it. */
-  acknowledgement: RosterAcknowledgement;
+  /** Which admission this is. */
+  kind: "loss" | "damage";
+  /** Why it is accounted for, and who signed for it. */
+  acknowledgement: RosterAcknowledgement | RosterDamageAcknowledgement;
 }
 
 /** Field order used for the canonical payload (chain fields excluded). */
@@ -184,7 +197,7 @@ const PAYLOAD_FIELDS: ReadonlyArray<keyof AuditMutation> = [
   "caller",
 ];
 
-/** In-process per-path write queue (async mutex) keeping appends serial. */
+/** In-process per-key write queue keeping this process's appends serial. */
 const writeQueues = new Map<string, Promise<unknown>>();
 
 /** Live chain position for a journal: how many entries, and the head hash. */
@@ -193,8 +206,17 @@ interface ChainState {
   headHash: string;
 }
 
-/** Cache of the chain position per path so the chain extends correctly. */
-const chainStateByPath = new Map<string, ChainState>();
+/**
+ * Chain state is deliberately **not** cached (Issue #491).
+ *
+ * The previous implementation kept a `Map<path, ChainState>` seeded on
+ * first use and never re-read it. Under a second writer — a child `deno`
+ * command inheriting `VIBE_RUN_ID`, or a concurrent run — the cached head
+ * went stale the moment the other process appended, and the next append
+ * chained onto an entry that was no longer the tail. Reading the head from
+ * disk inside the lock costs one read of a file that holds a few hundred
+ * lines, which is nothing beside getting the chain wrong.
+ */
 
 /** Compute the lowercase hex SHA-256 digest of a string. */
 async function sha256Hex(input: string): Promise<string> {
@@ -253,7 +275,19 @@ export function resolveBaseDir(override?: string): string {
   return `${tmp}/vibe-audit`;
 }
 
-/** Resolve the worker partition id from the environment. */
+/**
+ * Resolve the worker partition id from the environment.
+ *
+ * The partition is **per worker, not per process** (Issue #491). Every
+ * process on a host — the run driver and every child `deno` command it
+ * spawns — deliberately shares one journal, so the trail reads in the
+ * order the mutations actually happened rather than being scattered across
+ * a file per pid. Concurrency safety therefore comes from the directory
+ * lock in `recordMutation`, never from the filename: `WORKER_UNIQUE_ID` is
+ * a deployment seam for running two workers against one volume, and is
+ * unset on the standard single-worker host, which is why journals there
+ * are named `audit-worker-<date>.jsonl`.
+ */
 export function resolveWorkerId(override?: string): string {
   if (override) return sanitiseWorkerId(override);
   const id = Deno.env.get("WORKER_UNIQUE_ID") ??
@@ -277,14 +311,42 @@ export function auditFilePath(opts: RecordOptions = {}): string {
   return `${baseDir}/audit-${workerId}-${date}.jsonl`;
 }
 
-/** Run `fn` exclusively for `path`, serialising concurrent callers. */
-function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-  const prev = writeQueues.get(path) ?? Promise.resolve();
+/**
+ * Queue `fn` behind this process's other callers for `key`.
+ *
+ * **This is not a lock.** It is a chain of promises in a module-level
+ * `Map`, so it orders callers inside one Deno process and is invisible to
+ * every other process on the host — which is precisely how 10 of 14
+ * journals on GRQ-23 ended up with orphaned head hashes (Issue #491).
+ * Exclusion across processes is {@link withFileLock}'s job; this stays
+ * only as a fast path, so concurrent callers in one process wait on a
+ * promise rather than spinning on the lock file.
+ */
+function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = writeQueues.get(key) ?? Promise.resolve();
   // Chain regardless of whether the previous task resolved or rejected.
   const next = prev.then(fn, fn);
   // Swallow rejection on the stored tail so it never becomes unhandled.
-  writeQueues.set(path, next.then(() => {}, () => {}));
+  writeQueues.set(key, next.then(() => {}, () => {}));
   return next;
+}
+
+/**
+ * Lock file guarding every append to one audit directory (Issue #491).
+ *
+ * Directory-wide rather than per-journal, because journal *selection* is
+ * itself part of the critical section: `resolveWritableJournal` decides
+ * which segment to write to by reading chain state, and two writers making
+ * that decision concurrently is the same race as two writers appending
+ * concurrently. Held for the length of one append — a read, a hash and two
+ * small writes — so a single lock costs nothing at the rate mutations
+ * actually occur.
+ *
+ * The name is dot-prefixed and does not match the `audit-*.jsonl` pattern
+ * `verifyAllChains` sweeps, so it is never mistaken for a journal.
+ */
+function auditLockPath(baseDir: string): string {
+  return `${baseDir}/.audit-append.lock`;
 }
 
 /** Read a journal's non-empty lines, or `null` when the file is absent. */
@@ -370,15 +432,17 @@ function reconcile(
   return { count: lines.length, headHash };
 }
 
-/** Chain position for a path, seeded from disk (and its anchor) on first use. */
+/**
+ * Chain position for a path, read from disk and its anchor every time.
+ *
+ * Callers must hold the directory lock (Issue #491): the value is only
+ * true for as long as no other process appends, so reading it outside the
+ * lock and writing on the strength of it is the original bug.
+ */
 async function getChainState(path: string): Promise<ChainState> {
-  const cached = chainStateByPath.get(path);
-  if (cached !== undefined) return cached;
   const anchor = await readAnchor(path);
   const lines = await readJournalLines(path);
-  const state = reconcile(path, anchor, lines);
-  chainStateByPath.set(path, state);
-  return state;
+  return reconcile(path, anchor, lines);
 }
 
 /**
@@ -398,8 +462,18 @@ export async function recordMutation(
   try {
     const baseDir = resolveBaseDir(opts.baseDir);
     await Deno.mkdir(baseDir, { recursive: true });
-    const path = await resolveWritableJournal(auditFilePath(opts));
-    const entry = await withLock(path, () => appendEntry(path, mutation));
+    // Issue #491: journal selection and the append are one critical
+    // section, guarded across processes. The in-process queue wraps the
+    // file lock so same-process callers wait on a promise instead of
+    // spinning on the lock file.
+    const entry = await withLock(
+      baseDir,
+      () =>
+        withFileLock(auditLockPath(baseDir), async () => {
+          const path = await resolveWritableJournal(auditFilePath(opts));
+          return await appendEntry(path, mutation);
+        }),
+    );
     return { ok: true, value: entry };
   } catch (error: unknown) {
     return {
@@ -424,7 +498,6 @@ async function appendEntry(
     append: true,
   });
   const next: ChainState = { count: state.count + 1, headHash: hash };
-  chainStateByPath.set(path, next);
   const anchored = await writeAnchor(path, next);
   if (!anchored.ok) {
     // Fail loud (Issue #3234): an un-anchored append leaves the chain
@@ -525,14 +598,15 @@ async function noteQuarantine(
       `— left intact as evidence and still failing the sweep; recording ` +
       `continues in ${segment}`,
   );
-  await withLock(segment, () =>
-    appendEntry(segment, {
-      runId: resolveRunId(),
-      verb: AUDIT_JOURNAL_QUARANTINED_VERB,
-      target: damaged.path.slice(damaged.path.lastIndexOf("/") + 1),
-      outcome: "error",
-      caller: damaged.reason,
-    }));
+  // Already inside the directory lock (Issue #491): re-entering it here
+  // would deadlock, and the note is part of the same critical section.
+  await appendEntry(segment, {
+    runId: resolveRunId(),
+    verb: AUDIT_JOURNAL_QUARANTINED_VERB,
+    target: damaged.path.slice(damaged.path.lastIndexOf("/") + 1),
+    outcome: "error",
+    caller: damaged.reason,
+  });
 }
 
 /**
@@ -779,7 +853,8 @@ export async function adoptAnchor(path: string): Promise<Result<ChainAnchor>> {
     headHash: prev,
   });
   if (!written.ok) return written;
-  chainStateByPath.delete(path);
+  // No cache to invalidate since Issue #491: the next append reads the
+  // freshly written anchor from disk.
 
   // Issue #3949: an adopted journal is an expected journal from here on.
   const slash = path.lastIndexOf("/");
@@ -800,11 +875,161 @@ export async function adoptAnchor(path: string): Promise<Result<ChainAnchor>> {
 }
 
 /**
- * Verb recorded in the chain when a journal loss is signed for (Issue #359).
+ * Verb recorded in the chain when damage to a present journal is signed
+ * for (Issue #491).
  *
  * Greppable in the journal itself, and in every downstream consumer of the
  * audit trail, so "who silenced which alarm" is answerable from the chain
  * rather than from a sidecar alone.
+ */
+export const AUDIT_DAMAGE_ACKNOWLEDGED_VERB = "audit-damage-acknowledged";
+
+/**
+ * SHA-256 of a journal's bytes, with its entry count.
+ *
+ * The digest covers the whole file, not the chain, so it changes on any
+ * edit at all — including one that leaves the chain just as broken.
+ */
+async function journalDigest(path: string): Promise<Result<string>> {
+  try {
+    const bytes = await Deno.readFile(path);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return {
+      ok: true,
+      value: Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join(""),
+    };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
+/** Inputs for {@link acknowledgeJournalDamage}. */
+export interface AcknowledgeDamageParams {
+  /** Audit directory the roster covers. */
+  baseDir: string;
+  /** Basename of the damaged journal being signed for. */
+  journalName: string;
+  /** Why the damage is accounted for. Must not be blank. */
+  reason: string;
+  /** Who is signing for it. Must not be blank. */
+  by: string;
+}
+
+/**
+ * Sign for a journal that is present but does not verify (Issue #491).
+ *
+ * The cross-process append race left ten journals on GRQ-23 with an
+ * orphaned head hash. Fixing the writer stops new damage; it cannot repair
+ * the existing files, and repairing them is the last thing anyone should
+ * want — they are the evidence. But `--acknowledge-loss` refuses them by
+ * design (only a journal that is genuinely *gone* can be signed for), so
+ * the host was left with a permanent `[SECURITY]` alarm and no documented
+ * way out. An alarm that can never be cleared is an alarm nobody reads,
+ * which is the failure Issue #359 already identified for losses.
+ *
+ * This is the exit for damage, and it is narrower than the loss path:
+ *
+ *   - the journal must be **on disk** — a missing journal is a loss, and
+ *     `acknowledgeJournalLoss` is where that is signed for,
+ *   - it must **actually fail** verification. A journal that verifies has
+ *     nothing to sign for, and accepting one would let an operator
+ *     pre-sign a file they were about to damage,
+ *   - a **reason** and an **operator identity** are required,
+ *   - the signature is **pinned to the journal's exact bytes**. The sweep
+ *     honours it only while the file still hashes to the recorded digest,
+ *     so this closes today's finding without blessing tomorrow's edit,
+ *   - and the act is written into the hash chain **first**, in the
+ *     currently-writable journal, so who silenced what is itself chained.
+ *
+ * The damaged journal is never modified, re-anchored, or removed.
+ *
+ * @param params - Which journal, why, and on whose authority
+ * @param opts - Storage overrides for the chained record (mainly tests)
+ * @returns Result carrying the persisted acknowledgement
+ */
+export async function acknowledgeJournalDamage(
+  params: AcknowledgeDamageParams,
+  opts: RecordOptions = {},
+): Promise<Result<RosterDamageAcknowledgement>> {
+  const { baseDir, journalName, reason, by } = params;
+  const path = `${baseDir}/${journalName}`;
+
+  if (!await pathExists(path)) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge damage to ${journalName}: it is not on ` +
+          `disk — a journal that is gone is a loss, signed for with ` +
+          `--acknowledge-loss, not damage`,
+      ),
+    };
+  }
+
+  const verified = await verifyChain(path);
+  if (verified.ok && verified.value.valid) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge damage to ${journalName}: its chain ` +
+          `verifies — there is nothing to sign for, and a signature taken ` +
+          `now would cover damage that has not happened yet`,
+      ),
+    };
+  }
+
+  const digest = await journalDigest(path);
+  if (!digest.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge damage to ${journalName}: its bytes could ` +
+          `not be read, so the signature could not be pinned to them: ` +
+          `${digest.error.message}`,
+      ),
+    };
+  }
+  const entries = verified.ok ? verified.value.count : 0;
+
+  // The chain record comes first, as it does for a loss: a failure here
+  // leaves the alarm sounding, which is the safe direction to fail in.
+  const recorded = await recordMutation({
+    runId: resolveRunId(),
+    verb: AUDIT_DAMAGE_ACKNOWLEDGED_VERB,
+    target: journalName,
+    outcome: "success",
+    caller: `${by}: ${reason}`,
+  }, { ...opts, baseDir });
+  if (!recorded.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `refusing to acknowledge damage to ${journalName}: the ` +
+          `acknowledgement could not be recorded in the audit chain, so it ` +
+          `will not be recorded in the roster either: ` +
+          `${recorded.error.message}`,
+      ),
+    };
+  }
+
+  return await acknowledgeRosterDamage(
+    baseDir,
+    journalName,
+    reason,
+    by,
+    digest.value,
+    entries,
+  );
+}
+
+/**
+ * Verb recorded in the chain when a journal loss is signed for (Issue
+ * #359). See {@link AUDIT_DAMAGE_ACKNOWLEDGED_VERB} for the damage
+ * counterpart — the two are deliberately distinct verbs.
  */
 export const AUDIT_LOSS_ACKNOWLEDGED_VERB = "audit-loss-acknowledged";
 
@@ -971,11 +1196,13 @@ export async function verifyAllChains(
 
   let rostered: string[];
   let acknowledgements: Map<string, RosterAcknowledgement>;
+  let damageAcknowledgements: Map<string, RosterDamageAcknowledgement>;
   let seen: boolean;
   try {
     const contents = await readRosterContents(dir);
     rostered = contents.journals;
     acknowledgements = contents.acknowledged;
+    damageAcknowledgements = contents.damaged;
     seen = await rosterWasSeen(dir);
   } catch (error: unknown) {
     // A corrupted roster or seen-marker is a tamper signal in its own right.
@@ -1057,7 +1284,7 @@ export async function verifyAllChains(
       // through to `verifyChain` below and can never be silenced.
       const ack = acknowledgements.get(name);
       if (ack) {
-        acknowledged.push({ path, acknowledgement: ack });
+        acknowledged.push({ path, kind: "loss", acknowledgement: ack });
         continue;
       }
       broken.push({
@@ -1083,7 +1310,30 @@ export async function verifyAllChains(
       });
       continue;
     }
-    if (!result.value.valid) broken.push({ path, ...result.value });
+    if (result.value.valid) continue;
+
+    // Issue #491: a journal that is present but does not verify can be
+    // signed for — but only against the exact bytes that were shown to
+    // the operator. If the file has changed since, the signature no
+    // longer covers it and the alarm comes back, naming why.
+    const damage = damageAcknowledgements.get(name);
+    if (damage) {
+      const current = await journalDigest(path);
+      if (current.ok && current.value === damage.digest) {
+        acknowledged.push({ path, kind: "damage", acknowledgement: damage });
+        continue;
+      }
+      broken.push({
+        path,
+        ...result.value,
+        reason: `${result.value.reason ?? "chain does not verify"} — the ` +
+          `damage acknowledgement signed by ${damage.by} on ` +
+          `${damage.acknowledgedAt} no longer applies: the journal has ` +
+          `changed since it was signed for`,
+      });
+      continue;
+    }
+    broken.push({ path, ...result.value });
   }
 
   return {
@@ -1093,10 +1343,11 @@ export async function verifyAllChains(
 }
 
 /**
- * Reset in-process caches. Test-only helper so a fresh temp directory is
- * not polluted by chain state cached from a previous test's identical path.
+ * Reset in-process state. Test-only helper.
+ *
+ * Since Issue #491 there is no chain-state cache to clear — the head is
+ * read from disk on every append — so this only drops the write queues.
  */
 export function _resetAuditCaches(): void {
   writeQueues.clear();
-  chainStateByPath.clear();
 }
