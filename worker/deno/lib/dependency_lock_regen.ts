@@ -40,6 +40,7 @@
  * Australian English is used throughout (behaviour, normalised, organisation).
  */
 
+import type { RuleOutcome } from "./dependency_conflict_rules.ts";
 import { truncateLogTail } from "./log_tail.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
@@ -56,8 +57,13 @@ export interface RegenCommand {
   args: readonly string[];
 }
 
-/** How a paired manifest came out of the deterministic rule pass. */
-export type ManifestStatus = "resolved" | "unresolved";
+/**
+ * How a paired manifest came out of the deterministic rule pass.
+ *
+ * Derived from `RuleOutcome` so this seam cannot drift from the rule core in
+ * `dependency_conflict_rules.ts`.
+ */
+export type ManifestStatus = RuleOutcome["kind"];
 
 /** What a lock file needs to be regenerated. */
 export interface LockFileSpec {
