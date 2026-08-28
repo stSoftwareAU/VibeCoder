@@ -158,6 +158,7 @@ import { fetchAllIssues } from "./issue_query.ts";
 import {
   buildIdleDecisionCensus,
   formatIdleDecisionCensus,
+  type RepoCensusSkipReason,
 } from "./idle_decision_census.ts";
 
 // Label-based processors
@@ -831,6 +832,20 @@ export async function createProductionRunCoreDeps(
       workVolumeDetail: workVolume.status.reason ??
         `total ${formatGb(workVolume.status.totalBytes ?? 0)}`,
     });
+
+  /**
+   * Why the claim scan stopped, for the census (Issue #479).
+   *
+   * Reads the same two host-level gates the fleet-board note does, so the
+   * board and the census can never disagree about why this host is idle.
+   * Neither gate active means the scan really did run out of cycle, which is
+   * #437's deferral and keeps its historical reason.
+   */
+  const claimGateReason = (): RepoCensusSkipReason => {
+    if (hostDisk.status.level === "low") return "host_disk_low";
+    if (workVolumeFault() !== null) return "work_volume_fault";
+    return "cycle_deadline";
+  };
 
   fleetHealthConfig.hostNotes = () => {
     const notes: string[] = [];
@@ -3239,6 +3254,11 @@ export async function createProductionRunCoreDeps(
           // permanently by the scan, so counting it as claimable kept the
           // `mis_classification` ALERT firing against a scan that was right.
           mergedPRsFn: fetchMergedPRsForCensus,
+          // Issue #479: while a host-level gate is active the scan never ran,
+          // so `mis_classification` is guaranteed to fire and says nothing.
+          // Read from the same signals the census and the fleet-board note
+          // use, so all three agree about why this host is idle.
+          claimGateActive: claimGateReason() !== "cycle_deadline",
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -3308,9 +3328,15 @@ export async function createProductionRunCoreDeps(
               // backlog was never evaluated, so the repo was not scanned and
               // its claimable work was deferred rather than refused.
               scannedThisCycle: claimScanCompleted,
-              ...(claimScanCompleted
-                ? {}
-                : { skipReason: "cycle_deadline" as const }),
+              // Issue #479: name the gate that actually refused the work. A
+              // host below its disk floor (#226) or carrying a work-volume
+              // fault (#229) stops claiming for the whole host, and
+              // recording that as `cycle_deadline` is what let GRQ-23 sit
+              // gated for three days — #437's carve-out declined to escalate
+              // because "nothing refused the work", true of a deadline and
+              // false of a gate, so the real cause was never named and an
+              // operator reading the census went looking at cycle duration.
+              ...(claimScanCompleted ? {} : { skipReason: claimGateReason() }),
               nice: getRepoNice(config.repoConfig, repo),
               issues: issues.map((i) => ({
                 number: i.number,

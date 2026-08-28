@@ -531,6 +531,21 @@ export interface AuditClaimableStateOptions {
    * outside the idle gate).
    */
   scanFoundClaimable: boolean;
+  /**
+   * Whether a host-level gate stopped the claim scan this cycle (Issue
+   * #479) — the disk floor (#226) or a work-volume fault (#229).
+   *
+   * When true the `mis_classification` ALERT is suppressed: the alert exists
+   * to catch the audit disagreeing with a scan that *ran* (#2106), and while
+   * a gate is active the disagreement is guaranteed and carries no
+   * information. On GRQ-23 the alert count tracked the gate one-for-one for
+   * three days, and that noise is what taught operators to read it as a
+   * known false positive while the real condition hid behind it.
+   *
+   * The per-repo lines and the claimable total are unaffected: they are the
+   * evidence that work was waiting. Omitted → historical behaviour.
+   */
+  claimGateActive?: boolean;
   /** Per-repo issue cap passed to `gh issue list --limit`. Default 200. */
   perRepoLimit?: number;
   /** Injectable gh runner — defaults to the production retry wrapper. */
@@ -710,7 +725,10 @@ export async function auditClaimableState(
   const misClassificationRepos = perRepo
     .filter((r) => r.claimable > 0)
     .map((r) => r.repo);
-  const misClassification = !opts.scanFoundClaimable && claimableTotal > 0;
+  // Issue #479: a gated cycle never ran the scan, so a disagreement with it
+  // is not evidence of anything.
+  const misClassification = !opts.scanFoundClaimable && claimableTotal > 0 &&
+    opts.claimGateActive !== true;
 
   log(
     `[idle-detect] tick=${opts.tick} host=${host} repos=${opts.repos.length} claimable_total=${claimableTotal}`,
