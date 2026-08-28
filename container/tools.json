@@ -148,7 +148,7 @@
       "id": "node",
       "version": "24.19.0",
       "versionArg": "NODE_VERSION",
-      "commands": ["node", "npm"],
+      "commands": ["node"],
       "versionCommand": "node",
       "source": "https://nodejs.org/dist",
       "sha256": {
@@ -156,7 +156,20 @@
         "arm64": "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc"
       },
       "repos": ["stSoftwareAU/VibeCoder"],
-      "notes": "The runtime markdownlint-cli2, Playwright and the Gemini CLI provider need; the worker itself is Deno. Node 24 is the current LTS line. Its Containerfile layer sits before the coding-agent provider layer because a provider fragment whose CLI is a JavaScript bundle needs it at install time (Issue #4107)."
+      "notes": "The runtime markdownlint-cli2, Playwright and the Gemini CLI provider need; the worker itself is Deno. Node 24 is the current LTS line. Its Containerfile layer sits before the coding-agent provider layer because a provider fragment whose CLI is a JavaScript bundle needs it at install time (Issue #4107). It ships an npm of its own, but the `npm` toolchain below owns that command (Issue #475) — one pin per command, so the version the image carries is never whatever the Node tarball happened to bundle."
+    },
+    {
+      "id": "npm",
+      "version": "12.0.2",
+      "versionArg": "NPM_VERSION",
+      "commands": ["npm"],
+      "versionCommand": "npm",
+      "source": "https://registry.npmjs.org/npm",
+      "sha256": {
+        "noarch": "5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "Pinned separately from Node (Issue #475): Node 24.19.0 bundles npm 11.17.0, so every build logged a 'New major version of npm available' notice and the image tracked whatever npm the runtime tarball carried. Installed over the bundled copy from a checksum-verified tarball, like the other npm-sourced tools. npm 12 requires node ^22.22.2 || ^24.15.0 || >=26.0.0, which the pinned Node 24.19.0 satisfies — bump the two together. Pure JavaScript, so one noarch checksum covers both architectures."
     },
     {
       "id": "markdownlint-cli2",
