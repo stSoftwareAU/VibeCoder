@@ -173,6 +173,12 @@ branch at the same time. A host that loses the race returns immediately.
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
 - `worker/deno/lib/dependency_conflict_rules.ts` — the pure conflict-hunk
   parser, dependency-version comparator and manifest-rule registry a future
-  deterministic path for dependency bumps will use. Nothing is wired into the
-  pass yet, so today every conflict still follows the contract above.
+  deterministic path for dependency bumps will use.
+- `worker/deno/lib/dependency_conflict_json.ts` — the JSON manifest rules
+  registered against that seam: `deno.json`/`deno.jsonc` (`imports`, `scopes`)
+  and `package.json` (`dependencies`, `devDependencies`, `peerDependencies`,
+  `optionalDependencies`). Per dependency key the higher semver wins, whichever
+  branch carries it; a hunk touching anything else, or one undecidable version,
+  defers the whole file. Neither module is wired into the pass yet, so today
+  every conflict still follows the contract above.
 - `prompts/merge_conflict/` — the versioned agent prompt carrying the contract.
