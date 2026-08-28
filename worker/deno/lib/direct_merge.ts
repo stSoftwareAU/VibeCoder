@@ -64,7 +64,12 @@ export type MergeBlockedReason =
   | "no_checks"
   | "head_moved"
   | "head_too_recent"
-  | "milestone_rollup_merged";
+  | "milestone_rollup_merged"
+  /**
+   * The milestone's route to the default branch could not be *read*
+   * (Issue #477) — a transient deferral, not a refusal.
+   */
+  | "milestone_route_unreadable";
 
 /**
  * A head commit younger than this is not merged (Issue #4375). After a
@@ -680,6 +685,18 @@ export async function enforcePreMergeRequirements(
       baseRefName,
       ghCommandFn,
     });
+  // Issue #477: an unreadable route defers like any other transient gate
+  // failure; only positive evidence refuses the merge outright.
+  if (routeGate.decision === "defer") {
+    return {
+      ok: true,
+      value: {
+        allowed: false,
+        reason: "milestone_route_unreadable",
+        detail: routeGate.detail,
+      },
+    };
+  }
   if (routeGate.decision === "block") {
     return {
       ok: true,

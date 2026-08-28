@@ -342,15 +342,21 @@ Deno.test("decideMilestoneBaseMerge - a closed milestone blocks even with no rol
   if (d.decision === "block") assertEquals(d.reason, "milestone-closed");
 });
 
-Deno.test("decideMilestoneBaseMerge - a milestone base that cannot be verified blocks (identified-but-unverifiable) (Issue #4396)", async () => {
+Deno.test("decideMilestoneBaseMerge - a milestone base that cannot be verified DEFERS, it does not block (Issue #477)", async () => {
+  // Business-logic change from Issue #4396, which blocked here. A `block`
+  // retargets the PR at the default branch, so an unreadable route — a
+  // GitHub rate limit, certain across an unattended weekend — refused every
+  // milestone child and moved the ones it could onto the review-gated
+  // default branch, to wait for a human who was not there. "I could not
+  // read it" is not evidence; only a merged rollup or a closed milestone is.
   const d = await decideMilestoneBaseMerge({
     repo: "org/repo",
     prNumber: 1,
     baseRefName: "milestone/clean-up",
     ghCommandFn: ghForBaseGate({ fail: "rollups" }),
   });
-  assertEquals(d.decision, "block");
-  if (d.decision === "block") assertEquals(d.reason, "lookup-failed");
+  assertEquals(d.decision, "defer");
+  if (d.decision === "defer") assertEquals(d.reason, "lookup-failed");
 });
 
 Deno.test("decideMilestoneBaseMerge - resolves the base itself when the caller has none (Issue #4396)", async () => {

@@ -65,6 +65,14 @@ export type MergeAttemptOutcome =
    */
   | { kind: "milestone_rollup_merged" }
   /**
+   * The milestone's route to the default branch could not be *read*
+   * (Issue #477) — a rate limit, a network blip. Nothing is known, so
+   * nothing is done: the PR is left exactly as it is and re-read next
+   * scan. Never a fault, and never grounds to escalate: escalating here
+   * would hand a healthy PR to a human because GitHub was busy.
+   */
+  | { kind: "milestone_route_unreadable" }
+  /**
    * A milestone summary PR whose milestone still has open children (#3909).
    * Deliberately deferred, not a fault — the gate has already explained
    * itself on the PR, and the merge is retried once the children close.
@@ -157,6 +165,10 @@ export function classifyMergeAttempt(
       // The base's route to the default branch has closed; the auto-merge
       // path retargets the PR and explains itself (Issue #4396). The next
       // scan merges it onto the default branch.
+      return "await_checks";
+    case "milestone_route_unreadable":
+      // The route could not be read (Issue #477). Wait and re-read; a
+      // transient GitHub failure must not escalate a healthy PR.
       return "await_checks";
     case "behind_target":
       return "update_branch";
