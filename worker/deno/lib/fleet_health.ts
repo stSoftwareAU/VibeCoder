@@ -130,6 +130,22 @@ export interface FleetHealthDeps {
  * segment of its URL without `.git` (`git@github.com:org/GRQ-health.git` and
  * `https://github.com/org/GRQ-health` both give `GRQ-health`).
  */
+/**
+ * The bare work-root entry name of the fleet-health checkout (Issue #477).
+ *
+ * The work-volume reclaim tiers work-root entries by name, while
+ * {@link FleetHealthConfig.healthDir} carries an absolute path — so the
+ * checkout is only actually protected from the disk-low sweep if the two
+ * agree on one string. An empty or unset `healthDir` yields `""`, which
+ * protects nothing: a fleet with health tracking switched off must not
+ * accidentally reserve every entry in the work root.
+ */
+export function fleetHealthCheckoutDirName(healthDir: string): string {
+  const trimmed = healthDir.trim().replace(/\/+$/, "");
+  const slash = trimmed.lastIndexOf("/");
+  return slash < 0 ? trimmed : trimmed.slice(slash + 1);
+}
+
 export function healthRepoCheckoutName(repoUrl: string): string {
   const trimmed = repoUrl.trim().replace(/\/+$/, "");
   const last = trimmed.split(/[/:]/).pop() ?? "";
