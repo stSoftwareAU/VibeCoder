@@ -38,10 +38,12 @@ import {
   buildCount,
   builderHealed,
   type Harness,
+  initCount,
   type LaunchOutcome,
   mountValues,
   recorded,
   removedImages,
+  removedVolumes,
   REPO_ROOT,
   runCoreLog,
   runLauncher as runHarnessLauncher,
@@ -992,6 +994,146 @@ Deno.test("run.sh - the work volume is trimmed before the hard disk floor can re
     );
     // The refusal still holds: no worker container was started.
     assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- Self-healing a volume the runtime will not trim (Issue #478) -----------
+
+/** The `VOLUME_TRIM_REFUSED` lines container/volume-init.sh writes. */
+const TRIM_REFUSED_STDOUT = [
+  `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+  `VOLUME_TRIM_REFUSED ${TARGETS.approvalState}`,
+].join("\\n");
+
+Deno.test("run.sh - a refused trim below the claiming floor recreates the volumes and re-runs the init (Issue #478)", async () => {
+  // GRQ-23: FITRIM refused on every launch, ~14 GB of dead space, three days
+  // below the floor claiming nothing, and a remedy only a human could apply.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    // A claiming floor no host can clear: the launcher is below it.
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // Both untrimmable volumes were recreated — no operator incantation.
+    assertEquals(await removedVolumes(harness), [
+      WORK_VOLUME_NAME,
+      APPROVAL_STATE_VOLUME_NAME,
+    ]);
+    assert(
+      await recorded(harness, "volume-create"),
+      "a recreated volume must be created again",
+    );
+    // A fresh volume is root-owned, so the init must have run a second time.
+    assertEquals(await initCount(harness), 2);
+
+    const log = await runCoreLog(harness);
+    // The refusal is recorded as a refusal, not as a successful trim.
+    assertStringIncludes(log, "the runtime refused to trim");
+    assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
+    // The floor is unreachable here, so the launcher must not claim a fix.
+    assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
+    assertStringIncludes(outcome.stderr, "[WORK_VOLUME_UNRECOVERED]");
+
+    // The worker still launched: a host that cannot claim must still run and
+    // report (Issue #477). Only the hard floor stops a launch.
+    assert(await recorded(harness, "run"), "the worker must still start");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a refused trim on a host with room to spare destroys nothing (Issue #478)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    // Floors of zero: whatever this host has free is above them.
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "0",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(
+      await removedVolumes(harness),
+      [],
+      "a host above its floor must keep its clones",
+    );
+    assertEquals(await initCount(harness), 1);
+
+    const log = await runCoreLog(harness);
+    // Still recorded — the ratchet is real, the host just is not short yet.
+    assertStringIncludes(log, "the runtime refused to trim");
+    assertStringIncludes(log, "above the");
+    assertEquals(log.includes("[WORK_VOLUME_UNRECOVERED]"), false, log);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a recreate that did not clear the floor is not retried on the next launch (Issue #478)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+  });
+  try {
+    // A recreate from a minute ago: this launch must escalate, not wipe the
+    // clones again every hour for ever.
+    await Deno.mkdir(`${harness.tmpDir}/home/.vibe-coder`, { recursive: true });
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/home/.vibe-coder/work-volume-heal`,
+      `${Math.floor(Date.now() / 1000) - 60}\n`,
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(await removedVolumes(harness), []);
+    assertEquals(await initCount(harness), 1);
+    assertStringIncludes(outcome.stderr, "[WORK_VOLUME_UNRECOVERED]");
+    assertStringIncludes(
+      await runCoreLog(harness),
+      "recreating again would destroy the clones",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - volumes too small to hold the missing space are escalated, not destroyed (Issue #478)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+  });
+  try {
+    // A container store whose work volume holds a few kilobytes: the host's
+    // space went somewhere else, so recreating it would achieve nothing.
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      "small",
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(await removedVolumes(harness), []);
+    assertStringIncludes(
+      await runCoreLog(harness),
+      "the host's missing space is somewhere else",
+    );
   } finally {
     await harness.cleanup();
   }

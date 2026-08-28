@@ -650,10 +650,10 @@ things make the floor reachable again:
 - **`fstrim` at every launch.** `container/volume-init.sh` already runs as
   root with the volumes mounted, so it discards each block-device volume's
   unused blocks — which punches them out of the image and hands them back to
-  the host. This is the supported compaction path: no operator incantation,
-  no `container volume delete`, and it runs on every launch. A runtime whose
-  virtual disk cannot discard, or an image without `fstrim`, says so loudly
-  and the launch still proceeds.
+  the host. It runs on every launch, with no operator incantation. A runtime
+  whose virtual disk cannot discard, or an image without `fstrim`, says so
+  loudly, names the volume on stdout as `VOLUME_TRIM_REFUSED <target>` (see
+  the self-heal below), and the launch still proceeds.
 - **The hard free-disk floor is checked *after* the init.** Gating first made
   the floor unreachable by construction: a host below it refused the launch,
   so the volume was never trimmed, so the host never got its blocks back.
@@ -685,10 +685,70 @@ cleanup that failed:
 work volume — monitored 2.9 GB in 9 repos; side/data 10.8 GB in 1 dirs;
 removed 1 (11.0 GB, disk-low) — 11.0 GB freed inside the guest, 0 bytes
 returned to the host: the vibe-work volume image only grows — 23.5 GB of the
-image is now space the guest has already freed. The launch-time volume trim
-(fstrim in volume-init) hands those blocks back on the next launch; where the
-runtime cannot discard, stop the container and `volume delete vibe-work` —
-the clones re-clone and the approval snapshots re-baseline (Issue #384)
+image is now space the guest has already freed. Nothing the guest does
+returns those blocks: the launcher trims the volume at the next launch and,
+where the runtime refuses the discard, recreates the volume itself while the
+host is below its claiming floor — the clones re-clone and the approval
+snapshots re-baseline. A recreate that does not clear the floor is logged as
+[WORK_VOLUME_UNRECOVERED] (Issues #384, #478)
+```
+
+## When the runtime refuses the trim — the launcher self-heals (Issue #478)
+
+On the Apple `container` runtime the trim above has **never** worked. As
+root, on a device that advertises discard
+(`/sys/block/vdc/queue/discard_max_bytes` = 549755813888), the ioctl is
+refused outright:
+
+```text
+$ container exec --user root vibe-coder-26896 fstrim -v /home/vibe/auto-issue-work
+fstrim: /home/vibe/auto-issue-work: FITRIM ioctl failed: Operation not permitted
+```
+
+So GRQ-23 carried a 26 GB volume image for 12.1 GB of live data, sat below
+its floor for three days claiming nothing out of 43 claimable issues, and the
+only remedy on offer — `container volume delete vibe-work` — was addressed to
+a human who was not there. An unattended host has no human, so the launcher
+takes it:
+
+1. **The refusal is a fact, not a warning.** `volume-init.sh` prints
+   `VOLUME_TRIM_REFUSED <target>` on stdout; `run.sh` maps each target back to
+   its named volume and records the refusal in `run_core.log`. A launch where
+   FITRIM was refused is never recorded as a successful trim.
+2. **A host below its claiming floor is healed.** When the refusal coincides
+   with less free space than the floor the worker stops claiming at — the
+   larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and
+   `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), the same floor
+   `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
+   the volume, then runs the init again to re-own it. This happens **before
+   any container starts**, so no work is in flight: the clones re-clone and
+   the approval snapshots re-baseline.
+3. **The attempt is bounded and never silent.** At most one recreate per
+   `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24), recorded in
+   `~/.vibe-coder/work-volume-heal`; volumes holding less than
+   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) in the store are never destroyed,
+   because the host's missing space is elsewhere. Free space is **re-measured**
+   after the recreate: a heal that did not clear the floor is reported as
+   `[WORK_VOLUME_UNRECOVERED]` on stderr and in `run_core.log`, never as a fix.
+4. **The launch still proceeds.** Only the hard floor refuses a launch — a
+   host that cannot claim must still run and report, or it vanishes from the
+   fleet board (Issue #477).
+
+```mermaid
+flowchart TD
+    I["volume-init: fstrim"] -->|"trimmed"| OK["blocks returned<br/>to the host"]
+    I -->|"FITRIM refused"| R["VOLUME_TRIM_REFUSED &lt;target&gt;<br/>on stdout"]
+    R --> G{"host below the<br/>claiming floor?"}
+    G -->|"no"| N["recorded in run_core.log;<br/>nothing destroyed"]
+    G -->|"yes"| B{"recreated within<br/>24 h, or volume &lt; 1 GB?"}
+    B -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
+    B -->|"no"| D["delete + create volume,<br/>re-run the init"]
+    D --> M{"floor cleared?<br/>(re-measured)"}
+    M -->|"yes"| H["host recovered<br/>without an operator"]
+    M -->|"no"| E
+    style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style H fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style E fill:#c9184a,stroke:#800f2f,color:#fff
 ```
 
 ## Standing totals at cycle start and end of run (Issues #244, #345)

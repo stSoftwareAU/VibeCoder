@@ -33,10 +33,16 @@
  * - {@link describeGuestReclaimToHost} — the full line the disk-low reclaim
  *   logs: guest bytes freed, host bytes returned (zero), and the remedy.
  *
- * The remedy is not an operator incantation any more: `container/volume-init.sh`
- * runs `fstrim` on the volume at every launch, which punches the freed blocks
- * out of the image and hands them back to the host. Where the runtime cannot
- * discard, recreating the volume is the fallback, and the message says so.
+ * The remedy is not an operator incantation any more (Issue #478).
+ * `container/volume-init.sh` runs `fstrim` on the volume at every launch,
+ * which punches the freed blocks out of the image where the runtime allows
+ * the discard. The Apple container runtime does not: it refuses FITRIM as
+ * root on a device that advertises discard, so the init reports
+ * `VOLUME_TRIM_REFUSED` and the launcher recreates the volume itself when
+ * the host is below its claiming floor — before any container runs, so no
+ * work is in flight. These messages therefore name the launcher's own
+ * remedy; a recreate that does not clear the floor is reported by the
+ * launcher as `[WORK_VOLUME_UNRECOVERED]` rather than as a fix.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -118,7 +124,8 @@ export function describeWorkVolumeRatchet(
     `volume image still holds (guest ${formatGb(ratchet.usedBytes)}, image ` +
     `high-water ${
       formatGb(ratchet.peakBytes)
-    }) — the launch-time volume trim returns it (Issue #384)`;
+    }) — the launcher trims the volume at launch and recreates it when the ` +
+    `runtime refuses the discard (Issues #384, #478)`;
 }
 
 /**
@@ -146,9 +153,10 @@ export function describeGuestReclaimToHost(
       `guest has already freed`
     : "";
   return `${freed}0 bytes returned to the host: the ${volumeName} volume ` +
-    `image only grows${dead}. The launch-time volume trim (fstrim in ` +
-    `volume-init) hands those blocks back on the next launch; where the ` +
-    `runtime cannot discard, stop the container and \`volume delete ` +
-    `${volumeName}\` — the clones re-clone and the approval snapshots ` +
-    `re-baseline (Issue #384)`;
+    `image only grows${dead}. Nothing the guest does returns those blocks: ` +
+    `the launcher trims the volume at the next launch and, where the runtime ` +
+    `refuses the discard, recreates the volume itself while the host is ` +
+    `below its claiming floor — the clones re-clone and the approval ` +
+    `snapshots re-baseline. A recreate that does not clear the floor is ` +
+    `logged as [WORK_VOLUME_UNRECOVERED] (Issues #384, #478)`;
 }
