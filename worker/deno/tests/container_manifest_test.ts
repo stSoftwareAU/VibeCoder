@@ -1219,6 +1219,58 @@ Deno.test("container/ - every committed toolchain names the repositories it exis
 });
 
 // ---------------------------------------------------------------------------
+// Issue #475 — npm is pinned in its own right, not inherited from Node
+// ---------------------------------------------------------------------------
+
+Deno.test("container/ - npm is pinned at 12.x and owned by exactly one toolchain (Issue #475)", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+
+  // Two toolchains claiming `npm` means one silently overwrites the other and
+  // nothing says which pin the image actually carries.
+  const owners = manifest.toolchains.filter((t) => t.commands.includes("npm"));
+  assertEquals(
+    owners.map((t) => t.id),
+    ["npm"],
+    "exactly one toolchain may install the npm command",
+  );
+
+  const npm = owners[0]!;
+  assertEquals(npm.versionCommand, "npm");
+  assertEquals(
+    npm.version.split(".")[0],
+    "12",
+    `npm must be pinned on the 12.x line (got ${npm.version})`,
+  );
+  // Pure JavaScript, so one noarch digest covers both architectures.
+  assertEquals(Object.keys(npm.sha256), ["noarch"]);
+  assertEquals(npm.sha256.noarch?.length, 64);
+
+  // Node still supplies the runtime; neither command may fall back to a host
+  // installation.
+  assertEquals(findMissingRuntimeTools(manifest, ["node", "npm"]), []);
+});
+
+Deno.test("container/Containerfile - installs the pinned npm from a checksum-verified tarball (Issue #475)", async () => {
+  const containerfile = await Deno.readTextFile(
+    new URL("container/Containerfile", REPO_ROOT),
+  );
+  const steps = containerfile
+    .split("\n")
+    .filter((line) =>
+      !line.trim().startsWith("#") && !/^ARG\b/.test(line.trim())
+    )
+    .join("\n");
+
+  // The ARG restatement is checked by findContainerfileViolations; this is the
+  // other half — a declared pin the build never applies would leave the image
+  // on Node's bundled npm while the manifest claimed otherwise.
+  assertStringIncludes(steps, "npm/-/npm-${NPM_VERSION}.tgz");
+  assertStringIncludes(steps, "${NPM_SHA256_NOARCH}");
+});
+
+// ---------------------------------------------------------------------------
 // Playwright + headless Chromium baked into the image (Issue #4069)
 // ---------------------------------------------------------------------------
 

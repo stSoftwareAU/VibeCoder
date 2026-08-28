@@ -187,4 +187,12 @@ branch at the same time. A host that loses the race returns immediately.
   manifest, a missing toolchain, a failing command or a lock that still carries
   markers all defer the file, staging nothing. None of these modules is wired
   into the pass yet, so today every conflict still follows the contract above.
+- `worker/deno/lib/dependency_conflict_native.ts` — the non-JSON manifest rules
+  on the same seam: `Cargo.toml` (`[dependencies]`, `[dev-dependencies]`,
+  `[build-dependencies]` and their `[target.*.dependencies]` variants, in both
+  the short and inline-table entry forms — only the `version` field is compared,
+  so a changed `features` or `default-features` defers) and `go.mod` (`require`
+  lines, single-line and parenthesised-block forms; `+incompatible` and
+  pseudo-versions are undecidable). None of these modules is wired into the pass
+  yet, so today every conflict still follows the contract above.
 - `prompts/merge_conflict/` — the versioned agent prompt carrying the contract.

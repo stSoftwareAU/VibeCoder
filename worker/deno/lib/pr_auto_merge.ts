@@ -337,6 +337,16 @@ export async function enableAutoMerge(
       baseRefName: options.baseRefName,
       ghCommandFn,
     });
+  // Issue #477: an unreadable route is not a closed one. Leave the PR
+  // untouched and look again next scan — a rate limit must never move a
+  // healthy milestone child onto the review-gated default branch.
+  if (routeGate.decision === "defer") {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
+    };
+  }
   if (routeGate.decision === "block") {
     const defaultBranch = await (options.getDefaultBranchFn ??
       ((r: string) => getRepoDefaultBranch(r, ghCommandFn)))(repo);
