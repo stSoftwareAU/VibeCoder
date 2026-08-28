@@ -19,6 +19,7 @@ import {
   clearIdleInversion,
   formatIdleInversionBody,
   formatIdleInversionMarker,
+  IDLE_INVERSION_TARGET_REPO,
   IDLE_INVERSION_THRESHOLD,
   idleInversionStatePath,
   isIdleInversionIssue,
@@ -300,4 +301,151 @@ Deno.test("#437 - the body states that only completed scans were counted", () =>
   });
   assertStringIncludes(body, "completed an eligibility pass");
   assertStringIncludes(body, "Issue #437");
+});
+
+// ===========================================================================
+// Issue #459 — the escalation belongs in the worker's own repo
+// ===========================================================================
+
+/** The value following `flag` in a recorded `gh` call. */
+function argAfter(call: string[], flag: string): string {
+  const value = call[call.indexOf(flag) + 1];
+  if (value === undefined) throw new Error(`no ${flag} in ${call.join(" ")}`);
+  return value;
+}
+
+const SUBJECT = "stSoftwareAU/GRQ";
+
+Deno.test("#459 - the issue is filed in VibeCoder, not the subject repo", async () => {
+  await withState(async (statePath) => {
+    const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
+    for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+      await recordIdleInversion({
+        statePath,
+        cycleId: `run-${cycle}`,
+        report: { ...report, repo: SUBJECT },
+        ghFn: fn,
+      });
+    }
+    const create = calls.find((c) => c[1] === "create");
+    if (!create) throw new Error("an issue is filed at the threshold");
+    const repoArg = argAfter(create, "--repo");
+    assertEquals(
+      repoArg,
+      IDLE_INVERSION_TARGET_REPO,
+      "GRQ#4465 was filed into GRQ, where the claim scan's code does not live",
+    );
+    assertEquals(repoArg, "stSoftwareAU/VibeCoder");
+  });
+});
+
+Deno.test("#459 - the title and body still name the subject repo", async () => {
+  await withState(async (statePath) => {
+    const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
+    for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+      await recordIdleInversion({
+        statePath,
+        cycleId: `run-${cycle}`,
+        report: { ...report, repo: SUBJECT },
+        ghFn: fn,
+      });
+    }
+    const create = calls.find((c) => c[1] === "create");
+    if (!create) throw new Error("an issue is filed at the threshold");
+    const title = argAfter(create, "--title");
+    const body = argAfter(create, "--body");
+    assertStringIncludes(title, SUBJECT);
+    assertStringIncludes(body, SUBJECT);
+    assertStringIncludes(
+      body,
+      formatIdleInversionMarker(SUBJECT),
+      "dedup stays keyed on the subject repo so two hosts converge",
+    );
+  });
+});
+
+Deno.test("#459 - the dedup search runs against VibeCoder", async () => {
+  await withState(async (statePath) => {
+    const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
+    for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+      await recordIdleInversion({
+        statePath,
+        cycleId: `run-${cycle}`,
+        report: { ...report, repo: SUBJECT },
+        ghFn: fn,
+      });
+    }
+    const list = calls.find((c) => c[1] === "list");
+    if (!list) {
+      throw new Error("the threshold cycle searches for an existing issue");
+    }
+    assertEquals(
+      argAfter(list, "--repo"),
+      IDLE_INVERSION_TARGET_REPO,
+      "searching the subject repo would never find the issue we now file",
+    );
+    const search = argAfter(list, "--search");
+    assertStringIncludes(search, SUBJECT, "keyed on the subject repo");
+  });
+});
+
+Deno.test("#459 - two subject repos file two issues, one each", async () => {
+  await withState(async (statePath) => {
+    const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
+    for (const subject of [SUBJECT, "stSoftwareAU/NEAT-AI"]) {
+      for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+        await recordIdleInversion({
+          statePath,
+          cycleId: `run-${subject}-${cycle}`,
+          report: { ...report, repo: subject },
+          ghFn: fn,
+        });
+      }
+    }
+    assertEquals(calls.filter((c) => c[1] === "create").length, 2);
+  });
+});
+
+// ===========================================================================
+// Issue #460 — the body must name the issues it is talking about
+// ===========================================================================
+
+Deno.test("#460 - the body lists the issues the census counted", () => {
+  const body = formatIdleInversionBody({
+    repo: SUBJECT,
+    consecutiveCycles: 3,
+    claimable: 3,
+    claimableIssues: [4326, 4376, 4405],
+    detail: "top_priority=1 work_on=2",
+  });
+  assertStringIncludes(body, "#4326");
+  assertStringIncludes(body, "#4376");
+  assertStringIncludes(body, "#4405");
+});
+
+Deno.test("#460 - a body with no issue numbers still reads correctly", () => {
+  const body = formatIdleInversionBody({
+    repo: SUBJECT,
+    consecutiveCycles: 3,
+    claimable: 0,
+    detail: "top_priority=0 work_on=0",
+  });
+  assert(!body.includes("undefined"));
+  assert(!body.includes("NaN"));
+});
+
+Deno.test("#460 - the body names the per-issue skip reasons when known", () => {
+  const body = formatIdleInversionBody({
+    repo: SUBJECT,
+    consecutiveCycles: 3,
+    claimable: 2,
+    claimableIssues: [4326, 4376],
+    scanSkips: [
+      { issue: 4326, reason: "dependency-blocked" },
+      { issue: 4376, reason: "milestone-occupied" },
+    ],
+    detail: "top_priority=0 work_on=2",
+  });
+  assertStringIncludes(body, "dependency-blocked");
+  assertStringIncludes(body, "milestone-occupied");
 });

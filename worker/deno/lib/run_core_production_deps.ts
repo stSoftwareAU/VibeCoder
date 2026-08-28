@@ -67,7 +67,10 @@ import {
 // Issue finding
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
-import type { DiagnosticSummary } from "./issue_finder_logger.ts";
+import type {
+  BlockedCandidateInfo,
+  DiagnosticSummary,
+} from "./issue_finder_logger.ts";
 import {
   fetchAllOpenPRs,
   fetchOpenPRsByUser,
@@ -764,6 +767,16 @@ export async function createProductionRunCoreDeps(
   // Issue #333: the quota outage is read once per cycle rather than inside
   // `hostNotes`, which is synchronous. A stale reading is harmless — the note
   // exists to name a multi-day outage, not to be second-accurate.
+  /**
+   * The claim scan's per-issue skip reasons from the most recent scan
+   * (Issue #460). Read once at the idle-task filing decision point so the
+   * idle-inversion escalation can name the gate that refused each issue the
+   * census counted as claimable — the question GRQ#4465 asked a human to
+   * answer from a log that never recorded it. Diagnostics only: a stale
+   * reading names a gate one scan out of date, never blocks a claim.
+   */
+  let lastScanBlockedDetails: BlockedCandidateInfo[] = [];
+
   let quotaOutageNote: string | null = null;
   const refreshQuotaOutageNote = async () => {
     const outage = await readQuotaOutage(workDir);
@@ -2317,6 +2330,12 @@ export async function createProductionRunCoreDeps(
         maintenanceAuthors,
       });
 
+      // Issue #460: keep the scan's own per-issue skip reasons so the
+      // idle-inversion escalation can name the gate that refused each issue
+      // the census called claimable. Diagnostics only — overwritten by each
+      // scan, read once at the filing decision point.
+      lastScanBlockedDetails = result.blockedDetails ?? [];
+
       // Issue #219: hand the scan's counts to the caller before returning,
       // so a slot that gets nothing back logs why rather than retiring in
       // silence.
@@ -3187,7 +3206,9 @@ export async function createProductionRunCoreDeps(
     // Logs route through `logger.info` for the same visibility reason as
     // the filer and audit above. Best-effort — any throw is caught here
     // and logged so a census failure never reaches the loop's catch.
-    runIdleDecisionCensus: async ({ decisionPoint, claimScanCompleted }) => {
+    runIdleDecisionCensus: async (
+      { decisionPoint, claimScanCompleted, claimedRepos },
+    ) => {
       try {
         const host = `${Deno.hostname()}:${Deno.pid}`;
         const perRepo = await Promise.all(
@@ -3237,6 +3258,9 @@ export async function createProductionRunCoreDeps(
                 labels: i.labels,
                 assignees: i.assignees,
                 milestone: i.milestone,
+                // Issue #460: `fetchAllIssues` already requests `body`, so
+                // the census's dependency gate costs no extra call.
+                body: i.body,
               })),
               openPRs,
               mergedPRs,
@@ -3247,6 +3271,10 @@ export async function createProductionRunCoreDeps(
           decisionPoint,
           workerUser: githubUser,
           repos: perRepo,
+          // Issue #460: a repo the scan claimed from this cycle was served,
+          // not refused — whatever the run's outcome. The census withdraws
+          // it from the escalation set and reports it as served.
+          claimedRepos,
         });
         const censusLines = formatIdleDecisionCensus(census, host);
         for (const line of censusLines) {
@@ -3268,6 +3296,7 @@ export async function createProductionRunCoreDeps(
         try {
           const statePath = idleInversionStatePath(workDir);
           const cycleId = resolveRunId();
+          const served = new Set(census.servedInversionRepos);
           const escalating = new Set(census.escalationRepos);
           for (const repo of census.escalationRepos) {
             const snapshot = census.perRepo.find((r) => r.repo === repo);
@@ -3281,6 +3310,15 @@ export async function createProductionRunCoreDeps(
                     snapshot.unblocked.workOn +
                     snapshot.unblocked.lowPriority
                   : 0,
+                claimableIssues: snapshot?.claimableIssues ?? [],
+                // Issue #460: the scan's own reason for refusing each issue
+                // the census called claimable — the disagreement, named.
+                scanSkips: lastScanBlockedDetails
+                  .filter((b) =>
+                    b.repo === repo &&
+                    (snapshot?.claimableIssues ?? []).includes(b.issueNumber)
+                  )
+                  .map((b) => ({ issue: b.issueNumber, reason: b.reason })),
                 detail: censusLines.filter((l) => l.includes(repo)).join("\n"),
               },
               ghFn: (args: string[]) => runGhCommand(args),
@@ -3307,7 +3345,12 @@ export async function createProductionRunCoreDeps(
           // An unscanned repo is left untouched (Issue #437): the cycle
           // proves neither a refusal nor a clean pass.
           for (const snapshot of census.perRepo) {
-            if (snapshot.scannedThisCycle && !escalating.has(snapshot.repo)) {
+            // Issue #460: a served repo clears its streak — the next cycle
+            // starts from zero rather than resuming a stale count.
+            if (
+              (snapshot.scannedThisCycle || served.has(snapshot.repo)) &&
+              !escalating.has(snapshot.repo)
+            ) {
               await clearIdleInversion(
                 statePath,
                 snapshot.repo,

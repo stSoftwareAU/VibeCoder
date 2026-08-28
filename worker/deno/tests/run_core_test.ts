@@ -6,7 +6,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildPriorityDispatchTable,
   createDefaultRunCoreConfig,
@@ -1834,3 +1834,46 @@ Deno.test(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #460 — a repo the scan claimed from was still escalated
+// ---------------------------------------------------------------------------
+//
+// GRQ#4465 was filed while the scan claimed GRQ#4463 from that very repo and
+// worked it to the cycle deadline. `recordSuccess()` is the wrong signal for
+// this: #4463 ended `no_pr:timeout:execute`, a failure, so a success-only
+// flag would still have called the repo "refused". What matters is that the
+// scan *claimed* from it.
+
+Deno.test("#460 - the tracker records which repos the scan claimed from", () => {
+  const tracker = createWorkProgressTracker();
+  assertEquals(tracker.claimedRepos.size, 0);
+
+  tracker.recordClaim("stSoftwareAU/GRQ");
+  assert(tracker.claimedRepos.has("stSoftwareAU/GRQ"));
+});
+
+Deno.test("#460 - a claim that then fails still counts as claimed", () => {
+  const tracker = createWorkProgressTracker();
+  tracker.recordClaim("stSoftwareAU/GRQ");
+  // No recordSuccess() — the run timed out at the cycle deadline.
+  assertEquals(tracker.foundClaimableIssue, false);
+  assert(
+    tracker.claimedRepos.has("stSoftwareAU/GRQ"),
+    "GRQ#4463 was claimed and worked for 13 minutes before it timed out",
+  );
+});
+
+Deno.test("#460 - claimed repos reset with the scan cycle", () => {
+  const tracker = createWorkProgressTracker();
+  tracker.recordClaim("stSoftwareAU/GRQ");
+  tracker.resetScanProgress();
+  assertEquals(tracker.claimedRepos.size, 0);
+});
+
+Deno.test("#460 - the same repo claimed twice is recorded once", () => {
+  const tracker = createWorkProgressTracker();
+  tracker.recordClaim("stSoftwareAU/GRQ");
+  tracker.recordClaim("stSoftwareAU/GRQ");
+  assertEquals(tracker.claimedRepos.size, 1);
+});

@@ -283,8 +283,21 @@ export interface WorkProgressTracker {
    * Priority 2 scan came up empty across every monitored repo.
    */
   foundClaimableIssue: boolean;
+  /**
+   * Repos the Priority 2 scan claimed an issue from this cycle (Issue #460).
+   *
+   * Distinct from {@link WorkProgressTracker.foundClaimableIssue}, which
+   * flips only on *success*. GRQ#4465 was filed against a repo the scan had
+   * claimed from and worked for thirteen minutes — the run then timed out at
+   * the cycle deadline, so no success was recorded and the idle-inversion
+   * streak counted the repo as one the scan "keeps refusing". A claim that
+   * later fails is still not a refusal.
+   */
+  claimedRepos: Set<string>;
   /** Record a successful issue processing. */
   recordSuccess: () => void;
+  /** Record that the scan claimed an issue from `repo` this cycle (#460). */
+  recordClaim: (repo: string) => void;
   /** Reset scan-level progress tracking for a new cycle. */
   resetScanProgress: () => void;
 }
@@ -931,11 +944,18 @@ export interface RunCoreDeps {
    * Only a completed pass is evidence that the scan *refused* the census's
    * claimable work, so it gates the Issue #321 escalation (never the filer
    * suppression: work the scan did not reach is still work).
+   *
+   * Issue #460: `claimedRepos` names the repos the scan actually claimed
+   * from this cycle. GRQ#4465 was filed against a repo the scan had claimed
+   * from four minutes earlier, so "the claim scan keeps refusing this work"
+   * was already false when it was written. A served repo never feeds the
+   * escalation streak.
    */
   runIdleDecisionCensus?: (
     info: {
       decisionPoint: "filing" | "selection";
       claimScanCompleted: boolean;
+      claimedRepos: readonly string[];
     },
   ) => Promise<{ inversionDetected: boolean } | void>;
 
@@ -1092,6 +1112,12 @@ export function createWorkProgressTracker(): WorkProgressTracker {
     issuesProcessed: 0,
     scanHadSuccess: false,
     foundClaimableIssue: false,
+    claimedRepos: new Set<string>(),
+    recordClaim(repo: string) {
+      // Issue #460: the claim, not its outcome. A repo the scan served is
+      // not a repo the scan refused, however the run ended.
+      tracker.claimedRepos.add(repo);
+    },
     recordSuccess() {
       tracker.issuesProcessed++;
       tracker.scanHadSuccess = true;
@@ -1102,6 +1128,7 @@ export function createWorkProgressTracker(): WorkProgressTracker {
     resetScanProgress() {
       tracker.scanHadSuccess = false;
       tracker.foundClaimableIssue = false;
+      tracker.claimedRepos.clear();
     },
   };
   return tracker;
@@ -1774,6 +1801,9 @@ async function runIssueScanLoop(
       await deps.sweepLeakedHeartbeats();
     }
 
+    // Issue #460: record the claim before the run, not after it. The
+    // outcome does not change the fact that this repo was served.
+    tracker.recordClaim(issue.repo);
     // Process the issue
     const processResult = await deps.processIssue(issue, endTime);
     // The run outcome (Issue #4325) rides the claim release so the comment
@@ -2990,6 +3020,8 @@ async function runSlotIssue(
     await deps.sweepLeakedHeartbeatsExcept(pool.registry.heldHeartbeatKeys());
   }
 
+  // Issue #460: see the sibling call site — the claim, not the outcome.
+  tracker.recordClaim(issue.repo);
   const processResult = await deps.processIssue(issue, endTime);
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
 
@@ -3968,6 +4000,8 @@ export async function runCoreLoop(
                   decisionPoint: "filing",
                   claimScanCompleted:
                     scanResult.eligibilityScanCompleted === true,
+                  // Issue #460: a repo the scan served is not one it refused.
+                  claimedRepos: [...tracker.claimedRepos],
                 });
                 if (
                   censusResult !== undefined &&

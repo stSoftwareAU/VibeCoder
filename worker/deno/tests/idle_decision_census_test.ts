@@ -20,10 +20,12 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   buildIdleDecisionCensus,
+  CENSUS_SCAN_GATE_COVERAGE,
   type CensusIssue,
   formatIdleDecisionCensus,
   type RepoCensusInput,
 } from "../lib/idle_decision_census.ts";
+import { SKIP_REASONS } from "../lib/issue_finder_logger.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 
 function issue(
@@ -807,4 +809,274 @@ Deno.test("formatter - no deferral note when every inverted repo was scanned (Is
   });
   const lines = formatIdleDecisionCensus(census);
   assert(!lines.some((l) => l.includes("NOTE inversion_not_escalated")));
+});
+
+// ===========================================================================
+// Issue #460 — the census must model the scan's dependency gate
+// ===========================================================================
+//
+// GRQ#4465: the census modelled three of the claim scan's gates
+// (`pr_blocked`, `stream_occupied`, `merged_pr_blocked`) while
+// `collect_work_on_candidates.ts` also refuses `dependency-blocked` work via
+// `isDependencyBlocked`. Every gate present in one side and missing from the
+// other is a manufactured inversion: the census calls the issue claimable,
+// the scan skips it, and after three cycles a human is handed an issue about
+// a bug nobody has.
+
+function depIssue(
+  number: number,
+  labels: string[],
+  body: string,
+): CensusIssue {
+  return { number, labels, assignees: [], milestone: "", body };
+}
+
+Deno.test("#460 - an issue blocked by an open same-repo dependency is not claimable", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [
+        depIssue(10, ["work-on"], "Depends on #11"),
+        issue(11, []),
+      ],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 0, "the scan refuses it, so must we");
+  assertEquals(entry.dependencyBlocked, 1);
+  assertEquals(entry.inversionSignal, false);
+});
+
+Deno.test("#460 - a closed dependency does not block", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    // #11 is absent from the open-issue list, so it is closed.
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [depIssue(10, ["work-on"], "Depends on #11")],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+  assertEquals(entry.inversionSignal, true);
+});
+
+Deno.test("#460 - 'blocked by' is honoured alongside 'depends on'", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [depIssue(10, ["top-priority"], "Blocked by #11"), issue(11, [])],
+    })],
+  });
+  assertEquals(census.perRepo[0]?.dependencyBlocked, 1);
+});
+
+Deno.test("#460 - a cross-repo dependency blocks: the scan fails safe, so does the census", () => {
+  // `isDependencyBlocked` returns true when it cannot resolve the dependency.
+  // Matching that here keeps the census on the under-counting side, which at
+  // worst files an idle-task beside real work — the bounded-harm direction
+  // this module already prefers — rather than manufacturing an inversion.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [depIssue(10, ["work-on"], "Depends on other/repo#3")],
+    })],
+  });
+  assertEquals(census.perRepo[0]?.dependencyBlocked, 1);
+  assertEquals(census.perRepo[0]?.unblocked.workOn, 0);
+});
+
+Deno.test("#460 - a dependency named inside a code span is not a dependency", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [
+        depIssue(10, ["work-on"], "the fix is to write `Depends on #11`"),
+        issue(11, []),
+      ],
+    })],
+  });
+  assertEquals(census.perRepo[0]?.dependencyBlocked, 0);
+  assertEquals(census.perRepo[0]?.unblocked.workOn, 1);
+});
+
+Deno.test("#460 - no body means no dependency modelling, as before", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [issue(10, ["work-on"]), issue(11, [])],
+    })],
+  });
+  assertEquals(census.perRepo[0]?.dependencyBlocked, 0);
+  assertEquals(census.perRepo[0]?.unblocked.workOn, 1);
+});
+
+Deno.test("#460 - a more fundamental gate keeps its reason", () => {
+  // PR-blocked wins over dependency-blocked, matching the scan's order and
+  // the existing `pr_blocked` / `merged_pr_blocked` precedence.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [depIssue(10, ["work-on"], "Depends on #11"), issue(11, [])],
+      openPRs: [openPR(7, "main", "issue-10")],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.prBlocked, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+});
+
+Deno.test("#460 - the census line reports dependency_blocked", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [depIssue(10, ["work-on"], "Depends on #11"), issue(11, [])],
+    })],
+  });
+  const lines = formatIdleDecisionCensus(census, "host:1");
+  const repoLine = lines.find((l) => l.includes("repo=o/r"));
+  assert(repoLine, "a per-repo line is emitted");
+  assert(
+    repoLine.includes("dependency_blocked=1"),
+    `the deferral must stay observable; got: ${repoLine}`,
+  );
+});
+
+Deno.test("#460 - the census exposes which issues it counted as claimable", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [issue(10, ["work-on"]), issue(12, ["top-priority"])],
+    })],
+  });
+  assertEquals(census.perRepo[0]?.claimableIssues, [10, 12]);
+});
+
+// ===========================================================================
+// Issue #460 — a repo the scan claimed from is not a repo it refused
+// ===========================================================================
+
+Deno.test("#460 - a repo the scan claimed from does not escalate", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    claimedRepos: ["o/served"],
+    repos: [
+      repoInput({ repo: "o/served", issues: [issue(1, ["work-on"])] }),
+      repoInput({ repo: "o/refused", issues: [issue(2, ["work-on"])] }),
+    ],
+  });
+  assertEquals(census.escalationRepos, ["o/refused"]);
+});
+
+Deno.test("#460 - a served repo still raises the inversion signal", () => {
+  // The signal suppresses the idle-task filer (Issue #2813) and must keep
+  // doing so: unclaimed work beside a filed idle-task is still an inversion.
+  // Only the *escalation* — "the scan keeps refusing this" — is withdrawn.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    claimedRepos: ["o/served"],
+    repos: [repoInput({ repo: "o/served", issues: [issue(1, ["work-on"])] })],
+  });
+  assertEquals(census.inversionDetected, true);
+  assertEquals(census.inversionRepos, ["o/served"]);
+  assertEquals(census.escalationRepos, []);
+});
+
+Deno.test("#460 - a served repo is reported, not silently dropped", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    claimedRepos: ["o/served"],
+    repos: [repoInput({ repo: "o/served", issues: [issue(1, ["work-on"])] })],
+  });
+  assertEquals(census.servedInversionRepos, ["o/served"]);
+  const lines = formatIdleDecisionCensus(census, "host:1");
+  assert(
+    lines.some((l) => l.includes("inversion_not_escalated_served")),
+    `the withdrawal must stay visible in the log; got:\n${lines.join("\n")}`,
+  );
+});
+
+Deno.test("#460 - omitting claimedRepos preserves the old behaviour", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({ repo: "o/r", issues: [issue(1, ["work-on"])] })],
+  });
+  assertEquals(census.escalationRepos, ["o/r"]);
+  assertEquals(census.servedInversionRepos, []);
+});
+
+// ===========================================================================
+// Issue #460 — the regression guard
+// ===========================================================================
+//
+// The recurring failure is not any one missing gate; it is that a gate can be
+// added to the claim scan and forgotten in the census. That has now happened
+// three times (#3526 pr_blocked, #3852 stream_occupied, GRQ#4419
+// merged_pr_blocked) and each cost a human an issue about a bug nobody had.
+//
+// `CENSUS_SCAN_GATE_COVERAGE` is a total map over the scan's own
+// `SkipReason` union, so a new skip reason fails the type check until
+// somebody classifies it. These tests pin the classifications that matter.
+
+Deno.test("#460 - every scan skip reason has a census verdict", () => {
+  for (const reason of SKIP_REASONS) {
+    assert(
+      CENSUS_SCAN_GATE_COVERAGE[reason] !== undefined,
+      `${reason} has no census verdict — classify it in ` +
+        `CENSUS_SCAN_GATE_COVERAGE, do not leave it to be discovered in a log`,
+    );
+  }
+});
+
+Deno.test("#460 - the gates that manufactured GRQ#4465 are modelled", () => {
+  for (
+    const reason of [
+      "pr-blocked",
+      "merged-pr-permanent",
+      "milestone-occupied",
+      "dependency-blocked",
+    ] as const
+  ) {
+    assertEquals(
+      CENSUS_SCAN_GATE_COVERAGE[reason],
+      "modelled",
+      `${reason} excludes work from the scan, so the census must exclude it too`,
+    );
+  }
+});
+
+Deno.test("#460 - no gate is left unclassified", () => {
+  const unclassified = SKIP_REASONS.filter(
+    (r) => CENSUS_SCAN_GATE_COVERAGE[r] === "unclassified",
+  );
+  assertEquals(
+    unclassified,
+    [],
+    "an unclassified gate is exactly how #3526, #3852 and GRQ#4419 happened",
+  );
 });

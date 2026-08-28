@@ -136,6 +136,8 @@
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { BLOCKING_LABELS } from "./idle_detect_diagnostics.ts";
+import { extractDependencyReferencesDetailed } from "./issue_dependencies.ts";
+import type { SkipReason } from "./issue_finder_logger.ts";
 import {
   type ClosedPR,
   getBlockingPRForIssue,
@@ -150,6 +152,76 @@ import {
 // ---------------------------------------------------------------------------
 // Public data shape
 // ---------------------------------------------------------------------------
+
+/**
+ * How the census treats one of the claim scan's skip reasons (Issue #460).
+ *
+ * - `modelled` — the census applies the same gate, so the two agree.
+ * - `upstream` — the issue is already excluded before the gate is reached
+ *   (label / assignee / repo-level filtering the census applies first), so
+ *   modelling it separately would change nothing.
+ * - `run-local` — the gate depends on this worker's run state (cooldowns,
+ *   in-flight holds) rather than anything readable from GitHub. The census
+ *   deliberately omits it and thereby *over*-counts, which is why an
+ *   escalation must never rest on a single cycle.
+ * - `escalated-elsewhere` — the scan already raises this to a human on the
+ *   issue itself, so the census has nothing to add.
+ * - `unclassified` — nobody has decided. Always a bug; the guard test fails.
+ */
+export type CensusGateCoverage =
+  | "modelled"
+  | "upstream"
+  | "run-local"
+  | "escalated-elsewhere"
+  | "unclassified";
+
+/**
+ * Every gate the claim scan applies, and what the census does about it.
+ *
+ * This map is **total** over the scan's `SkipReason` union, so a new skip
+ * reason in any `collect_*_candidates.ts` fails the type check here until
+ * somebody classifies it. Issues #3526, #3852 and GRQ#4419 were each a gate
+ * added to the scan and forgotten here, and each one manufactured an
+ * inversion alert against a scan that was right.
+ */
+export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
+  {
+    // Repo-level: the census reads only monitored repos and reports
+    // `monitored` / `nice` separately.
+    "repo-not-allowed": "upstream",
+    "repo-deprioritised": "upstream",
+    "repo-busy": "upstream",
+    "fetch-error": "upstream",
+    // Label and assignee filtering, applied by `isUnblockedFor` before any
+    // gate below is reached.
+    "assigned": "upstream",
+    "blocking-label": "upstream",
+    "label-author-not-allowed": "upstream",
+    "untrusted-operational-label": "upstream",
+    "non-wrapper-title": "upstream",
+    "filtered-out": "upstream",
+    "needs-human": "upstream",
+    // Modelled gates — the ones that have bitten.
+    "milestone-occupied": "modelled",
+    "pr-blocked": "modelled",
+    "merged-pr-permanent": "modelled",
+    "dependency-blocked": "modelled",
+    // Run-local: cooldowns and holds live in this worker's state, not in
+    // anything the census reads. Omitting them over-counts.
+    "closed-pr-cooldown": "run-local",
+    "cooldown": "run-local",
+    "cross-worker-cooldown": "run-local",
+    "content-modified-after-approval": "run-local",
+    "content-check-error": "run-local",
+    "content-editor-unresolved": "run-local",
+    "content-store-unconfigured": "run-local",
+    "content-snapshot-persist-failed": "run-local",
+    "no-approval-snapshot": "run-local",
+    // The scan already puts these in front of a human on the issue itself.
+    "dependency-cycle-escalated": "escalated-elsewhere",
+    "dead-label-tracker-escalated": "escalated-elsewhere",
+    "human-pr-blocked-escalated": "escalated-elsewhere",
+  };
 
 /** Which idle-task decision point the census was taken at. */
 export type DecisionPoint = "filing" | "selection";
@@ -187,6 +259,13 @@ export interface CensusIssue {
   assignees: string[];
   /** Milestone title, or "" for the default-branch (non-milestone) stream. */
   milestone: string;
+  /**
+   * Issue body, so the census can model the scan's dependency gate
+   * (Issue #460). `fetchAllIssues` already requests `body`, so supplying it
+   * costs no extra call. Omitted → no dependency blocking is applied,
+   * preserving the pre-#460 behaviour exactly as `openPRs` does.
+   */
+  body?: string;
 }
 
 /** Per-repo input to {@link buildIdleDecisionCensus}. */
@@ -267,6 +346,21 @@ export interface RepoCensusEntry {
    */
   mergedPrBlocked: number;
   /**
+   * Count of priority (`top-priority` / `work-on` / `low-priority`) issues
+   * that passed every other check but name an open dependency, which the
+   * scan refuses as `dependency-blocked` (Issue #460, GRQ#4465). Kept
+   * separate from `unblocked` so the deferral stays observable in the
+   * `[idle-census]` line.
+   */
+  dependencyBlocked: number;
+  /**
+   * The issue numbers behind {@link RepoCensusEntry.unblocked}'s priority
+   * counts, in issue order (Issue #460). The escalation body names them, so
+   * a reader can see *which* issues the census and the scan disagree about
+   * instead of being handed a bare count as GRQ#4465 was.
+   */
+  claimableIssues: number[];
+  /**
    * `true` when the repo holds ≥1 unblocked `top-priority` / `work-on` /
    * `low-priority` issue — the idle-vs-work-on inversion symptom.
    * `idle-task` is excluded by design.
@@ -299,6 +393,17 @@ export interface IdleDecisionCensus {
    * deferral is visible in the log, never escalated.
    */
   deferredInversionRepos: string[];
+  /**
+   * Inverted repos the claim scan **claimed from** this cycle (Issue #460).
+   *
+   * The scan served them, so their leftover work was not refused — it was
+   * simply not reached before the cycle ended, which two concurrent slots
+   * against an 80-issue backlog guarantee on every cycle. GRQ#4465 was filed
+   * four minutes after the scan claimed GRQ#4463 from that very repo. These
+   * repos keep raising {@link IdleDecisionCensus.inversionRepos} (the filer
+   * suppression is still right) but never feed the Issue #321 streak.
+   */
+  servedInversionRepos: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +460,45 @@ function isMergedPrBlocked(issue: CensusIssue, mergedPRs: ClosedPR[]): boolean {
 }
 
 /**
+ * True when `issue` names a dependency the Priority 2 scan would refuse it
+ * for, matching `isDependencyBlocked` in `issue_finder_common.ts`
+ * (Issue #460, GRQ#4465).
+ *
+ * Resolved against the repo's own open-issue set, which the census already
+ * holds — so this adds no `gh` call and the census stays pure. Two cases
+ * follow the scan rather than the cheap answer:
+ *
+ * - A **same-repo** `#N` that is not in the open set is closed, so it does
+ *   not block — the scan agrees.
+ * - A **cross-repo** `owner/repo#N` cannot be resolved from this repo's
+ *   issues. `isDependencyBlocked` treats an unresolvable dependency as
+ *   blocking (fail safe), so this does too. The residual error is an
+ *   under-count, which at worst files an idle-task beside real work — the
+ *   bounded-harm direction this module already prefers — rather than
+ *   manufacturing an inversion against a scan that was right.
+ *
+ * Parent/child blocking (`checkParentBlocked`) is deliberately not modelled:
+ * it needs a per-issue API call the census must not pay for, and it errs in
+ * the same under-counting direction.
+ */
+function isDependencyBlockedByOpenIssue(
+  issue: CensusIssue,
+  repo: string,
+  openIssueNumbers: ReadonlySet<number>,
+): boolean {
+  if (issue.body === undefined) return false;
+  const refs = extractDependencyReferencesDetailed(issue.body);
+  const lowerRepo = repo.trim().toLowerCase();
+  return refs.some((ref) => {
+    const sameRepo = ref.repo === undefined ||
+      ref.repo.trim().toLowerCase() === lowerRepo;
+    // Unresolvable (cross-repo) → blocked, as the scan fails safe.
+    if (!sameRepo) return true;
+    return openIssueNumbers.has(ref.number);
+  });
+}
+
+/**
  * Work streams the worker already occupies — milestones (or `""` for the
  * default-branch stream) hosting an open issue assigned to `workerUser`.
  *
@@ -385,11 +529,14 @@ function countUnblocked(
   openPRs: OpenPR[],
   mergedPRs: ClosedPR[],
   workerUser: string,
+  repo: string,
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
   streamOccupied: number;
   mergedPrBlocked: number;
+  dependencyBlocked: number;
+  claimableIssues: number[];
 } {
   const counts: UnblockedCounts = {
     topPriority: 0,
@@ -398,9 +545,14 @@ function countUnblocked(
     idleTask: 0,
   };
   const occupiedStreams = occupiedStreamsFor(issues, workerUser);
+  // Every issue in this list is open — the census only ever reads open
+  // issues — so membership is exactly "the dependency is still open".
+  const openIssueNumbers = new Set(issues.map((i) => i.number));
+  const claimableIssues: number[] = [];
   let prBlocked = 0;
   let streamOccupied = 0;
   let mergedPrBlocked = 0;
+  let dependencyBlocked = 0;
   for (const issue of issues) {
     // Idle-task claiming is gated by repo busyness, not by
     // getBlockingPRForIssue, so its count ignores PR blocking.
@@ -430,6 +582,15 @@ function countUnblocked(
       mergedPrBlocked += 1;
       continue;
     }
+    // Issue #460: applied last, mirroring the scan's own order — an issue
+    // refused for a more fundamental reason keeps that reason, so
+    // `dependency_blocked` marks only issues that would otherwise be
+    // claimable right now.
+    if (isDependencyBlockedByOpenIssue(issue, repo, openIssueNumbers)) {
+      dependencyBlocked += 1;
+      continue;
+    }
+    claimableIssues.push(issue.number);
     if (isUnblockedFor(issue, LABEL_DEFAULTS.topPriorityLabel)) {
       counts.topPriority += 1;
     }
@@ -440,7 +601,14 @@ function countUnblocked(
       counts.lowPriority += 1;
     }
   }
-  return { counts, prBlocked, streamOccupied, mergedPrBlocked };
+  return {
+    counts,
+    prBlocked,
+    streamOccupied,
+    mergedPrBlocked,
+    dependencyBlocked,
+    claimableIssues,
+  };
 }
 
 /** Derive the availability verdict from a repo's open issues. */
@@ -479,16 +647,29 @@ export function buildIdleDecisionCensus(opts: {
   decisionPoint: DecisionPoint;
   workerUser: string;
   repos: RepoCensusInput[];
+  /**
+   * Repos the Priority 2 scan claimed an issue from this cycle (Issue #460).
+   * Omitted → no repo is treated as served, preserving the pre-#460
+   * behaviour.
+   */
+  claimedRepos?: readonly string[];
 }): IdleDecisionCensus {
   const perRepo: RepoCensusEntry[] = [];
   for (const input of opts.repos) {
-    const { counts: unblocked, prBlocked, streamOccupied, mergedPrBlocked } =
-      countUnblocked(
-        input.issues,
-        input.openPRs ?? [],
-        input.mergedPRs ?? [],
-        opts.workerUser,
-      );
+    const {
+      counts: unblocked,
+      prBlocked,
+      streamOccupied,
+      mergedPrBlocked,
+      dependencyBlocked,
+      claimableIssues,
+    } = countUnblocked(
+      input.issues,
+      input.openPRs ?? [],
+      input.mergedPRs ?? [],
+      opts.workerUser,
+      input.repo,
+    );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,
       opts.workerUser,
@@ -509,6 +690,8 @@ export function buildIdleDecisionCensus(opts: {
       prBlocked,
       streamOccupied,
       mergedPrBlocked,
+      dependencyBlocked,
+      claimableIssues,
       inversionSignal,
     });
   }
@@ -520,11 +703,20 @@ export function buildIdleDecisionCensus(opts: {
   // Issue #437: only a repo the claim scan actually evaluated this cycle can
   // be said to have had its work *refused*. A repo the scan never reached —
   // the cycle deadline, a shutdown, a drain — is deferred, not refused.
+  //
+  // Issue #460: a repo the scan *claimed from* is likewise not one it
+  // refused. Two concurrent slots working an 80-issue backlog leave
+  // claimable work on every cycle by construction, so without this the
+  // escalation is guaranteed to fire against any busy repo.
+  const served = new Set(opts.claimedRepos ?? []);
   const escalationRepos = inverted
-    .filter((r) => r.scannedThisCycle)
+    .filter((r) => r.scannedThisCycle && !served.has(r.repo))
     .map((r) => r.repo);
   const deferredInversionRepos = inverted
     .filter((r) => !r.scannedThisCycle)
+    .map((r) => r.repo);
+  const servedInversionRepos = inverted
+    .filter((r) => r.scannedThisCycle && served.has(r.repo))
     .map((r) => r.repo);
 
   return {
@@ -535,6 +727,7 @@ export function buildIdleDecisionCensus(opts: {
     inversionDetected: inversionRepos.length > 0,
     escalationRepos,
     deferredInversionRepos,
+    servedInversionRepos,
   };
 }
 
@@ -575,6 +768,7 @@ export function formatIdleDecisionCensus(
         `idle_task=${r.unblocked.idleTask} pr_blocked=${r.prBlocked} ` +
         `stream_occupied=${r.streamOccupied} ` +
         `merged_pr_blocked=${r.mergedPrBlocked} ` +
+        `dependency_blocked=${r.dependencyBlocked} ` +
         `inversion_signal=${r.inversionSignal}`,
     );
   }
@@ -593,6 +787,17 @@ export function formatIdleDecisionCensus(
         `repos=${census.deferredInversionRepos.join(",")} — the claim scan ` +
         `did not complete an eligibility pass this cycle, so nothing ` +
         `refused this work`,
+    );
+  }
+  // Issue #460: the scan claimed from this repo this cycle, so its leftover
+  // work was served rather than refused. Reported, never escalated.
+  if (census.servedInversionRepos.length > 0) {
+    lines.push(
+      `[idle-census]${hostField} decision_point=${census.decisionPoint} ` +
+        `NOTE inversion_not_escalated_served ` +
+        `repos=${census.servedInversionRepos.join(",")} — the claim scan ` +
+        `claimed work from these repos this cycle, so nothing refused the ` +
+        `remainder`,
     );
   }
   return lines;

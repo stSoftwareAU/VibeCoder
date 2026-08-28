@@ -511,7 +511,9 @@ flowchart LR
     P -- yes --> PB["pr_blocked+1"]
     P -- no --> M{Named by a<br/>merged fleet PR?}
     M -- yes --> MB["merged_pr_blocked+1"]
-    M -- no --> U["unblocked+1<br/>→ inversion signal"]
+    M -- no --> D{Names an open<br/>dependency?}
+    D -- yes --> DB["dependency_blocked+1"]
+    D -- no --> U["unblocked+1<br/>→ inversion signal"]
 ```
 
 Before Issue #3852 the census skipped the occupancy gate, so every sibling of an
@@ -533,6 +535,24 @@ is named by merged PR #4336. The scan was right; the census escalated it as
 "the claim scan keeps refusing" (GRQ#4419, VibeCoder#429). Excluded issues are
 now reported as `merged_pr_blocked=<n>` so the permanent strand stays visible
 rather than being silently dropped.
+
+The **dependency** gate (Issue #460, GRQ#4465) closes the third instance of the
+same hole. `collect_work_on_candidates.ts` refuses an issue naming an open
+dependency (`dependency-blocked` via `isDependencyBlocked`); the census did not
+model it, so such an issue counted as claimable on every cycle. It is resolved
+against the repo's own open-issue set — which the census already holds — so it
+costs no `gh` call: a same-repo `#N` absent from that set is closed and does not
+block, and a cross-repo `owner/repo#N` cannot be resolved locally, so it blocks,
+matching `isDependencyBlocked`'s fail-safe.
+
+Three times is a pattern, not three accidents, so the gate list is now checked
+by the compiler. `SKIP_REASONS` in `issue_finder_logger.ts` is a runtime tuple
+(the `SkipReason` type is derived from it), and
+`CENSUS_SCAN_GATE_COVERAGE` in `idle_decision_census.ts` is a **total** map over
+it, classifying every gate as `modelled`, `upstream`, `run-local` or
+`escalated-elsewhere`. A new skip reason in any `collect_*_candidates.ts` fails
+the type check until somebody classifies it — the check #3526, #3852 and
+GRQ#4419 each went without.
 
 Two deliberate limits keep both instruments cheap probes rather than a second
 scan: only **merged** PRs count (a closed-unmerged PR blocks for a cooldown
@@ -565,12 +585,23 @@ splits the inverted repos in two:
 ```mermaid
 flowchart TD
     S["Inversion signal on repo"] --> C{"Claim scan completed<br/>an eligibility pass?"}
-    C -- yes --> E["escalationRepos<br/>→ Issue #321 streak +1"]
     C -- no --> D["deferredInversionRepos<br/>→ NOTE inversion_not_escalated"]
-    E --> F["3 consecutive cycles → file an issue"]
+    C -- yes --> V{"Did the scan claim<br/>from this repo?"}
+    V -- yes --> W["servedInversionRepos<br/>→ NOTE inversion_not_escalated_served"]
+    V -- no --> E["escalationRepos<br/>→ Issue #321 streak +1"]
+    E --> F["3 consecutive cycles → file an issue in VibeCoder"]
     D --> H["streak held: neither counted nor cleared"]
+    W --> H2["streak cleared: the repo was served"]
     S --> I["inversionDetected → idle-task filer suppressed<br/>(unchanged: the work is real either way)"]
 ```
+
+A repo the scan **claimed from** is likewise not one it refused (Issue #460).
+Two concurrent slots working an 80-issue backlog leave claimable work behind on
+every cycle by construction, so without this the escalation is guaranteed to
+fire against any busy repo. GRQ#4465 was filed at 16:11:57Z on 2026-08-27; at
+16:15:49Z the same scan claimed GRQ#4463 from that repo and worked it to the
+cycle deadline. The claim counts, not the outcome — that run ended
+`no_pr:timeout:execute`, and a claim that later fails is still not a refusal.
 
 An unscanned repo is **held**, not cleared: the cycle proves neither a refusal
 nor a clean pass, so a genuine streak survives a busy cycle and a busy fleet
@@ -590,6 +621,29 @@ scan had simply run out of cycle. The deferral is now logged instead:
 claim scan did not complete an eligibility pass this cycle, so nothing refused
 this work
 ```
+
+#### The escalation is filed in VibeCoder
+
+The issue lands in `stSoftwareAU/VibeCoder`, never in the subject repo
+(Issue #459). The census, the claim scan and the filer are all worker code, so
+no change in the subject repo can fix what the issue reports. GRQ#4465 was filed
+into GRQ, whose body then asked a human to apply `work-on` — scheduling an agent
+against a checkout containing none of the deciding code, with a write allowlist
+covering only that repo, so the sole available outcome was a `needs-human`
+hand-off. The dedup marker stays keyed on the **subject** repo
+(`<!-- VIBE_IDLE_INVERSION:owner/repo -->`), so two hosts watching the same
+subject still converge on one issue. Same rule, and same shape, as
+`run_failure_issue.ts`: an issue whose fix is worker code belongs in the
+worker's repo, whatever repo it is *about*. Scan findings (security,
+best-practices, dead-code, …) are the opposite case and stay in the repo they
+describe.
+
+The body now names the issues the census counted and, where the scan recorded
+one, the gate that refused each — `FindIssuesResult.blockedDetails` carries the
+per-issue reasons the same way Issue #219's counts ride the result. GRQ#4465
+carried a bare count, and the scan logged only aggregate top-3 reasons, so which
+gate the two sides disagreed about was unrecoverable from the alert and the log
+together.
 
 The census reads through the iteration-scoped `IssueCache` / `fetchAllIssues`,
 so a quiet cycle adds **no** extra issue-list API call (whichever of the census,

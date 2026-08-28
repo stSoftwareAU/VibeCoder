@@ -246,3 +246,60 @@ Deno.test(
     assertEquals(result.output.includes("|100|"), true);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #460 — the scan's per-issue skip reasons must reach its caller
+// ---------------------------------------------------------------------------
+//
+// GRQ#4465 asked a human to work out which gate refused six issues. The scan
+// knew — it records a reason per issue — but only ever emitted aggregate
+// top-3 counts to a debug-gated log, so the answer was unrecoverable from the
+// alert, the log, or both together. The counts already ride the result
+// (Issue #219); the reasons now do too.
+
+Deno.test(
+  "findOldestIssue - the result carries the per-issue skip reasons (Issue #460)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      "owner/repo-a": {
+        issues: [
+          issue({
+            number: 300,
+            title: "Blocked on an open dependency",
+            labels: [{ name: "work-on" }],
+            body: "Depends on #301",
+          }),
+          issue({
+            number: 301,
+            title: "The dependency, still open and unlabelled",
+            labels: [],
+            body: "",
+          }),
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "work-on" }, actor: ALICE },
+        ],
+      },
+    });
+
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+    });
+
+    assertEquals(result.found, false, "the only candidate is blocked");
+    const blocked = result.blockedDetails ?? [];
+    const entry = blocked.find((b) => b.issueNumber === 300);
+    if (!entry) {
+      throw new Error(
+        `#300's skip reason must ride the result; got ${
+          JSON.stringify(blocked)
+        }`,
+      );
+    }
+    assertEquals(entry.reason, "dependency-blocked");
+    assertEquals(entry.repo, "owner/repo-a");
+  },
+);
