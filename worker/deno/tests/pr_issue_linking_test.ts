@@ -611,7 +611,12 @@ Deno.test("pr_issue_linking - closeDuplicatePrs returns 0 for empty branch", asy
 // `fetchMergedPRsByUser`, so the mocked `pr list` response must be the
 // JSON shape `[{ number, title, headRefName }, ...]`.
 const MOCK_MERGED_PRS = JSON.stringify([
-  { number: 1, title: "Fix: Bug (#42)", headRefName: "issue-42" },
+  {
+    number: 1,
+    title: "Fix: Bug (#42)",
+    headRefName: "issue-42",
+    mergedAt: "2026-01-02T00:00:00Z",
+  },
 ]);
 
 Deno.test("pr_issue_linking - closeIssuesForMergedPrs closes open issues", async () => {
@@ -621,7 +626,11 @@ Deno.test("pr_issue_linking - closeIssuesForMergedPrs closes open issues", async
       return MOCK_MERGED_PRS;
     }
     if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ state: "OPEN", labels: [] });
+      return JSON.stringify({
+        state: "OPEN",
+        labels: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
     }
     if (args[0] === "issue" && args[1] === "close") {
       closedIssues.push(args[2]!);
@@ -668,7 +677,11 @@ Deno.test("pr_issue_linking - closeIssuesForMergedPrs skips planning issues (Iss
       return MOCK_MERGED_PRS;
     }
     if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ state: "OPEN", labels: [{ name: "planning" }] });
+      return JSON.stringify({
+        state: "OPEN",
+        labels: [{ name: "planning" }],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
     }
     if (args[0] === "issue" && args[1] === "close") {
       closedIssues.push(args[2]!);
@@ -697,6 +710,7 @@ Deno.test("pr_issue_linking - closeIssuesForMergedPrs closes non-planning issues
       return JSON.stringify({
         state: "OPEN",
         labels: [{ name: "enhancement" }],
+        createdAt: "2026-01-01T00:00:00Z",
       });
     }
     if (args[0] === "issue" && args[1] === "close") {
@@ -957,11 +971,20 @@ Deno.test("pr_issue_linking - closeIssuesForMergedPrs invalidates issues_all on 
     const fn = async (args: string[]): Promise<string> => {
       if (args[0] === "pr" && args[1] === "list") {
         return JSON.stringify([
-          { number: 5, title: "Fix (#42)", headRefName: "issue-42" },
+          {
+            number: 5,
+            title: "Fix (#42)",
+            headRefName: "issue-42",
+            mergedAt: "2026-01-02T00:00:00Z",
+          },
         ]);
       }
       if (args[0] === "issue" && args[1] === "view") {
-        return JSON.stringify({ state: "OPEN", labels: [] });
+        return JSON.stringify({
+          state: "OPEN",
+          labels: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        });
       }
       // issue close
       return "";
@@ -1031,7 +1054,11 @@ function createRecordingGh(handlers: {
     }
     if (args[0] === "issue" && args[1] === "view") {
       const answer = handlers.view?.(args[2]!) ??
-        JSON.stringify({ state: "OPEN", labels: [] });
+        JSON.stringify({
+          state: "OPEN",
+          labels: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        });
       if (answer instanceof Error) return Promise.reject(answer);
       return Promise.resolve(answer);
     }
@@ -1048,7 +1075,12 @@ Deno.test("pr_issue_linking - the reconcile watermark suppresses issue views on 
   try {
     const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
     const prs = JSON.stringify([
-      { number: 5, title: "Fix: Bug (#42)", headRefName: "issue-42" },
+      {
+        number: 5,
+        title: "Fix: Bug (#42)",
+        headRefName: "issue-42",
+        mergedAt: "2026-01-02T00:00:00Z",
+      },
     ]);
 
     const first = createRecordingGh({ prs });
@@ -1093,7 +1125,12 @@ Deno.test("pr_issue_linking - a failed issue view holds the watermark back for r
   try {
     const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
     const prs = JSON.stringify([
-      { number: 7, title: "Fix: Bug (#77)", headRefName: "issue-77" },
+      {
+        number: 7,
+        title: "Fix: Bug (#77)",
+        headRefName: "issue-77",
+        mergedAt: "2026-01-02T00:00:00Z",
+      },
     ]);
 
     const failing = createRecordingGh({
@@ -1140,13 +1177,22 @@ Deno.test("pr_issue_linking - a planning-label skip holds the watermark back (Is
   try {
     const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
     const prs = JSON.stringify([
-      { number: 9, title: "Plan: Feature (#90)", headRefName: "issue-90" },
+      {
+        number: 9,
+        title: "Plan: Feature (#90)",
+        headRefName: "issue-90",
+        mergedAt: "2026-01-02T00:00:00Z",
+      },
     ]);
 
     const planning = createRecordingGh({
       prs,
       view: () =>
-        JSON.stringify({ state: "OPEN", labels: [{ name: "planning" }] }),
+        JSON.stringify({
+          state: "OPEN",
+          labels: [{ name: "planning" }],
+          createdAt: "2026-01-01T00:00:00Z",
+        }),
     });
     const c1 = await closeIssuesForMergedPrs(
       ["owner/repo"],

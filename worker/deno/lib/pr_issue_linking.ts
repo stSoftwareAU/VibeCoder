@@ -651,6 +651,35 @@ export async function updatePrLabels(
  * @param options - Reconcile watermark wiring (Issue #4256)
  * @returns Number of issues closed
  */
+/**
+ * Whether a merged PR could possibly be the fix for the issue its title names
+ * (Issue #482).
+ *
+ * `"issue-predates-merge"` is the only verdict that permits a close. Both
+ * other verdicts are refusals, but they differ in kind and the caller treats
+ * them differently: `"issue-postdates-merge"` is permanent — the issue is
+ * younger than the merge and can never become its subject — while
+ * `"unknown"` is transient and worth deciding again next cycle.
+ *
+ * Equal timestamps count as predating: GitHub reports whole seconds, and a
+ * genuine "PR merged, issue closed" pair can land inside one. The tie goes to
+ * the historical behaviour, since a same-second collision with an unrelated
+ * issue is not the failure mode this guard exists to stop.
+ *
+ * @param mergedAt - The PR's ISO-8601 merge time; `""`/absent means unknown.
+ * @param createdAt - The issue's ISO-8601 creation time; `""`/absent means
+ *   unknown.
+ */
+export function classifyMergeCloseOrdering(
+  mergedAt: string | undefined,
+  createdAt: string | undefined,
+): "issue-predates-merge" | "issue-postdates-merge" | "unknown" {
+  const merged = Date.parse(mergedAt ?? "");
+  const created = Date.parse(createdAt ?? "");
+  if (Number.isNaN(merged) || Number.isNaN(created)) return "unknown";
+  return created <= merged ? "issue-predates-merge" : "issue-postdates-merge";
+}
+
 export async function closeIssuesForMergedPrs(
   repos: string[],
   githubUser: string,
@@ -685,7 +714,7 @@ export async function closeIssuesForMergedPrs(
   let watermarksDirty = false;
 
   for (const repo of repos) {
-    let mergedPrs: Array<{ number: number; title: string }>;
+    let mergedPrs: Array<{ number: number; title: string; mergedAt: string }>;
     try {
       // Issue #1787: route through `fetchMergedPRsByUser` so this
       // call reuses the iteration-scoped `prs_merged_${user}` cache.
@@ -725,15 +754,37 @@ export async function closeIssuesForMergedPrs(
           "--repo",
           repo,
           "--json",
-          "state,labels",
+          "state,labels,createdAt",
         ]);
 
         const issueData = JSON.parse(issueOutput) as {
           state: string;
           labels: Array<{ name: string }>;
+          createdAt?: string;
         };
 
         if (issueData.state !== "OPEN") continue;
+
+        // Issue #482: a fix cannot predate the thing it fixes. Issues and PRs
+        // share one number sequence, so a stale or invented reference in an
+        // already-merged PR is otherwise a standing instruction to close
+        // whatever later takes that number — which is how PR #476, merged at
+        // 06:44Z naming a then-nonexistent "Issue #477", closed the unrelated
+        // issue #477 filed at 06:53Z. The close is silent and destroys work.
+        const ordering = classifyMergeCloseOrdering(
+          pr.mergedAt,
+          issueData.createdAt,
+        );
+        if (ordering !== "issue-predates-merge") {
+          // `issue-postdates-merge` is permanent — the number can never
+          // become this PR's subject, so it is watermarked away rather than
+          // re-examined for ever. An `unknown` ordering is transient (a cache
+          // entry written before `mergedAt` was collected), so it is held
+          // back and decided next cycle: closing is destructive and
+          // unprompted, while deferring costs one cycle.
+          if (ordering === "unknown") holdBack = Math.min(holdBack, pr.number);
+          continue;
+        }
 
         if (issueData.labels.some((l) => l.name === planningLabel)) {
           holdBack = Math.min(holdBack, pr.number);
@@ -757,7 +808,9 @@ export async function closeIssuesForMergedPrs(
           "--repo",
           repo,
           "--comment",
-          `Closed automatically — PR has been merged.`,
+          // Issue #482: name the PR. A wrong close must be traceable to its
+          // cause from the issue alone, without reading the worker's logs.
+          `Closed automatically — PR #${pr.number} has been merged.`,
         ]);
         closedCount++;
         mutated = true;
