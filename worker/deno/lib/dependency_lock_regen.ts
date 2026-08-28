@@ -227,12 +227,15 @@ export const LOCK_FILE_SPECS: readonly LockFileSpec[] = [
 /**
  * Whether a path is a safe repository-relative path.
  *
+ * Exported because the deterministic pass (Issue #466) guards the manifest
+ * paths it writes with exactly the same rule — one definition, not two.
+ *
  * The paths arrive from `git diff --name-only` on a conflicted merge, but they
  * decide a `cwd` and a filesystem read, so they are validated rather than
  * trusted: no absolute path, no drive letter, no backslash, and no `.`/`..`
  * segment that could escape the working directory.
  */
-function isSafeRelativePath(path: string): boolean {
+export function isSafeRepoRelativePath(path: string): boolean {
   if (path === "" || path.startsWith("/") || path.includes("\\")) return false;
   if (/^[A-Za-z]:/.test(path)) return false;
   return path.split("/").every((part) =>
@@ -398,7 +401,7 @@ export async function regenerateLockFile(
     return { kind: "unresolved", path: lockPath, reason };
   };
 
-  if (!isSafeRelativePath(lockPath)) {
+  if (!isSafeRepoRelativePath(lockPath)) {
     return defer(`unsafe path outside the working directory: ${lockPath}`);
   }
 
