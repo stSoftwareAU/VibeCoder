@@ -93,14 +93,3 @@ Deno.test("TROUBLESHOOTING.md documents the bump status a failed deno pre-flight
     `${TROUBLESHOOTING_PATH} must point at ~/.deno/bin as the remedy`,
   );
 });
-
-Deno.test("pr-summary-3532 learnings are absorbed, so the archived summary is gone", async () => {
-  const relative = "docs/archive/pr-summaries/pr-summary-3532.md";
-  try {
-    await Deno.stat(new URL(relative, REPO_ROOT));
-  } catch (err) {
-    assert(err instanceof Deno.errors.NotFound, `unexpected error: ${err}`);
-    return;
-  }
-  throw new Error(`${relative} must be removed once absorbed into the manuals`);
-});

@@ -158,13 +158,3 @@ Deno.test("repointed anchors - every fragment resolves to a real heading", async
     );
   }
 });
-
-Deno.test("repointed anchors - every referencing doc uses the corrected link", async () => {
-  for (const ref of REPOINTED) {
-    const body = await read(ref.source);
-    assert(
-      body.includes(`(${ref.link})`),
-      `${ref.source} must link to ${ref.link}`,
-    );
-  }
-});

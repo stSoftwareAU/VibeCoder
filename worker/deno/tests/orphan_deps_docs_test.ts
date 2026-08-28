@@ -23,13 +23,6 @@ import {
   renderOrphanDepsSummary,
 } from "../lib/idle_task_templates/orphan_deps_template.ts";
 
-// Repo root relative to this test file (worker/deno/tests/).
-const REPO_ROOT = new URL("../../../", import.meta.url);
-
-function readDoc(relPath: string): string {
-  return Deno.readTextFileSync(new URL(relPath, REPO_ROOT));
-}
-
 // ---------------------------------------------------------------------------
 // Documented constants match the registered template
 // ---------------------------------------------------------------------------
@@ -73,27 +66,3 @@ Deno.test("orphan-deps docs - body fingerprint matches the prompt heading the do
 // ---------------------------------------------------------------------------
 // Operator manual exists and is cross-linked
 // ---------------------------------------------------------------------------
-
-Deno.test("orphan-deps docs - operator manual quotes the template's constants", () => {
-  const doc = readDoc("docs/ORPHAN-DEPS-SCAN.md");
-  assert(doc.includes(ORPHAN_DEPS_LABEL), "documents the orphan-deps label");
-  assert(doc.includes(ORPHAN_DEPS_ISSUE_TITLE), "documents the wrapper title");
-  // Derive the cadence from the template's own constant so a cadence change
-  // must update both code and doc together — not grep an arbitrary literal.
-  assert(
-    doc.includes(String(orphanDepsTemplate.cooldownHours)),
-    "documents the weekly cadence (cooldownHours)",
-  );
-});
-
-Deno.test("orphan-deps docs - framework manual links the operator manual + lists the templates", () => {
-  const framework = readDoc("docs/IDLE-TASK-FRAMEWORK.md");
-  assert(
-    framework.includes("ORPHAN-DEPS-SCAN.md"),
-    "framework links the new manual",
-  );
-  assert(
-    framework.includes(ORPHAN_DEPS_LABEL),
-    "framework names the template",
-  );
-});

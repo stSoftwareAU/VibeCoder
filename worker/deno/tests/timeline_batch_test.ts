@@ -4,80 +4,132 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  buildBatchQuery,
   fetchTimelineBatch,
   TIMELINE_BATCH_SIZE,
   wrapGhWithBatchedTimeline,
 } from "../lib/timeline_batch.ts";
 import { wasLabelAddedByAllowedAuthor } from "../lib/issue_query.ts";
 import { verifyOperationalLabels } from "../lib/label_security.ts";
+import {
+  fakeGithubGraphQL,
+  type FakeLabelEvent,
+} from "./support/github_graphql_fake.ts";
 
 // =============================================================================
-// buildBatchQuery
+// Behaviour against a fake that models GitHub's own connection rules
 // =============================================================================
 
-Deno.test("timeline_batch - buildBatchQuery aliases each issue", () => {
-  const q = buildBatchQuery("acme", "tools", [10, 20, 30]);
-  assertStringIncludes(q, "n0: issue(number: 10)");
-  assertStringIncludes(q, "n1: issue(number: 20)");
-  assertStringIncludes(q, "n2: issue(number: 30)");
-  assertStringIncludes(q, 'repository(owner: "acme", name: "tools")');
-  assertStringIncludes(q, "itemTypes: [LABELED_EVENT]");
-});
-
-Deno.test("timeline_batch - buildBatchQuery reads the most-recent labelled events (Issue #3089)", () => {
-  // The trust gate inspects only the most-recent labelled event, so the batch
-  // must fetch from the tail (`last`) — not the oldest events (`first`) — so a
-  // heavily-labelled issue cannot drop the genuine most-recent add.
-  const q = buildBatchQuery("acme", "tools", [10]);
-  assertStringIncludes(q, "last: 100");
-  assert(!q.includes("first: 50"));
-});
-
-Deno.test("timeline_batch - most-recent untrusted add survives batching and is rejected (Issue #3089)", async () => {
-  // GraphQL `last: 100` returns the tail of the chronological timeline, so the
-  // most-recent labelled event (untrusted mallory) is always present even when
-  // older trusted adds exist. The gate must therefore reject the reserved
-  // label. We verify end-to-end: a batch response whose last labelled event is
-  // by an untrusted actor flows through wrapGhWithBatchedTimeline into the
-  // trust gate and yields `false`.
-  const batchResponse = JSON.stringify({
-    data: {
-      repository: {
-        n0: {
-          timelineItems: {
-            nodes: [
-              {
-                __typename: "LabeledEvent",
-                createdAt: "2024-01-01T00:00:00Z",
-                label: { name: "work-on" },
-                actor: { login: "alice" },
-              },
-              {
-                __typename: "LabeledEvent",
-                createdAt: "2024-06-01T00:00:00Z",
-                label: { name: "work-on" },
-                actor: { login: "mallory" },
-              },
-            ],
-          },
-        },
+Deno.test("timeline_batch - each issue receives its own timeline (Issue #471)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    issues: {
+      10: {
+        labelEvents: [{
+          label: "work-on",
+          actor: "alice",
+          createdAt: "2024-01-01T00:00:00Z",
+        }],
+      },
+      20: {
+        labelEvents: [{
+          label: "top-priority",
+          actor: "bob",
+          createdAt: "2024-02-01T00:00:00Z",
+        }],
       },
     },
   });
-  const baseGh = (_args: string[]): Promise<string> =>
-    Promise.resolve(batchResponse);
-  const batch = await fetchTimelineBatch("acme/tools", [55], baseGh);
+
+  const result = await fetchTimelineBatch("acme/tools", [10, 20], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.events.get(10)?.[0]?.label?.name, "work-on");
+  assertEquals(result.events.get(10)?.[0]?.actor?.login, "alice");
+  assertEquals(result.events.get(20)?.[0]?.label?.name, "top-priority");
+  assertEquals(result.events.get(20)?.[0]?.actor?.login, "bob");
+});
+
+Deno.test("timeline_batch - the most-recent untrusted add survives batching and is rejected (Issue #3089)", async () => {
+  // 101 labelled events: the oldest 100 are trusted adds by alice, the newest
+  // is an untrusted add by mallory. GitHub's `last: n` returns the tail, so a
+  // fetcher that reads the tail sees mallory's add and the trust gate refuses.
+  // A fetcher that read the head (`first: n`) would see only alice's adds and
+  // wrongly accept — the fake answers each spelling truthfully, so the
+  // assertion below is what detects the difference.
+  const labelEvents: FakeLabelEvent[] = [];
+  for (let i = 0; i < 149; i++) {
+    labelEvents.push({
+      label: "work-on",
+      actor: "alice",
+      createdAt: `2024-01-01T00:00:${String(i % 60).padStart(2, "0")}Z`,
+    });
+  }
+  labelEvents.push({
+    label: "work-on",
+    actor: "mallory",
+    createdAt: "2024-06-01T00:00:00Z",
+  });
+
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    issues: { 55: { labelEvents } },
+  });
+
+  const batch = await fetchTimelineBatch("acme/tools", [55], gh);
   assert(batch.ok);
-  const wrapped = wrapGhWithBatchedTimeline(baseGh, batch.events);
-  const result = await wasLabelAddedByAllowedAuthor(
-    "acme/tools",
-    55,
-    "work-on",
-    ["alice"],
-    wrapped,
+  if (!batch.ok) return;
+  const fetched = batch.events.get(55) ?? [];
+  assertEquals(fetched.at(-1)?.actor?.login, "mallory");
+});
+
+Deno.test("timeline_batch - the trust gate refuses a batched timeline whose last add is untrusted (Issue #3089)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    issues: {
+      55: {
+        labelEvents: [
+          {
+            label: "work-on",
+            actor: "alice",
+            createdAt: "2024-01-01T00:00:00Z",
+          },
+          {
+            label: "work-on",
+            actor: "mallory",
+            createdAt: "2024-06-01T00:00:00Z",
+          },
+        ],
+      },
+    },
+  });
+
+  const batch = await fetchTimelineBatch("acme/tools", [55], gh);
+  assert(batch.ok);
+  if (!batch.ok) return;
+  const wrapped = wrapGhWithBatchedTimeline(gh, batch.events);
+  assertEquals(
+    await wasLabelAddedByAllowedAuthor(
+      "acme/tools",
+      55,
+      "work-on",
+      ["alice"],
+      wrapped,
+    ),
+    false,
   );
-  assertEquals(result, false);
+});
+
+Deno.test("timeline_batch - a repository the API cannot resolve is an error, not an empty timeline", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    issues: { 1: { labelEvents: [] } },
+  });
+  const result = await fetchTimelineBatch("acme/other", [1], gh);
+  assertEquals(result.ok, false);
 });
 
 // =============================================================================

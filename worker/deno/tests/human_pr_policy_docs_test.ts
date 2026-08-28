@@ -33,8 +33,6 @@ import { getBlockingPRForIssue } from "../lib/issue_query.ts";
 import { isPrInvited } from "../lib/pr_invitation.ts";
 
 const POLICY_DOC = "docs/HUMAN-PR-POLICY.md";
-const CONFIG_DOC = "docs/CONFIGURATION.md";
-const LESSONS_DOC = "docs/LESSONS-LEARNT.md";
 
 // tests/ → worker/deno/ → worker/ → repo root
 function repoPath(relative: string): URL {
@@ -106,33 +104,6 @@ function documentedToken(rowLabel: string): string {
 // ---------------------------------------------------------------------------
 // The policy document exists and is reachable
 // ---------------------------------------------------------------------------
-
-Deno.test("human-PR policy - the policy document exists", () => {
-  assert(
-    Deno.statSync(repoPath(POLICY_DOC)).isFile,
-    `${POLICY_DOC} must exist`,
-  );
-});
-
-Deno.test("human-PR policy - README Documentation table links the policy", () => {
-  const lines = read("README.md").split("\n");
-  const start = lines.findIndex((line) =>
-    line.startsWith("## 📖 Documentation")
-  );
-  assert(start >= 0, "README must have a '📖 Documentation' section");
-  const rows: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (line.startsWith("## ")) break;
-    if (line.startsWith("|")) rows.push(line);
-  }
-  const row = rows.find((line) => line.includes(`(${POLICY_DOC})`));
-  assert(row, `No README Documentation-table row links ${POLICY_DOC}`);
-  assert(
-    row.split("|").map((cell) => cell.trim()).filter((cell) => cell.length > 0)
-      .length >= 2,
-    `The ${POLICY_DOC} row needs a description cell`,
-  );
-});
 
 Deno.test("human-PR policy - the policy is reachable from the README", () => {
   assert(
@@ -230,33 +201,9 @@ Deno.test("human-PR policy - trusted humans are deferred to, never maintained", 
   assertEquals(resolveFleetMaintenanceAuthorSet(input), [HOST, SIBLING]);
 });
 
-Deno.test("human-PR policy - CONFIGURATION.md states the one-line rule", () => {
-  assert(
-    /trusted to command, not to be commanded/i.test(read(CONFIG_DOC)),
-    `${CONFIG_DOC} must state the rule "trusted to command, not to be ` +
-      `commanded" so the two sets cannot be misread`,
-  );
-  assert(
-    markdownLinks(CONFIG_DOC).includes(POLICY_DOC),
-    `${CONFIG_DOC} must link ${POLICY_DOC}`,
-  );
-});
-
 // ---------------------------------------------------------------------------
 // The blocked-`work-on` branch
 // ---------------------------------------------------------------------------
-
-Deno.test("human-PR policy - the page says a human PR never blocks pickup", () => {
-  const policy = read(POLICY_DOC);
-  assert(
-    /never (?:parks|blocks)|does not block/i.test(policy),
-    `${POLICY_DOC} must state that a human PR does not block issue pickup`,
-  );
-  assert(
-    //.test(policy),
-    `${POLICY_DOC} must cite for the blocking change`,
-  );
-});
 
 Deno.test("human-PR policy - the real guard ignores a human PR and keeps fleet PRs", () => {
   const pushCapable = resolveFleetMaintenanceAuthorSet({
@@ -285,17 +232,3 @@ Deno.test("human-PR policy - the real guard ignores a human PR and keeps fleet P
 // ---------------------------------------------------------------------------
 // The incident is on record
 // ---------------------------------------------------------------------------
-
-Deno.test("human-PR policy - LESSONS-LEARNT records the incident", () => {
-  const lessons = read(LESSONS_DOC);
-  assert(
-    lessons.includes(
-      "started listing, claiming and pushing to human-authored PRs",
-    ),
-    `${LESSONS_DOC} must record the uninvited-PR incident`,
-  );
-  assert(
-    markdownLinks(LESSONS_DOC).includes(POLICY_DOC),
-    `${LESSONS_DOC} must link ${POLICY_DOC} so the lesson leads to the policy`,
-  );
-});

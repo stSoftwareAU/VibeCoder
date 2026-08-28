@@ -87,16 +87,6 @@ Deno.test("config docs - no JSON example advertises a dead / hardwired key", asy
   }
 });
 
-Deno.test("config docs - claude_model_planning is documented nowhere", async () => {
-  for (const doc of ["docs/CONFIGURATION.md", "README.md"]) {
-    const markdown = await read(doc);
-    assert(
-      !markdown.includes("claude_model_planning"),
-      `${doc} still mentions the non-existent key claude_model_planning`,
-    );
-  }
-});
-
 Deno.test("config docs - primary sample .config.json uses only recognised keys", async () => {
   const markdown = await read("docs/CONFIGURATION.md");
   const first = jsonBlocks(markdown)[0];

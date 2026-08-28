@@ -149,3 +149,66 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - a watchdog waking after the child was reaped sends no signal and keeps the child's real status (Issue #471)",
+  // The orphan deliberately outlives the agent and holds the pipe; the
+  // abandoned pump and child handle are the condition under test.
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const dir = await Deno.makeTempDir({ prefix: "claude_reaped_pid_stub_" });
+    // The agent exits straight away, so it is REAPED almost immediately. A
+    // double-forked orphan inherits stdout and holds it open, so the runner
+    // is still in its bounded stream drain when the 1s hard deadline expires.
+    // That is the window in which the watchdog used to fire at a pid the
+    // kernel was already free to reuse — and the stray group signal is what
+    // took the CI runner down mid-suite.
+    const stubPath = `${dir}/claude`;
+    await Deno.writeTextFile(
+      stubPath,
+      "#!/usr/bin/env bash\n( sleep 4 & )\n" +
+        `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+    );
+    await Deno.chmod(stubPath, 0o755);
+    const originalPath = Deno.env.get("PATH") ?? "";
+    Deno.env.set("PATH", `${dir}:${originalPath}`);
+
+    const logs: string[] = [];
+    const logger = {
+      info: (m: string) => logs.push(m),
+      warn: (m: string) => logs.push(m),
+      error: (m: string) => logs.push(m),
+      debug: (m: string) => logs.push(m),
+    } as unknown as Logger;
+
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        streamDrainCapSeconds: 3,
+        logger,
+      });
+
+      assert(result.ok, "the runner must return a result, not an error");
+      if (!result.ok) return;
+      // The child reported its own status before the deadline, so a watchdog
+      // waking during the drain must not reclassify the run as a timeout.
+      assertEquals(
+        result.value.timedOut,
+        false,
+        "a run whose child exited cleanly must not be reported as timed out",
+      );
+      assertEquals(result.value.exitCode, 0);
+      assert(
+        !logs.some((m) => m.includes("Watchdog kill failed")),
+        "no kill may be attempted against the reaped pid",
+      );
+    } finally {
+      Deno.env.set("PATH", originalPath);
+      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+    }
+  },
+});

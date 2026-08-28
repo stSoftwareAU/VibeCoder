@@ -4,34 +4,88 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
-  buildCommentBatchQuery,
   COMMENT_BATCH_SIZE,
   COMMENTS_PER_ISSUE,
   fetchCommentBatch,
 } from "../lib/comment_batch.ts";
+import {
+  type FakeComment,
+  fakeGithubGraphQL,
+} from "./support/github_graphql_fake.ts";
 
 // =============================================================================
-// buildCommentBatchQuery
+// Behaviour against a fake that models GitHub's own connection rules
 // =============================================================================
 
-Deno.test("comment_batch - buildCommentBatchQuery aliases each issue", () => {
-  const q = buildCommentBatchQuery("acme", "tools", [10, 20, 30]);
-  assertStringIncludes(q, "n0: issue(number: 10)");
-  assertStringIncludes(q, "n1: issue(number: 20)");
-  assertStringIncludes(q, "n2: issue(number: 30)");
-  assertStringIncludes(q, 'repository(owner: "acme", name: "tools")');
-  assertStringIncludes(q, `comments(last: ${COMMENTS_PER_ISSUE})`);
-  assertStringIncludes(q, "databaseId");
-  assertStringIncludes(q, "author { login }");
-  assertStringIncludes(q, "body");
-  assertStringIncludes(q, "createdAt");
+Deno.test("comment_batch - each issue receives its own comments (Issue #471)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    issues: {
+      10: {
+        comments: [{
+          databaseId: 1,
+          author: "alice",
+          body: "on ten",
+          createdAt: "2024-01-01T00:00:00Z",
+        }],
+      },
+      20: {
+        comments: [{
+          databaseId: 2,
+          author: "bob",
+          body: "on twenty",
+          createdAt: "2024-02-01T00:00:00Z",
+        }],
+      },
+    },
+  });
+
+  const result = await fetchCommentBatch("acme/tools", [10, 20], gh);
+  assertEquals(result.failedNumbers, []);
+  assertEquals(result.comments.get(10)?.[0]?.body, "on ten");
+  assertEquals(result.comments.get(10)?.[0]?.author, "alice");
+  assertEquals(result.comments.get(20)?.[0]?.body, "on twenty");
+  assertEquals(result.comments.get(20)?.[0]?.author, "bob");
 });
 
-Deno.test("comment_batch - buildCommentBatchQuery honours commentsPerIssue override", () => {
-  const q = buildCommentBatchQuery("acme", "tools", [1], 5);
-  assertStringIncludes(q, "comments(last: 5)");
+Deno.test("comment_batch - the newest comments are the ones fetched (Issue #471)", async () => {
+  // Twice the per-issue budget exists on the issue. GitHub's `last: n` returns
+  // the tail, so the fetcher must come back with the newest COMMENTS_PER_ISSUE
+  // comments — a fetcher reading the head would return the oldest instead.
+  const comments: FakeComment[] = [];
+  for (let i = 0; i < COMMENTS_PER_ISSUE * 2; i++) {
+    comments.push({
+      databaseId: i,
+      author: "alice",
+      body: `comment-${i}`,
+      createdAt: `2024-01-01T00:00:${String(i % 60).padStart(2, "0")}Z`,
+    });
+  }
+
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    issues: { 7: { comments } },
+  });
+
+  const result = await fetchCommentBatch("acme/tools", [7], gh);
+  const got = result.comments.get(7) ?? [];
+  assertEquals(got.length, COMMENTS_PER_ISSUE);
+  assertEquals(got.at(-1)?.body, `comment-${COMMENTS_PER_ISSUE * 2 - 1}`);
+});
+
+Deno.test("comment_batch - a repository the API cannot resolve fails the batch (Issue #471)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    issues: { 7: { comments: [] } },
+  });
+  const result = await fetchCommentBatch("acme/other", [7], gh);
+  assertEquals(result.failedNumbers, [7]);
+  assertEquals(result.comments.size, 0);
 });
 
 // =============================================================================

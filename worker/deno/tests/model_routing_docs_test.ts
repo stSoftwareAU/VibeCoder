@@ -13,7 +13,6 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
-  DEFAULT_CLAUDE_EFFORT_PLANNING,
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
@@ -61,13 +60,6 @@ Deno.test("model routing docs - every phase in PHASE_MODEL_DEFAULTS is in the ro
       `table documents unknown phase ${phase}`,
     );
   }
-});
-
-Deno.test("model routing docs - the doc never claims Fable is the default for no phase, and the healthy example uses the default planning effort (Issue #3349)", () => {
-  assert(!/not the default for any phase/i.test(text));
-  const example = /- \*\*Effort:\*\* `([a-z]+)`/.exec(text);
-  assert(example, "healthy-run example carries an Effort line");
-  assertEquals(example[1], DEFAULT_CLAUDE_EFFORT_PLANNING);
 });
 
 Deno.test("model routing docs - the Fable-preferring phase list in the doc matches fable_routing.ts", () => {

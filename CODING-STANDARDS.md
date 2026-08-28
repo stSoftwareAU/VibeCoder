@@ -95,6 +95,38 @@ Deno.test("should have validateConfig function", async () => {
 });
 ```
 
+### Fake the external service, do not assert the request
+
+When a function's only observable effect is a call to an external API, do not
+assert the *text* of the request it builds. A test written from the same mental
+model that produced the request cannot disagree with its author: Issue #470
+shipped a reversed `Ref.compare` and the test that pinned the reversed query
+text passed for the whole life of the defect.
+
+Write a fake that models the external API's own rules and assert on the decision
+the worker reaches. `worker/deno/tests/support/github_graphql_fake.ts` is the
+worked example — it resolves aliases, honours `first:` (head) versus `last:`
+(tail) and returns `null` for what it cannot resolve, so a query asked the wrong
+way round receives a truthfully wrong answer and the test goes red.
+
+### Never fire a real process-group signal from a test
+
+A test may spawn a real subprocess and let the production code kill it — that is
+the only way the watchdogs are covered end to end. It must not arrange for the
+signal to be a **group** signal (`kill -TERM -<pgid>`). Put the stub in the
+`deno test` process group and `terminateProcessTree` refuses the group signal by
+design, leaving the PID signal plus `terminateDescendants`; give the stub its
+own session (`setsid`) and the group signal genuinely fires inside the CI VM,
+where a single mis-read PGID takes the whole runner down.
+
+That is not hypothetical. Three test files gave their stubs a session; the shard
+split kept them one-per-shard until it did not, and the moment two landed in the
+same job `validate (tests 4/4)` died mid-file with "The runner has received a
+shutdown signal" at the instant of the second file's first kill — four times
+running, on four different commits. The group-signalling logic itself is covered
+by `worker/deno/tests/pid_guard_test.ts`, which asserts the exact signal targets
+through injected seams and needs no real process at all.
+
 ### Test coverage expectations
 
 Every new or modified public function should cover the happy path, at least one

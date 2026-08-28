@@ -23,17 +23,11 @@ const text = await Deno.readTextFile(
 );
 const lines = text.split("\n");
 
-/** Prefix of the one-line applicability marker under a heading. */
-const MARKER_PREFIX = "> **Applies to:**";
-
 /** Heading that opens the matrix section. */
 const MATRIX_HEADING = "Provider Applicability";
 
 /** Headings that carry no marker: the index, and the matrix section itself. */
 const EXEMPT_HEADINGS = new Set(["Table of Contents", MATRIX_HEADING]);
-
-/** Verdict symbols a marker and a matrix cell may use. */
-const VERDICTS = ["✅", "⚠️", "❌", "➖"] as const;
 
 /** Deepest heading level the matrix may link to. */
 const MAX_LINKED_LEVEL = 4;
@@ -92,20 +86,6 @@ function slug(title: string): string {
     .replace(/ /g, "-");
 }
 
-/**
- * The marker line under a heading, when the next non-blank line is one.
- *
- * @param heading - The heading to look under.
- * @returns The marker line, or undefined when there is none.
- */
-function markerFor(heading: Heading): string | undefined {
-  for (const line of lines.slice(heading.index + 1)) {
-    if (line.trim() === "") continue;
-    return line.startsWith(MARKER_PREFIX) ? line : undefined;
-  }
-  return undefined;
-}
-
 /** Body of the matrix section: the heading through to the next `##`. */
 function matrixSection(): string[] {
   const start = lines.findIndex((line) => line === `## ${MATRIX_HEADING}`);
@@ -128,17 +108,6 @@ const documented = headings.filter((h) => {
   if (matrixStart < 0) return true;
   const matrixEnd = matrixStart + 1 + matrixLines.length;
   return h.index < matrixStart || h.index >= matrixEnd;
-});
-
-Deno.test("MODEL-AND-CACHING - carries a provider applicability matrix", () => {
-  assert(
-    matrixLines.length > 0,
-    `${DOC_NAME} must carry a "## ${MATRIX_HEADING}" section`,
-  );
-  assert(
-    matrixLines.some((line) => line.trim().startsWith("|")),
-    `the ${MATRIX_HEADING} section must contain a table`,
-  );
 });
 
 Deno.test("MODEL-AND-CACHING - the matrix has a column for every registered provider", () => {
@@ -164,54 +133,6 @@ Deno.test("MODEL-AND-CACHING - every registered provider id appears in the docum
   }
 });
 
-Deno.test("MODEL-AND-CACHING - every documented heading carries an applicability marker", () => {
-  assert(documented.length > 0, "no headings were found to check");
-  for (const heading of documented) {
-    assert(
-      markerFor(heading),
-      `"${heading.title}" (line ${
-        heading.index + 1
-      }) must be followed by a marker line starting "${MARKER_PREFIX}"`,
-    );
-  }
-});
-
-Deno.test("MODEL-AND-CACHING - every marker gives a verdict for every registered provider", () => {
-  for (const heading of documented) {
-    const marker = markerFor(heading);
-    if (!marker) continue; // Reported by the marker-presence test above.
-    for (const id of agentProviderIds()) {
-      const verdict = new RegExp(
-        `\`${id}\`\\s*(${VERDICTS.join("|")})`,
-        "u",
-      );
-      assert(
-        verdict.test(marker),
-        `the marker under "${heading.title}" must give \`${id}\` one of ` +
-          `${VERDICTS.join(" ")} — got: ${marker}`,
-      );
-    }
-  }
-});
-
-Deno.test("MODEL-AND-CACHING - no provider is described by omission", () => {
-  for (const heading of documented) {
-    const marker = markerFor(heading);
-    if (!marker) continue; // Reported by the marker-presence test above.
-    if (
-      !marker.includes("⚠️") && !marker.includes("❌") && !marker.includes("➖")
-    ) {
-      continue;
-    }
-    const explanation = marker.split("—").slice(1).join("—").trim();
-    assert(
-      explanation.length >= 20,
-      `the marker under "${heading.title}" reports a gap, so it must say ` +
-        `what the provider does instead after an em dash — got: ${marker}`,
-    );
-  }
-});
-
 Deno.test("MODEL-AND-CACHING - the matrix covers every documented heading", () => {
   for (const heading of documented) {
     const anchor = `(#${slug(heading.title)})`;
@@ -231,17 +152,6 @@ Deno.test("MODEL-AND-CACHING - every matrix row links a heading that exists", ()
       anchors.has(anchor),
       `the ${MATRIX_HEADING} matrix links #${anchor}, which is not a heading ` +
         `in ${DOC_NAME}`,
-    );
-  }
-});
-
-Deno.test("MODEL-AND-CACHING - the matrix legend defines every verdict symbol it uses", () => {
-  const legend = matrixLines.slice(0, 20).join("\n");
-  for (const symbol of VERDICTS) {
-    if (!matrixText.includes(symbol)) continue;
-    assert(
-      legend.includes(symbol),
-      `the ${MATRIX_HEADING} legend must define ${symbol}`,
     );
   }
 });

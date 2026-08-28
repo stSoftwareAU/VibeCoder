@@ -46,23 +46,20 @@ interface StubAgent {
 }
 
 /**
- * Install a stub `claude` on PATH, re-execed into its own session so the
- * watchdog's process-group kill lands on the stub alone.
+ * Install a stub `claude` on PATH.
+ *
+ * The stub runs in the `deno test` process group — deliberately, so the
+ * watchdog signals its PID and descendants and never a process GROUP
+ * (Issue #471; see the note in {@link file://../../../CODING-STANDARDS.md}).
+ * `terminateProcessTree` already refuses a group signal for a target sharing
+ * our group, and `terminateDescendants` still reaps the stub's children, so
+ * the kill under test is exercised end to end without a signal that can
+ * escape the tree.
  */
 async function installStub(body: string): Promise<StubAgent> {
   const dir = await Deno.makeTempDir({ prefix: "timeout_telemetry_4298_" });
   const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(
-    `${dir}/claude.impl`,
-    `#!/usr/bin/env bash\n${body}`,
-  );
-  await Deno.writeTextFile(
-    stubPath,
-    `#!/usr/bin/env bash\n` +
-      `impl="$(dirname "$0")/claude.impl"\n` +
-      `if command -v setsid >/dev/null 2>&1; then exec setsid bash "$impl"; fi\n` +
-      `exec bash "$impl"\n`,
-  );
+  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body}`);
   await Deno.chmod(stubPath, 0o755);
   const originalPath = Deno.env.get("PATH") ?? "";
   Deno.env.set("PATH", `${dir}:${originalPath}`);

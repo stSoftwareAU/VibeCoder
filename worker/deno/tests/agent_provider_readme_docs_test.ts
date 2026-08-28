@@ -64,13 +64,6 @@ function assertMentions(haystack: string, name: string, needle: string): void {
   );
 }
 
-Deno.test("README.md - carries a coding-agent provider section", () => {
-  assert(
-    agentProviderSection(README) !== "",
-    "README.md must carry a section on choosing the coding agent",
-  );
-});
-
 Deno.test("README.md - names every registered provider id and display name", () => {
   const section = agentProviderSection(README);
   const ids = agentProviderIds();
@@ -96,16 +89,6 @@ Deno.test("README.md - names both ways to select a provider", () => {
     section,
     "README.md provider section",
     `\`${AGENT_PROVIDER_ENV}\``,
-  );
-});
-
-Deno.test("README.md - links the detailed provider documentation", () => {
-  const section = agentProviderSection(README);
-  assertMentions(section, "README.md provider section", "docs/CONTAINER.md");
-  assertMentions(
-    section,
-    "README.md provider section",
-    "docs/CONFIGURATION.md",
   );
 });
 

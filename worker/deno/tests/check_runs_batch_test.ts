@@ -10,7 +10,6 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  buildCheckRunsBatchQuery,
   CHECK_RUNS_BATCH_SIZE,
   fetchCheckRunsBatch,
   fetchFailedCheckRunsBatch,
@@ -19,6 +18,71 @@ import {
   rollupToCombinedStatusResponse,
   rollupToFailedCheckRuns,
 } from "../lib/check_runs_batch.ts";
+
+import { fakeGithubGraphQL } from "./support/github_graphql_fake.ts";
+
+// ---------------------------------------------------------------------------
+// Behaviour against a fake that models GitHub's own resolution rules
+// ---------------------------------------------------------------------------
+
+Deno.test("check_runs_batch - each PR receives its own rollup (Issue #471)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      10: {
+        headOid: "aaa111",
+        rollupState: "SUCCESS",
+        contexts: [{
+          kind: "checkRun",
+          databaseId: 1,
+          name: "build",
+          status: "COMPLETED",
+          conclusion: "SUCCESS",
+        }],
+      },
+      20: {
+        headOid: "bbb222",
+        rollupState: "FAILURE",
+        contexts: [{
+          kind: "checkRun",
+          databaseId: 2,
+          name: "test",
+          status: "COMPLETED",
+          conclusion: "FAILURE",
+        }],
+      },
+    },
+  });
+
+  const result = await fetchCheckRunsBatch("acme/tools", [10, 20], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(10)?.rollupState, "SUCCESS");
+  assertEquals(result.rollups.get(10)?.headSha, "aaa111");
+  assertEquals(result.rollups.get(10)?.checkRuns[0]?.name, "build");
+  assertEquals(result.rollups.get(20)?.rollupState, "FAILURE");
+  assertEquals(result.rollups.get(20)?.headSha, "bbb222");
+  assertEquals(result.rollups.get(20)?.checkRuns[0]?.name, "test");
+});
+
+Deno.test("check_runs_batch - a PR the API cannot resolve carries no state, not a green one (Issue #471)", async () => {
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      10: { headOid: "aaa111", rollupState: "SUCCESS", contexts: [] },
+    },
+  });
+
+  const result = await fetchCheckRunsBatch("acme/tools", [10, 99], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.rollups.get(10)?.rollupState, "SUCCESS");
+  assertEquals(result.rollups.get(99)?.rollupState, null);
+  assertEquals(result.rollups.get(99)?.headSha, null);
+  assertEquals(result.rollups.get(99)?.checkRuns, []);
+});
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -80,17 +144,6 @@ function fakeRollupResponse(
 // ===========================================================================
 // buildCheckRunsBatchQuery
 // ===========================================================================
-
-Deno.test("check_runs_batch - buildCheckRunsBatchQuery aliases each PR", () => {
-  const q = buildCheckRunsBatchQuery("acme", "tools", [10, 20, 30]);
-  assertStringIncludes(q, "n0: pullRequest(number: 10)");
-  assertStringIncludes(q, "n1: pullRequest(number: 20)");
-  assertStringIncludes(q, "n2: pullRequest(number: 30)");
-  assertStringIncludes(q, 'repository(owner: "acme", name: "tools")');
-  assertStringIncludes(q, "statusCheckRollup");
-  assertStringIncludes(q, "... on CheckRun");
-  assertStringIncludes(q, "... on StatusContext");
-});
 
 // ===========================================================================
 // fetchCheckRunsBatch — happy path / empty / batching / failures

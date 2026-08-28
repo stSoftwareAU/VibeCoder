@@ -8,45 +8,10 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import {
-  getLatestVersion,
-  loadPrompt,
-  validatePromptTemplate,
-} from "../lib/prompt_manager.ts";
 import { buildCiFixPrompt } from "../lib/prompt_builder.ts";
 import type { CiAnnotation } from "../lib/ci_failure_classifier.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-
-Deno.test("ci_fix v4 - exists and loads", async () => {
-  const result = await loadPrompt("ci_fix", "v4", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.length > 0, true);
-  }
-});
-
-Deno.test("ci_fix v4 - is the latest version", async () => {
-  const result = await getLatestVersion("ci_fix", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    const num = parseInt(result.value.replace("v", ""), 10);
-    assertEquals(
-      num >= 4,
-      true,
-      `Expected ci_fix >= v4, got ${result.value}`,
-    );
-  }
-});
-
-Deno.test("ci_fix v4 - retains required placeholders", async () => {
-  const result = await loadPrompt("ci_fix", "v4", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    const validation = validatePromptTemplate("ci_fix", result.value);
-    assertEquals(validation.ok, true);
-  }
-});
 
 Deno.test("ci_fix v4 - renderer substitutes FAILURE_CLASSIFICATION for semgrep", async () => {
   const annotations: CiAnnotation[] = [

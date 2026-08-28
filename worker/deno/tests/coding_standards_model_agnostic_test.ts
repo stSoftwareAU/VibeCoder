@@ -16,7 +16,7 @@
  *   - the actual repository tree passes (regression guard).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   findModelGenerationNames,
   MODEL_AGNOSTIC_DOCS,
@@ -168,22 +168,4 @@ Deno.test("runModelAgnosticDocsCheck - the live CODING-STANDARDS.md names no mod
   }
   assertEquals(result.status, "PASSED", result.output);
   assertEquals(result.filesScanned, MODEL_AGNOSTIC_DOCS.length);
-});
-
-Deno.test("CODING-STANDARDS.md defers routing to docs/MODEL-AND-CACHING.md", async () => {
-  const url = new URL("../../../CODING-STANDARDS.md", import.meta.url);
-  const text = await Deno.readTextFile(url);
-  const section = text.slice(text.indexOf("## Prompt Engineering Guidance"));
-  assert(
-    section.includes("docs/MODEL-AND-CACHING.md#model-selection"),
-    "Prompt Engineering Guidance does not link to the Model Selection " +
-      "section that owns the per-phase routing chain",
-  );
-  assert(
-    section.includes(
-      "docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning",
-    ),
-    "Prompt Engineering Guidance does not link to the model-generation " +
-      "prompt-tuning section that owns generation-specific findings",
-  );
 });

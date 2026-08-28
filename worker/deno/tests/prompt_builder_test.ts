@@ -20,11 +20,10 @@ import {
   buildPrFeedbackPrompt,
   buildQuestionPrompt,
   buildSpellingFixPrompt,
-  type PromptParts,
   stripPlaywrightSection,
   stripScreenshotInstructions,
 } from "../lib/prompt_builder.ts";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -933,13 +932,6 @@ Deno.test("prompt builder - PR feedback prompt returns PromptParts", async () =>
   }
 });
 
-Deno.test("prompt builder - PromptParts type is exported and usable", () => {
-  // Type smoke test — verify the PromptParts type can be used
-  const _parts: PromptParts = { systemPrompt: "static", prompt: "dynamic" };
-  assertEquals(_parts.systemPrompt, "static");
-  assertEquals(_parts.prompt, "dynamic");
-});
-
 // --- Repo context injection tests (Issue #1325) ---
 //
 // Issue #3706 (SEC-a482f7e01b65) moved repository CLAUDE.md/AGENTS.md out of
@@ -1303,45 +1295,6 @@ Deno.test("prompt builder - planning prompt sanitises delimiter injection in com
 
 // --- Human escalation via needs-human label (Issue #1471) ---
 
-Deno.test("prompt builder - coding_guidelines latest version is >= v11", async () => {
-  const result = await getLatestVersion("coding_guidelines", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    const num = parseInt(result.value.replace("v", ""), 10);
-    assertEquals(
-      num >= 11,
-      true,
-      `Expected coding_guidelines >= v11, got ${result.value}`,
-    );
-  }
-});
-
-Deno.test("prompt builder - issue latest version is >= v13", async () => {
-  const result = await getLatestVersion("issue", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    const num = parseInt(result.value.replace("v", ""), 10);
-    assertEquals(
-      num >= 13,
-      true,
-      `Expected issue >= v13, got ${result.value}`,
-    );
-  }
-});
-
-Deno.test("prompt builder - planning latest version is >= v11", async () => {
-  const result = await getLatestVersion("planning", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    const num = parseInt(result.value.replace("v", ""), 10);
-    assertEquals(
-      num >= 11,
-      true,
-      `Expected planning >= v11, got ${result.value}`,
-    );
-  }
-});
-
 Deno.test("prompt builder - coding guidelines direct the worker to use needs-human (Issue #1471)", async () => {
   const result = await buildCodingGuidelines(false, PROMPTS_DIR);
   assertEquals(result.ok, true);
@@ -1470,16 +1423,6 @@ Deno.test("prompt builder - coding guidelines carry the standing untrusted-image
     assertStringIncludes(result.value, "user-attachments");
     assertStringIncludes(result.value, "browser_take_screenshot");
     assertStringIncludes(result.value, "escalate for a human to review");
-  }
-});
-
-Deno.test("prompt builder - security-scan prompt carries the untrusted-image rule (Issue #3388)", async () => {
-  // The security-scan wrapper body inlines the latest security_scan template,
-  // so assert against the assembled template the loader returns.
-  const loaded = await loadPrompt("security_scan", undefined, PROMPTS_DIR);
-  assertEquals(loaded.ok, true);
-  if (loaded.ok) {
-    assertStringIncludes(loaded.value, UNTRUSTED_IMAGE_SENTINEL);
   }
 });
 

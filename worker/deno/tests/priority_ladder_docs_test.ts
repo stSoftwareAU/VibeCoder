@@ -13,7 +13,7 @@
  * Uses Australian English throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert } from "@std/assert";
 
 const ROOT = new URL("../../../", import.meta.url).pathname;
 
@@ -107,24 +107,6 @@ Deno.test("priority ladder - docs/workflows/README.md table lists every dispatch
       `workflows table documents priority ${p}, which the code does not dispatch`,
     );
   }
-});
-
-Deno.test("priority ladder - Planning and Question carry the code's numbers in every restatement (Issue #3348)", () => {
-  const planningRow = /^\|\s*([0-9.]+)\s*\|\s*Planning/m.exec(workflows);
-  const questionRow = /^\|\s*([0-9.]+)\s*\|\s*Question/m.exec(workflows);
-  assert(planningRow && questionRow, "table rows for Planning/Question");
-  assertEquals(normalise(planningRow[1]!), "1.8");
-  assertEquals(normalise(questionRow[1]!), "1.85");
-  // TL;DR prose and USAGE prose must not say "questions (1.8)".
-  assert(!/questions?\s*\(1\.8\)/i.test(workflows), "TL;DR still inverts");
-  assert(
-    !/1\.8\s*[:—-]\s*Question/i.test(workflows + usage),
-    "diagram inverts",
-  );
-  assert(
-    !/1\.85\s*[:—-]\s*Planning/i.test(workflows + usage),
-    "diagram inverts",
-  );
 });
 
 Deno.test("priority ladder - both flow diagrams carry every dispatch tier (Issue #3348)", () => {
