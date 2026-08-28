@@ -88,15 +88,28 @@ for target in "$@"; do
     # the root privileges FITRIM needs and no operator incantation. Loud but
     # never fatal - a virtual disk that cannot discard must not block a
     # launch, and the worker's own alarm then names the fallback.
+    #
+    # Issue #478: the refusal is reported on stdout as
+    # `VOLUME_TRIM_REFUSED <target>`, spelled like #229's
+    # `VOLUME_UNREPAIRABLE` marker, because a warning nobody reads is what let
+    # this run for three days. On the Apple `container` runtime the ioctl is
+    # refused outright - `FITRIM ioctl failed: Operation not permitted`, as
+    # root, on a device that advertises discard - so #384's "supported
+    # compaction path" never returns a byte there and the image ratchets for
+    # ever. The launcher decides what to do about it: only the host side
+    # knows whether it is actually short of disk, and recreating a volume on
+    # a host with room to spare would re-clone every repo for nothing.
     if command -v fstrim >/dev/null 2>&1; then
       trim_out=""
       if trim_out="$(fstrim -v "${target}" 2>&1)"; then
         echo "volume-init: trimmed ${target} - ${trim_out} (Issue #384)" >&2
       else
         echo "volume-init: WARNING could not trim ${target} - the volume image keeps every block it was allocated, so guest reclaim cannot return host disk (Issue #384): ${trim_out}" >&2
+        echo "VOLUME_TRIM_REFUSED ${target}"
       fi
     else
       echo "volume-init: WARNING fstrim is not available - blocks the guest frees stay allocated to the ${target} volume image (Issue #384)" >&2
+      echo "VOLUME_TRIM_REFUSED ${target}"
     fi
   fi
   chown "${owner}" "${target}"

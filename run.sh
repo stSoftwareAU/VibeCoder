@@ -513,20 +513,37 @@ done
 # not repair on stdout (`VOLUME_UNREPAIRABLE <target>`): those are recreated
 # — the clones are disposable, everything of value is pushed — and the init
 # runs once more. Any other failure is the launch failure it always was.
+volume_for_target() {
+  local target="$1" candidate arg
+  for candidate in ${volume_names[@]+"${volume_names[@]}"}; do
+    for arg in "${init_args[@]}"; do
+      if [[ "${arg}" == "${candidate}:${target}" ]]; then
+        printf '%s' "${candidate}"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# Volumes whose trim the runtime refused on this launch (Issue #478).
+trim_refused_targets=()
+
 run_volume_init() {
   local out status=0
+  trim_refused_targets=()
   out="$("${RUNTIME}" "${init_args[@]}" </dev/null)" || status=$?
+  local marker_line
+  while IFS= read -r marker_line; do
+    [[ "${marker_line}" == VOLUME_TRIM_REFUSED\ * ]] || continue
+    trim_refused_targets+=("${marker_line#VOLUME_TRIM_REFUSED }")
+  done <<<"${out}"
   if ((status == 3)); then
     local target volume line recreated=0
     while IFS= read -r line; do
       [[ "${line}" == VOLUME_UNREPAIRABLE\ * ]] || continue
       target="${line#VOLUME_UNREPAIRABLE }"
-      volume=""
-      for candidate in ${volume_names[@]+"${volume_names[@]}"}; do
-        for arg in "${init_args[@]}"; do
-          if [[ "${arg}" == "${candidate}:${target}" ]]; then volume="${candidate}"; fi
-        done
-      done
+      volume="$(volume_for_target "${target}" || true)"
       if [[ -z "${volume}" ]]; then
         echo "[run.sh] volume-init reported ${target} unrepairable but no volume maps to it" >&2
         continue
@@ -545,6 +562,83 @@ run_volume_init() {
   return "${status}"
 }
 run_volume_init
+
+# A volume the runtime will not trim only ever grows (Issue #478). Issue #384
+# added the launch-time `fstrim` and called it the supported compaction path,
+# but the Apple `container` runtime refuses the ioctl outright - as root, on a
+# device that advertises discard - so on that runtime it has never returned a
+# byte. GRQ-23 ratcheted its work volume to 26 GB against 12.1 GB of live data
+# and sat below its disk floor for three days, claiming none of 43 available
+# issues, while the remedy printed in its own alarm was addressed to a human.
+#
+# So take the remedy here, and only when it is warranted:
+#
+#   - only when the host is genuinely below its disk floor. Recreating costs a
+#     full re-clone of every repository, which is a bad trade to pay on a host
+#     with room merely because its runtime cannot discard.
+#   - only once. A recreate that did not clear the floor must not run again
+#     next launch: re-cloning everything on every launch for ever is a worse
+#     failure than the one being healed, so the host escalates instead and the
+#     worker's own `NOT CLAIMING WORK` report (Issue #477) carries it.
+#
+# The stamp is cleared whenever the host is above the floor, so a volume that
+# ratchets again later is healed again.
+volume_recreate_stamp="${HOME}/logs/.vibe-volume-recreate-attempted"
+heal_untrimmable_volumes() {
+  ((${#trim_refused_targets[@]})) || return 0
+
+  local probe_path="${HOME}"
+  [[ -d "${container_store}" ]] && probe_path="${container_store}"
+  local avail_kb total_kb
+  avail_kb="$(df -kP "${probe_path}" 2>/dev/null | awk 'NR>1 {v=$(NF-2)} END {print v}')"
+  total_kb="$(df -kP "${probe_path}" 2>/dev/null | awk 'NR>1 {v=$(NF-4)} END {print v}')"
+  [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[0-9]+$ ]] || return 0
+
+  # Mirrors host_disk.ts: the floor is the greater of an absolute figure and a
+  # percentage of the filesystem, so one setting suits a 500 GB laptop and a
+  # 4 TB server.
+  local floor_gb="${VIBE_HOST_DISK_LOW_FLOOR_GB:-20}"
+  local floor_pct="${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-10}"
+  [[ "${floor_gb}" =~ ^[0-9]+$ ]] || floor_gb=20
+  [[ "${floor_pct}" =~ ^[0-9]+$ ]] || floor_pct=10
+  local floor_kb=$((floor_gb * 1024 * 1024))
+  local pct_kb=$((total_kb / 100 * floor_pct))
+  ((pct_kb > floor_kb)) && floor_kb=${pct_kb}
+
+  if ((avail_kb >= floor_kb)); then
+    # Above the floor: the ratchet is not costing anything yet, and a later
+    # one deserves a fresh attempt.
+    rm -f "${volume_recreate_stamp}" 2>/dev/null || true
+    return 0
+  fi
+
+  local target volume recreated=0
+  if [[ -f "${volume_recreate_stamp}" ]]; then
+    log_run_core "volume-init: cannot self-heal - ${trim_refused_targets[*]} still untrimmable and the host is still below its disk floor after an earlier recreate; free host disk or move this host to a runtime that supports discard (Issue #478)"
+    echo "[run.sh] volume recreate already attempted and the host is still below its disk floor - not recreating again (Issue #478)" >&2
+    return 0
+  fi
+
+  for target in "${trim_refused_targets[@]}"; do
+    volume="$(volume_for_target "${target}" || true)"
+    if [[ -z "${volume}" ]]; then
+      echo "[run.sh] volume-init reported ${target} untrimmable but no volume maps to it" >&2
+      continue
+    fi
+    echo "[run.sh] recreating volume ${volume}: the runtime refuses to trim it and the host is below its disk floor (Issue #478)" >&2
+    log_run_core "volume-init: recreating ${volume} (${target}) - trim refused and host below the disk floor; the clones re-clone and approval snapshots re-baseline (Issue #478)"
+    "${RUNTIME}" volume delete "${volume}" </dev/null >/dev/null 2>&1 || true
+    "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
+    recreated=1
+  done
+
+  if ((recreated)); then
+    mkdir -p "$(dirname "${volume_recreate_stamp}")" 2>/dev/null || true
+    date -u +%Y-%m-%dT%H:%M:%SZ > "${volume_recreate_stamp}" 2>/dev/null || true
+    "${RUNTIME}" "${init_args[@]}" </dev/null >/dev/null
+  fi
+}
+heal_untrimmable_volumes
 
 # Hard free-disk floor (Issue #226). Host GRQ-23 ran its data volume to zero
 # with the worker running: log writes failed, two issues' work was lost and

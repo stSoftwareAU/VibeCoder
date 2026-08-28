@@ -133,6 +133,13 @@ case "\${sub}" in
     exit 0
     ;;
   run-init)
+    # Issue #478: the init reports machine-readable volume verdicts on stdout
+    # (\`VOLUME_UNREPAIRABLE\`, \`VOLUME_TRIM_REFUSED\`); tests drive them here.
+    # The same verdict is returned on every init in a test, which is what a
+    # runtime that cannot discard actually does.
+    if [[ -n "\${STUB_INIT_STDOUT:-}" ]]; then
+      printf '%s\\n' "\${STUB_INIT_STDOUT}"
+    fi
     exit "\${STUB_INIT_EXIT:-0}"
     ;;
   run)
