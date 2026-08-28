@@ -316,9 +316,11 @@ import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
 
 // FLEET health
+import { claimSuppressedNote } from "./claim_gate_health_note.ts";
 import {
   buildFleetHealthConfig,
   createProductionFleetHealthDeps,
+  fleetHealthCheckoutDirName,
   runFleetHealthReporting,
 } from "./fleet_health.ts";
 
@@ -833,9 +835,22 @@ export async function createProductionRunCoreDeps(
   fleetHealthConfig.hostNotes = () => {
     const notes: string[] = [];
     const status = hostDisk.status;
-    if (status.level === "low") notes.push(`host-disk low: ${status.detail}`);
     const fault = workVolumeFault();
-    if (fault !== null) notes.push(`work-volume fault: ${fault.detail}`);
+    // Issue #477: lead with the consequence. These are exactly the two gates
+    // that make the cycle skip the claim scan outright ("claiming no new
+    // issues this cycle"), so a host reporting either is declining every
+    // issue in the fleet — an outage, not the housekeeping note that
+    // `host-disk low: …` alone reads as. The gate detail is carried inside
+    // the note, so nothing #226 or #229 reported is lost.
+    const gateNote = claimSuppressedNote([
+      ...(status.level === "low"
+        ? [{ id: "host-disk-low", detail: status.detail }]
+        : []),
+      ...(fault !== null
+        ? [{ id: "work-volume-fault", detail: fault.detail }]
+        : []),
+    ]);
+    if (gateNote !== null) notes.push(gateNote);
     // Issue #345: a host that has lost its disk telemetry says so on the
     // fleet board *before* it fills up, not after the crash.
     notes.push(...diskTelemetry().notes);
@@ -2437,6 +2452,15 @@ export async function createProductionRunCoreDeps(
         monitoredRepos: config.repos,
         mode: "disk-low",
         bytesNeeded: hostDisk.shortfallBytes,
+        // Issue #477: the fleet-health checkout is a side clone by shape, so
+        // this sweep used to delete it to win back space — after which #410
+        // refused to clone it back while the host stayed below the floor, and
+        // the host reported nothing to the fleet board for as long as the
+        // condition lasted. It is the instrument that reports this fault, and
+        // megabytes never buy back a floor measured in gigabytes.
+        protectedNames: [
+          fleetHealthCheckoutDirName(fleetHealthConfig.healthDir),
+        ],
         log: (message: string) => logger.info(message),
       });
       const after = await hostDisk.check({ force: true });
