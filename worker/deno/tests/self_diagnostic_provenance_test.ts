@@ -66,6 +66,13 @@ Deno.test("recogniseSelfDiagnostic - rejects an unknown marker family", () => {
   );
 });
 
+Deno.test("recogniseSelfDiagnostic - a longer prefix is a different family", () => {
+  assertEquals(
+    recogniseSelfDiagnostic("<!-- VIBE_RUN_FAILURE_FOLLOWUP:owner/repo#1 -->"),
+    null,
+  );
+});
+
 Deno.test("recogniseSelfDiagnostic - rejects a marker without its value", () => {
   assertEquals(recogniseSelfDiagnostic("<!-- VIBE_IDLE_INVERSION -->"), null);
 });

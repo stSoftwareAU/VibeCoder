@@ -91,15 +91,27 @@ export const SELF_DIAGNOSTIC_FAMILIES: readonly SelfDiagnosticFamily[] = [
 ];
 
 /**
- * Match a family's marker as a whole HTML comment — `<!-- PREFIX:value -->`
- * — so prose that merely names the prefix is not mistaken for provenance.
+ * Match any marker written as a whole HTML comment — `<!-- PREFIX:value -->`
+ * — so prose that merely names a prefix is not mistaken for provenance.
  *
- * `VIBE_RUN_FAILURE_FOLLOWUP` shares a prefix with `VIBE_RUN_FAILURE`; the
- * `:` immediately after the prefix keeps them distinct, and the follow-up
- * marker only ever appears on comments, never on a body.
+ * Hardcoded rather than built per family from `markerPrefix`: a regex
+ * compiled from a variable is a ReDoS hazard (semgrep
+ * `detect-non-literal-regexp`). The prefix is captured and compared as a
+ * plain string instead, which is both safe and exact — `VIBE_RUN_FAILURE`
+ * no longer needs the `:` to stay distinct from
+ * `VIBE_RUN_FAILURE_FOLLOWUP`, since the capture must equal the family
+ * prefix in full.
  */
-function markerPattern(markerPrefix: string): RegExp {
-  return new RegExp(`<!--\\s*${markerPrefix}:[^\\s<>]+\\s*-->`);
+const MARKER_COMMENT_PATTERN = /<!--\s*([A-Za-z0-9_]+):[^\s<>]+\s*-->/g;
+
+/** Every marker prefix carried as a whole HTML comment in `text`. */
+function markerPrefixesIn(text: string): Set<string> {
+  const prefixes = new Set<string>();
+  for (const match of text.matchAll(MARKER_COMMENT_PATTERN)) {
+    const prefix = match[1];
+    if (prefix !== undefined) prefixes.add(prefix);
+  }
+  return prefixes;
 }
 
 /**
@@ -111,8 +123,10 @@ export function recogniseSelfDiagnostic(
 ): SelfDiagnosticFamily | null {
   const text = body ?? "";
   if (text === "") return null;
+  const prefixes = markerPrefixesIn(text);
+  if (prefixes.size === 0) return null;
   for (const family of SELF_DIAGNOSTIC_FAMILIES) {
-    if (markerPattern(family.markerPrefix).test(text)) return family;
+    if (prefixes.has(family.markerPrefix)) return family;
   }
   return null;
 }
