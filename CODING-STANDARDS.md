@@ -4,10 +4,13 @@ The single source of truth for coding standards and conventions in this
 repository. There is **one set** of standards, shared by human contributors and
 AI agents alike — no per-provider copy.
 
-- **Why the system behaves as it does** — [Design Principles](DESIGN-PRINCIPLES.md).
+- **Why the system behaves as it does** —
+  [Design Principles](DESIGN-PRINCIPLES.md).
 - **User-facing overview & feature index** — [README](README.md).
-- **Extending the worker (commands, prompts, tests)** — [docs/EXTENDING.md](docs/EXTENDING.md).
-- **Contributing (branching, commits, local quality gate)** — [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Extending the worker (commands, prompts, tests)** —
+  [docs/EXTENDING.md](docs/EXTENDING.md).
+- **Contributing (branching, commits, local quality gate)** —
+  [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Language and Spelling
 
@@ -79,7 +82,8 @@ Deno.test("loadConfig - should parse repos from JSON config", async () => {
     configPath,
     JSON.stringify({
       repos: ["org/repo1", "org/repo2"],
-    }),);
+    }),
+  );
   const config = await loadConfig(configPath);
   assertEquals(config.repos[0], "org/repo1");
 });
@@ -98,7 +102,7 @@ Deno.test("should have validateConfig function", async () => {
 ### Fake the external service, do not assert the request
 
 When a function's only observable effect is a call to an external API, do not
-assert the *text* of the request it builds. A test written from the same mental
+assert the _text_ of the request it builds. A test written from the same mental
 model that produced the request cannot disagree with its author: Issue #470
 shipped a reversed `Ref.compare` and the test that pinned the reversed query
 text passed for the whole life of the defect.
@@ -126,6 +130,16 @@ shutdown signal" at the instant of the second file's first kill — four times
 running, on four different commits. The group-signalling logic itself is covered
 by `worker/deno/tests/pid_guard_test.ts`, which asserts the exact signal targets
 through injected seams and needs no real process at all.
+
+### Never signal a pid you cannot prove is still yours
+
+A pid is a handle the kernel re-issues the moment its process is reaped, so
+evidence gathered earlier (a `pgrep -P` sweep, a `ps` liveness probe) can name a
+stranger by the time the signal is sent. Fingerprint the process while it is
+provably yours — `captureProcessIdentity` in
+[`pid_guard.ts`](worker/deno/lib/pid_guard.ts) records its start time — and
+re-verify with `isSameProcess` immediately before every signal, TERM and KILL
+alike. Unproven means no signal, never "go ahead".
 
 ### Test coverage expectations
 
@@ -155,8 +169,8 @@ the foreground**, before raising the PR and fix what it reports; re-run it after
 a fix, never on a timer. Never background it behind a `sleep`/`pgrep` poll loop
 — that spends the whole budget waiting (Issue #399). It streams one line per
 check as each settles, so a slow run is visibly alive rather than
-indistinguishable from a hung one. The quality gate is implemented
-in Deno TypeScript (`worker/deno/quality.ts`) and runs prompt-immutability,
+indistinguishable from a hung one. The quality gate is implemented in Deno
+TypeScript (`worker/deno/quality.ts`) and runs prompt-immutability,
 benchmark-audit, pages-liquid, markdownlint, `deno test`, `deno lint`,
 `deno check`, and `deno fmt --check`. Shellcheck is deliberately not run here —
 bash linting is owned by each repo's own CI. See
@@ -185,8 +199,8 @@ full workflow.
 Published documentation must refer to prompts by **directory name only** —
 `prompts/<type>/` — so it stays fresh as new versions are added. When you
 genuinely need to name a specific version, use the wording **"from vN onward"**
-rather than a literal `prompts/<type>/vN.md` filename. The `docs prompt versions`
-quality check enforces this.
+rather than a literal `prompts/<type>/vN.md` filename. The
+`docs prompt versions` quality check enforces this.
 
 ## Language-Agnostic Standards vs Per-Language Buckets
 
@@ -203,16 +217,16 @@ selects the bucket from the languages detected in the repository
 ([`language_detector.ts`](worker/deno/lib/language_detector.ts)). The operator
 manual is [docs/BEST-PRACTICES-SCAN.md](docs/BEST-PRACTICES-SCAN.md).
 
-| Bucket | Covers |
-| --- | --- |
-| [`rust`](prompts/best_practices/buckets/rust.md) | Error handling, ownership and lifetimes, `unsafe`, Cargo build profiles |
-| [`typescript`](prompts/best_practices/buckets/typescript.md) | Type safety, `tsconfig` strictness, lint rules, module structure |
-| [`java`](prompts/best_practices/buckets/java.md) | Effective Java items, style guide conformance, API design |
-| [`react`](prompts/best_practices/buckets/react.md) | Hooks rules, rendering and state, component accessibility |
-| [`html`](prompts/best_practices/buckets/html.md) | Living-standard markup, WCAG and ARIA accessibility |
-| [`terraform`](prompts/best_practices/buckets/terraform.md) | Module composition, state handling, provider/version pinning |
-| [`aws-cloudformation`](prompts/best_practices/buckets/aws-cloudformation.md) | Well-Architected pillars, template structure, stack safety |
-| [`general`](prompts/best_practices/buckets/general.md) | Repo-level hygiene only — never language-specific code quality |
+| Bucket                                                                       | Covers                                                                  |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [`rust`](prompts/best_practices/buckets/rust.md)                             | Error handling, ownership and lifetimes, `unsafe`, Cargo build profiles |
+| [`typescript`](prompts/best_practices/buckets/typescript.md)                 | Type safety, `tsconfig` strictness, lint rules, module structure        |
+| [`java`](prompts/best_practices/buckets/java.md)                             | Effective Java items, style guide conformance, API design               |
+| [`react`](prompts/best_practices/buckets/react.md)                           | Hooks rules, rendering and state, component accessibility               |
+| [`html`](prompts/best_practices/buckets/html.md)                             | Living-standard markup, WCAG and ARIA accessibility                     |
+| [`terraform`](prompts/best_practices/buckets/terraform.md)                   | Module composition, state handling, provider/version pinning            |
+| [`aws-cloudformation`](prompts/best_practices/buckets/aws-cloudformation.md) | Well-Architected pillars, template structure, stack safety              |
+| [`general`](prompts/best_practices/buckets/general.md)                       | Repo-level hygiene only — never language-specific code quality          |
 
 **Which surface does a new rule belong on?** If it holds regardless of language,
 it belongs here. If it names a language, a framework, or their tooling, it
@@ -245,8 +259,7 @@ must be written in TypeScript, and all tests use `deno test` with `@std/assert`.
 Each module has a corresponding test file (e.g. `lib/config.ts` →
 `tests/config_test.ts`). For the command pattern, the `Command` /
 `CommandResult<T>` interfaces, registry error handling, and step-by-step
-instructions for adding a command, see
-[docs/EXTENDING.md](docs/EXTENDING.md).
+instructions for adding a command, see [docs/EXTENDING.md](docs/EXTENDING.md).
 
 ## Commit Safety — never commit hidden files
 
@@ -257,16 +270,16 @@ small allowlist.
 **Allowlist — the only hidden paths that may ever be tracked:** `.gitignore`,
 `.gitattributes`, `.github/` (workflow YAML), `.markdownlint-cli2.jsonc`.
 
-**Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`, `.config*.json`,
-`*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, and any
-other hidden file not on the allowlist.
+**Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
+`.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,
+`.netrc`, and any other hidden file not on the allowlist.
 
-**Also forbidden — private key material and credential files:**
-`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
+**Also forbidden — private key material and credential files:** `*.pem`,
+`*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
 `service-account*.json`. These are not hidden files, so the `.*` rule never
-covered them — the worker reads a GitHub App private key from disk, and a
-`.pem` left in a working tree would otherwise be staged by `git add -A`. If a
-repo intentionally tracks a fixture matching one of these patterns, negate it
+covered them — the worker reads a GitHub App private key from disk, and a `.pem`
+left in a working tree would otherwise be staged by `git add -A`. If a repo
+intentionally tracks a fixture matching one of these patterns, negate it
 explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
 
 - Before every commit, run `git diff --cached --name-only` and confirm no hidden
@@ -280,7 +293,7 @@ explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
 ## Secret Redaction — Every Outbound Sink
 
 Commit Safety keeps secrets out of the repo; this keeps them out of everything
-the worker *emits*. There is **no global redaction chokepoint** — redaction is
+the worker _emits_. There is **no global redaction chokepoint** — redaction is
 applied **per-sink** as defence-in-depth. Every public or permanent outbound
 sink (logs, issue/PR comments, crash and failure notifications, the answer
 sanitiser) must independently route its text through `redactSecrets()` from
@@ -318,13 +331,13 @@ for every PR summary — containing:
 3. **Test Plan** — Tests added or modified.
 
 For changes to architecture, workflows, or sequence of events, include a
-**Mermaid** diagram in a fenced ` ```mermaid ` block — it renders natively on
+**Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
 GitHub and often tells the story better than prose.
 
 You may write Liquid-looking syntax (`{% ... %}`, `{{ ... }}`) freely in
-published Markdown prose — the Pages build wraps every published body in a Liquid
-raw block. Do not write the literal raw open/close markers themselves in prose;
-Liquid does not support nested raw blocks.
+published Markdown prose — the Pages build wraps every published body in a
+Liquid raw block. Do not write the literal raw open/close markers themselves in
+prose; Liquid does not support nested raw blocks.
 
 ## Available Tools
 
@@ -342,12 +355,11 @@ proactively:
 ## Prompt Engineering Guidance
 
 The guidance below is model-generation-agnostic good practice for authoring
-prompt templates and agent instructions; it names no model generation by
-design. Which generation runs which phase — the per-phase routing chain and
-the self-heal that reroutes when the top-tier generation is unavailable — is
-recorded once, in
-[Model Selection](docs/MODEL-AND-CACHING.md#model-selection). Where a rule does
-depend on the model generation, it defers to
+prompt templates and agent instructions; it names no model generation by design.
+Which generation runs which phase — the per-phase routing chain and the
+self-heal that reroutes when the top-tier generation is unavailable — is
+recorded once, in [Model Selection](docs/MODEL-AND-CACHING.md#model-selection).
+Where a rule does depend on the model generation, it defers to
 [Model-generation prompt tuning](docs/MODEL-AND-CACHING.md#model-generation-prompt-tuning),
 which records what each generation needs and what was tried and reversed.
 `worker/deno/tests/coding_standards_model_agnostic_test.ts` fails the quality

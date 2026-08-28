@@ -9,7 +9,7 @@
  * Australian English spelling throughout (behaviour, defence, authorised).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   checkPidFile,
   getCommand,
@@ -260,9 +260,15 @@ Deno.test("pid_guard - getDescendants returns array of numbers", async () => {
 // =============================================================================
 
 Deno.test("pid_guard - terminateDescendants returns empty for non-existent PID", async () => {
+  // The message names the real reason now (Issue #501): a pid holding no
+  // identifiable process is never swept for children, because `pgrep -P` on a
+  // reused pid lists a stranger's.
   const result = await terminateDescendants(999999999);
   assertEquals(result.targetedPids, []);
-  assertEquals(result.message, "No descendants found");
+  assertStringIncludes(
+    result.message,
+    "no longer holds the process we started",
+  );
 });
 
 // =============================================================================
@@ -360,6 +366,11 @@ function makeFakeDeps(opts: {
 
   const deps: TerminateProcessTreeDeps = {
     selfPid: FAKE_SELF_PID,
+    // A constant start time: the target stays the process we fingerprinted
+    // for the whole kill, so these cases exercise the pgid policy alone.
+    // Pid reuse has its own suite (pid_guard_identity_501_test.ts).
+    getStartTime: (): Promise<string> =>
+      Promise.resolve("Mon Aug 24 09:00:00 2026"),
     runPgidCommand: (pid: number): Promise<PgidCommandResult> =>
       Promise.resolve(
         pid === FAKE_SELF_PID
