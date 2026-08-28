@@ -7,6 +7,13 @@
  *
  * The module under test is pure — no git, no network, no file I/O — so every
  * behaviour is exercised directly with literal inputs.
+ *
+ * The fixtures below embed real conflict markers at column 0, which is exactly
+ * what the "Check for merge conflict markers" CI step looks for. That step
+ * honours the sentinel on the next line to exempt this file, and prints the
+ * exemption; nothing here is an unresolved conflict.
+ *
+ * vibe-allow-conflict-markers
  */
 
 import { assertEquals, assertThrows } from "@std/assert";
