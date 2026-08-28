@@ -824,8 +824,16 @@ const baseRefMock = (args: string[]): Promise<string> => {
       JSON.stringify([{ number: 1, title: "x", state: "open" }]),
     );
   }
+  // Issue #470: the gate now reads both refs in one `pr view --json
+  // baseRefName,headRefName`, because the ahead/behind comparison has to be
+  // oriented base-to-head. Answer with the JSON object it parses.
   if (key.includes("baseRefName")) {
-    return Promise.resolve("milestone/x");
+    return Promise.resolve(
+      JSON.stringify({
+        baseRefName: "milestone/x",
+        headRefName: "issue-1-feature",
+      }),
+    );
   }
   return Promise.reject(new Error(`Unexpected: ${key}`));
 };

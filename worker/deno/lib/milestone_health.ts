@@ -231,11 +231,18 @@ async function fetchBranchInfoGraphQL(
     return { ok: false, error: new Error(`Invalid repo: ${repo}`) };
   }
 
+  // Issue #470: the ref the `compare` field hangs off is the comparison
+  // **base**, and the `headRef:` argument is the comparison **head**. The
+  // drift wanted here is the milestone branch measured against the default
+  // branch, so the default ref is the receiver and the milestone ref is the
+  // argument. Written the other way round the query still succeeds and
+  // still returns two numbers — they are simply swapped, and they then
+  // contradicted this function's own REST fallback.
   const query =
     "query($owner:String!,$name:String!,$milestoneRef:String!,$defaultRef:String!){" +
     "repository(owner:$owner,name:$name){" +
-    "ref(qualifiedName:$milestoneRef){" +
-    "compare(headRef:$defaultRef){aheadBy behindBy}" +
+    "ref(qualifiedName:$defaultRef){" +
+    "compare(headRef:$milestoneRef){aheadBy behindBy}" +
     "}}}";
 
   let raw: string;
@@ -295,13 +302,11 @@ async function fetchBranchInfoGraphQL(
     };
   }
 
-  // GraphQL `compare(headRef:default)` from the milestone-branch ref
-  // returns ahead/behind from the perspective of the milestone branch
-  // versus the default head ref. The original REST `compare/${default}...${milestone}`
-  // reports `ahead_by` = commits the milestone branch has that default
-  // does not, and `behind_by` = commits default has that milestone does
-  // not. GraphQL's `aheadBy` from the milestone ref toward the default
-  // ref means the same: commits ahead on milestone vs default.
+  // The query above compares from the default ref (base) to the milestone
+  // ref (head), matching the REST fallback's `compare/${default}...${milestone}`
+  // exactly: `aheadBy` = commits the milestone branch has that default does
+  // not, `behindBy` = commits default has that the milestone branch does
+  // not. The two paths are held to that agreement by a test (Issue #470).
   return {
     ok: true,
     value: {
