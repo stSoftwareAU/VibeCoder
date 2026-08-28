@@ -60,8 +60,13 @@ async function installStub(body: string): Promise<StubAgent> {
     stubPath,
     `#!/usr/bin/env bash\n` +
       `impl="$(dirname "$0")/claude.impl"\n` +
-      `if command -v setsid >/dev/null 2>&1; then exec setsid bash "$impl"; fi\n` +
-      `exec bash "$impl"\n`,
+      // No silent fallback: without setsid the stub would share this process's
+      // group, and the watchdog's group kill would land on the test runner
+      // (Issue #471). Fail loud instead of running unisolated.
+      `if ! command -v setsid >/dev/null 2>&1; then\n` +
+      `  echo "setsid is required to isolate the stub agent" >&2; exit 127\n` +
+      `fi\n` +
+      `exec setsid bash "$impl"\n`,
   );
   await Deno.chmod(stubPath, 0o755);
   const originalPath = Deno.env.get("PATH") ?? "";

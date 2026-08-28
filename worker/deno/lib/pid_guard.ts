@@ -480,9 +480,19 @@ export async function terminateProcessTree(
   // terminates the worker (observed as the test runner / a native worker
   // dying with the agent it was killing). Such a target gets the pid signal
   // only; its descendants are handled by terminateDescendants().
+  //
+  // An unknown own pgid fails SAFE (Issue #471): if `ps` cannot tell us which
+  // group we are in, we cannot prove the target's group is not ours, and a
+  // group signal sent on that assumption takes the worker — or a CI runner —
+  // down with the agent. Unknown means pid-only, never "go ahead".
   if (pgid !== null) {
     const ownPgid = await ownProcessGroup(deps);
-    if (ownPgid !== null && ownPgid === pgid) {
+    if (ownPgid === null) {
+      console.debug(
+        `[pid-guard] own process group unknown — signalling PID ${pid} only, not group ${pgid}`,
+      );
+      pgid = null;
+    } else if (ownPgid === pgid) {
       console.debug(
         `[pid-guard] PID ${pid} shares this process's group ${pgid} — signalling the pid only`,
       );

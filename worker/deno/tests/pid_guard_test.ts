@@ -352,6 +352,8 @@ function makeFakeDeps(opts: {
   runningSequence: boolean[];
   /** The worker's own pgid as `ps` reports it (Issue #4369). Default "1". */
   ownPgidOutput?: string;
+  /** Whether the own-pgid lookup "succeeded" (Issue #471). Default true. */
+  ownPgidSuccess?: boolean;
 }): { deps: TerminateProcessTreeDeps; sent: SentSignal[] } {
   const sent: SentSignal[] = [];
   const running = [...opts.runningSequence];
@@ -361,7 +363,10 @@ function makeFakeDeps(opts: {
     runPgidCommand: (pid: number): Promise<PgidCommandResult> =>
       Promise.resolve(
         pid === FAKE_SELF_PID
-          ? { success: true, stdout: opts.ownPgidOutput ?? "1\n" }
+          ? {
+            success: opts.ownPgidSuccess ?? true,
+            stdout: opts.ownPgidOutput ?? "1\n",
+          }
           : {
             success: opts.pgidSuccess ?? true,
             stdout: opts.pgidOutput ?? "",
@@ -505,4 +510,40 @@ Deno.test("pid_guard - terminateProcessTree never signals the worker's own proce
   });
   await terminateProcessTree(1234, 30, deps);
   assertEquals(sent, [{ target: 1234, signal: "TERM" }]);
+});
+
+Deno.test("pid_guard - terminateProcessTree fails safe: an unreadable own pgid sends the pid signal only (Issue #471)", async () => {
+  // `ps` could not report our own group, so we cannot prove the target's
+  // group is not ours. Signalling it anyway is what took a CI runner down
+  // mid-suite; unknown must mean pid-only.
+  const { deps, sent } = makeFakeDeps({
+    pgidOutput: "4321\n",
+    ownPgidSuccess: false,
+    runningSequence: [false],
+  });
+  await terminateProcessTree(1234, 30, deps);
+  assertEquals(sent, [{ target: 1234, signal: "TERM" }]);
+});
+
+Deno.test("pid_guard - terminateProcessTree fails safe: an unparseable own pgid sends the pid signal only (Issue #471)", async () => {
+  const { deps, sent } = makeFakeDeps({
+    pgidOutput: "4321\n",
+    ownPgidOutput: "not-a-pgid\n",
+    runningSequence: [false],
+  });
+  await terminateProcessTree(1234, 30, deps);
+  assertEquals(sent, [{ target: 1234, signal: "TERM" }]);
+});
+
+Deno.test("pid_guard - terminateProcessTree fails safe on escalation too: an unknown own pgid never SIGKILLs a group (Issue #471)", async () => {
+  const { deps, sent } = makeFakeDeps({
+    pgidOutput: "4321\n",
+    ownPgidSuccess: false,
+    runningSequence: [true],
+  });
+  await terminateProcessTree(1234, 1, deps);
+  assertEquals(sent, [
+    { target: 1234, signal: "TERM" },
+    { target: 1234, signal: "KILL" },
+  ]);
 });
