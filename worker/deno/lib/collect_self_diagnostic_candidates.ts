@@ -66,6 +66,7 @@ import {
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
+import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { escalateUnworkableWorkOn } from "./escalate_unworkable_work_on.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import {
@@ -119,7 +120,10 @@ export interface SelfDiagnosticDeps {
   log?: (message: string) => void;
 }
 
-const EMPTY: SelfDiagnosticCollectionResult = { candidates: [], refusals: [] };
+/** A fresh empty result — never a shared mutable object. */
+function empty(): SelfDiagnosticCollectionResult {
+  return { candidates: [], refusals: [] };
+}
 
 /**
  * Write the scheduling decision to the audit chain. Returns false — never
@@ -160,8 +164,8 @@ export async function collectSelfDiagnosticCandidates(
   deps: SelfDiagnosticDeps = {},
 ): Promise<SelfDiagnosticCollectionResult> {
   const enabled = config.selfScheduleDiagnosticsEnabled ?? DEFAULT_ENABLED;
-  if (!enabled) return EMPTY;
-  if (!isSelfDiagnosticRepo(repo)) return EMPTY;
+  if (!enabled) return empty();
+  if (!isSelfDiagnosticRepo(repo)) return empty();
 
   const ghFn = options.ghCommandFn ?? runGhCommand;
   const diag = options.diagnostics;
@@ -188,7 +192,7 @@ export async function collectSelfDiagnosticCandidates(
       entry.family !== null &&
       isFleetAuthor(entry.issue.author, fleetWorkerLogins)
     );
-  if (recognised.length === 0) return EMPTY;
+  if (recognised.length === 0) return empty();
 
   // An assigned diagnostic is a claimed one — the assignee is the fleet's
   // claim lock — so that is what "in flight" counts.
@@ -205,7 +209,7 @@ export async function collectSelfDiagnosticCandidates(
       ...config.issueLabels ?? [],
       config.workOnLabel,
       config.lowPriorityLabel,
-      "idle-task",
+      IDLE_TASK_LABEL,
     ].filter((l) => typeof l === "string" && l !== ""),
   );
 
@@ -222,7 +226,7 @@ export async function collectSelfDiagnosticCandidates(
       needsHumanLabel: config.needsHumanLabel,
     },
   );
-  if (filtered.length === 0) return EMPTY;
+  if (filtered.length === 0) return empty();
 
   const refusals: SelfScheduleRefusal[] = [];
   let remaining = maxInFlight - inFlight;
