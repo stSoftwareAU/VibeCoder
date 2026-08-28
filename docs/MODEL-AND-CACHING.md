@@ -103,7 +103,7 @@ a section without a marker, fails `deno test`.
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
 | [Model Fallback on Rate Limit](#model-fallback-on-rate-limit) | ✅ | ❌ | ❌ | ❌ | No `cheaperModel()` ladder: the attempt returns `no-ladder-for-provider` and warns once, naming the provider (#365). `deepseek-chat` is a different model, not a cheaper rung of `deepseek-reasoner` |
 | [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow) | ✅ | ✅ | ✅ | ✅ | — |
-| [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) | ✅ | ⚠️ | ⚠️ | ⚠️ | The comment still posts. Codex and Gemini expose no served model, so the verdict is `❓ unknown`; DeepSeek exposes one but is compared against Claude's expected model, so it is wrongly reported degraded ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)) |
+| [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) | ✅ | ⚠️ | ⚠️ | ✅ | The comment still posts, and the expected model comes from the invocation's *own* provider routing ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)), so DeepSeek is judged `deepseek-reasoner` vs `deepseek-reasoner`. Codex and Gemini expose no served model, so the verdict stays `❓ unknown` |
 | [Session ID — a UUID (Issue #204)](#session-id--a-uuid-issue-204) | ✅ | ❌ | ❌ | ✅ | Codex and Gemini name their own sessions; the worker supplies no id. DeepSeek runs the same CLI, so it takes the same worker-generated id |
 | [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal) | ✅ | ❌ | ❌ | ❌ | No Fable tier exists for them; the probe run on their CLI fails and is read optimistically as `available` |
 | [Pre-flight Fable reroute](#pre-flight-fable-reroute) | ✅ | ❌ | ❌ | ❌ | Nothing to reroute, and the chokepoint is **gated off** for them (#398): their invocations keep their own routing, are never flagged degraded, and the skipped reroute is logged once per provider. The gate matters most for DeepSeek, whose Anthropic CLI would accept `--model opus` and fail at the endpoint ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)) |
@@ -766,7 +766,7 @@ version at runtime.
 
 ### Planning-run stats + degraded-model detection
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the stats comment is still posted, but the served model is read from Claude's `stream-json` assistant lines and the expected model from the Claude chain, so a Codex or Gemini run observes no served model and reports `❓ unknown` rather than a degraded verdict. DeepSeek is the opposite failure: it runs the Claude CLI, so a served model **is** observed, but the expected model is still derived from Claude's chain, so `deepseek-reasoner` is compared against `fable` and the run is wrongly reported degraded ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)).
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the stats comment is posted for every provider, and since [#441](https://github.com/stSoftwareAU/VibeCoder/issues/441) the expected model is derived from the **invocation's own** provider routing (`provider.resolveModel(phase)`), not from Claude's chain. DeepSeek runs the Claude CLI with `--output-format stream-json`, so its served model **is** observed and is now judged against `deepseek-reasoner` rather than `fable`; a genuinely wrong DeepSeek tier (`deepseek-chat` for `planning`) still flags. The served model is read from those same `stream-json` assistant lines, which Codex and Gemini do not emit, so their runs observe no served model and report `❓ unknown` rather than a degraded verdict.
 
 Every planning run posts a short model-usage stats block on the parent issue
 and computes a **degradation verdict**. The block reports the requested model,
@@ -781,11 +781,20 @@ configured best planning model, or an explicit rate-limit fallback fired:
   `best_planning_model` config key (global, or per-repo via `repo_config`)
   **pins** a specific model the run is expected to be served by. When it is left
   empty — the default — the expected model is derived from the `planning` phase
-  resolution chain by reusing
-  [`buildClaudeModelArgs()`](../worker/deno/lib/claude_executor.ts) (single
-  source of truth, no duplicated chain), so a repo that deliberately routes
-  planning to a different tier via `repo_config` is never falsely
-  flagged. Set it to expect an exact model regardless of routing.
+  resolution chain of **the provider the invocation ran on**, by reusing that
+  provider descriptor's
+  [`resolveModel(phase)`](../worker/deno/lib/agent_provider.ts) (single source of
+  truth, no duplicated chain), so a repo that deliberately routes planning to a
+  different tier via `repo_config` is never falsely flagged. Set it to expect an
+  exact model regardless of routing.
+- **The chain is the provider's own, not Claude's** (Issue #441). Reading
+  Claude's chain unconditionally was harmless while only Claude exposed a served
+  model, but DeepSeek is carried on the Anthropic CLI: a `planning` run under
+  `agent_provider: deepseek` compared served `deepseek-reasoner` against expected
+  `fable` and flagged itself degraded for a tier the operator never requested.
+  The gate is the descriptor, never a `provider.id === "claude"` equality check —
+  the same shape [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398)
+  established for the pre-flight reroute, one layer up.
 - **Served-model match** is prefix/alias-aware: requested `fable` (or
   `claude-fable-5`) vs served `claude-fable-5-<date>` is **OK**; a served
   `claude-opus-*` alone is **degraded**.

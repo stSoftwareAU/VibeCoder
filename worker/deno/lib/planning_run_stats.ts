@@ -17,7 +17,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { buildClaudeModelArgs } from "./claude_executor.ts";
+import { activeAgentProvider } from "./agent_provider.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import {
@@ -54,9 +54,9 @@ export interface PlanningInvocationStats {
    * #3232). When the cached probe said Fable was unavailable, the phase is
    * dispatched on Opus @ `max` and the run carries this flag. The recorder
    * treats it as a first-class degraded cause **even when the served model
-   * matches the (fable) expected model** — the reroute deliberately leaves
-   * `buildClaudeModelArgs(phase)` resolving to `fable`, so the served-vs-expected
-   * check alone cannot see it.
+   * matches the (fable) expected model** — the reroute deliberately leaves the
+   * provider's routing for the phase resolving to `fable`, so the
+   * served-vs-expected check alone cannot see it.
    */
   preflightDegraded?: boolean;
   /** Human-readable reason accompanying {@link preflightDegraded}. */
@@ -190,9 +190,9 @@ export function modelsMatch(expected: string, served: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Sentinel returned by {@link resolveExpectedPlanningModel} when the routing
- * chain resolves to no explicit `--model` arg (i.e. `buildClaudeModelArgs`
- * returns `[]`). The CLI then falls back to its own built-in default, which the
+ * Sentinel returned by {@link resolveExpectedPlanningModel} when the provider's
+ * routing chain resolves to no model (i.e. `resolveModel(phase)` returns
+ * `undefined`). The CLI then falls back to its own built-in default, which the
  * worker cannot observe, so the expected model is genuinely unresolvable.
  *
  * {@link assessDegradation} recognises this sentinel and skips served-model
@@ -205,6 +205,20 @@ export function modelsMatch(expected: string, served: string): boolean {
 export const UNRESOLVED_EXPECTED_MODEL = "(CLI default)";
 
 /**
+ * The minimum a coding-agent provider must expose to derive an expected model.
+ *
+ * Structural rather than an `AgentProviderDescriptor` import, mirroring
+ * `FableRoutingProvider` in `fable_routing.ts` (Issue #398): the descriptor's
+ * *routing* is the whole dependency, so a caller can judge a provider it
+ * constructed itself and this module never grows a `provider.id === "claude"`
+ * equality check.
+ */
+export interface ExpectedModelProvider {
+  /** The model this provider routes `phase` to, if any. */
+  resolveModel(phase?: string): string | undefined;
+}
+
+/**
  * Resolve the configured best planning model (Issue #2654).
  *
  * When an explicit `bestPlanningModel` is configured (globally via the
@@ -214,11 +228,19 @@ export const UNRESOLVED_EXPECTED_MODEL = "(CLI default)";
  * request to.
  *
  * When no value is pinned (the empty default — {@link DEFAULT_BEST_PLANNING_MODEL}),
- * the expected model is derived from the planning routing chain via
- * {@link buildClaudeModelArgs} (phase env var > per-repo `phase_model_overrides`
- * > per-repo `claude_model` > global overrides > `PHASE_MODEL_DEFAULTS.planning`).
- * This keeps the per-repo-override-for-free behaviour (#2625) and never flags a
- * repo that deliberately routes planning to a different tier.
+ * the expected model is derived from **the invocation's own provider**
+ * (`provider.resolveModel(phase)`, Issue #441) — the six-step chain that
+ * provider owns (phase env var > per-repo phase overrides > per-repo base tier
+ * > global overrides > that provider's phase defaults > base env var). This
+ * keeps the per-repo-override-for-free behaviour (#2625) and never flags a repo
+ * that deliberately routes planning to a different tier.
+ *
+ * Reading **Claude's** chain unconditionally is what this replaces: a
+ * `planning` run under `agent_provider: deepseek` is carried on the Anthropic
+ * CLI, so its served model *is* observable, and comparing `deepseek-reasoner`
+ * against Claude's `fable` flagged every such run degraded for a tier the
+ * operator never requested (Issue #441 — the same defect class as #398/#417,
+ * one layer up).
  *
  * The `phase` parameter (default `"planning"`) selects the routing chain used
  * to derive the expected model when nothing is pinned — Issue #2717 passes
@@ -229,16 +251,19 @@ export const UNRESOLVED_EXPECTED_MODEL = "(CLI default)";
  *   to derive it from the routing chain for {@link phase}
  * @param phase - The phase whose routing chain derives the expected model
  *   (default `"planning"`)
+ * @param provider - The provider the invocation ran on; omit for the active
+ *   provider, which is the one the run was dispatched to
  * @returns The model identifier the run is expected to be served by
  */
 export function resolveExpectedPlanningModel(
   configuredBest?: string,
   phase: string = "planning",
+  provider?: ExpectedModelProvider,
 ): string {
   const pinned = configuredBest?.trim();
   if (pinned) return pinned;
-  const args = buildClaudeModelArgs(phase);
-  return args.length >= 2 ? args[1]! : UNRESOLVED_EXPECTED_MODEL;
+  const routed = (provider ?? activeAgentProvider()).resolveModel(phase);
+  return routed?.trim() ? routed : UNRESOLVED_EXPECTED_MODEL;
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +638,8 @@ export function buildPlanningStatsSection(args: {
  * @param args.gate - Failure-Detection gate/repair counters for the run (#63);
  *   supplied only by the planning closure, which is the sole path that gates
  *   published sub-issues
+ * @param args.provider - The provider the invocations ran on (Issue #441); omit
+ *   for the active provider, which is the one the run was dispatched to
  * @returns The resolved expected model, the verdict, and the stats section
  */
 export function buildDegradationReport(args: {
@@ -620,11 +647,13 @@ export function buildDegradationReport(args: {
   configuredBestModel?: string;
   phase?: string;
   gate?: FailureDetectionGateStats;
+  provider?: ExpectedModelProvider;
 }): DegradationReport {
   const phase = args.phase ?? "planning";
   const expectedModel = resolveExpectedPlanningModel(
     args.configuredBestModel,
     phase,
+    args.provider,
   );
   const verdict = assessDegradation(args.invocations, expectedModel, phase);
   const section = buildPlanningStatsSection({
