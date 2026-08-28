@@ -25,6 +25,19 @@
 # clones are disposable; everything of value is pushed) and run the init
 # again. Every other failure exits 1 as before.
 #
+# Issue #478: the launch-time trim below is refused outright by the Apple
+# container runtime ("FITRIM ioctl failed: Operation not permitted", as
+# root, on a device that advertises discard), so the freed blocks are never
+# handed back and the volume image only grows. A refusal is therefore
+# reported on stdout as
+#
+#   VOLUME_TRIM_REFUSED <target>
+#
+# — a fact the launcher's disk gate acts on (it recreates the volume when
+# the host is below its floor), not a warning that dies in stderr. It is not
+# a failure on its own: the exit status is unchanged, because a runtime that
+# cannot discard must not block a launch.
+#
 # Usage: vibe-volume-init <uid:gid> <target>...
 set -euo pipefail
 
@@ -84,19 +97,22 @@ for target in "$@"; do
     # image only ever grows and every guest-side reclaim - the tier sweep,
     # the 90%-disk nuke - hands the host exactly zero bytes. fstrim discards
     # the filesystem's unused blocks, which punches them out of the image.
-    # This is the supported compaction path: it runs on every launch, with
-    # the root privileges FITRIM needs and no operator incantation. Loud but
-    # never fatal - a virtual disk that cannot discard must not block a
-    # launch, and the worker's own alarm then names the fallback.
+    # It runs on every launch, with the root privileges FITRIM needs and no
+    # operator incantation. Loud but never fatal - a virtual disk that cannot
+    # discard must not block a launch. Where the runtime refuses the ioctl
+    # (Apple container does, always), the refusal is named on stdout so the
+    # launcher can recreate the volume instead of assuming a trim happened.
     if command -v fstrim >/dev/null 2>&1; then
       trim_out=""
       if trim_out="$(fstrim -v "${target}" 2>&1)"; then
         echo "volume-init: trimmed ${target} - ${trim_out} (Issue #384)" >&2
       else
-        echo "volume-init: WARNING could not trim ${target} - the volume image keeps every block it was allocated, so guest reclaim cannot return host disk (Issue #384): ${trim_out}" >&2
+        echo "volume-init: WARNING could not trim ${target} - the volume image keeps every block it was allocated, so guest reclaim cannot return host disk (Issues #384, #478): ${trim_out}" >&2
+        echo "VOLUME_TRIM_REFUSED ${target}"
       fi
     else
-      echo "volume-init: WARNING fstrim is not available - blocks the guest frees stay allocated to the ${target} volume image (Issue #384)" >&2
+      echo "volume-init: WARNING fstrim is not available - blocks the guest frees stay allocated to the ${target} volume image (Issues #384, #478)" >&2
+      echo "VOLUME_TRIM_REFUSED ${target}"
     fi
   fi
   chown "${owner}" "${target}"
