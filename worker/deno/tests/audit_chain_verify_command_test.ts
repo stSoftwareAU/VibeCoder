@@ -396,3 +396,218 @@ Deno.test("audit-chain-verify - a half-formed acknowledgement line is a tamper s
 
   await Deno.remove(baseDir, { recursive: true }).catch(() => {});
 });
+
+// ---------------------------------------------------------------------------
+// Signing for damage to a journal that is still on disk (Issue #491)
+// ---------------------------------------------------------------------------
+
+/**
+ * Break the chain the way the cross-process race did: rewrite one entry's
+ * `prevHash` so it points back past its predecessor. The file stays
+ * well-formed JSONL, exactly as the ten GRQ-23 journals are.
+ */
+async function orphanHead(path: string): Promise<void> {
+  const lines = (await Deno.readTextFile(path)).split("\n").filter((l) =>
+    l.trim().length > 0
+  );
+  const entry = JSON.parse(lines[2]!);
+  entry.prevHash = JSON.parse(lines[0]!).hash;
+  lines[2] = JSON.stringify(entry);
+  await Deno.writeTextFile(path, `${lines.join("\n")}\n`);
+}
+
+Deno.test("audit-chain-verify - a present but broken journal offers the damage remedy (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(4);
+  await orphanHead(path);
+
+  const result = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "prevHash linkage mismatch");
+  assertStringIncludes(result.message, "--acknowledge-damage");
+  // The loss command would refuse this journal, so it must not be offered.
+  assert(
+    !result.message.includes("--acknowledge-loss"),
+    "a corrupt journal must not be pointed at the loss command",
+  );
+});
+
+Deno.test("audit-chain-verify - damage stays loud until it is signed for (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(4);
+  await orphanHead(path);
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+
+  const before = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(before.success, false);
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-damage": journal,
+    "reason": "cross-process append race, fixed in #491",
+    "by": "operator",
+  }, CONFIG);
+  assertEquals(signed.success, true, signed.message);
+
+  const after = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(after.success, true, after.message);
+  assertStringIncludes(after.message, "AUDIT_CHAIN_DAMAGE_ACKNOWLEDGED");
+  assertStringIncludes(after.message, "acknowledged as damaged");
+  assertStringIncludes(after.message, "cross-process append race");
+});
+
+Deno.test("audit-chain-verify - the damage journal is never repaired (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(4);
+  await orphanHead(path);
+  const before = await Deno.readTextFile(path);
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-damage": path.slice(path.lastIndexOf("/") + 1),
+    "reason": "accounted for",
+    "by": "operator",
+  }, CONFIG);
+  assertEquals(signed.success, true, signed.message);
+
+  assertEquals(
+    await Deno.readTextFile(path),
+    before,
+    "the damaged journal is evidence and must not be touched",
+  );
+});
+
+Deno.test("audit-chain-verify - a signature does not cover later edits (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(4);
+  await orphanHead(path);
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-damage": path.slice(path.lastIndexOf("/") + 1),
+    "reason": "accounted for",
+    "by": "operator",
+  }, CONFIG);
+  assertEquals(signed.success, true, signed.message);
+
+  // Anything at all changing in the file must bring the alarm back: a
+  // signature that survived edits would launder every future forgery.
+  const lines = (await Deno.readTextFile(path)).split("\n").filter((l) =>
+    l.trim().length > 0
+  );
+  await Deno.writeTextFile(path, `${lines.slice(0, 3).join("\n")}\n`);
+
+  const after = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(after.success, false, "an edited journal must fail again");
+  assertStringIncludes(after.message, "no longer applies");
+  assertStringIncludes(after.message, "changed since it was signed for");
+});
+
+Deno.test("audit-chain-verify - a journal that verifies cannot be pre-signed (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(3);
+
+  const result = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-damage": path.slice(path.lastIndexOf("/") + 1),
+    "reason": "nothing wrong with it",
+    "by": "operator",
+  }, CONFIG);
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "AUDIT_CHAIN_DAMAGE_NOT_ACKNOWLEDGED");
+  assertStringIncludes(result.message, "its chain verifies");
+});
+
+Deno.test("audit-chain-verify - a missing journal cannot be signed for as damage (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(2);
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+  await Deno.remove(path);
+
+  const result = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-damage": journal,
+    "reason": "it is gone",
+    "by": "operator",
+  }, CONFIG);
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "it is not on disk");
+  assertStringIncludes(result.message, "--acknowledge-loss");
+});
+
+Deno.test("audit-chain-verify - damage cannot be signed for without a reason (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(4);
+  await orphanHead(path);
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+
+  for (
+    const args of [
+      { "base-dir": baseDir, "acknowledge-damage": journal },
+      { "base-dir": baseDir, "acknowledge-damage": journal, "reason": "   " },
+    ]
+  ) {
+    const result = await auditChainVerifyCommand.execute(args, CONFIG);
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "--acknowledge-damage needs --reason");
+  }
+});
+
+Deno.test("audit-chain-verify - a damage signature does not silence a deleted journal (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(4);
+  await orphanHead(path);
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-damage": journal,
+    "reason": "accounted for",
+    "by": "operator",
+  }, CONFIG);
+  assertEquals(signed.success, true, signed.message);
+
+  // Now delete the journal and its anchor outright. The damage signature
+  // covers corruption, never erasure — the sweep must go red again.
+  await Deno.remove(path);
+  await Deno.remove(anchorPath(path));
+
+  const after = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(after.success, false, "erasure must not inherit the signature");
+  assertStringIncludes(after.message, "pair deleted");
+});
+
+Deno.test("audit-chain-verify - the damage signature is recorded in the hash chain (Issue #491)", async () => {
+  const { baseDir, path } = await seedDir(4);
+  await orphanHead(path);
+  const journal = path.slice(path.lastIndexOf("/") + 1);
+
+  const signed = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+    "acknowledge-damage": journal,
+    "reason": "cross-process append race",
+    "by": "the operator",
+  }, CONFIG);
+  assertEquals(signed.success, true, signed.message);
+
+  // The act is chained somewhere in the directory — in a healthy journal,
+  // never in the damaged one, which is never written to again.
+  let found = false;
+  for await (const item of Deno.readDir(baseDir)) {
+    if (!item.isFile || !/^audit-.*\.jsonl$/.test(item.name)) continue;
+    const body = await Deno.readTextFile(`${baseDir}/${item.name}`);
+    if (body.includes("audit-damage-acknowledged")) {
+      found = true;
+      assert(
+        item.name !== journal,
+        "the damaged journal must never be appended to",
+      );
+    }
+  }
+  assert(found, "the signature must be chained, not only in the roster");
+
+  const roster = await Deno.readTextFile(rosterPath(baseDir));
+  assertStringIncludes(roster, '"kind":"damage"');
+});

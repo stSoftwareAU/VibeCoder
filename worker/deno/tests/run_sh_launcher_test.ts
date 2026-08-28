@@ -39,6 +39,7 @@ import {
   builderHealed,
   type Harness,
   initCount,
+  invocationOrder,
   type LaunchOutcome,
   mountValues,
   recorded,
@@ -786,6 +787,73 @@ Deno.test("run.sh - stops the runtime's builder helper on Apple container, and a
       // arguments and the launcher must not invent a call.
       assertEquals(stop, null);
     }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+/** What Apple container prints when the buildkit VM is not there. */
+const BUILDER_ABSENT_STDERR =
+  'Error: failed to stop container (cause: "notFound: "container with ID ' +
+  'buildkit not found"")';
+
+Deno.test("run.sh - a builder that is not there is not a failure (Issue #492)", async () => {
+  const harness = await setupHarness({
+    STUB_RUN_EXIT: "0",
+    STUB_BUILDER_STOP_EXIT: "1",
+    STUB_BUILDER_STOP_STDERR: BUILDER_ABSENT_STDERR,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    if (Deno.build.os !== "darwin") return; // no builder helper to stop
+    assert(
+      !outcome.stderr.includes("could not stop"),
+      `a builder that was never running must not warn: ${outcome.stderr}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a genuine builder stop failure warns and names the cause (Issue #492)", async () => {
+  const harness = await setupHarness({
+    STUB_RUN_EXIT: "0",
+    STUB_BUILDER_STOP_EXIT: "1",
+    STUB_BUILDER_STOP_STDERR: "Error: builder is wedged and will not stop",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, "a stop failure must not fail the launch");
+    if (Deno.build.os !== "darwin") return; // no builder helper to stop
+    assertStringIncludes(outcome.stderr, "could not stop");
+    // The previous implementation discarded the runtime's stderr, leaving a
+    // warning that named no cause at all.
+    assertStringIncludes(outcome.stderr, "builder is wedged");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the builder stop runs after the store prune, never before it (Issue #492)", async () => {
+  const harness = await setupHarness({ STUB_RUN_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    if (Deno.build.os !== "darwin") return; // no builder helper to stop
+
+    const order = await invocationOrder(harness);
+    const stop = order.indexOf("builder-stop");
+    // The store prune reclaims dangling layers and can delete the builder
+    // outright; stopping something it is about to delete was pointless work
+    // that also guaranteed the next launch found nothing to stop.
+    const prune = order.lastIndexOf("image-prune");
+    assert(stop > -1, `no builder stop recorded: ${order.join(", ")}`);
+    assert(prune > -1, `no store prune recorded: ${order.join(", ")}`);
+    assert(
+      stop > prune,
+      `builder stop ran before the store prune: ${order.join(", ")}`,
+    );
   } finally {
     await harness.cleanup();
   }

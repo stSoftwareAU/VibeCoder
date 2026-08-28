@@ -94,6 +94,20 @@ export interface ContainerRuntimeDialect {
    */
   builderStopArgs: readonly string[];
   /**
+   * Fragments of the runtime's own error text that mean "there is no
+   * builder to stop" (Issue #492).
+   *
+   * `builderStopArgs` runs on every launch, but the builder only exists
+   * after a build that this launch may not have needed, and the store
+   * prune deletes it outright when the host is short of disk. A stop that
+   * finds nothing has succeeded at what it was asked to do; treating its
+   * non-zero exit as a failure made the warning permanent on any host that
+   * had ever tripped the builder floor. Matched case-insensitively as
+   * substrings, so the runtime's wording can drift a little without the
+   * launcher going quiet about a real failure.
+   */
+  builderAbsentPatterns: readonly string[];
+  /**
    * Sub-commands that restart the runtime's build helper, in order (Issue
    * #4441). Each entry is one complete invocation.
    *
@@ -276,6 +290,8 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   volumeListArgs: ["volume", "ls", "--format", "{{.Name}}"],
   volumeRemoveArgs: ["volume", "rm"],
   builderStopArgs: [],
+  // Nothing is stopped, so there is no "nothing to stop" to recognise.
+  builderAbsentPatterns: [],
   // No builder container to delete (Issue #227).
   builderDeleteArgs: [],
   // No builder VM to bounce (Issue #4441): the equivalent remedy for a build
@@ -325,6 +341,13 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   // next `container build`, so stopping costs nothing but a cold builder
   // on the next definition change.
   builderStopArgs: ["builder", "stop"],
+  // What `container builder stop` says when the buildkit VM is not there:
+  //   Error: failed to stop container
+  //   (cause: "notFound: "container with ID buildkit not found"")
+  // Both spellings are matched: the cause code and the prose, so a change
+  // to either on its own does not silently turn a real failure into a
+  // shrug (Issue #492).
+  builderAbsentPatterns: ["notfound", "not found"],
   // The builder VM remounts its filesystem read-only after an ENOSPC and
   // stays that way until it is restarted (Issue #4441): a stop/start is what
   // a human ran by hand on host-23 to end a launch loop that had already

@@ -38,6 +38,7 @@ function plan(): ContainerLaunchPlan {
     imageInspectArgs: ["image", "inspect", "vibe-coder:abc123"],
     buildArgs: ["build"],
     builderStopArgs: [],
+    builderAbsentPatterns: [],
     runArgs: [
       "run",
       "--rm",

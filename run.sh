@@ -274,6 +274,7 @@ init_args=()
 exists_args=()
 build_args=()
 builder_stop_args=()
+builder_absent_patterns=()
 run_args=()
 
 while IFS= read -r -d '' token; do
@@ -290,6 +291,7 @@ while IFS= read -r -d '' token; do
     exists) exists_args+=("${value}") ;;
     build) build_args+=("${value}") ;;
     builder-stop) builder_stop_args+=("${value}") ;;
+    builder-absent) builder_absent_patterns+=("${value}") ;;
     run) run_args+=("${value}") ;;
     *)
       echo "Error: unrecognised launch-plan key: ${key}" >&2
@@ -464,20 +466,6 @@ if [[ -d "${container_store}" ]] && command -v du >/dev/null 2>&1; then
     >>"${HOME}/logs/run_core.log" 2>/dev/null || true
 fi
 
-# Stop the runtime's persistent build helper (Issue #4331). Apple container
-# starts a `buildkit` builder VM for `container build` and leaves it running
-# for ever — 2 CPUs, 2 GB and a 13 GB rootfs on every fleet host, observed
-# still up 25 hours after the build it served. The image exists at this
-# point (built above or already present), so the builder has nothing to do
-# until the next definition change, when `container build` restarts it
-# implicitly. Runtimes without a builder container carry no arguments here.
-# Best-effort: an idle builder is waste, not a launch failure.
-if [[ ${#builder_stop_args[@]} -gt 0 ]]; then
-  if ! bounded 120 "${RUNTIME}" "${builder_stop_args[@]}" </dev/null >/dev/null 2>&1; then
-    echo "[run.sh] warning: could not stop the ${RUNTIME} builder helper" >&2
-  fi
-fi
-
 # Reclaim the host container store (Issue #227). Host GRQ-23 crashed out of
 # disk with ~20 GB reclaimable that nothing touched: the stopped builder's
 # 13 GB rootfs, 5.8 GB of dangling image layers, and throwaway volumes the
@@ -494,6 +482,58 @@ if ! bounded 600 "${DENO_CMD}" run \
   --runtime "${RUNTIME}" \
   --store-path "${container_store}" </dev/null >&2; then
   echo "[run.sh] warning: could not reclaim the ${RUNTIME} store" >&2
+fi
+
+# Does the runtime's stop failure mean "there was no builder to stop"?
+#
+# Substring match, case-insensitively, against the fragments the launch plan
+# carries for this runtime. An empty pattern list answers no to everything,
+# so a runtime whose wording is unknown keeps warning rather than going
+# quiet about a real failure.
+builder_absent() {
+  local detail lowered pattern
+  detail="$1"
+  ((${#builder_absent_patterns[@]})) || return 1
+  lowered="$(printf '%s' "${detail}" | tr '[:upper:]' '[:lower:]')"
+  for pattern in "${builder_absent_patterns[@]}"; do
+    pattern="$(printf '%s' "${pattern}" | tr '[:upper:]' '[:lower:]')"
+    [[ -n "${pattern}" && "${lowered}" == *"${pattern}"* ]] && return 0
+  done
+  return 1
+}
+
+# Stop the runtime's persistent build helper (Issue #4331). Apple container
+# starts a `buildkit` builder VM for `container build` and leaves it running
+# for ever — 2 CPUs, 2 GB and a 13 GB rootfs on every fleet host, observed
+# still up 25 hours after the build it served. The image exists at this
+# point (built above or already present), so the builder has nothing to do
+# until the next definition change, when `container build` restarts it
+# implicitly. Runtimes without a builder container carry no arguments here.
+#
+# Runs *after* the store prune (Issue #492), which deletes the builder
+# outright when the host is below the free-space floor: stopping something
+# a later step in the same launch is about to delete was pointless work,
+# and it guaranteed that the next launch found nothing to stop.
+#
+# "Nothing to stop" is success, and the common case: the builder only
+# exists after a build, and most launches find the image already built. A
+# stop that fails for any other reason still warns — with the runtime's own
+# explanation, which the previous `2>&1` to /dev/null threw away, leaving a
+# warning that named no cause at all.
+if [[ ${#builder_stop_args[@]} -gt 0 ]]; then
+  builder_stop_err="$(mktemp -t vibe-builder-stop.XXXXXX)"
+  if ! bounded 120 "${RUNTIME}" "${builder_stop_args[@]}" \
+    </dev/null >/dev/null 2>"${builder_stop_err}"; then
+    builder_stop_detail="$(tr '\n' ' ' <"${builder_stop_err}" | sed 's/[[:space:]]*$//')"
+    if builder_absent "${builder_stop_detail}"; then
+      log_run_core "builder-stop: no ${RUNTIME} builder to stop"
+    else
+      echo "[run.sh] warning: could not stop the ${RUNTIME} builder helper:" \
+        "${builder_stop_detail:-no explanation given}" >&2
+      log_run_core "builder-stop: failed: ${builder_stop_detail:-no explanation given}"
+    fi
+  fi
+  rm -f "${builder_stop_err}"
 fi
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling

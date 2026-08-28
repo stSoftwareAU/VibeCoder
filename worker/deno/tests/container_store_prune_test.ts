@@ -22,6 +22,23 @@ import {
   type StorePruneDeps,
 } from "../lib/container_store_prune.ts";
 import { CONTAINER_RUNTIMES } from "../lib/container_runtime.ts";
+import {
+  DEFAULT_LOW_FLOOR_GB,
+  DEFAULT_LOW_FLOOR_PERCENT,
+  type DiskFloors,
+} from "../lib/host_disk.ts";
+
+/**
+ * Free-space fixtures are in real bytes (Issue #493). The floor has a
+ * gigabyte component now, so "460" cannot stand in for a 460 GB host.
+ */
+const GB = 1_073_741_824;
+
+/** The floors the worker itself claims at. */
+const WORKER_FLOORS: DiskFloors = {
+  lowFloorGb: DEFAULT_LOW_FLOOR_GB,
+  lowFloorPercent: DEFAULT_LOW_FLOOR_PERCENT,
+};
 
 const APPLE = CONTAINER_RUNTIMES["apple-container"].dialect;
 const DOCKER = CONTAINER_RUNTIMES["docker"].dialect;
@@ -42,9 +59,15 @@ const APPLE_VOLUMES = JSON.stringify([
 function makeDeps(options: {
   responses?: (args: readonly string[]) => RuntimeInvocation | undefined;
   free?: FreeSpace | null;
+  /**
+   * Successive free-space readings, for the before/after measurement the
+   * builder delete reports (Issue #493). The last value repeats.
+   */
+  freeSequence?: (FreeSpace | null)[];
 }): { deps: StorePruneDeps; calls: string[][]; log: string[] } {
   const calls: string[][] = [];
   const log: string[] = [];
+  let reading = 0;
   const deps: StorePruneDeps = {
     runRuntime: (args) => {
       calls.push([...args]);
@@ -52,7 +75,13 @@ function makeDeps(options: {
         options.responses?.(args) ?? { code: 0, stdout: "", stderr: "" },
       );
     },
-    freeSpace: () => Promise.resolve(options.free ?? null),
+    freeSpace: () => {
+      if (options.freeSequence) {
+        const index = Math.min(reading++, options.freeSequence.length - 1);
+        return Promise.resolve(options.freeSequence[index] ?? null);
+      }
+      return Promise.resolve(options.free ?? null);
+    },
     log: (m) => log.push(m),
   };
   return { deps, calls, log };
@@ -105,14 +134,55 @@ Deno.test("parseDfOutput - reads the available column of df -kP", () => {
 
 Deno.test("builderDeleteReason - keeps the builder with room, deletes it below the floor, keeps it when unknown", () => {
   assertEquals(
-    builderDeleteReason({ availableBytes: 50, totalBytes: 100 }, 20),
+    builderDeleteReason(
+      { availableBytes: 200 * GB, totalBytes: 400 * GB },
+      WORKER_FLOORS,
+    ),
     null,
   );
   assertStringIncludes(
-    builderDeleteReason({ availableBytes: 5, totalBytes: 100 }, 20)!,
-    "below the 20% floor",
+    builderDeleteReason(
+      { availableBytes: 5 * GB, totalBytes: 100 * GB },
+      WORKER_FLOORS,
+    )!,
+    "below the 20.0 GB floor the worker stops claiming at",
   );
-  assertEquals(builderDeleteReason(null, 20), null);
+  assertEquals(builderDeleteReason(null, WORKER_FLOORS), null);
+});
+
+Deno.test("builderDeleteReason - keeps the builder on a host the worker is still claiming on (Issue #493)", () => {
+  // GRQ-23 on 2026-08-28: 56.3 GB free of 460.4 GB. The worker's floor is
+  // 46.0 GB, so it was claiming and running happily — and the old hardcoded
+  // 20% builder floor (92.1 GB) deleted the build cache on every launch,
+  // making every image-definition change pay a full cold rebuild.
+  assertEquals(
+    builderDeleteReason(
+      { availableBytes: 56.3 * GB, totalBytes: 460.4 * GB },
+      WORKER_FLOORS,
+    ),
+    null,
+  );
+});
+
+Deno.test("builderDeleteReason - names the floor it measured against, in the worker's units (Issue #493)", () => {
+  const reason = builderDeleteReason(
+    { availableBytes: 30 * GB, totalBytes: 460.4 * GB },
+    WORKER_FLOORS,
+  )!;
+  assertStringIncludes(reason, "30.0 GB free");
+  assertStringIncludes(reason, "46.0 GB floor");
+  assertStringIncludes(reason, "the larger of 20 GB and 10%");
+});
+
+Deno.test("builderDeleteReason - an explicit percent override still deletes earlier (Issue #493)", () => {
+  const eager: DiskFloors = { lowFloorGb: 0, lowFloorPercent: 20 };
+  assertStringIncludes(
+    builderDeleteReason(
+      { availableBytes: 56.3 * GB, totalBytes: 460.4 * GB },
+      eager,
+    )!,
+    "92.1 GB floor",
+  );
 });
 
 Deno.test("pruneContainerStore - removes only the throwaway volumes, never vibe-work or vibe-approval-state", async () => {
@@ -121,7 +191,7 @@ Deno.test("pruneContainerStore - removes only the throwaway volumes, never vibe-
       args[0] === "volume" && args[1] === "ls"
         ? { code: 0, stdout: APPLE_VOLUMES, stderr: "" }
         : undefined,
-    free: { availableBytes: 200, totalBytes: 400 },
+    free: { availableBytes: 200 * GB, totalBytes: 400 * GB },
   });
   const outcome = await pruneContainerStore(deps, {
     dialect: APPLE,
@@ -139,7 +209,7 @@ Deno.test("pruneContainerStore - removes only the throwaway volumes, never vibe-
 
 Deno.test("pruneContainerStore - prunes dangling images only (never --all) and keeps the builder with room", async () => {
   const { deps, calls } = makeDeps({
-    free: { availableBytes: 200, totalBytes: 400 },
+    free: { availableBytes: 200 * GB, totalBytes: 400 * GB },
   });
   await pruneContainerStore(deps, { dialect: APPLE, storePath: "/store" });
   const imagePrune = calls.find((c) => c[0] === "image" && c[1] === "prune")!;
@@ -150,7 +220,7 @@ Deno.test("pruneContainerStore - prunes dangling images only (never --all) and k
 
 Deno.test("pruneContainerStore - deletes the builder when free space is below the floor", async () => {
   const { deps, calls } = makeDeps({
-    free: { availableBytes: 23, totalBytes: 460 }, // 5% — the crashed host
+    free: { availableBytes: 23 * GB, totalBytes: 460 * GB }, // the crashed host
   });
   const outcome = await pruneContainerStore(deps, {
     dialect: APPLE,
@@ -166,7 +236,7 @@ Deno.test("pruneContainerStore - deletes the builder when free space is below th
 
 Deno.test("pruneContainerStore - a runtime without a builder container skips that step", async () => {
   const { deps, calls } = makeDeps({
-    free: { availableBytes: 1, totalBytes: 400 },
+    free: { availableBytes: 1 * GB, totalBytes: 400 * GB },
   });
   const outcome = await pruneContainerStore(deps, {
     dialect: DOCKER,
@@ -185,7 +255,7 @@ Deno.test("pruneContainerStore - a builder that is already gone is the state we 
       args[0] === "builder"
         ? { code: 1, stdout: "", stderr: "Error: builder not found" }
         : undefined,
-    free: { availableBytes: 1, totalBytes: 400 },
+    free: { availableBytes: 1 * GB, totalBytes: 400 * GB },
   });
   const outcome = await pruneContainerStore(deps, {
     dialect: APPLE,
@@ -200,7 +270,7 @@ Deno.test("pruneContainerStore - a failed step is reported and does not stop the
       args[0] === "volume" && args[1] === "ls"
         ? { code: 1, stdout: "", stderr: "daemon unreachable" }
         : undefined,
-    free: { availableBytes: 200, totalBytes: 400 },
+    free: { availableBytes: 200 * GB, totalBytes: 400 * GB },
   });
   const outcome = await pruneContainerStore(deps, {
     dialect: APPLE,
@@ -210,4 +280,53 @@ Deno.test("pruneContainerStore - a failed step is reported and does not stop the
   assertStringIncludes(outcome.steps[0]!.detail, "daemon unreachable");
   // The image prune still ran.
   assertEquals(calls.some((c) => c[0] === "image" && c[1] === "prune"), true);
+});
+
+Deno.test("pruneContainerStore - reports what deleting the builder reclaimed (Issue #493)", async () => {
+  const { deps, log } = makeDeps({
+    freeSequence: [
+      { availableBytes: 23 * GB, totalBytes: 460 * GB },
+      { availableBytes: 36 * GB, totalBytes: 460 * GB },
+    ],
+  });
+  const outcome = await pruneContainerStore(deps, {
+    dialect: APPLE,
+    storePath: "/store",
+  });
+
+  const builder = outcome.steps.find((s) => s.step === "builder")!;
+  assertEquals(builder.removed, ["builder"]);
+  // The reading that triggered the delete cannot answer "did it help?".
+  assertStringIncludes(builder.detail!, "reclaimed 13.0 GB");
+  assertStringIncludes(log.join("\n"), "reclaimed 13.0 GB");
+});
+
+Deno.test("pruneContainerStore - a builder delete that recovered nothing says so (Issue #493)", async () => {
+  const { deps } = makeDeps({
+    free: { availableBytes: 23 * GB, totalBytes: 460 * GB },
+  });
+  const outcome = await pruneContainerStore(deps, {
+    dialect: APPLE,
+    storePath: "/store",
+  });
+
+  const builder = outcome.steps.find((s) => s.step === "builder")!;
+  assertStringIncludes(builder.detail!, "reclaimed nothing");
+});
+
+Deno.test("run.sh's work-volume heal floor does not drift from the worker's (Issue #493)", async () => {
+  // One host disk, one floor. `run.sh` cannot import the constants, so this
+  // is what keeps its fallbacks honest — the same guard
+  // `work_volume_ratchet_test.ts` puts on the volume name.
+  const runSh = await Deno.readTextFile(
+    new URL("../../../run.sh", import.meta.url),
+  );
+  assertStringIncludes(
+    runSh,
+    `local total_kb="$1" gb="\${VIBE_HOST_DISK_LOW_FLOOR_GB:-${DEFAULT_LOW_FLOOR_GB}}"`,
+  );
+  assertStringIncludes(
+    runSh,
+    `local pct="\${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-${DEFAULT_LOW_FLOOR_PERCENT}}"`,
+  );
 });

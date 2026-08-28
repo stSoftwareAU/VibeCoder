@@ -15,6 +15,8 @@
  *   deno task audit-chain-verify --adopt        # bless pre-anchor journals
  *   deno task audit-chain-verify --acknowledge-loss <journal>[,<journal>]
  *       --reason "<why it is gone>" [--by <operator>]
+ *   deno task audit-chain-verify --acknowledge-damage <journal>[,<journal>]
+ *       --reason "<why it is accounted for>" [--by <operator>]
  *   deno task audit-chain-verify --json
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
@@ -23,6 +25,7 @@
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   type AcknowledgedLoss,
+  acknowledgeJournalDamage,
   acknowledgeJournalLoss,
   adoptAnchor,
   type ChainSweepEntry,
@@ -60,6 +63,19 @@ function isAcknowledgeableLoss(entry: ChainSweepEntry): boolean {
     reason.includes("pair deleted");
 }
 
+/**
+ * Has a damage signature already been given for this journal and then
+ * stopped applying?
+ *
+ * Such an entry must not be offered `--acknowledge-damage` as if it were
+ * fresh: the operator already signed, and the file changed underneath the
+ * signature. Re-signing is a decision to be made deliberately, not a
+ * remedy suggested by the alarm.
+ */
+function hasLapsedDamageSignature(entry: ChainSweepEntry): boolean {
+  return (entry.reason ?? "").includes("no longer applies");
+}
+
 /** Format one broken chain as a loud, greppable line. */
 function formatBroken(entry: ChainSweepEntry): string {
   const at = entry.brokenIndex !== undefined
@@ -69,21 +85,37 @@ function formatBroken(entry: ChainSweepEntry): string {
   // The operator who meets this alarm should not have to go and find out
   // that a resolution exists — the previous behaviour was an alarm with no
   // documented exit but hand-editing the tamper-evidence file.
-  const remedy = isAcknowledgeableLoss(entry)
-    ? ` — if this loss is accounted for, sign for it with ` +
+  // Issue #491: a journal that is present but does not verify has its own
+  // exit now. Naming the right one matters — pointing a corrupt journal at
+  // `--acknowledge-loss` sends the operator to a command that refuses it.
+  let remedy = "";
+  if (isAcknowledgeableLoss(entry)) {
+    remedy = ` — if this loss is accounted for, sign for it with ` +
       `\`deno task audit-chain-verify --acknowledge-loss ` +
-      `${basename(entry.path)} --reason "<why>"\``
-    : "";
+      `${basename(entry.path)} --reason "<why>"\``;
+  } else if (!hasLapsedDamageSignature(entry)) {
+    remedy = ` — if this damage is accounted for, sign for it with ` +
+      `\`deno task audit-chain-verify --acknowledge-damage ` +
+      `${basename(entry.path)} --reason "<why>"\`; the journal is left ` +
+      `exactly as it is`;
+  }
   return `[SECURITY] [AUDIT_CHAIN_BROKEN] ${entry.path}${at}: ${
     entry.reason ?? "unknown reason"
   }${remedy}`;
 }
 
-/** Format one acknowledged loss — reported on every sweep, never a failure. */
+/**
+ * Format one accounted-for finding — reported on every sweep, never a
+ * failure. The tag says which admission it is: a journal that is gone is
+ * not the same finding as one that is corrupt (Issue #491).
+ */
 function formatAcknowledged(loss: AcknowledgedLoss): string {
   const { by, acknowledgedAt, reason } = loss.acknowledgement;
-  return `[AUDIT_CHAIN_LOSS_ACKNOWLEDGED] ${loss.path}: signed for by ${by} ` +
-    `on ${acknowledgedAt} — ${reason}`;
+  const tag = loss.kind === "damage"
+    ? "AUDIT_CHAIN_DAMAGE_ACKNOWLEDGED"
+    : "AUDIT_CHAIN_LOSS_ACKNOWLEDGED";
+  return `[${tag}] ${loss.path}: signed for by ${by} on ${acknowledgedAt} ` +
+    `— ${reason}`;
 }
 
 /** Basename of a path. */
@@ -116,6 +148,7 @@ export const auditChainVerifyCommand: Command = {
     // so a bare `--acknowledge-loss` or a numeric-looking `--reason 2026`
     // arrives as a non-string. Normalise rather than trusting the cast.
     const lossArg = asText(args["acknowledge-loss"]);
+    const damageArg = asText(args["acknowledge-damage"]);
     const reason = asText(args["reason"]) ?? "";
     const by = asText(args["by"]) ?? resolveOperator();
 
@@ -192,6 +225,48 @@ export const auditChainVerifyCommand: Command = {
       }
     }
 
+    // Issue #491: sign for damage to a journal that is still on disk. Same
+    // shape as the loss path above, and just as unforgiving: refusals are
+    // returned, never skipped.
+    if (damageArg !== undefined) {
+      const requested = splitList(damageArg);
+      if (requested.length === 0) {
+        return {
+          success: false,
+          message: `--acknowledge-damage needs at least one journal name`,
+          data: empty(),
+        };
+      }
+      if (reason.trim().length === 0) {
+        return {
+          success: false,
+          message: `--acknowledge-damage needs --reason "<why the damage is ` +
+            `accounted for>" — unexplained damage stays loud`,
+          data: empty(),
+        };
+      }
+      const refusals: string[] = [];
+      for (const journalName of requested) {
+        const signed = await acknowledgeJournalDamage({
+          baseDir,
+          journalName: basename(journalName),
+          reason,
+          by,
+        });
+        if (signed.ok) newlyAcknowledged.push(signed.value.journal);
+        else refusals.push(signed.error.message);
+      }
+      if (refusals.length > 0) {
+        return {
+          success: false,
+          message: refusals
+            .map((r) => `[AUDIT_CHAIN_DAMAGE_NOT_ACKNOWLEDGED] ${r}`)
+            .join("\n"),
+          data: empty(),
+        };
+      }
+    }
+
     const swept = await verifyAllChains(baseDir);
     if (!swept.ok) {
       return {
@@ -223,16 +298,19 @@ export const auditChainVerifyCommand: Command = {
     const lines: string[] = [];
     for (const path of adopted) lines.push(`adopted anchor for ${path}`);
     for (const name of newlyAcknowledged) {
-      lines.push(`acknowledged the loss of ${name} (recorded in the chain)`);
+      lines.push(`acknowledged ${name} (recorded in the chain)`);
     }
     for (const loss of acknowledged) lines.push(formatAcknowledged(loss));
     for (const entry of broken) lines.push(formatBroken(entry));
-    // Acknowledged losses are named in the summary too. A count that read
-    // "12 verified" while three of them were known-gone would be the same
+    // Named in the summary too. A count that read "12 verified" while
+    // three of them were known-gone or known-corrupt would be the same
     // quiet reassurance this whole subsystem exists to refuse.
-    const signedFor = acknowledged.length > 0
-      ? `, ${acknowledged.length} acknowledged as lost`
-      : "";
+    const lost = acknowledged.filter((a) => a.kind === "loss").length;
+    const damaged = acknowledged.filter((a) => a.kind === "damage").length;
+    const parts: string[] = [];
+    if (lost > 0) parts.push(`${lost} acknowledged as lost`);
+    if (damaged > 0) parts.push(`${damaged} acknowledged as damaged`);
+    const signedFor = parts.length > 0 ? `, ${parts.join(", ")}` : "";
     lines.push(
       broken.length === 0
         ? `audit chains OK: ${checked} verified in ${baseDir}${signedFor}`
