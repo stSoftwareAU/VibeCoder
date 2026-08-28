@@ -142,12 +142,20 @@ jobs:
         run: |
           set -euo pipefail
           echo "=== Checking for merge conflict markers ==="
+          # A file whose subject IS conflict-marker text — the merge-conflict
+          # parser's fixtures — cannot be told apart from a real conflict by
+          # shape, so it opts out with an explicit sentinel comment. Every
+          # exemption is printed, so a file can never go unchecked silently.
+          sentinel='vibe-allow-conflict-markers'
           fail=0
           while IFS= read -r f; do
-            if grep -qE '^(<{7}|={7}|>{7})' "$f" 2>/dev/null; then
-              echo "❌ Merge conflict markers found in: $f" >&2
-              fail=1
+            grep -qE '^(<{7}|={7}|>{7})' "$f" 2>/dev/null || continue
+            if grep -qF "$sentinel" "$f"; then
+              echo "ℹ️  Conflict markers exempted by the '$sentinel' sentinel: $f"
+              continue
             fi
+            echo "❌ Merge conflict markers found in: $f" >&2
+            fail=1
           done < <(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.json" -o -name "*.sh" \) ! -path "*/node_modules/*" ! -path "*/.git/*")
           if [[ $fail -eq 1 ]]; then
             echo "❌ Merge conflict markers detected. Please resolve conflicts." >&2
