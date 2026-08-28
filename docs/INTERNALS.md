@@ -245,6 +245,19 @@ the deleted bash `worker/run_core.sh` conductor. It sequences:
    termination interrupts the cleanup) and then tears down the orphan-prone
    `claude` / `deno test` subtree via the shared pid-guard logic.
 
+Process-group signalling is **lead-only**
+([pid_guard.ts](../worker/deno/lib/pid_guard.ts)): `terminateProcessTree` sends
+`kill -<signal> -<pgid>` only when the target *leads* its group (`pgid === pid`,
+which is what `setsid` gives every process the worker spawns). Leadership is the
+only group membership provable to belong to a process we started; a group the
+target merely belongs to predates our child and holds processes we never
+spawned. Our own group, an unreadable group, and a group the target does not
+lead all fall back to signalling the pid alone, with descendants handled
+separately by `terminateDescendants`. Relatedly, `runClaudeWithTimeout` disarms
+its kill the instant `child.status` resolves: once the child is reaped the
+kernel may reuse its pid, so a watchdog waking during the bounded stream drain
+logs and returns rather than signalling a stranger.
+
 Per-PID logging: each process writes to its own log file with automatic
 size-based rotation (keeps 10 log files via
 [log_rotation.ts](../worker/deno/lib/log_rotation.ts)).

@@ -897,6 +897,12 @@ export async function runClaudeWithTimeout(
   // Set once the child has settled: a check still in flight then abandons its
   // decision rather than killing a process that has already exited.
   let runFinished = false;
+  // Set the instant `child.status` resolves — i.e. the child has been REAPED
+  // (Issue #471). The watchdogs stay armed through the bounded stream drain
+  // that follows, so without this a late watchdog would signal a pid the
+  // kernel is already free to have reused, and the kill would land on a
+  // stranger's process tree.
+  let childReaped = false;
 
   try {
     // Sanitise the child environment (Issue #3203): clear it and pass an
@@ -1134,6 +1140,19 @@ export async function runClaudeWithTimeout(
       message: string,
     ) => {
       if (timedOut) return; // already firing — don't double-kill
+      // The child has already been reaped (Issue #471): there is nothing left
+      // to kill, and the pid may since have been reused by an unrelated
+      // process. Signalling it would take that stranger's process group down —
+      // on CI, the runner's, reported as "the runner has received a shutdown
+      // signal". The run is already settling on the child's real status, so a
+      // watchdog waking here has nothing left to decide.
+      if (childReaped) {
+        logger?.debug?.(
+          `Watchdog (${reason}) woke after PID ${childPid} was reaped — ` +
+            `no signal sent; the run is settling on the child's own status.`,
+        );
+        return;
+      }
       timedOut = true;
       timeoutReason = reason;
       killFiredMs = Date.now();
@@ -1529,6 +1548,8 @@ export async function runClaudeWithTimeout(
     // than never releasing the slot.
     const settle = (async () => {
       const s = await child.status;
+      // Reaped: from here the pid is no longer ours to signal (Issue #471).
+      childReaped = true;
       await Promise.race([
         Promise.all([
           stdoutPump.catch(() => {/* reader closed by kill */}),

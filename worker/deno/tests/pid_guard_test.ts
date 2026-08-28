@@ -390,7 +390,7 @@ function makeFakeDeps(opts: {
 Deno.test("pid_guard - terminateProcessTree sends SIGTERM to group and process", async () => {
   // Process reports not-running on the first poll, so no SIGKILL follows.
   const { deps, sent } = makeFakeDeps({
-    pgidOutput: "4321\n",
+    pgidOutput: "1234\n",
     runningSequence: [false],
   });
 
@@ -398,20 +398,20 @@ Deno.test("pid_guard - terminateProcessTree sends SIGTERM to group and process",
 
   // SIGTERM to the process group (-pgid) and to the process itself.
   assertEquals(sent, [
-    { target: -4321, signal: "TERM" },
+    { target: -1234, signal: "TERM" },
     { target: 1234, signal: "TERM" },
   ]);
 });
 
 Deno.test("pid_guard - terminateProcessTree parses whitespace-padded pgid", async () => {
   const { deps, sent } = makeFakeDeps({
-    pgidOutput: "   987  \n",
+    pgidOutput: "   1234  \n",
     runningSequence: [false],
   });
 
   await terminateProcessTree(1234, 30, deps);
 
-  assertEquals(sent[0], { target: -987, signal: "TERM" });
+  assertEquals(sent[0], { target: -1234, signal: "TERM" });
 });
 
 Deno.test("pid_guard - terminateProcessTree skips group signal when pgid unparseable", async () => {
@@ -454,7 +454,7 @@ Deno.test("pid_guard - terminateProcessTree does not SIGKILL when process exits 
   // Alive for the pre-loop escalation guard is never reached: first poll is
   // running, second poll is dead → loop returns before escalation.
   const { deps, sent } = makeFakeDeps({
-    pgidOutput: "4321",
+    pgidOutput: "1234",
     runningSequence: [true, false],
   });
 
@@ -462,7 +462,7 @@ Deno.test("pid_guard - terminateProcessTree does not SIGKILL when process exits 
 
   // Only the two TERM signals — no KILL.
   assertEquals(sent, [
-    { target: -4321, signal: "TERM" },
+    { target: -1234, signal: "TERM" },
     { target: 1234, signal: "TERM" },
   ]);
   assertEquals(sent.some((s) => s.signal === "KILL"), false);
@@ -471,16 +471,16 @@ Deno.test("pid_guard - terminateProcessTree does not SIGKILL when process exits 
 Deno.test("pid_guard - terminateProcessTree escalates to SIGKILL when process never exits", async () => {
   // Always running: the poll loop exhausts, then escalation fires.
   const { deps, sent } = makeFakeDeps({
-    pgidOutput: "4321",
+    pgidOutput: "1234",
     runningSequence: [true],
   });
 
   await terminateProcessTree(1234, 2, deps);
 
   assertEquals(sent, [
-    { target: -4321, signal: "TERM" },
+    { target: -1234, signal: "TERM" },
     { target: 1234, signal: "TERM" },
-    { target: -4321, signal: "KILL" },
+    { target: -1234, signal: "KILL" },
     { target: 1234, signal: "KILL" },
   ]);
 });
@@ -539,6 +539,33 @@ Deno.test("pid_guard - terminateProcessTree fails safe on escalation too: an unk
   const { deps, sent } = makeFakeDeps({
     pgidOutput: "4321\n",
     ownPgidSuccess: false,
+    runningSequence: [true],
+  });
+  await terminateProcessTree(1234, 1, deps);
+  assertEquals(sent, [
+    { target: 1234, signal: "TERM" },
+    { target: 1234, signal: "KILL" },
+  ]);
+});
+
+Deno.test("pid_guard - terminateProcessTree signals a group only when the target leads it: a foreign group gets the pid signal only (Issue #471)", async () => {
+  // The target belongs to group 4321 but does not lead it, so that group
+  // predates our child and holds processes we never spawned. On CI those
+  // were the runner's own, and `kill -TERM -4321` surfaced as "the runner
+  // has received a shutdown signal" mid-suite.
+  const { deps, sent } = makeFakeDeps({
+    pgidOutput: "4321\n",
+    ownPgidOutput: "555\n",
+    runningSequence: [false],
+  });
+  await terminateProcessTree(1234, 30, deps);
+  assertEquals(sent, [{ target: 1234, signal: "TERM" }]);
+});
+
+Deno.test("pid_guard - terminateProcessTree escalation respects lead-only: a non-led group is never SIGKILLed (Issue #471)", async () => {
+  const { deps, sent } = makeFakeDeps({
+    pgidOutput: "4321\n",
+    ownPgidOutput: "555\n",
     runningSequence: [true],
   });
   await terminateProcessTree(1234, 1, deps);
