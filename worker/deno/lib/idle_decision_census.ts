@@ -247,7 +247,38 @@ export type RepoCensusSkipReason =
    * evaluated, so nothing refused it.
    */
   | "cycle_deadline"
+  /**
+   * A host-level gate refused every claim this cycle (Issue #479). Unlike
+   * `cycle_deadline` these are refusals, not deferrals: the backlog was not
+   * merely unreached, the host decided not to take it.
+   *
+   * `host_disk_low` is Issue #226's floor; `work_volume_fault` is Issue
+   * #229's. Both stop the claim scan for the whole host, which is why they
+   * are reported once against the host rather than escalated per repo.
+   */
+  | "host_disk_low"
+  | "work_volume_fault"
   | "unknown";
+
+/**
+ * Skip reasons that mean a host-level gate refused the work (Issue #479).
+ *
+ * Recording these as `cycle_deadline` is what let GRQ-23 sit below its disk
+ * floor for three days: #437's carve-out declined to escalate because
+ * "nothing refused the work", which was true of a deadline and false of the
+ * gate, and the real cause was never named.
+ */
+export const CLAIM_GATE_SKIP_REASONS: readonly RepoCensusSkipReason[] = [
+  "host_disk_low",
+  "work_volume_fault",
+] as const;
+
+/** Whether a skip reason names a host-level claim gate (Issue #479). */
+export function isClaimGateSkipReason(
+  reason: RepoCensusSkipReason | undefined,
+): boolean {
+  return reason !== undefined && CLAIM_GATE_SKIP_REASONS.includes(reason);
+}
 
 /** Availability verdict for a repo, derived from its open issues. */
 export type AvailabilityVerdict = "available" | "busy" | "empty";
@@ -393,6 +424,18 @@ export interface IdleDecisionCensus {
    * deferral is visible in the log, never escalated.
    */
   deferredInversionRepos: string[];
+  /**
+   * Repos with claimable work that a host-level claim gate refused this
+   * cycle (Issue #479).
+   *
+   * Kept apart from {@link deferredInversionRepos}, whose note says nothing
+   * refused the work — untrue here — and out of {@link escalationRepos},
+   * which files one issue per repo. The gate is a single host-level fault,
+   * so N repos on one gated host must not become N issues; the host's own
+   * fleet-board report (Issue #477) already names it once, at the level it
+   * actually occurs.
+   */
+  gatedInversionRepos: string[];
   /**
    * Inverted repos the claim scan **claimed from** this cycle (Issue #460).
    *
@@ -712,8 +755,13 @@ export function buildIdleDecisionCensus(opts: {
   const escalationRepos = inverted
     .filter((r) => r.scannedThisCycle && !served.has(r.repo))
     .map((r) => r.repo);
+  // Issue #479: a claim gate refused this work, so it is neither "deferred"
+  // (nothing refused it) nor per-repo escalation material (one host fault).
+  const gatedInversionRepos = inverted
+    .filter((r) => !r.scannedThisCycle && isClaimGateSkipReason(r.skipReason))
+    .map((r) => r.repo);
   const deferredInversionRepos = inverted
-    .filter((r) => !r.scannedThisCycle)
+    .filter((r) => !r.scannedThisCycle && !isClaimGateSkipReason(r.skipReason))
     .map((r) => r.repo);
   const servedInversionRepos = inverted
     .filter((r) => r.scannedThisCycle && served.has(r.repo))
@@ -727,6 +775,7 @@ export function buildIdleDecisionCensus(opts: {
     inversionDetected: inversionRepos.length > 0,
     escalationRepos,
     deferredInversionRepos,
+    gatedInversionRepos,
     servedInversionRepos,
   };
 }
@@ -787,6 +836,29 @@ export function formatIdleDecisionCensus(
         `repos=${census.deferredInversionRepos.join(",")} — the claim scan ` +
         `did not complete an eligibility pass this cycle, so nothing ` +
         `refused this work`,
+    );
+  }
+  // Issue #479: a host-level gate refused this work. Said plainly, and with
+  // the gate named, because the alternative wording ("nothing refused this
+  // work") sent operators to look at cycle duration while GRQ-23 sat below
+  // its disk floor for three days. Reported once for the host, not escalated
+  // per repo: one gate is one fault, and the host's fleet-board report
+  // (Issue #477) already carries it.
+  if (census.gatedInversionRepos.length > 0) {
+    const gates = [
+      ...new Set(
+        census.perRepo
+          .filter((r) => census.gatedInversionRepos.includes(r.repo))
+          .map((r) => r.skipReason),
+      ),
+    ].join(",");
+    lines.push(
+      `[idle-census]${hostField} decision_point=${census.decisionPoint} ` +
+        `NOTE inversion_claim_gated ` +
+        `repos=${census.gatedInversionRepos.join(",")} gate=${gates} — the ` +
+        `claim scan was stopped for the whole host by this gate, so this ` +
+        `work was refused rather than deferred; clear the gate, not the ` +
+        `backlog`,
     );
   }
   // Issue #460: the scan claimed from this repo this cycle, so its leftover
