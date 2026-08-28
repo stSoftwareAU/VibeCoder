@@ -7,6 +7,13 @@
  * the budget is spent.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ *
+ * The fixtures embed conflict markers at column 0, which is exactly what the CI
+ * "Check for merge conflict markers" step looks for; that step honours the
+ * sentinel below to exempt this file, and prints the exemption. Nothing here is
+ * an unresolved conflict.
+ *
+ * vibe-allow-conflict-markers
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
