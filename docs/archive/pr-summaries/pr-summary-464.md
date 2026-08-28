@@ -45,8 +45,8 @@ evidence is the test suite, which drives the real rules over real conflicted
 manifest text and asserts on the merged output.
 
 ```
-deno test tests/dependency_conflict_native_test.ts
-ok | 37 passed | 0 failed (9ms)
+$ deno test tests/dependency_conflict_native_test.ts
+ok | 37 passed | 0 failed (5ms)
 ```
 
 Every acceptance criterion in the issue has a named test:
