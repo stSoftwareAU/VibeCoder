@@ -543,8 +543,25 @@ export type MilestoneBaseMergeDecision =
     reason: "not-milestone-base" | "base-unknown" | "route-open";
   }
   | {
+    /**
+     * The route could not be *read* (Issue #477). Not evidence of
+     * anything: leave the PR exactly as it is and look again next scan.
+     *
+     * This used to be a `block`, which retargets the PR at the default
+     * branch. A GitHub rate limit — certain to happen across an
+     * unattended weekend — therefore refused every milestone child, and
+     * any whose retarget succeeded was moved onto the review-gated
+     * default branch to wait for a human who was not there. "I could not
+     * read it" must never be actioned as "the route has closed".
+     */
+    decision: "defer";
+    reason: "lookup-failed";
+    milestoneBranch: string;
+    detail: string;
+  }
+  | {
     decision: "block";
-    reason: "rollup-merged" | "milestone-closed" | "lookup-failed";
+    reason: "rollup-merged" | "milestone-closed";
     milestoneBranch: string;
     rollupPrNumber?: number;
     milestoneNumber?: number;
@@ -606,7 +623,7 @@ export async function decideMilestoneBaseMerge(
   }
   if (!REPO_PATTERN.test(repo) || !BRANCH_PATTERN.test(base)) {
     return {
-      decision: "block",
+      decision: "defer",
       reason: "lookup-failed",
       milestoneBranch: base,
       detail: "repo or branch name failed the argument allowlist",
@@ -634,7 +651,7 @@ export async function decideMilestoneBaseMerge(
     rollups = Array.isArray(parsed) ? parsed as RawRollupPr[] : [];
   } catch (err) {
     return {
-      decision: "block",
+      decision: "defer",
       reason: "lookup-failed",
       milestoneBranch: base,
       detail: `could not list rollup PRs for ${base}: ${
@@ -707,7 +724,7 @@ export async function decideMilestoneBaseMerge(
     }
   } catch (err) {
     return {
-      decision: "block",
+      decision: "defer",
       reason: "lookup-failed",
       milestoneBranch: base,
       detail: `could not read milestones: ${
@@ -762,8 +779,9 @@ export function renderRetargetComment(
 /**
  * Refuse the milestone-branch merge loudly and move the PR onto the
  * default branch. Comment once (marker-deduplicated), retarget, log.
- * Returns whether the retarget succeeded. A `lookup-failed` gate does NOT
- * retarget — nothing is known — it only comments and logs.
+ * Returns whether the retarget succeeded. Only a gate carrying positive
+ * evidence — a merged rollup, or a closed milestone — reaches here. An
+ * unreadable route defers instead and never retargets (Issue #477).
  */
 export async function retargetOrphanBoundPr(
   options: RetargetOrphanBoundPrOptions,
@@ -771,10 +789,7 @@ export async function retargetOrphanBoundPr(
   const { repo, prNumber, gate, defaultBranch, ghCommandFn, log } = options;
   log(
     `WARNING: refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
-      `(Issue #4396)` +
-      (gate.reason === "lookup-failed"
-        ? ""
-        : ` — retargeting at ${defaultBranch}`),
+      `(Issue #4396) — retargeting at ${defaultBranch}`,
   );
   let existing = "";
   try {
@@ -807,7 +822,6 @@ export async function retargetOrphanBoundPr(
       );
     }
   }
-  if (gate.reason === "lookup-failed") return false;
   try {
     await ghCommandFn([
       "pr",

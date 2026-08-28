@@ -271,6 +271,8 @@ export function blockedReason(reason: MergeBlockedReason | undefined): string {
       return "head_too_recent";
     case "milestone_rollup_merged":
       return "milestone_rollup_merged";
+    case "milestone_route_unreadable":
+      return "milestone_route_unreadable";
     default:
       // Exhaustiveness guard: a new MergeBlockedReason must be handled here
       // explicitly rather than silently mapped to "checks_pending" (#2794).
