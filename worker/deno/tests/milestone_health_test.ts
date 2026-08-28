@@ -497,3 +497,132 @@ Deno.test("formatMilestoneHealthReport - shows completed milestone status", () =
   assertStringIncludes(output, "3/3 issues complete");
   assertStringIncludes(output, "Complete");
 });
+
+// ============================================================================
+// Comparison direction — GraphQL must agree with its own REST fallback
+// (Issue #470)
+// ============================================================================
+
+/**
+ * Milestone-branch drift used by the direction tests: five commits ahead of
+ * the default branch and two behind it. Both counts are non-zero and
+ * different, so a swapped answer is unambiguous.
+ */
+const DRIFT_AHEAD = 5;
+const DRIFT_BEHIND = 2;
+
+/**
+ * Commits reachable from each ref. `milestone/oidc` carries five commits
+ * `main` lacks; `main` carries two `milestone/oidc` lacks.
+ */
+const DRIFT_COMMITS: Record<string, string[]> = {
+  "main": ["c1", "c2", "m1", "m2"],
+  "milestone/oidc": ["c1", "c2", "b1", "b2", "b3", "b4", "b5"],
+};
+
+/**
+ * Answer the branch-drift GraphQL query the way GitHub does: the ref the
+ * `compare` field hangs off is the comparison **base**, and the `headRef:`
+ * argument is the comparison **head**. The query names its refs through
+ * variables, so resolve those from the `-F` arguments before comparing.
+ */
+function answerDriftQuery(args: string[]): string {
+  const query = args.find((a) => a.startsWith("query="))?.slice(6) ?? "";
+  const variables: Record<string, string> = {};
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] !== "-F") continue;
+    const [name, ...rest] = args[i + 1]!.split("=");
+    variables[name!] = rest.join("=").replace(/^refs\/heads\//, "");
+  }
+
+  const shape = query.match(
+    /ref\(qualifiedName:\$(\w+)\)\{compare\(headRef:\$(\w+)\)/,
+  );
+  if (!shape) throw new Error(`Unrecognised drift query: ${query}`);
+  const comparisonBase = variables[shape[1]!] ?? "";
+  const comparisonHead = variables[shape[2]!] ?? "";
+
+  const baseCommits = DRIFT_COMMITS[comparisonBase] ?? [];
+  const headCommits = DRIFT_COMMITS[comparisonHead] ?? [];
+  return buildGraphQLBranchResponse({
+    aheadBy: headCommits.filter((c) => !baseCommits.includes(c)).length,
+    behindBy: baseCommits.filter((c) => !headCommits.includes(c)).length,
+  });
+}
+
+/**
+ * Fake gh for the drift tests. `graphqlWorks: false` makes the GraphQL call
+ * fail so the REST fallback runs instead, which is how the two paths are
+ * compared against each other.
+ */
+function driftGhFn(graphqlWorks: boolean): (a: string[]) => Promise<string> {
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("repos/owner/repo/milestones")) {
+      return JSON.stringify([{ title: "OIDC", number: 1 }]);
+    }
+    if (key.includes("graphql")) {
+      if (!graphqlWorks) throw new Error("GraphQL unavailable");
+      return answerDriftQuery(args);
+    }
+    // REST fallback pair: branch existence, then `compare/<base>...<head>`.
+    if (key.includes("/branches/milestone/oidc")) {
+      return JSON.stringify({ name: "milestone/oidc" });
+    }
+    const rest = key.match(/compare\/([^.]+)\.\.\.(\S+)/);
+    if (rest) {
+      const baseCommits = DRIFT_COMMITS[rest[1]!] ?? [];
+      const headCommits = DRIFT_COMMITS[rest[2]!] ?? [];
+      return JSON.stringify({
+        ahead_by: headCommits.filter((c) => !baseCommits.includes(c)).length,
+        behind_by: baseCommits.filter((c) => !headCommits.includes(c)).length,
+      });
+    }
+    if (key.includes("repos/owner/repo") && key.includes(".default_branch")) {
+      return "main";
+    }
+    return "[]";
+  };
+}
+
+async function driftFor(
+  graphqlWorks: boolean,
+): Promise<{ aheadBy: number; behindBy: number }> {
+  return await withFreshCaches(async () => {
+    const result = await getMilestoneHealth({
+      repos: ["owner/repo"],
+      ghCommandFn: driftGhFn(graphqlWorks),
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) throw new Error("unreachable");
+    const branch = result.value.repos[0]!.milestones[0]!.branch;
+    if (!branch) throw new Error("branch drift missing from report");
+    return { aheadBy: branch.aheadBy, behindBy: branch.behindBy };
+  });
+}
+
+Deno.test("getMilestoneHealth - GraphQL reports milestone drift the same way round as REST (Issue #470)", async () => {
+  const viaGraphQL = await driftFor(true);
+  const viaRest = await driftFor(false);
+
+  assertEquals(
+    viaGraphQL,
+    viaRest,
+    "the GraphQL path and its own REST fallback must not disagree about which way round the drift runs (Issue #470)",
+  );
+});
+
+Deno.test("getMilestoneHealth - milestone branch ahead of default is not reported as behind it (Issue #470)", async () => {
+  const drift = await driftFor(true);
+
+  assertEquals(
+    drift.aheadBy,
+    DRIFT_AHEAD,
+    "the milestone branch carries five commits the default branch lacks",
+  );
+  assertEquals(
+    drift.behindBy,
+    DRIFT_BEHIND,
+    "the default branch carries two commits the milestone branch lacks",
+  );
+});

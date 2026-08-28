@@ -303,7 +303,7 @@ import {
   checkSoftwareUpdates,
   softwareUpdateOptionsFromEnv,
 } from "./software_updates.ts";
-import { enableAutoMerge } from "./pr_auto_merge.ts";
+import { enableAutoMerge, logAutoMergeOutcome } from "./pr_auto_merge.ts";
 import { closeIssuesForMergedPrs as prIssueCloseForMerged } from "./pr_issue_linking.ts";
 import { formatGb, HostDiskMonitor } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
@@ -1589,6 +1589,8 @@ export async function createProductionRunCoreDeps(
               prs.map((pr) => ({
                 number: pr.number,
                 baseRefName: pr.baseRefName || "main", // allow-hardcoded-branch — safe fallback
+                // Issue #470: orients the ahead/behind comparison.
+                headRefName: pr.headRefName,
               })),
               runGhCommand,
               issueCache,
@@ -2040,7 +2042,7 @@ export async function createProductionRunCoreDeps(
               try {
                 // Issue #3909: pass the head branch so the milestone
                 // open-children gate needs no extra lookup.
-                await enableAutoMerge({
+                const outcome = await enableAutoMerge({
                   repo,
                   prNumber: pr.number,
                   headRefName: pr.headRefName,
@@ -2050,8 +2052,22 @@ export async function createProductionRunCoreDeps(
                   baseRefName: pr.baseRefName,
                   log: (message: string) => logger.warn(message),
                 });
+                // Issue #470: this outcome used to be discarded. A gate that
+                // refused every merge in the fleet was therefore invisible —
+                // the priority logged its name and a duration while nothing
+                // merged, no milestone child closed, and no milestone ever
+                // completed. A gate may refuse; it may not refuse silently.
+                logAutoMergeOutcome(logger, repo, pr.number, outcome);
                 mutated = true;
-              } catch { /* best-effort per PR */ }
+              } catch (err) {
+                // Best-effort per PR — but say so. A silent catch here is how
+                // the same class of failure hides next time (Issue #470).
+                logger.warn("Auto-merge attempt threw", {
+                  repo,
+                  prNumber: pr.number,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
             }
             // Issue #1799: enabling auto-merge can immediately close a
             // PR when all checks already pass. Invalidate the cached

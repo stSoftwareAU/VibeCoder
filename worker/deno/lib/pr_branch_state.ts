@@ -25,13 +25,21 @@ import type { IssueCache } from "./issue_cache.ts";
 export interface PRForBranchState {
   number: number;
   baseRefName: string;
+  /**
+   * Head branch of the PR (Issue #470). The comparison is asked for as
+   * `baseRef { compare(headRef: <this>) }` so `aheadBy`/`behindBy` describe
+   * the PR relative to its base. Optional in the type so an older caller
+   * still compiles, but a descriptor without it is refused at query-build
+   * time rather than answered with a swapped comparison.
+   */
+  headRefName?: string;
 }
 
 /** Per-PR branch state returned by the batch helper. */
 export interface PRBranchState {
-  /** Commits the head branch is ahead of the base branch. */
+  /** Commits the PR's head branch is ahead of its base branch. */
   aheadBy: number;
-  /** Commits the head branch is behind the base branch. */
+  /** Commits the PR's head branch is behind its base branch. */
   behindBy: number;
   /** GitHub mergeable state (e.g. "MERGEABLE", "CONFLICTING", "UNKNOWN"). */
   mergeable: string;
@@ -94,6 +102,22 @@ function validateRefName(ref: string): string {
  * The compare argument differs per-PR (each PR may target a different
  * base branch), so we cannot use the `pullRequests(states: OPEN)`
  * collection — we alias each PR explicitly by number.
+ *
+ * Comparison direction (Issue #470). In GitHub's schema the ref the
+ * `compare` field hangs off is the comparison **base**, and the `headRef:`
+ * argument is the comparison **head**. The counts must therefore be asked
+ * for as `baseRef { compare(headRef: <PR head>) }`. Asking the other way
+ * round — `headRef { compare(headRef: <base>) }` — is still a *valid*
+ * query, and GitHub answers it truthfully for the question actually asked:
+ * how the base compares to the head, i.e. the two counts swapped. Nothing
+ * errors; the numbers are simply the wrong way round. That swap made every
+ * PR with at least one commit look behind its base, so the gated direct
+ * merge refused every merge with `behind_target` and priority 1.6
+ * re-"updated" the same branches every cycle, for ever.
+ *
+ * @throws when a PR descriptor carries no head ref — an unorientable
+ *   comparison is refused rather than guessed, so the caller falls back to
+ *   the per-PR REST pair instead of trusting a swapped answer.
  */
 export function buildBatchQuery(
   owner: string,
@@ -101,14 +125,24 @@ export function buildBatchQuery(
   prs: PRForBranchState[],
 ): string {
   const aliases = prs.map((pr, i) => {
-    const base = validateRefName(pr.baseRefName);
+    // The base is no longer interpolated into the query, but it is still
+    // validated: a ref that fails the allowlist should fail loudly here
+    // rather than somewhere downstream.
+    validateRefName(pr.baseRefName);
+    if (!pr.headRefName) {
+      throw new Error(
+        `PR #${pr.number} has no head ref, so its ahead/behind comparison ` +
+          `cannot be oriented (Issue #470)`,
+      );
+    }
+    const head = validateRefName(pr.headRefName);
     return `p${i}: pullRequest(number: ${pr.number}) {
         number
         headRefName
         baseRefName
         mergeable
-        headRef {
-          compare(headRef: "${base}") {
+        baseRef {
+          compare(headRef: "${head}") {
             aheadBy
             behindBy
           }
@@ -131,7 +165,12 @@ interface BatchResponse {
 interface BatchPRNode {
   number?: number;
   mergeable?: string | null;
-  headRef?: {
+  /**
+   * Comparison hung off the **base** ref with the PR head as its argument,
+   * so `aheadBy`/`behindBy` describe the PR relative to its base
+   * (Issue #470).
+   */
+  baseRef?: {
     compare?: {
       aheadBy?: number;
       behindBy?: number;
@@ -243,7 +282,7 @@ export async function fetchPRBranchStateBatch(
     const pr = prs[i]!;
     const node = repoNode[`p${i}`];
     if (!node) continue;
-    const compare = node.headRef?.compare ?? null;
+    const compare = node.baseRef?.compare ?? null;
     states.set(pr.number, {
       aheadBy: typeof compare?.aheadBy === "number" ? compare.aheadBy : 0,
       behindBy: typeof compare?.behindBy === "number" ? compare.behindBy : 0,

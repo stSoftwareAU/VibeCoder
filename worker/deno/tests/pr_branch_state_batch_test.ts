@@ -9,32 +9,60 @@
  *  - reuses cached results within the IssueCache TTL.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import {
-  buildBatchQuery,
-  fetchPRBranchStateBatch,
-} from "../lib/pr_branch_state.ts";
+import { assert, assertEquals } from "@std/assert";
+import { fetchPRBranchStateBatch } from "../lib/pr_branch_state.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 
 // ---------------------------------------------------------------------------
 // buildBatchQuery
 // ---------------------------------------------------------------------------
 
-Deno.test("pr_branch_state - buildBatchQuery aliases each PR with per-PR base", () => {
-  const q = buildBatchQuery("acme", "tools", [
-    { number: 10, baseRefName: "main" },
-    { number: 20, baseRefName: "release/v2" },
-  ]);
-  assertStringIncludes(q, "p0: pullRequest(number: 10)");
-  assertStringIncludes(q, "p1: pullRequest(number: 20)");
-  assertStringIncludes(q, 'compare(headRef: "main")');
-  assertStringIncludes(q, 'compare(headRef: "release/v2")');
-  assertStringIncludes(q, 'repository(owner: "acme", name: "tools")');
-  assertStringIncludes(q, "mergeable");
-  assertStringIncludes(q, "aheadBy");
-  assertStringIncludes(q, "behindBy");
-});
+Deno.test("pr_branch_state - each PR in a batch gets its own base comparison", async () => {
+  // Behaviour, not shape (Issue #471): two PRs on different bases, each with
+  // its own drift, must come back with its own numbers. This previously
+  // asserted the query text — and so passed for the whole life of the
+  // inverted-comparison bug (Issue #470). The comparison *direction* is
+  // covered behaviourally in pr_branch_state_compare_direction_test.ts.
+  const drift: Record<number, { aheadBy: number; behindBy: number }> = {
+    10: { aheadBy: 4, behindBy: 0 },
+    20: { aheadBy: 1, behindBy: 7 },
+  };
+  const gh = (args: string[]): Promise<string> => {
+    const query = args[3]?.slice("query=".length) ?? "";
+    const repo: Record<string, unknown> = {};
+    for (const [i, number] of [10, 20].entries()) {
+      // Answer from whichever ref the query names as the comparison head.
+      const head = [...query.matchAll(/compare\(headRef: "([^"]+)"\)/g)][i]
+        ?.[1];
+      repo[`p${i}`] = {
+        number,
+        mergeable: "MERGEABLE",
+        baseRef: {
+          compare: head === `feature-${number}` ? drift[number] : null,
+        },
+      };
+    }
+    return Promise.resolve(JSON.stringify({ data: { repository: repo } }));
+  };
 
+  const result = await fetchPRBranchStateBatch("acme/tools", [
+    { number: 10, baseRefName: "main", headRefName: "feature-10" },
+    { number: 20, baseRefName: "release/v2", headRefName: "feature-20" },
+  ], gh);
+
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.states.get(10), {
+    aheadBy: 4,
+    behindBy: 0,
+    mergeable: "MERGEABLE",
+  });
+  assertEquals(result.states.get(20), {
+    aheadBy: 1,
+    behindBy: 7,
+    mergeable: "MERGEABLE",
+  });
+});
 // ---------------------------------------------------------------------------
 // fetchPRBranchStateBatch — happy path / empty / failure / cache
 // ---------------------------------------------------------------------------
@@ -56,7 +84,7 @@ function fakeGraphQLResponse(prs: FakePR[]): string {
       headRefName: `feature-${pr.number}`,
       baseRefName: pr.baseRefName,
       mergeable: pr.mergeable,
-      headRef: {
+      baseRef: {
         compare: {
           aheadBy: pr.aheadBy,
           behindBy: pr.behindBy,
@@ -102,9 +130,9 @@ Deno.test("pr_branch_state - happy path: one GraphQL call returns all states", a
   const result = await fetchPRBranchStateBatch(
     "acme/tools",
     [
-      { number: 1, baseRefName: "main" },
-      { number: 2, baseRefName: "main" },
-      { number: 3, baseRefName: "main" },
+      { number: 1, baseRefName: "main", headRefName: "feature-1" },
+      { number: 2, baseRefName: "main", headRefName: "feature-2" },
+      { number: 3, baseRefName: "main", headRefName: "feature-3" },
     ],
     gh,
   );
@@ -140,7 +168,7 @@ Deno.test("pr_branch_state - returns error on gh failure (caller falls back to R
   };
   const result = await fetchPRBranchStateBatch(
     "acme/tools",
-    [{ number: 1, baseRefName: "main" }],
+    [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
     gh,
   );
   assert(!result.ok);
@@ -156,7 +184,7 @@ Deno.test("pr_branch_state - returns error on GraphQL errors payload", async () 
   };
   const result = await fetchPRBranchStateBatch(
     "acme/tools",
-    [{ number: 1, baseRefName: "main" }],
+    [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
     gh,
   );
   assert(!result.ok);
@@ -166,13 +194,13 @@ Deno.test("pr_branch_state - rejects malformed repo identifier", async () => {
   const gh = (_args: string[]): Promise<string> => Promise.resolve("{}");
   const r1 = await fetchPRBranchStateBatch(
     "not-a-repo",
-    [{ number: 1, baseRefName: "main" }],
+    [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
     gh,
   );
   assert(!r1.ok);
   const r2 = await fetchPRBranchStateBatch(
     "ow ner/repo",
-    [{ number: 1, baseRefName: "main" }],
+    [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
     gh,
   );
   assert(!r2.ok);
@@ -182,7 +210,7 @@ Deno.test("pr_branch_state - rejects unsafe base ref characters", async () => {
   const gh = (_args: string[]): Promise<string> => Promise.resolve("{}");
   const result = await fetchPRBranchStateBatch(
     "acme/tools",
-    [{ number: 1, baseRefName: 'main"; injected' }],
+    [{ number: 1, baseRefName: 'main"; injected', headRefName: "feature-1" }],
     gh,
   );
   assert(!result.ok);
@@ -210,7 +238,7 @@ Deno.test("pr_branch_state - cache hit on second invocation skips GraphQL call",
 
     const r1 = await fetchPRBranchStateBatch(
       "acme/tools",
-      [{ number: 1, baseRefName: "main" }],
+      [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
       gh,
       cache,
     );
@@ -221,7 +249,7 @@ Deno.test("pr_branch_state - cache hit on second invocation skips GraphQL call",
 
     const r2 = await fetchPRBranchStateBatch(
       "acme/tools",
-      [{ number: 1, baseRefName: "main" }],
+      [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
       gh,
       cache,
     );
@@ -241,7 +269,7 @@ Deno.test("pr_branch_state - GraphQL response missing data.repository returns er
   };
   const result = await fetchPRBranchStateBatch(
     "acme/tools",
-    [{ number: 1, baseRefName: "main" }],
+    [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
     gh,
   );
   assert(!result.ok);
@@ -257,7 +285,7 @@ Deno.test("pr_branch_state - missing compare node defaults to zero ahead/behind"
             headRefName: "feature-1",
             baseRefName: "main",
             mergeable: "UNKNOWN",
-            headRef: null,
+            baseRef: null,
           },
         },
       },
@@ -265,7 +293,7 @@ Deno.test("pr_branch_state - missing compare node defaults to zero ahead/behind"
   };
   const result = await fetchPRBranchStateBatch(
     "acme/tools",
-    [{ number: 1, baseRefName: "main" }],
+    [{ number: 1, baseRefName: "main", headRefName: "feature-1" }],
     gh,
   );
   assert(result.ok);

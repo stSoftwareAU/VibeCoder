@@ -619,19 +619,30 @@ export async function enforcePreMergeRequirements(
   }
 
   // 2. Re-fetch fresh branch state so a stale green CI result is never trusted.
+  //    Both refs come back in one read: the ahead/behind comparison has to be
+  //    oriented base-to-head, so the head ref is not optional (Issue #470).
   let baseRefName: string;
+  let headRefName: string;
   try {
-    baseRefName = (await ghCommandFn([
+    const raw = await ghCommandFn([
       "pr",
       "view",
       String(prNumber),
       "--repo",
       repo,
       "--json",
-      "baseRefName",
-      "--jq",
-      ".baseRefName",
-    ])).trim();
+      "baseRefName,headRefName",
+    ]);
+    const parsed = JSON.parse(raw) as {
+      baseRefName?: unknown;
+      headRefName?: unknown;
+    };
+    baseRefName = typeof parsed.baseRefName === "string"
+      ? parsed.baseRefName.trim()
+      : "";
+    headRefName = typeof parsed.headRefName === "string"
+      ? parsed.headRefName.trim()
+      : "";
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -645,6 +656,15 @@ export async function enforcePreMergeRequirements(
     return {
       ok: false,
       error: new Error(`PR #${prNumber} in ${repo} has no base branch`),
+    };
+  }
+  if (!headRefName) {
+    return {
+      ok: false,
+      error: new Error(
+        `PR #${prNumber} in ${repo} has no head branch, so its ahead/behind ` +
+          `comparison cannot be oriented (Issue #470)`,
+      ),
     };
   }
 
@@ -673,7 +693,7 @@ export async function enforcePreMergeRequirements(
 
   const batch = await fetchBranchStateFn(
     repo,
-    [{ number: prNumber, baseRefName }],
+    [{ number: prNumber, baseRefName, headRefName }],
     ghCommandFn,
   );
   if (!batch.ok) {

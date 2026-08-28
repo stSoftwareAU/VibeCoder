@@ -8,7 +8,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { directMergePr } from "./direct_merge.ts";
 import {
@@ -59,6 +59,47 @@ export enum AutoMergeResult {
    * instead and is picked up by the normal merge path next scan.
    */
   RetargetedToDefault = "retargeted_to_default",
+}
+
+/**
+ * Outcomes that mean the worker did what it set out to do. Everything else
+ * is a refusal or a failure and is logged at warning level (Issue #470).
+ */
+const SUCCESSFUL_OUTCOMES: ReadonlySet<AutoMergeResult> = new Set([
+  AutoMergeResult.Enabled,
+  AutoMergeResult.MergedDirectly,
+  AutoMergeResult.Skipped,
+]);
+
+/**
+ * Record what an auto-merge attempt actually did (Issue #470).
+ *
+ * The priority 1.65 sweep used to discard {@link EnableAutoMergeResult}
+ * entirely. When an inverted ahead/behind comparison made the pre-merge
+ * gate refuse *every* PR in the fleet with `behind_target`, the only trace
+ * was the priority's name and a duration: milestone children stopped
+ * merging, their issues stopped closing, no milestone ever completed, and
+ * the log said nothing at all. A gate is allowed to refuse a merge; it is
+ * not allowed to refuse silently.
+ *
+ * @param logger - Sink for the line
+ * @param repo - Repository in "owner/repo" format
+ * @param prNumber - PR the attempt was for
+ * @param outcome - What {@link enableAutoMerge} returned
+ */
+export function logAutoMergeOutcome(
+  logger: Pick<Logger, "info" | "warn">,
+  repo: string,
+  prNumber: number,
+  outcome: EnableAutoMergeResult,
+): void {
+  const context = { repo, prNumber, result: outcome.result };
+  const line = `Auto-merge ${outcome.result}: ${outcome.message}`;
+  if (SUCCESSFUL_OUTCOMES.has(outcome.result)) {
+    logger.info(line, context);
+    return;
+  }
+  logger.warn(line, context);
 }
 
 /** Options for enabling auto-merge. */
