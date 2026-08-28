@@ -187,7 +187,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #4 removed `seatbelt-profile` — containment is mandatory (137 → 136).
   // Issue #242 added `work-volume-tiers` (count 138 → 139).
   // Issue #272 added `check-mermaid-built-output` (count 139 → 140).
-  assertEquals(commands.length, 140);
+  // Issue #504 added `merged-pr-issue-sweep` (count 140 → 141).
+  assertEquals(commands.length, 141);
+  assertEquals(commands.includes("merged-pr-issue-sweep"), true);
   assertEquals(commands.includes("check-mermaid-built-output"), true);
   assertEquals(commands.includes("work-volume-tiers"), true);
   assertEquals(commands.includes("security-tree-sweep"), true);

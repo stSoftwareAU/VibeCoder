@@ -81,6 +81,44 @@ Deno.test("ensureIssueClosedIfPrMerged - closes open issue when PR is merged", a
   }
 });
 
+Deno.test("ensureIssueClosedIfPrMerged - closeCommentFn names the merge commit (Issue #504)", async () => {
+  let closeComment = "";
+  const mockGh = (args: string[]) => {
+    if (args.includes("pr") && args.includes("view")) {
+      return Promise.resolve(JSON.stringify(MERGED_ON_DEFAULT));
+    }
+    if (args.join(" ").includes(".default_branch")) {
+      return Promise.resolve("Develop\n");
+    }
+    if (args.join(" ").includes("/compare/")) {
+      return Promise.resolve(JSON.stringify({ status: "behind" }));
+    }
+    if (args.includes("issue") && args.includes("view")) {
+      return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+    }
+    if (args.includes("issue") && args.includes("close")) {
+      closeComment = args[args.indexOf("--comment") + 1] ?? "";
+    }
+    return Promise.resolve("");
+  };
+
+  const result = await ensureIssueClosedIfPrMerged(
+    "org/repo",
+    42,
+    100,
+    "testbot",
+    {
+      ghCommandFn: mockGh,
+      logger: makeLogger(),
+      closeCommentFn: ({ prNumber, landing }) =>
+        `swept: PR #${prNumber} at ${landing.mergeCommit} via ${landing.via}`,
+    },
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(closeComment, "swept: PR #100 at abc123 via default-branch");
+});
+
 Deno.test("ensureIssueClosedIfPrMerged - no action when PR not merged", async () => {
   const mockGh = (args: string[]) => {
     if (args.includes("pr") && args.includes("view")) {

@@ -149,7 +149,15 @@ Alongside the per-candidate filters above there is one **per-repo** gate. A repo
 | Eligible, or deferred by an open PR / occupied stream / closed-**unmerged** PR cooldown | **Yes** | Every one of these clears by itself, so waiting is correct. |
 | Assigned, carrying a blocking label, or a milestone-tracking tracker | No — dropped by `filterAndSort` | The worker never actions it. |
 | Blocked solely by an open dependency | No | The dependency is often a `low-priority` issue in the same repo; suppressing would deadlock the chain. |
-| Named by a **merged** fleet PR (`merged-pr-permanent`) | No | The block is permanent — only a trusted re-label dated after the merge lifts it. |
+| Named by a **merged** fleet PR (`merged-pr-permanent`) | No | The block is permanent — only a trusted re-label dated after the merge lifts it, or the housekeeping sweep closes the issue outright. |
+
+Issue #504 attacks the other end of the same fault: the worker only closed an
+issue whose PR merged from inside the run working that issue, so a fix merged by
+anyone else left the issue open for ever in exactly this refused state. The
+housekeeping `merged-pr-issue-sweep` step now closes those issues — see
+[INTERNALS.md](../INTERNALS.md) → *Worker driver*, step 4 — so
+`merged-pr-permanent` stops being a standing strand rather than merely being
+excluded from the suppression signal.
 
 The merged-PR carve-out is Issue #499. `stSoftwareAU/NEAT-AI-Rebase#48` carried `work-on` and was named by merged PR #49, so the scan refused it on every cycle while it parked all 28 of the repo's `low-priority` issues indefinitely — neither the suppressing issue nor anything it suppressed could ever be claimed. The idle-decision census, which does model the merged-PR gate, kept reporting those 28 as claimable and escalated the disagreement as "the claim scan keeps refusing this work". The census now mirrors this gate too and reports a suppressed backlog as `low_priority_suppressed=<n>` (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census)).
 

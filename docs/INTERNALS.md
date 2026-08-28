@@ -225,10 +225,39 @@ bash `worker/run_core.sh` conductor. It sequences:
    scopes are logged with a `[SECURITY]` tag.
 4. **Startup housekeeping** — the one-time disk-space reclaim, log rotation,
    worker-log retention, stale temp-file / work-dir / worktree / Claude-session
-   sweeps, and orphaned local + stale remote branch cleanup run as a single
-   in-order Deno sequence
+   sweeps, orphaned local + stale remote branch cleanup, and finally the
+   merged-PR issue sweep run as a single in-order Deno sequence
    ([run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts),); each step
    is best-effort — a failure is logged loud but never blocks start.
+
+   The last step,
+   `merged-pr-issue-sweep`
+   ([merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts),
+   Issue #504), is the only one that touches GitHub rather than local disk. It
+   closes every open issue whose fix has already **merged and landed**,
+   whoever authored the PR — the set the claim scan refuses for ever as
+   `merged-pr-permanent` and which therefore cannot heal itself. It invents no
+   new rule: candidates come from the scan's own merged-PR matcher, and the
+   Issue #482 ordering guard, the Issue #4396 merge-landing check and the
+   trusted-re-label escape hatch all still apply. An issue carrying
+   `needs-human` is never closed by it.
+
+```mermaid
+flowchart TD
+    A["Open issue"] --> B{"Named by a merged<br/>fleet PR?"}
+    B -->|No| Z["Left alone"]
+    B -->|Yes| C{"needs-human /<br/>planning?"}
+    C -->|Yes| Z
+    C -->|No| D{"Issue predates<br/>the merge? (#482)"}
+    D -->|No| Z
+    D -->|Yes| E{"Trusted re-label<br/>after the merge?"}
+    E -->|Yes| Z
+    E -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
+    F -->|No| Z
+    F -->|Yes| G["Closed, naming the PR<br/>and the merge commit"]
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 5. **Main loop** — invokes the `run-core` command
    ([run_core.ts](../worker/deno/commands/run_core.ts)), which builds production
    deps via `createProductionRunCoreDeps()` and runs `runCoreLoop()` with the
@@ -2728,6 +2757,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [heartbeat.ts](../worker/deno/lib/heartbeat.ts)                                                                   | Heartbeat tracking for stuck-issue detection                                                                                                                                         |
 |                             | [live_slot_holds.ts](../worker/deno/lib/live_slot_holds.ts)                                                       | Issues live slots own — recovery passes never touch them                                                                                                                             |
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                |
+|                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                   |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                             |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                       |
 | **Utilities**               |                                                                                                                   |                                                                                                                                                                                      |

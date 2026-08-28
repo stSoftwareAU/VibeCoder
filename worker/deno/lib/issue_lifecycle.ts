@@ -76,6 +76,19 @@ export interface LifecycleDeps {
    */
   verifyMergeLandedFn?: typeof verifyMergeLanded;
   /**
+   * Close-comment builder (Issue #504). Callers that close an issue from
+   * outside the run that produced the fix — the housekeeping merged-PR sweep
+   * — need the comment to name the merge commit as well as the PR, so the
+   * closure is attributable from the issue alone. Omitted: the default
+   * "PR #N has been merged" wording is used.
+   */
+  closeCommentFn?: (context: {
+    repo: string;
+    issueNumber: number;
+    prNumber: number;
+    landing: Extract<MergeLanding, { landed: true }>;
+  }) => string;
+  /**
    * Optional issue cache (Issue #1787). When provided,
    * `handlePrClosedAfterCreation` reuses the iteration-scoped
    * `prs_merged_${user}` cache instead of issuing a per-issue
@@ -378,7 +391,8 @@ export async function ensureIssueClosedIfPrMerged(
       "--repo",
       repo,
       "--comment",
-      `Automatically closed — PR #${prNumber} has been merged.`,
+      deps.closeCommentFn?.({ repo, issueNumber, prNumber, landing }) ??
+        `Automatically closed — PR #${prNumber} has been merged.`,
     ]);
 
     // Unassign
