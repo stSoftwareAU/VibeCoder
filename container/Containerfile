@@ -74,6 +74,23 @@ RUN set -eu; \
     node --version; \
     npm --version
 
+# npm is pinned in its own right (Issue #475): the Node tarball bundles npm 11,
+# so without this the image tracks whatever the runtime happened to ship. Same
+# rule as the other npm-sourced tools — verify the tarball, then install from
+# the local file. Bumping NODE_VERSION means checking npm's `engines` still
+# accepts it.
+ARG NPM_VERSION="12.0.2"
+ARG NPM_SHA256_NOARCH="5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1"
+
+RUN set -eu; \
+    tarball="/tmp/npm.tgz"; \
+    curl -fsSL -o "${tarball}" "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"; \
+    echo "${NPM_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
+    npm install -g --ignore-scripts "${tarball}"; \
+    npm cache clean --force; \
+    rm -f "${tarball}"; \
+    npm --version | grep -qxF "${NPM_VERSION}"
+
 # Coding-agent provider set (Issues #4067, #4105) — see docs/CONTAINER-IMAGE.md.
 # Defaults to the manifest's `installedProviders` (gate-checked); part of the
 # hashed definition, so changing the set changes the tag (Issue #4062).

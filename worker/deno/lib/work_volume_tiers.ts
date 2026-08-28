@@ -122,13 +122,29 @@ export function monitoredDirNames(
  * by the work-volume prune (Issue #228); reserved names (`logs`,
  * `lost+found`, the `audit` trail and its roster sidecars) belong to other
  * subsystems. Everything else that is not a monitored clone is disposable.
+ *
+ * `protectedNames` adds caller-supplied entries to the reserved set (Issue
+ * #477). The fleet-health checkout is the motivating case: it is a side
+ * clone by shape, so it tiered as disposable and the disk-low reclaim took
+ * it — after which #410 refused to clone it back while the host stayed below
+ * the floor, and the host reported nothing to the fleet board for three days.
+ * A directory measured in megabytes never buys back a floor measured in
+ * gigabytes, and destroying the fleet's view of a host under strain is the
+ * wrong trade at any size.
  */
 export function classifyWorkRootEntry(
   name: string,
   monitored: ReadonlySet<string>,
+  protectedNames: Iterable<string> = [],
 ): WorkRootTier {
   if (name === "" || name.startsWith(".")) return "state";
   if (isReservedWorkRootEntry(name)) return "state";
+  // Issue #477: a diagnostic checkout the operator's view of this host
+  // depends on. Named by the caller rather than by a constant here because
+  // the directory is derived from `FLEET_HEALTH_REPO` and differs per fleet.
+  for (const protectedName of protectedNames) {
+    if (protectedName !== "" && protectedName === name) return "state";
+  }
   if (monitored.has(name)) return "monitored";
   return "disposable";
 }
@@ -198,6 +214,13 @@ export interface WorkVolumeTierOptions {
   sizeOf?: (path: string) => Promise<number | null>;
   /** Whether any slot is mid-execute, injectable. */
   anySlotActive?: (workDir: string) => Promise<boolean>;
+  /**
+   * Work-root entries this sweep must never remove, on top of the reserved
+   * set (Issue #477) — today the fleet-health checkout, whose deletion under
+   * disk pressure is what stops the host reporting the very pressure that
+   * deleted it.
+   */
+  protectedNames?: readonly string[];
   /** Push-before-delete rescue, injectable. */
   rescue?: (
     repoDir: string,
@@ -283,6 +306,8 @@ export async function scanWorkRootTiers(
   options: {
     nowFn?: () => number;
     sizeOf?: (path: string) => Promise<number | null>;
+    /** Entries the caller reserves regardless of tier (Issue #477). */
+    protectedNames?: readonly string[];
   } = {},
 ): Promise<{ dirs: WorkRootDir[]; errors: string[] }> {
   const now = (options.nowFn ?? (() => Math.floor(Date.now() / 1000)))();
@@ -303,7 +328,11 @@ export async function scanWorkRootTiers(
 
   for (const entry of entries) {
     if (!entry.isDirectory) continue;
-    const tier = classifyWorkRootEntry(entry.name, monitored);
+    const tier = classifyWorkRootEntry(
+      entry.name,
+      monitored,
+      options.protectedNames ?? [],
+    );
     if (tier === "state") continue;
     const path = `${workDir}/${entry.name}`;
     let readable = true;
@@ -405,7 +434,11 @@ export async function reclaimWorkVolumeTiers(
   const { dirs, errors } = await scanWorkRootTiers(
     options.workDir,
     options.monitoredRepos,
-    { nowFn: () => now, sizeOf: options.sizeOf },
+    {
+      nowFn: () => now,
+      sizeOf: options.sizeOf,
+      protectedNames: options.protectedNames,
+    },
   );
 
   const sum = (tier: WorkRootTier) => {
