@@ -471,3 +471,33 @@ Deno.test("buildHousekeepingSteps - work-volume-tiers honours its env override",
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// Merged-PR issue sweep (Issue #504)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildHousekeepingSteps - sweeps merged-PR issues last, wired to the worker login", () => {
+  const steps = buildHousekeepingSteps(baseOptions({ githubUser: "vibe-bot" }));
+  const last = steps[steps.length - 1];
+
+  assertEquals(last?.id, "merged-pr-issue-sweep");
+  assertEquals(last?.command, "merged-pr-issue-sweep");
+  assertEquals(last?.args["github-user"], "vibe-bot");
+  assertEquals(last?.args["issue-limit"], 200);
+});
+
+Deno.test("buildHousekeepingSteps - merged-pr-issue-sweep honours its env override", () => {
+  const previous = Deno.env.get("MERGED_PR_SWEEP_ISSUE_LIMIT");
+  Deno.env.set("MERGED_PR_SWEEP_ISSUE_LIMIT", "50");
+  try {
+    const step = buildHousekeepingSteps(baseOptions())
+      .find((s) => s.id === "merged-pr-issue-sweep");
+    assertEquals(step?.args["issue-limit"], 50);
+  } finally {
+    if (previous === undefined) {
+      Deno.env.delete("MERGED_PR_SWEEP_ISSUE_LIMIT");
+    } else {
+      Deno.env.set("MERGED_PR_SWEEP_ISSUE_LIMIT", previous);
+    }
+  }
+});

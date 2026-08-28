@@ -536,7 +536,10 @@ GRQ#4326 â€” `work-on` since 23 August, unassigned, carrying no blocking label â
 is named by merged PR #4336. The scan was right; the census escalated it as
 "the claim scan keeps refusing" (GRQ#4419, VibeCoder#429). Excluded issues are
 now reported as `merged_pr_blocked=<n>` so the permanent strand stays visible
-rather than being silently dropped.
+rather than being silently dropped. Issue #504 drains the strand itself: the
+housekeeping `merged-pr-issue-sweep` step closes an issue whose fix has merged
+**and landed**, whoever authored the PR, so this count reflects issues awaiting
+that sweep rather than a permanent population.
 
 The **dependency** gate (Issue #460, GRQ#4465) closes the third instance of the
 same hole. `collect_work_on_candidates.ts` refuses an issue naming an open

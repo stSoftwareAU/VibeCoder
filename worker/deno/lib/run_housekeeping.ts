@@ -39,6 +39,7 @@ import { denoCacheGuardCommand } from "../commands/deno_cache_guard.ts";
 import { branchCleanupCommand } from "../commands/branch_cleanup.ts";
 import { workVolumePruneCommand } from "../commands/work_volume_prune.ts";
 import { workVolumeTiersCommand } from "../commands/work_volume_tiers.ts";
+import { mergedPrIssueSweepCommand } from "../commands/merged_pr_issue_sweep.ts";
 import {
   DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
   DEFAULT_SIDE_REPO_MAX_GIT_BYTES,
@@ -64,6 +65,10 @@ import { createLogger } from "./logger.ts";
  * rotation runs first, then age-based retention deletes the worker-PID logs
  * (plain or gzipped) that have aged out. This step was orphaned by the Deno
  * housekeeping migration (#3484) when `run_core.sh` was deleted.
+ *
+ * `merged-pr-issue-sweep` runs **last** (Issue #504): it is the only step that
+ * touches GitHub state rather than local disk, and it must not delay the
+ * reclaim steps the worker needs before it can run at all.
  */
 export const HOUSEKEEPING_STEP_IDS = [
   "audit-chain-verify",
@@ -79,6 +84,7 @@ export const HOUSEKEEPING_STEP_IDS = [
   "work-volume-tiers",
   "branch-cleanup-orphaned",
   "branch-cleanup-stale",
+  "merged-pr-issue-sweep",
 ] as const;
 
 /** A single housekeeping step identifier. */
@@ -357,6 +363,17 @@ export function buildHousekeepingSteps(
         "github-user": options.githubUser,
       },
     },
+    {
+      // Issue #504: close the issues whose fix already merged and landed but
+      // which no run closed — the set every claim scan refuses for ever as
+      // `merged-pr-permanent`, and which therefore cannot heal itself.
+      id: "merged-pr-issue-sweep",
+      command: "merged-pr-issue-sweep",
+      args: {
+        "github-user": options.githubUser,
+        "issue-limit": envInt("MERGED_PR_SWEEP_ISSUE_LIMIT", 200),
+      },
+    },
   ];
 }
 
@@ -374,6 +391,7 @@ const HOUSEKEEPING_COMMANDS = {
   "branch-cleanup": branchCleanupCommand,
   "work-volume-prune": workVolumePruneCommand,
   "work-volume-tiers": workVolumeTiersCommand,
+  "merged-pr-issue-sweep": mergedPrIssueSweepCommand,
 } as const;
 
 /** Build the production dependency set for {@link runStartupHousekeeping}. */
