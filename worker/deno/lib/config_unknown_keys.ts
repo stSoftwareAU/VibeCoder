@@ -83,6 +83,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "progress_extension_stall_seconds",
   // Working-tree sampling interval (Issue #4295)
   "progress_extension_check_seconds",
+  // Self-scheduled worker diagnostics (Issue #505)
+  "self_schedule_diagnostics_enabled",
+  "self_schedule_diagnostics_max_in_flight",
   "claude_kill_after",
   "max_clarification_rounds",
   "sleep_interval",

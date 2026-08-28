@@ -677,6 +677,14 @@ carried a bare count, and the scan logged only aggregate top-3 reasons, so which
 gate the two sides disagreed about was unrecoverable from the alert and the log
 together.
 
+Since Issue #505 the escalation issue no longer waits for a human to schedule
+it. Its `VIBE_IDLE_INVERSION` marker is recognised provenance, so the claim
+scan's tier 2b
+([`collect_self_diagnostic_candidates.ts`](../worker/deno/lib/collect_self_diagnostic_candidates.ts))
+claims it on that basis — one at a time, recorded in the audit chain and
+announced on the issue, and still below any human-scheduled work. See
+[Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b).
+
 The census reads through the iteration-scoped `IssueCache` / `fetchAllIssues`,
 so a quiet cycle adds **no** extra issue-list API call (whichever of the census,
 the recovery scan, and the Priority 2 scan runs first populates the shared

@@ -128,6 +128,13 @@ export async function escalateUnworkableWorkOn(opts: {
   issueNumber: number;
   needsHumanLabel: string;
   escalation: UnworkableEscalation;
+  /**
+   * Comment heading. Defaults to the unworkable-`work-on` wording; callers
+   * escalating a different unworkable object (Issue #505: an auto-filed
+   * diagnostic nothing can schedule) pass their own so the comment names
+   * what is actually stuck.
+   */
+  heading?: string;
   githubUser?: string;
   ghFn: GhFn;
   deps?: EscalateUnworkableDeps;
@@ -154,7 +161,8 @@ export async function escalateUnworkableWorkOn(opts: {
       needsHumanLabel: opts.needsHumanLabel,
       reason: opts.escalation.reason,
       nextStep: opts.escalation.nextStep,
-      heading: "Unworkable work-on issue — needs human attention",
+      heading: opts.heading ??
+        "Unworkable work-on issue — needs human attention",
       dedupKey: opts.escalation.dedupKey,
       githubUser: opts.githubUser,
       logger,

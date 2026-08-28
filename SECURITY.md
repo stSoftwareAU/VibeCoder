@@ -1031,6 +1031,38 @@ Operational labels that affect worker behaviour (`planning`, `question`, `needs-
 - **Worker-owned failure marks.** `failed` / `failed-once` applied by a fleet worker stay trusted — they drive the consecutive-failure circuit breaker, and stripping them would re-pick a persistently failing issue forever.
 - **Unverifiable authorship keeps the label.** For blocking-only labels, *stripping* is the fail-open direction (it hands a known-failing issue back for another billed run). A missing `labeled` event, a null actor, or an unreadable timeline therefore leaves the label in place; only a named untrusted adder strips it. The permissive labels keep their original fail-closed behaviour.
 
+#### 5a. Self-scheduled worker diagnostics — provenance, not a label (Issue #505)
+
+The worker may schedule its **own** auto-filed diagnostics without a human
+applying `work-on`. The reserved-label guards are **not** relaxed to allow it:
+no label is applied at all, `worker_label_guard.ts`,
+`wasLabelAddedByAllowedAuthor()` and `verifyOperationalLabels()` are unchanged,
+and `top-priority` / `work-on` remain human-only unconditionally. What changes
+is the claim scan, which gains a tier
+([`collect_self_diagnostic_candidates.ts`](worker/deno/lib/collect_self_diagnostic_candidates.ts))
+whose eligibility rests on provenance.
+
+- **Three signals must agree** — the issue is in the worker's own repo, its body
+  carries a recognised template marker matched as a whole HTML comment, and it
+  was filed by a fleet worker login. Author alone is insufficient: an injected
+  agent can file issues too. A worker-filed issue in a **product** repo, a
+  human-filed issue, and an unmarked issue are all refused.
+- **Forged markers.** The filers escape `<!--` / `-->` out of every interpolated
+  field before a body is written, so a marker in a filed body can only have come
+  from the template.
+- **Bounded.** At most `self_schedule_diagnostics_max_in_flight` (default `1`)
+  diagnostics may be in flight; the surplus is refused and logged.
+- **Auditable and announced.** Each decision is written to the audit chain under
+  the distinct `self-schedule-diagnostic` verb and announced in a comment on the
+  issue. If either fails the diagnostic is **not** scheduled — an untraceable
+  privilege-bearing decision is worse than one more cycle of waiting.
+- **Reversible.** `self_schedule_diagnostics_enabled: false` restores the
+  previous behaviour exactly.
+- **Residual risk, stated.** An actor with write access to the worker's repo can
+  edit a worker-filed body. That actor can already apply `work-on` directly, so
+  self-scheduling grants no new capability, and issue content still reaches the
+  agent inside the untrusted-content boundary.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).

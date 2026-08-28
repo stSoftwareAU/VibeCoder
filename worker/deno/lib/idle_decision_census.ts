@@ -235,10 +235,16 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "content-store-unconfigured": "run-local",
     "content-snapshot-persist-failed": "run-local",
     "no-approval-snapshot": "run-local",
+    // Issue #505: the self-scheduling cap and its audit/announce steps are
+    // this worker's state and this worker's writes — nothing the census reads.
+    "self-schedule-refused": "run-local",
     // The scan already puts these in front of a human on the issue itself.
     "dependency-cycle-escalated": "escalated-elsewhere",
     "dead-label-tracker-escalated": "escalated-elsewhere",
     "human-pr-blocked-escalated": "escalated-elsewhere",
+    // Issue #505: a diagnostic nothing can schedule is put in front of a
+    // human on the issue itself.
+    "self-schedule-escalated": "escalated-elsewhere",
   };
 
 /** Which idle-task decision point the census was taken at. */

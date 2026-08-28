@@ -504,6 +504,29 @@ export async function loadConfig(
         `run whose tool activity landed between checks.`,
     );
   }
+  // Self-scheduling for auto-filed worker diagnostics (Issue #505). On by
+  // default; `false` restores the wait-for-a-human behaviour exactly. The
+  // in-flight cap is refused loudly when it is not a whole number — a
+  // fractional or negative cap would silently disable a feature the operator
+  // believes is on.
+  const selfScheduleDiagnosticsEnabled =
+    file.self_schedule_diagnostics_enabled ??
+      OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsEnabled;
+  const selfScheduleDiagnosticsMaxInFlight =
+    file.self_schedule_diagnostics_max_in_flight ??
+      OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsMaxInFlight;
+  if (
+    !Number.isInteger(selfScheduleDiagnosticsMaxInFlight) ||
+    selfScheduleDiagnosticsMaxInFlight < 0
+  ) {
+    throw new Error(
+      `self_schedule_diagnostics_max_in_flight must be a non-negative ` +
+        `integer, got ${selfScheduleDiagnosticsMaxInFlight}. Use 0 to refuse ` +
+        `every self-scheduled diagnostic, or ` +
+        `self_schedule_diagnostics_enabled: false to turn the path off.`,
+    );
+  }
+
   // Issue #1824: distinct hard timeouts for reactive phases — PR feedback
   // and CI fix should not inherit the larger issue-work budget. Falls back
   // to claude_timeout if explicitly set in config (back-compat), then to
@@ -759,6 +782,8 @@ export async function loadConfig(
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,
     progressExtensionCheckSeconds,
+    selfScheduleDiagnosticsEnabled,
+    selfScheduleDiagnosticsMaxInFlight,
     prFeedbackTimeout,
     ciFixTimeout,
     claudeKillAfter,

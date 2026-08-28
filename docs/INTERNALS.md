@@ -957,7 +957,8 @@ find_oldest_issue(github_user)
   |         Filter: same as above
   |
   +-- _select_highest_priority()    [issue_priority.ts]
-  |     Tier 1 configured-label > Tier 2 work-on > Tier 3 low-priority
+  |     Tier 1 configured-label > Tier 2 work-on
+  |       > Tier 2b self-scheduled worker diagnostic > Tier 3 low-priority
   |     A lower tier fires only when every higher tier is empty
   |     across ALL scanned repos (cross-repo global guarantee)
   |     If configured-label search FAILED (API error): no fallback
@@ -995,8 +996,23 @@ find_oldest_issue(github_user)
    exhaustive read backs the untrusted-`work-on` strip
    (`strip_untrusted_work_on.ts`), which both removes a label and names the
    adder publicly.
+2b. **Self-scheduled worker diagnostic** — no label at all. An issue the worker
+   auto-filed about itself, in its own repo, carrying a recognised provenance
+   marker, is claimable on that provenance alone
+   ([collect_self_diagnostic_candidates.ts](../worker/deno/lib/collect_self_diagnostic_candidates.ts),
+   [self_diagnostic_provenance.ts](../worker/deno/lib/self_diagnostic_provenance.ts)).
+   **Nothing is self-labelled** — the reserved-label guards are untouched and
+   `top-priority`/`work-on` stay human-only. Three signals must agree (repo,
+   marker, fleet author); the tier is capped at
+   `self_schedule_diagnostics_max_in_flight`, its decisions are written to the
+   audit chain under the `self-schedule-diagnostic` verb and announced on the
+   issue, a permanently-blocked diagnostic is escalated with `needs-human`, and
+   `self_schedule_diagnostics_enabled: false` restores the previous behaviour.
+   See
+   [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b).
 3. **Low-priority label** — idle-time tier. Selected only when **no** eligible
-   configured-label or `work-on` candidate exists in **any** scanned repo.
+   configured-label, `work-on` or self-scheduled diagnostic candidate exists in
+   **any** scanned repo.
    Implemented in
    [collect_low_priority_candidates.ts](../worker/deno/lib/collect_low_priority_candidates.ts)
    and integrated by

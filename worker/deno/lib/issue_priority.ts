@@ -13,6 +13,13 @@ import { MILESTONE_PRIORITY_VALUES } from "./milestone_priority.ts";
  *                          configurable for backward compatibility but
  *                          are no longer part of the hardwired set.
  *   2. work-on           — explicit work-on signal
+ *   2b. self-diagnostic  — an auto-filed worker diagnostic the worker
+ *                          scheduled itself (Issue #505). Below both
+ *                          human-scheduled tiers, above the backlog: a
+ *                          fault in the machine that does the work outranks
+ *                          backlog, but never outranks a human's intent.
+ *                          Carries no label — provenance alone makes it
+ *                          claimable.
  *   3. low-priority      — backlog
  *   4. idle-task         — worker-filed busywork, picked up only when
  *                          every other tier is empty (Issue #1961). The
@@ -45,7 +52,13 @@ export interface IssueCandidate {
   /** Zero-padded label index for priority ordering (configured-label only) */
   labelIndex: number;
   /** Source of the candidate */
-  source: "configured-label" | "work-on" | "low-priority" | "idle-task";
+  source:
+    | "configured-label"
+    | "work-on"
+    /** Issue #505: self-scheduled auto-filed worker diagnostic. */
+    | "self-diagnostic"
+    | "low-priority"
+    | "idle-task";
   /**
    * Milestone priority derived from priority labels (Issue #1237).
    * Lower value = higher priority. Only affects ordering within the
@@ -107,6 +120,17 @@ export interface SelectionResult {
   workOnCandidates: IssueCandidate[];
   /** Repos/milestones that have blocked configured-label issues */
   blockedEntries: Array<{ repo: string; milestone: string }>;
+  /**
+   * All self-scheduled worker-diagnostic candidates found (Issue #505).
+   *
+   * Tier 2b — below both human-scheduled tiers (`configured-label`,
+   * `work-on`) and above `low-priority`. These carry no label: they are
+   * claimable on provenance alone (see
+   * `collect_self_diagnostic_candidates.ts`). Optional for backward
+   * compatibility — defaults to an empty list, which is exactly the
+   * behaviour before self-scheduling existed.
+   */
+  selfDiagnosticCandidates?: IssueCandidate[];
   /**
    * All low-priority candidates found (Issue #1725).
    *
@@ -363,8 +387,12 @@ export function orderCandidatesByNiceTier(
  *    (repos with search failures are excluded — we cannot be sure there
  *    isn't a higher-priority configured-label issue there). Blocked
  *    configured-label issues suppress work-on in the same repo+milestone.
- * 3. Low-priority candidates (Issue #1725) — only chosen when tiers 1 and
- *    2 produce no selectable candidate across every scanned repo.
+ * 2b. Self-scheduled worker diagnostics (Issue #505) — auto-filed
+ *    diagnostics about the worker itself, claimable on provenance rather
+ *    than on a label. Chosen only when tiers 1 and 2 produce no selectable
+ *    candidate, and always ahead of the backlog.
+ * 3. Low-priority candidates (Issue #1725) — only chosen when tiers 1, 2
+ *    and 2b produce no selectable candidate across every scanned repo.
  * 4. Idle-task candidates (Issue #1961, #2812) — a *fleet-global* floor,
  *    strictly below every real-work tier across *all* `nice` tiers. Only
  *    chosen when no monitored repo in any `nice` tier has a selectable
@@ -399,6 +427,7 @@ export function selectHighestPriority(
       [
         ...result.labelCandidates,
         ...result.workOnCandidates,
+        ...(result.selfDiagnosticCandidates ?? []),
         ...(result.lowPriorityCandidates ?? []),
         ...(result.idleTaskCandidates ?? []),
       ].map((c) => repoNice(c.repo)),
@@ -460,6 +489,13 @@ function selectWithinNiceTier(
 
   const labelCandidates = result.labelCandidates.filter(inTier);
   const workOnCandidates = result.workOnCandidates.filter(inTier);
+  // Issue #505: tier 2b — self-scheduled worker diagnostics. Never
+  // suppressed by `reposWithOpenWorkOn`: the tier order below already keeps
+  // every human-scheduled candidate ahead of them, and the collector runs
+  // the same PR/milestone/dependency gates, so the one-PR-per-work-stream
+  // guarantee holds without a second suppression rule.
+  const selfDiagnosticCandidates = (result.selfDiagnosticCandidates ?? [])
+    .filter(inTier);
   const lowPriorityCandidates = (result.lowPriorityCandidates ?? []).filter(
     inTier,
   );
@@ -521,10 +557,12 @@ function selectWithinNiceTier(
       return selectFairWithinTier(unblockedWorkOn, options);
     }
 
-    // No work-on survived suppression — fall through to tier 3 then tier 4
-    // (applying the Issue #2164 repo-level suppression).
+    // No work-on survived suppression — fall through to tier 2b (Issue
+    // #505), then tier 3 and tier 4 (applying the Issue #2164 repo-level
+    // suppression).
     return (
-      selectFairWithinTier(eligibleLowPriority, options) ??
+      selectFairWithinTier(selfDiagnosticCandidates, options) ??
+        selectFairWithinTier(eligibleLowPriority, options) ??
         selectFairWithinTier(eligibleIdleTask, options)
     );
   }
@@ -532,6 +570,14 @@ function selectWithinNiceTier(
   // Priority 2 (cont.): Work-on candidates from repos with successful searches
   if (eligibleWorkOn.length > 0) {
     return selectFairWithinTier(eligibleWorkOn, options);
+  }
+
+  // Priority 2b: self-scheduled worker diagnostics (Issue #505). Reached
+  // only when no human-scheduled candidate is selectable, so a human's
+  // intent always outranks the worker's own; above the backlog, because a
+  // fault in the machine that does the work is not backlog.
+  if (selfDiagnosticCandidates.length > 0) {
+    return selectFairWithinTier(selfDiagnosticCandidates, options);
   }
 
   // Priority 3: Low-priority candidates (Issue #1725).

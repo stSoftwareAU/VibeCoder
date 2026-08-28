@@ -61,6 +61,15 @@ export const SKIP_REASONS = [
   "dead-label-tracker-escalated",
   /** Issue #4078: blocked by a human-authored PR — nudged and escalated */
   "human-pr-blocked-escalated",
+  /**
+   * Issue #505: an auto-filed worker diagnostic the self-scheduling path
+   * refused this scan — the in-flight cap is full, or the decision could
+   * not be recorded/announced. Distinct so a refusal is never mistaken for
+   * "no diagnostic was there".
+   */
+  "self-schedule-refused",
+  /** Issue #505: an unschedulable diagnostic escalated to a human */
+  "self-schedule-escalated",
 ] as const;
 
 /**

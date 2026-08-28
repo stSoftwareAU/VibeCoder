@@ -47,6 +47,7 @@ import { collectLabelCandidates } from "./collect_label_candidates.ts";
 import { collectWorkOnCandidates } from "./collect_work_on_candidates.ts";
 import { collectLowPriorityCandidates } from "./collect_low_priority_candidates.ts";
 import { collectIdleTaskCandidates } from "./collect_idle_task_candidates.ts";
+import { collectSelfDiagnosticCandidates } from "./collect_self_diagnostic_candidates.ts";
 import { getRepoNice } from "./repo_config.ts";
 import {
   compareFleetAuthorSets,
@@ -147,6 +148,8 @@ export async function findOldestIssue(
 
   const allLabelCandidates: IssueCandidate[] = [];
   const allWorkOnCandidates: IssueCandidate[] = [];
+  /** Issue #505: tier 2b — auto-filed diagnostics the worker schedules. */
+  const allSelfDiagnosticCandidates: IssueCandidate[] = [];
   const allLowPriorityCandidates: IssueCandidate[] = [];
   const allIdleTaskCandidates: IssueCandidate[] = [];
   const allBlocked: Array<{ repo: string; milestone: string }> = [];
@@ -285,6 +288,20 @@ export async function findOldestIssue(
       reposWithOpenWorkOn.add(repo);
     }
 
+    // Issue #505: Collect self-scheduled worker diagnostics. Tier 2b —
+    // below both human-scheduled tiers, above the backlog. A no-op for
+    // every repo but the worker's own, and when the path is disabled.
+    const selfDiagnosticResult = await collectSelfDiagnosticCandidates(
+      repo,
+      config,
+      optionsWithDiag,
+      repoPRs,
+      repoAllIssues,
+      fetcher,
+      repoClosedPRs,
+    );
+    allSelfDiagnosticCandidates.push(...selfDiagnosticResult.candidates);
+
     // Issue #1725: Collect low-priority candidates per repo. Tier 3
     // suppression is enforced globally in selectHighestPriority once
     // every repo has been scanned.
@@ -338,6 +355,19 @@ export async function findOldestIssue(
     })
     : allWorkOnCandidates;
 
+  // Issue #505: self-scheduled diagnostics receive the same local and
+  // cross-worker cooldown treatment as every other tier — a diagnostic the
+  // worker just released must not be re-claimed straight away.
+  const localFilteredSelfDiagnostic = options.isIssueInCooldown
+    ? allSelfDiagnosticCandidates.filter((c) => {
+      const inCooldown = options.isIssueInCooldown!(c.repo, c.number);
+      if (inCooldown) {
+        diag.logIssueSkipped(c.repo, c.number, "cooldown");
+      }
+      return !inCooldown;
+    })
+    : allSelfDiagnosticCandidates;
+
   // Issue #1725: low-priority candidates receive the same local cooldown
   // and cross-worker cooldown treatment as the other two tiers.
   const localFilteredLowPriority = options.isIssueInCooldown
@@ -365,6 +395,7 @@ export async function findOldestIssue(
   // Issue #1087: Apply cross-worker cooldown filtering (supplementary to local)
   let filteredLabel = localFilteredLabel;
   let filteredWorkOn = localFilteredWorkOn;
+  let filteredSelfDiagnostic = localFilteredSelfDiagnostic;
   let filteredLowPriority = localFilteredLowPriority;
   let filteredIdleTask = localFilteredIdleTask;
 
@@ -389,6 +420,9 @@ export async function findOldestIssue(
 
     filteredLabel = await crossWorkerFilter(localFilteredLabel);
     filteredWorkOn = await crossWorkerFilter(localFilteredWorkOn);
+    filteredSelfDiagnostic = await crossWorkerFilter(
+      localFilteredSelfDiagnostic,
+    );
     filteredLowPriority = await crossWorkerFilter(localFilteredLowPriority);
     filteredIdleTask = await crossWorkerFilter(localFilteredIdleTask);
   }
@@ -397,6 +431,7 @@ export async function findOldestIssue(
     selected: null,
     labelCandidates: filteredLabel,
     workOnCandidates: filteredWorkOn,
+    selfDiagnosticCandidates: filteredSelfDiagnostic,
     blockedEntries: allBlocked,
     lowPriorityCandidates: filteredLowPriority,
     idleTaskCandidates: filteredIdleTask,

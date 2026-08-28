@@ -36,8 +36,17 @@
 [extend]
 useDefault = true
 
+# The `generic-api-key` rule keys off any identifier containing "key", so a
+# `dedupKey` whose value is a hyphenated slug (Issue #505) trips it on entropy
+# alone. These are escalation dedup markers, not credentials. The regex matches
+# the key format for any issue number rather than one fixture value, so it does
+# not have to be revisited each time a new dedup key is asserted.
 [allowlist]
-description = "Synthetic secret fixtures in redaction and scrub-gate unit tests (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196)"
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505)"
+regexTarget = "line"
+regexes = [
+  '''self-diagnostic-unschedulable-\d+''',
+]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
   # Fake GH_TOKEN / ANTHROPIC_API_KEY / x-access-token strings feeding
