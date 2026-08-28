@@ -179,6 +179,13 @@ branch at the same time. A host that loses the race returns immediately.
   and `package.json` (`dependencies`, `devDependencies`, `peerDependencies`,
   `optionalDependencies`). Per dependency key the higher semver wins, whichever
   branch carries it; a hunk touching anything else, or one undecidable version,
-  defers the whole file. Neither module is wired into the pass yet, so today
-  every conflict still follows the contract above.
+  defers the whole file.
+- `worker/deno/lib/dependency_conflict_native.ts` — the non-JSON manifest rules
+  on the same seam: `Cargo.toml` (`[dependencies]`, `[dev-dependencies]`,
+  `[build-dependencies]` and their `[target.*.dependencies]` variants, in both
+  the short and inline-table entry forms — only the `version` field is compared,
+  so a changed `features` or `default-features` defers) and `go.mod` (`require`
+  lines, single-line and parenthesised-block forms; `+incompatible` and
+  pseudo-versions are undecidable). None of these modules is wired into the pass
+  yet, so today every conflict still follows the contract above.
 - `prompts/merge_conflict/` — the versioned agent prompt carrying the contract.
