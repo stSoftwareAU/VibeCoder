@@ -273,7 +273,9 @@ Deno.test("#321 - the body names the repo, the counts and what to check", () => 
   assertStringIncludes(body, "4 consecutive cycles");
   assertStringIncludes(body, "2 claimable");
   assertStringIncludes(body, "ALERT inversion");
-  // The worker cannot self-apply work-on, so it must ask.
+  // Issue #505: the worker schedules this itself; `work-on` is now the way
+  // to schedule it *sooner*, not the only way to schedule it at all.
+  assertStringIncludes(body, "schedules this diagnostic itself");
   assertStringIncludes(body, "Apply `work-on`");
 });
 

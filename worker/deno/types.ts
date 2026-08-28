@@ -206,6 +206,27 @@ export interface WorkerConfig {
    */
   progressExtensionCheckSeconds?: number;
   /**
+   * Let the worker schedule its own auto-filed diagnostics (Issue #505;
+   * default: true).
+   *
+   * An issue the worker filed about itself, in its own repo, carrying a
+   * recognised provenance marker, becomes claimable without a human
+   * applying `work-on`. Nothing is self-labelled: the claim scan gains a
+   * tier (`collect_self_diagnostic_candidates.ts`), and the reserved-label
+   * guards are untouched. `false` restores today's behaviour exactly — the
+   * diagnostic waits for a human.
+   *
+   * Optional so the existing `WorkerConfig` literals stay valid;
+   * `loadConfig` always populates it from `OPERATIONAL_DEFAULTS`.
+   */
+  selfScheduleDiagnosticsEnabled?: boolean;
+  /**
+   * How many self-scheduled diagnostics may be in flight at once
+   * (Issue #505, default: 1). A misfiring detector cannot fill the queue
+   * with its own work; the surplus is refused and logged.
+   */
+  selfScheduleDiagnosticsMaxInFlight?: number;
+  /**
    * Timeout in seconds for the PR feedback phase (Issue #1824, default: 1800 = 30 min).
    * A single PR comment cannot reasonably need more than 30 minutes —
    * keeping this distinct from `claudeTimeout` prevents reactive phases
@@ -949,6 +970,13 @@ export interface ConfigFile {
   progress_extension_stall_seconds?: number;
   /** Seconds between working-tree progress checks (Issue #4295) */
   progress_extension_check_seconds?: number;
+  /**
+   * Let the worker schedule its own auto-filed diagnostics (Issue #505;
+   * default true). `false` restores the human-`work-on`-only behaviour.
+   */
+  self_schedule_diagnostics_enabled?: boolean;
+  /** Self-scheduled diagnostics allowed in flight at once (Issue #505) */
+  self_schedule_diagnostics_max_in_flight?: number;
   /** Hard timeout in seconds for the PR feedback phase (Issue #1824) */
   pr_feedback_timeout?: number;
   /** Hard timeout in seconds for the CI fix phase (Issue #1824) */

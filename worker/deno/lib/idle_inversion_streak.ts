@@ -44,9 +44,13 @@
  * work on every cycle by construction. `idle_decision_census.ts` decides
  * which repos qualify (`escalationRepos`).
  *
- * The issue is filed with no label. The worker cannot self-apply `work-on`
- * (`worker_label_guard.ts` strips a worker-applied pickup label on the next
- * scan), so the body asks a human to apply it.
+ * The issue is filed with no label — the worker still cannot self-apply
+ * `work-on` (`worker_label_guard.ts` strips a worker-applied pickup label on
+ * the next scan). Since Issue #505 it does not have to: the marker below is
+ * recognised provenance, so `collect_self_diagnostic_candidates.ts` schedules
+ * this issue itself (tier 2b, capped, audited and announced) unless an
+ * operator has switched that path off. A human `work-on` still works and
+ * still outranks it.
  *
  * Best-effort throughout: never throws, so the idle path can call it without
  * a guard. Every failure is logged rather than swallowed.
@@ -289,8 +293,12 @@ export function formatIdleInversionBody(
     "blocked those issue numbers for ever, under a skip reason that read as " +
     "a passing cooldown.",
     "",
-    "Apply `work-on` to schedule the fix — the worker cannot self-apply that " +
-    "label.",
+    "The worker schedules this diagnostic itself (Issue #505): the marker " +
+    "above is recognised provenance, so it is claimed without waiting for a " +
+    "label — capped, recorded in the audit chain, and announced in a comment " +
+    "below when it happens. Apply `work-on` to schedule it sooner; that " +
+    "outranks self-scheduling and is still the only way to raise its " +
+    "priority.",
     "",
     "The worker files this once per streak and stops reporting as soon as " +
     "the repo has a clean cycle.",

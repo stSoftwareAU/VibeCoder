@@ -232,6 +232,24 @@ export const OPERATIONAL_DEFAULTS = {
    * sampling window could still be killed for stale tool activity.
    */
   progressExtensionCheckSeconds: 300,
+  /**
+   * Self-scheduling for auto-filed worker diagnostics (Issue #505).
+   *
+   * **On by default.** The worker diagnoses its own faults accurately and
+   * then stopped dead at the one action reserved for humans, so on an
+   * unattended host the alarm just accumulated — `NEAT-AI-Rebase#39` waited
+   * two days for a label the fix then took 79 minutes to honour. Only
+   * issues the worker filed about itself, in its own repo, carrying a
+   * recognised provenance marker, qualify; no label is ever self-applied.
+   * Set `self_schedule_diagnostics_enabled: false` to restore the
+   * wait-for-a-human behaviour exactly.
+   */
+  selfScheduleDiagnosticsEnabled: true,
+  /**
+   * One self-scheduled diagnostic in flight at a time (Issue #505), so a
+   * misfiring detector cannot fill the queue with its own work.
+   */
+  selfScheduleDiagnosticsMaxInFlight: 1,
   claudeKillAfter: 30,
   maxClarificationRounds: 3,
   sleepInterval: 30,
@@ -1300,6 +1318,11 @@ export function buildDefaultWorkerConfig(
       OPERATIONAL_DEFAULTS.progressExtensionStallSeconds,
     progressExtensionCheckSeconds:
       OPERATIONAL_DEFAULTS.progressExtensionCheckSeconds,
+    // Issue #505: self-scheduling for auto-filed worker diagnostics.
+    selfScheduleDiagnosticsEnabled:
+      OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsEnabled,
+    selfScheduleDiagnosticsMaxInFlight:
+      OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsMaxInFlight,
     prFeedbackTimeout: OPERATIONAL_DEFAULTS.prFeedbackTimeout,
     ciFixTimeout: OPERATIONAL_DEFAULTS.ciFixTimeout,
     claudeKillAfter: OPERATIONAL_DEFAULTS.claudeKillAfter,
