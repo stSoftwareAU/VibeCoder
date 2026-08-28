@@ -28,8 +28,8 @@
     },
     {
       "name": "denoland/deno",
-      "tag": "bin-2.9.5",
-      "digest": "sha256:0d1262facd139e815217c001945eb822c7a78584cf660142c34a6b53effec1aa",
+      "tag": "bin-2.9.6",
+      "digest": "sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba",
       "arg": "DENO_IMAGE",
       "provides": ["deno"],
       "notes": "Scratch image containing only the deno binary; copied in via a build stage so no archive extractor is needed."
