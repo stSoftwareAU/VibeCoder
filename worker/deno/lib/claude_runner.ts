@@ -59,7 +59,12 @@ import {
   readFableAvailability,
   recordFableAvailability,
 } from "./health_check_cache.ts";
-import { terminateDescendants, terminateProcessTree } from "./pid_guard.ts";
+import {
+  captureProcessIdentity,
+  type ProcessIdentity,
+  terminateDescendants,
+  terminateProcessTree,
+} from "./pid_guard.ts";
 import {
   captureKillDiagnostics,
   describeCgroupMemory,
@@ -675,6 +680,8 @@ interface ActiveAgentRun {
   label: string;
   killAfterSeconds: number;
   logger?: Logger;
+  /** Spawn-time fingerprint (Issue #501); `null` when it could not be taken. */
+  identity: ProcessIdentity | null;
 }
 
 const activeAgentRuns = new Map<number, ActiveAgentRun>();
@@ -740,7 +747,12 @@ export async function terminateActiveAgentRuns(
     );
     await Promise.all(runs.map(async (run) => {
       try {
-        await killClaudeProcessTree(run.pid, run.killAfterSeconds, run.logger);
+        await killClaudeProcessTree(
+          run.pid,
+          run.killAfterSeconds,
+          run.logger,
+          run.identity,
+        );
       } catch (err) {
         run.logger?.warn(
           `Failed to terminate agent pid ${run.pid}: ${
@@ -1033,11 +1045,25 @@ export async function runClaudeWithTimeout(
         // EPIPE / early exit: the child's exit status tells the story.
       });
     }
+    // Fingerprint the child while it is provably ours (Issue #501). Every
+    // later signal is checked against this: a pid reaped and reused before
+    // the watchdog fires belongs to a stranger, and on CI that stranger was
+    // in the runner's own tree. A capture that fails is kept as `null` —
+    // an agent we cannot identify is one the kill path must never signal.
+    const childIdentity = await captureProcessIdentity(childPid);
+    if (childIdentity === null) {
+      logger?.warn(
+        `Could not fingerprint agent PID ${childPid} — a watchdog kill will ` +
+          `refuse to signal it rather than risk a reused pid (Issue #501).`,
+      );
+    }
+
     activeAgentRuns.set(childPid, {
       pid: childPid,
       label: `${phase ?? "agent"}${repo ? ` ${repo}` : ""}`,
       killAfterSeconds,
       logger,
+      identity: childIdentity,
     });
 
     // Remember the child's descendants while it lives (Issue #4382). After
@@ -1157,7 +1183,12 @@ export async function runClaudeWithTimeout(
       timeoutReason = reason;
       killFiredMs = Date.now();
       logger?.error(message);
-      killPromise = killClaudeProcessTree(childPid, killAfterSeconds, logger)
+      killPromise = killClaudeProcessTree(
+        childPid,
+        killAfterSeconds,
+        logger,
+        childIdentity,
+      )
         .catch((err) => {
           logger?.error(
             `Watchdog kill failed for PID ${childPid}: ${
@@ -1870,14 +1901,35 @@ function concatChunks(chunks: Uint8Array[]): Uint8Array {
  * the old broad `pgrep claude`/`pkill deno test` sweep is gone — a stuck
  * container is run.sh's kill-and-reap responsibility (#4173), not an
  * in-container process hunt that could match the live agent.
+ *
+ * `identity` is the agent's fingerprint from spawn time (Issue #501). Passing
+ * it makes every signal below provably reach the process we started: a pid
+ * reaped and reused between the spawn and the watchdog belongs to a stranger,
+ * and signalling it — or sweeping its children — is what took a CI runner down
+ * mid-suite. `null` means the spawn-time capture failed, and nothing is
+ * signalled at all.
+ *
+ * @param pid - The agent PID
+ * @param killAfterSeconds - Seconds to wait before escalating to SIGKILL
+ * @param logger - Optional logger for failures
+ * @param identity - Spawn-time fingerprint; omit only when the caller has none
  */
 export async function killClaudeProcessTree(
   pid: number,
   killAfterSeconds: number,
   logger?: Logger,
+  identity?: ProcessIdentity | null,
 ): Promise<void> {
+  const options = identity === undefined ? {} : { identity };
+  if (identity === null) {
+    logger?.warn(
+      `Refusing to signal PID ${pid}: the agent was never fingerprinted, so ` +
+        `the pid cannot be proven to still hold it (Issue #501).`,
+    );
+    return;
+  }
   try {
-    await terminateDescendants(pid, killAfterSeconds);
+    await terminateDescendants(pid, killAfterSeconds, undefined, options);
   } catch (err) {
     logger?.error(
       `Failed to kill claude descendants (PID ${pid}): ${
@@ -1886,7 +1938,7 @@ export async function killClaudeProcessTree(
     );
   }
   try {
-    await terminateProcessTree(pid, killAfterSeconds);
+    await terminateProcessTree(pid, killAfterSeconds, undefined, options);
   } catch (err) {
     logger?.error(
       `Failed to kill claude process (PID ${pid}): ${

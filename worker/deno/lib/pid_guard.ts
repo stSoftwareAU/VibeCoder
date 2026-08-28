@@ -23,8 +23,30 @@ export interface PidGuardResult {
 export interface TerminationResult {
   /** PIDs that were targeted for termination. */
   targetedPids: number[];
+  /** PIDs left alone because they no longer held the process we found. */
+  skippedPids?: number[];
   /** Human-readable summary message. */
   message: string;
+}
+
+/**
+ * Evidence that a pid still holds the process we started (Issue #501).
+ *
+ * A pid is only a handle: the kernel re-issues it as soon as the process
+ * behind it is reaped, and every signal this module sends is decided from
+ * evidence gathered earlier (a `pgrep -P` sweep, a `ps` liveness probe). The
+ * process's start time is the discriminator — it is fixed for the life of a
+ * process and a reused pid reports a different one, so re-reading it
+ * immediately before a signal proves the target is still ours.
+ *
+ * One-second resolution is enough: reusing a pid within the same second would
+ * take a full wrap of the pid space (32768 spawns at the Linux minimum).
+ */
+export interface ProcessIdentity {
+  /** The pid the process held when it was fingerprinted. */
+  pid: number;
+  /** Absolute start time as `ps -o lstart=` reports it. */
+  startedAt: string;
 }
 
 /**
@@ -210,6 +232,88 @@ export async function getElapsedSeconds(pid: number): Promise<number | null> {
 }
 
 /**
+ * Read a process's absolute start time (`ps -o lstart=`).
+ *
+ * @param pid - The process ID to query
+ * @returns The start time, or an empty string when the pid holds no process
+ *   (or `ps` cannot report it)
+ */
+export async function getStartTime(pid: number): Promise<string> {
+  try {
+    const cmd = new Deno.Command("ps", {
+      args: ["-p", String(pid), "-o", "lstart="],
+      stdout: "piped",
+      stderr: "null",
+    });
+    const output = await cmd.output();
+    if (!output.success) return "";
+    return trim(new TextDecoder().decode(output.stdout));
+  } catch (err) {
+    console.debug(
+      `[pid-guard] Failed to read start time for PID ${pid}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return "";
+  }
+}
+
+/**
+ * Fingerprint the process currently holding a pid (Issue #501).
+ *
+ * Capture this while the process is known to be ours — at spawn, or as the
+ * kill path first finds it — and pass it to the terminate helpers so every
+ * later signal can be proven to reach the same process.
+ *
+ * @param pid - The process ID to fingerprint
+ * @param readStartTime - Start-time seam (defaults to the real `ps`)
+ * @returns The identity, or `null` when the pid holds nothing identifiable
+ */
+export async function captureProcessIdentity(
+  pid: number,
+  readStartTime: (pid: number) => Promise<string> = getStartTime,
+): Promise<ProcessIdentity | null> {
+  const startedAt = await readStartTime(pid);
+  if (!startedAt) return null;
+  return { pid, startedAt };
+}
+
+/**
+ * Whether a pid still holds the process the identity fingerprinted.
+ *
+ * @param identity - The fingerprint captured earlier
+ * @param readStartTime - Start-time seam (defaults to the real `ps`)
+ * @returns Whether the process is unchanged; `false` when it is gone,
+ *   unreadable, or a different process has taken the pid
+ */
+export async function isSameProcess(
+  identity: ProcessIdentity,
+  readStartTime: (pid: number) => Promise<string> = getStartTime,
+): Promise<boolean> {
+  const startedAt = await readStartTime(identity.pid);
+  return startedAt !== "" && startedAt === identity.startedAt;
+}
+
+/**
+ * Resolve the identity a terminate helper must hold before it signals.
+ *
+ * `undefined` means the caller has no fingerprint and one is taken now;
+ * an explicit identity is re-verified; an explicit `null` means the caller
+ * tried and failed to fingerprint the target, which is never signalled.
+ */
+async function resolveIdentity(
+  pid: number,
+  supplied: ProcessIdentity | null | undefined,
+  readStartTime: (pid: number) => Promise<string>,
+): Promise<ProcessIdentity | null> {
+  if (supplied === undefined) {
+    return await captureProcessIdentity(pid, readStartTime);
+  }
+  if (supplied === null) return null;
+  return (await isSameProcess(supplied, readStartTime)) ? supplied : null;
+}
+
+/**
  * Get all descendant PIDs of a process (children, grandchildren, etc.).
  *
  * Returns PIDs in bottom-up order (deepest descendants first) for safe
@@ -314,54 +418,163 @@ async function sendSignal(pid: number, signal: string): Promise<void> {
 }
 
 /**
+ * Injectable seams for {@link terminateDescendants}.
+ *
+ * Every seam defaults to a real OS-backed implementation; tests override them
+ * to replay a pid being reused mid-kill without spawning real processes.
+ */
+export interface TerminateDescendantsDeps {
+  /** Descendants of a pid, bottom-up (deepest first). */
+  getDescendants: (pid: number) => Promise<number[]>;
+  /** A process's absolute start time; "" when the pid holds nothing. */
+  getStartTime: (pid: number) => Promise<string>;
+  /** Send a signal to a single pid (never a group). */
+  sendSignal: (pid: number, signal: string) => Promise<void>;
+  /** Whether a pid is still running. */
+  isRunning: (pid: number) => Promise<boolean>;
+  /** Sleep between poll iterations. */
+  sleep: (ms: number) => Promise<void>;
+}
+
+/** Production seams for {@link terminateDescendants}. */
+const defaultTerminateDescendantsDeps: TerminateDescendantsDeps = {
+  getDescendants: (pid) => getDescendants(pid),
+  getStartTime,
+  sendSignal,
+  isRunning,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
+ * Send a signal only when the pid still holds the fingerprinted process.
+ *
+ * @returns Whether the signal was sent
+ */
+async function signalIfSameProcess(
+  identity: ProcessIdentity,
+  signal: string,
+  deps: {
+    getStartTime: (pid: number) => Promise<string>;
+    sendSignal: (pid: number, signal: string) => Promise<void>;
+  },
+): Promise<boolean> {
+  if (!(await isSameProcess(identity, deps.getStartTime))) {
+    console.debug(
+      `[pid-guard] PID ${identity.pid} no longer holds the process we ` +
+        `fingerprinted — SIG${signal} not sent (Issue #501)`,
+    );
+    return false;
+  }
+  await deps.sendSignal(identity.pid, signal);
+  return true;
+}
+
+/**
  * Terminate all descendant processes of a given PID.
  *
  * Finds and terminates all descendant processes bottom-up (deepest children
  * first). Sends SIGTERM, waits for graceful termination, then escalates to
  * SIGKILL.
  *
+ * Identity-gated throughout (Issue #501). The parent is fingerprinted before
+ * its children are swept — `pgrep -P` on a reused pid lists a STRANGER's
+ * children, and on CI that stranger sat in the runner's own tree — and each
+ * descendant is fingerprinted at discovery and re-verified immediately before
+ * its TERM and again before its KILL. A pid that has been reaped and reused in
+ * one of those windows is reported in `skippedPids` and never signalled.
+ *
  * @param parentPid - Parent PID whose descendants should be terminated
  * @param maxWaitSeconds - Max wait seconds before SIGKILL (default: 5)
- * @returns Termination result with targeted PIDs
+ * @param deps - Injectable seams (defaults to real OS-backed implementations)
+ * @param options.identity - The parent's fingerprint from when it was known to
+ *   be ours; omit to fingerprint it now, pass `null` when a capture attempt
+ *   failed (the parent is then never swept)
+ * @returns Termination result with the PIDs signalled and those skipped
  */
 export async function terminateDescendants(
   parentPid: number,
   maxWaitSeconds = 5,
+  deps: TerminateDescendantsDeps = defaultTerminateDescendantsDeps,
+  options: { identity?: ProcessIdentity | null } = {},
 ): Promise<TerminationResult> {
-  const descendants = await getDescendants(parentPid);
+  const parent = await resolveIdentity(
+    parentPid,
+    options.identity,
+    deps.getStartTime,
+  );
+  if (parent === null) {
+    return {
+      targetedPids: [],
+      skippedPids: [parentPid],
+      message: `PID ${parentPid} no longer holds the process we started — no ` +
+        `descendant signalled (Issue #501)`,
+    };
+  }
+
+  const descendants = await deps.getDescendants(parentPid);
 
   if (descendants.length === 0) {
     return { targetedPids: [], message: "No descendants found" };
   }
 
-  // Send SIGTERM to all descendants
+  // Fingerprint every descendant while the sweep still says it is ours.
+  const skipped: number[] = [];
+  const targets: ProcessIdentity[] = [];
   for (const pid of descendants) {
-    await sendSignal(pid, "TERM");
+    const identity = await captureProcessIdentity(pid, deps.getStartTime);
+    if (identity === null) {
+      skipped.push(pid);
+      continue;
+    }
+    targets.push(identity);
+  }
+
+  // Send SIGTERM to every descendant that is still the process we found
+  const signalled: number[] = [];
+  for (const identity of targets) {
+    if (await signalIfSameProcess(identity, "TERM", deps)) {
+      signalled.push(identity.pid);
+    } else {
+      skipped.push(identity.pid);
+    }
   }
 
   // Wait for graceful termination
   for (let i = 0; i < maxWaitSeconds; i++) {
     let anyRunning = false;
-    for (const pid of descendants) {
-      if (await isRunning(pid)) {
+    for (const identity of targets) {
+      if (
+        (await deps.isRunning(identity.pid)) &&
+        (await isSameProcess(identity, deps.getStartTime))
+      ) {
         anyRunning = true;
         break;
       }
     }
     if (!anyRunning) break;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await deps.sleep(1000);
   }
 
-  // Send SIGKILL to any remaining
-  for (const pid of descendants) {
-    if (await isRunning(pid)) {
-      await sendSignal(pid, "KILL");
+  // Send SIGKILL to any remaining — identity re-checked once more
+  const killed: number[] = [];
+  for (const identity of targets) {
+    if (!(await deps.isRunning(identity.pid))) continue;
+    if (await signalIfSameProcess(identity, "KILL", deps)) {
+      killed.push(identity.pid);
+    } else {
+      skipped.push(identity.pid);
     }
   }
 
+  const skippedPids = [...new Set(skipped)];
   return {
-    targetedPids: descendants,
-    message: `Terminated ${descendants.length} descendant process(es)`,
+    targetedPids: signalled,
+    skippedPids,
+    message: `Terminated ${signalled.length} descendant process(es)` +
+      (killed.length > 0 ? ` (SIGKILL needed for ${killed.join(",")})` : "") +
+      (skippedPids.length > 0
+        ? `; skipped ${skippedPids.join(",")} (pid no longer ours)`
+        : ""),
   };
 }
 
@@ -390,6 +603,8 @@ export interface TerminateProcessTreeDeps {
    * child with pgid 1, every process on the box).
    */
   selfPid?: number;
+  /** A process's absolute start time; "" when the pid holds nothing. */
+  getStartTime: (pid: number) => Promise<string>;
   /** Send a signal to a PID (a negative PID targets the process group). */
   sendSignal: (pid: number, signal: string) => Promise<void>;
   /** Whether a PID is still running. */
@@ -439,6 +654,7 @@ async function ownProcessGroup(
 /** Production seams for {@link terminateProcessTree}. */
 const defaultTerminateProcessTreeDeps: TerminateProcessTreeDeps = {
   runPgidCommand: defaultRunPgidCommand,
+  getStartTime,
   sendSignal,
   isRunning,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -450,15 +666,39 @@ const defaultTerminateProcessTreeDeps: TerminateProcessTreeDeps = {
  * Sends SIGTERM to the process group and the process itself, waits for
  * termination, then escalates to SIGKILL if needed.
  *
+ * Identity-gated (Issue #501): the target is fingerprinted by start time and
+ * re-verified immediately before the TERM pair and again before the KILL pair,
+ * so a pid reaped and reused mid-kill — between the spawn and the watchdog,
+ * or across the SIGTERM wait — is never signalled. Proving the target is still
+ * ours also proves the resolved pgid still describes it.
+ *
  * @param pid - The PID to terminate
  * @param maxWaitSeconds - Max wait seconds before SIGKILL (default: 30)
  * @param deps - Injectable seams (defaults to real OS-backed implementations)
+ * @param options.identity - The target's fingerprint from when it was known to
+ *   be ours; omit to fingerprint it now, pass `null` when a capture attempt
+ *   failed (nothing is then signalled)
  */
 export async function terminateProcessTree(
   pid: number,
   maxWaitSeconds = 30,
   deps: TerminateProcessTreeDeps = defaultTerminateProcessTreeDeps,
+  options: { identity?: ProcessIdentity | null } = {},
 ): Promise<void> {
+  // Never signal a pid we cannot prove still holds the process we started.
+  const target = await resolveIdentity(
+    pid,
+    options.identity,
+    deps.getStartTime,
+  );
+  if (target === null) {
+    console.debug(
+      `[pid-guard] PID ${pid} holds no process we can prove we started — ` +
+        `nothing signalled (Issue #501)`,
+    );
+    return;
+  }
+
   // Get process group ID (parse stays here so the branch is observable).
   let pgid: number | null = null;
   try {
@@ -515,7 +755,14 @@ export async function terminateProcessTree(
     }
   }
 
-  // Send SIGTERM to process group and process
+  // Send SIGTERM to process group and process — the pgid lookups above are
+  // themselves a window in which the pid could have been reused.
+  if (!(await isSameProcess(target, deps.getStartTime))) {
+    console.debug(
+      `[pid-guard] PID ${pid} was reused before SIGTERM — nothing signalled`,
+    );
+    return;
+  }
   if (pgid !== null) {
     await deps.sendSignal(-pgid, "TERM");
   }
@@ -524,11 +771,21 @@ export async function terminateProcessTree(
   // Wait for termination
   for (let i = 0; i < maxWaitSeconds; i++) {
     if (!(await deps.isRunning(pid))) return;
+    // A live pid that is no longer ours means the target exited and the
+    // kernel re-issued its pid: our work here is done.
+    if (!(await isSameProcess(target, deps.getStartTime))) return;
     await deps.sleep(1000);
   }
 
   // Escalate to SIGKILL
   if (await deps.isRunning(pid)) {
+    if (!(await isSameProcess(target, deps.getStartTime))) {
+      console.debug(
+        `[pid-guard] PID ${pid} was reused before the SIGKILL escalation — ` +
+          `nothing signalled (Issue #501)`,
+      );
+      return;
+    }
     if (pgid !== null) {
       await deps.sendSignal(-pgid, "KILL");
     }
