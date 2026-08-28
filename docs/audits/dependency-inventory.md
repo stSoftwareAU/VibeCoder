@@ -28,7 +28,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Image | Digest | Declared in | Verdict |
 | --- | --- | --- | --- |
-| denoland/deno:bin-2.9.5 | sha256:0d1262facd139e815217c001945eb822c7a78584cf660142c34a6b53effec1aa | container/Containerfile:14 (ARG DENO_IMAGE) | digest-pinned |
+| denoland/deno:bin-2.9.6 | sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba | container/Containerfile:14 (ARG DENO_IMAGE) | digest-pinned |
 | ruby:3.4-trixie | sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b | container/Containerfile:16 (ARG BASE_IMAGE) | digest-pinned |
 
 ## Container tools (container/tools.json)
@@ -73,5 +73,5 @@ Top-level imports of `container/deno-seed/deno.json` resolved through `container
 
 | Tool | Version | Source | Verdict |
 | --- | --- | --- | --- |
-| Deno | 2.9.5 | .deno-version | exact version |
+| Deno | 2.9.6 | .deno-version | exact version |
 | Node.js | 24.19.0 | .node-version | exact version |
