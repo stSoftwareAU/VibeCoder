@@ -16,7 +16,8 @@ PR-feedback queue either. Priority **1.61** closes that gap: it labels every
 `CONFLICTING` PR `merge-conflict` so the stuck queue is visible, then merges the
 base branch into the PR branch **for real** — both sides' changes survive, never
 a side-pick — runs the repository's quality gate on the result, and pushes
-without force. Two **concluded** attempts, at least four hours apart; after that
+without force. A dependency-version conflict is settled by deterministic rules
+first, and the AI is only asked about what those rules could not decide. Two **concluded** attempts, at least four hours apart; after that
 the worker escalates with `needs-human` and a conflict summary instead of
 retrying forever. Every attempt ends visibly: merged, failed, or escalated. An
 attempt that opened and then went silent was disrupted, not judged — it does not
@@ -39,7 +40,10 @@ flowchart TD
     Record --> Merge["git merge origin/base"]
     Merge --> Clean{"Clean merge?"}
     Clean -->|Yes| Push["Commit and push"]
-    Clean -->|No| Agent["Run agent with merge_conflict prompt"]
+    Clean -->|No| Rules["Deterministic dependency rules<br/>(manifests, then lock files)"]
+    Rules --> Left{"Anything left unresolved?"}
+    Left -->|No| Verify
+    Left -->|Yes| Agent["Run agent with merge_conflict prompt<br/>(deferred files only)"]
     Agent --> Verify{"Tree fully resolved?"}
     Verify -->|No — markers or unmerged paths| Abort["git merge --abort"]
     Verify -->|Yes| Push
@@ -61,6 +65,8 @@ flowchart TD
     style Record fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style Merge fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style Clean fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style Rules fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+    style Left fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Agent fill:#e0a050,stroke:#8b4500,color:#1a1a1a
     style Verify fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Push fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
@@ -106,6 +112,32 @@ The worker enforces what it can mechanically: it refuses to push a tree with
 unmerged paths or leftover conflict markers, and it verifies the base branch is
 genuinely an ancestor of the new branch tip before calling the merge resolved.
 Any failure aborts the merge, leaving the branch untouched.
+
+### 📦 Dependency files are decided before the agent runs
+
+One conflict shape needs no judgement at all: both branches bumped the same
+dependency. The agent's contract forbids it from deciding that — "the same value
+set to two different values" is a human's call — so the worker settles it
+deterministically **before** the agent is asked anything:
+
+- Each conflicted path is offered to the registered manifest rules
+  (`deno.json`/`deno.jsonc`, `package.json`, `Cargo.toml`, `go.mod`). Per
+  dependency key the higher published version wins, whichever branch carries it,
+  and a key only one side has is kept — an ordinary both-sides-survive merge.
+- A lock file (`deno.lock`, `package-lock.json`, `Cargo.lock`, `go.sum`) is
+  **never** text-merged. It is regenerated from the already-merged manifest with
+  the ecosystem's own tool, and only when that toolchain is on `PATH`.
+- Resolution is all-or-nothing per file, and a rule-resolved file is staged, so
+  the unmerged-path and conflict-marker guards above still cover it.
+- **The AI remains the fallback.** Anything the rules cannot decide — an
+  undecidable version, a hunk touching more than a dependency map, a source file
+  — still goes to the agent, with the prompt's conflicted-file list narrowed to
+  exactly those paths. If the rules resolve every conflicted path, the agent is
+  not run at all: a `deno.json`/`deno.lock` version conflict costs no AI call.
+- The resolved comment on the PR **names every rule-resolved file and every
+  version decision** (`@std/fs: ^1.0.0 → ^1.2.0`, taken from the base). This is a
+  documented carve-out from the never-side-pick contract, so it states what it
+  did and a reviewer can audit the pick without reading the diff.
 
 ## 🔁 Bounds and escalation
 
@@ -171,9 +203,16 @@ branch at the same time. A host that loses the race returns immediately.
 - [CI fix](ci-fix.md) — the queue that takes over once CI can run again.
 - `worker/deno/lib/pr_merge_conflict_scan.ts` and
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
+- `worker/deno/lib/dependency_conflict_apply.ts` — the deterministic pass the
+  processor runs before the agent: it applies the registered rules, regenerates
+  the lock files whose manifest resolved, stages what it resolved, and returns
+  the deferred paths with a reason each. A deferral stages and changes nothing.
+- `worker/deno/lib/dependency_conflict_decisions.ts` — derives the
+  per-dependency decisions the resolved PR comment reports, from the rule's own
+  output, so the comment can never describe a pick the rules did not make.
 - `worker/deno/lib/dependency_conflict_rules.ts` — the pure conflict-hunk
-  parser, dependency-version comparator and manifest-rule registry a future
-  deterministic path for dependency bumps will use.
+  parser, dependency-version comparator and manifest-rule registry that
+  deterministic path is built on.
 - `worker/deno/lib/dependency_conflict_json.ts` — the JSON manifest rules
   registered against that seam: `deno.json`/`deno.jsonc` (`imports`, `scopes`)
   and `package.json` (`dependencies`, `devDependencies`, `peerDependencies`,
@@ -185,14 +224,12 @@ branch at the same time. A host that loses the race returns immediately.
   regenerated from the already-merged manifest with the ecosystem's own tool,
   and only when that toolchain is on `PATH` in the container. An unresolved
   manifest, a missing toolchain, a failing command or a lock that still carries
-  markers all defer the file, staging nothing. None of these modules is wired
-  into the pass yet, so today every conflict still follows the contract above.
+  markers all defer the file, staging nothing.
 - `worker/deno/lib/dependency_conflict_native.ts` — the non-JSON manifest rules
   on the same seam: `Cargo.toml` (`[dependencies]`, `[dev-dependencies]`,
   `[build-dependencies]` and their `[target.*.dependencies]` variants, in both
   the short and inline-table entry forms — only the `version` field is compared,
   so a changed `features` or `default-features` defers) and `go.mod` (`require`
   lines, single-line and parenthesised-block forms; `+incompatible` and
-  pseudo-versions are undecidable). None of these modules is wired into the pass
-  yet, so today every conflict still follows the contract above.
+  pseudo-versions are undecidable).
 - `prompts/merge_conflict/` — the versioned agent prompt carrying the contract.

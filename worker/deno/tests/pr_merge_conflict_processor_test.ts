@@ -12,6 +12,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildConflictEscalationReason,
+  buildResolvedComment,
+  describeDependencyDecision,
   type MergeConflictInput,
   type MergeConflictProcessorDeps,
   parseUnmergedPaths,
@@ -59,6 +61,8 @@ interface Captured {
   gitArgs: string[][];
   commitAndPushCalls: number;
   agentRuns: number;
+  /** Prompts the agent was actually given (Issue #466). */
+  agentPrompts: string[];
   /** Lock-comment refreshes (Issue #395). */
   lockRenewals: number[];
 }
@@ -214,8 +218,9 @@ function makeGithub(captured: Captured): Partial<GitHubDeps> {
 
 function makeClaude(captured: Captured, delayMs = 0): Partial<ClaudeDeps> {
   return {
-    runClaudeWithRetry: (async () => {
+    runClaudeWithRetry: (async (options: { prompt?: string }) => {
       captured.agentRuns++;
+      captured.agentPrompts.push(options?.prompt ?? "");
       captured.events.push("agent:run");
       // A real resolution runs for minutes; a few milliseconds is enough for
       // a test to observe what happens *while* it runs (Issue #395).
@@ -247,7 +252,7 @@ async function runProcessor(
   input: MergeConflictInput,
   script: GitScript,
   depOverrides?: Partial<MergeConflictProcessorDeps>,
-  opts?: { claudeDelayMs?: number },
+  opts?: { claudeDelayMs?: number; workDirFiles?: Record<string, string> },
 ): Promise<{
   captured: Captured;
   result: Awaited<
@@ -262,6 +267,7 @@ async function runProcessor(
     gitArgs: [],
     commitAndPushCalls: 0,
     agentRuns: 0,
+    agentPrompts: [],
     lockRenewals: [],
   };
 
@@ -271,10 +277,15 @@ async function runProcessor(
     claude: makeClaude(captured, opts?.claudeDelayMs ?? 0),
   });
 
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-merge-conflict-" });
+  for (const [path, content] of Object.entries(opts?.workDirFiles ?? {})) {
+    await Deno.writeTextFile(`${workDir}/${path}`, content);
+  }
+
   const result = await processMergeConflict(input, {
     logger: makeSilentLogger(),
     deps,
-    workDir: await Deno.makeTempDir({ prefix: "vibe-merge-conflict-" }),
+    workDir,
     // Pin the prompts directory: the checkout under test, not whatever
     // VIBE_BASE_DIR/PROMPTS_DIR the host happens to export.
     promptsDir: new URL("../../../prompts", import.meta.url).pathname,
@@ -527,4 +538,204 @@ Deno.test("processMergeConflict - a PR locked by another worker is left alone", 
   assertEquals(result.value.processed, false);
   assertEquals(captured.gitArgs.length, 0);
   assertEquals(captured.comments.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Deterministic dependency rules before the agent (Issue #466)
+// ---------------------------------------------------------------------------
+
+/** A conflicted `deno.json` whose only difference is a version bump. */
+const DENO_JSON_CONFLICT = `{
+  "imports": {
+<<<<<<< HEAD
+    "@std/fs": "jsr:@std/fs@^1.0.0"
+=======
+    "@std/fs": "jsr:@std/fs@^1.2.0"
+>>>>>>> origin/main
+  }
+}
+`;
+
+/** A stub pass with a fixed verdict, so the processor's wiring is isolated. */
+function stubRules(
+  resolved: readonly { path: string; kind: "manifest" | "lock" }[],
+  deferred: readonly string[] = [],
+): MergeConflictProcessorDeps["applyDependencyRulesFn"] {
+  return () =>
+    Promise.resolve({
+      resolved: resolved.map((file) => ({
+        path: file.path,
+        kind: file.kind,
+        resolvedBy: file.kind === "lock" ? "deno install" : "deno.json",
+        decisions: [],
+        decisionsUnattributed: false,
+      })),
+      deferred: deferred.map((path) => ({ path, reason: "no rule" })),
+    });
+}
+
+Deno.test("processMergeConflict - a deno.json/deno.lock conflict is resolved with no agent call", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterMerge: ["deno.json", "deno.lock"] }),
+    {
+      applyDependencyRulesFn: stubRules([
+        { path: "deno.json", kind: "manifest" },
+        { path: "deno.lock", kind: "lock" },
+      ]),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(captured.agentRuns, 0);
+  assertEquals(captured.commitAndPushCalls, 1);
+
+  const resolved = captured.comments.at(-1) ?? "";
+  assertStringIncludes(resolved, CONFLICT_RESOLVED_MARKER);
+  assertStringIncludes(resolved, "`deno.json`");
+  assertStringIncludes(resolved, "`deno.lock`");
+  assertStringIncludes(resolved, "deno install");
+});
+
+Deno.test("processMergeConflict - the real rules resolve a version bump and name the decision", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterMerge: ["deno.json"] }),
+    {},
+    { workDirFiles: { "deno.json": DENO_JSON_CONFLICT } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(captured.agentRuns, 0);
+  assert(
+    captured.gitArgs.some((a) => a[0] === "add" && a.includes("deno.json")),
+    `the rule-resolved path must be staged; got ${
+      JSON.stringify(captured.gitArgs)
+    }`,
+  );
+
+  const resolved = captured.comments.at(-1) ?? "";
+  assertStringIncludes(resolved, "no AI decision was involved");
+  assertStringIncludes(resolved, "`@std/fs`");
+  assertStringIncludes(resolved, "jsr:@std/fs@^1.0.0");
+  assertStringIncludes(resolved, "jsr:@std/fs@^1.2.0");
+  assertStringIncludes(resolved, "taken from `main`");
+});
+
+Deno.test("processMergeConflict - the agent is asked only about the files the rules deferred", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterMerge: ["deno.json", "src/app.ts"] }),
+    {},
+    { workDirFiles: { "deno.json": DENO_JSON_CONFLICT } },
+  );
+
+  assert(result.ok);
+  assertEquals(captured.agentRuns, 1);
+  const prompt = captured.agentPrompts[0] ?? "";
+  assertStringIncludes(prompt, "- `src/app.ts`");
+  assertEquals(
+    prompt.includes("- `deno.json`"),
+    false,
+    "the agent must not be asked to re-reason about a rule-resolved file",
+  );
+});
+
+Deno.test("processMergeConflict - a conflict with no rule-eligible file reaches the agent unchanged", async () => {
+  const { captured, result } = await runProcessor(makeInput(), makeGitScript());
+
+  assert(result.ok);
+  assertEquals(captured.agentRuns, 1);
+  assertStringIncludes(captured.agentPrompts[0] ?? "", "- `SECURITY.md`");
+
+  const resolved = captured.comments.at(-1) ?? "";
+  assertEquals(resolved.includes("no AI decision was involved"), false);
+});
+
+Deno.test("processMergeConflict - leftover markers still fail a rule-resolved tree", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      unmergedAfterMerge: ["deno.json"],
+      markersAfterAgent: true,
+    }),
+    {
+      applyDependencyRulesFn: stubRules([{
+        path: "deno.json",
+        kind: "manifest",
+      }]),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(captured.agentRuns, 0);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assert(captured.gitArgs.some((a) => a[0] === "merge" && a[1] === "--abort"));
+  assertStringIncludes(captured.comments.at(-1) ?? "", "conflict markers");
+});
+
+Deno.test("processMergeConflict - an unmerged path left by the rules fails the attempt", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      unmergedAfterMerge: ["deno.json"],
+      unmergedAfterAgent: ["deno.json"],
+    }),
+    {
+      applyDependencyRulesFn: stubRules([{
+        path: "deno.json",
+        kind: "manifest",
+      }]),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assertStringIncludes(
+    captured.comments.at(-1) ?? "",
+    "the deterministic rules left 1 path(s) unmerged",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Comment rendering (Issue #466)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildResolvedComment - says nothing extra when the rules resolved nothing", () => {
+  assertEquals(
+    buildResolvedComment("main", "issue-16-fix", "merged by hand"),
+    buildResolvedComment("main", "issue-16-fix", "merged by hand", []),
+  );
+});
+
+Deno.test("describeDependencyDecision - renders each decision shape", () => {
+  const base = { key: "@std/fs", ours: "^1.0.0", theirs: "^1.2.0" };
+  assertStringIncludes(
+    describeDependencyDecision(
+      { ...base, kept: "^1.2.0" },
+      "main",
+      "pr-branch",
+    ),
+    "`^1.0.0` → `^1.2.0` (taken from `main`)",
+  );
+  assertStringIncludes(
+    describeDependencyDecision(
+      { ...base, kept: "^1.0.0" },
+      "main",
+      "pr-branch",
+    ),
+    "kept from `pr-branch`",
+  );
+  assertStringIncludes(
+    describeDependencyDecision(
+      { key: "@std/path", ours: null, theirs: "^1.1.0", kept: "^1.1.0" },
+      "main",
+      "pr-branch",
+    ),
+    "added by `main`",
+  );
 });
