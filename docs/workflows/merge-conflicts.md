@@ -171,4 +171,8 @@ branch at the same time. A host that loses the race returns immediately.
 - [CI fix](ci-fix.md) — the queue that takes over once CI can run again.
 - `worker/deno/lib/pr_merge_conflict_scan.ts` and
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
+- `worker/deno/lib/dependency_conflict_rules.ts` — the pure conflict-hunk
+  parser, dependency-version comparator and manifest-rule registry a future
+  deterministic path for dependency bumps will use. Nothing is wired into the
+  pass yet, so today every conflict still follows the contract above.
 - `prompts/merge_conflict/` — the versioned agent prompt carrying the contract.
