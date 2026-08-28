@@ -52,6 +52,12 @@ import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import {
+  applyDependencyConflictRules,
+  type DependencyRuleApplier,
+  type ResolvedConflictFile,
+} from "./dependency_conflict_apply.ts";
+import type { DependencyDecision } from "./dependency_conflict_decisions.ts";
+import {
   clearMergeConflictLabel,
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -134,6 +140,11 @@ export interface MergeConflictProcessorDeps {
   startLockRenewalFn?: typeof startBranchUpdateLockRenewal;
   /** Renewal interval in milliseconds (tests). */
   lockRenewalIntervalMs?: number;
+  /**
+   * Injectable deterministic dependency-rule pass (Issue #466). Defaults to
+   * {@link applyDependencyConflictRules}.
+   */
+  applyDependencyRulesFn?: DependencyRuleApplier;
 }
 
 const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
@@ -250,16 +261,108 @@ export function buildAttemptComment(
   return lines.join("\n");
 }
 
+/**
+ * One dependency decision, in a form a reviewer can audit without the diff.
+ *
+ * The rules pick the higher published version per dependency key — a
+ * documented carve-out from the never-side-pick contract — so the comment
+ * states both sides' specifiers and which one is now in the tree.
+ */
+export function describeDependencyDecision(
+  decision: DependencyDecision,
+  baseBranch: string,
+  branchName: string,
+): string {
+  const name = decision.key === null ? "a line" : `\`${decision.key}\``;
+  const { ours, theirs, kept } = decision;
+
+  if (kept === null) {
+    return `  - ${name}: dropped (\`${branchName}\`: ${
+      ours ?? "absent"
+    }, \`${baseBranch}\`: ${theirs ?? "absent"})`;
+  }
+  if (ours === null) {
+    return `  - ${name}: \`${kept}\` — added by \`${baseBranch}\``;
+  }
+  if (theirs === null) {
+    return `  - ${name}: \`${kept}\` — kept from \`${branchName}\`, which ` +
+      `\`${baseBranch}\` does not carry`;
+  }
+  if (kept === theirs) {
+    return `  - ${name}: \`${ours}\` → \`${kept}\` (taken from \`${baseBranch}\`)`;
+  }
+  return `  - ${name}: \`${kept}\` kept from \`${branchName}\` ` +
+    `(\`${baseBranch}\` had \`${theirs}\`)`;
+}
+
+/**
+ * The section naming what the deterministic rules resolved (Issue #466).
+ *
+ * Empty when the rules resolved nothing, so a conflict the agent handled alone
+ * produces exactly the comment it produced before.
+ */
+export function buildRuleResolutionSection(
+  ruleResolved: readonly ResolvedConflictFile[],
+  baseBranch: string,
+  branchName: string,
+): string[] {
+  if (ruleResolved.length === 0) return [];
+
+  const lines = [
+    "",
+    "**Resolved by deterministic rule — no AI decision was involved for " +
+    "these files:**",
+    "",
+  ];
+  for (const file of ruleResolved) {
+    if (file.kind === "lock") {
+      lines.push(
+        `- \`${file.path}\` — never text-merged; regenerated from the merged ` +
+          `manifest with \`${file.resolvedBy}\``,
+      );
+      continue;
+    }
+    lines.push(`- \`${file.path}\` (rule \`${file.resolvedBy}\`)`);
+    if (file.decisionsUnattributed) {
+      lines.push(
+        "  - the per-dependency decisions could not be attributed — review " +
+          "this file in the diff",
+      );
+      continue;
+    }
+    if (file.decisions.length === 0) {
+      lines.push("  - both sides agreed on every dependency in the conflict");
+      continue;
+    }
+    for (const decision of file.decisions) {
+      lines.push(describeDependencyDecision(decision, baseBranch, branchName));
+    }
+  }
+  lines.push(
+    "",
+    "Per dependency key the higher published version wins and every other " +
+      "entry from both sides survives, so nothing either branch changed was " +
+      "dropped. Audit the picks above rather than in the diff.",
+  );
+  return lines;
+}
+
 /** Body of the comment posted when the merge lands. */
 export function buildResolvedComment(
   baseBranch: string,
   branchName: string,
   detail?: string,
+  ruleResolved: readonly ResolvedConflictFile[] = [],
 ): string {
   const body = detail && detail.trim().length > 0
     ? detail.trim()
     : `Merged \`${baseBranch}\` into \`${branchName}\` and pushed the result.`;
-  return `${CONFLICT_RESOLVED_MARKER}\n✅ **Merge conflict resolved**\n\n${body}`;
+  return [
+    `${CONFLICT_RESOLVED_MARKER}\n✅ **Merge conflict resolved**`,
+    "",
+    body,
+    ...buildRuleResolutionSection(ruleResolved, baseBranch, branchName),
+  ].join("\n");
 }
 
 /**
@@ -531,6 +634,10 @@ async function resolveConflict(
   );
 
   let conflictedFiles: string[] = [];
+  /** What the deterministic rules resolved, named on the resolved comment. */
+  let ruleResolved: readonly ResolvedConflictFile[] = [];
+  /** Whether the AI fallback was asked for anything at all. */
+  let agentRan = false;
   if (merge.code !== 0) {
     const unmerged = await git(
       run,
@@ -554,31 +661,68 @@ async function resolveConflict(
       );
     }
 
-    logger.info("Merge conflicted — handing the resolution to the agent", {
-      repo,
-      prNumber,
+    // Try the deterministic dependency rules first (Issue #466). A version
+    // bump on both sides is the one conflict shape the agent's contract
+    // forbids it from deciding, and it needs no judgement: the higher
+    // published version wins per key. Whatever the rules cannot decide is
+    // still the agent's — narrowed to those paths so it is not asked to
+    // re-reason about files that are already staged and resolved.
+    const applyRules = processorDeps.applyDependencyRulesFn ??
+      applyDependencyConflictRules;
+    const ruleReport = await applyRules({
+      workingDir: workDir,
       conflictedFiles,
+      git: (args) => git(run, [...args], workDir),
+      logger,
     });
+    const deferredFiles = ruleReport.deferred.map((file) => file.path);
+    if (ruleReport.resolved.length > 0) {
+      logger.info("Deterministic dependency rules resolved conflicted files", {
+        repo,
+        prNumber,
+        ruleResolved: ruleReport.resolved.map((file) => file.path),
+        deferred: ruleReport.deferred.map((file) =>
+          `${file.path}: ${file.reason}`
+        ),
+      });
+    }
 
-    const agentOutcome = await runResolutionAgent(
-      input,
-      processorDeps,
-      conflictedFiles,
-    );
-    if (!agentOutcome.ok) {
-      await abortMerge(run, workDir);
-      return await failAttempt(
+    if (deferredFiles.length > 0) {
+      logger.info("Merge conflicted — handing the resolution to the agent", {
+        repo,
+        prNumber,
+        conflictedFiles: deferredFiles,
+      });
+
+      agentRan = true;
+      const agentOutcome = await runResolutionAgent(
         input,
         processorDeps,
-        conflictedFiles,
-        agentOutcome.error.message,
-        attemptNumber,
+        deferredFiles,
+      );
+      if (!agentOutcome.ok) {
+        await abortMerge(run, workDir);
+        return await failAttempt(
+          input,
+          processorDeps,
+          conflictedFiles,
+          agentOutcome.error.message,
+          attemptNumber,
+        );
+      }
+    } else {
+      logger.info(
+        "Merge conflict resolved by deterministic rules — no agent run",
+        { repo, prNumber, conflictedFiles },
       );
     }
 
-    // The agent must leave a fully resolved tree. Unmerged paths or leftover
-    // conflict markers mean it did not finish — abort rather than pushing a
-    // broken merge.
+    ruleResolved = ruleReport.resolved;
+
+    // The tree must be fully resolved — by the rules, the agent, or both.
+    // Unmerged paths or leftover conflict markers mean it is not, so abort
+    // rather than pushing a broken merge. These guards run over the whole
+    // tree, so they cover the rule-resolved files too.
     const stillUnmerged = parseUnmergedPaths(
       (await git(run, ["diff", "--name-only", "--diff-filter=U"], workDir))
         .stdout,
@@ -589,7 +733,9 @@ async function resolveConflict(
         input,
         processorDeps,
         conflictedFiles,
-        `the agent left ${stillUnmerged.length} path(s) unmerged: ${
+        `${
+          agentRan ? "the agent" : "the deterministic rules"
+        } left ${stillUnmerged.length} path(s) unmerged: ${
           stillUnmerged.join(", ")
         }`,
         attemptNumber,
@@ -675,7 +821,7 @@ async function resolveConflict(
       deps,
       repo,
       prNumber,
-      buildResolvedComment(baseBranch, branchName, detail),
+      buildResolvedComment(baseBranch, branchName, detail, ruleResolved),
     );
   } catch (err) {
     logger.warn("Failed to post merge-resolved comment", {
@@ -699,8 +845,15 @@ async function resolveConflict(
     repo,
     prNumber,
     conflictedFiles,
+    ruleResolved: ruleResolved.map((file) => file.path),
+    agentRan,
   });
 
+  const ruleNote = ruleResolved.length === 0
+    ? ""
+    : ` (${ruleResolved.length} by deterministic rule${
+      agentRan ? "" : ", no AI call"
+    })`;
   return {
     ok: true,
     value: {
@@ -709,7 +862,7 @@ async function resolveConflict(
       escalated: false,
       summary: conflictedFiles.length === 0
         ? `Merged ${baseBranch} into PR #${prNumber} cleanly`
-        : `Merged ${baseBranch} into PR #${prNumber}, resolving ${conflictedFiles.length} conflicted file(s)`,
+        : `Merged ${baseBranch} into PR #${prNumber}, resolving ${conflictedFiles.length} conflicted file(s)${ruleNote}`,
     },
   };
 }
