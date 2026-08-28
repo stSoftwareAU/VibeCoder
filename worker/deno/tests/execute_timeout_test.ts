@@ -1,10 +1,16 @@
 /**
- * Tests for the deadline-aware execute timeout (Issue #4254, proposal 1).
+ * Tests for the deadline-aware timeout rule (Issue #4254, proposal 1).
+ *
+ * Issue work no longer applies it — a claim keeps its full budget (Issue
+ * #420) — but an idle-task **scan** still does (Issue #186), so the rule and
+ * its only caller are covered together below: a tidy-up that deletes
+ * `resolveExecuteTimeoutSeconds` as "dead" must break the build rather than
+ * silently unbound every scan.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildFailureMessage } from "../lib/execute_claude_phase.ts";
 import {
   buildExtensionTelemetry,
@@ -14,6 +20,11 @@ import {
   EXECUTE_TIMEOUT_FLOOR_SECONDS,
   resolveExecuteTimeoutSeconds,
 } from "../lib/execute_timeout.ts";
+import {
+  IDLE_TASK_TIMEOUT_SECONDS,
+  resolveIdleTaskBudget,
+  withIdleTaskRunContext,
+} from "../lib/idle_task_claude_budget.ts";
 
 const NOW = 1_000_000_000_000;
 
@@ -48,6 +59,24 @@ Deno.test("execute timeout - the kill grace extends the deadline slightly (Issue
   // Deadline exactly now; the grace alone (30s) is below the floor, so floored.
   const r = resolveExecuteTimeoutSeconds(3600, 30, NOW, NOW);
   assertEquals(r.timeoutSeconds, EXECUTE_TIMEOUT_FLOOR_SECONDS);
+});
+
+// ---------------------------------------------------------------------------
+// The surviving caller: an idle-task scan is still bounded (Issues #186, #420)
+// ---------------------------------------------------------------------------
+
+Deno.test("execute timeout - an idle-task scan is still bounded to its cycle runway (Issues #186, #420)", async () => {
+  // Sixteen minutes of runway — the very shape that no longer truncates an
+  // issue claim. A scan holds no WIP and is discretionary, so it stays bound.
+  await withIdleTaskRunContext({ cycleDeadlineEpochMs: NOW + 960_000 }, () => {
+    const budget = resolveIdleTaskBudget({ prompt: "scan" }, NOW);
+    assertEquals(budget.deadlineBound, true);
+    assert(
+      (budget.options.timeoutSeconds ?? 0) < IDLE_TASK_TIMEOUT_SECONDS,
+      `the scan must not outlive the cycle: ${budget.options.timeoutSeconds}s`,
+    );
+    return Promise.resolve();
+  });
 });
 
 // ---------------------------------------------------------------------------

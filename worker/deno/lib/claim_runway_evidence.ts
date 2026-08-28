@@ -1,39 +1,47 @@
 /**
- * Adaptive claim-runway floor (Issue #245).
+ * Adaptive claim-runway floor (Issues #245/#425, parent #397).
  *
- * The plain floor (`claim_runway.ts`, Issues #4304/#47) is the same for every
+ * The plain floor (`claim_runway.ts`, Issue #4304) is the same for every
  * issue: enough runway to finish setup, and WIP preservation carries whatever
  * the run did not finish into the next cycle. That is right for a fresh issue
- * — a one-file fix genuinely fits a late-cycle slice — and wrong for an issue
- * already known to be a long job. VibeCoder#222 (21 files) was claimed with
- * 933 s of runway left: a near-certain timeout the moment it was taken, which
- * cost a claim cycle, a Fable-tier run and a claim/release comment pair, and
- * contributed nothing the next attempt did not redo.
+ * — a one-file fix genuinely fits the runway that is left — and wrong for an
+ * issue already known to be a long job. VibeCoder#222 (21 files) was claimed
+ * with 933 s of runway left: a near-certain timeout the moment it was taken,
+ * which cost a claim cycle, a Fable-tier run and a claim/release comment pair,
+ * and contributed nothing the next attempt did not redo.
  *
  * So the floor adapts to what is already known about the issue:
  *
- * - **No evidence** → no extra floor. Late-cycle claims of fresh small issues
- *   still happen, which is the whole point of #47's default.
+ * - **No evidence** → no extra floor. Late claims of fresh small issues still
+ *   happen, which is what keeps the tail of a cycle productive.
  * - **Evidence it is not a short job** — preserved WIP on the issue branch, a
  *   previous attempt that timed out in `execute`, or a configured long-job
  *   size label — → the claim needs a runway that can host a real execute, not
  *   a slice of one.
  *
- * ## What "a real execute" means, including on the #47 exception host
+ * ## Which runway, post-#397
+ *
+ * Issue #420 stopped truncating an execute budget at the cycle deadline, so
+ * "the runway left" is no longer the runway left in the *cycle* — a claim
+ * taken at minute 59 keeps its full `claude_timeout`. What still kills a run
+ * short is the **supervisor hard cap** (`run_hard_cap.ts`, Issue #421), so
+ * that is what this floor is measured against: `remainingRunwaySeconds` is the
+ * runway to the hard-cap ceiling, and an uncapped run has none of this floor
+ * at all (the caller skips it — nothing can cut the execute short).
+ *
+ * ## What "a real execute" means, including on a short-cap host
  *
  * The requirement is {@link LONG_JOB_BUDGET_SHARE} of the largest execute
- * budget the host can actually offer: `min(claudeTimeout, cycleSeconds)` — the
- * configured budget where the cycle can fit one, and the remaining-cycle
- * equivalent on a host whose cycle can never fit it (#47's documented
- * exception, which keeps its own plain floor unchanged).
+ * budget the host can actually offer: `min(claudeTimeout, runwayWindowSeconds)`
+ * — the configured budget where the hard-cap window can fit one, and the
+ * window's own equivalent on a host whose cap is shorter than the budget.
  *
  * The share exists because the requirement must stay satisfiable. Demanding
- * the entire budget would make an exception host — where the cycle *is* the
- * budget — claim nothing at all, the exact failure #47's exception was
- * written to avoid. Three quarters separates the doomed slice from the
- * workable run on the observed #222 timeline: 933 s of a 3600 s budget (26 %)
- * is refused, while the attempts that actually made progress — 56 min (93 %)
- * and 49 min (82 %) — are not.
+ * the entire budget would make a short-cap host claim nothing at all. Three
+ * quarters separates the doomed slice from the workable run on the observed
+ * #222 timeline: 933 s of a 3600 s budget (26 %) is refused, while the
+ * attempts that actually made progress — 56 min (93 %) and 49 min (82 %) —
+ * are not.
  *
  * Pure and side-effect free: the caller gathers the evidence (see
  * `claim_evidence_lookup.ts`), applies the decision at its claim gate, and
@@ -116,12 +124,13 @@ export function describeClaimEvidence(
  *
  * @param options.evidence - What is known about the issue (see
  *   {@link IssueClaimEvidence}). Empty evidence always claims.
- * @param options.remainingRunwaySeconds - Seconds until the cycle deadline.
+ * @param options.remainingRunwaySeconds - Seconds to the supervisor hard-cap
+ *   ceiling (Issue #425) — the deadline that still kills a run short.
  * @param options.fullExecuteBudgetSeconds - `config.claudeTimeout`.
  *   Non-positive (or unknown) disables the adaptive floor entirely.
- * @param options.cycleSeconds - `config.runDurationSeconds`, so a host whose
- *   cycle can never fit the configured budget requires the cycle equivalent
- *   instead of a floor it could never meet.
+ * @param options.runwayWindowSeconds - The whole hard-cap window (run start to
+ *   ceiling), so a host whose cap can never fit the configured budget requires
+ *   the window's equivalent instead of a floor it could never meet.
  * @param options.budgetShare - Override for {@link LONG_JOB_BUDGET_SHARE};
  *   values outside `(0, 1]` are rejected in favour of the default rather
  *   than silently disabling or idling the gate.
@@ -130,46 +139,50 @@ export function decideAdaptiveClaim(options: {
   evidence: IssueClaimEvidence;
   remainingRunwaySeconds: number;
   fullExecuteBudgetSeconds: number;
-  cycleSeconds: number;
+  runwayWindowSeconds: number;
   budgetShare?: number;
 }): AdaptiveClaimDecision {
   const {
     evidence,
     remainingRunwaySeconds,
     fullExecuteBudgetSeconds,
-    cycleSeconds,
+    runwayWindowSeconds,
   } = options;
   const phrases = describeClaimEvidence(evidence);
   const noFloor = { claim: true, evidence: phrases, requiredRunwaySeconds: 0 };
   if (phrases.length === 0) return noFloor;
-  if (fullExecuteBudgetSeconds <= 0 || cycleSeconds <= 0) return noFloor;
+  if (fullExecuteBudgetSeconds <= 0 || runwayWindowSeconds <= 0) return noFloor;
 
   const share = options.budgetShare !== undefined && options.budgetShare > 0 &&
       options.budgetShare <= 1
     ? options.budgetShare
     : LONG_JOB_BUDGET_SHARE;
   // The best execute this host can offer: the configured budget, or the
-  // remaining-cycle equivalent on the #47 exception host.
-  const effectiveBudget = Math.min(fullExecuteBudgetSeconds, cycleSeconds);
+  // hard-cap window's equivalent on a host whose cap is shorter than it.
+  const effectiveBudget = Math.min(
+    fullExecuteBudgetSeconds,
+    runwayWindowSeconds,
+  );
   const required = Math.ceil(share * effectiveBudget);
   if (remainingRunwaySeconds >= required) {
     return { claim: true, evidence: phrases, requiredRunwaySeconds: required };
   }
 
-  // The #47 exception is `cycle <= budget` — a cycle exactly the length of
-  // the budget can never offer it either, once setup and scan are paid for.
-  const budgetClause = cycleSeconds <= fullExecuteBudgetSeconds
-    ? `this cycle (${cycleSeconds}s) can never offer the configured ` +
-      `${fullExecuteBudgetSeconds}s execute budget, so its own ` +
-      `${effectiveBudget}s equivalent is required`
+  // A hard-cap window no longer than the budget can never offer it either,
+  // once startup, the maintenance passes and the scan are paid for.
+  const budgetClause = runwayWindowSeconds <= fullExecuteBudgetSeconds
+    ? `this run's supervisor hard cap (${runwayWindowSeconds}s) can never ` +
+      `offer the configured ${fullExecuteBudgetSeconds}s execute budget, so ` +
+      `its own ${effectiveBudget}s equivalent is required`
     : `needs the full ${effectiveBudget}s execute budget`;
   return {
     claim: false,
     evidence: phrases,
     requiredRunwaySeconds: required,
     reason: `${budgetClause} (${phrases.join("; ")}); ` +
-      `${remainingRunwaySeconds}s of runway left, below the ${required}s ` +
-      `adaptive floor — leaving it for the next cycle (Issue #245)`,
+      `${remainingRunwaySeconds}s of hard-cap runway left, below the ` +
+      `${required}s adaptive floor — leaving it for the next cycle ` +
+      `(Issue #245)`,
   };
 }
 

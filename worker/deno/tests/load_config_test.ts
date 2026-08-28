@@ -608,7 +608,10 @@ Deno.test("load-config - exports the progress-extension keys for bash consumers 
   });
 });
 
-Deno.test("load-config - the progress-extension defaults are exported when unset (Issue #4295)", async () => {
+// Issue #422 flipped the shipped default from `false` to `true`, so the
+// exported value for an unset key changed with it. The assertion's purpose is
+// unchanged: bash must see exactly what the Deno runner decided with.
+Deno.test("load-config - the progress-extension defaults are exported when unset (Issues #4295, #422)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["user1"],
     repos: ["org/repo"],
@@ -624,9 +627,9 @@ Deno.test("load-config - the progress-extension defaults are exported when unset
     const output = result.message;
     assert(
       output.includes(
-        'export PROGRESS_EXTENSION_ENABLED="${PROGRESS_EXTENSION_ENABLED:-false}"',
+        'export PROGRESS_EXTENSION_ENABLED="${PROGRESS_EXTENSION_ENABLED:-true}"',
       ),
-      "the feature ships dark, so the exported default is false",
+      "the feature ships on, so the exported default is true",
     );
     assert(
       output.includes(

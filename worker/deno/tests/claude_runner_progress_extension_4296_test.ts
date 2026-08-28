@@ -18,7 +18,10 @@
  * - the #4254 wall-clock backstop compares against the *current* deadline, so
  *   a chunk arriving after the original budget does not kill an extended run;
  * - the #1825 silence watchdog is untouched — a silent run still dies at
- *   `noOutputTimeout` no matter how many extensions were granted.
+ *   `noOutputTimeout` no matter how many extensions were granted;
+ * - with a `ceilingMs` (Issue #421, the supervisor's wall-clock cap less the
+ *   shutdown reserve) the last grant is clamped to the runway left and the
+ *   next check refuses, while no ceiling keeps the sequence unbounded.
  *
  * The agent is a stub script on PATH; the tree probe is injected, so no test
  * needs a git repository.
@@ -440,6 +443,94 @@ Deno.test({
           "each report must carry a later deadline",
         );
       }
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+// ===========================================================================
+// Issue #421 — the ceiling the supervisor's wall-clock cap implies
+// ===========================================================================
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - grants are clamped to the run hard cap and then refused (Issue #421)",
+  fn: async () => {
+    // A run that keeps progressing against a ceiling 2.5 s out: the early
+    // grants are full, the last is clamped to the runway that is left, and
+    // the check after it refuses so the worker's own kill lands before the
+    // supervisor's `timeout` would.
+    const stub = await installStub(chattyStub(120, "0.1"));
+    const { logger, lines } = recordingLogger();
+    const { probe } = scriptedProbe(["advanced"]);
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
+          treeProbe: probe,
+          ceilingMs: Date.now() + 2500,
+        },
+      });
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(
+        result.value.timedOut,
+        true,
+        "the run must be killed at the ceiling rather than extended past it",
+      );
+      const extensionLines = lines.filter((l) =>
+        l.includes("[progress-extension]")
+      );
+      assert(
+        extensionLines.some((l) => l.includes("clamped to the run hard cap")),
+        `a clamped grant must be logged: ${JSON.stringify(extensionLines)}`,
+      );
+      assert(
+        extensionLines.some((l) =>
+          l.includes("not extending") && l.includes("run hard cap reached")
+        ),
+        `the refusal must name the cap: ${JSON.stringify(extensionLines)}`,
+      );
+    } finally {
+      await stub.restore();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - no ceiling leaves the extension sequence unbounded (Issue #421)",
+  fn: async () => {
+    // The same run without a ceiling: extensions keep coming and the agent
+    // finishes on its own, exactly as it did before the cap was published.
+    const stub = await installStub(chattyStub(30, "0.1"));
+    const { logger, lines } = recordingLogger();
+    const { probe } = scriptedProbe(["advanced"]);
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 1,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
+          treeProbe: probe,
+        },
+      });
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(result.value.timedOut, false);
+      assert(
+        !lines.some((l) => l.includes("hard cap")),
+        `an uncapped run must never mention a cap: ${JSON.stringify(lines)}`,
+      );
     } finally {
       await stub.restore();
     }

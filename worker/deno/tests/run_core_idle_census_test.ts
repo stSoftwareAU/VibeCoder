@@ -295,9 +295,10 @@ Deno.test(
         nowValue += ms ?? 4000 * 1000;
         return Promise.resolve();
       },
-      // A floor as long as the whole cycle: the loop stops before its first
-      // claim, so the backlog is never evaluated.
+      // A floor as long as the whole hard-cap runway: the loop stops before
+      // its first claim, so the backlog is never evaluated (Issue #425).
       minClaimRunwaySeconds: 3600,
+      claimHardCap: { ceilingMs: 3600 * 1000, windowSeconds: 3600 },
       findNextIssue: () => {
         findCalls += 1;
         return Promise.resolve({ ok: true as const, value: null });

@@ -953,3 +953,25 @@ Deno.test("buildContainerLaunchPlan - passes the host disk reading into the cont
     false,
   );
 });
+
+Deno.test("buildContainerLaunchPlan - passes the supervisor run cap into the container (Issue #421)", () => {
+  // Inside the container the worker cannot see loop.sh's `timeout`, so the
+  // cap and the run's start epoch are handed over explicitly; without them
+  // the progress-extension policy applies no ceiling and a progressing run
+  // walks into the SIGTERM.
+  const plan = buildContainerLaunchPlan(
+    inputs({
+      runCap: { maxSeconds: 10800, startedEpochSeconds: 1_700_000_000 },
+    }),
+  );
+  assertEquals(plan.runArgs.includes("VIBE_RUN_MAX_SECONDS=10800"), true);
+  assertEquals(
+    plan.runArgs.includes("VIBE_RUN_STARTED_EPOCH=1700000000"),
+    true,
+  );
+  const bare = buildContainerLaunchPlan(inputs());
+  assertEquals(
+    bare.runArgs.some((arg) => arg.startsWith("VIBE_RUN_")),
+    false,
+  );
+});

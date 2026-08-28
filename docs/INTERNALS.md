@@ -182,10 +182,15 @@ Deno. Both launchers follow the same steps:
    on Windows the console control event reaches the runtime CLI directly and
    `run.ps1` stops the container by name when its own pipeline is stopped), and
    exits with the container's exit status.
-6. **Waits under a deadline** — the plan carries a `watchdog` value (the
-   worker's own maximum run duration plus a margin). A container that outlives
-   it is reaped by `container-reap` and the launcher exits `87`, so a wedged
-   container VM cannot block the supervisor indefinitely.
+6. **Waits under a deadline** — the plan carries a `watchdog` value derived
+   from the supervisor's own cap (`VIBE_RUN_MAX_SECONDS`, the worker's maximum
+   run duration) plus a margin, so raising the cap raises the watchdog with it.
+   A container that outlives the deadline is reaped by `container-reap` and the
+   launcher exits `87`, so a wedged container VM cannot block the supervisor
+   indefinitely. The cap itself is the last stage of
+   [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) — the
+   only place a still-progressing agent is killed, and the worker stops itself
+   before it so work in progress is committed and pushed.
 
 Inside the container, `container/entrypoint.sh` `exec`s
 `deno run … worker/deno/mod.ts run-entrypoint`. There is no bash on the runtime

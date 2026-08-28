@@ -43,6 +43,7 @@ import {
 } from "../lib/execute_claude_phase.ts";
 import { saveSession } from "../lib/session_manager.ts";
 import { buildProgressExtension } from "../lib/progress_extension_runtime.ts";
+import { resolveRunHardCap } from "../lib/run_hard_cap.ts";
 
 export const executeClaudePhaseCommand: Command = {
   name: "execute-claude-phase",
@@ -120,7 +121,15 @@ export const executeClaudePhaseCommand: Command = {
     // timeout exactly as it was.
     const repoName = repo.split("/").pop() ?? repo;
     const repoPath = `${workDir}/${repoName}`;
-    const progressExtension = await buildProgressExtension(config, repoPath);
+    // The supervisor's wall-clock cap when this command runs under loop.sh
+    // (Issue #421); a bare CLI invocation has no cap and stays unbounded.
+    const hardCap = resolveRunHardCap({ killAfterSeconds: claudeKillAfter });
+    const progressExtension = await buildProgressExtension(
+      config,
+      repoPath,
+      undefined,
+      hardCap.capped ? hardCap.cap.ceilingMs : undefined,
+    );
 
     const result = await runExecuteClaudePhase({
       repo,

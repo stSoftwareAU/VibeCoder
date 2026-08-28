@@ -1449,7 +1449,10 @@ Deno.test("config - include_codebase_map can be switched off (Issue #4281)", asy
   });
 });
 
-Deno.test("config - progress extension is off by default (Issue #4296)", async () => {
+// Issue #422 flipped the shipped default from `false` to `true`, so this test
+// now pins the opposite verdict for the same unconfigured input. The companion
+// tunables are unchanged — only the switch moved.
+Deno.test("config - progress extension is on by default (Issues #4296, #422)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo1"],
@@ -1457,7 +1460,7 @@ Deno.test("config - progress extension is off by default (Issue #4296)", async (
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.progressExtensionEnabled, false);
+    assertEquals(config.progressExtensionEnabled, true);
     assertEquals(config.progressExtensionGrantSeconds, 900);
     assertEquals(config.progressExtensionStallSeconds, 300);
   });

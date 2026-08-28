@@ -103,6 +103,7 @@ import {
   buildTimeoutKillMessage,
   type ExtensionTelemetry,
 } from "./timeout_extension_telemetry.ts";
+import type { ScheduledReleaseReason } from "./failure_diagnosis.ts";
 import {
   attemptModelFallback,
   resolveCurrentModel,
@@ -247,6 +248,17 @@ export interface ClaudeRunResult {
    * - `"no-output"` — silence watchdog fired (`noOutputTimeout`).
    */
   timeoutReason?: "hard-timeout" | "no-output";
+  /**
+   * The run was stopped on schedule, not because it failed (Issue #424,
+   * parent #397).
+   *
+   * A hard-cap release still fires the worker's own watchdog, so
+   * `timedOut` and `timeoutReason` read exactly as a genuine timeout does —
+   * the kill path is the only place that knows the difference, and this is
+   * how it says so. Present only when the release was scheduled; absent
+   * means the run really did exhaust its own budget.
+   */
+  scheduledRelease?: ScheduledReleaseReason;
   /**
    * Seconds the hard watchdog fired past its configured budget
    * (Issue #4254). Deno timers in a starved VM are not a reliable clock —
@@ -860,6 +872,11 @@ export async function runClaudeWithTimeout(
 
   let timedOut = false;
   let timeoutReason: "hard-timeout" | "no-output" | undefined;
+  // Why the deadline check refused the last extension, when the answer was
+  // "the supervisor's cap left no runway" rather than "the run stalled"
+  // (Issue #424). Carried onto the result so the phase can report a
+  // scheduled release instead of a per-issue timeout.
+  let scheduledRelease: ScheduledReleaseReason | undefined;
   let hardWatchdog: ReturnType<typeof setTimeout> | undefined;
   let silenceWatchdog: ReturnType<typeof setTimeout> | undefined;
   let killBoundTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1305,12 +1322,20 @@ export async function runClaudeWithTimeout(
           : {}),
         treeState: combinedTreeState,
         extensionsGranted,
+        // The supervisor's wall-clock cap (Issue #421): a grant that would
+        // cross it is clamped to it, and a run with no runway left is
+        // refused so the worker's own kill lands first.
+        ...(opts.ceilingMs !== undefined ? { ceilingMs: opts.ceilingMs } : {}),
       }, opts.policy);
 
       const elapsedSeconds = Math.round((nowMs - startMs) / 1000);
       if (decision.action === "kill") {
         // Name the stalled signal in the telemetry (Issue #4298).
         lastRefusalReason = decision.reason;
+        // The cap stopped a progressing run, so this kill is a scheduled
+        // release (Issue #424) — the issue is not at fault and must not be
+        // told it ran out of time.
+        if (decision.cause === "hard-cap") scheduledRelease = "hard-cap";
         logger?.info(
           `[progress-extension] not extending after ${elapsedSeconds}s ` +
             `(extensions granted ${extensionsGranted}): ${decision.reason}`,
@@ -1748,6 +1773,7 @@ export async function runClaudeWithTimeout(
         stderr,
         timedOut,
         timeoutReason,
+        ...(scheduledRelease ? { scheduledRelease } : {}),
         ...(terminated ? { terminated: true } : {}),
         ...(externalSigterm ? { externalSigterm: true } : {}),
         ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
@@ -2164,6 +2190,12 @@ export async function runClaudeWithRetry(
           output,
           timedOut: true,
           timeoutReason,
+          // A scheduled release wears the same watchdog and exit status as a
+          // genuine timeout (Issue #424) — without this the phase could only
+          // guess, and guessed "the issue ran out of time".
+          ...(result.value.scheduledRelease
+            ? { scheduledRelease: result.value.scheduledRelease }
+            : {}),
           // Carry the #4254 evidence: a late-firing watchdog and an
           // abandoned post-kill wait must survive into the diagnostics.
           ...(result.value.watchdogLateSeconds !== undefined
