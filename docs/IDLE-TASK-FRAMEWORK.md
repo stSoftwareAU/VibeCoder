@@ -513,7 +513,9 @@ flowchart LR
     M -- yes --> MB["merged_pr_blocked+1"]
     M -- no --> D{Names an open<br/>dependency?}
     D -- yes --> DB["dependency_blocked+1"]
-    D -- no --> U["unblocked+1<br/>→ inversion signal"]
+    D -- no --> T{"low-priority, and the repo<br/>holds a suppressing work-on issue?"}
+    T -- yes --> TS["low_priority_suppressed+1"]
+    T -- no --> U["unblocked+1<br/>→ inversion signal"]
 ```
 
 Before Issue #3852 the census skipped the occupancy gate, so every sibling of an
@@ -545,7 +547,28 @@ costs no `gh` call: a same-repo `#N` absent from that set is closed and does not
 block, and a cross-repo `owner/repo#N` cannot be resolved locally, so it blocks,
 matching `isDependencyBlocked`'s fail-safe.
 
-Three times is a pattern, not three accidents, so the gate list is now checked
+The **tier-3 suppression** gate (Issue #499) closes the same hole one level up.
+Every gate above is per-issue; this one is per-repo. `selectHighestPriority`
+drops every `low-priority` candidate from a repo that holds a _suppressing_ open
+`work-on` issue (`reposWithOpenWorkOn` — see
+[issue-processing.md → Per-repo tier suppression](workflows/issue-processing.md#per-repo-tier-suppression-a-suppressing-work-on-issue-parks-the-lower-tiers)),
+so such a backlog is not work the scan refused — it is work the scan is
+deliberately serialising. The census counted it anyway. On 2026-08-28
+`stSoftwareAU/NEAT-AI-Rebase` logged
+`work_on=0 low_priority=28 merged_pr_blocked=1 inversion_signal=true` on cycle
+after cycle; excluded issues are now reported as `low_priority_suppressed=<n>`.
+
+That repo exposed the other half of the fault at the same time, and it was the
+scan's: the single suppressing issue was NEAT-AI-Rebase#48, refused
+_permanently_ as `merged-pr-permanent` because merged PR #49 names it. All 28
+`low-priority` issues were parked behind work no cycle could ever claim.
+`collect_work_on_candidates.ts` now excludes permanently blocked issues from the
+suppression signal, and the census mirrors both carve-outs — a `work-on` issue
+blocked only by an open dependency (Issue #2610) or permanently by a merged PR
+(Issue #499) does not suppress, while every self-clearing blocker (open PR,
+occupied stream, closed-unmerged cooldown) still does.
+
+Four times is a pattern, not four accidents, so the gate list is now checked
 by the compiler. `SKIP_REASONS` in `issue_finder_logger.ts` is a runtime tuple
 (the `SkipReason` type is derived from it), and
 `CENSUS_SCAN_GATE_COVERAGE` in `idle_decision_census.ts` is a **total** map over
@@ -553,6 +576,12 @@ it, classifying every gate as `modelled`, `upstream`, `run-local` or
 `escalated-elsewhere`. A new skip reason in any `collect_*_candidates.ts` fails
 the type check until somebody classifies it — the check #3526, #3852 and
 GRQ#4419 each went without.
+
+That guard covers the **collection** gates only. Tier-3 suppression is applied
+in `selectHighestPriority`, so it never reaches `logIssueSkipped` and carries no
+`SkipReason` for the map to demand a verdict on — which is how Issue #499 slipped
+past a compiler check built for exactly this class of bug. Selection-stage gates
+have to be mirrored by hand, and `idle_decision_census_test.ts` pins each one.
 
 Two deliberate limits keep both instruments cheap probes rather than a second
 scan: only **merged** PRs count (a closed-unmerged PR blocks for a cooldown

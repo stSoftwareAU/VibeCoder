@@ -86,6 +86,24 @@
  * closed-unmerged PR blocks for a cooldown window that clears itself, so
  * counting it would hide genuinely returning work.
  *
+ * **Tier-3 suppression** is the same hole one level up (Issue #499). The gates
+ * above are per-issue; this one is per-repo. `selectHighestPriority` drops
+ * every `low-priority` candidate from a repo that holds a *suppressing* open
+ * `work-on` issue (`reposWithOpenWorkOn`, Issue #2164), so such a backlog is
+ * work the scan will not claim this cycle however claimable each issue looks
+ * on its own. The census counted it anyway: on 2026-08-28
+ * `stSoftwareAU/NEAT-AI-Rebase` logged `work_on=0 low_priority=28
+ * merged_pr_blocked=1 inversion_signal=true` on cycle after cycle. Issues
+ * excluded solely by tier-3 suppression are surfaced per repo as
+ * `low_priority_suppressed=<n>`.
+ *
+ * That repo also exposed the other half of the same fault, fixed in
+ * `collect_work_on_candidates.ts`: the suppressing issue was NEAT-AI-Rebase#48,
+ * refused permanently as `merged-pr-permanent`, so the 28 were stranded behind
+ * work no cycle could ever claim. The census's carve-outs mirror the scan's —
+ * a `work-on` issue blocked only by an open dependency (#2610) or permanently
+ * by a merged PR (#499) does not suppress.
+ *
  * PR-blocking matters because the inversion verdict suppresses the
  * idle-task filer (Issue #2813): counting PR-blocked issues as available
  * starved the filer for hours in the host-23 incident (one open PR in one
@@ -385,6 +403,14 @@ export interface RepoCensusEntry {
    */
   dependencyBlocked: number;
   /**
+   * Count of `low-priority` issues that passed every per-issue gate but are
+   * not claimable this cycle because the repo holds a *suppressing* open
+   * `work-on` issue — the tier-3 suppression `selectHighestPriority` applies
+   * via `reposWithOpenWorkOn` (Issues #2164, #2610, #499). Kept separate from
+   * `unblocked` so the deferral stays observable in the `[idle-census]` line.
+   */
+  lowPrioritySuppressed: number;
+  /**
    * The issue numbers behind {@link RepoCensusEntry.unblocked}'s priority
    * counts, in issue order (Issue #460). The escalation body names them, so
    * a reader can see *which* issues the census and the scan disagree about
@@ -566,6 +592,42 @@ function occupiedStreamsFor(
   return occupied;
 }
 
+/**
+ * True when the repo holds at least one `work-on` issue that suppresses its
+ * lower tiers, mirroring `hasSuppressingWorkOn` in
+ * `collect_work_on_candidates.ts` (Issues #2164, #2610, #499).
+ *
+ * `selectHighestPriority` drops every `low-priority` candidate from a repo in
+ * `reposWithOpenWorkOn`, so a suppressed backlog is work the scan will not
+ * claim this cycle however claimable each issue looks on its own. The census
+ * did not model that gate, so on `stSoftwareAU/NEAT-AI-Rebase` its 28
+ * `low-priority` issues counted as claimable cycle after cycle while the scan
+ * — correctly, given the rule as it then stood — claimed none of them.
+ *
+ * The two documented carve-outs are applied, so the census suppresses exactly
+ * where the scan does: an issue whose sole blocker is an open dependency
+ * (#2610) and one refused permanently by a merged fleet PR (#499) do not
+ * suppress. Gates the census cannot see (label author, content integrity) are
+ * not modelled, which makes this *over*-count suppressors and therefore
+ * *under*-count claimable work — the bounded-harm direction this module
+ * already prefers.
+ */
+function hasSuppressingWorkOn(
+  issues: CensusIssue[],
+  mergedPRs: ClosedPR[],
+  repo: string,
+  openIssueNumbers: ReadonlySet<number>,
+): boolean {
+  return issues.some((issue) => {
+    if (!isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel)) return false;
+    if (isMergedPrBlocked(issue, mergedPRs)) return false;
+    if (isDependencyBlockedByOpenIssue(issue, repo, openIssueNumbers)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 /** Count unblocked issues per priority label for one repo. */
 function countUnblocked(
   issues: CensusIssue[],
@@ -579,6 +641,7 @@ function countUnblocked(
   streamOccupied: number;
   mergedPrBlocked: number;
   dependencyBlocked: number;
+  lowPrioritySuppressed: number;
   claimableIssues: number[];
 } {
   const counts: UnblockedCounts = {
@@ -592,10 +655,19 @@ function countUnblocked(
   // issues — so membership is exactly "the dependency is still open".
   const openIssueNumbers = new Set(issues.map((i) => i.number));
   const claimableIssues: number[] = [];
+  // Issue #499: tier-3 suppression is a repo-level property, so it is
+  // resolved once before the per-issue pass.
+  const tierThreeSuppressed = hasSuppressingWorkOn(
+    issues,
+    mergedPRs,
+    repo,
+    openIssueNumbers,
+  );
   let prBlocked = 0;
   let streamOccupied = 0;
   let mergedPrBlocked = 0;
   let dependencyBlocked = 0;
+  let lowPrioritySuppressed = 0;
   for (const issue of issues) {
     // Idle-task claiming is gated by repo busyness, not by
     // getBlockingPRForIssue, so its count ignores PR blocking.
@@ -633,16 +705,26 @@ function countUnblocked(
       dependencyBlocked += 1;
       continue;
     }
+    const isTopPriority = isUnblockedFor(
+      issue,
+      LABEL_DEFAULTS.topPriorityLabel,
+    );
+    const isWorkOn = isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel);
+    const isLowPriority = isUnblockedFor(
+      issue,
+      LABEL_DEFAULTS.lowPriorityLabel,
+    );
+    // Issue #499: applied last, mirroring the scan — an issue refused for a
+    // more fundamental reason keeps that reason. Only the tier-3 pool is
+    // suppressed, so an issue also carrying a higher-tier label is unaffected.
+    if (isLowPriority && !isTopPriority && !isWorkOn && tierThreeSuppressed) {
+      lowPrioritySuppressed += 1;
+      continue;
+    }
     claimableIssues.push(issue.number);
-    if (isUnblockedFor(issue, LABEL_DEFAULTS.topPriorityLabel)) {
-      counts.topPriority += 1;
-    }
-    if (isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel)) {
-      counts.workOn += 1;
-    }
-    if (isUnblockedFor(issue, LABEL_DEFAULTS.lowPriorityLabel)) {
-      counts.lowPriority += 1;
-    }
+    if (isTopPriority) counts.topPriority += 1;
+    if (isWorkOn) counts.workOn += 1;
+    if (isLowPriority) counts.lowPriority += 1;
   }
   return {
     counts,
@@ -650,6 +732,7 @@ function countUnblocked(
     streamOccupied,
     mergedPrBlocked,
     dependencyBlocked,
+    lowPrioritySuppressed,
     claimableIssues,
   };
 }
@@ -705,6 +788,7 @@ export function buildIdleDecisionCensus(opts: {
       streamOccupied,
       mergedPrBlocked,
       dependencyBlocked,
+      lowPrioritySuppressed,
       claimableIssues,
     } = countUnblocked(
       input.issues,
@@ -734,6 +818,7 @@ export function buildIdleDecisionCensus(opts: {
       streamOccupied,
       mergedPrBlocked,
       dependencyBlocked,
+      lowPrioritySuppressed,
       claimableIssues,
       inversionSignal,
     });
@@ -818,6 +903,7 @@ export function formatIdleDecisionCensus(
         `stream_occupied=${r.streamOccupied} ` +
         `merged_pr_blocked=${r.mergedPrBlocked} ` +
         `dependency_blocked=${r.dependencyBlocked} ` +
+        `low_priority_suppressed=${r.lowPrioritySuppressed} ` +
         `inversion_signal=${r.inversionSignal}`,
     );
   }
