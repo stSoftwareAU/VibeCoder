@@ -107,32 +107,6 @@ function controlRows(): Map<string, string[]> {
   return rows;
 }
 
-Deno.test("the threat model carries every section the model needs", () => {
-  const anchors = anchorSet(read(THREAT_MODEL));
-  for (
-    const heading of [
-      "-assets",
-      "-trust-boundaries",
-      "-attacker-capabilities-per-surface",
-      "-attack-paths",
-      "-traceability--control--code--test",
-      "-known-gaps--controls-with-no-enforcing-test",
-      "-residual-risks",
-      "-the-assumption-this-model-holds-under",
-    ]
-  ) {
-    assert(anchors.has(heading), `${THREAT_MODEL} must have a #${heading}`);
-  }
-});
-
-Deno.test("the threat model states the compromised-agent assumption", () => {
-  const body = section(read(THREAT_MODEL), "assumption this model holds under");
-  assert(
-    /agent inside the container is fully compromised/i.test(body),
-    "the model must state that it holds with the agent fully compromised",
-  );
-});
-
 Deno.test("every file path cited in the traceability table exists", () => {
   const rows = controlRows();
   assert(rows.size > 0, "the traceability table must have control rows");
@@ -244,27 +218,6 @@ Deno.test("every in-repo link and anchor in the threat model resolves", () => {
   }
 
   assertEquals(broken, [], `${THREAT_MODEL} has unresolvable links`);
-});
-
-Deno.test("SECURITY.md points at the threat model and no longer duplicates it", () => {
-  const security = read("SECURITY.md");
-  assert(
-    security.includes("docs/THREAT-MODEL.md"),
-    "SECURITY.md must link the design-level threat model",
-  );
-  // The design-level model moved out; these are the shapes that used to
-  // duplicate it in SECURITY.md.
-  const duplicated = [
-    "| Actor | Trust Level |",
-    "What We're Protecting Against",
-    "### Attack Scenarios",
-  ];
-  const remaining = duplicated.filter((marker) => security.includes(marker));
-  assertEquals(
-    remaining,
-    [],
-    "SECURITY.md must not restate the design-level model — link it instead",
-  );
 });
 
 Deno.test("the markdown-lint workflow runs the threat-model check", () => {

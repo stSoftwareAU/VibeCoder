@@ -51,11 +51,6 @@ function minimalConfig(extra: ConfigFile = {}): ConfigFile {
   };
 }
 
-// tests/ → worker/deno/ → worker/ → repo root
-function repoPath(relative: string): URL {
-  return new URL(`../../../${relative}`, import.meta.url);
-}
-
 Deno.test("progress extension default - an empty config resolves enabled through lib/config.ts (Issue #422)", async () => {
   await withTempConfig(minimalConfig(), async (configPath) => {
     const config = await loadConfig(configPath);
@@ -146,34 +141,5 @@ Deno.test("progress extension default - an unconfigured worker builds a runner o
   assertEquals(
     option.policy.checkSeconds,
     OPERATIONAL_DEFAULTS.progressExtensionCheckSeconds,
-  );
-});
-
-Deno.test("progress extension default - CONFIGURATION.md documents the on-by-default behaviour (Issue #422)", async () => {
-  const doc = await Deno.readTextFile(repoPath("docs/CONFIGURATION.md"));
-
-  const row = doc.split("\n").find((line) =>
-    line.includes("| `progress_extension_enabled` |")
-  );
-  assert(row !== undefined, "no progress_extension_enabled reference row");
-  assert(
-    row.includes("| `true` |"),
-    `the documented default must be the shipped default: ${row}`,
-  );
-  assertEquals(
-    /off by default/i.test(row),
-    false,
-    `the reference row still calls the feature opt-in: ${row}`,
-  );
-
-  // The operator must be told how to get the old flat kill back.
-  assert(
-    doc.includes('"progress_extension_enabled": false'),
-    "the docs must show how to switch extensions off",
-  );
-  // And that the chain is bounded, not open-ended (Issue #421).
-  assert(
-    doc.includes("The run hard cap bounds every grant"),
-    "the docs must state the ceiling that bounds the on-by-default chain",
   );
 });

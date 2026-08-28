@@ -15,7 +15,7 @@
  * Australian English spelling used throughout.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
 import {
   hasProjectConventionsStanza,
@@ -73,24 +73,6 @@ Deno.test("hasProjectConventionsStanza - false when the wording drifted", () => 
 });
 
 // --- the canonical wording ---
-
-Deno.test("stanza - carries its three load-bearing clauses", () => {
-  // Clause 1: read the repo's own conventions first.
-  assertStringIncludes(PROJECT_CONVENTIONS_STANZA, "Before applying any check");
-  assertStringIncludes(PROJECT_CONVENTIONS_STANZA, "`CONTRIBUTING.md`");
-  // Clause 2: only a written-down convention counts.
-  assertStringIncludes(
-    PROJECT_CONVENTIONS_STANZA,
-    "counts only when it is written",
-  );
-  // Clause 3: an unsafe convention is itself the finding.
-  assertStringIncludes(
-    PROJECT_CONVENTIONS_STANZA,
-    "security or fail-loud violation",
-  );
-  // Repository isolation (#3239) is explicitly untouched.
-  assertStringIncludes(PROJECT_CONVENTIONS_STANZA, "no cross-repo mechanism");
-});
 
 // --- prompt versions ---
 

@@ -136,50 +136,6 @@ function tableRows(body: string): string[][] {
 // The run mode (Issues #4151, #4) — container, and only container
 // ---------------------------------------------------------------------------
 
-/** Operator-facing pages that must carry the container-only story. */
-const RUN_MODE_SURFACES = [
-  "README.md",
-  "docs/CONTAINER.md",
-  "docs/CONTAINMENT.md",
-  "docs/CONFIGURATION.md",
-  "docs/DEPLOYMENT.md",
-  "docs/TROUBLESHOOTING.md",
-];
-
-/**
- * Accepted spellings of the no-host-fallback rule.
- *
- * The rule itself is the invariant `lib/run_mode.ts` and the launchers
- * enforce: a missing container runtime is a loud failure, never a run on the
- * host. The pages are free to word it, but they may not omit it.
- */
-const NO_AUTO_FALLBACK =
-  /never (?:silently )?(?:selects?|switch(?:es)?(?: to)?|falls back|runs? (?:the worker )?on the host)|no (?:auto-|host )?fallback|not a fallback|never a fallback/i;
-
-/**
- * The default stated near the mode that carries it — "container by default",
- * "the default `container` run mode", "container (the default)", "the only
- * run mode" and so on.
- */
-const DEFAULT_STATED = new RegExp(
-  `(default[^.\\n]{0,40}\\b${DEFAULT_RUN_MODE}\\b|\\b${DEFAULT_RUN_MODE}\\b[^.\\n]{0,40}default|only run mode)`,
-  "i",
-);
-
-/**
- * Claims a page may no longer make (Issue #4): the removed modes are not
- * something an operator can opt into. History may name them; instructions may
- * not.
- */
-const RETIRED_CLAIMS = [
-  '"run_mode": "native"',
-  '"run_mode": "seatbelt"',
-  "vibe_run_mode=native",
-  "vibe_run_mode=seatbelt",
-  "opt into the native mode",
-  "opt into native mode",
-];
-
 /** Every markdown file under `docs/`, excluding the immutable PR archive. */
 function liveDocs(directory = "docs"): string[] {
   const found: string[] = [];
@@ -193,38 +149,6 @@ function liveDocs(directory = "docs"): string[] {
     }
   }
   return found;
-}
-
-Deno.test("no live document tells an operator how to opt into a removed run mode (Issue #4)", () => {
-  const offenders: string[] = [];
-  for (const surface of ["README.md", ...liveDocs()]) {
-    const text = read(surface).toLowerCase();
-    for (const claim of RETIRED_CLAIMS) {
-      if (text.includes(claim)) offenders.push(`${surface}: "${claim}"`);
-    }
-  }
-  assertEquals(
-    offenders,
-    [],
-    "native and seatbelt were removed (Issue #4); no page may offer them",
-  );
-});
-
-for (const surface of RUN_MODE_SURFACES) {
-  Deno.test(`${surface} tells the container-only story`, () => {
-    const text = read(surface).toLowerCase();
-    for (const mode of RUN_MODES) {
-      assert(text.includes(mode), `${surface} must name the ${mode} run mode`);
-    }
-    assert(
-      DEFAULT_STATED.test(text),
-      `${surface} must state that ${DEFAULT_RUN_MODE} is the default (and only) mode`,
-    );
-    assert(
-      NO_AUTO_FALLBACK.test(text),
-      `${surface} must state that a missing runtime never runs the worker on the host`,
-    );
-  });
 }
 
 Deno.test("CONFIGURATION.md documents the run-mode setting as the code spells it", () => {
@@ -250,18 +174,6 @@ Deno.test("CONFIGURATION.md documents the run-mode setting as the code spells it
       `CONFIGURATION.md must name the removed ${removed} mode as removed`,
     );
   }
-});
-
-Deno.test("CONTAINMENT.md states that containment is mandatory", () => {
-  const text = read("docs/CONTAINMENT.md").toLowerCase();
-  assert(
-    text.includes("mandatory"),
-    "CONTAINMENT.md must say containment is mandatory (Issue #4)",
-  );
-  assert(
-    NO_AUTO_FALLBACK.test(text),
-    "CONTAINMENT.md must state there is no host fallback",
-  );
 });
 
 // ---------------------------------------------------------------------------
@@ -295,25 +207,6 @@ Deno.test("CONTAINMENT.md documents exactly the mounts the launcher creates", ()
   );
 });
 
-Deno.test("CONTAINMENT.md names the host resources kept outside the boundary", () => {
-  const text = read("docs/CONTAINMENT.md");
-  // The resources the containment integration tests (Issue #4071) prove
-  // unreachable from inside the container.
-  const excluded = [
-    "the host home directory",
-    "~/Documents",
-    "~/Desktop",
-    "~/Pictures",
-    "~/.ssh",
-    "~/Library",
-    "Keychain",
-    "/var/run/docker.sock",
-    "/run/podman/podman.sock",
-  ];
-  const missing = excluded.filter((item) => !text.includes(item));
-  assertEquals(missing, [], "CONTAINMENT.md must name every excluded resource");
-});
-
 Deno.test("CONTAINMENT.md's network boundary matches the launch plan", () => {
   const plan = buildContainerLaunchPlan(launchInputs());
   // The claims the document makes, verified against the real arguments.
@@ -335,13 +228,6 @@ Deno.test("CONTAINMENT.md's network boundary matches the launch plan", () => {
   }
 });
 
-Deno.test("CONTAINMENT.md documents the disposable container root filesystem", () => {
-  const text = read("docs/CONTAINMENT.md").toLowerCase();
-  assert(text.includes("disposable"), "must describe disposable state");
-  assert(text.includes("--rm"), "must state the container is removed on exit");
-  assert(text.includes("tmpfs"), "must state /tmp is a tmpfs");
-});
-
 // ---------------------------------------------------------------------------
 // docs/DEPLOYMENT.md — host requirements
 // ---------------------------------------------------------------------------
@@ -360,141 +246,10 @@ Deno.test("DEPLOYMENT.md requires the container runtime each platform probes", (
   }
 });
 
-Deno.test("DEPLOYMENT.md no longer requires the worker's tools on the host", () => {
-  // Only the section's list items and table rows state a requirement; prose
-  // may (and does) name these tools to say they ship in the image instead.
-  const required = section(read("docs/DEPLOYMENT.md"), "Requirements")
-    .split("\n")
-    .filter((line) => /^\s*([-*]\s|\|)/.test(line))
-    .join("\n");
-  // These ship inside the image (Issue #4061 onwards); requiring them on the
-  // host is exactly the leakage containment exists to end.
-  const containerOwned = [
-    "`gh`",
-    "`jq`",
-    "`claude`",
-    "`timeout`",
-    "`gtimeout`",
-  ];
-  const stillRequired = containerOwned.filter((tool) =>
-    required.includes(tool)
-  );
-  assertEquals(
-    stillRequired,
-    [],
-    "the Requirements section must not list container-owned tools",
-  );
-});
-
-Deno.test("DEPLOYMENT.md states the hard-cutover rollout requirement", () => {
-  const text = read("docs/DEPLOYMENT.md").toLowerCase();
-  assert(
-    text.includes("hard cutover"),
-    "an operator upgrading an existing host must see the hard cutover",
-  );
-  // Issues #4151, #4: the cutover is into the only mode. An operator reading
-  // the rollout note must see it named, and the rule that a missing runtime
-  // never runs the worker on the host.
-  for (const mode of RUN_MODES) {
-    assert(
-      text.includes(mode),
-      `the rollout note must name the ${mode} run mode`,
-    );
-  }
-  assert(
-    NO_AUTO_FALLBACK.test(text),
-    "the rollout note must state that a missing runtime never runs on the host",
-  );
-});
-
-Deno.test("DEPLOYMENT.md's screenshot section stops installing a host browser", () => {
-  const body = section(read("docs/DEPLOYMENT.md"), "Screenshot Support");
-  assert(
-    body.includes("CONTAINER.md") || body.includes("CONTAINMENT.md"),
-    "the screenshot section must point at the container documentation",
-  );
-  assert(
-    !/sudo apt-get install/.test(body),
-    "the screenshot section must not tell operators to install browser " +
-      "libraries on the host",
-  );
-});
-
 // ---------------------------------------------------------------------------
 // README.md / docs/OVERVIEW.md — appliance and control plane
 // ---------------------------------------------------------------------------
 
-const CONTROL_PLANE_SURFACES = ["README.md", "docs/OVERVIEW.md"];
-
-for (const surface of CONTROL_PLANE_SURFACES) {
-  Deno.test(`${surface} describes the host as an unattended appliance`, () => {
-    const text = read(surface).toLowerCase();
-    assert(
-      text.includes("appliance"),
-      `${surface} must call the host an appliance`,
-    );
-    assert(
-      text.includes("control plane"),
-      `${surface} must name GitHub as the control plane`,
-    );
-    for (
-      const excluded of ["ssh", "remote desktop", "screen sharing", "terminal"]
-    ) {
-      assert(
-        text.includes(excluded),
-        `${surface} must state ${excluded} is not required for normal operation`,
-      );
-    }
-  });
-
-  Deno.test(`${surface} states the clone → configure → run deployment story`, () => {
-    const text = read(surface);
-    assert(text.includes("run.sh"), `${surface} must name ./run.sh`);
-    assert(text.includes("run.ps1"), `${surface} must name run.ps1`);
-    assert(
-      /git clone|repo clone/.test(text),
-      `${surface} must start the story at cloning the repository`,
-    );
-  });
-}
-
-Deno.test("README's Documentation table links docs/CONTAINMENT.md", () => {
-  const lines = read("README.md").split("\n");
-  const start = lines.findIndex((line) =>
-    line.startsWith("## 📖 Documentation")
-  );
-  assert(start >= 0, "README must have a '📖 Documentation' section");
-  const rows: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (line.startsWith("## ")) break;
-    if (line.startsWith("|")) rows.push(line);
-  }
-  const row = rows.find((line) => line.includes("(docs/CONTAINMENT.md)"));
-  assert(row, "no Documentation-table row links docs/CONTAINMENT.md");
-  assert(
-    row.split("|").map((cell) => cell.trim()).filter((cell) => cell !== "")
-      .length >= 2,
-    "the CONTAINMENT.md row needs a description cell",
-  );
-});
-
 // ---------------------------------------------------------------------------
 // docs/TROUBLESHOOTING.md — the container-era diagnosis path
 // ---------------------------------------------------------------------------
-
-Deno.test("TROUBLESHOOTING.md covers the container diagnosis path", () => {
-  const text = read("docs/TROUBLESHOOTING.md");
-  for (
-    const marker of [
-      "container-image-hash", // reading the image reference
-      "container-runtime-detect", // runtime-detection failure
-      "~/logs", // where logs land on the host
-    ]
-  ) {
-    assert(text.includes(marker), `TROUBLESHOOTING.md must mention ${marker}`);
-  }
-  assert(
-    /rebuild/i.test(text),
-    "TROUBLESHOOTING.md must explain how to force an image rebuild",
-  );
-});

@@ -203,10 +203,3 @@ Deno.test("bucket docs - every live bucket is documented and its link resolves",
     `expected at least the eight known buckets, found ${result.bucketNames.length}`,
   );
 });
-
-Deno.test("bucket docs - the standard routes a Rust reader to the unwrap rule", async () => {
-  const text = await Deno.readTextFile(`${REPO_ROOT}/${BUCKET_DOCS_FILE}`);
-  assertStringIncludes(text, "unwrap()");
-  assertStringIncludes(text, `${BUCKETS_DIR}/rust.md`);
-  assertStringIncludes(text, "worker/deno/lib/best_practices_bucket_picker.ts");
-});

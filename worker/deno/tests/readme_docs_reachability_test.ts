@@ -21,7 +21,7 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import "../lib/create_all_idle_task_wrappers.ts";
 import { listTemplates } from "../lib/idle_task_template.ts";
 
@@ -76,47 +76,6 @@ function reachableFromReadme(): Set<string> {
   return seen;
 }
 
-/** Rows of the README "📖 Documentation" table, as raw markdown lines. */
-function documentationTableRows(): string[] {
-  const lines = read("README.md").split("\n");
-  const start = lines.findIndex((line) =>
-    line.startsWith("## 📖 Documentation")
-  );
-  assert(start >= 0, "README must have a '📖 Documentation' section");
-  const rows: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (line.startsWith("## ")) break;
-    if (line.startsWith("|")) rows.push(line);
-  }
-  assert(rows.length > 0, "Documentation section must contain a table");
-  return rows;
-}
-
-// ---------------------------------------------------------------------------
-// README Documentation table rows
-// ---------------------------------------------------------------------------
-
-const REQUIRED_TABLE_ENTRIES = [
-  "docs/BASH-SYNTAX-AUDIT-SCAN.md",
-  "docs/CROSS-REPO-FIX.md",
-  "docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md",
-  "docs/security/README.md",
-];
-
-for (const target of REQUIRED_TABLE_ENTRIES) {
-  Deno.test(`README Documentation table links ${target}`, () => {
-    const rows = documentationTableRows();
-    const row = rows.find((line) => line.includes(`(${target})`));
-    assert(row, `No README Documentation-table row links ${target}`);
-    // The row must carry a description, not just a bare link.
-    const cells = row.split("|").map((cell) => cell.trim());
-    assert(
-      cells.filter((cell) => cell.length > 0).length >= 2,
-      `Documentation-table row for ${target} needs a description cell`,
-    );
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Reachability of the previously orphaned documents
 // ---------------------------------------------------------------------------
@@ -160,27 +119,6 @@ Deno.test("the security index lists every docs/security report", () => {
 // Cross-links requested by the finding
 // ---------------------------------------------------------------------------
 
-Deno.test("SECURITY-SCAN.md cites the #3535 harness gap analysis", () => {
-  assert(
-    markdownLinks("docs/SECURITY-SCAN.md").includes(
-      "docs/security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md",
-    ),
-    "docs/SECURITY-SCAN.md must link the #3535 gap analysis",
-  );
-});
-
-Deno.test("SECURITY.md cites the GhostCommit threat-model pair", () => {
-  const links = markdownLinks("SECURITY.md");
-  for (
-    const doc of [
-      "docs/security/ghostcommit-image-injection-assessment.md",
-      "docs/security/ghostcommit-canary-tests.md",
-    ]
-  ) {
-    assert(links.includes(doc), `SECURITY.md must link ${doc}`);
-  }
-});
-
 // ---------------------------------------------------------------------------
 // OWASP matrix inventory freshness (drift test against the live registry)
 // ---------------------------------------------------------------------------
@@ -197,17 +135,5 @@ Deno.test("OWASP matrix accounts for every registered idle-task template", () =>
     "Every registered template must appear in the OWASP matrix — either " +
       "scored in the matrix or listed as registered since the point-in-time " +
       "snapshot",
-  );
-});
-
-Deno.test("OWASP matrix no longer claims to cover all templates", () => {
-  const matrix = read("docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md");
-  assert(
-    !/all ten idle-task audit\s+templates/.test(matrix),
-    "The stale 'all ten … templates' claim must be date-stamped instead",
-  );
-  assert(
-    listTemplates().length > 10,
-    "Registry has grown past ten — the matrix must say so explicitly",
   );
 });

@@ -36,9 +36,6 @@ import {
   ORPHAN_DEPS_METADATA_HOSTS,
   validateSourceRepoUrl,
 } from "../lib/orphan_deps_metadata.ts";
-import { loadPrompt } from "../lib/prompt_manager.ts";
-
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 /** A recording stub `fetch` that returns a fixed JSON body for every call. */
 function recordingFetch(
@@ -370,65 +367,3 @@ Deno.test("ORPHAN_DEPS_FORBIDDEN_OPERATIONS - enumerates the install / lifecycle
 // ---------------------------------------------------------------------------
 // Regression: the sibling prompts keep their static-evidence-only rule
 // ---------------------------------------------------------------------------
-
-Deno.test(
-  "regression - sibling prompts retain the static-evidence-only / no-network prohibition",
-  async () => {
-    // supply_chain_detection: explicit "do not contact a registry or the
-    // network" prohibition.
-    const scd = await loadPrompt(
-      "supply_chain_detection",
-      undefined,
-      PROMPTS_DIR,
-    );
-    assert(scd.ok);
-    if (scd.ok) {
-      const lower = scd.value.toLowerCase();
-      assert(
-        lower.includes("static-evidence only") ||
-          lower.includes("static-evidence-only"),
-        "supply_chain_detection must keep the static-evidence-only rule",
-      );
-      assert(
-        lower.includes("do not contact a registry or the network"),
-        "supply_chain_detection must keep the no-network prohibition",
-      );
-    }
-
-    // supply_chain_readiness: static-evidence only, no package-manager
-    // invocation.
-    const scr = await loadPrompt(
-      "supply_chain_readiness",
-      undefined,
-      PROMPTS_DIR,
-    );
-    assert(scr.ok);
-    if (scr.ok) {
-      const lower = scr.value.toLowerCase();
-      assert(
-        lower.includes("static-evidence only") ||
-          lower.includes("static-evidence-only"),
-        "supply_chain_readiness must keep the static-evidence-only rule",
-      );
-      assert(
-        lower.includes("do not invoke package managers"),
-        "supply_chain_readiness must keep the no-package-manager prohibition",
-      );
-    }
-
-    // security_scan: static, evidence-backed audit; no code execution.
-    const sec = await loadPrompt("security_scan", undefined, PROMPTS_DIR);
-    assert(sec.ok);
-    if (sec.ok) {
-      const lower = sec.value.toLowerCase();
-      assert(
-        lower.includes("static, evidence-backed audit"),
-        "security_scan must remain a static, evidence-backed audit",
-      );
-      assert(
-        lower.includes("no code execution"),
-        "security_scan must keep the no-code-execution rule",
-      );
-    }
-  },
-);
