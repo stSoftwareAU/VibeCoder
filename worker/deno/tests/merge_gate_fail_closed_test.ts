@@ -74,8 +74,17 @@ const baseRefMock = (args: string[]): Promise<string> => {
       JSON.stringify([{ number: 1, title: "x", state: "open" }]),
     );
   }
+  // Issue #470: the gate reads both refs in one
+  // `pr view --json baseRefName,headRefName` so the ahead/behind comparison
+  // can be oriented base-to-head. The blast-radius guard still reads the base
+  // alone with `--jq`, so answer that form with a bare branch name.
   if (key.includes("baseRefName")) {
-    return Promise.resolve("milestone/x");
+    return Promise.resolve(
+      key.includes("--jq") ? "milestone/x" : JSON.stringify({
+        baseRefName: "milestone/x",
+        headRefName: "issue-1-feature",
+      }),
+    );
   }
   return Promise.reject(new Error(`Unexpected: ${key}`));
 };

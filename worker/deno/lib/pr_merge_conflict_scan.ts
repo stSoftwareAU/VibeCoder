@@ -459,6 +459,8 @@ async function fetchMergeableStates(
       number: pr.number,
       // allow-hardcoded-branch — safe fallback when the listing omits the base
       baseRefName: pr.baseRefName || "main",
+      // Issue #470: orients the ahead/behind comparison.
+      headRefName: pr.headRefName,
     })),
     ghCommandFn,
     cache,

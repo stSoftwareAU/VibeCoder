@@ -67,8 +67,16 @@ function createDirectMergeMock(
         JSON.stringify([{ number: 1, title: "x", state: "open" }]),
       );
     }
+    // Issue #470: the gate reads both refs in one
+    // `pr view --json baseRefName,headRefName`; the blast-radius guard still
+    // reads the base alone with `--jq`.
     if (joined.includes("pr view") && joined.includes("baseRefName")) {
-      return Promise.resolve("milestone/x");
+      return Promise.resolve(
+        joined.includes("--jq") ? "milestone/x" : JSON.stringify({
+          baseRefName: "milestone/x",
+          headRefName: "issue-1-feature",
+        }),
+      );
     }
     if (joined.includes("default_branch")) {
       return Promise.resolve("main");
