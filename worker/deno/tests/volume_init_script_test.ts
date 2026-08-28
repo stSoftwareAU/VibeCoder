@@ -249,7 +249,9 @@ Deno.test("volume-init - a runtime that cannot discard is loud, and the launch s
     );
     assertStringIncludes(r.stderr, "could not trim /work");
     assertStringIncludes(r.stderr, "discard operation is not supported");
-    assertStringIncludes(r.stderr, "Issue #384");
+    // Issue #478 widened this warning's issue reference; the behaviour it
+    // asserts — loud, non-fatal — is unchanged.
+    assertStringIncludes(r.stderr, "Issues #384, #478");
     assertStringIncludes(r.calls, "chown 1000:1000 /work");
   } finally {
     await Deno.remove(f.dir, { recursive: true });
@@ -266,7 +268,70 @@ Deno.test("volume-init - an image without fstrim says so rather than failing sil
     const r = await run(f, ["/work"]);
     assertEquals(r.code, 0, r.stderr);
     assertStringIncludes(r.stderr, "fstrim is not available");
-    assertStringIncludes(r.stderr, "Issue #384");
+    assertStringIncludes(r.stderr, "Issues #384, #478");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+// --- Reporting a refused trim to the launcher (Issue #478) -----------------
+
+Deno.test("volume-init - a refused FITRIM is named on stdout so the launcher can act on it", async () => {
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+    fstrimExit: 1,
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    // The refusal is a machine-readable fact, not a warning that dies in
+    // stderr: the launcher's disk gate recreates the volume off this line.
+    assertStringIncludes(r.stdout, "VOLUME_TRIM_REFUSED /work");
+    assertStringIncludes(r.calls, "chown 1000:1000 /work");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - a trim that succeeded reports no refusal", async () => {
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+    fstrimExit: 0,
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    assertEquals(r.stdout.includes("VOLUME_TRIM_REFUSED"), false, r.stdout);
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - a missing fstrim is a refusal too: the blocks stay in the image", async () => {
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    assertStringIncludes(r.stdout, "VOLUME_TRIM_REFUSED /work");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - a bind-mounted target reports no refusal (there is no image to trim)", async () => {
+  const f = await fixture({ device: "", e2fsckExit: 0 });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    assertEquals(r.stdout.includes("VOLUME_TRIM_REFUSED"), false, r.stdout);
   } finally {
     await Deno.remove(f.dir, { recursive: true });
   }

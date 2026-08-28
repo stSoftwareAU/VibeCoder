@@ -71,7 +71,7 @@ Deno.test("describeWorkVolumeRatchet - names the dead space and the volume, or s
   );
   assertStringIncludes(detail, "23.5 GB");
   assertStringIncludes(detail, "vibe-work");
-  assertStringIncludes(detail, "Issue #384");
+  assertStringIncludes(detail, "Issues #384, #478");
 
   assertEquals(
     describeWorkVolumeRatchet(classifyWorkVolumeRatchet(13 * GIB, 13 * GIB)),
@@ -88,10 +88,16 @@ Deno.test("describeGuestReclaimToHost - a guest sweep that freed bytes says the 
   assertStringIncludes(line, "0 bytes returned to the host");
   assertStringIncludes(line, "11.0 GB");
   assertStringIncludes(line, "only grows");
-  // The remedy an operator can actually act on.
-  assertStringIncludes(line, "fstrim");
-  assertStringIncludes(line, "volume delete vibe-work");
-  assertStringIncludes(line, "Issue #384");
+  // Issue #478: the remedy is the launcher's, not an operator's. The old
+  // line promised the launch-time fstrim would hand the blocks back — false
+  // on the Apple container runtime, which refuses FITRIM — and then told a
+  // human to run `volume delete vibe-work` on an unattended host.
+  assertStringIncludes(line, "recreates the volume");
+  assert(
+    !line.includes("stop the container and"),
+    `the remedy must not be addressed to a human: ${line}`,
+  );
+  assertStringIncludes(line, "Issues #384, #478");
 });
 
 Deno.test("describeGuestReclaimToHost - a sweep that freed nothing still explains the category error", () => {
@@ -113,7 +119,7 @@ Deno.test("describeGuestReclaimToHost - no ratchet still states that the host fi
     classifyWorkVolumeRatchet(13 * GIB, 13 * GIB),
   );
   assertStringIncludes(line, "0 bytes returned to the host");
-  assertStringIncludes(line, "Issue #384");
+  assertStringIncludes(line, "Issues #384, #478");
 });
 
 Deno.test("work-volume name - the ratchet message names the volume the launcher mounts", () => {

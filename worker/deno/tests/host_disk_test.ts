@@ -279,7 +279,9 @@ Deno.test("HostDiskMonitor - the low alarm names the volume image as where the s
   advance(61_000);
   const status = await m.check();
   assertStringIncludes(status.detail, "volume image still holds");
-  assertStringIncludes(status.detail, "Issue #384");
+  // Issue #478 widened the clause: the remedy is the launcher's recreate
+  // where the runtime refuses the discard, not a trim that always works.
+  assertStringIncludes(status.detail, "Issues #384, #478");
   assertEquals(m.workVolumeRatchet.ratcheted, true);
   assertEquals(m.workVolumeRatchet.deadBytes, 23 * GIB);
 });

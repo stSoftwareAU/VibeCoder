@@ -129,10 +129,25 @@ case "\${sub}" in
     # Default "absent", so the create-then-init path is what tests exercise.
     exit "\${STUB_VOLUME_INSPECT_EXIT:-1}"
     ;;
+  volume-delete|volume-rm|volume-remove)
+    # One line per removal (Issue #478), so a test can see every volume the
+    # launcher recreated rather than only the last one.
+    printf '%s\\n' "\${*: -1}" >> "\${record_dir}/volume-removed.lines"
+    exit "\${STUB_VOLUME_DELETE_EXIT:-0}"
+    ;;
   volume-*)
     exit 0
     ;;
   run-init)
+    # Count the init runs (Issue #478): a launcher that recreated a volume
+    # must run the init again, or the fresh volume stays root-owned.
+    count=\$(( \$(cat "\${record_dir}/run-init.count" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "\${count}" > "\${record_dir}/run-init.count"
+    # What container/volume-init.sh reports on stdout — the launcher parses
+    # \`VOLUME_UNREPAIRABLE\` (#229) and \`VOLUME_TRIM_REFUSED\` (#478) from it.
+    if [[ -n "\${STUB_INIT_STDOUT:-}" ]]; then
+      printf '%b\\n' "\${STUB_INIT_STDOUT}"
+    fi
     exit "\${STUB_INIT_EXIT:-0}"
     ;;
   run)
@@ -352,6 +367,40 @@ export async function removedImages(harness: Harness): Promise<string[]> {
     );
   } catch {
     return [];
+  }
+}
+
+/**
+ * Named volumes the launcher deleted (Issues #229, #478).
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The volume names removed, in the order they were removed
+ */
+export async function removedVolumes(harness: Harness): Promise<string[]> {
+  try {
+    const text = await Deno.readTextFile(
+      `${harness.recordDir}/volume-removed.lines`,
+    );
+    return text.split("\n").map((line) => line.trim()).filter((line) =>
+      line !== ""
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * How many times the launcher ran the volume init (Issue #478).
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The init count, or 0 when the init never ran
+ */
+export async function initCount(harness: Harness): Promise<number> {
+  try {
+    const text = await Deno.readTextFile(`${harness.recordDir}/run-init.count`);
+    return Number(text.trim()) || 0;
+  } catch {
+    return 0;
   }
 }
 

@@ -618,6 +618,12 @@ if ($initialised.ExitCode -ne 0) {
         "Error: the volume init failed (Issues #4186, #229)")
     Exit-Launcher $initialised.ExitCode
 }
+# Issue #478 (the `VOLUME_TRIM_REFUSED` self-heal) has no counterpart here on
+# purpose: it exists for the Apple container runtime, which mounts a named
+# volume as a thin-provisioned ext4 image and refuses FITRIM on it. Docker and
+# Podman - the runtimes this launcher drives - bind-mount a host directory, so
+# volume-init's block-device branch never runs and no refusal is ever
+# reported. Should one be, run.sh is the launcher to mirror.
 
 # Hard free-disk floor (Issue #226). Mirrors run.sh: a host whose drive is
 # below the floor must not start a worker that would fill it. Best-effort

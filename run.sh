@@ -508,6 +508,44 @@ for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
   fi
 done
+# The named volume mounted at an init target, on stdout; non-zero when no
+# volume maps to that target.
+volume_for_target() {
+  local target="$1" candidate arg
+  for candidate in ${volume_names[@]+"${volume_names[@]}"}; do
+    for arg in "${init_args[@]}"; do
+      if [[ "${arg}" == "${candidate}:${target}" ]]; then
+        printf '%s' "${candidate}"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# Volumes the runtime refused to trim, by name (Issue #478). Rewritten by
+# every run_volume_init from the init's `VOLUME_TRIM_REFUSED <target>` lines.
+trim_refused_volumes=()
+
+# Record the trim refusals in one init's output. A refusal is a fact about
+# this host's runtime, not a warning to be lost in stderr: it is what
+# heal_untrimmable_volumes below acts on.
+note_trim_refusals() {
+  local line target volume
+  trim_refused_volumes=()
+  while IFS= read -r line; do
+    [[ "${line}" == VOLUME_TRIM_REFUSED\ * ]] || continue
+    target="${line#VOLUME_TRIM_REFUSED }"
+    volume="$(volume_for_target "${target}" || true)"
+    if [[ -z "${volume}" ]]; then
+      echo "[run.sh] volume-init could not trim ${target} but no volume maps to it" >&2
+      continue
+    fi
+    trim_refused_volumes+=("${volume}")
+    log_run_core "work-volume: the runtime refused to trim ${volume} (${target}) - the volume image keeps every block it holds (Issue #478)"
+  done <<<"${1}"
+}
+
 # The init run (Issues #4186, #229) checks each block-device volume's
 # filesystem and chowns the roots. Exit 3 names the volume(s) e2fsck could
 # not repair on stdout (`VOLUME_UNREPAIRABLE <target>`): those are recreated
@@ -521,12 +559,7 @@ run_volume_init() {
     while IFS= read -r line; do
       [[ "${line}" == VOLUME_UNREPAIRABLE\ * ]] || continue
       target="${line#VOLUME_UNREPAIRABLE }"
-      volume=""
-      for candidate in ${volume_names[@]+"${volume_names[@]}"}; do
-        for arg in "${init_args[@]}"; do
-          if [[ "${arg}" == "${candidate}:${target}" ]]; then volume="${candidate}"; fi
-        done
-      done
+      volume="$(volume_for_target "${target}" || true)"
       if [[ -z "${volume}" ]]; then
         echo "[run.sh] volume-init reported ${target} unrepairable but no volume maps to it" >&2
         continue
@@ -538,13 +571,144 @@ run_volume_init() {
       recreated=1
     done <<<"${out}"
     if ((recreated)); then
-      "${RUNTIME}" "${init_args[@]}" </dev/null >/dev/null
-      return
+      status=0
+      out="$("${RUNTIME}" "${init_args[@]}" </dev/null)" || status=$?
     fi
   fi
+  note_trim_refusals "${out}"
   return "${status}"
 }
 run_volume_init
+
+# Where the host's free space is measured: the container store when it
+# exists, else HOME (the same filesystem on macOS).
+disk_gate_path="${HOME}"
+if [[ -d "${container_store}" ]]; then
+  disk_gate_path="${container_store}"
+fi
+
+# Self-heal a volume the runtime will not trim (Issue #478).
+#
+# #384 made the launch-time `fstrim` the supported compaction path, but the
+# Apple container runtime refuses FITRIM outright — as root, on a device that
+# advertises discard — so it has never returned a byte on this fleet and the
+# thin-provisioned image only grows. GRQ-23 held ~14 GB of dead space, sat
+# below its floor for three days claiming nothing, and the only remedy on
+# offer (`container volume delete vibe-work`) was addressed to a human who
+# was not there. An unattended host has no human, so the launcher takes it.
+#
+# When the init reports the trim refused AND the host is below the floor the
+# worker stops claiming at, the volume is recreated here — before any
+# container runs, so no work is in flight; the clones re-clone and the
+# approval snapshots re-baseline, exactly as #384 documents.
+#
+# Bounded and never silent: at most one recreate per
+# VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS, never for volumes too small to hold
+# the host's missing space, and a recreate that leaves the host below the
+# floor is reported as `[WORK_VOLUME_UNRECOVERED]` rather than as a fix. The
+# launch continues either way: a host that cannot claim must still run and
+# report (Issue #477), and the hard floor below is what stops it.
+HEAL_STATE_FILE="${VIBE_WORK_VOLUME_HEAL_STATE:-${HOME}/.vibe-coder/work-volume-heal}"
+
+# Free (field 2) or total (field 4) kilobytes of the gate's filesystem.
+host_disk_field_kb() {
+  df -kP "${disk_gate_path}" 2>/dev/null |
+    awk -v f="$1" 'NR>1 {v=$(NF-f)} END {print v}'
+}
+
+# The floor the worker stops claiming at, in kilobytes: the larger of
+# VIBE_HOST_DISK_LOW_FLOOR_GB and VIBE_HOST_DISK_LOW_FLOOR_PERCENT of the
+# filesystem. Kept in step with DEFAULT_LOW_FLOOR_GB / DEFAULT_LOW_FLOOR_PERCENT
+# in worker/deno/lib/host_disk.ts — healing at a different floor than the
+# worker claims at would either wipe the clones early or never fire at all.
+claim_floor_kb() {
+  local total_kb="$1" gb="${VIBE_HOST_DISK_LOW_FLOOR_GB:-20}"
+  local pct="${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-10}" by_gb by_pct
+  [[ "${gb}" =~ ^[0-9]+$ ]] || gb=20
+  [[ "${pct}" =~ ^[0-9]+$ && "${pct}" -le 100 ]] || pct=10
+  by_gb=$((gb * 1024 * 1024))
+  by_pct=$((total_kb * pct / 100))
+  if ((by_gb > by_pct)); then printf '%s' "${by_gb}"; else printf '%s' "${by_pct}"; fi
+}
+
+# Kilobytes the runtime's store holds for a named volume; non-zero when the
+# store layout is one this launcher cannot measure.
+volume_store_kb() {
+  local path="${container_store}/volumes/$1"
+  [[ -d "${path}" ]] || return 1
+  du -sk "${path}" 2>/dev/null | awk 'END {print $1}'
+}
+
+# A heal that did not clear the floor reports what is still wrong. Never a
+# silent retry, and never dressed up as a fix.
+report_unrecovered() {
+  echo "[run.sh] [WORK_VOLUME_UNRECOVERED] $1 (Issues #478, #226)" >&2
+  log_run_core "[WORK_VOLUME_UNRECOVERED] $1 (Issues #478, #226)"
+}
+
+heal_untrimmable_volumes() {
+  ((${#trim_refused_volumes[@]})) || return 0
+
+  local avail_kb total_kb floor_kb volume
+  avail_kb="$(host_disk_field_kb 2)"
+  total_kb="$(host_disk_field_kb 4)"
+  if ! [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[1-9][0-9]*$ ]]; then
+    report_unrecovered "the runtime refused to trim ${trim_refused_volumes[*]} and ${disk_gate_path} could not be measured - no volume is destroyed on a guess"
+    return 0
+  fi
+  floor_kb="$(claim_floor_kb "${total_kb}")"
+  if ((avail_kb >= floor_kb)); then
+    log_run_core "work-volume: trim refused for ${trim_refused_volumes[*]}; $((avail_kb / 1024)) MB free is above the $((floor_kb / 1024)) MB claiming floor - the image is ratcheting but the host is not short (Issue #478)"
+    return 0
+  fi
+
+  local now last interval_hours
+  now="$(date +%s)"
+  interval_hours="${VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS:-24}"
+  [[ "${interval_hours}" =~ ^[0-9]+$ ]] || interval_hours=24
+  last="$(cat "${HEAL_STATE_FILE}" 2>/dev/null || echo 0)"
+  [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+  if ((last > 0 && now - last < interval_hours * 3600)); then
+    report_unrecovered "the last recreate was $(((now - last) / 60)) minutes ago and ${disk_gate_path} still has $((avail_kb / 1024)) MB free, below the $((floor_kb / 1024)) MB claiming floor - recreating again would destroy the clones without clearing the floor"
+    return 0
+  fi
+
+  # Only a volume big enough to hold the missing space is worth destroying.
+  local kb held_kb=0 measured=0 min_gb="${VIBE_WORK_VOLUME_HEAL_MIN_GB:-1}"
+  [[ "${min_gb}" =~ ^[0-9]+$ ]] || min_gb=1
+  for volume in "${trim_refused_volumes[@]}"; do
+    kb="$(volume_store_kb "${volume}" || true)"
+    if [[ "${kb}" =~ ^[0-9]+$ ]]; then
+      measured=1
+      held_kb=$((held_kb + kb))
+    fi
+  done
+  if ((measured)) && ((held_kb < min_gb * 1024 * 1024)); then
+    report_unrecovered "${trim_refused_volumes[*]} hold only $((held_kb / 1024)) MB in ${container_store} - the host's missing space is somewhere else, so recreating them would destroy the clones for nothing"
+    return 0
+  fi
+
+  for volume in "${trim_refused_volumes[@]}"; do
+    echo "[run.sh] recreating volume ${volume}: the runtime refuses to trim it and the host is below its claiming floor (Issue #478)" >&2
+    log_run_core "work-volume: recreating ${volume} - trim refused and $((avail_kb / 1024)) MB free is below the $((floor_kb / 1024)) MB claiming floor (Issue #478)"
+    "${RUNTIME}" volume delete "${volume}" </dev/null >/dev/null 2>&1 || true
+    "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
+  done
+  mkdir -p "$(dirname "${HEAL_STATE_FILE}")" 2>/dev/null || true
+  printf '%s\n' "${now}" >"${HEAL_STATE_FILE}" 2>/dev/null || true
+
+  # A fresh volume is root-owned and unchecked, so the init runs again.
+  run_volume_init
+
+  # Measured, not assumed: the heal is only a heal if the host got the space.
+  avail_kb="$(host_disk_field_kb 2)"
+  if [[ "${avail_kb}" =~ ^[0-9]+$ ]] && ((avail_kb >= floor_kb)); then
+    log_run_core "work-volume: the recreate returned ${disk_gate_path} to $((avail_kb / 1024)) MB free, above the $((floor_kb / 1024)) MB claiming floor (Issue #478)"
+    return 0
+  fi
+  report_unrecovered "the recreate left ${disk_gate_path} with $((avail_kb / 1024)) MB free, still below the $((floor_kb / 1024)) MB claiming floor - the work volume is not where this host's space went"
+}
+heal_untrimmable_volumes
 
 # Hard free-disk floor (Issue #226). Host GRQ-23 ran its data volume to zero
 # with the worker running: log writes failed, two issues' work was lost and
@@ -558,12 +722,10 @@ run_volume_init
 # guest's freed blocks to the host. Gating first made the floor unreachable
 # by construction: a host below it refused the launch, the volume was never
 # trimmed, and the thin-provisioned image kept every block it had ever been
-# allocated — GRQ-23 sat there for days, claiming nothing.
-disk_gate_path="${HOME}"
-if [[ -d "${container_store}" ]]; then
-  disk_gate_path="${container_store}"
-fi
-disk_avail_kb="$(df -kP "${disk_gate_path}" 2>/dev/null | awk 'NR>1 {v=$(NF-2)} END {print v}')"
+# allocated — GRQ-23 sat there for days, claiming nothing. Where the runtime
+# refuses that trim, the self-heal above has already recreated the volume
+# (Issue #478), so this reading is taken after both have had their chance.
+disk_avail_kb="$(host_disk_field_kb 2)"
 disk_hard_floor_gb="${VIBE_HOST_DISK_HARD_FLOOR_GB:-5}"
 if [[ "${disk_avail_kb}" =~ ^[0-9]+$ && "${disk_hard_floor_gb}" =~ ^[0-9]+$ ]]; then
   if ((disk_avail_kb < disk_hard_floor_gb * 1024 * 1024)); then
