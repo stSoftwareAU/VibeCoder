@@ -38,6 +38,10 @@ import {
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
 import type { ClosedPR, OpenPR } from "./issue_query.ts";
+import type {
+  BlockedCandidateInfo,
+  SkipReason,
+} from "./issue_finder_logger.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
 import { extractMilestonePriority } from "./milestone_priority.ts";
 import type { IssueFetcher } from "./issue_dependencies.ts";
@@ -115,6 +119,15 @@ export interface WorkOnCollectionResult {
    * one-PR-per-work-stream guarantee.
    */
   hasSuppressingWorkOn: boolean;
+  /**
+   * One entry per issue this collector refused, and why (Issue #460).
+   *
+   * `find_oldest_issue.ts` merges these into `FindIssuesResult` so the
+   * idle-inversion escalation can name the gate per issue instead of asking
+   * a human to reconstruct it from an aggregate, debug-gated log line — the
+   * position GRQ#4465 left its reader in.
+   */
+  blockedDetails: BlockedCandidateInfo[];
 }
 
 /**
@@ -355,6 +368,16 @@ export async function collectWorkOnCandidates(
   // sub-issue reads `isDependencyBlocked` already made via `memoFetcher`, so
   // the feature adds no extra `gh` calls.
   const dependencyBlockedIssues: number[] = [];
+  // Issue #460: the per-issue skip reasons, recorded beside the diagnostic
+  // log calls so the two cannot drift.
+  const blockedDetails: BlockedCandidateInfo[] = [];
+  const noteBlocked = (
+    issueNumber: number,
+    milestone: string,
+    reason: SkipReason,
+  ): void => {
+    blockedDetails.push({ repo, issueNumber, milestone, reason });
+  };
 
   for (const issue of filtered) {
     diag?.logIssueConsidered(repo, issue.number, issue.title);
@@ -373,6 +396,7 @@ export async function collectWorkOnCandidates(
       fleetWorkerLogins,
     );
     if (!labelAdded) {
+      noteBlocked(issue.number, issue.milestone, "label-author-not-allowed");
       diag?.logIssueSkipped(repo, issue.number, "label-author-not-allowed");
       // Issue #3575: fail loud. An untrusted `work-on` label was previously
       // skipped silently, leaving the issue in a false "queued" state that
@@ -417,6 +441,7 @@ export async function collectWorkOnCandidates(
         config.allowedAuthors,
       )
     ) {
+      noteBlocked(issue.number, milestoneTitle, "milestone-occupied");
       diag?.logIssueSkipped(
         repo,
         issue.number,
@@ -447,6 +472,11 @@ export async function collectWorkOnCandidates(
         // that a "cooldown" reads as self-healing and sent the diagnosis of
         // #187/#188 down the wrong path for a day. Name which it is, and say
         // what clears it.
+        noteBlocked(
+          issue.number,
+          milestoneTitle,
+          closedPR.merged ? "merged-pr-permanent" : "closed-pr-cooldown",
+        );
         diag?.logIssueSkipped(
           repo,
           issue.number,
@@ -477,6 +507,7 @@ export async function collectWorkOnCandidates(
           options.cache,
         );
         if (!hasIgnore) {
+          noteBlocked(issue.number, milestoneTitle, "pr-blocked");
           diag?.logIssueSkipped(
             repo,
             issue.number,
@@ -494,6 +525,7 @@ export async function collectWorkOnCandidates(
     if (
       await isDependencyBlocked(repo, issue.number, memoFetcher, openStateMap)
     ) {
+      noteBlocked(issue.number, milestoneTitle, "dependency-blocked");
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       dependencyBlockedCount++;
       dependencyBlockedIssues.push(issue.number);
@@ -596,5 +628,5 @@ export async function collectWorkOnCandidates(
   // them adds no separate suppression adjustment.
   const hasSuppressingWorkOn = (filtered.length - dependencyBlockedCount) > 0;
 
-  return { candidates, hasOpenIssues, hasSuppressingWorkOn };
+  return { candidates, hasOpenIssues, hasSuppressingWorkOn, blockedDetails };
 }

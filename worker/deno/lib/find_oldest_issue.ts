@@ -273,6 +273,9 @@ export async function findOldestIssue(
       repoClosedPRs,
     );
     allWorkOnCandidates.push(...workOnResult.candidates);
+    // Issue #460: the work-on collector's per-issue skip reasons join the
+    // label collector's, so the result names every gate that refused work.
+    allBlockedDetails.push(...workOnResult.blockedDetails);
     // Issue #2610: suppress this repo's low-priority/idle-task tiers only
     // when it has an open work-on issue that is not *solely* dependency-
     // blocked. A repo whose only work-on issues are waiting on open
@@ -460,7 +463,14 @@ export async function findOldestIssue(
   const diagnosticSummary = diag.getSummary();
 
   if (!selected) {
-    return { ...noResult, diagnosticSummary };
+    // Issue #460: the reasons ride the result alongside the counts, so a
+    // caller handed `found: false` can name the gate per issue instead of
+    // asking a human to reconstruct it from an aggregate log line.
+    return {
+      ...noResult,
+      diagnosticSummary,
+      blockedDetails: allBlockedDetails,
+    };
   }
 
   const stats = cache.getStats();
@@ -474,5 +484,6 @@ export async function findOldestIssue(
       `(cache: ${stats.hits} hits, ${stats.misses} misses, ` +
       `gh-calls: ${ghMetrics.total} total)`,
     diagnosticSummary,
+    blockedDetails: allBlockedDetails,
   };
 }

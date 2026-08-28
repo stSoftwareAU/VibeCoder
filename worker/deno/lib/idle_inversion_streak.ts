@@ -11,7 +11,15 @@
  *
  * This module gives the signal a memory. It counts consecutive **cycles** in
  * which a repo raises the inversion, and at
- * {@link IDLE_INVERSION_THRESHOLD} files one issue against that repo.
+ * {@link IDLE_INVERSION_THRESHOLD} files one issue naming that repo.
+ *
+ * **Filed here, about them (Issue #459).** The issue lands in
+ * {@link IDLE_INVERSION_TARGET_REPO} — the worker's own repo — because the
+ * census, the claim scan and this filer are all worker code, so no change in
+ * the subject repo can fix what it reports. GRQ#4465 was filed into GRQ,
+ * where an agent claiming it has neither the deciding code nor write access
+ * beyond that repo; the only outcome available to it was a `needs-human`
+ * hand-off.
  *
  * **Cycles, not ticks.** The detector runs several times per cycle — the
  * VibeCoder#319 log shows ticks 1, 2 and 3 inside one — so a per-tick count
@@ -24,12 +32,16 @@
  * than the title (as `run_failure_issue.ts` does), so two hosts watching the
  * same repo converge on one issue.
  *
- * **Only a refusal counts (Issue #437).** A cycle escalates a repo only when
- * the claim scan completed an eligibility pass and still claimed nothing.
+ * **Only a refusal counts (Issues #437, #460).** A cycle escalates a repo
+ * only when the claim scan completed an eligibility pass, still claimed
+ * nothing **from that repo**, and left work behind.
  * Cycles that ended on the deadline — the pool stops before its next claim
  * and never evaluates the backlog — are neither counted nor treated as clean,
  * so a busy fleet with a real backlog no longer escalates "the claim scan
- * keeps refusing" work nothing refused. `idle_decision_census.ts` decides
+ * keeps refusing" work nothing refused. Issue #460 adds the other half: a
+ * repo the scan *claimed from* this cycle was served, not refused, however
+ * that run ended — two slots against an 80-issue backlog leave claimable
+ * work on every cycle by construction. `idle_decision_census.ts` decides
  * which repos qualify (`escalationRepos`).
  *
  * The issue is filed with no label. The worker cannot self-apply `work-on`
@@ -53,6 +65,23 @@ export const IDLE_INVERSION_STATE_FILE = "idle_inversion_streak.json";
 
 /** Body marker prefix used to dedup the escalation issue. */
 export const IDLE_INVERSION_MARKER_PREFIX = "VIBE_IDLE_INVERSION";
+
+/**
+ * Where the escalation lands, whichever repo raised the inversion
+ * (Issue #459).
+ *
+ * The census, the claim scan and this filer all live here, so the fix for
+ * every issue this module raises is a change to worker code. Filing into the
+ * *subject* repo — as GRQ#4465 was — hands the work to an agent whose
+ * checkout contains none of the deciding code and whose write allowlist
+ * covers only that repo, so the only available outcome is a `needs-human`
+ * hand-off. Same reasoning, and same shape, as
+ * `run_failure_issue.ts`'s `RUN_FAILURE_TARGET_REPO`.
+ *
+ * The dedup marker stays keyed on the **subject** repo, so two hosts
+ * watching the same repo still converge on one issue.
+ */
+export const IDLE_INVERSION_TARGET_REPO = "stSoftwareAU/VibeCoder";
 
 /** One repo's streak state. */
 export interface IdleInversionEntry {
@@ -137,10 +166,16 @@ export function isIdleInversionIssue(body: string, repo: string): boolean {
   return (body ?? "").includes(formatIdleInversionMarker(repo));
 }
 
-/** Stable title; dedup never uses it, humans find the issue by it. */
+/**
+ * Stable title; dedup never uses it, humans find the issue by it.
+ *
+ * `repo` is the **subject** — the monitored repo that raised the inversion.
+ * The issue itself is filed in {@link IDLE_INVERSION_TARGET_REPO}, so the
+ * title leads with the defect and names the subject as the evidence.
+ */
 export function formatIdleInversionTitle(repo: string): string {
-  return `fix: ${repo} has claimable work the claim scan keeps refusing — ` +
-    `inversion sustained across cycles`;
+  return `fix: idle-inversion on ${repo} — claimable work the claim scan ` +
+    `keeps refusing, sustained across cycles`;
 }
 
 /** What the detector saw, for the issue body. */
@@ -152,6 +187,22 @@ export interface IdleInversionReport {
   claimable: number;
   /** Free-text detail from the census line, already redaction-safe. */
   detail: string;
+  /**
+   * Issue numbers the census counted as claimable (Issue #460).
+   *
+   * GRQ#4465 carried a count and nothing else, so the reader could not tell
+   * *which* issues the two sides disagreed about — and the claim scan logs
+   * only aggregate top-3 skip totals, so it was not recoverable from the log
+   * either. Naming them costs nothing: the census already holds the numbers.
+   */
+  claimableIssues?: readonly number[];
+  /**
+   * The claim scan's own per-issue skip reason, where the caller has it
+   * (Issue #460). This is the single most useful line in the issue: it names
+   * the gate the two sides disagree about instead of asking a human to find
+   * it. Absent when the scan recorded no reason for that issue.
+   */
+  scanSkips?: readonly { issue: number; reason: string }[];
 }
 
 /** Escape so script output cannot close our fence or forge a marker. */
@@ -160,10 +211,34 @@ function bodySafe(text: string): string {
     .replace(/```/g, "'''");
 }
 
+/** `#4326, #4376` — the issues, or an empty string when none were passed. */
+function formatClaimableIssues(issues: readonly number[] | undefined): string {
+  if (!issues || issues.length === 0) return "";
+  return issues.map((n) => `#${n}`).join(", ");
+}
+
+/** One `- #N — reason` line per issue the scan recorded a reason for. */
+function formatScanSkips(
+  skips: readonly { issue: number; reason: string }[] | undefined,
+): string[] {
+  if (!skips || skips.length === 0) return [];
+  return [
+    "## What the claim scan did with them",
+    "",
+    ...skips.map((s) => `- #${s.issue} — \`${bodySafe(s.reason)}\``),
+    "",
+    "A reason here that names a **permanent** condition on an issue the " +
+    "census calls claimable is the bug: the two sides are modelling " +
+    "different gates.",
+    "",
+  ];
+}
+
 /** Issue body: marker first, then the diagnosis and what to do. */
 export function formatIdleInversionBody(
   report: IdleInversionReport,
 ): string {
+  const issueList = formatClaimableIssues(report.claimableIssues);
   return [
     formatIdleInversionMarker(report.repo),
     "",
@@ -175,11 +250,27 @@ export function formatIdleInversionBody(
     "The two disagree. One of them is wrong, and until this is resolved that " +
     "work is not being done by anyone.",
     "",
+    // Issue #459: this issue lives in the worker's repo because that is the
+    // only place its cause can be fixed. Say so, so nobody moves it back.
+    `The subject is \`${report.repo}\`; the defect is here. The census ` +
+    "(`idle_decision_census.ts`), the claim scan " +
+    "(`collect_*_candidates.ts`) and this filer " +
+    "(`idle_inversion_streak.ts`) are all worker code, so no change in the " +
+    "subject repo can resolve it.",
+    "",
     "Every cycle counted here is one in which the claim scan **completed an " +
     "eligibility pass** and still claimed nothing — a cycle that ended on the " +
     "deadline (or drained) before the scan looked is not counted, because " +
-    "nothing refused the work (Issue #437).",
+    "nothing refused the work (Issue #437). A repo the scan **did** claim " +
+    "from this cycle is not counted either (Issue #460).",
     "",
+    ...(issueList === "" ? [] : [
+      "## The issues the census counted",
+      "",
+      issueList,
+      "",
+    ]),
+    ...formatScanSkips(report.scanSkips),
     "## What the census saw",
     "",
     "```",
@@ -189,11 +280,11 @@ export function formatIdleInversionBody(
     "## What to check",
     "",
     "1. `[idle-detect] ... ALERT mis_classification ...` and " +
-    "`[idle-census] ... ALERT inversion ...` in `~/logs/worker.log` — both " +
-    "name this repo on every affected cycle.",
-    "2. The claim scan's own skip reasons for those issues " +
-    "(`no eligible work: ... top-skips=...`). A skip reason that names a " +
-    "*permanent* condition on issues the census calls claimable is the bug.",
+    "`[idle-census] ... ALERT inversion ...` in the worker log for the " +
+    "cycle — both name the subject repo on every affected cycle.",
+    "2. Whether the census models every gate the claim scan applies. Each " +
+    "gate present in one and missing from the other manufactures this " +
+    "alert (Issue #460).",
     "3. Issue #319 was one instance: a merged PR's title mentioning `#N` " +
     "blocked those issue numbers for ever, under a skip reason that read as " +
     "a passing cooldown.",
@@ -242,9 +333,13 @@ function parseCreatedIssueNumber(output: string): number {
 }
 
 /**
- * Find the open escalation issue for `repo`, or null when there is none.
- * Throws when the search itself failed — a lookup we could not perform must
- * not read as "no issue exists" and file a duplicate.
+ * Find the open escalation issue for subject `repo`, or null when there is
+ * none. Throws when the search itself failed — a lookup we could not perform
+ * must not read as "no issue exists" and file a duplicate.
+ *
+ * Issue #459: the search runs against {@link IDLE_INVERSION_TARGET_REPO},
+ * where the issue is filed, while the marker stays keyed on the subject repo
+ * so two hosts watching the same subject still converge on one issue.
  */
 async function findOpenEscalationIssue(
   repo: string,
@@ -254,7 +349,7 @@ async function findOpenEscalationIssue(
     "issue",
     "list",
     "--repo",
-    repo,
+    IDLE_INVERSION_TARGET_REPO,
     "--state",
     "open",
     "--search",
@@ -356,7 +451,8 @@ async function decide(
       "issue",
       "create",
       "--repo",
-      repo,
+      // Issue #459: the worker's own repo — the subject repo cannot fix it.
+      IDLE_INVERSION_TARGET_REPO,
       "--title",
       formatIdleInversionTitle(repo),
       "--body",

@@ -13,6 +13,7 @@ import { IssueCache } from "./issue_cache.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import type { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
 import type {
+  BlockedCandidateInfo,
   DiagnosticSummary,
   IssueFinderDiagnostics,
 } from "./issue_finder_logger.ts";
@@ -132,6 +133,17 @@ export interface FindIssuesResult {
    * behind `ISSUE_FINDER_DEBUG`, but these counts do not.
    */
   diagnosticSummary?: DiagnosticSummary;
+  /**
+   * Per-issue skip reasons collected while scanning (Issue #460).
+   *
+   * `diagnosticSummary` carries the aggregate counts; this carries the
+   * detail behind them, so a caller can say *which* issue was refused and
+   * *why*. GRQ#4465 asked a human to work that out from a log that only ever
+   * printed the top three aggregate reasons. Same rationale as the counts in
+   * Issue #219: the detail rides the result, whether or not the
+   * `ISSUE_FINDER_DEBUG` diagnostics are enabled.
+   */
+  blockedDetails?: BlockedCandidateInfo[];
 }
 
 /** Check whether an error represents a GitHub API rate limit. */

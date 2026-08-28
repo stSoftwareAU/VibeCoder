@@ -12,49 +12,62 @@ import type { FleetAuthorSetDivergence } from "./fleet_authors.ts";
 
 /**
  * Skip reason codes for issue filtering.
+ *
+ * Declared as a runtime tuple, not a bare type union, so other modules can
+ * enumerate the gates rather than restate them (Issue #460). The census's
+ * `CENSUS_SCAN_GATE_COVERAGE` is a total map over this list, so adding a
+ * reason here fails the type check until the census classifies it — the
+ * check that #3526, #3852 and GRQ#4419 each went without.
  */
-export type SkipReason =
-  | "repo-not-allowed"
-  | "repo-deprioritised"
-  | "repo-busy"
-  | "fetch-error"
-  | "assigned"
-  | "blocking-label"
-  | "milestone-occupied"
-  | "pr-blocked"
-  | "closed-pr-cooldown"
+export const SKIP_REASONS = [
+  "repo-not-allowed",
+  "repo-deprioritised",
+  "repo-busy",
+  "fetch-error",
+  "assigned",
+  "blocking-label",
+  "milestone-occupied",
+  "pr-blocked",
+  "closed-pr-cooldown",
   /**
    * Issue #319: a **merged** fleet PR blocks permanently (Issue #3151),
    * unlike the cooldown-windowed closed-unmerged case. Distinct so the
    * scan tally does not report a permanent strand as a passing cooldown.
    */
-  | "merged-pr-permanent"
-  | "dependency-blocked"
-  | "cooldown"
-  | "cross-worker-cooldown"
-  | "label-author-not-allowed"
-  | "non-wrapper-title"
-  | "untrusted-operational-label"
-  | "content-modified-after-approval"
+  "merged-pr-permanent",
+  "dependency-blocked",
+  "cooldown",
+  "cross-worker-cooldown",
+  "label-author-not-allowed",
+  "non-wrapper-title",
+  "untrusted-operational-label",
+  "content-modified-after-approval",
   /** Issue #3649: approval baseline unusable — fail closed rather than bless */
-  | "content-check-error"
+  "content-check-error",
   /** Issue #3715: the actor behind the edit could not be resolved */
-  | "content-editor-unresolved"
+  "content-editor-unresolved",
   /** Issue #3874: workDir names no store, so no baseline exists to verify */
-  | "content-store-unconfigured"
+  "content-store-unconfigured",
   /** Issue #3868: the refreshed approval baseline could not be persisted */
-  | "content-snapshot-persist-failed"
+  "content-snapshot-persist-failed",
   /** Issue #3876: no approval baseline to verify the prompt content against */
-  | "no-approval-snapshot"
-  | "filtered-out"
+  "no-approval-snapshot",
+  "filtered-out",
   /** Issue #1470: worker-to-human escalation — skip issues with needs-human */
-  | "needs-human"
+  "needs-human",
   /** Issue #2752: dependency cycle detected — escalated and dropped */
-  | "dependency-cycle-escalated"
+  "dependency-cycle-escalated",
   /** Issue #2752: milestone-tracking issue labelled work-on — escalated */
-  | "dead-label-tracker-escalated"
+  "dead-label-tracker-escalated",
   /** Issue #4078: blocked by a human-authored PR — nudged and escalated */
-  | "human-pr-blocked-escalated";
+  "human-pr-blocked-escalated",
+] as const;
+
+/**
+ * Skip reason codes for issue filtering. Derived from {@link SKIP_REASONS}
+ * so the type and the enumerable list cannot drift.
+ */
+export type SkipReason = typeof SKIP_REASONS[number];
 
 /**
  * Repo classification for diagnostic output.
