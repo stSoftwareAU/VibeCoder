@@ -180,6 +180,13 @@ branch at the same time. A host that loses the race returns immediately.
   `optionalDependencies`). Per dependency key the higher semver wins, whichever
   branch carries it; a hunk touching anything else, or one undecidable version,
   defers the whole file.
+- `worker/deno/lib/dependency_lock_regen.ts` — lock files are **never**
+  text-merged: `deno.lock`, `package-lock.json`, `Cargo.lock` and `go.sum` are
+  regenerated from the already-merged manifest with the ecosystem's own tool,
+  and only when that toolchain is on `PATH` in the container. An unresolved
+  manifest, a missing toolchain, a failing command or a lock that still carries
+  markers all defer the file, staging nothing. None of these modules is wired
+  into the pass yet, so today every conflict still follows the contract above.
 - `worker/deno/lib/dependency_conflict_native.ts` — the non-JSON manifest rules
   on the same seam: `Cargo.toml` (`[dependencies]`, `[dev-dependencies]`,
   `[build-dependencies]` and their `[target.*.dependencies]` variants, in both
