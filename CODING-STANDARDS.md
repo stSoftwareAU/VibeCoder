@@ -95,6 +95,20 @@ Deno.test("should have validateConfig function", async () => {
 });
 ```
 
+### Fake the external service, do not assert the request
+
+When a function's only observable effect is a call to an external API, do not
+assert the *text* of the request it builds. A test written from the same mental
+model that produced the request cannot disagree with its author: Issue #470
+shipped a reversed `Ref.compare` and the test that pinned the reversed query
+text passed for the whole life of the defect.
+
+Write a fake that models the external API's own rules and assert on the decision
+the worker reaches. `worker/deno/tests/support/github_graphql_fake.ts` is the
+worked example — it resolves aliases, honours `first:` (head) versus `last:`
+(tail) and returns `null` for what it cannot resolve, so a query asked the wrong
+way round receives a truthfully wrong answer and the test goes red.
+
 ### Test coverage expectations
 
 Every new or modified public function should cover the happy path, at least one
