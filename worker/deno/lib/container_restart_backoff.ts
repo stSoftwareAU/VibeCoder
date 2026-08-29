@@ -59,6 +59,11 @@ import {
   QUOTA_PAUSE_EXIT_STATUS,
   type QuotaPauseMarker,
 } from "./quota_pause.ts";
+import {
+  escalationHostId,
+  fileOrCommentIssue,
+  resolveOriginRepo,
+} from "./host_escalation.ts";
 
 /** Module name used for the self-heal events this file emits. */
 export const SELF_HEAL_MODULE = "container_restart";
@@ -948,8 +953,55 @@ export interface RecordContainerOutcomeOptions {
   now?: () => number;
   /** Notification seam (tests inject a recorder). */
   send?: CrashNotifier;
+  /**
+   * Fallback escalation seam (Issue #556) — the worker's own repository,
+   * used when the crash channel has nobody to tell. Tests inject a recorder;
+   * production uses {@link escalateHostFailure}.
+   */
+  escalateHost?: (report: HostFailureReport) => Promise<unknown>;
+  /**
+   * Checkout whose `origin` names the repository the fallback files into.
+   * Defaults to the working directory: the supervisor invokes this command
+   * from the worker checkout.
+   */
+  repoDir?: string;
   /** Sink for warnings (defaults to `console.error` via the state reporter). */
   warn?: (message: string) => void;
+}
+
+/**
+ * A launcher failure with no issue to report on (Issue #556).
+ *
+ * The crash channel comments on the issue the worker was working on. A
+ * launcher that dies before claiming one has no such target — and that is the
+ * case an operator most needs to hear about, because the host is doing
+ * nothing at all. This report goes to the worker's own repository instead.
+ */
+export interface HostFailureReport {
+  /** Checkout whose `origin` names the repository to file into. */
+  repoDir: string;
+  /** Exact issue title — also the deduplication key. */
+  title: string;
+  /** Markdown body. */
+  body: string;
+}
+
+/**
+ * Production escalator: file (or comment on) the host's own failure issue.
+ *
+ * Separated from the caller so tests can record the report without a git or
+ * GitHub round trip, and so a failure to resolve the repository is reported
+ * as an undelivered escalation rather than a silent success.
+ */
+export async function escalateHostFailure(
+  report: HostFailureReport,
+): Promise<void> {
+  const repo = await resolveOriginRepo(report.repoDir);
+  await fileOrCommentIssue({
+    repo,
+    title: report.title,
+    body: report.body,
+  });
 }
 
 /** What the supervisor is told after recording an outcome. */
@@ -1179,6 +1231,40 @@ export async function recordContainerRestartOutcome(
     }
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
+  }
+
+  // Issue #556: the crash channel reports on the issue the worker was
+  // working on, and a launcher that never got that far has none — the exact
+  // case an operator most needs to hear about, because nothing is being
+  // worked and nothing will be. Fall back to the worker's own repository.
+  // Only for `no_channel`: `rate_limited` is a deliberate silence.
+  // The fallback is opt-in by construction: the library files nothing unless
+  // the caller named the checkout to file into (the command does) or injected
+  // its own escalator (tests do), so no unit test can reach GitHub by
+  // default.
+  const canEscalateToHostRepo = options.escalateHost !== undefined ||
+    options.repoDir !== undefined;
+  if (!notified && reason === "no_channel" && canEscalateToHostRepo) {
+    const host = escalationHostId();
+    try {
+      await (options.escalateHost ?? escalateHostFailure)({
+        repoDir: options.repoDir ?? ".",
+        title: `Vibe Coder launcher failing on ${host} (${decision.phase})`,
+        body: [
+          `The launcher on \`${host}\` has failed ` +
+          `${decision.state.consecutiveFailures} consecutive runs and has no ` +
+          `issue in flight to report on, so this is the report.`,
+          "",
+          params.logTail,
+        ].join("\n"),
+      });
+      notified = true;
+      reason = null;
+    } catch (err) {
+      reason = `host_escalation_failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+    }
   }
 
   // A suppressed escalation is queued, not dropped: the next cycle retries it
