@@ -14,9 +14,12 @@ maintain this repo, not a feed the worker consumes.
 
 Three of them, and they matter more than the list:
 
-1. **Prompts stay pure.** Attribution lives here, never inside a prompt
-   template. A prompt is instructions for an agent; a bibliography in the middle
-   of one is tokens that buy nothing.
+1. **Prompts stay pure.** Attribution lives here, not inside a prompt template.
+   A prompt is instructions for an agent; a bibliography in the middle of one is
+   tokens that buy nothing. Where a prompt does name a guide — the
+   best-practices buckets carry a short "link, do not restate" list — it is
+   there so a *finding* can cite it, which is a working instruction rather than
+   credit.
 2. **Nothing is fetched at run time.** The worker never reaches out to any URL
    on this page while it works. A prompt that pulls its content from the
    internet is a supply-chain attack with a friendly face — one edit to a page
