@@ -45,6 +45,7 @@
 
 import { parseHttpStatus } from "./alert_feeds/code_scanning_alerts.ts";
 import { runGhCommand } from "./github.ts";
+import { listAllOpenIssueTitles } from "./idle_task_snapshot.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import {
   extractFindingId,
@@ -1551,10 +1552,17 @@ export function createDefaultSweepDeps(): SweepDeps {
       }
     },
     runWorkerScanFn: async ({ slug, repoDir }) => {
+      // Repo-wide open-issue titles (Issue #537) — the semantic second line
+      // of dedup. A gh failure returns an empty list, which renders `(none)`.
+      const openIssueTitles = await listAllOpenIssueTitles(
+        slug,
+        (args) => runGhCommand(args),
+      );
       const result = await runSecurityScan({
         repo: slug,
         workDir: repoDir,
         knownOpenFindingIds: [],
+        openIssueTitles,
         suppressedIds: [],
       });
       return result.ok

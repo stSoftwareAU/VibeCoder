@@ -42,9 +42,12 @@ import { runGhCommand as defaultGhCommand } from "../github.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
+  listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  type OpenIssueTitle,
   parseGhJsonArray,
+  renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
@@ -126,6 +129,11 @@ export interface RunScanOptions {
   workDir: string;
   /** Stable ids already open as `dead-code` issues — skip-list. */
   knownOpenFindingIds: string[];
+  /**
+   * Every issue currently open in the repo, whatever its label — the
+   * cross-label dedup list (Issue #537).
+   */
+  openIssueTitles: OpenIssueTitle[];
   /** Stable ids the run should suppress (in-source markers, prior triage). */
   suppressedIds: string[];
 }
@@ -154,6 +162,12 @@ export function assembleDeadCodePrompt(
   opts: {
     suppressedIds: readonly string[];
     knownOpenFindingIds: readonly string[];
+    /**
+     * Every issue currently open in the target repo, whatever its
+     * label (Issue #537) — the semantic second line of dedup. An
+     * empty list renders the `(none)` sentinel.
+     */
+    openIssueTitles?: readonly OpenIssueTitle[];
     attributionFooter?: string;
   },
 ): string {
@@ -163,10 +177,12 @@ export function assembleDeadCodePrompt(
   const known = opts.knownOpenFindingIds.length > 0
     ? opts.knownOpenFindingIds.join("\n")
     : "(none)";
+  const openIssues = renderOpenIssueTitles(opts.openIssueTitles ?? []);
   const footer = opts.attributionFooter ?? "";
   return template
     .replaceAll("{{SUPPRESSED_IDS}}", suppressed)
     .replaceAll("{{KNOWN_OPEN_FINDING_IDS}}", known)
+    .replaceAll("{{OPEN_ISSUE_TITLES}}", openIssues)
     .replaceAll("{{ATTRIBUTION_FOOTER}}", footer);
 }
 
@@ -266,6 +282,7 @@ async function defaultRunScan(
   const prompt = assembleDeadCodePrompt(promptResult.value, {
     suppressedIds: opts.suppressedIds,
     knownOpenFindingIds: opts.knownOpenFindingIds,
+    openIssueTitles: opts.openIssueTitles,
   });
 
   const result = await runIdleTaskClaude({
@@ -389,12 +406,22 @@ export function createDeadCodeTemplate(
         ghCommandFn,
       );
 
+      // Repo-wide open-issue titles (Issue #537) — the semantic second
+      // line of dedup, so a finding already open under another label is
+      // not re-filed. A gh failure returns an empty list, which renders
+      // `(none)` and leaves the scan running.
+      const openIssueTitles = await listAllOpenIssueTitles(
+        opts.repo,
+        ghCommandFn,
+      );
+
       // 4. Invoke Claude. It files surviving findings via `gh issue
       //    create` directly — no JSON parsing here.
       const scanResult = await runScanFn({
         repo: opts.repo,
         workDir: opts.workDir,
         knownOpenFindingIds,
+        openIssueTitles,
         suppressedIds: [],
       });
       if (!scanResult.ok) {

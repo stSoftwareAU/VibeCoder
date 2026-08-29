@@ -43,6 +43,7 @@ import { buildAttributionFooter } from "../idle_task_attribution.ts";
 import { buildPromptPreviewBody } from "../idle_task_body_preview.ts";
 import {
   diffNewlyFiled,
+  listAllOpenIssueTitles,
   listOpenIssueNumbersByLabel,
   parseGhJsonArray,
 } from "../idle_task_snapshot.ts";
@@ -283,7 +284,16 @@ export function createSecurityScanTemplate(
         ghCommandFn,
       );
 
-      // 2. Run the scanner. Claude itself files findings via
+      // 2. Repo-wide open-issue titles (Issue #537) — the semantic second
+      //    line of dedup, so a finding already open under another label is
+      //    not re-filed. A gh failure returns an empty list, which renders
+      //    `(none)` and leaves the scan running.
+      const openIssueTitles = await listAllOpenIssueTitles(
+        opts.repo,
+        ghCommandFn,
+      );
+
+      // 3. Run the scanner. Claude itself files findings via
       //    `gh issue create` — we never see a JSON block or summary.
       //    Issue #4010: honour the tier the wrapper was filed for; an
       //    unstamped wrapper leaves `model` unset and the phase default
@@ -292,6 +302,7 @@ export function createSecurityScanTemplate(
         repo: opts.repo,
         workDir: opts.workDir,
         knownOpenFindingIds: [],
+        openIssueTitles,
         suppressedIds: [],
         ...(opts.modelTier !== undefined ? { model: opts.modelTier } : {}),
       });
@@ -303,7 +314,7 @@ export function createSecurityScanTemplate(
         };
       }
 
-      // 3. Snapshot again and compute the newly-filed set.
+      // 4. Snapshot again and compute the newly-filed set.
       const after = await listOpenIssueNumbersByLabel(
         opts.repo,
         "security",
@@ -311,7 +322,7 @@ export function createSecurityScanTemplate(
       );
       const newlyFiled = diffNewlyFiled(before, after);
 
-      // 4. Additive SARIF emission (Issue #3538). Upload the just-filed
+      // 5. Additive SARIF emission (Issue #3538). Upload the just-filed
       //    findings to GitHub code scanning so they dedup against tool
       //    alerts and share the code-scanning triage UI. This never fails
       //    the wrapper task — its status is appended to the summary.

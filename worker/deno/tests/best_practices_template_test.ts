@@ -40,6 +40,7 @@ import {
   renderBestPracticesSummary,
 } from "../lib/idle_task_templates/best_practices_template.ts";
 import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
+import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
 import type {
   BucketPick,
   SupportedLanguage,
@@ -1168,4 +1169,115 @@ Deno.test("renderBestPracticesSummary - issues sort ascending", () => {
     "Best-practices scan complete (bucket: typescript). Filed 3 issues: " +
       "#200, #201, #202",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Repo-wide open-issue titles (Issue #537)
+// ---------------------------------------------------------------------------
+
+/**
+ * gh stub for the repo-wide open-issue title lookup — `issue list --json
+ * number,title` with neither `--label` nor `--search`. The wrapper-body view
+ * still returns a typescript bucket so `runTask` reaches the scan; every
+ * other call returns an empty list. `fail` makes the title lookup (and only
+ * that lookup) throw.
+ */
+function makeTitleGhStub(
+  titles: Array<{ number: number; title: string }>,
+  fail = false,
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    const jsonIdx = args.indexOf("--json");
+    const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
+    if (
+      jsonField === "number,title" && !args.includes("--label") &&
+      !args.includes("--search")
+    ) {
+      return fail
+        ? Promise.reject(new Error("gh: rate limited"))
+        : Promise.resolve(JSON.stringify(titles));
+    }
+    if (args[0] === "issue" && args[1] === "view") {
+      return Promise.resolve(
+        JSON.stringify({
+          body: "**Bucket:** `typescript`\n\n# Best-Practices Review",
+        }),
+      );
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+Deno.test("assembleBestPracticesPrompt - open issue titles are substituted", () => {
+  const out = assembleBestPracticesPrompt(
+    "Already open:\n{{OPEN_ISSUE_TITLES}}",
+    STUB_GUIDE,
+    {
+      bucket: "typescript",
+      suppressedIds: [],
+      knownOpenFindingIds: [],
+      openIssueTitles: [{ number: 37, title: "Add a CODEOWNERS file" }],
+    },
+  );
+  assert(!out.includes("{{OPEN_ISSUE_TITLES}}"));
+  assertStringIncludes(out, "#37 — Add a CODEOWNERS file");
+});
+
+Deno.test("assembleBestPracticesPrompt - an empty open-issue list renders (none)", () => {
+  const out = assembleBestPracticesPrompt(
+    "Already open:\n{{OPEN_ISSUE_TITLES}}",
+    STUB_GUIDE,
+    {
+      bucket: "typescript",
+      suppressedIds: [],
+      knownOpenFindingIds: [],
+      openIssueTitles: [],
+    },
+  );
+  assertStringIncludes(out, "Already open:\n(none)");
+});
+
+Deno.test("runTask - repo-wide open issue titles reach the scan runner", async () => {
+  const seen: OpenIssueTitle[][] = [];
+  const tpl = createBestPracticesTemplate({
+    ghCommandFn: makeTitleGhStub([
+      { number: 37, title: "Add a CODEOWNERS file" },
+    ]),
+    checkLinterInCIFn: stubLinterConfigured,
+    runScanFn: (opts) => {
+      seen.push(opts.openIssueTitles);
+      return Promise.resolve({ ok: true, value: true });
+    },
+  });
+
+  const result = await tpl.runTask({
+    repo: "org/repo",
+    workDir: "/tmp/repo",
+    idleTaskIssueNumber: 50,
+  });
+
+  assert(result.ok);
+  assertEquals(seen, [[{ number: 37, title: "Add a CODEOWNERS file" }]]);
+});
+
+Deno.test("runTask - a gh failure listing titles degrades to an empty list", async () => {
+  const seen: OpenIssueTitle[][] = [];
+  const tpl = createBestPracticesTemplate({
+    ghCommandFn: makeTitleGhStub([], true),
+    checkLinterInCIFn: stubLinterConfigured,
+    runScanFn: (opts) => {
+      seen.push(opts.openIssueTitles);
+      return Promise.resolve({ ok: true, value: true });
+    },
+  });
+
+  const result = await tpl.runTask({
+    repo: "org/repo",
+    workDir: "/tmp/repo",
+    idleTaskIssueNumber: 50,
+  });
+
+  // The scan still ran, with the `(none)` sentinel's empty list.
+  assert(result.ok);
+  assertEquals(seen, [[]]);
 });

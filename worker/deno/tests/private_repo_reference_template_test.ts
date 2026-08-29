@@ -49,6 +49,7 @@ import { IDLE_TASK_LABEL } from "../lib/idle_task_issue.ts";
 import type { Logger } from "../types.ts";
 import type { Result } from "../types.ts";
 import type { RepoVisibility } from "../lib/repo_visibility.ts";
+import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -476,4 +477,112 @@ Deno.test("claim handler - dispatches a private-repo-reference wrapper to runTas
     result.summary,
     "Private-repo reference audit complete. Filed 1 issues: #11",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Repo-wide open-issue titles (Issue #537)
+// ---------------------------------------------------------------------------
+
+/**
+ * gh stub for the repo-wide open-issue title lookup — `issue list --json
+ * number,title` with neither `--label` nor `--search`. Every other call
+ * returns an empty list, so the snapshot diff stays empty and the only
+ * behaviour under test is what reaches the scan runner. `fail` makes the
+ * title lookup (and only that lookup) throw.
+ */
+function makeTitleGhStub(
+  titles: Array<{ number: number; title: string }>,
+  fail = false,
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    const jsonIdx = args.indexOf("--json");
+    const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
+    if (
+      jsonField === "number,title" && !args.includes("--label") &&
+      !args.includes("--search")
+    ) {
+      return fail
+        ? Promise.reject(new Error("gh: rate limited"))
+        : Promise.resolve(JSON.stringify(titles));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+Deno.test("assemblePrivateRepoReferencePrompt - open issue titles are substituted", () => {
+  const out = assemblePrivateRepoReferencePrompt(
+    "Already open:\n{{OPEN_ISSUE_TITLES}}",
+    {
+      suppressedIds: [],
+      knownOpenFindingIds: [],
+      openIssueTitles: [
+        { number: 37, title: "Add a CODEOWNERS file" },
+        { number: 64, title: "Repo has no CODEOWNERS" },
+      ],
+    },
+  );
+  assert(!out.includes("{{OPEN_ISSUE_TITLES}}"));
+  assertStringIncludes(out, "#37 — Add a CODEOWNERS file");
+  assertStringIncludes(out, "#64 — Repo has no CODEOWNERS");
+});
+
+Deno.test("assemblePrivateRepoReferencePrompt - an empty open-issue list renders (none)", () => {
+  const out = assemblePrivateRepoReferencePrompt(
+    "Already open:\n{{OPEN_ISSUE_TITLES}}",
+    {
+      suppressedIds: [],
+      knownOpenFindingIds: [],
+      openIssueTitles: [],
+    },
+  );
+  assertEquals(out, "Already open:\n(none)");
+});
+
+Deno.test("runTask - repo-wide open issue titles reach the scan runner", async () => {
+  const seen: OpenIssueTitle[][] = [];
+  const t = createPrivateRepoReferenceTemplate({
+    ghCommandFn: makeTitleGhStub([
+      { number: 37, title: "Add a CODEOWNERS file" },
+    ]),
+    loadPromptFn: okPrompt,
+    getVisibilityFn: visibility("public"),
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    runScanFn: (opts) => {
+      seen.push(opts.openIssueTitles);
+      return Promise.resolve({ ok: true, value: true });
+    },
+  });
+
+  const result = await t.runTask({
+    repo: "acme/widget",
+    workDir: "/tmp/widget",
+    idleTaskIssueNumber: 100,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(seen, [[{ number: 37, title: "Add a CODEOWNERS file" }]]);
+});
+
+Deno.test("runTask - a gh failure listing titles degrades to an empty list", async () => {
+  const seen: OpenIssueTitle[][] = [];
+  const t = createPrivateRepoReferenceTemplate({
+    ghCommandFn: makeTitleGhStub([], true),
+    loadPromptFn: okPrompt,
+    getVisibilityFn: visibility("public"),
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    runScanFn: (opts) => {
+      seen.push(opts.openIssueTitles);
+      return Promise.resolve({ ok: true, value: true });
+    },
+  });
+
+  const result = await t.runTask({
+    repo: "acme/widget",
+    workDir: "/tmp/widget",
+    idleTaskIssueNumber: 100,
+  });
+
+  // The scan still ran, with the `(none)` sentinel's empty list.
+  assertEquals(result.ok, true);
+  assertEquals(seen, [[]]);
 });
