@@ -31,6 +31,7 @@ import {
   type ContainerRestartOutcome,
   describeFailurePhase,
   escalationThresholdFor,
+  type HostFailureReport,
   loadContainerRestartState,
   recordContainerRestartOutcome,
   resolveContainerRestartConfig,
@@ -356,21 +357,29 @@ Deno.test("buildContainerEscalationParams - each phase is described in the messa
   }
 });
 
-Deno.test("recordContainerRestartOutcome - escalation is rate-limited by the crash cooldown", async () => {
+Deno.test("recordContainerRestartOutcome - a refused re-notification is queued, not dropped", async () => {
   const harness = await setupHarness();
   try {
-    // No `send` override: the real crash-notification channel runs with an
-    // empty repo (no GitHub call, no webhook configured), so only its
-    // cooldown state is exercised. The cooldown is set beyond the first
-    // re-notify interval so a due re-notification still meets a closed
-    // channel.
+    // The channel delivers the crossing and then refuses the due update —
+    // the shape a crash cooldown produces. What matters here is what the
+    // caller does with a refusal: queue it and record it as skipped.
     let nowSeconds = 1_700_000_000;
+    let sends = 0;
     const options = {
       workDir: harness.workDir,
       phaseMarker: "container_run",
       config: FAST_CONFIG,
-      crashConfig: { ...harness.crashConfig, cooldownSeconds: 7200 },
+      crashConfig: harness.crashConfig,
       now: () => nowSeconds,
+      send: () => {
+        sends += 1;
+        return Promise.resolve({
+          ok: true as const,
+          value: sends === 1
+            ? { notified: true }
+            : { notified: false, reason: "rate_limited" },
+        });
+      },
     };
 
     await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
@@ -392,7 +401,7 @@ Deno.test("recordContainerRestartOutcome - escalation is rate-limited by the cra
     assertEquals(afterThreshold.escalationReason, "suppressed_same_streak");
 
     // Once the re-notification falls due, the channel is entered again — and
-    // its cooldown is what refuses this one.
+    // refuses this one.
     nowSeconds += 3600;
     const reNotify = await recordContainerRestartOutcome({
       ...options,
@@ -410,6 +419,125 @@ Deno.test("recordContainerRestartOutcome - escalation is rate-limited by the cra
       escalations.some((e) => e.result === "skipped"),
       "a rate-limited escalation must be recorded as skipped",
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The host's own escalation channel (Issue #556). A launcher failure has no
+// in-flight issue to comment on, and answering "notified" for that silence is
+// how GRQ-23 stayed down for ten hours with the escalation path recording
+// success and no issue existing anywhere.
+// ---------------------------------------------------------------------------
+
+Deno.test("recordContainerRestartOutcome - a crossing with no in-flight issue reports to the worker's own repo", async () => {
+  const harness = await setupHarness();
+  try {
+    // The real crash channel runs: empty repo, no webhook — it has nobody to
+    // tell, and must say so rather than claim delivery.
+    let nowSeconds = 1_700_000_000;
+    const reports: { title: string; body: string }[] = [];
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => nowSeconds,
+      repoDir: harness.workDir,
+      escalateHost: (report: HostFailureReport) => {
+        reports.push({ title: report.title, body: report.body });
+        return Promise.resolve();
+      },
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const atThreshold = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+
+    assertEquals(atThreshold.escalated, true);
+    assertEquals(atThreshold.escalationReason, null);
+    assertEquals(reports.length, 1);
+    // Titled for the host and the phase, so one host's ongoing launcher
+    // failure is one issue rather than one per cycle.
+    assertStringIncludes(reports[0]!.title, "launcher failing on");
+    assertStringIncludes(reports[0]!.title, "worker_run");
+    assertStringIncludes(reports[0]!.body, "3 consecutive runs");
+
+    // A non-delivery must not have started a cooldown: when the update falls
+    // due it is reported too, rather than being refused by a notification
+    // that never happened.
+    nowSeconds += 3600;
+    const reNotify = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+    assertEquals(reNotify.escalated, true);
+    assertEquals(reports.length, 2);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a fallback that cannot deliver is recorded as undelivered", async () => {
+  const harness = await setupHarness();
+  try {
+    // gh refuses the write: the escalation is NOT delivered, and the streak
+    // must carry it as pending instead of closing the incident.
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => 1_700_000_000,
+      repoDir: harness.workDir,
+      escalateHost: () => Promise.reject(new Error("gh issue create exited 1")),
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const atThreshold = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+
+    assertEquals(atThreshold.escalated, false);
+    assertStringIncludes(
+      atThreshold.escalationReason ?? "",
+      "host_escalation_failed",
+    );
+    assertEquals(atThreshold.escalationPendingAttempts, 1);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - the fallback stays inert without a checkout to file into", async () => {
+  const harness = await setupHarness();
+  try {
+    // No repoDir and no injected escalator: a caller that named no repository
+    // files nothing. Unit tests reach the escalation path constantly; none of
+    // them may reach GitHub by default.
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => 1_700_000_000,
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const atThreshold = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+
+    assertEquals(atThreshold.escalated, false);
+    assertEquals(atThreshold.escalationReason, "no_channel");
   } finally {
     await harness.cleanup();
   }
