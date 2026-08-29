@@ -282,3 +282,7 @@ docs/security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md:
 docs/SPEC-KIT-COMPARISON.md:
   title: "Vibe Coder: Spec-Kit Comparison"
   page_icon: "🔍"
+
+docs/REFERENCES.md:
+  title: "Vibe Coder: References"
+  page_icon: "📚"
