@@ -34,6 +34,42 @@ export interface CrashNotificationConfig {
   webhookUrl?: string;
 }
 
+/** Leaf name of the crash-notification state directory on the work volume. */
+export const CRASH_STATE_DIR_NAME = ".crash-state";
+
+/**
+ * Where the rate-limit state file belongs (Issue #515).
+ *
+ * Host-side that is `~/.vibe-coder`, beside the operator's other worker
+ * state. **Inside the container it is not:** `/home/vibe/.vibe-coder` is the
+ * root-owned parent the runtime creates for the read-only credential and
+ * config mounts, on the image layer — every write there is refused today and
+ * refused louder once the container root filesystem is mounted read-only
+ * (Issue #509). In the container the state belongs on the `vibe-work` volume,
+ * where it also survives the container restart the rate limit exists to
+ * throttle.
+ *
+ * @param workDir - The resolved work directory (the volume mount inside the
+ *   container). Required for the in-container branch.
+ * @param env - Environment lookup, injectable for testing.
+ * @returns The directory the rate-limit state file is written to.
+ */
+export function resolveCrashStateDir(
+  workDir: string | undefined,
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): string {
+  const explicit = env("CRASH_NOTIFICATION_STATE_DIR")?.trim();
+  if (explicit) return explicit;
+  // VIBE_IMAGE_AGENT_PROVIDERS is stamped into the image, so it is the
+  // container signal every other module uses (see optional_feature_env.ts).
+  const inContainer = env("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
+  const trimmedWorkDir = workDir?.trim();
+  if (inContainer && trimmedWorkDir) {
+    return `${trimmedWorkDir}/${CRASH_STATE_DIR_NAME}`;
+  }
+  return `${env("HOME") ?? "~"}/.vibe-coder`;
+}
+
 /** Crash notification parameters. */
 export interface CrashNotificationParams {
   /** Exit code of the crashed process. */
@@ -576,8 +612,17 @@ export async function sendCrashNotification(
   // Post to webhook if configured
   await notifyCrashViaWebhook(config, params);
 
-  // Record that we sent a notification
-  await recordNotificationSent(config);
+  // Record that we sent a notification. A failure here means the next crash
+  // in the loop is NOT rate-limited, so it is said out loud rather than
+  // discarded (Issue #515).
+  const recorded = await recordNotificationSent(config);
+  if (!recorded.ok) {
+    console.warn(
+      `[crash-notification] Could not record the rate-limit state in ` +
+        `${config.stateDir}: ${recorded.error.message} — the next crash ` +
+        `notification will not be rate-limited`,
+    );
+  }
 
   return { ok: true, value: { notified: true } };
 }

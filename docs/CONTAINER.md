@@ -477,10 +477,12 @@ over the virtiofs `/workspace` mount. The entrypoint now:
   Override with `VIBE_DENO_CACHE_DIR`; the `deno-cache-guard` housekeeping
   step wipes the cache when it exceeds `DENO_CACHE_MAX_BYTES` (default
   2 GiB — a cold start is the only cost of losing it);
-- stages `worker/deno` into VM-local storage (`~/.worker-src`) and runs the
-  driver from there, so module reads stop crossing virtiofs. The mounted
-  checkout stays the source of truth (`--base-dir` still points at it), and
-  any staging failure falls back loudly to the previous behaviour.
+- stages `worker/deno` into VM-local storage (`${VIBE_SCRATCH_DIR}/worker-src`
+  — the per-launch scratch root, see
+  [Containment → the writable-path rule](CONTAINMENT.md#the-writable-path-rule))
+  and runs the driver from there, so module reads stop crossing virtiofs. The
+  mounted checkout stays the source of truth (`--base-dir` still points at
+  it), and any staging failure falls back loudly to the previous behaviour.
 
 ## The work volume has two tiers (Issue #242)
 
