@@ -122,7 +122,10 @@ one when a mount source is the host home directory or an ancestor of it, a
 container-runtime control socket, a relative path, or a path carrying
 characters the launcher's NUL framing could not pass. The finished argument
 list is then re-checked for `--privileged`, `--cap-add`, `--device`, published
-ports and host namespaces before it is returned.
+ports and host namespaces before it is returned — and, on a runtime that
+supports it, for the *presence* of `--read-only` and its scratch `tmpfs`
+mounts (see below), so the immutable root filesystem cannot be dropped by a
+later edit either.
 
 ## What is deliberately not exposed
 
@@ -149,19 +152,51 @@ must not merely be unreadable: it must not exist inside the container at all.
 CI sets `VIBE_CONTAINMENT_REQUIRED=1` so the suite cannot end up silently
 skipped.
 
-## The container root filesystem is disposable
+## The container root filesystem is read-only
 
 The container is an execution environment, not the durable worker state:
 
+- **`--read-only`** — the root filesystem is **immutable** (Issue #516). A
+  compromise inside the container cannot plant a binary on `PATH`, edit the
+  image's own scripts, or leave anything at all behind outside the writable
+  exceptions below.
 - `--rm` removes the container on exit, so nothing accumulates between runs.
-- `/tmp` is a writable `tmpfs` (`rw,nosuid,nodev,exec,mode=1777`), so scratch
-  state — including the browser profile at
-  `/tmp/vibe-playwright-profile` — dies with the container.
 - `--cap-drop ALL` and `--security-opt no-new-privileges` are passed wherever
   the runtime understands them. Apple `container` takes neither, because each
   container is already its own lightweight VM.
 - The image is rebuilt only when its content-derived reference is absent
   locally, so a changed container definition is simply a different image.
+
+### The writable exceptions
+
+Everything else fails with `EROFS` — loudly, in the worker log, rather than
+corrupting state:
+
+| Writable path | What it is | Options |
+| ------------- | ---------- | ------- |
+| `/tmp` | scratch `tmpfs` — the entrypoint's `VIBE_SCRATCH_DIR`, `TMPDIR`, and the browser profile at `/tmp/vibe-playwright-profile` | `rw,nosuid,nodev,exec,mode=1777` |
+| `/var/tmp` | scratch `tmpfs` — POSIX's other world-writable scratch directory, which tools reach for without asking | `rw,nosuid,nodev,noexec,mode=1777` |
+| `/home/vibe/auto-issue-work` (+ its approval-state sibling) | the named volumes: clones, caches, agent state | read/write mounts |
+| `/home/vibe/logs` | the log mount | read/write mount |
+
+`exec` only where it is genuinely needed: the agent runs scratch scripts it
+writes under `/tmp`, and `/var/tmp` is pure data. `/run` is deliberately
+**not** given a `tmpfs` — the image ships it root-owned `0755` and the worker
+runs as an unprivileged account, so it was never writable from inside the
+container and a `tmpfs` would only hand a root this container does not have
+somewhere to write.
+
+`--read-only` and those `tmpfs` mounts are **one decision, not two**: a
+read-only root with no writable scratch is a container that cannot run, so
+`worker/deno/lib/container_launch.ts` makes `tmpfs` support a precondition of
+read-only support — a runtime dialect claiming one without the other is refused
+loudly — and a runtime that takes no `tmpfs` gets **neither**. Apple
+`container` is that runtime (`supportsTmpfs: false`, `supportsReadOnly:
+false`): each container there is its own lightweight VM, which is the
+compensating control, and the entrypoint puts its scratch root on the
+`vibe-work` volume instead. The finished argument list is re-checked both
+ways — the flag must be present for a supporting runtime, and it can never
+appear without its scratch — so no future edit can quietly drop half the pair.
 
 Durable state lives **only** in the mounted workspace, logs, configuration and
 credentials. Anything the worker writes elsewhere is gone at the next launch —
@@ -174,10 +209,11 @@ which is what makes restarting the container a genuine repair.
 > resolves below — never under `${HOME}` itself and never anywhere else on the
 > root filesystem.
 
-The rule exists so the root filesystem can be mounted read-only (`--read-only`)
-without breaking a run. `${HOME}` is `/home/vibe`, an **image layer**: it looks
-writable today and stops being writable the moment that flag is set, so a
-writer left there is a launch failure waiting to happen. `container/entrypoint.sh`
+The rule exists so the root filesystem can be mounted read-only (`--read-only`,
+now the default wherever the runtime supports it — see above) without breaking
+a run. `${HOME}` is `/home/vibe`, an **image layer**: it is not writable at
+all once that flag is set, so a writer left there is a launch failure, not a
+theoretical one. `container/entrypoint.sh`
 resolves two roots before its first write and exports them:
 
 | Root | Env | Where | For |

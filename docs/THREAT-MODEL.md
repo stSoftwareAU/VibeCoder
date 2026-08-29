@@ -188,7 +188,7 @@ here exists.
 | **C19** | Host toolchain upgrades gated on release age and pinned to the version the gate approved | `worker/deno/lib/tool_release_age.ts` | `worker/deno/tests/tool_release_age_test.ts` |
 | **C20** | Agent child environment built by denying credential-shaped variables by default | `worker/deno/lib/claude_env.ts` | `worker/deno/tests/claude_env_test.ts` |
 | **C21** | Non-interactive credential provisioning into one owner-only directory, mounted read-only per provider sub-directory | `worker/deno/lib/credential_preflight.ts`, `worker/deno/lib/container_launch.ts` | `worker/deno/tests/credential_preflight_test.ts`, `worker/deno/tests/container_launch_test.ts` |
-| **C22** | Execution containment — a disposable container with an explicit mount set, no host networking and no published ports | `worker/deno/lib/container_launch.ts`, `worker/deno/lib/container_runtime.ts` | `worker/deno/tests/container_containment_test.ts` |
+| **C22** | Execution containment — a disposable container with an explicit mount set, an immutable (`--read-only`) root filesystem whose only writable exceptions are the scratch `tmpfs` mounts and the named volumes, no host networking and no published ports | `worker/deno/lib/container_launch.ts`, `worker/deno/lib/container_runtime.ts` | `worker/deno/tests/container_containment_test.ts`, `worker/deno/tests/container_launch_test.ts` |
 | **C23** | Secret redaction rules applied per outbound sink, linear-time over untrusted input | `worker/deno/lib/secret_redaction.ts` | `worker/deno/tests/secret_redaction_test.ts`, `worker/deno/tests/secret_redaction_redos_test.ts` |
 | **C24** | Structural redaction chokepoints — the patched console, worker `gh` bodies, and agent-authored `gh` bodies including `--body-file` | `worker/deno/lib/console_redaction.ts`, `worker/deno/lib/gh_body_redaction.ts` | `worker/deno/tests/console_redaction_test.ts`, `worker/deno/tests/gh_body_redaction_test.ts` |
 | **C25** | Worker identity guard — the authenticated login must match the configured service-account allowlist | `worker/deno/lib/identity_guard.ts` | `worker/deno/tests/identity_guard_test.ts` |
@@ -242,7 +242,11 @@ holds *after* the agent has already been persuaded:
 - it never sees a credential it does not need (C20), and the ones it does see
   are read-only mounts of a single provisioned directory (C21),
 - it runs in a disposable container with an explicit mount set, no inbound
-  ports and no host networking (C22).
+  ports and no host networking (C22),
+- and that container's root filesystem is **immutable**: it can persist
+  nothing outside the per-launch `tmpfs` scratch and the work volume it is
+  meant to write, so a compromise does not survive the launch it happened in
+  (C22).
 
 A change that weakens one of these in exchange for a stronger prompt-level
 defence is a bad trade, and this document exists to make that visible.
