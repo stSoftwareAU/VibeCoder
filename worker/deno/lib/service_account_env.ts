@@ -29,6 +29,10 @@ import {
   GH_RUNTIME_CONFIG_SUFFIX,
   SCRATCH_DIR_ENV,
 } from "./credential_preflight.ts";
+import {
+  isGhConfigDirUsable,
+  restageGhConfigDir,
+} from "./gh_credential_stage.ts";
 
 /** Resolved env entries; absent when the operator did not configure them. */
 export interface ServiceAccountEnv {
@@ -183,8 +187,9 @@ export function applyServiceAccountEnv(
     // writable copy rather than hand gh a directory it cannot write.
     Deno.env.set(
       "GH_CONFIG_DIR",
-      inContainer ? ensureWritableGhConfigDir(env.GH_CONFIG_DIR) : env
-        .GH_CONFIG_DIR,
+      inContainer
+        ? ensureWritableGhConfigDir(env.GH_CONFIG_DIR, home)
+        : env.GH_CONFIG_DIR,
     );
   }
   if (env.GIT_SSH_COMMAND !== undefined) {
@@ -206,18 +211,6 @@ function stagedGhConfigDirsFromEnv(): string[] {
   ].filter((dir): dir is string => dir !== undefined && dir.length > 0);
 }
 
-/** True when a file can be created inside `dir` (probe written and removed). */
-function isWritableDir(dir: string): boolean {
-  const probePath = `${dir}/.vibe-write-probe`;
-  try {
-    Deno.writeTextFileSync(probePath, "");
-    Deno.removeSync(probePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Return a `GH_CONFIG_DIR` gh can write to.
  *
@@ -228,35 +221,17 @@ function isWritableDir(dir: string): boolean {
  * staging decision in different languages, and when they disagree the run
  * dies at `gh api user` with a message no log carried (Issue #509).
  */
-function ensureWritableGhConfigDir(dir: string): string {
-  if (isWritableDir(dir)) return dir;
-  const tmp = Deno.env.get("TMPDIR")?.replace(/\/+$/, "") ?? "/tmp";
-  const scratch = Deno.env.get(SCRATCH_DIR_ENV);
-  const candidates = [
-    `${tmp}/vibe-gh-config`,
-    scratch ? `${scratch}/gh-config` : undefined,
-  ].filter((candidate): candidate is string => candidate !== undefined);
-  for (const candidate of candidates) {
-    try {
-      Deno.mkdirSync(candidate, { recursive: true, mode: 0o700 });
-      Deno.copyFileSync(
-        `${dir}/${GH_HOSTS_FILE}`,
-        `${candidate}/${GH_HOSTS_FILE}`,
-      );
-      Deno.chmodSync(`${candidate}/${GH_HOSTS_FILE}`, 0o600);
-      console.error(
-        `[SECURITY] gh config dir ${dir} is not writable — staged a ` +
-          `container-local copy at ${candidate} (Issue #509)`,
-      );
-      return candidate;
-    } catch {
-      // Try the next candidate; the caller's gh call stays the loud failure.
-    }
-  }
-  console.error(
-    `[SECURITY] gh config dir ${dir} is not writable and no staging ` +
-      `candidate could be created (${candidates.join(", ")}) — gh will fail ` +
-      `its first-use config migration`,
-  );
-  return dir;
+/**
+ * Return a `GH_CONFIG_DIR` gh can actually use.
+ *
+ * The resolved directory is returned untouched when it already holds a
+ * non-empty, writable `hosts.yml`. Otherwise the copy is rebuilt **from the
+ * read-only credential mount** (Issue #564) — never from the broken copy,
+ * which is what the first version of this fallback tried: with its source
+ * already deleted it created empty directories and gave up, while the intact
+ * credential sat on the mount unread and the run died.
+ */
+function ensureWritableGhConfigDir(dir: string, home: string): string {
+  if (isGhConfigDirUsable(dir)) return dir;
+  return restageGhConfigDir({ home }) ?? dir;
 }
