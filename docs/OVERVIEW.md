@@ -265,9 +265,9 @@ iteration, then sleep and repeat:
 
 The worker has multiple layers of resilience:
 
-- **Startup recovery:** repo reset on each run, module-snapshot execution (the
-  Deno driver is immune to its own mid-run `git reset`), pre-Claude repository
-  validation, disk cleanup at threshold.
+- **Startup recovery:** a host-side checkout update before each launch,
+  module-snapshot execution (the Deno driver is immune to any mid-run change to
+  the checkout), pre-Claude repository validation, disk cleanup at threshold.
 - **Runtime protection:** timeout wrappers on all GitHub/git operations,
   rate-limit aware retry with `Retry-After` header support, rate-limit circuit
   breaker with exponential backoff (prevents hammering failing resources).

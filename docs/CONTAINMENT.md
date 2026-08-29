@@ -68,7 +68,7 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 
 | Source                       | In container                                    | Mode |
 | ---------------------------- | ----------------------------------------------- | ---- |
-| the worker checkout          | `/workspace`                                    | `rw` |
+| the worker checkout          | `/workspace`                                    | `ro` |
 | volume `vibe-work`           | `/home/vibe/auto-issue-work`                    | `rw` |
 | volume `vibe-approval-state` | `/home/vibe/auto-issue-work-approval-state`     | `rw` |
 | the worker log directory     | `/home/vibe/logs`                               | `rw` |
@@ -77,8 +77,14 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 | `…/credentials/<provider>`   | `/home/vibe/.vibe-coder/credentials/<provider>` | `ro` |
 
 - **The checkout is the worker's own code**, not host data: the image ships
-  only the entrypoint, so without it there is no driver to run and no tree for
-  the bootstrap to self-update.
+  only the entrypoint, so without it there is no driver to run. It is mounted
+  **read-only** (Issue #514) — there is no reason the Vibe Coder should ever
+  modify the running code. The checkout is updated on the *host* before launch
+  (Issue #512) and the in-container `git reset` that once forced this mount
+  read/write is gone (Issue #513), so any write to `/workspace` from inside is
+  a bug: it now fails loudly with `EROFS` rather than quietly changing the code
+  the next cycle runs. The driver's PID file moved to the log directory for
+  the same reason (see the inventory below).
 - **The workspace is a named volume, not a host directory**.
   The work dir — repo clones, build churn, agent transcripts, session
   stores — and its content-approval sibling live on runtime-managed volumes
@@ -116,7 +122,10 @@ one when a mount source is the host home directory or an ancestor of it, a
 container-runtime control socket, a relative path, or a path carrying
 characters the launcher's NUL framing could not pass. The finished argument
 list is then re-checked for `--privileged`, `--cap-add`, `--device`, published
-ports and host namespaces before it is returned.
+ports and host namespaces before it is returned — and, on a runtime that
+supports it, for the *presence* of `--read-only` and its scratch `tmpfs`
+mounts (see below), so the immutable root filesystem cannot be dropped by a
+later edit either.
 
 ## What is deliberately not exposed
 
@@ -143,23 +152,132 @@ must not merely be unreadable: it must not exist inside the container at all.
 CI sets `VIBE_CONTAINMENT_REQUIRED=1` so the suite cannot end up silently
 skipped.
 
-## The container root filesystem is disposable
+## The container root filesystem is read-only
 
 The container is an execution environment, not the durable worker state:
 
+- **`--read-only`** — the root filesystem is **immutable** (Issue #516). A
+  compromise inside the container cannot plant a binary on `PATH`, edit the
+  image's own scripts, or leave anything at all behind outside the writable
+  exceptions below.
 - `--rm` removes the container on exit, so nothing accumulates between runs.
-- `/tmp` is a writable `tmpfs` (`rw,nosuid,nodev,exec,mode=1777`), so scratch
-  state — including the browser profile at
-  `/tmp/vibe-playwright-profile` — dies with the container.
 - `--cap-drop ALL` and `--security-opt no-new-privileges` are passed wherever
   the runtime understands them. Apple `container` takes neither, because each
   container is already its own lightweight VM.
 - The image is rebuilt only when its content-derived reference is absent
   locally, so a changed container definition is simply a different image.
 
+### The writable exceptions
+
+Everything else fails with `EROFS` — loudly, in the worker log, rather than
+corrupting state:
+
+| Writable path | What it is | Options |
+| ------------- | ---------- | ------- |
+| `/tmp` | scratch `tmpfs` — the entrypoint's `VIBE_SCRATCH_DIR`, `TMPDIR`, and the browser profile at `/tmp/vibe-playwright-profile` | `rw,nosuid,nodev,exec,mode=1777` |
+| `/var/tmp` | scratch `tmpfs` — POSIX's other world-writable scratch directory, which tools reach for without asking | `rw,nosuid,nodev,noexec,mode=1777` |
+| `/home/vibe/auto-issue-work` (+ its approval-state sibling) | the named volumes: clones, caches, agent state | read/write mounts |
+| `/home/vibe/logs` | the log mount | read/write mount |
+
+`exec` only where it is genuinely needed: the agent runs scratch scripts it
+writes under `/tmp`, and `/var/tmp` is pure data. `/run` is deliberately
+**not** given a `tmpfs` — the image ships it root-owned `0755` and the worker
+runs as an unprivileged account, so it was never writable from inside the
+container and a `tmpfs` would only hand a root this container does not have
+somewhere to write.
+
+`--read-only` and those `tmpfs` mounts are **one decision, not two**: a
+read-only root with no writable scratch is a container that cannot run, so
+`worker/deno/lib/container_launch.ts` makes `tmpfs` support a precondition of
+read-only support — a runtime dialect claiming one without the other is refused
+loudly — and a runtime that takes no `tmpfs` gets **neither**. Apple
+`container` is that runtime (`supportsTmpfs: false`, `supportsReadOnly:
+false`): each container there is its own lightweight VM, which is the
+compensating control, and the entrypoint puts its scratch root on the
+`vibe-work` volume instead. The finished argument list is re-checked both
+ways — the flag must be present for a supporting runtime, and it can never
+appear without its scratch — so no future edit can quietly drop half the pair.
+
 Durable state lives **only** in the mounted workspace, logs, configuration and
 credentials. Anything the worker writes elsewhere is gone at the next launch —
 which is what makes restarting the container a genuine repair.
+
+## The writable-path rule
+
+> **Nothing writes to the image layer.** Every in-container write lands on
+> `/tmp`, on a mounted volume, or on one of the two roots the entrypoint
+> resolves below — never under `${HOME}` itself and never anywhere else on the
+> root filesystem.
+
+The rule exists so the root filesystem can be mounted read-only (`--read-only`,
+now the default wherever the runtime supports it — see above) without breaking
+a run. `${HOME}` is `/home/vibe`, an **image layer**: it is not writable at
+all once that flag is set, so a writer left there is a launch failure, not a
+theoretical one. `container/entrypoint.sh`
+resolves two roots before its first write and exports them:
+
+| Root | Env | Where | For |
+| ---- | --- | ----- | --- |
+| per-launch scratch | `VIBE_SCRATCH_DIR` | `${TMPDIR:-/tmp}/vibe-scratch`, else `…/auto-issue-work/.container-scratch` on the `vibe-work` volume | anything rebuilt on every start |
+| durable state | `VIBE_STATE_DIR` | `…/auto-issue-work/.container-state` on the `vibe-work` volume, else `${VIBE_SCRATCH_DIR}/state` | caches worth keeping between launches |
+
+A tmpfs alone is not an answer: Apple `container` reports
+`supportsTmpfs: false` ([`container_runtime.ts`](../worker/deno/lib/container_runtime.ts)),
+so on that runtime `/tmp` is ordinary root filesystem. Every scratch writer
+therefore has a volume fallback that works on a runtime taking no tmpfs at all.
+The scratch root is cleared on every start, so the volume fallback never
+accumulates. Both roots are on the work-volume housekeeping's reserved list, so
+the scratch-pruner cannot age a live launch's state out from under it.
+
+```mermaid
+flowchart TD
+    W["✍️ a writer"] --> Q{"survives the launch?"}
+    Q -->|no| S["VIBE_SCRATCH_DIR<br/>/tmp → vibe-work volume"]
+    Q -->|yes| D["VIBE_STATE_DIR<br/>vibe-work volume"]
+    Q -->|it is worker output| M["a mount:<br/>workspace · logs"]
+    X["🚫 \${HOME}, the image layer"]
+    W -.never.-x X
+    style X fill:#d00000,stroke:#9d0208,color:#fff
+    style S fill:#e85d04,stroke:#dc2f02,color:#000
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style M fill:#40916c,stroke:#2d6a4f,color:#fff
+```
+
+### The inventory
+
+Every path written inside the container, and the class it was assigned:
+
+| Writer | Was | Now | Class |
+| ------ | --- | --- | ----- |
+| the staged worker source (Issue #4302) | `${HOME}/.worker-src` | `${VIBE_SCRATCH_DIR}/worker-src` | scratch — `rm -rf`'d and re-copied every start |
+| git's global config (`safe.directory`, the HTTPS rewrite, the identity) | `${HOME}/.gitconfig` | `${VIBE_SCRATCH_DIR}/gitconfig` via `GIT_CONFIG_GLOBAL` | scratch — recomputed from the mounted credential every start |
+| the writable `gh` config copy (Issue #4220) | `${HOME}/.config/gh-runtime` | `${VIBE_SCRATCH_DIR}/gh` via `GH_CONFIG_DIR` | scratch — re-copied from the read-only mount every start |
+| temporary files (`mktemp`, `Deno.makeTempDir`) | `/tmp` | `/tmp`, or `${VIBE_SCRATCH_DIR}/tmp` via `TMPDIR` when `/tmp` is refused | scratch |
+| the browser profile | `/tmp/vibe-playwright-profile` | unchanged | scratch |
+| the Deno cache (Issue #4302) | `…/auto-issue-work/.deno-cache`, falling back to the image's `DENO_DIR` | unchanged, falling back to `${VIBE_SCRATCH_DIR}/deno-cache` | persistent — on the volume |
+| `XDG_CONFIG_HOME` | `${HOME}/.config` | `${VIBE_SCRATCH_DIR}/config` | scratch |
+| `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `${HOME}/.cache`, `${HOME}/.local/…` | `${VIBE_STATE_DIR}/{cache,data,state}` | persistent |
+| cargo's registry cache | `${HOME}/.cargo` | `${VIBE_STATE_DIR}/cargo` via `CARGO_HOME` | persistent |
+| npm's cache | `${HOME}/.npm` | `${VIBE_STATE_DIR}/npm` via `npm_config_cache` | persistent |
+| the agent's session transcripts (Issue #4170) | — | `…/auto-issue-work/.claude-config` via `CLAUDE_CONFIG_DIR` | persistent — already on the volume |
+| the crash-notification rate limit | `${HOME}/.vibe-coder` — the root-owned parent of the credential mounts, so already refused | `…/auto-issue-work/.crash-state` | persistent — it must outlive the restart it throttles |
+| repository clones, build artefacts, worker state | `…/auto-issue-work` | unchanged | persistent — the `vibe-work` volume |
+| worker logs | `${HOME}/logs` | unchanged | persistent — the log mount |
+| the driver's PID file (Issue #514) | `/workspace/.run.pid` — the checkout, now read-only | `${HOME}/logs/.run.pid` | persistent — the log mount, so the guard still bounds one driver per host |
+| the startup orphaned-branch sweep (Issue #514) | `git fetch --prune` and `git branch -d` in the process working directory, which the entrypoint sets to the checkout | not relocated — the sweep probes the git directory first and skips with a named reason | host-side work: the host updates the checkout before each launch (Issue #512) |
+
+**Each relocation degrades loudly.** When a target cannot be created or
+written, the entrypoint names the path it refused and the fallback it took, in
+the same shape as the existing durable-Deno-cache warning; when no candidate at
+all is writable it says the legacy `${HOME}` paths are being kept and that they
+need a writable root filesystem. Nothing is swallowed, so a read-only root
+produces a named warning rather than a mystery.
+
+**Adding a writer?** Decide its class first — rebuilt every launch, or worth
+keeping — then write it under `${VIBE_SCRATCH_DIR}` or `${VIBE_STATE_DIR}` and
+add a row above. A path under `${HOME}` that is not one of the mounts is a bug,
+and `worker/deno/tests/container_entrypoint_test.ts` asserts the entrypoint
+leaves `${HOME}` untouched.
 
 ## The network boundary
 

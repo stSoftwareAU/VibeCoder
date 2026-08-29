@@ -13,9 +13,10 @@
 #
 # Steps:
 #   1. Locate Deno on the host (the only host tool this script needs).
-#   2. Build the launch plan (runtime detection, image reference, mounts).
-#   3. Build the image when the content-derived reference is absent.
-#   4. Launch the container, stop it if this launcher is terminated, and exit
+#   2. Update the worker checkout to origin's default branch (Issue #512).
+#   3. Build the launch plan (runtime detection, image reference, mounts).
+#   4. Build the image when the content-derived reference is absent.
+#   5. Launch the container, stop it if this launcher is terminated, and exit
 #      with the container's exit status so Task Scheduler and loop.ps1 see
 #      real failures.
 #
@@ -40,6 +41,11 @@
 #              stale worker container is reaped before the launch, and a reaped
 #              wedge exits with the named status so the scheduler's next cycle
 #              runs instead of the slot staying blocked.
+# Issue #512:  The worker checkout is updated here, on the host, before the
+#              launch plan is built - the prerequisite for mounting it
+#              read-only (Issue #509). A failed update is a warning, never a
+#              refused launch, and VIBE_SKIP_CHECKOUT_UPDATE turns it off for
+#              a development checkout or a CI tree.
 ################################################################################
 
 $ErrorActionPreference = "Stop"
@@ -241,6 +247,64 @@ if ($RunMode -ne "container") {
     Exit-Launcher 1
 }
 
+$HomeDir_ = [Environment]::GetEnvironmentVariable("USERPROFILE")
+if (-not $HomeDir_) { $HomeDir_ = [Environment]::GetEnvironmentVariable("HOME") }
+
+<#
+.SYNOPSIS
+    Append one line to the worker's own host log, best-effort.
+.DESCRIPTION
+    A fleet host that keeps failing a launcher step is visible in run_core.log
+    without anyone reading launcher stderr (Issues #4441, #512). An unwritable
+    log must never fail a launch.
+#>
+function Write-RunCoreLog {
+    param([Parameter(Mandatory = $true)][string] $Message)
+
+    try {
+        # The log directory is created by the launch plan later in the run, so
+        # it may not exist yet at the first line written (Issue #512).
+        New-Item -ItemType Directory -Force -Path (Join-Path $HomeDir_ "logs") |
+            Out-Null
+        # The backslashes escape the literal T and Z for .NET's custom
+        # date-format parser, so the stamp matches run.sh's `date -u` exactly.
+        $stamp = [DateTime]::UtcNow.ToString("yyyy-MM-dd\THH:mm:ss\Z")
+        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
+            -Value "$stamp $Message" -ErrorAction Stop
+    } catch {
+        # Best-effort by design.
+    }
+}
+
+# Update the worker checkout on the host, before the container is launched
+# (Issue #512). This is the only update of that checkout since Issue #513
+# retired the in-container reset: nothing inside the container writes to
+# /workspace, which is what lets that mount be read-only (Issue #509) - and it
+# has to be, because the fleet self-update rewrites the launchers, code the
+# host executes.
+#
+# Failure is not fatal: a host that cannot reach GitHub still launches the
+# worker on the checkout it already has. It says so loudly on stderr and in
+# the run-core log rather than passing quietly (Issue #3234), and three
+# consecutive failures raise a GitHub issue naming this host (Issue #4204).
+#
+# --allow-sys=hostname: that escalation titles its issue with the host id, so
+# each host gets its own report instead of every host sharing one.
+$checkoutUpdate = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+    "run",
+    "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+    "--allow-env", "--allow-read", "--allow-write", "--allow-run", "--allow-sys=hostname",
+    "$BaseDir/worker/deno/mod.ts", "worker-checkout-update",
+    "--base-dir", $BaseDir
+)
+if ($checkoutUpdate.StdOut) { [Console]::Error.Write($checkoutUpdate.StdOut) }
+if ($checkoutUpdate.StdErr) { [Console]::Error.Write($checkoutUpdate.StdErr) }
+if ($checkoutUpdate.ExitCode -ne 0) {
+    [Console]::Error.WriteLine(
+        "[run.ps1] warning: could not update the worker checkout (status $($checkoutUpdate.ExitCode)) - launching on the existing checkout")
+    Write-RunCoreLog "worker-checkout-update: failed (status $($checkoutUpdate.ExitCode)) - launching on the existing checkout"
+}
+
 $ContainerName = "vibe-coder-$PID"
 $PlanFile = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("vibe-launch-plan-" + [System.Guid]::NewGuid().ToString("N"))
@@ -270,8 +334,6 @@ try {
     # looks like a credential; --allow-write is scoped to that file plus the
     # read-only config staging directory the plan mounts (Apple container
     # cannot mount a single file, so the command stages a copy there).
-    $HomeDir_ = [Environment]::GetEnvironmentVariable("USERPROFILE")
-    if (-not $HomeDir_) { $HomeDir_ = [Environment]::GetEnvironmentVariable("HOME") }
     $ConfigStageDir = Join-Path $HomeDir_ ".vibe-coder/run-config"
     $plan = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
         "run",
@@ -397,28 +459,6 @@ if ($reaped.ExitCode -ne 0) {
 # failed). Kept in step with BUILD_NOT_HEALABLE_EXIT in
 # worker/deno/commands/container_build_heal.ts by the launcher tests.
 $BuildNotHealableExit = 3
-
-<#
-.SYNOPSIS
-    Append one line to the worker's own host log, best-effort.
-.DESCRIPTION
-    A fleet host that keeps restarting its builder is visible in run_core.log
-    without anyone reading launcher stderr (Issue #4441). An unwritable log
-    must never fail a launch.
-#>
-function Write-RunCoreLog {
-    param([Parameter(Mandatory = $true)][string] $Message)
-
-    try {
-        # The backslashes escape the literal T and Z for .NET's custom
-        # date-format parser, so the stamp matches run.sh's `date -u` exactly.
-        $stamp = [DateTime]::UtcNow.ToString("yyyy-MM-dd\THH:mm:ss\Z")
-        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
-            -Value "$stamp $Message" -ErrorAction Stop
-    } catch {
-        # Best-effort by design.
-    }
-}
 
 <#
 .SYNOPSIS

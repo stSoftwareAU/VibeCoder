@@ -871,6 +871,10 @@ async function runLauncherWithoutConfig(
       HOME: tmpDir,
       WORK_DIR: tmpDir,
       CONFIG_PATH: join(tmpDir, "absent-config.json"),
+      // This is the repository the test suite is running from, not a worker
+      // checkout: the launcher's host-side update would git-reset it to the
+      // default branch and discard the very work under test (Issue #512).
+      VIBE_SKIP_CHECKOUT_UPDATE: "1",
       VIBE_LAUNCH_PHASE_FILE: join(tmpDir, "last-launch-phase"),
       VIBE_STATE_DIR: join(tmpDir, "state"),
       CRASH_NOTIFICATION_STATE_DIR: join(tmpDir, "state"),

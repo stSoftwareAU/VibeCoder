@@ -217,6 +217,7 @@ import { checkLivenessWindow } from "./liveness_guard.ts";
 import { cleanupInProgressIssue as crashCleanupFn } from "./crash_cleanup.ts";
 import {
   type CrashNotificationConfig,
+  resolveCrashStateDir,
   sendCrashNotification as crashNotifyFn,
 } from "./crash_notification.ts";
 import {
@@ -714,7 +715,9 @@ export async function createProductionRunCoreDeps(
     workerName: "Vibe Coder",
     cooldownSeconds: 600,
     logTailMaxBytes: 50000,
-    stateDir: `${Deno.env.get("HOME") ?? "~"}/.vibe-coder`,
+    // The work volume inside the container, ~/.vibe-coder on the host: the
+    // in-container ~/.vibe-coder is the root-owned image layer (Issue #515).
+    stateDir: resolveCrashStateDir(workDir),
   };
 
   const cooldownConfig: CooldownConfig = {

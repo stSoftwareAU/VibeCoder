@@ -32,6 +32,7 @@ import {
 } from "../lib/launcher_contract.ts";
 import {
   BASH_LAUNCHER,
+  denoInvocationOrder,
   mountValues,
   POWERSHELL_LAUNCHER,
   recorded,
@@ -72,6 +73,7 @@ Deno.test("extractLauncherContract - reads the keys a bash launcher honours", ()
   assertEquals(contract.broadeningMarkers, []);
   assertEquals(contract.nativeExecutionMarkers, []);
   assertEquals(contract.consultsRunMode, false);
+  assertEquals(contract.updatesCheckout, false);
   assertEquals(contract.hardcodedMountFlags, []);
 });
 
@@ -115,20 +117,25 @@ Deno.test("extractLauncherContract - names a launcher that decides for itself", 
   assertEquals(contract.hardcodedMountFlags, ["--volume"]);
 
   // No delegation, missing plan keys, broadening, host execution, no
-  // run-mode consultation, hardcoded mounts: six faults.
+  // run-mode consultation, no host-side checkout update (Issue #512),
+  // hardcoded mounts: seven faults.
   const faults = launcherContractFaults(contract);
-  assertEquals(faults.length, 6, faults.join("\n"));
+  assertEquals(faults.length, 7, faults.join("\n"));
 });
 
 // ---------------------------------------------------------------------------
 // Host execution is a fault outright (Issue #4)
 // ---------------------------------------------------------------------------
 
-/** A synthetic bash launcher that honours every launch-plan key. */
+/**
+ * A synthetic bash launcher that honours every launch-plan key, consults the
+ * run-mode resolver and updates the checkout host-side (Issue #512).
+ */
 function bashLauncher(...extraLines: string[]): string {
   return [
     'if ! deno run mod.ts container-launch-plan --out "${PLAN}"; then exit 1; fi',
     'RUN_MODE="$(deno run mod.ts run-mode)"',
+    'deno run mod.ts worker-checkout-update --base-dir "${BASE_DIR}" || true',
     "case ${key} in",
     ...LAUNCH_PLAN_KEYS.map((key) => `  ${key}) value_of_${key}=${key} ;;`),
     "esac",
@@ -178,6 +185,7 @@ Deno.test("launcherContractFaults - never consulting the run-mode resolver is a 
     "silent.sh",
     [
       'if ! deno run mod.ts container-launch-plan --out "${PLAN}"; then exit 1; fi',
+      'deno run mod.ts worker-checkout-update --base-dir "${BASE_DIR}" || true',
       "case ${key} in",
       ...LAUNCH_PLAN_KEYS.map((key) => `  ${key}) value_of_${key}=${key} ;;`),
       "esac",
@@ -188,6 +196,43 @@ Deno.test("launcherContractFaults - never consulting the run-mode resolver is a 
   const faults = launcherContractFaults(contract);
   assertEquals(faults.length, 1, faults.join("\n"));
   assertStringIncludes(faults[0]!, "run-mode resolver");
+});
+
+Deno.test("launcherContractFaults - leaving the checkout update to the container is a fault (Issue #512)", () => {
+  // Everything else sound: the only thing missing is the host-side update,
+  // which is what keeps /workspace mounted read-write.
+  const contract = extractLauncherContract(
+    "stale.sh",
+    [
+      'if ! deno run mod.ts container-launch-plan --out "${PLAN}"; then exit 1; fi',
+      'RUN_MODE="$(deno run mod.ts run-mode)"',
+      "case ${key} in",
+      ...LAUNCH_PLAN_KEYS.map((key) => `  ${key}) value_of_${key}=${key} ;;`),
+      "esac",
+    ].join("\n"),
+    "bash",
+  );
+  assertEquals(contract.updatesCheckout, false);
+  const faults = launcherContractFaults(contract);
+  assertEquals(faults.length, 1, faults.join("\n"));
+  assertStringIncludes(faults[0]!, "worker-checkout-update");
+  assertStringIncludes(faults[0]!, "Issues #512, #509");
+});
+
+Deno.test("launcherContractFaults - a comment naming the checkout update is not the step (Issue #512)", () => {
+  const contract = extractLauncherContract(
+    "commented-update.sh",
+    [
+      'if ! deno run mod.ts container-launch-plan --out "${PLAN}"; then exit 1; fi',
+      'RUN_MODE="$(deno run mod.ts run-mode)"',
+      "# worker-checkout-update used to run here",
+      "case ${key} in",
+      ...LAUNCH_PLAN_KEYS.map((key) => `  ${key}) value_of_${key}=${key} ;;`),
+      "esac",
+    ].join("\n"),
+    "bash",
+  );
+  assertEquals(contract.updatesCheckout, false);
 });
 
 Deno.test("launcherContractFaults - PowerShell is judged the same way", () => {
@@ -281,6 +326,35 @@ Deno.test("run.sh and run.ps1 - both are container-only and both consult the run
   }
 });
 
+Deno.test("run.sh and run.ps1 - both update the worker checkout host-side (Issue #512)", () => {
+  for (const contract of [RUN_SH, RUN_PS1]) {
+    assertEquals(
+      contract.updatesCheckout,
+      true,
+      `${contract.name} must update the checkout before the launch, so the ` +
+        `container never has to`,
+    );
+  }
+});
+
+Deno.test("compareLauncherContracts - a run.ps1 that drops the checkout update is a divergence (Issue #512)", () => {
+  const drifted = extractLauncherContract(
+    "run.ps1",
+    RUN_PS1_SOURCE.replaceAll("worker-checkout-update", "run-mode"),
+    "powershell",
+  );
+
+  const { divergences } = compareLauncherContracts(RUN_SH, drifted);
+  assert(
+    divergences.some((message) =>
+      message.includes("host-side checkout update")
+    ),
+    `dropping the checkout update must be a divergence: ${
+      JSON.stringify(divergences)
+    }`,
+  );
+});
+
 Deno.test("run.sh and run.ps1 - both delegate every containment decision", () => {
   for (const contract of [RUN_SH, RUN_PS1]) {
     const faults = launcherContractFaults(contract);
@@ -317,6 +391,66 @@ Deno.test({
         } finally {
           await harness.cleanup();
         }
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.sh and run.ps1 - both update the checkout before building the launch plan (Issue #512)",
+  ignore: POWERSHELL_LAUNCHER === null,
+  fn: async () => {
+    for (const launcher of [BASH_LAUNCHER, POWERSHELL_LAUNCHER!]) {
+      const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+      try {
+        const outcome = await runLauncher(harness, launcher);
+        assertEquals(outcome.code, 0, outcome.stderr);
+
+        const args = await recorded(harness, "worker-checkout-update");
+        assert(args, `${launcher.name} never updated the worker checkout`);
+        assertEquals(args[args.indexOf("--base-dir") + 1], REPO_ROOT);
+
+        const order = await denoInvocationOrder(harness);
+        const update = order.indexOf("worker-checkout-update");
+        const plan = order.indexOf("container-launch-plan");
+        assert(update > -1 && plan > -1, `${launcher.name}: ${order}`);
+        assert(
+          update < plan,
+          `${launcher.name} must update the checkout before it builds the ` +
+            `launch plan, got ${order.join(" -> ")}`,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.sh and run.ps1 - a failed checkout update warns in both and launches anyway (Issue #512)",
+  ignore: POWERSHELL_LAUNCHER === null,
+  fn: async () => {
+    for (const launcher of [BASH_LAUNCHER, POWERSHELL_LAUNCHER!]) {
+      const harness = await setupHarness({
+        STUB_IMAGE_INSPECT_EXIT: "0",
+        STUB_CHECKOUT_UPDATE_EXIT: "1",
+      });
+      try {
+        const outcome = await runLauncher(harness, launcher);
+        assertEquals(
+          outcome.code,
+          0,
+          `${launcher.name} must still launch: ${outcome.stderr}`,
+        );
+        assertStringIncludes(outcome.stderr, "could not update the worker");
+        assert(
+          await recorded(harness, "run"),
+          `${launcher.name} launched no container after a failed update`,
+        );
+      } finally {
+        await harness.cleanup();
       }
     }
   },

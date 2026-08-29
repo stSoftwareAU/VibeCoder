@@ -43,6 +43,7 @@ import {
   containerTargetPaths,
   FORBIDDEN_RUN_FLAGS,
   resolveContainerLaunchHostPaths,
+  SCRATCH_TMPFS_MOUNTS,
 } from "../lib/container_launch.ts";
 import {
   CONTAINER_RUNTIMES,
@@ -471,7 +472,13 @@ async function buildHostFixture(
     );
   }
 
-  await makeSharedDir(checkout);
+  // World-writable, and with a `.git` of its own: the checkout mount is
+  // read-only (Issue #514), and only the mount flag — never host ownership —
+  // may be what makes the container's write probe fail.
+  await makeSharedDir(checkout, 0o777);
+  await makeSharedDir(`${checkout}/.git`, 0o777);
+  await Deno.writeTextFile(`${checkout}/.git/HEAD`, "ref: refs/heads/main\n");
+  await Deno.chmod(`${checkout}/.git/HEAD`, 0o666);
   const configToken = `config-${token}`;
   const configFile = `${checkout}/.config.json`;
   await Deno.writeTextFile(
@@ -687,6 +694,22 @@ function mountProbes(fixture: HostFixture): Probe[] {
       why: "the log directory is mounted read/write",
     },
     {
+      // Issue #514: the worker never modifies the code it is running, so the
+      // checkout crosses the boundary read-only.
+      kind: "ro-dir",
+      id: "worker-checkout",
+      target: targets.base,
+      why: "the worker checkout is mounted read-only",
+    },
+    {
+      // `.git` explicitly: a writable `.git` is enough to rewrite the tree
+      // the next cycle checks out, even when the working files are not.
+      kind: "ro-dir",
+      id: "worker-checkout-git",
+      target: `${targets.base}/.git`,
+      why: "the checkout's .git is mounted read-only",
+    },
+    {
       kind: "ro-file",
       id: "config-file",
       // The staged copy inside the read-only config directory mount — the
@@ -711,6 +734,49 @@ function mountProbes(fixture: HostFixture): Probe[] {
       id: "host-home-canary",
       target: fixture.canaryName,
       why: "a canary in the host home is not visible from inside",
+    },
+  ];
+}
+
+/**
+ * The read-only root filesystem and the writable exceptions it keeps
+ * (Issue #516).
+ *
+ * Empty for a runtime whose plan carries no `--read-only` (Apple `container`),
+ * so the suite asserts what this plan actually asked the runtime for rather
+ * than a property the runtime was never given.
+ *
+ * `${HOME}` is the discriminating probe: the image ships it owned by the
+ * worker's own account, so it is writable on a writable root and immutable
+ * only because the root filesystem is.
+ */
+function readOnlyRootProbes(plan: ContainerLaunchPlan): Probe[] {
+  if (!plan.runArgs.includes("--read-only")) return [];
+  const containerHome = `/home/${MANIFEST.user.name}`;
+  return [
+    {
+      kind: "ro-dir",
+      id: "read-only-root-home",
+      target: containerHome,
+      why: "the container HOME is on the image layer, which is read-only",
+    },
+    {
+      kind: "ro-dir",
+      id: "read-only-root-usr-local-bin",
+      target: "/usr/local/bin",
+      why: "no binary may be planted on the image's PATH",
+    },
+    {
+      kind: "rw",
+      id: "scratch-tmp",
+      target: "/tmp",
+      why: "/tmp is the scratch tmpfs the read-only root depends on",
+    },
+    {
+      kind: "rw",
+      id: "scratch-var-tmp",
+      target: "/var/tmp",
+      why: "/var/tmp is the second scratch tmpfs",
     },
   ];
 }
@@ -854,6 +920,7 @@ Deno.test({
         ...prohibitedProbes(fixture),
         ...socketProbes(),
         ...mountProbes(fixture),
+        ...readOnlyRootProbes(fixture.plan),
       ];
       await Deno.writeTextFile(
         `${fixture.checkout}/containment-probes.tsv`,
@@ -1320,4 +1387,55 @@ Deno.test("containment harness - every prohibited location and socket is probed 
     socketProbes().every((probe) => probe.kind === "socket"),
     "A runtime socket must be probed for absence, not merely readability.",
   );
+});
+
+Deno.test("containment harness - the worker checkout and its .git are probed read-only (Issue #514)", () => {
+  // Runs without a container runtime, so the probe table itself is guarded
+  // even where the live containment run is skipped: a future edit that drops
+  // these probes cannot make the read-only checkout untested by accident.
+  const targets = containerTargetPaths(MANIFEST);
+  const probes = mountProbes({ canaryName: "canary.txt" } as HostFixture);
+
+  for (const target of [targets.base, `${targets.base}/.git`]) {
+    const probe = probes.find((candidate) => candidate.target === target);
+    assert(probe, `${target} has no containment probe of its own.`);
+    assertEquals(
+      probe.kind,
+      "ro-dir",
+      `${target} must be probed read-only — the worker never modifies the ` +
+        `code it is running.`,
+    );
+  }
+});
+
+Deno.test("containment harness - the read-only root and its writable exceptions are probed (Issue #516)", () => {
+  // Also runs without a container runtime, so the probe set is guarded even
+  // where the live run is skipped.
+  const probes = readOnlyRootProbes(samplePlan());
+  const containerHome = `/home/${MANIFEST.user.name}`;
+
+  const home = probes.find((probe) => probe.target === containerHome);
+  assert(home, `${containerHome} has no read-only root probe.`);
+  assertEquals(
+    home.kind,
+    "ro-dir",
+    "the container HOME is on the image layer and must be immutable",
+  );
+  // Every declared scratch mount is probed writable — a read-only root with
+  // no writable scratch is a container that cannot run.
+  for (const mount of SCRATCH_TMPFS_MOUNTS) {
+    const path = mount.split(":")[0]!;
+    const probe = probes.find((candidate) => candidate.target === path);
+    assert(probe, `The scratch tmpfs ${path} has no containment probe.`);
+    assertEquals(probe.kind, "rw", `${path} must be probed writable.`);
+  }
+
+  // A runtime whose plan carries no --read-only is not asserted against a
+  // property it was never given (Apple container takes neither the flag nor
+  // a tmpfs).
+  const writableRoot: ContainerLaunchPlan = {
+    ...samplePlan(),
+    runArgs: samplePlan().runArgs.filter((arg) => arg !== "--read-only"),
+  };
+  assertEquals(readOnlyRootProbes(writableRoot), []);
 });

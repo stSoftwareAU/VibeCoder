@@ -78,6 +78,15 @@ export interface ContainerRuntimeDialect {
   /** Whether `--tmpfs <mount>` is understood. */
   supportsTmpfs: boolean;
   /**
+   * Whether `--read-only` (an immutable container root filesystem) is
+   * understood (Issue #516).
+   *
+   * Paired with {@link ContainerRuntimeDialect.supportsTmpfs} by the launch
+   * plan: a read-only root with no writable scratch is a container that
+   * cannot run, so the flag and its tmpfs mounts are one decision, never two.
+   */
+  supportsReadOnly: boolean;
+  /**
    * Explicit non-host network mode to request, when the runtime takes one.
    * Undefined means "leave the runtime's own default", which is never host
    * networking on any supported runtime.
@@ -276,6 +285,7 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   supportsSecurityOpt: true,
   supportsCapDrop: true,
   supportsTmpfs: true,
+  supportsReadOnly: true,
   // Explicit rather than implicit: the launcher asks for bridge networking so
   // a reviewer can see host networking was never requested.
   networkMode: "bridge",
@@ -305,9 +315,10 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
 
 /**
  * Apple `container` takes `--volume src:dst[:ro]` but has neither `--userns`,
- * `--security-opt`, `--cap-drop` nor `--tmpfs` — each container is already
- * its own lightweight VM with its own IP address, so there is no host
- * namespace to opt out of (apple/container `docs/command-reference.md`).
+ * `--security-opt`, `--cap-drop`, `--tmpfs` nor `--read-only` — each container
+ * is already its own lightweight VM with its own IP address, so there is no
+ * host namespace to opt out of and no shared kernel a writable root filesystem
+ * could be leveraged against (apple/container `docs/command-reference.md`).
  */
 const APPLE_DIALECT: ContainerRuntimeDialect = {
   mountFlag: "--volume",
@@ -317,6 +328,7 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   supportsSecurityOpt: false,
   supportsCapDrop: false,
   supportsTmpfs: false,
+  supportsReadOnly: false,
   // Singular `image` — `container images ...` is not a subcommand on Apple
   // container 1.2.2: the CLI resolves it as a plugin named `container-images`,
   // fails, and exits 64. run.sh reads any non-zero exists-check as "image

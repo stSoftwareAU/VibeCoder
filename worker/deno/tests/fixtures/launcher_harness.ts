@@ -186,21 +186,45 @@ esac
 `;
 
 /**
- * A partial stand-in for Deno on the launcher's PATH (Issue #4148).
- *
- * Everything the launcher asks Deno is answered by the real binary — the
- * run-mode resolution and the launch plan stay genuine — except the two
- * invocations a test must not actually perform: `run-entrypoint`, which would
- * start the whole worker on this host, and `container-restart-backoff`, the
- * outcome record. Both are recorded instead, so a test can assert the launcher
- * made them.
+ * The Deno sub-commands a launcher run is expected to make, recorded in order
+ * (Issue #512) so a test can assert that one step ran before another — the
+ * checkout update before the launch plan, say.
  */
-const DENO_STUB = `#!/bin/bash
-set -u
-record_dir="\${VIBE_STUB_RECORD}"
-mkdir -p "\${record_dir}"
-for arg in "\$@"; do
-  case "\${arg}" in
+const RECORDED_DENO_COMMANDS = [
+  "run-mode",
+  "worker-checkout-update",
+  "container-launch-plan",
+  "container-reap",
+  "container-image-prune",
+  "container-store-prune",
+  "container-build-heal",
+  "container-restart-backoff",
+  "run-entrypoint",
+];
+
+/**
+ * A stand-in for Deno on the launcher's PATH (Issues #4148, #512).
+ *
+ * Every recognised sub-command is appended to `deno-order.log`, and all but
+ * one are then answered by the real binary — the run-mode resolution and the
+ * launch plan stay genuine.
+ *
+ * `worker-checkout-update` is **always** intercepted: it git-resets the
+ * checkout it is pointed at, and the launcher points it at this very
+ * repository, so really running it would discard the working tree the tests
+ * are running from. `STUB_CHECKOUT_UPDATE_EXIT` makes it fail, which is how
+ * the "a failed update still launches" behaviour is exercised.
+ *
+ * With `full`, two more invocations are intercepted rather than performed:
+ * `run-entrypoint`, which would start the whole worker on this host, and
+ * `container-restart-backoff`, the outcome record (Issue #4148).
+ *
+ * @param full - Intercept the worker driver and the outcome recorder too
+ * @returns The stub script source
+ */
+function denoStubSource(full: boolean): string {
+  const extraIntercepts = full
+    ? `
     run-entrypoint)
       printf '%s\\0' "\$@" > "\${record_dir}/run-entrypoint.args"
       if [[ -n "\${STUB_ENTRYPOINT_SLEEP:-}" ]]; then
@@ -217,11 +241,38 @@ for arg in "\$@"; do
       printf '%s\\0' "\$@" > "\${record_dir}/container-restart-backoff.args"
       echo 60
       exit 0
-      ;;
+      ;;`
+    : "";
+
+  return `#!/bin/bash
+set -u
+record_dir="\${VIBE_STUB_RECORD}"
+mkdir -p "\${record_dir}"
+for arg in "\$@"; do
+  case "\${arg}" in
+${
+    RECORDED_DENO_COMMANDS.map((name) =>
+      `    ${name}) printf '%s\\n' "${name}" >> "\${record_dir}/deno-order.log" ;;`
+    ).join("\n")
+  }
+  esac
+done
+for arg in "\$@"; do
+  case "\${arg}" in
+    worker-checkout-update)
+      # Never really git-reset this repository (Issue #512).
+      printf '%s\\0' "\$@" > "\${record_dir}/worker-checkout-update.args"
+      status="\${STUB_CHECKOUT_UPDATE_EXIT:-0}"
+      if [[ "\${status}" -ne 0 ]]; then
+        printf 'cannot update the worker checkout\\n' >&2
+      fi
+      exit "\${status}"
+      ;;${extraIntercepts}
   esac
 done
 exec "\${VIBE_REAL_DENO}" "\$@"
 `;
+}
 
 /** Deno's module cache, so the launcher's `--frozen` run stays offline. */
 async function resolveDenoDir(): Promise<string> {
@@ -298,10 +349,14 @@ export async function setupHarness(
     await Deno.chmod(path, 0o755);
   }
 
-  if (options.denoStub) {
-    await Deno.writeTextFile(`${stubDir}/deno`, DENO_STUB);
-    await Deno.chmod(`${stubDir}/deno`, 0o755);
-  }
+  // Always installed: the checkout update must never really run against this
+  // repository (Issue #512). `denoStub` widens the same stub to the worker
+  // driver and the outcome recorder.
+  await Deno.writeTextFile(
+    `${stubDir}/deno`,
+    denoStubSource(options.denoStub === true),
+  );
+  await Deno.chmod(`${stubDir}/deno`, 0o755);
 
   return {
     tmpDir,
@@ -355,6 +410,23 @@ export async function recorded(
 export async function invocationOrder(harness: Harness): Promise<string[]> {
   try {
     const raw = await Deno.readTextFile(`${harness.recordDir}/order.log`);
+    return raw.split("\n").filter((line) => line.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Deno sub-commands in the order the launcher invoked them (Issue #512).
+ *
+ * @param harness - Launcher harness to read from
+ * @returns One entry per recognised Deno invocation, oldest first
+ */
+export async function denoInvocationOrder(
+  harness: Harness,
+): Promise<string[]> {
+  try {
+    const raw = await Deno.readTextFile(`${harness.recordDir}/deno-order.log`);
     return raw.split("\n").filter((line) => line.trim().length > 0);
   } catch {
     return [];

@@ -2,13 +2,15 @@
  * Run-bootstrap command for the Vibe Coder worker (Issue #3501).
  *
  * Runs the worker bootstrap prelude — PATH resolution, run-id / `VIBE_RUN_ID`,
- * worker log initialisation, git reset to the default branch, and the periodic
+ * worker log initialisation, the checkout's default branch, and the periodic
  * software-update check — in a single Deno process, replacing the bash
- * orchestration glue previously in `worker/run_core.sh`.
+ * orchestration glue previously in `worker/run_core.sh`. The prelude writes
+ * nothing to the checkout: it is updated host-side by `worker-checkout-update`
+ * before the container launches (Issues #512, #513).
  *
  * With `--shell-exports` the command prints `export KEY=VALUE` lines the calling
  * shell can `eval` to inherit the established PATH, `VIBE_RUN_ID`, and log-file
- * path during the incremental migration. A failed git reset exits non-zero so
+ * path during the incremental migration. A failed prelude exits non-zero so
  * the shell fails loud (Issue #3234) before evaluating any exports.
  *
  * Australian English spelling throughout (behaviour, organisation, authorised).
@@ -45,7 +47,7 @@ function toOptionalNumber(value: unknown): number | undefined {
 export const runBootstrapCommand: Command = {
   name: "run-bootstrap",
   description:
-    "Run the worker bootstrap prelude (PATH, run-id, log init, git reset, updates)",
+    "Run the worker bootstrap prelude (PATH, run-id, log init, default branch, updates)",
 
   async execute(
     args: Record<string, unknown>,

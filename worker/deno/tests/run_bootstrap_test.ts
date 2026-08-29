@@ -2,10 +2,12 @@
  * Tests for run_bootstrap.ts — the worker bootstrap prelude (Issue #3501).
  *
  * Covers the canonical prelude order (PATH → run-id → side-repo clone args →
- * log init → git reset → software-update), that PATH / VIBE_RUN_ID /
+ * log init → default branch → software-update), that PATH / VIBE_RUN_ID /
  * `VIBE_SIDE_REPO_CLONE_ARGS` (Issue #243) / log-file path are established
- * in-process, fail-loud git-reset handling, the start-of-run compression of
- * prior worker logs (Issue #4027), and the shell-export rendering.
+ * in-process, that the prelude writes **nothing** to the worker checkout
+ * (Issue #513 — the git reset now runs host-side), the start-of-run
+ * compression of prior worker logs (Issue #4027), and the shell-export
+ * rendering.
  *
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
@@ -82,10 +84,6 @@ function recordingDeps(
       order.push("resolveDefaultBranch");
       return Promise.resolve({ ok: true, value: "main" } as Result<string>);
     },
-    resetToDefaultBranch: (_repoDir, _branch, _logDir) => {
-      order.push("resetToDefaultBranch");
-      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
-    },
     checkUpdates: (_options) => {
       order.push("checkUpdates");
       return Promise.resolve();
@@ -93,34 +91,7 @@ function recordingDeps(
     setEnv: (name, value) => {
       env[name] = value;
     },
-    describeCheckoutState: (_repoDir) => {
-      order.push("describeCheckoutState");
-      return Promise.resolve(null);
-    },
-    readBootstrapFailureStreak: (_logDir) => {
-      order.push("readStreak");
-      return Promise.resolve(0);
-    },
-    writeBootstrapFailureStreak: (_logDir, count) => {
-      order.push(`writeStreak:${count}`);
-      return Promise.resolve();
-    },
-    escalateBootstrapFailure: (_context) => {
-      order.push("escalate");
-      return Promise.resolve();
-    },
     ...overrides,
-  };
-}
-
-/** A resetToDefaultBranch override that always fails. */
-function failingReset(order: string[]) {
-  return (_repoDir: string, _branch: string, _logDir: string) => {
-    order.push("resetToDefaultBranch");
-    return Promise.resolve({
-      ok: false,
-      error: new Error("git checkout Develop failed (exit code 1)"),
-    } as Result<void>);
   };
 }
 
@@ -137,14 +108,26 @@ Deno.test("runBootstrap - runs prelude steps in canonical order", async () => {
     "resolveRunId",
     "initWorkerLog",
     "gzipPriorWorkerLogs",
-    // No branch named: the checkout's own origin/HEAD is consulted first.
+    // No branch named: the checkout's own origin/HEAD is read (never written).
     "resolveDefaultBranch",
-    "resetToDefaultBranch",
-    // A successful reset ends any bootstrap-failure streak (Issue #4204).
-    "writeStreak:0",
     "checkUpdates",
   ]);
   assertEquals(result.stepsRun, [...PRELUDE_STEPS]);
+});
+
+Deno.test("runBootstrap - the prelude has no git-reset step (Issue #513)", () => {
+  // The checkout is updated on the host, before the container launches, so
+  // nothing in the prelude may write to it — that is what lets /workspace be
+  // mounted read-only (Issue #509).
+  assertEquals(PRELUDE_STEPS.includes("git-reset" as never), false);
+  assertEquals([...PRELUDE_STEPS], [
+    "path",
+    "run-id",
+    "side-repo-clone-args",
+    "log-init",
+    "default-branch",
+    "software-update",
+  ]);
 });
 
 Deno.test("runBootstrap - establishes PATH, VIBE_RUN_ID, log path in-process", async () => {
@@ -232,166 +215,6 @@ Deno.test("runBootstrap - PATH is bootstrapped before run-id and update check", 
   assertEquals(pathAtUpdateCheck, "/bootstrapped/bin:/usr/bin");
 });
 
-Deno.test("runBootstrap - fails loud and skips update check when git reset fails", async () => {
-  const order: string[] = [];
-  const env: Record<string, string> = {};
-  const deps = recordingDeps(order, env, {
-    resetToDefaultBranch: (_repoDir, _branch, _logDir) => {
-      order.push("resetToDefaultBranch");
-      return Promise.resolve({
-        ok: false,
-        error: new Error("git fetch origin failed (exit code 128)"),
-      } as Result<void>);
-    },
-  });
-
-  const result = await runBootstrap(baseOptions(), deps);
-
-  assertEquals(result.ok, false);
-  assertStringIncludes(result.error ?? "", "git fetch origin failed");
-  // The software-update step must NOT run after a failed reset.
-  assertEquals(order.includes("checkUpdates"), false);
-  assertEquals(result.stepsRun.includes("software-update"), false);
-  // A "Git reset failed" line is logged (now carrying the detail, #4204).
-  assertEquals(
-    order.some((entry) => entry.startsWith("log:Git reset failed")),
-    true,
-  );
-});
-
-// ---------------------------------------------------------------------------
-// Issue #4204 — the worker checkout colliding with an interactive dev tree
-// ---------------------------------------------------------------------------
-
-Deno.test("runBootstrap - a reset failure on a development checkout names the collision (Issue #4204)", async () => {
-  const order: string[] = [];
-  const env: Record<string, string> = {};
-  const deps = recordingDeps(order, env, {
-    resetToDefaultBranch: failingReset(order),
-    describeCheckoutState: (_repoDir) => {
-      order.push("describeCheckoutState");
-      return Promise.resolve({ branch: "fix/some-feature", dirtyFiles: 3 });
-    },
-  });
-
-  const result = await runBootstrap(baseOptions(), deps);
-
-  assertEquals(result.ok, false);
-  const error = result.error ?? "";
-  assertStringIncludes(error, "active development tree");
-  assertStringIncludes(error, "fix/some-feature");
-  assertStringIncludes(error, "3 uncommitted change");
-  assertStringIncludes(error, "4204");
-  // The enriched detail reaches run_core.log too, not only the return value.
-  assertEquals(
-    order.some((entry) =>
-      entry.startsWith("log:Git reset failed") &&
-      entry.includes("active development tree")
-    ),
-    true,
-  );
-});
-
-Deno.test("runBootstrap - a clean on-branch checkout failure keeps the plain git error (Issue #4204)", async () => {
-  const order: string[] = [];
-  const env: Record<string, string> = {};
-  const deps = recordingDeps(order, env, {
-    resetToDefaultBranch: failingReset(order),
-    describeCheckoutState: (_repoDir) => {
-      order.push("describeCheckoutState");
-      return Promise.resolve({ branch: "main", dirtyFiles: 0 });
-    },
-  });
-
-  const result = await runBootstrap(baseOptions(), deps);
-
-  assertEquals(result.ok, false);
-  assertEquals(
-    (result.error ?? "").includes("active development tree"),
-    false,
-    "a clean checkout on the default branch is not a dev-tree collision",
-  );
-});
-
-Deno.test("runBootstrap - the third consecutive reset failure escalates, once (Issue #4204)", async () => {
-  // Streak 2 -> this failure makes 3 -> escalate.
-  {
-    const order: string[] = [];
-    const deps = recordingDeps(order, {}, {
-      resetToDefaultBranch: failingReset(order),
-      readBootstrapFailureStreak: (_logDir) => Promise.resolve(2),
-    });
-    const result = await runBootstrap(baseOptions(), deps);
-    assertEquals(result.ok, false);
-    assertEquals(order.includes("writeStreak:3"), true);
-    assertEquals(order.includes("escalate"), true);
-  }
-
-  // First failure (streak 0 -> 1): no escalation yet.
-  {
-    const order: string[] = [];
-    const deps = recordingDeps(order, {}, {
-      resetToDefaultBranch: failingReset(order),
-    });
-    await runBootstrap(baseOptions(), deps);
-    assertEquals(order.includes("writeStreak:1"), true);
-    assertEquals(order.includes("escalate"), false);
-  }
-
-  // Fourth failure (streak 3 -> 4): already escalated this streak — stay quiet.
-  {
-    const order: string[] = [];
-    const deps = recordingDeps(order, {}, {
-      resetToDefaultBranch: failingReset(order),
-      readBootstrapFailureStreak: (_logDir) => Promise.resolve(3),
-    });
-    await runBootstrap(baseOptions(), deps);
-    assertEquals(order.includes("writeStreak:4"), true);
-    assertEquals(
-      order.includes("escalate"),
-      false,
-      "one escalation per streak — a crash-loop must not spam the repo",
-    );
-  }
-});
-
-Deno.test("runBootstrap - a successful reset clears the failure streak (Issue #4204)", async () => {
-  const order: string[] = [];
-  const env: Record<string, string> = {};
-  const deps = recordingDeps(order, env, {
-    readBootstrapFailureStreak: (_logDir) => Promise.resolve(2),
-  });
-
-  const result = await runBootstrap(baseOptions(), deps);
-
-  assertEquals(result.ok, true);
-  assertEquals(order.includes("writeStreak:0"), true);
-});
-
-Deno.test("runBootstrap - escalation problems never mask the bootstrap error (Issue #4204)", async () => {
-  const order: string[] = [];
-  const deps = recordingDeps(order, {}, {
-    resetToDefaultBranch: failingReset(order),
-    readBootstrapFailureStreak: (_logDir) => Promise.resolve(2),
-    escalateBootstrapFailure: (_context) => {
-      order.push("escalate");
-      return Promise.reject(new Error("gh is not authenticated"));
-    },
-  });
-
-  const result = await runBootstrap(baseOptions(), deps);
-
-  assertEquals(result.ok, false);
-  assertStringIncludes(result.error ?? "", "git checkout Develop failed");
-  // The escalation failure is logged, best-effort, and never thrown.
-  assertEquals(
-    order.some((entry) =>
-      entry.startsWith("log:") && entry.includes("escalation failed")
-    ),
-    true,
-  );
-});
-
 Deno.test("runBootstrap - skipSoftwareUpdate omits the update check", async () => {
   const order: string[] = [];
   const env: Record<string, string> = {};
@@ -405,38 +228,30 @@ Deno.test("runBootstrap - skipSoftwareUpdate omits the update check", async () =
   assertEquals(result.stepsRun.includes("software-update"), false);
 });
 
-Deno.test("runBootstrap - resets to the supplied default branch", async () => {
+Deno.test("runBootstrap - reports the supplied default branch", async () => {
   const order: string[] = [];
   const env: Record<string, string> = {};
-  let resetBranch = "";
-  const deps = recordingDeps(order, env, {
-    resetToDefaultBranch: (_repoDir, branch, _logDir) => {
-      resetBranch = branch;
-      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
-    },
-  });
 
-  await runBootstrap(baseOptions({ defaultBranch: "main" }), deps);
-  assertEquals(resetBranch, "main");
+  const result = await runBootstrap(
+    baseOptions({ defaultBranch: "main" }),
+    recordingDeps(order, env),
+  );
+  assertEquals(result.defaultBranch, "main");
 });
 
-Deno.test("runBootstrap - with no branch named, resets to the checkout's own origin/HEAD — no repository or branch name is assumed", async () => {
+Deno.test("runBootstrap - with no branch named, reads the checkout's own origin/HEAD — no repository or branch name is assumed", async () => {
   const order: string[] = [];
   const env: Record<string, string> = {};
-  let resetBranch = "";
   const deps = recordingDeps(order, env, {
-    resolveDefaultBranch: (_repoDir) =>
-      Promise.resolve({ ok: true, value: "release" } as Result<string>),
-    resetToDefaultBranch: (_repoDir, branch, _logDir) => {
-      resetBranch = branch;
-      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    resolveDefaultBranch: (_repoDir) => {
+      order.push("resolveDefaultBranch");
+      return Promise.resolve({ ok: true, value: "release" } as Result<string>);
     },
   });
 
   const result = await runBootstrap(baseOptions(), deps);
-  assertEquals(resetBranch, "release");
   assertEquals(result.defaultBranch, "release");
-  assertStringIncludes(order.join(","), "log:Resetting repo to origin/release");
+  assertStringIncludes(order.join(","), "log:Default branch: release");
 });
 
 Deno.test("runBootstrap - a named branch is used as given and origin/HEAD is not consulted", async () => {
@@ -452,7 +267,7 @@ Deno.test("runBootstrap - a named branch is used as given and origin/HEAD is not
   assertEquals(order.includes("resolveDefaultBranch"), false);
 });
 
-Deno.test("runBootstrap - an unresolvable default branch fails the prelude loud, naming the escape hatch", async () => {
+Deno.test("runBootstrap - an unreadable default branch is logged loud but does not fail the run (Issue #513)", async () => {
   const order: string[] = [];
   const env: Record<string, string> = {};
   const deps = recordingDeps(order, env, {
@@ -464,15 +279,103 @@ Deno.test("runBootstrap - an unresolvable default branch fails the prelude loud,
   });
 
   const result = await runBootstrap(baseOptions(), deps);
-  assertEquals(result.ok, false);
+  // The prelude no longer resets the checkout, so an unreadable origin/HEAD
+  // costs the orphaned-branch clean-up, not the whole run.
+  assertEquals(result.ok, true);
   assertEquals(result.defaultBranch, "");
-  assertEquals(order.includes("resetToDefaultBranch"), false);
-  assertStringIncludes(
-    result.error ?? "",
-    "cannot resolve the checkout's default branch",
-  );
-  assertStringIncludes(result.error ?? "", "origin/HEAD is unset");
-  assertStringIncludes(result.error ?? "", "--default-branch");
+  assertEquals(order.includes("checkUpdates"), true);
+  const logged =
+    order.find((entry) => entry.startsWith("log:Default branch unresolved")) ??
+      "";
+  assertStringIncludes(logged, "origin/HEAD is unset");
+  assertStringIncludes(logged, "--default-branch");
+});
+
+Deno.test("runBootstrap - leaves a dirty checkout on another branch exactly as it is (Issue #513)", async () => {
+  // The regression this guards: while the prelude reset the checkout, a
+  // bootstrap run against a dirty tree or a non-default branch either
+  // destroyed that work or crash-looped. The checkout is updated host-side
+  // now, so the prelude must run clean and touch nothing.
+  const tmp = await Deno.makeTempDir({ prefix: "run_bootstrap_no_write_" });
+  try {
+    const remote = `${tmp}/remote.git`;
+    const seed = `${tmp}/seed`;
+    const clone = `${tmp}/clone`;
+    const logDir = `${tmp}/logs`;
+    await runGitCommand(["init", "--bare", "--initial-branch=trunk", remote]);
+    await runGitCommand(["init", "--initial-branch=trunk", seed]);
+    await Deno.writeTextFile(`${seed}/file.txt`, "one\n");
+    await runGitCommand(["add", "file.txt"], { cwd: seed });
+    await runGitCommand(
+      ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "one"],
+      { cwd: seed },
+    );
+    await runGitCommand(["push", remote, "trunk"], { cwd: seed });
+    await runGitCommand(["clone", "--quiet", remote, clone]);
+
+    // An active development tree: another branch, a modified file, and an
+    // untracked one — everything the old reset would have destroyed.
+    await runGitCommand(["checkout", "-b", "fix/in-flight"], { cwd: clone });
+    await Deno.writeTextFile(`${clone}/file.txt`, "work in progress\n");
+    await Deno.writeTextFile(`${clone}/scratch.txt`, "untracked\n");
+    const headBefore = await runGitCommand(["rev-parse", "HEAD"], {
+      cwd: clone,
+    });
+    assert(headBefore.ok && headBefore.value.code === 0);
+
+    const result = await runBootstrap(
+      {
+        repoDir: clone,
+        logDir,
+        home: `${tmp}/home`,
+        currentPath: "/usr/bin",
+        pid: 99,
+        skipSoftwareUpdate: true,
+      },
+      {
+        resolvePath: () => Promise.resolve("/usr/bin"),
+        resolveRunId: () => "vibe-no-write",
+        setEnv: () => {},
+        checkUpdates: () => Promise.resolve(),
+      },
+    );
+
+    assertEquals(result.ok, true, result.error ?? "");
+    // origin/HEAD is read, not repaired, and reported for housekeeping.
+    assertEquals(result.defaultBranch, "trunk");
+
+    // Nothing moved: same branch, same commit, same working tree.
+    const branchAfter = await runGitCommand(
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      { cwd: clone },
+    );
+    assert(branchAfter.ok);
+    assertEquals(branchAfter.value.stdout.trim(), "fix/in-flight");
+    const headAfter = await runGitCommand(["rev-parse", "HEAD"], {
+      cwd: clone,
+    });
+    assert(headAfter.ok);
+    assertEquals(headAfter.value.stdout, headBefore.value.stdout);
+    assertEquals(
+      await Deno.readTextFile(`${clone}/file.txt`),
+      "work in progress\n",
+    );
+    assertEquals(
+      await Deno.readTextFile(`${clone}/scratch.txt`),
+      "untracked\n",
+    );
+
+    // And `pull.log` — the reset's own log — was never written.
+    let pullLogWritten = true;
+    try {
+      await Deno.stat(`${logDir}/pull.log`);
+    } catch {
+      pullLogWritten = false;
+    }
+    assertEquals(pullLogWritten, false, "the prelude must not run a git reset");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
 });
 
 Deno.test("resolveOriginDefaultBranch - reads origin/HEAD, and records it first when the clone lacks it", async () => {
@@ -524,8 +427,6 @@ Deno.test("runBootstrap - initWorkerLog writes a timestamp-named log with a rela
         order.push(`log:${message}`);
         return Promise.resolve();
       },
-      resetToDefaultBranch: () =>
-        Promise.resolve({ ok: true, value: undefined } as Result<void>),
       checkUpdates: () => Promise.resolve(),
       setEnv: (name, value) => {
         env[name] = value;

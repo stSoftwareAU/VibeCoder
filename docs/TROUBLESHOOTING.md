@@ -207,31 +207,34 @@ still fails with a permission error: setup reports it with the
 group membership itself. On a non-apt distribution nothing is offered and the
 manual hints stand.
 
-## 🌳 Every cycle logs `Git reset failed` and the worker claims nothing
+## 🌳 Every cycle logs `Checkout update failed` and the fleet runs stale code
 
-The bootstrap prelude resets the worker checkout to its default branch (read
-from `origin/HEAD` — the example below shows `main`) each cycle and **fails
-loud** when it cannot — each run then exits seconds after
-starting, leaving a one-line `worker-<pid>.log` and, in
-`~/logs/run_core.log`:
+The **launcher** updates the worker checkout to its default branch (read from
+`origin/HEAD` — the example below shows `main`) on the host before each
+container launch, and says so loudly when it cannot (Issues #512, #513). The
+run still starts — on whatever the checkout already holds — so the symptom is
+a host stuck on an old commit, with this in `~/logs/run_core.log` every cycle:
 
 ```text
-Resetting repo to origin/main
-Git reset failed: git checkout main failed (exit code 1) — the worker
-checkout looks like an active development tree (branch fix/x, 3 uncommitted
-change(s)). Commit or stash that work, or give the worker its own dedicated
-clone.
+Updating /Users/vibe/VibeCoder to origin/main
+Checkout update failed: cannot update /Users/vibe/VibeCoder to origin/main:
+git checkout main failed (exit code 1) — the worker checkout looks like an
+active development tree (branch fix/x, 3 uncommitted change(s)). Commit or
+stash that work, or give the worker its own dedicated clone.
 ```
 
 The usual cause is exactly what the message says: the worker's clone is
 doubling as somebody's development tree. Commit or stash the in-flight
 work — or better, move development elsewhere and leave the appliance clone
 alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)).
-After three consecutive failures the worker also files (or comments on) a
-`Worker bootstrap failing on <host>` issue against the worker repository,
-so the crash-loop is visible from GitHub rather than only in host logs. The
-streak counter lives at `~/logs/bootstrap-failure-streak` and resets on the
-first successful cycle.
+After three consecutive failures the host also files (or comments on) a
+`Worker checkout update failing on <host>` issue against the worker
+repository, so the stuck host is visible from GitHub rather than only in host
+logs. The streak counter lives at `~/logs/checkout-update-failure-streak` and
+resets on the first successful update. A checkout that is *meant* to be left
+alone — a development tree, a CI merge commit — should set
+`VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
+raises nothing.
 
 ## 🔐 The worker exits on a credential preflight error
 
@@ -794,6 +797,8 @@ state is the GitHub `idle-task` issue itself.
 ## 🔄 Checking if worker is running
 
 ```bash
-cat .run.pid  # Shows PID if running
-ps -p $(cat .run.pid) 2>/dev/null && echo "Running" || echo "Not running"
+# The driver's PID file lives in the log directory, not the checkout
+# (Issue #514): /workspace is mounted read-only inside the container.
+cat ~/logs/.run.pid  # Shows PID if running
+ps -p $(head -1 ~/logs/.run.pid) 2>/dev/null && echo "Running" || echo "Not running"
 ```

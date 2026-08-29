@@ -15,9 +15,29 @@
  * resolved values are returned so the calling shell can still export them for
  * the remaining shell steps during the incremental migration.
  *
- * Fail-loud (Issue #3234): a failed git reset returns `ok: false` and the
- * software-update step is skipped, exactly mirroring the old bash path where a
- * non-zero git reset exited the script before the update check ran.
+ * **The prelude never writes to the worker checkout (Issue #513).** The git
+ * reset it used to perform — the last intentional in-container writer to
+ * `/workspace`, and so the only reason that mount had to be read-write — now
+ * runs on the host before the container launches, in
+ * [checkout_update.ts](./checkout_update.ts) via the `worker-checkout-update`
+ * command (Issue #512). The consecutive-failure escalation and the "active
+ * development tree" diagnosis went with it: they are about the checkout, and
+ * they now sit beside the code that updates it. Everything left here writes to
+ * the mounted **log directory** only — `run_core.log`, the per-run worker log
+ * — and the checkout is touched by exactly one read: resolving its default
+ * branch from `origin/HEAD`, reported in the result for the housekeeping
+ * branch clean-up. That read is not fatal: an unresolvable default branch is
+ * logged loud and the prelude carries on.
+ *
+ * **Software-update gate (Issue #513).** With no reset left to gate it, the
+ * update check runs on every prelude, unless the caller passes
+ * `skipSoftwareUpdate` (`--skip-software-update`, or the documented
+ * `SKIP_SOFTWARE_UPDATE` / per-tool `SKIP_*_UPDATE` variables the callers
+ * resolve). It writes nothing to the checkout either: its check/attempt
+ * timestamps go to `timestampDir` (the home directory unless
+ * `SOFTWARE_UPDATE_TIMESTAMP_DIR` names another), and the `pull.log` the git
+ * update writes now belongs to the host-side update, under the mounted log
+ * directory.
  *
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
@@ -36,8 +56,6 @@ import {
 } from "./side_repo_clone_args.ts";
 import { resolveLocalDefaultBranch } from "./git_push.ts";
 import { createLogger } from "./logger.ts";
-import { spawnGh } from "./gh_spawn.ts";
-import { GH_RUNTIME_CONFIG_SUFFIX } from "./credential_preflight.ts";
 import {
   gzipOldWorkerLogs,
   type GzipWorkerLogsResult,
@@ -89,49 +107,17 @@ export async function resolveOriginDefaultBranch(
 }
 
 /**
- * Consecutive reset failures before the bootstrap escalates through the
- * control plane (Issue #4204). One transient blip stays a log line; a
- * crash-loop becomes a GitHub issue the operator actually sees — the
- * observed failure mode was a worker silently absent for an hour while its
- * checkout was occupied by interactive development work.
- */
-export const BOOTSTRAP_ESCALATION_THRESHOLD = 3;
-
-/** File under the log directory persisting the consecutive-failure count. */
-export const BOOTSTRAP_FAILURE_STREAK_FILE = "bootstrap-failure-streak";
-
-/** What the worker checkout looks like, for collision diagnosis (#4204). */
-export interface CheckoutState {
-  /** Currently checked-out branch (or `HEAD` when detached). */
-  branch: string;
-  /** Number of uncommitted paths reported by `git status --porcelain`. */
-  dirtyFiles: number;
-}
-
-/** Everything the escalation hook needs to name the failure (#4204). */
-export interface BootstrapEscalationContext {
-  /** The worker checkout that could not be reset. */
-  repoDir: string;
-  /** Worker log directory (for any escalation-side logging). */
-  logDir: string;
-  /** Consecutive failures, including this one. */
-  streak: number;
-  /** The enriched failure detail. */
-  error: string;
-  /** Checkout state at failure time, when it could be read. */
-  checkout: CheckoutState | null;
-}
-
-/**
- * The canonical prelude order (Issue #3501). Exposed so tests and callers can
- * assert the sequence without hard-coding string literals.
+ * The canonical prelude order (Issues #3501, #513). Exposed so tests and
+ * callers can assert the sequence without hard-coding string literals. There
+ * is no `git-reset` step: the checkout is updated host-side before the
+ * container launches (see the module comment).
  */
 export const PRELUDE_STEPS = [
   "path",
   "run-id",
   "side-repo-clone-args",
   "log-init",
-  "git-reset",
+  "default-branch",
   "software-update",
 ] as const;
 
@@ -157,7 +143,10 @@ export interface BootstrapEnv {
 
 /** Options controlling the bootstrap prelude. */
 export interface BootstrapOptions {
-  /** Repository directory to reset to the default branch. */
+  /**
+   * Worker checkout. Read-only to the prelude (Issue #513) — it is consulted
+   * for the default branch and never written to.
+   */
   repoDir: string;
   /** Directory holding worker logs (typically `~/logs`). */
   logDir: string;
@@ -168,8 +157,9 @@ export interface BootstrapOptions {
   /** Optional colon-separated additional fallback paths. */
   fallbackPaths?: string;
   /**
-   * Branch to reset to. Omitted, it is resolved from the checkout's own
-   * `origin/HEAD` (see {@link resolveOriginDefaultBranch}).
+   * The checkout's default branch. Omitted, it is read from the checkout's
+   * own `origin/HEAD` — a read, never the self-healing repair the host-side
+   * update performs (Issue #513).
    */
   defaultBranch?: string;
   /** PID stamped into the per-PID worker log file name. */
@@ -191,9 +181,9 @@ export interface BootstrapResult {
   /** Failure reason when {@link ok} is false. */
   error?: string;
   /**
-   * The branch the checkout was reset to — given, or resolved from
-   * `origin/HEAD` — so later steps (housekeeping's branch clean-up) use the
-   * same answer. Empty when the prelude failed before it was known.
+   * The checkout's default branch — given, or read from `origin/HEAD` — so
+   * later steps (housekeeping's orphaned-branch clean-up) use the same
+   * answer. Empty when it could not be read; that is logged, not fatal.
    */
   defaultBranch: string;
 }
@@ -221,37 +211,14 @@ export interface BootstrapDeps {
   ): Promise<GzipWorkerLogsResult>;
   /** Append a timestamped line to `run_core.log`. */
   appendRunCoreLog(logDir: string, message: string): Promise<void>;
-  /** Resolve the checkout's default branch from `origin/HEAD`. */
+  /** Read the checkout's default branch from `origin/HEAD` — no write. */
   resolveDefaultBranch(repoDir: string): Promise<Result<string>>;
-  /** Reset the checkout to `origin/<branch>`; fail-loud on any git failure. */
-  resetToDefaultBranch(
-    repoDir: string,
-    branch: string,
-    logDir: string,
-  ): Promise<Result<void>>;
   /** Run the periodic software-update check. */
   checkUpdates(options: SoftwareUpdateOptions | undefined): Promise<void>;
   /** Establish an environment variable in-process. */
   setEnv(name: string, value: string): void;
   /** Read an environment variable (`undefined` when unset). */
   readEnv?(name: string): string | undefined;
-  /**
-   * Describe the checkout for collision diagnosis (Issue #4204). Best-effort:
-   * `null` when the state cannot be read — diagnosis is enrichment, never a
-   * new failure mode.
-   */
-  describeCheckoutState(repoDir: string): Promise<CheckoutState | null>;
-  /** Read the persisted consecutive-failure count (0 when absent). */
-  readBootstrapFailureStreak(logDir: string): Promise<number>;
-  /** Persist the consecutive-failure count. */
-  writeBootstrapFailureStreak(logDir: string, count: number): Promise<void>;
-  /**
-   * Raise the crash-loop through the control plane (Issue #4204) — the
-   * default files (or comments on) a deduplicated GitHub issue against the
-   * checkout's origin repository. Best-effort: a throw is logged and never
-   * masks the underlying bootstrap failure.
-   */
-  escalateBootstrapFailure(context: BootstrapEscalationContext): Promise<void>;
 }
 
 /** Format a UTC timestamp matching bash `date -u +%Y-%m-%dT%H:%M:%SZ`. */
@@ -282,244 +249,25 @@ async function appendLine(filePath: string, line: string): Promise<void> {
 }
 
 /**
- * Default git reset sequence, mirroring the old bash chain:
- *   git fetch origin && git checkout <branch> &&
- *   git reset --hard origin/<branch> && git clean -fd
+ * Read the checkout's default branch from `origin/HEAD` (Issue #513).
  *
- * Output is appended to `pull.log`. The first failing command short-circuits
- * and returns a fail-loud error (Issue #3234).
+ * Deliberately *not* {@link resolveOriginDefaultBranch}: that repairs a clone
+ * whose `origin/HEAD` is unset with `git remote set-head origin --auto`, a
+ * write. The prelude writes nothing to the checkout, so it reads and reports
+ * what is there; the host-side update does the repairing.
  */
-async function defaultResetToDefaultBranch(
+async function readOriginDefaultBranch(
   repoDir: string,
-  branch: string,
-  logDir: string,
-): Promise<Result<void>> {
-  const pullLog = `${logDir}/pull.log`;
-  const steps: string[][] = [
-    ["fetch", "origin"],
-    ["checkout", branch],
-    ["reset", "--hard", `origin/${branch}`],
-    ["clean", "-fd"],
-  ];
-
-  for (const args of steps) {
-    const result = await runGitCommand(args, { cwd: repoDir });
-    if (!result.ok) {
-      return { ok: false, error: result.error };
-    }
-    const { code, stdout, stderr } = result.value;
-    const output = `${stdout}${stderr}`;
-    if (output.length > 0) {
-      try {
-        await appendLine(pullLog, output.replace(/\n$/, ""));
-      } catch {
-        // Best-effort logging — never masks the git outcome.
-      }
-    }
-    if (code !== 0) {
-      return {
-        ok: false,
-        error: new Error(
-          `git ${args.join(" ")} failed (exit code ${code}): ${
-            stderr.trim() || stdout.trim()
-          }`,
-        ),
-      };
-    }
-  }
-
-  return { ok: true, value: undefined };
-}
-
-/**
- * Read the checkout's branch and dirty-file count (Issue #4204). Best-effort:
- * any git failure returns `null` — diagnosis must never add a failure mode.
- */
-async function defaultDescribeCheckoutState(
-  repoDir: string,
-): Promise<CheckoutState | null> {
-  try {
-    const branchResult = await runGitCommand(
-      ["rev-parse", "--abbrev-ref", "HEAD"],
-      { cwd: repoDir },
-    );
-    if (!branchResult.ok || branchResult.value.code !== 0) return null;
-    const statusResult = await runGitCommand(["status", "--porcelain"], {
-      cwd: repoDir,
-    });
-    if (!statusResult.ok || statusResult.value.code !== 0) return null;
-    const dirtyFiles = statusResult.value.stdout
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
-      .length;
-    return { branch: branchResult.value.stdout.trim(), dirtyFiles };
-  } catch {
-    return null;
-  }
-}
-
-/** Path of the persisted consecutive-failure count. */
-function streakFilePath(logDir: string): string {
-  return `${logDir}/${BOOTSTRAP_FAILURE_STREAK_FILE}`;
-}
-
-/** Read the persisted streak; absent or unreadable reads as zero. */
-async function defaultReadBootstrapFailureStreak(
-  logDir: string,
-): Promise<number> {
-  try {
-    const text = await Deno.readTextFile(streakFilePath(logDir));
-    const parsed = Number.parseInt(text.trim(), 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Persist the streak. Best-effort — a write failure only loses the count. */
-async function defaultWriteBootstrapFailureStreak(
-  logDir: string,
-  count: number,
-): Promise<void> {
-  try {
-    await Deno.mkdir(logDir, { recursive: true });
-    await Deno.writeTextFile(streakFilePath(logDir), `${count}\n`);
-  } catch {
-    // Best-effort persistence.
-  }
-}
-
-/** Parse `owner/repo` out of a git origin URL (SSH or HTTPS). */
-export function parseOriginRepo(url: string): string | null {
-  const match = url.trim().match(
-    /github\.com[/:]([^/\s]+\/[^/\s]+?)(?:\.git)?$/,
-  );
-  return match ? match[1]! : null;
-}
-
-/** The host's own identity for the escalation title. */
-function escalationHostId(): string {
-  const fromEnv = Deno.env.get("VIBE_HOST_ID")?.trim();
-  if (fromEnv) return fromEnv;
-  try {
-    return Deno.hostname().split(".")[0] || "unknown-host";
-  } catch {
-    return "unknown-host";
-  }
-}
-
-/**
- * File (or comment on) a deduplicated GitHub issue naming the crash-loop
- * (Issue #4204). Goes through the `spawnGh` chokepoint like every other
- * worker write. The bootstrap runs before the worker's configuration is
- * loaded, so `GH_CONFIG_DIR` may not be established yet — inside the
- * container the entrypoint stages a runtime copy under the home directory,
- * which is pointed at explicitly when present.
- */
-async function defaultEscalateBootstrapFailure(
-  context: BootstrapEscalationContext,
-): Promise<void> {
-  const origin = await runGitCommand(["remote", "get-url", "origin"], {
-    cwd: context.repoDir,
-  });
-  if (!origin.ok || origin.value.code !== 0) {
-    throw new Error("cannot resolve the checkout's origin remote");
-  }
-  const repo = parseOriginRepo(origin.value.stdout);
-  if (!repo) {
-    throw new Error(
-      `origin is not a GitHub repository: ${origin.value.stdout.trim()}`,
-    );
-  }
-
-  const env: Record<string, string> = {};
-  if (!Deno.env.get("GH_CONFIG_DIR")) {
-    const home = Deno.env.get("HOME");
-    if (home) {
-      const runtimeDir = `${home}/${GH_RUNTIME_CONFIG_SUFFIX}`;
-      try {
-        await Deno.stat(`${runtimeDir}/hosts.yml`);
-        env.GH_CONFIG_DIR = runtimeDir;
-      } catch {
-        // No staged runtime copy — let gh resolve its own configuration.
-      }
-    }
-  }
-
-  const host = escalationHostId();
-  const title = `Worker bootstrap failing on ${host}`;
-  const body = [
-    `The worker bootstrap on \`${host}\` has failed ` +
-    `${context.streak} consecutive runs — the worker is claiming nothing ` +
-    `while this persists (Issue #4204).`,
-    "",
-    "```",
-    context.error,
-    "```",
-    "",
-    context.checkout
-      ? `Checkout state: branch \`${context.checkout.branch}\`, ` +
-        `${context.checkout.dirtyFiles} uncommitted change(s).`
-      : "Checkout state could not be read.",
-    "",
-    "If this checkout doubles as a development tree, commit or stash the " +
-    "in-flight work, or give the worker its own dedicated clone — see " +
-    "docs/DEPLOYMENT.md (Dedicated clone).",
-  ].join("\n");
-
-  // Dedup by exact title: comment on an existing open report, else create.
-  const listed = await spawnGh(
-    [
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `in:title \"${title}\"`,
-      "--json",
-      "number,title",
-    ],
-    { env },
-  );
-  let existing: number | undefined;
-  if (listed.code === 0) {
-    try {
-      const issues = JSON.parse(listed.stdout) as {
-        number: number;
-        title: string;
-      }[];
-      existing = issues.find((issue) => issue.title === title)?.number;
-    } catch {
-      // Unparseable listing — fall through to creation.
-    }
-  }
-
-  const result = existing
-    ? await spawnGh(
-      [
-        "issue",
-        "comment",
-        `${existing}`,
-        "--repo",
-        repo,
-        "--body",
-        body,
-      ],
-      { env },
-    )
-    : await spawnGh(
-      ["issue", "create", "--repo", repo, "--title", title, "--body", body],
-      { env },
-    );
-  if (result.code !== 0) {
-    throw new Error(
-      `gh issue ${
-        existing ? "comment" : "create"
-      } exited ${result.code}: ${result.stderr.trim()}`,
-    );
-  }
+): Promise<Result<string>> {
+  const local = await resolveLocalDefaultBranch({ cwd: repoDir });
+  if (local) return { ok: true, value: local };
+  return {
+    ok: false,
+    error: new Error(
+      "refs/remotes/origin/HEAD is unset in the worker checkout — the " +
+        "host-side worker-checkout-update records it (Issue #512)",
+    ),
+  };
 }
 
 /** Build the production dependency set for {@link runBootstrap}. */
@@ -530,7 +278,7 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
     resolvePath: async (currentPath, home, fallbackPaths) =>
       (await applyDefaults(currentPath, home, fallbackPaths)).path,
     resolveRunId: () => getRunId(),
-    resolveDefaultBranch: resolveOriginDefaultBranch,
+    resolveDefaultBranch: readOriginDefaultBranch,
     initWorkerLog: async (logDir, pid) => {
       await Deno.mkdir(logDir, { recursive: true });
       // Timestamp-named per run (Issue #4227): in container mode the worker
@@ -580,11 +328,6 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
     gzipPriorWorkerLogs: (logDir, currentLogFile) =>
       gzipOldWorkerLogs(logDir, { currentLogFile }),
     appendRunCoreLog: appendRunCoreLogLine,
-    resetToDefaultBranch: defaultResetToDefaultBranch,
-    describeCheckoutState: defaultDescribeCheckoutState,
-    readBootstrapFailureStreak: defaultReadBootstrapFailureStreak,
-    writeBootstrapFailureStreak: defaultWriteBootstrapFailureStreak,
-    escalateBootstrapFailure: defaultEscalateBootstrapFailure,
     checkUpdates: (options) => checkSoftwareUpdates(log, options ?? {}),
     setEnv: (name, value) => {
       try {
@@ -607,8 +350,9 @@ function safeEnvGet(name: string): string | undefined {
 }
 
 /**
- * Run the bootstrap prelude in the canonical order (Issue #3501):
- * PATH → run-id → log init → git reset → software-update.
+ * Run the bootstrap prelude in the canonical order (Issues #3501, #513):
+ * PATH → run-id → side-repo clone args → log init → default branch →
+ * software-update. Nothing here writes to the worker checkout.
  *
  * Each step establishes its state in-process (via {@link BootstrapDeps.setEnv})
  * and the resolved PATH, `VIBE_RUN_ID`, and log-file path are returned so the
@@ -704,118 +448,32 @@ export async function runBootstrap(
     );
   }
 
-  // 4) Git reset to the default branch — fail-loud on any git failure. The
-  //    branch is whatever origin says it is unless the caller named one.
-  stepsRun.push("git-reset");
-  let reset: Result<void>;
+  // 4) Default branch — a read of the checkout's origin/HEAD (Issue #513),
+  //    reported so housekeeping's orphaned-branch clean-up works off the same
+  //    answer. Never a write, and never fatal: the checkout is updated on the
+  //    host now, so an unreadable origin/HEAD costs one housekeeping step,
+  //    not the run. It is logged loud either way (Issue #3234).
+  stepsRun.push("default-branch");
   if (branch === "") {
     const resolved = await deps.resolveDefaultBranch(options.repoDir);
     if (resolved.ok) {
       branch = resolved.value;
     } else {
-      reset = {
-        ok: false,
-        error: new Error(
-          `cannot resolve the checkout's default branch: ` +
-            `${resolved.error.message} (pass --default-branch to name it)`,
-        ),
-      };
+      await deps.appendRunCoreLog(
+        options.logDir,
+        `Default branch unresolved: ${resolved.error.message} — the ` +
+          `orphaned-branch clean-up will be skipped this run (pass ` +
+          `--default-branch to name it)`,
+      );
     }
   }
   if (branch !== "") {
-    await deps.appendRunCoreLog(
-      options.logDir,
-      `Resetting repo to origin/${branch}`,
-    );
-    reset = await deps.resetToDefaultBranch(
-      options.repoDir,
-      branch,
-      options.logDir,
-    );
-  }
-  if (!reset!.ok) {
-    // Collision diagnosis (Issue #4204): when the checkout looks like an
-    // active development tree — dirty, or parked on another branch — say so,
-    // instead of the bare "Git reset failed" that let a crash-loop run for
-    // an hour unexplained. Best-effort: an unreadable state adds nothing.
-    let checkout: CheckoutState | null = null;
-    try {
-      checkout = await deps.describeCheckoutState(options.repoDir);
-    } catch {
-      checkout = null;
-    }
-    let detail = reset!.error.message;
-    if (
-      checkout && branch !== "" &&
-      (checkout.dirtyFiles > 0 || checkout.branch !== branch)
-    ) {
-      detail += ` — the worker checkout looks like an active development ` +
-        `tree (branch ${checkout.branch}, ${checkout.dirtyFiles} ` +
-        `uncommitted change(s)). Commit or stash that work, or give the ` +
-        `worker its own dedicated clone (Issue #4204).`;
-    }
-    await deps.appendRunCoreLog(options.logDir, `Git reset failed: ${detail}`);
-
-    // Consecutive-failure escalation (Issue #4204): one blip stays a log
-    // line; a crash-loop is raised through the control plane exactly once
-    // per streak, so an unattended host's absence is visible where the
-    // operator actually looks. Every step is best-effort — nothing here may
-    // mask the underlying failure.
-    let streak: number;
-    try {
-      streak = (await deps.readBootstrapFailureStreak(options.logDir)) + 1;
-    } catch {
-      streak = 1;
-    }
-    try {
-      await deps.writeBootstrapFailureStreak(options.logDir, streak);
-    } catch {
-      // Best-effort persistence.
-    }
-    if (streak === BOOTSTRAP_ESCALATION_THRESHOLD) {
-      await deps.appendRunCoreLog(
-        options.logDir,
-        `Bootstrap has failed ${streak} consecutive runs — escalating ` +
-          `through the control plane (Issue #4204)`,
-      );
-      try {
-        await deps.escalateBootstrapFailure({
-          repoDir: options.repoDir,
-          logDir: options.logDir,
-          streak,
-          error: detail,
-          checkout,
-        });
-      } catch (escalationError) {
-        await deps.appendRunCoreLog(
-          options.logDir,
-          `Bootstrap escalation failed (continuing): ${
-            escalationError instanceof Error
-              ? escalationError.message
-              : String(escalationError)
-          }`,
-        );
-      }
-    }
-
-    return {
-      ok: false,
-      env,
-      stepsRun,
-      error: detail,
-      defaultBranch: branch,
-    };
-  }
-
-  // A successful reset ends any failure streak (Issue #4204).
-  try {
-    await deps.writeBootstrapFailureStreak(options.logDir, 0);
-  } catch {
-    // Best-effort persistence.
+    await deps.appendRunCoreLog(options.logDir, `Default branch: ${branch}`);
   }
 
   // 5) Software-update check — periodic, runs within the same process so it
-  //    inherits the freshly bootstrapped PATH and VIBE_RUN_ID.
+  //    inherits the freshly bootstrapped PATH and VIBE_RUN_ID. With no reset
+  //    left to gate it (Issue #513) the only gate is `skipSoftwareUpdate`.
   if (!options.skipSoftwareUpdate) {
     stepsRun.push("software-update");
     await deps.checkUpdates(options.softwareUpdate);
