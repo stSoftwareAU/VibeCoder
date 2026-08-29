@@ -26,6 +26,10 @@ so legitimate follow-up work on a reused branch name is never flagged.
 `ensureHistoryDepth()` runs first, because ancestry on a `--depth=1` clone is
 unanswerable and an unanswerable test would read as "not stale".
 
+A cheap local pre-filter runs before any `gh` call: a branch that already
+contains the base tip cannot be replaying a squash of itself, so the common case
+costs one `merge-base` and no API quota.
+
 Recovery replays content rather than picking a side, with three post-conditions:
 
 - **No unexplained deletion.** If the result removes a file the base has and no
@@ -86,11 +90,11 @@ flowchart TD
 Test output:
 
 ```text
-running 20 tests from ./tests/stale_branch_lineage_test.ts
+running 21 tests from ./tests/stale_branch_lineage_test.ts
 ...
 healStaleBranchLineage - rebases a squash-merged lineage instead of opening a
   conflicting PR (Issue #534) ... ok
-ok | 20 passed | 0 failed
+ok | 21 passed | 0 failed
 
 running 1 test from ./tests/completion_phase_stale_lineage_test.ts
 completion - a stale lineage that cannot be rebased safely stops before the
@@ -100,7 +104,7 @@ ok | 1 passed | 0 failed
 
 ## Test Plan
 
-Added `worker/deno/tests/stale_branch_lineage_test.ts` (20 tests):
+Added `worker/deno/tests/stale_branch_lineage_test.ts` (21 tests):
 
 - **The incident, end to end with real git** — a branch is squash-merged into
   `main` and reaped, a second writer commits on the pre-merge lineage, and
@@ -109,6 +113,8 @@ Added `worker/deno/tests/stale_branch_lineage_test.ts` (20 tests):
   (so a PR can fast-forward), `docs/REFERENCES.md` added to base while the
   branch was stale is **still present**, and the healed head reaches origin.
 - **A surviving stale remote branch** is replaced under `--force-with-lease`.
+- **A branch that already contains base** returns `not-stale` with a `gh` runner
+  that throws if called — the pre-filter must spend no API quota.
 - **A branch with no merged PR** is left byte-for-byte alone.
 - **An unreadable `gh` lookup** yields `unknown` and touches nothing — never a
   silent "not stale".
