@@ -13,6 +13,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import {
   _resetGhSpawnRunner,
   _setGhSpawnRunner,
+  resetGhRestageAttempts,
   runGhOrThrow,
   spawnGh,
 } from "../lib/gh_spawn.ts";
@@ -249,3 +250,98 @@ Deno.test("spawnGh - a failed issue close marks nothing", async () => {
     restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Credential recovery at the chokepoint (Issue #564). A call that failed for
+// want of authentication did nothing, so retrying it is safe — and the copy
+// of `hosts.yml` that went missing mid-run is rebuildable from the mount that
+// still has it.
+// ---------------------------------------------------------------------------
+
+Deno.test("spawnGh - an auth failure re-stages the credential and retries once", async () => {
+  const previousHome = Deno.env.get("HOME");
+  const previousGh = Deno.env.get("GH_CONFIG_DIR");
+  const previousState = Deno.env.get("VIBE_STATE_DIR");
+  const home = await Deno.makeTempDir();
+  try {
+    // The mount holds the credential; the staged copy is gone, exactly as it
+    // was found on the fleet.
+    await Deno.mkdir(`${home}/.vibe-coder/credentials/gh`, { recursive: true });
+    await Deno.writeTextFile(
+      `${home}/.vibe-coder/credentials/gh/hosts.yml`,
+      "github.com:\n",
+    );
+    Deno.env.set("HOME", home);
+    Deno.env.set("VIBE_STATE_DIR", `${home}/state`);
+    Deno.env.set("GH_CONFIG_DIR", `${home}/gone`);
+    resetGhRestageAttempts();
+
+    const calls: string[][] = [];
+    _setGhSpawnRunner((args) => {
+      calls.push([...args]);
+      return Promise.resolve(
+        calls.length === 1
+          ? {
+            code: 4,
+            success: false,
+            stdout: "",
+            stderr: "To get started with GitHub CLI, please run: gh auth login",
+          }
+          : { code: 0, success: true, stdout: "vibe-bot", stderr: "" },
+      );
+    });
+
+    const result = await spawnGh(["api", "user", "--jq", ".login"]);
+
+    assertEquals(result.success, true);
+    assertEquals(result.stdout, "vibe-bot");
+    assertEquals(calls.length, 2, "the call must be retried exactly once");
+    // The retry ran against a rebuilt configuration, not the missing one.
+    assertEquals(Deno.env.get("GH_CONFIG_DIR"), `${home}/state/gh-config`);
+    assertEquals(
+      await Deno.readTextFile(`${home}/state/gh-config/hosts.yml`),
+      "github.com:\n",
+    );
+  } finally {
+    _resetGhSpawnRunner();
+    resetGhRestageAttempts();
+    restoreGhEnv("HOME", previousHome);
+    restoreGhEnv("GH_CONFIG_DIR", previousGh);
+    restoreGhEnv("VIBE_STATE_DIR", previousState);
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("spawnGh - a non-auth failure is returned as-is, never retried", async () => {
+  const previousGh = Deno.env.get("GH_CONFIG_DIR");
+  try {
+    resetGhRestageAttempts();
+    const calls: string[][] = [];
+    _setGhSpawnRunner((args) => {
+      calls.push([...args]);
+      return Promise.resolve({
+        code: 1,
+        success: false,
+        stdout: "",
+        stderr: "Could not resolve to an Issue with the number of 999",
+      });
+    });
+
+    const result = await spawnGh(["issue", "view", "999"]);
+
+    assertEquals(result.success, false);
+    assertEquals(calls.length, 1);
+  } finally {
+    _resetGhSpawnRunner();
+    resetGhRestageAttempts();
+    restoreGhEnv("GH_CONFIG_DIR", previousGh);
+  }
+});
+
+function restoreGhEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    Deno.env.delete(name);
+  } else {
+    Deno.env.set(name, value);
+  }
+}

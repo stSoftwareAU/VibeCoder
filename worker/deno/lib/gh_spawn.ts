@@ -37,6 +37,11 @@
  */
 
 import { getGhTokenForSubprocess } from "./github_app_auth.ts";
+import {
+  ensureUsableGhConfigDir,
+  isGhAuthMissingFailure,
+  MAX_RESTAGE_ATTEMPTS,
+} from "./gh_credential_stage.ts";
 import { enforceGhWriteAllowlist } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
 import { redactGhBodyArgs } from "./gh_body_redaction.ts";
@@ -152,6 +157,33 @@ const productionRunner: GhSpawnRunner = async (args, options) => {
 let runner: GhSpawnRunner = productionRunner;
 
 /**
+ * Re-stagings this process has performed (Issue #564).
+ *
+ * Bounded by {@link MAX_RESTAGE_ATTEMPTS}: a credential that keeps vanishing
+ * is a fault to report, and a revoked token must fail rather than re-stage on
+ * every call for the rest of the run.
+ */
+let restageAttempts = 0;
+
+/** Reset the re-stage budget. Tests only. */
+export function resetGhRestageAttempts(): void {
+  restageAttempts = 0;
+}
+
+/**
+ * The retry's options, with any explicit `GH_CONFIG_DIR` refreshed.
+ *
+ * Callers that pin the directory per call (`setup/*`, the escalation paths)
+ * would otherwise retry against the same broken copy the re-stage replaced.
+ */
+function withStagedGhConfigDir(options: GhSpawnOptions): GhSpawnOptions {
+  if (options.env?.GH_CONFIG_DIR === undefined) return options;
+  const staged = Deno.env.get("GH_CONFIG_DIR");
+  if (staged === undefined) return options;
+  return { ...options, env: { ...options.env, GH_CONFIG_DIR: staged } };
+}
+
+/**
  * Run `gh` through the worker's chokepoint.
  *
  * Enforces the write-repo allowlist before the process starts (so a refused
@@ -170,7 +202,22 @@ export async function spawnGh(
   await enforceGhWriteAllowlist(args);
   // Mask secrets in the published body arguments (Issue #3707) — the last
   // point before a comment or PR body leaves the worker for GitHub.
-  const result = await runner(redactGhBodyArgs(args), options);
+  const redacted = redactGhBodyArgs(args);
+  let result = await runner(redacted, options);
+  // Issue #564: a call that failed for want of authentication did nothing,
+  // so retrying it is safe — and the credential is very likely recoverable.
+  // The writable copy of `hosts.yml` went missing mid-run once already and
+  // every later call failed with the intact original still on its mount.
+  // Rebuild from the mount and try once more, here at the chokepoint, so
+  // every gh caller in the worker inherits the recovery.
+  if (
+    isGhAuthMissingFailure(result) && restageAttempts < MAX_RESTAGE_ATTEMPTS
+  ) {
+    restageAttempts++;
+    if (ensureUsableGhConfigDir()) {
+      result = await runner(redacted, withStagedGhConfigDir(options));
+    }
+  }
   // Best-effort — never lets journalling alter or abort the gh call.
   await auditGhMutation(args, result.code);
   // Issue #181: a close the worker just performed invalidates the scan-cache

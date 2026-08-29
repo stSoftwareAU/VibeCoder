@@ -40,6 +40,14 @@ function scratchRoot(dir: string): string {
   return `${dir}/tmp/vibe-scratch`;
 }
 
+/**
+ * The durable state root the entrypoint resolves, where the writable gh copy
+ * lives (Issue #564 moved it off the agents' scratch).
+ */
+function stateRoot(dir: string): string {
+  return `${dir}/home/auto-issue-work/.container-state`;
+}
+
 /** Create a throwaway repo layout the entrypoint can point at. */
 async function fakeRepo(dir: string): Promise<void> {
   await Deno.mkdir(`${dir}/repo/worker/deno`, { recursive: true });
@@ -345,7 +353,7 @@ Deno.test("entrypoint - rewrites SSH remotes to HTTPS with the mounted gh token"
 
     // The writable runtime copy is staged for gh's own config migration.
     assertEquals(
-      await Deno.readTextFile(`${scratchRoot(dir)}/gh/hosts.yml`),
+      await Deno.readTextFile(`${stateRoot(dir)}/gh/hosts.yml`),
       "github.com:\n",
     );
     // The driver still execs after the transport setup.
@@ -400,7 +408,7 @@ Deno.test("entrypoint - exports GH_CONFIG_DIR so raw scripts inherit gh auth (Is
     // (Issue #515) and the staged copy is regenerated from the mount anyway.
     assertEquals(
       (await Deno.readTextFile(envFile)).trim(),
-      `${scratchRoot(dir)}/gh`,
+      `${stateRoot(dir)}/gh`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -991,12 +999,15 @@ Deno.test("entrypoint - writes nothing under HOME: the staged source, the git co
     assertEquals(code, 0, stderr);
 
     const scratch = scratchRoot(dir);
-    // Every writer landed on the scratch root…
+    // Every per-launch writer landed on the scratch root…
     assertEquals(
       await Deno.readTextFile(`${scratch}/worker-src/worker/deno/mod.ts`),
       "// stub\n",
     );
-    assertEquals(await exists(`${scratch}/gh/hosts.yml`), true);
+    // …and the credential on the durable state root instead, out of the
+    // world-writable /tmp the coding agents scribble in (Issue #564).
+    assertEquals(await exists(`${stateRoot(dir)}/gh/hosts.yml`), true);
+    assertEquals(await exists(`${scratch}/gh/hosts.yml`), false);
     const gitconfig = await Deno.readTextFile(`${scratch}/gitconfig`);
     assertStringIncludes(gitconfig, "[safe]");
     assertStringIncludes(gitconfig, "vibe-bot");
@@ -1194,7 +1205,8 @@ Deno.test("entrypoint - a launch completes with the image layer read-only (Issue
     // …the per-launch copies on the tmpfs, and the driver actually ran.
     assert(argv.includes(`${scratchRoot(dir)}/worker-src/worker/deno/mod.ts`));
     assert(argv.includes("run-entrypoint"));
-    assertEquals(await exists(`${scratchRoot(dir)}/gh/hosts.yml`), true);
+    // The credential is durable state, not per-launch scratch (Issue #564).
+    assertEquals(await exists(`${stateRoot(dir)}/gh/hosts.yml`), true);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
