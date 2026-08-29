@@ -61,6 +61,14 @@ export const WORK_ROOT_STATE_DIRS: ReadonlySet<string> = new Set([
   ".github",
   ".git",
   ".resume-state",
+  // The container-managed writable roots (Issue #515): the entrypoint's
+  // per-launch scratch and durable tool caches, and the crash-notification
+  // rate-limit state. All three belong to a LIVE launch, so the scratch rule
+  // must not age them out from under it — the entrypoint clears its own
+  // scratch on every start.
+  ".container-scratch",
+  ".container-state",
+  ".crash-state",
 ]);
 
 export interface WorkVolumePruneOptions {

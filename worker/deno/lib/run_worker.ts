@@ -18,8 +18,10 @@
  * `worker/run_core.sh` and its shadow-copy be deleted.
  *
  * Because Deno compiles and loads every module at process start, the running
- * driver is immune to the mid-run `git reset` the bootstrap performs — exactly
- * the property the old `worker/.run_core.sh` shadow-copy provided, now for free.
+ * driver is immune to any mid-run change to the checkout — exactly the property
+ * the old `worker/.run_core.sh` shadow-copy provided, now for free. Since Issue
+ * #513 the checkout is updated on the *host* before launch and the prelude
+ * writes nothing to it at all.
  *
  * Every side effect flows through {@link RunWorkerDeps} so the orchestration
  * order and fail-loud behaviour can be unit-tested without touching git, the
@@ -37,6 +39,7 @@ import {
   formatPidFileContent,
   readBootId,
   type RunGuardResult,
+  runPidFilePath,
 } from "./run_entrypoint.ts";
 import {
   appendRunCoreLogLine,
@@ -119,7 +122,7 @@ export interface RunWorkerDeps {
   ): Promise<RunGuardResult>;
   /** Claim the PID file for this process. */
   claimPidFile(pidFile: string, pid: number): Promise<void>;
-  /** Run the bootstrap prelude (PATH, run-id, logging, git reset, updates). */
+  /** Run the bootstrap prelude (PATH, run-id, logging, updates). */
   bootstrap(options: BootstrapOptions): Promise<BootstrapResult>;
   /** Validate the worker configuration (throws on invalid config). */
   validateConfig(config: WorkerConfig): void;
@@ -208,6 +211,11 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
     evaluateRunGuard: (pidFile, maxRunSeconds) =>
       defaultEvaluateRunGuard(pidFile, maxRunSeconds),
     claimPidFile: async (pidFile, pid) => {
+      // The PID file lives in the log directory (Issue #514), which a
+      // first-ever host run has not created yet — the bootstrap's log init
+      // does that at step 3, after this claim.
+      const parent = pidFile.slice(0, pidFile.lastIndexOf("/"));
+      if (parent !== "") await Deno.mkdir(parent, { recursive: true });
       // Boot id beside the PID: inside a container the worker is always
       // PID 1, so the guard needs the boot to tell a live claim from a
       // stale file left by a dead VM (see evaluateRunGuard).
@@ -391,10 +399,14 @@ export async function runWorker(
   const pid = options.pid ?? Deno.pid;
   const maxRunSeconds = options.maxRunSeconds ?? DEFAULT_MAX_RUN_SECONDS;
   const repoDir = options.baseDir;
-  const pidFile = `${repoDir}/.run.pid`;
   const env = options.env ?? ((name: string) => Deno.env.get(name));
   const home = env("HOME") ?? env("USERPROFILE") ?? "";
   const logDir = `${home}/logs`;
+  // In the log directory, never the checkout (Issue #514): /workspace is
+  // mounted read-only, so a PID file there is an EROFS failure on every
+  // containerised launch. One log directory per host keeps the guard's
+  // one-driver-per-host meaning unchanged.
+  const pidFile = runPidFilePath(logDir);
   const workDir = env("WORK_DIR") ?? `${home}/auto-issue-work`;
   const tmpDir = env("TMPDIR") ?? "/tmp";
 
@@ -439,8 +451,8 @@ export async function runWorker(
   );
 
   try {
-    // Step 3: Bootstrap prelude — PATH, run-id, logging, git reset, updates.
-    // Fail-loud: a failed git reset must not run the worker on stale code.
+    // Step 3: Bootstrap prelude — PATH, run-id, logging, updates. It writes
+    // nothing to the checkout (Issue #513): the host updated it before launch.
     // Issue #3655: the software-update options and the whole-step opt-out must
     // be forwarded here. Omitting them meant the documented SKIP_CLAUDE_UPDATE
     // / SKIP_GH_UPDATE / SKIP_DENO_UPDATE / SKIP_SOFTWARE_UPDATE variables were

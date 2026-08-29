@@ -45,6 +45,12 @@ export interface CleanupResult {
    * sweep populates this.
    */
   assessedCount?: number;
+  /**
+   * Why local branch maintenance did not run at all (Issue #514) — set when
+   * the repository could not be written, and unset on every real sweep.
+   * Callers report it instead of a clean pass they never made.
+   */
+  skippedReason?: string;
 }
 
 /** Options for gh command injection (testing). */
@@ -247,7 +253,11 @@ export async function cleanupMergedPrBranches(
         holdBack = Math.min(holdBack, prNumber);
       }
 
-      // Delete local branch (safe delete — won't delete unmerged)
+      // Delete local branch (safe delete — won't delete unmerged). Best
+      // effort by design: the deletion that counts is the API one above.
+      // With no `gitOptions.cwd` this lands in the worker's own checkout,
+      // where the branch of a monitored repo does not exist anyway — so the
+      // read-only mount (Issue #514) changes nothing here.
       await runGitCommand(buildBranchDeleteArgs(branchName), gitOptions);
 
       // Successes aggregate into one per-repo summary event below
@@ -329,11 +339,63 @@ function summariseBranches(names: string[]): string {
  */
 export const ORPHANED_BRANCH_FORCE_DELETE_AGE_DAYS = 7;
 
+/**
+ * Why local branch maintenance cannot run here, or `undefined` when it can
+ * (Issue #514).
+ *
+ * The startup sweep is invoked with no explicit `cwd`, so inside the container
+ * it targets the process working directory — the worker's own checkout, now
+ * mounted read-only at `/workspace`. Every write git needs there (`FETCH_HEAD`,
+ * a ref lock, the delete itself) is refused, and those results were discarded:
+ * the sweep reported a clean pass it never made. Probing the git directory
+ * first turns that silent no-op into a named skip, and leaves a writable
+ * checkout — a host run, or any managed clone — sweeping exactly as before.
+ *
+ * @param options - Git command options; `cwd` selects the repository
+ * @returns A human-readable reason, or `undefined` when maintenance may run
+ */
+export async function localBranchMaintenanceBlocker(
+  options: GitCommandOptions = {},
+): Promise<string | undefined> {
+  const where = options.cwd ?? Deno.cwd();
+  const gitDir = await runGitCommand(
+    ["rev-parse", "--absolute-git-dir"],
+    options,
+  );
+  if (!gitDir.ok || gitDir.value.code !== 0) {
+    return `${where} is not a git repository`;
+  }
+
+  // Writability is only knowable by writing: a read-only bind mount refuses
+  // the create, which is precisely the answer being asked for.
+  const dir = gitDir.value.stdout.trim();
+  const probe = `${dir}/.vibe-branch-cleanup-probe`;
+  try {
+    await Deno.writeTextFile(probe, "");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return `${dir} is not writable (${detail}) — the worker checkout is ` +
+      `mounted read-only, so local branch maintenance belongs on the host`;
+  }
+  await Deno.remove(probe);
+  return undefined;
+}
+
 export async function cleanupOrphanedLocalBranches(
   defaultBranch: string,
   options: GitCommandOptions = {},
   policy: { forceDeleteAgeDays?: number; nowFn?: () => number } = {},
 ): Promise<Result<CleanupResult>> {
+  // Nothing below can succeed on a repository git cannot write, and every
+  // failure it would hit is one this function discards (Issue #514).
+  const blocker = await localBranchMaintenanceBlocker(options);
+  if (blocker) {
+    return {
+      ok: true,
+      value: { deletedCount: 0, skippedCount: 0, skippedReason: blocker },
+    };
+  }
+
   let deletedCount = 0;
   let skippedCount = 0;
   const forceAgeSeconds = (policy.forceDeleteAgeDays ??

@@ -26,6 +26,7 @@ import {
   type OutstandingWork,
 } from "../lib/diagnose.ts";
 import { isRunning } from "../lib/pid_guard.ts";
+import { runPidFilePath } from "../lib/run_entrypoint.ts";
 import { runGhCommandRaw } from "../lib/github.ts";
 import { isRateLimitActive } from "../lib/rate_limit_signal.ts";
 
@@ -185,8 +186,10 @@ export const diagnoseCommand: Command = {
     config: WorkerConfig,
   ): Promise<CommandResult<DiagnoseData>> {
     const repoRoot = Deno.cwd();
-    const defaultPidFile = `${repoRoot}/.run.pid`;
     const defaultLogDir = `${Deno.env.get("HOME") ?? ""}/logs`;
+    // The driver writes its PID file to the log directory, not the checkout
+    // (Issue #514) — /workspace is read-only inside the container.
+    const defaultPidFile = runPidFilePath(defaultLogDir);
     const workDir = config.workDir || repoRoot;
 
     const pidFile = (args["pid-file"] as string | undefined) ?? defaultPidFile;

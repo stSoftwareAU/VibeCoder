@@ -306,11 +306,12 @@ graph TD
 The thin launcher `exec`s Deno directly on the `run-entrypoint` command — there
 is no bash on the runtime path, so the worker runs natively on Windows
 . Because Deno loads its modules at process start, the running
-driver is immune to the mid-run `git reset` its bootstrap performs — the same
-property the old `worker/.run_core.sh` shadow-copy provided.
+driver is immune to any mid-run change to the checkout — the same property the
+old `worker/.run_core.sh` shadow-copy provided.
 
-**Resilience features:** The worker is built to run unattended — a git-reset to
-the default branch each run (with the driver immune to it), shallow clones with
+**Resilience features:** The worker is built to run unattended — a host-side
+update of the checkout to the default branch before each launch (with the
+driver immune to it), shallow clones with
 on-demand history deepening, repo self-healing and
 startup sweeps, two-tier disk cleanup, PID locking, time-limited runs, timeout
 wrappers, rate-limit awareness with model fallback, crash-surviving failure

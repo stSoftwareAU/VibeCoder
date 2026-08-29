@@ -12,6 +12,8 @@ import {
   cleanupStaleRemoteBranches,
   findOpenPrNumber,
 } from "../lib/branch_cleanup.ts";
+import { branchCleanupCommand } from "../commands/branch_cleanup.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 
 // ---------------------------------------------------------------------------
@@ -828,6 +830,137 @@ Deno.test("branch cleanup - a gone-upstream branch -d refuses is force-deleted o
     assert(!branches.includes("old-squashed"), branches);
     assert(branches.includes("young-unmerged"), branches);
   } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Local branch maintenance on a read-only checkout (Issue #514)
+// ---------------------------------------------------------------------------
+
+/** Make a git directory immutable, and hand back the restore. */
+async function freezeGitDir(clone: string): Promise<() => Promise<void>> {
+  await new Deno.Command("chmod", { args: ["-R", "a-w", `${clone}/.git`] })
+    .output();
+  return async () => {
+    await new Deno.Command("chmod", { args: ["-R", "u+w", `${clone}/.git`] })
+      .output();
+  };
+}
+
+Deno.test("branch cleanup - cleanupOrphanedLocalBranches names a checkout it cannot write instead of reporting a pass it never made (Issue #514)", async () => {
+  // The startup sweep runs with no explicit cwd, so inside the container it
+  // targets the worker's own checkout — mounted read-only at /workspace since
+  // Issue #514. Every write git needs there (FETCH_HEAD, ref locks, the
+  // delete itself) is refused, and the results were discarded: the sweep
+  // reported a clean pass it never made.
+  const tmp = await Deno.makeTempDir({ prefix: "branch_cleanup_514_" });
+  let thaw: (() => Promise<void>) | undefined;
+  try {
+    const origin = `${tmp}/origin`;
+    const clone = `${tmp}/clone`;
+    await Deno.mkdir(origin, { recursive: true });
+    await runCleanupGit(["init", "--bare", "-b", "main"], origin);
+    await runCleanupGit(["clone", origin, clone], tmp);
+    await Deno.writeTextFile(`${clone}/f.txt`, "x\n");
+    await runCleanupGit(["add", "f.txt"], clone);
+    await runCleanupGit(["commit", "-m", "seed"], clone);
+    await runCleanupGit(["push", "origin", "main"], clone);
+
+    // A genuinely orphaned branch, with the gone-upstream marker already
+    // recorded while the tree was still writable — so the only thing standing
+    // between the sweep and a deletion is the read-only checkout.
+    await runCleanupGit(["branch", "gone-1", "main"], clone);
+    await runCleanupGit(["push", "-u", "origin", "gone-1"], clone);
+    await runCleanupGit(["push", "origin", ":gone-1"], clone);
+    await runCleanupGit(["fetch", "--prune"], clone);
+    assertStringIncludes(
+      (await runCleanupGit(["branch", "-vv"], clone)).stdout,
+      ": gone]",
+    );
+
+    thaw = await freezeGitDir(clone);
+    const result = await cleanupOrphanedLocalBranches("main", { cwd: clone });
+    await thaw();
+    thaw = undefined;
+
+    assert(result.ok);
+    assertEquals(result.value.deletedCount, 0);
+    // Named, not swallowed: the caller can say why nothing was cleaned.
+    const reason = result.value.skippedReason ?? "";
+    assertStringIncludes(reason, "not writable");
+    // And the sweep really did leave the tree alone.
+    assertStringIncludes(
+      (await runCleanupGit(["branch"], clone)).stdout,
+      "gone-1",
+    );
+  } finally {
+    if (thaw) await thaw();
+    await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("branch cleanup - cleanupOrphanedLocalBranches still sweeps a writable checkout (Issue #514)", async () => {
+  // The guard must not disarm the sweep everywhere else: on a host checkout,
+  // or any managed clone, the orphaned branch is still deleted.
+  const tmp = await Deno.makeTempDir({ prefix: "branch_cleanup_514_ok_" });
+  try {
+    const origin = `${tmp}/origin`;
+    const clone = `${tmp}/clone`;
+    await Deno.mkdir(origin, { recursive: true });
+    await runCleanupGit(["init", "--bare", "-b", "main"], origin);
+    await runCleanupGit(["clone", origin, clone], tmp);
+    await Deno.writeTextFile(`${clone}/f.txt`, "x\n");
+    await runCleanupGit(["add", "f.txt"], clone);
+    await runCleanupGit(["commit", "-m", "seed"], clone);
+    await runCleanupGit(["push", "origin", "main"], clone);
+    await runCleanupGit(["branch", "gone-2", "main"], clone);
+    await runCleanupGit(["push", "-u", "origin", "gone-2"], clone);
+    await runCleanupGit(["push", "origin", ":gone-2"], clone);
+
+    const result = await cleanupOrphanedLocalBranches("main", { cwd: clone });
+    assert(result.ok);
+    assertEquals(result.value.skippedReason, undefined);
+    assertEquals(result.value.deletedCount, 1);
+    assert(
+      !(await runCleanupGit(["branch"], clone)).stdout.includes("gone-2"),
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("branch cleanup - the cleanup-orphaned command reports the skip rather than 'no orphaned branches' (Issue #514)", async () => {
+  // The housekeeping step reads this message. "No orphaned branches to clean
+  // up" for a sweep that never ran is the silent failure Issue #514 closes.
+  const tmp = await Deno.makeTempDir({ prefix: "branch_cleanup_514_cmd_" });
+  let thaw: (() => Promise<void>) | undefined;
+  try {
+    const clone = `${tmp}/clone`;
+    await Deno.mkdir(clone, { recursive: true });
+    await runCleanupGit(["init", "-b", "main"], clone);
+    await Deno.writeTextFile(`${clone}/f.txt`, "x\n");
+    await runCleanupGit(["add", "f.txt"], clone);
+    await runCleanupGit(["commit", "-m", "seed"], clone);
+
+    thaw = await freezeGitDir(clone);
+    const result = await branchCleanupCommand.execute({
+      operation: "cleanup-orphaned",
+      "default-branch": "main",
+      cwd: clone,
+    }, buildDefaultWorkerConfig());
+    await thaw();
+    thaw = undefined;
+
+    assertEquals(result.success, true);
+    assertStringIncludes(result.message, "skipped");
+    assertStringIncludes(result.message, "not writable");
+    assert(
+      !result.message.includes("No orphaned branches"),
+      result.message,
+    );
+  } finally {
+    if (thaw) await thaw();
     await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
   }
 });

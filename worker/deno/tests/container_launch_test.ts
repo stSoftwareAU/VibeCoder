@@ -26,6 +26,7 @@ import {
   renderContainerLaunchPlan,
   resolveContainerLaunchHostPaths,
   resolveContainerResources,
+  SCRATCH_TMPFS_MOUNTS,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
@@ -105,7 +106,9 @@ Deno.test("buildContainerLaunchPlan - mounts exactly the permitted host paths", 
   assertEquals(
     plan.mounts.map((mount) => [mount.source, mount.target, !!mount.readOnly]),
     [
-      ["/opt/VibeCoder", targets.base, false],
+      // The checkout is read-only (Issue #514): the worker never modifies
+      // the code it is running.
+      ["/opt/VibeCoder", targets.base, true],
       // The work dir and its approval-state sibling ride named volumes
       // (Issue #4186): fast guest-owned filesystems, no host directory.
       [WORK_VOLUME_NAME, targets.work, false],
@@ -126,7 +129,7 @@ Deno.test("buildContainerLaunchPlan - mounts exactly the permitted host paths", 
   );
 
   assertEquals(mountValues(plan.runArgs), [
-    `/opt/VibeCoder:${targets.base}`,
+    `/opt/VibeCoder:${targets.base}:ro`,
     `${WORK_VOLUME_NAME}:${targets.work}`,
     `${APPROVAL_STATE_VOLUME_NAME}:${targets.approvalState}`,
     `/home/operator/logs:${targets.logs}`,
@@ -403,6 +406,79 @@ Deno.test("buildContainerLaunchPlan - starts the container with least privilege"
   );
 });
 
+/** `--tmpfs <spec>` values from a rendered argument list. */
+function tmpfsValues(args: string[]): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--tmpfs") values.push(args[i + 1] ?? "");
+  }
+  return values;
+}
+
+Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with its scratch tmpfs (Issue #516)", () => {
+  // The standing gate against a silent revert: an immutable root filesystem
+  // means a compromise inside the container can persist nothing beyond the
+  // per-launch tmpfs and the volumes it is meant to write.
+  for (const kind of ["docker", "podman"] as const) {
+    const plan = buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor(kind) }),
+    );
+    assertEquals(
+      plan.runArgs.includes("--read-only"),
+      true,
+      `${kind} supports an immutable root filesystem and must be given one`,
+    );
+    // The flag and its scratch are one decision: every declared mount is
+    // present, in order, and nothing else is.
+    assertEquals(tmpfsValues(plan.runArgs), [...SCRATCH_TMPFS_MOUNTS]);
+    assertEquals(tmpfsValues(plan.runArgs), [
+      "/tmp:rw,nosuid,nodev,exec,mode=1777",
+      "/var/tmp:rw,nosuid,nodev,noexec,mode=1777",
+    ]);
+    // Hardened the same way as the /tmp entry that predates this issue, and
+    // `exec` only where the agent genuinely runs what it writes.
+    for (const value of tmpfsValues(plan.runArgs)) {
+      assertStringIncludes(value, "nosuid");
+      assertStringIncludes(value, "nodev");
+    }
+    // The rendered plan carries them through to the launcher verbatim.
+    const parsed = parseContainerLaunchPlanText(
+      renderContainerLaunchPlan(plan),
+    );
+    assertEquals(parsed.run.includes("--read-only"), true);
+    assertEquals(tmpfsValues(parsed.run), [...SCRATCH_TMPFS_MOUNTS]);
+  }
+});
+
+Deno.test("buildContainerLaunchPlan - a runtime with no tmpfs gets neither --read-only nor scratch (Issue #516)", () => {
+  // Apple container: no tmpfs and no --read-only, and the two must move
+  // together — a read-only root with nowhere writable is a broken container.
+  // Its per-container VM is the compensating control, and the entrypoint
+  // puts the scratch root on the vibe-work volume there (Issue #515).
+  const plan = buildContainerLaunchPlan(
+    inputs({ descriptor: descriptorFor("apple-container") }),
+  );
+  assertEquals(plan.runArgs.includes("--read-only"), false);
+  assertEquals(tmpfsValues(plan.runArgs), []);
+});
+
+Deno.test("buildContainerLaunchPlan - refuses a read-only root with no tmpfs to write on (Issue #516)", () => {
+  // A dialect claiming --read-only support without tmpfs support is a
+  // configuration error, not a reason to emit half the pair: it fails loud
+  // rather than silently dropping the containment control or launching a
+  // container that cannot write anywhere.
+  const descriptor = descriptorFor("docker");
+  const broken: ContainerRuntimeDescriptor = {
+    ...descriptor,
+    dialect: { ...descriptor.dialect, supportsTmpfs: false },
+  };
+  assertThrows(
+    () => buildContainerLaunchPlan(inputs({ descriptor: broken })),
+    Error,
+    "nowhere writable to run",
+  );
+});
+
 Deno.test("buildContainerLaunchPlan - never broadens privileges or publishes ports", () => {
   const plan = buildContainerLaunchPlan(inputs());
   const forbidden = [
@@ -486,10 +562,56 @@ Deno.test("buildContainerLaunchPlan - a stripped Containerfile path is what --fi
 });
 
 Deno.test("buildContainerLaunchPlan - the launcher only ensures the read/write host mounts", () => {
-  // The work dir moved onto a named volume (Issue #4186), so the log
-  // directory is the only host directory left for the launcher to create.
+  // The work dir moved onto a named volume (Issue #4186) and the checkout is
+  // read-only (Issue #514), so the log directory is the only host directory
+  // left for the launcher to create — on the read-only test alone, with no
+  // second overlapping exclusion for the checkout.
   const plan = buildContainerLaunchPlan(inputs());
   assertEquals(plan.ensureDirectories, ["/home/operator/logs"]);
+  assert(
+    !plan.ensureDirectories.includes("/opt/VibeCoder"),
+    "the launcher must never create or touch the read-only checkout mount",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The worker checkout is read-only (Issue #514)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildContainerLaunchPlan - mounts the worker checkout read-only in every runtime dialect (Issue #514)", () => {
+  const targets = containerTargetPaths(MANIFEST);
+
+  // Every supported dialect, not just the one the test host happens to run:
+  // the read-only marker is spelled by the dialect, so a runtime added with
+  // a different suffix must still render the checkout mount read-only.
+  for (const kind of ["docker", "podman", "apple-container"] as const) {
+    const descriptor = descriptorFor(kind);
+    const plan = buildContainerLaunchPlan(inputs({ descriptor }));
+
+    const checkout = plan.mounts.find((mount) => mount.target === targets.base);
+    assert(checkout, `${kind}: the plan must mount the checkout`);
+    assertEquals(
+      checkout.readOnly,
+      true,
+      `${kind}: the checkout mount must be read-only`,
+    );
+
+    // And the flag must actually survive into the rendered arguments — a
+    // ContainerMount field the dialect never spells would contain nothing.
+    const suffix = descriptor.dialect.readOnlyMountSuffix;
+    assertEquals(
+      mountValues(plan.runArgs)[0],
+      `/opt/VibeCoder:${targets.base}${suffix}`,
+      `${kind}: the rendered checkout mount must carry ${suffix}`,
+    );
+
+    // The rendered stream the launchers read carries it too, so neither
+    // run.sh nor run.ps1 can drop it on the way to the runtime.
+    assertStringIncludes(
+      renderContainerLaunchPlan(plan),
+      `run=/opt/VibeCoder:${targets.base}${suffix}\0`,
+    );
+  }
 });
 
 Deno.test("buildContainerLaunchPlan - refuses to mount the host home directory", () => {
@@ -733,7 +855,7 @@ Deno.test("buildContainerLaunchPlan - Windows hosts mount the same targets", () 
   const targets = containerTargetPaths(MANIFEST);
 
   assertEquals(mountValues(plan.runArgs), [
-    `C:\\VibeCoder:${targets.base}`,
+    `C:\\VibeCoder:${targets.base}:ro`,
     // Named volumes are runtime objects, not host paths: their spelling is
     // identical on every host (Issue #4186).
     `${WORK_VOLUME_NAME}:${targets.work}`,
@@ -895,13 +1017,15 @@ Deno.test("buildContainerLaunchPlan - exposes only the active provider's credent
   assertEquals(
     readOnly.map((mount) => mount.source),
     [
+      // The checkout leads the read-only set since Issue #514.
+      "/opt/VibeCoder",
       "/home/operator/.vibe-coder/run-config",
       "/home/operator/.vibe-coder/credentials/gh",
       "/home/operator/.vibe-coder/credentials/next-provider",
     ],
   );
   assertEquals(
-    readOnly[2]?.target,
+    readOnly[3]?.target,
     `${targets.credentials}/next-provider`,
   );
   // The other provider's material stays on the host.

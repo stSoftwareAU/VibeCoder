@@ -79,7 +79,17 @@ export const branchCleanupCommand: Command = {
           return { success: false, message: result.error.message };
         }
 
-        const { deletedCount } = result.value;
+        const { deletedCount, skippedReason } = result.value;
+        // Never "no orphaned branches" for a sweep that never ran: on the
+        // read-only checkout (Issue #514) the skip is named, so the
+        // housekeeping log says why instead of implying a clean pass.
+        if (skippedReason) {
+          return {
+            success: true,
+            message: `Orphaned branch cleanup skipped: ${skippedReason}`,
+            data: { deletedCount, skippedReason },
+          };
+        }
         return {
           success: true,
           message: deletedCount > 0

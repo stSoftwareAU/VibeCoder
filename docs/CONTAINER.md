@@ -457,9 +457,9 @@ The command reports the executable on stdout and, with `OUTPUT_JSON=true`, the
 whole descriptor: `kind`, `executable`, `probed`, and the `dialect` the
 launchers need — `mountFlag`, `readOnlyMountSuffix`, the image-inspect
 sub-command (`image inspect` for Docker/Podman, `images inspect` for Apple
-`container`), and whether `--userns`, `--security-opt`, `--cap-drop` and
-`--tmpfs` are understood (Apple `container` supports none of them: each
-container is already its own lightweight VM). Passing
+`container`), and whether `--userns`, `--security-opt`, `--cap-drop`,
+`--tmpfs` and `--read-only` are understood (Apple `container` supports none of
+them: each container is already its own lightweight VM). Passing
 `--platform <darwin|linux|windows>` resolves for another platform, and
 `worker/deno/lib/container_runtime.ts` takes both the platform and the probe as
 parameters, so `worker/deno/tests/container_runtime_test.ts` exercises every
@@ -477,10 +477,12 @@ over the virtiofs `/workspace` mount. The entrypoint now:
   Override with `VIBE_DENO_CACHE_DIR`; the `deno-cache-guard` housekeeping
   step wipes the cache when it exceeds `DENO_CACHE_MAX_BYTES` (default
   2 GiB — a cold start is the only cost of losing it);
-- stages `worker/deno` into VM-local storage (`~/.worker-src`) and runs the
-  driver from there, so module reads stop crossing virtiofs. The mounted
-  checkout stays the source of truth (`--base-dir` still points at it), and
-  any staging failure falls back loudly to the previous behaviour.
+- stages `worker/deno` into VM-local storage (`${VIBE_SCRATCH_DIR}/worker-src`
+  — the per-launch scratch root, see
+  [Containment → the writable-path rule](CONTAINMENT.md#the-writable-path-rule))
+  and runs the driver from there, so module reads stop crossing virtiofs. The
+  mounted checkout stays the source of truth (`--base-dir` still points at
+  it), and any staging failure falls back loudly to the previous behaviour.
 
 ## The work volume has two tiers (Issue #242)
 
@@ -858,16 +860,23 @@ being restated in shell — code running *inside* the container cannot broaden
 its own mounts or capabilities by editing the launcher.
 
 It resolves the run mode first so that a configuration naming a
-removed mode fails loud in one place (Issue #4) — then builds the launch plan
-below. There is no other branch: the worker runs in the container or not at
-all.
+removed mode fails loud in one place (Issue #4), then updates the worker
+checkout host-side (Issue #512) — `worker-checkout-update` fetches `origin`
+and resets the checkout to `origin/<default-branch>`, the only update of that
+checkout since Issue #513 retired the in-container reset, so nothing inside
+the container writes to `/workspace` — and then builds the launch plan below. A failed update warns and the launch continues on the existing
+checkout; `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for a development
+checkout or a CI tree. There is no other branch: the worker runs in the
+container or not at all.
 
 ```mermaid
 flowchart TD
     S["🖥️ loop.sh / launchd / cron / systemd"] --> R["run.sh"]
     R --> M{"run-mode<br/>(VIBE_RUN_MODE → run_mode → container)"}
     M -->|"native / seatbelt (removed, Issue #4)"| NV["❌ exit non-zero<br/>(removal explained)"]
-    M -->|container| P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
+    M -->|container| U["worker-checkout-update<br/>(host-side reset to origin/HEAD)"]
+    U -->|"failed — warn only"| P
+    U --> P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
     P -->|no runtime| X["❌ exit non-zero<br/>(no host fallback)"]
     P --> E{"image reference<br/>present?"}
     E -->|no| B["🐳 build"]
@@ -891,7 +900,7 @@ flowchart TD
 
 | Source (host path or named volume) | In container                   | Mode |
 | ---------------------------- | ------------------------------------ | ---- |
-| the worker checkout          | `/workspace`                         | rw   |
+| the worker checkout          | `/workspace`                         | ro   |
 | volume `vibe-work`           | `/home/vibe/auto-issue-work`         | rw   |
 | volume `vibe-approval-state` | `…/auto-issue-work-approval-state`   | rw   |
 | the worker log directory     | `/home/vibe/logs`                    | rw   |
@@ -903,8 +912,10 @@ One credential mount per **enabled** provider, so a
 multi-provider run carries three of them and a default run exactly one.
 
 The checkout is the worker's own code, not host data: the image ships only the
-entrypoint, so without it there is no driver to run and no tree for the
-bootstrap to self-update. The rest is the persistent state: named volumes
+entrypoint, so without it there is no driver to run. It is mounted
+**read-only** (Issue #514) — the checkout is updated on the host before launch,
+so nothing inside the container has any business writing to it. The rest is the
+persistent state: named volumes
 for the workspace and the approval snapshots (no browsable copy of the
 worker's repositories on the host, and no host `~/auto-issue-work`), host
 directories for the logs and configuration. Their in-container paths are
@@ -958,8 +969,15 @@ most the last minute, and the warning tells you the VM needs more memory
 - No `--privileged`, no host networking, no published ports — outbound only,
   on the runtime's bridge network.
 - `--cap-drop ALL` and `--security-opt no-new-privileges` where the runtime
-  understands them, and a writable `tmpfs` for `/tmp` so the container root
-  filesystem stays disposable. `--rm` removes the container on exit.
+  understands them. `--rm` removes the container on exit.
+- **`--read-only`** where the runtime understands it (Issue #516): the root
+  filesystem is immutable, and the writable exceptions are the mounts, the
+  named volumes and two scratch `tmpfs` mounts — `/tmp`
+  (`rw,nosuid,nodev,exec,mode=1777`) and `/var/tmp`
+  (`rw,nosuid,nodev,noexec,mode=1777`). The flag and its `tmpfs` mounts are one
+  decision: a runtime that takes no `tmpfs` (Apple `container`) gets neither,
+  and a dialect claiming one without the other is refused loudly. See
+  [Containment](CONTAINMENT.md#the-container-root-filesystem-is-read-only).
 - The image is rebuilt only when its content-derived reference is absent
   locally (`image inspect` / `images inspect`).
 - `SIGTERM` and `SIGINT` are forwarded to the container so the Deno driver's

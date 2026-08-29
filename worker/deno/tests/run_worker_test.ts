@@ -46,7 +46,13 @@ function okBootstrap(): BootstrapResult {
       WORKER_LOG_FILE: "",
       LOG_FILE: "",
     },
-    stepsRun: ["path", "run-id", "log-init", "git-reset", "software-update"],
+    stepsRun: [
+      "path",
+      "run-id",
+      "log-init",
+      "default-branch",
+      "software-update",
+    ],
     defaultBranch: "main",
   };
 }
@@ -321,8 +327,8 @@ Deno.test("runWorker - bootstrap failure aborts before the loop (fail-loud)", as
             WORKER_LOG_FILE: "",
             LOG_FILE: "",
           },
-          stepsRun: ["path", "run-id", "log-init", "git-reset"],
-          error: "git reset --hard origin/main failed",
+          stepsRun: ["path", "run-id", "log-init"],
+          error: "worker log initialisation failed",
           defaultBranch: "main",
         });
       },
@@ -444,6 +450,70 @@ Deno.test("runWorker - never writes a worker/.run_core.sh shadow-copy", async ()
       exists = false;
     }
     assertEquals(exists, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// =============================================================================
+// The PID file never lands in the read-only checkout (Issue #514)
+// =============================================================================
+
+Deno.test("runWorker - guards, claims and cleans up a PID file in the log directory, never in the checkout (Issue #514)", async () => {
+  const rec = newRecorder();
+  const seen: Record<string, string> = {};
+  await runWorker(
+    baseOptions(),
+    stubDeps(rec, {
+      evaluateRunGuard: (pidFile) => {
+        seen.guard = pidFile;
+        return Promise.resolve({ action: "proceed", reason: "no PID file" });
+      },
+      claimPidFile: (pidFile) => {
+        seen.claim = pidFile;
+        return Promise.resolve();
+      },
+      cleanup: (pidFile) => {
+        seen.cleanup = pidFile;
+        return Promise.resolve();
+      },
+    }),
+  );
+
+  // /workspace is mounted read-only, so a PID file under the checkout is an
+  // EROFS failure on every containerised launch. All three seams must agree
+  // on the log-directory path.
+  assertEquals(seen.guard, "/home/worker/logs/.run.pid");
+  assertEquals(seen.claim, "/home/worker/logs/.run.pid");
+  assertEquals(seen.cleanup, "/home/worker/logs/.run.pid");
+  for (const [seam, path] of Object.entries(seen)) {
+    assert(
+      !path.startsWith("/repo"),
+      `${seam} must not put the PID file in the checkout: ${path}`,
+    );
+  }
+});
+
+Deno.test("runWorker - the real claimPidFile writes into a log directory that does not exist yet (Issue #514)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "run_worker_pid_" });
+  try {
+    const rec = newRecorder();
+    // No `logs` directory: a first-ever host run reaches the claim before the
+    // bootstrap's log init creates one, so the production seam must make it.
+    const deps = stubDeps(rec);
+    delete (deps as Partial<RunWorkerDeps>).claimPidFile;
+    await runWorker(
+      {
+        baseDir: `${tmpDir}/checkout`,
+        config: buildDefaultWorkerConfig(),
+        pid: 4242,
+        env: (name: string) => ({ HOME: tmpDir }[name]),
+      },
+      deps,
+    );
+
+    const written = await Deno.readTextFile(`${tmpDir}/logs/.run.pid`);
+    assertEquals(written.split("\n")[0], "4242");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

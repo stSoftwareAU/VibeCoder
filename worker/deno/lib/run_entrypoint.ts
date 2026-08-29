@@ -33,6 +33,26 @@ export interface RunGuardResult {
 /** Default maximum run duration before treating a process as stale (3 hours). */
 export const DEFAULT_MAX_RUN_SECONDS = 3 * 60 * 60;
 
+/** Name of the driver's PID file. */
+export const RUN_PID_FILENAME = ".run.pid";
+
+/**
+ * Where the driver's PID file lives — the worker log directory (Issue #514).
+ *
+ * It used to sit in the worker checkout, which is mounted read-only inside
+ * the container: writing it there is an `EROFS` failure on every launch. The
+ * log directory is the other host-visible read/write mount and, like the
+ * checkout, there is exactly one per host — so the guard still bounds one
+ * driver per host, and a host-side `diagnose` reads the same file the
+ * containerised driver wrote.
+ *
+ * @param logDir - The worker log directory
+ * @returns Absolute path of the PID file
+ */
+export function runPidFilePath(logDir: string): string {
+  return `${logDir.replace(/\/+$/, "")}/${RUN_PID_FILENAME}`;
+}
+
 /** Grace period (seconds) for SIGTERM before escalating to SIGKILL. */
 const TERMINATE_GRACE_SECONDS = 30;
 

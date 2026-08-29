@@ -16,6 +16,7 @@ import {
   notifyCrashViaIssueComment,
   notifyCrashViaWebhook,
   recordNotificationSent,
+  resolveCrashStateDir,
   shouldRateLimitNotification,
   signalNameFromExitCode,
 } from "../lib/crash_notification.ts";
@@ -543,4 +544,76 @@ Deno.test("crash notification - webhook swallows fetch failure", async () => {
 Deno.test("crash notification - defaults have expected values", () => {
   assertEquals(CRASH_NOTIFICATION_DEFAULTS.cooldownSeconds, 600);
   assertEquals(CRASH_NOTIFICATION_DEFAULTS.logTailMaxBytes, 50000);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #515 — the rate-limit state must not be written to the image layer
+// ---------------------------------------------------------------------------
+
+Deno.test("resolveCrashStateDir - in the container the state goes on the work volume, not ~/.vibe-coder", async (t) => {
+  // /home/vibe/.vibe-coder is the root-owned parent the runtime creates for
+  // the read-only credential and config mounts — an image-layer path that is
+  // unwritable today and gone entirely once the root filesystem is read-only.
+  const containerEnv: Record<string, string> = {
+    HOME: "/home/vibe",
+    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
+  };
+  const lookup = (env: Record<string, string>) => (name: string) => env[name];
+
+  await t.step("container run → the vibe-work volume", () => {
+    assertEquals(
+      resolveCrashStateDir("/home/vibe/auto-issue-work", lookup(containerEnv)),
+      "/home/vibe/auto-issue-work/.crash-state",
+    );
+  });
+
+  await t.step("host run → unchanged, beside the operator's state", () => {
+    assertEquals(
+      resolveCrashStateDir(
+        "/Users/dev/auto-issue-work",
+        lookup({ HOME: "/Users/dev" }),
+      ),
+      "/Users/dev/.vibe-coder",
+    );
+  });
+
+  await t.step("an explicit override always wins", () => {
+    assertEquals(
+      resolveCrashStateDir(
+        "/home/vibe/auto-issue-work",
+        lookup({
+          ...containerEnv,
+          CRASH_NOTIFICATION_STATE_DIR: "/somewhere/else",
+        }),
+      ),
+      "/somewhere/else",
+    );
+  });
+
+  await t.step("no work dir in the container → the host default", () => {
+    // Nothing better is known, so the legacy path is kept rather than a
+    // guessed one invented.
+    assertEquals(
+      resolveCrashStateDir(undefined, lookup(containerEnv)),
+      "/home/vibe/.vibe-coder",
+    );
+    assertEquals(
+      resolveCrashStateDir("   ", lookup(containerEnv)),
+      "/home/vibe/.vibe-coder",
+    );
+  });
+});
+
+Deno.test("recordNotificationSent - reports failure rather than silently losing the rate limit", async () => {
+  // The state directory is a regular file, so the write cannot succeed. A
+  // swallowed error here means the next crash in a loop is unthrottled.
+  const dir = await makeTempDir();
+  try {
+    const blocked = `${dir}/blocked`;
+    await Deno.writeTextFile(blocked, "");
+    const result = await recordNotificationSent(testConfig(blocked));
+    assertEquals(result.ok, false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
