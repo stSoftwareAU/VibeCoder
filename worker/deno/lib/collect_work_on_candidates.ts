@@ -70,7 +70,8 @@ import {
   isDependencyBlocked,
   memoiseIssueFetcher,
 } from "./issue_finder_common.ts";
-import { verifyWorkOnContentIntegrity } from "./work_on_content_integrity.ts";
+import { verifyWorkOnContentIntegrityDetailed } from "./work_on_content_integrity.ts";
+import { suppressesLowerTiers } from "./skip_reason_clearing.ts";
 import { buildBatchedGh } from "./timeline_batch.ts";
 import { stripUntrustedWorkOnLabel } from "./strip_untrusted_work_on.ts";
 
@@ -218,22 +219,13 @@ export async function collectWorkOnCandidates(
   const rawOpenWorkOnCount = issues.length;
   const hasOpenIssues = rawOpenWorkOnCount > 0;
 
-  // Issue #2610: count the work-on issues whose *only* blocker is an open
-  // dependency. An issue reaches the `isDependencyBlocked` branch below
-  // only after passing every serialisation check (label author, content
-  // integrity, milestone occupancy, closed-PR cooldown, PR blocking), so
-  // a hit there means dependencies are its sole blocker. When every open
-  // work-on issue is purely dependency-blocked the repo must not suppress
-  // its low-priority backlog (see `hasSuppressingWorkOn`).
-  let dependencyBlockedCount = 0;
-
-  // Issue #499: count the work-on issues refused *permanently* because a
-  // merged fleet PR names them (`merged-pr-permanent`, Issue #3151). Unlike
-  // every other surviving blocker, that one never clears on its own — only a
-  // trusted re-label dated after the merge lifts it — so letting it raise the
-  // suppression signal strands the repo's whole low-priority backlog behind
-  // work the scan will refuse for ever (see `hasSuppressingWorkOn`).
-  let mergedPrPermanentCount = 0;
+  // Issue #524: count the post-`filterAndSort` work-on issues that actually
+  // serialise this repo — the eligible ones, plus those held by a gate whose
+  // refusal clears by itself (`SKIP_REASON_CLEARING`). Accumulated at each
+  // decision point rather than subtracted per gate afterwards, so a gate
+  // added without a clearing classification cannot silently rejoin the
+  // signal (see `hasSuppressingWorkOn`).
+  let suppressingCount = 0;
 
   issues = await cleanStaleLabels(
     issues,
@@ -379,12 +371,17 @@ export async function collectWorkOnCandidates(
   // Issue #460: the per-issue skip reasons, recorded beside the diagnostic
   // log calls so the two cannot drift.
   const blockedDetails: BlockedCandidateInfo[] = [];
+  // Issue #524: the single accounting point for a refusal. Recording the
+  // reason and deciding whether that reason still serialises the repo happen
+  // together, so the two cannot drift and no gate can be refused without its
+  // clearing behaviour being consulted.
   const noteBlocked = (
     issueNumber: number,
     milestone: string,
     reason: SkipReason,
   ): void => {
     blockedDetails.push({ repo, issueNumber, milestone, reason });
+    if (suppressesLowerTiers(reason)) suppressingCount++;
   };
 
   for (const issue of filtered) {
@@ -426,7 +423,13 @@ export async function collectWorkOnCandidates(
 
     // Issue #1341: TOCTOU protection — verify content has not been modified
     // after the work-on label was approved by a trusted author.
-    const contentCheckResult = await verifyWorkOnContentIntegrity(
+    // Issue #524: the *reason* comes back, not just the verdict. A content
+    // fault that needs a trusted re-approval must not park the repo's lower
+    // tiers, while a transient read error (which clears on the next pass)
+    // still does — a distinction a bare "blocked" cannot express. It also
+    // closes the Issue #460 gap where a content-blocked issue was missing
+    // from `blockedDetails` entirely.
+    const contentCheck = await verifyWorkOnContentIntegrityDetailed(
       repo,
       issue,
       config,
@@ -435,7 +438,9 @@ export async function collectWorkOnCandidates(
       options.contentApprovalDeps,
       options.timelineCache,
     );
-    if (contentCheckResult === "blocked") {
+    if (contentCheck.verdict === "blocked") {
+      // The gate has already logged its own skip line; record the reason.
+      noteBlocked(issue.number, issue.milestone, contentCheck.reason);
       continue;
     }
 
@@ -485,9 +490,6 @@ export async function collectWorkOnCandidates(
           milestoneTitle,
           closedPR.merged ? "merged-pr-permanent" : "closed-pr-cooldown",
         );
-        // Issue #499: a merged PR blocks for ever, so this issue must not
-        // hold the repo's lower tiers hostage.
-        if (closedPR.merged) mergedPrPermanentCount++;
         diag?.logIssueSkipped(
           repo,
           issue.number,
@@ -538,12 +540,14 @@ export async function collectWorkOnCandidates(
     ) {
       noteBlocked(issue.number, milestoneTitle, "dependency-blocked");
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
-      dependencyBlockedCount++;
       dependencyBlockedIssues.push(issue.number);
       continue;
     }
 
     diag?.logIssueEligible(repo, issue.number);
+    // Issue #2164: an eligible work-on issue is the original serialisation
+    // signal — the repo has real higher-tier work, so the lower tiers wait.
+    suppressingCount++;
     candidates.push({
       repo,
       number: issue.number,
@@ -613,42 +617,33 @@ export async function collectWorkOnCandidates(
     }
   }
 
-  // Issue #2751: compute the suppression signal from the *post-
-  // `filterAndSort`* set (`filtered`), not the raw fetch count.
-  // `filterAndSort` drops every work-on issue the worker can never action
-  // this cycle — milestone-tracking trackers (the proven `private-repo-12`
-  // field case), issues assigned to anyone, and issues carrying a blocking
-  // label (failed, needs-human, needs-revision, refine-issue, planning,
-  // question). A repo whose only work-on issues fall into those categories
-  // would otherwise deadlock its entire low-priority/idle-task backlog
-  // behind work the worker permanently skips. By deriving the signal from
-  // `filtered`, those dropped categories deliberately do NOT suppress.
+  // Issue #2751: the signal counts only *post-`filterAndSort`* work-on issues.
+  // `filterAndSort` drops every work-on issue the worker can never action this
+  // cycle — milestone-tracking trackers (the proven `private-repo-12` field
+  // case), issues assigned to anyone, and issues carrying a blocking label
+  // (failed, needs-human, needs-revision, refine-issue, planning, question).
+  // A repo whose only work-on issues fall into those categories would
+  // otherwise deadlock its entire low-priority/idle-task backlog behind work
+  // the worker permanently skips. They never reach `suppressingCount`.
   //
-  // Issue #2610: of the work-on issues that DO survive `filterAndSort`,
-  // exclude the ones whose *only* blocker is an open dependency
-  // (`dependencyBlockedCount`). The dependency is frequently a
-  // low-priority issue in the same repo, so suppressing it would deadlock
-  // the chain. What remains — `filtered.length - dependencyBlockedCount`
-  // greater than zero — is a genuine serialisation signal: at least one
-  // surviving work-on issue is eligible, PR-blocked, milestone-occupied,
-  // or in closed-PR cooldown, so the lower tiers stay suppressed to keep
-  // the one-PR-per-work-stream guarantee.
+  // Issue #524: of the issues that DO survive, each one counts only when the
+  // gate that refused it clears by itself (`SKIP_REASON_CLEARING`) — a PR
+  // merges, a cooldown expires, a stream frees up — so waiting is the right
+  // behaviour. That single rule subsumes the carve-outs #2610 and #499 each
+  // added by hand: `dependency-blocked` (the dependency is frequently a
+  // low-priority issue in the same repo, so suppressing deadlocks the chain)
+  // and `merged-pr-permanent` (only a trusted re-label dated after the merge
+  // lifts it). On `stSoftwareAU/NEAT-AI-Rebase` one issue of the latter kind
+  // (#48, named by merged PR #49) stranded all 28 of the repo's `low-priority`
+  // issues indefinitely while the census — which does model the merged-PR
+  // gate — kept reporting them as claimable. The subtraction that replaced it
+  // named two gates from memory; this counts what the map declares, so gate
+  // #25 cannot rejoin the signal unclassified.
   //
   // Issue #2752: dependency-cycle issues are a subset of the
   // dependency-blocked set, so they are already excluded here — escalating
   // them adds no separate suppression adjustment.
-  //
-  // Issue #499: also exclude the issues refused permanently because a merged
-  // fleet PR names them. Every other surviving blocker clears by itself — a
-  // PR merges, a cooldown expires, a stream frees up — so waiting is the right
-  // behaviour. `merged-pr-permanent` never does: only a trusted re-label dated
-  // after the merge lifts it. On `stSoftwareAU/NEAT-AI-Rebase` one such issue
-  // (#48, named by merged PR #49) stranded all 28 of the repo's `low-priority`
-  // issues indefinitely, and the census — which does model the merged-PR gate —
-  // kept reporting them as claimable, filing this issue against a scan whose
-  // suppression rule was the actual fault.
-  const hasSuppressingWorkOn =
-    (filtered.length - dependencyBlockedCount - mergedPrPermanentCount) > 0;
+  const hasSuppressingWorkOn = suppressingCount > 0;
 
   return { candidates, hasOpenIssues, hasSuppressingWorkOn, blockedDetails };
 }

@@ -15,7 +15,10 @@
 
 import type { WorkerConfig } from "../types.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
-import type { IssueFinderDiagnostics } from "./issue_finder_logger.ts";
+import type {
+  IssueFinderDiagnostics,
+  SkipReason,
+} from "./issue_finder_logger.ts";
 import {
   captureContentSnapshot,
   type ContentApprovalDeps,
@@ -725,7 +728,22 @@ export async function resolveContentIntegrity(
 }
 
 /**
- * Verify work-on issue content integrity at scan time (Issue #1341).
+ * The scan-time content-integrity outcome, carrying the gate that refused
+ * (Issue #524).
+ *
+ * `reason` is a {@link SkipReason} rather than a
+ * {@link ContentIntegrityBlockReason} because the fetch-failure branch below
+ * refuses under `fetch-error`, which is not a content-integrity verdict. The
+ * caller needs the gate that actually refused, so the wider type is the honest
+ * one: it is what decides whether the issue still serialises its repo.
+ */
+export type WorkOnContentIntegrityOutcome =
+  | { verdict: "proceed" }
+  | { verdict: "blocked"; reason: SkipReason };
+
+/**
+ * Verify work-on issue content integrity at scan time, reporting *which* gate
+ * refused (Issues #1341, #524).
  *
  * Fetches the current title/body itself, then applies the shared decision in
  * `resolveContentIntegrity`. Note that the verified content is *not* what the
@@ -737,9 +755,10 @@ export async function resolveContentIntegrity(
  * label. Defaults to `config.workOnLabel` so existing callers are
  * unaffected.
  *
- * @returns "proceed" to continue processing, "blocked" to skip
+ * @returns "proceed" to continue processing, or "blocked" with the refusing
+ *   gate's skip reason.
  */
-export async function verifyWorkOnContentIntegrity(
+export async function verifyWorkOnContentIntegrityDetailed(
   repo: string,
   issue: FilterableIssue,
   config: WorkerConfig,
@@ -748,7 +767,7 @@ export async function verifyWorkOnContentIntegrity(
   contentDeps?: ContentApprovalDeps,
   timelineCache?: TimelineCache,
   labelName?: string,
-): Promise<"proceed" | "blocked"> {
+): Promise<WorkOnContentIntegrityOutcome> {
   const fetched = await fetchIssueTitleAndBody(repo, issue.number, ghFn);
   if (!fetched.ok) {
     // Issue #2534: a gh failure or malformed JSON for a single issue must not
@@ -759,7 +778,7 @@ export async function verifyWorkOnContentIntegrity(
         `${repo}#${issue.number}: ${fetched.error.message} — skipping`,
     );
     diag?.logIssueSkipped(repo, issue.number, "fetch-error");
-    return "blocked";
+    return { verdict: "blocked", reason: "fetch-error" };
   }
 
   const decision = await resolveContentIntegrity({
@@ -776,5 +795,36 @@ export async function verifyWorkOnContentIntegrity(
     contentDeps,
     timelineCache,
   });
-  return decision.verdict;
+  return decision;
+}
+
+/**
+ * Verify work-on issue content integrity at scan time (Issue #1341).
+ *
+ * Verdict-only wrapper over {@link verifyWorkOnContentIntegrityDetailed} for
+ * callers that do not act on the reason.
+ *
+ * @returns "proceed" to continue processing, "blocked" to skip
+ */
+export async function verifyWorkOnContentIntegrity(
+  repo: string,
+  issue: FilterableIssue,
+  config: WorkerConfig,
+  ghFn: (args: string[]) => Promise<string>,
+  diag?: IssueFinderDiagnostics,
+  contentDeps?: ContentApprovalDeps,
+  timelineCache?: TimelineCache,
+  labelName?: string,
+): Promise<"proceed" | "blocked"> {
+  const outcome = await verifyWorkOnContentIntegrityDetailed(
+    repo,
+    issue,
+    config,
+    ghFn,
+    diag,
+    contentDeps,
+    timelineCache,
+    labelName,
+  );
+  return outcome.verdict;
 }
