@@ -418,6 +418,41 @@ Deno.test(
 );
 
 Deno.test(
+  "healStaleBranchLineage - a branch that already contains base costs no gh call",
+  async () => {
+    const tmp = await Deno.makeTempDir({ prefix: "stale_lineage_prefilter_" });
+    try {
+      const origin = `${tmp}/origin.git`;
+      const clone = `${tmp}/clone`;
+      await gitOk(["init", "--bare", "-b", "main", origin], tmp);
+      await gitOk(["clone", origin, clone], tmp);
+      await gitOk(["config", "user.email", "t@t"], clone);
+      await gitOk(["config", "user.name", "t"], clone);
+      await writeAndCommit(clone, "README.md", "seed\n", "seed");
+      await gitOk(["push", "origin", "main"], clone);
+      await gitOk(["checkout", "-b", "issue-9-on-top"], clone);
+      await writeAndCommit(clone, "new.md", "work\n", "work");
+
+      const outcome = await healStaleBranchLineage({
+        repo: "stSoftwareAU/VibeCoder",
+        branch: "issue-9-on-top",
+        baseBranch: "main",
+        runGit: runGitCommand,
+        runGh: () => {
+          throw new Error("gh must not be called for an up-to-date branch");
+        },
+        cwd: clone,
+      });
+
+      assertEquals(outcome.kind, "not-stale");
+      assertStringIncludes(outcome.detail, "already contains");
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
   "healStaleBranchLineage - an unreadable merged-PR lookup is unknown, never 'not stale'",
   async () => {
     const tmp = await Deno.makeTempDir({ prefix: "stale_lineage_unknown_" });

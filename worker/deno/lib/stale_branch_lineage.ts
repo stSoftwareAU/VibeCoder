@@ -664,6 +664,17 @@ export async function healStaleBranchLineage(
     };
   }
 
+  // Cheap local pre-filter, before any `gh` call: a branch that already
+  // contains the base tip cannot be replaying content the base squashed, so
+  // the common case costs one `merge-base` and no API quota. Shallow
+  // truncation can only make this answer "no", never a false "yes".
+  if (await isAncestor(ctx, baseRef.value, branch)) {
+    return {
+      kind: "not-stale",
+      detail: `the branch already contains '${baseRef.value}'`,
+    };
+  }
+
   // Ancestry on a `--depth=1` clone is unanswerable, and an unanswerable
   // ancestry test reads as "not stale" — the silent miss this guard exists to
   // close. Deepen first (a no-op on a full clone).
