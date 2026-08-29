@@ -31,7 +31,8 @@ Three changes make a full work cycle survive the read-only mount:
 | the entrypoint's staged worker source (`cp -R ${BASE_DIR}/worker/deno`) | **Fixed.** The copy is a read, but `cp -R` carries the read-only source's mode bits, and `rm -rf` cannot empty a directory with no write bit — so the _next_ launch's `rm -rf "${LOCAL_SRC}"` would fail and the worker would fall back to virtiofs for ever wherever the scratch root is the durable volume (Apple `container` takes no tmpfs). `chmod -R u+w "${LOCAL_SRC}"` after the copy, inside the same `&&` chain so a failure still degrades loudly.                       |
 | `PROMPTS_DIR=${BASE_DIR}/prompts`                                       | **Read-only already.** `recordPromptVersion()` is the only writer in `prompt_manager.ts` and takes a caller-supplied log file; nothing in the run path calls it.                                                                                                                                                                                                                                                                                                                    |
 | the bootstrap prelude's default-branch resolution                       | **Read-only already** since Issue #513 — `readOriginDefaultBranch` deliberately does not run the `git remote set-head` repair.                                                                                                                                                                                                                                                                                                                                                      |
-| `git` with `cwd` set to the base directory                              | **None found.** Every `runGitCommand` call in the run path passes a `cwd` inside a managed clone; the bootstrap's are reads.                                                                                                                                                                                                                                                                                                                                                        |
+| `git` with **no** `cwd` — the startup orphaned-branch sweep             | **Fixed.** `runGitCommand` with no `cwd` inherits the process working directory, and the entrypoint `cd`s to the checkout, so `branch-cleanup-orphaned` ran `git fetch --prune` and `git branch -d` _in_ `/workspace`. Both results were discarded, so under the read-only mount the step would report "No orphaned branches to clean up" for a pass it never made. `cleanupOrphanedLocalBranches` now probes the git directory first and returns a named `skippedReason`; the command reports the skip. A writable checkout sweeps exactly as before. |
+| `git` with `cwd` set to the base directory                              | **None found.** Every `runGitCommand` call in the run path that passes a `cwd` points inside a managed clone; the bootstrap's are reads. The merged-PR sweep's local `git branch -d` also lands in the checkout, but it is a best-effort no-op there either way — the deletion that counts is the GitHub API one — so it is documented rather than changed.                                                                                                                                                                                            |
 | `.config.json`                                                          | **Already off the checkout** — `CONFIG_PATH` points at the staged read-only copy.                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ### The mount set after this change
@@ -94,6 +95,17 @@ Supporting tests, each also failing before the change:
   writable assertion fails against the unfixed entrypoint.
 - `worker/deno/tests/container_containment_test.ts::containment harness - the worker checkout and its .git are probed read-only (Issue #514)`
   — guards the probe table itself where no container runtime is available.
+- `worker/deno/tests/branch_cleanup_test.ts::branch cleanup - cleanupOrphanedLocalBranches names a checkout it cannot write instead of reporting a pass it never made (Issue #514)`
+  — a real clone with a genuinely orphaned branch, its `.git` frozen with
+  `chmod -R a-w`, so only the read-only tree can answer the assertion. Against
+  the unfixed code the sweep returns no `skippedReason` and deletes the branch,
+  so both assertions fail; after the fix it skips with a named reason and
+  leaves the tree untouched.
+- `worker/deno/tests/branch_cleanup_test.ts::branch cleanup - the cleanup-orphaned command reports the skip rather than 'no orphaned branches' (Issue #514)`
+  — the housekeeping-facing seam: the message a frozen checkout produces must
+  name the skip, never "No orphaned branches to clean up".
+- `worker/deno/tests/branch_cleanup_test.ts::branch cleanup - cleanupOrphanedLocalBranches still sweeps a writable checkout (Issue #514)`
+  — the guard must not disarm the sweep on a host checkout or a managed clone.
 - The live containment run now probes `/workspace` and `/workspace/.git` as
   `ro-dir`, against a fixture checkout made world-writable (so only the mount
   flag can answer the assertion). It runs for real in
@@ -135,6 +147,10 @@ ok | 6 passed | 0 failed | 1 ignored (26ms)
    (the live container run is skipped on this host — no runtime available;
     CI sets VIBE_CONTAINMENT_REQUIRED=1 so the skip is a failure there)
 
+worker/deno$ deno test tests/branch_cleanup_test.ts \
+    tests/branch_cleanup_cache_test.ts tests/run_housekeeping_test.ts
+ok | 51 passed | 0 failed (287ms)
+
 worker/deno$ deno task test:run-mode
 ok | 209 passed | 0 failed | 22 ignored (1m30s)
 
@@ -142,26 +158,23 @@ VibeCoder$ ./quality.sh
   prompt immutability   PASSED     mermaid           PASSED
   benchmark audit       PASSED     markdownlint      PASSED
   hardcoded branches    PASSED     docs prompt vers  PASSED
-  needs-human           PASSED     deno tests        FAILED (see below)
+  needs-human           PASSED     deno tests        PASSED
   gh spawn chokepoint   PASSED     deno lint         PASSED
   host work-dir guard   PASSED     deno type check   PASSED
   git ref chokepoint    PASSED     deno fmt          PASSED
   workflow hygiene      PASSED     source targets    PASSED
 
-worker/deno$ deno task test
-FAILED | 15309 passed (4 steps) | 1 failed | 38 ignored (11m57s)
+Result: PASSED (with skipped checks)
 ```
 
-**The one failing test is pre-existing and unrelated.**
+An earlier run of this branch saw one unrelated failure —
 `secret_redaction_bounds_test.ts::redactSecrets - a 500 kB ragged long-line
-blob stays bounded (Issue #196)`
-measures wall-clock inside a unit test and took 2155 ms against a 2000 ms bound
-on this host — 8% over. It fails identically with the tree checked out at the
-unmodified parent commit (`4e0208c`) and when run on its own, so it is host
-speed, not this change; the project's own standard forbids timing assertions in
-unit tests for exactly this reason. Recorded as stSoftwareAU/VibeCoder#530
-rather than folded into this PR, which touches no redaction code. Every other
-check passes.
+blob stays bounded (Issue #196)` took 2155 ms against a 2000 ms wall-clock
+bound, 8% over on a loaded host. It fails identically at the unmodified parent
+commit (`4e0208c`), so it is host speed rather than this change, and it passes
+in the run above. The timing assertion itself is recorded as
+stSoftwareAU/VibeCoder#530 rather than folded into this PR, which touches no
+redaction code.
 
 ## Test Plan
 
@@ -172,6 +185,9 @@ Added:
 - `worker/deno/tests/run_worker_test.ts::runWorker - the real claimPidFile writes into a log directory that does not exist yet (Issue #514)`
 - `worker/deno/tests/container_entrypoint_test.ts::entrypoint - a launch completes with the worker checkout mounted read-only (Issue #514)`
 - `worker/deno/tests/container_containment_test.ts::containment harness - the worker checkout and its .git are probed read-only (Issue #514)`
+- `worker/deno/tests/branch_cleanup_test.ts::branch cleanup - cleanupOrphanedLocalBranches names a checkout it cannot write instead of reporting a pass it never made (Issue #514)`
+- `worker/deno/tests/branch_cleanup_test.ts::branch cleanup - cleanupOrphanedLocalBranches still sweeps a writable checkout (Issue #514)`
+- `worker/deno/tests/branch_cleanup_test.ts::branch cleanup - the cleanup-orphaned command reports the skip rather than 'no orphaned branches' (Issue #514)`
 
 Modified (expectations updated to the new boundary, none removed or disabled):
 
@@ -186,8 +202,8 @@ Modified (expectations updated to the new boundary, none removed or disabled):
 Documentation updated in the same change: the mount tables in
 `worker/deno/lib/container_launch.ts`, `docs/CONTAINMENT.md` and
 `docs/CONTAINER.md` say `ro`; `docs/CONTAINMENT.md`'s writer inventory gains the
-PID-file relocation; `docs/TROUBLESHOOTING.md`'s "is the worker running" recipe
-reads `~/logs/.run.pid`.
+PID-file relocation and the orphaned-branch sweep; `docs/TROUBLESHOOTING.md`'s
+"is the worker running" recipe reads `~/logs/.run.pid`.
 
 ## Pre-PR Security Self-Check
 
