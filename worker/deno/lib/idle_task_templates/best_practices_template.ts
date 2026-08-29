@@ -68,9 +68,12 @@ import { buildAttributionFooter } from "../idle_task_attribution.ts";
 import {
   diffNewlyFiled,
   fileFindingOnce,
+  listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  type OpenIssueTitle,
   parseGhJsonArray,
+  renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
 import type { Result } from "../../types.ts";
 
@@ -209,6 +212,11 @@ export interface RunScanOptions {
   bucket: string;
   /** Stable ids already open as `best-practices` issues — skip-list. */
   knownOpenFindingIds: string[];
+  /**
+   * Every issue currently open in the repo, whatever its label — the
+   * cross-label dedup list (Issue #537).
+   */
+  openIssueTitles: OpenIssueTitle[];
   /** Stable ids the run should suppress (in-source markers, prior triage). */
   suppressedIds: string[];
 }
@@ -274,6 +282,12 @@ export function assembleBestPracticesPrompt(
     bucket: string;
     suppressedIds: readonly string[];
     knownOpenFindingIds: readonly string[];
+    /**
+     * Every issue currently open in the target repo, whatever its
+     * label (Issue #537) — the semantic second line of dedup. An
+     * empty list renders the `(none)` sentinel.
+     */
+    openIssueTitles?: readonly OpenIssueTitle[];
     attributionFooter?: string;
   },
 ): string {
@@ -283,6 +297,7 @@ export function assembleBestPracticesPrompt(
   const known = opts.knownOpenFindingIds.length > 0
     ? opts.knownOpenFindingIds.join("\n")
     : "(none)";
+  const openIssues = renderOpenIssueTitles(opts.openIssueTitles ?? []);
   const footer = opts.attributionFooter ?? "";
 
   const substitute = (text: string): string =>
@@ -290,6 +305,7 @@ export function assembleBestPracticesPrompt(
       .replaceAll("{{BUCKET}}", opts.bucket)
       .replaceAll("{{SUPPRESSED_IDS}}", suppressed)
       .replaceAll("{{KNOWN_OPEN_FINDING_IDS}}", known)
+      .replaceAll("{{OPEN_ISSUE_TITLES}}", openIssues)
       .replaceAll("{{ATTRIBUTION_FOOTER}}", footer);
 
   const body = substitute(template);
@@ -539,6 +555,7 @@ async function defaultRunScan(
     bucket: opts.bucket,
     suppressedIds: opts.suppressedIds,
     knownOpenFindingIds: opts.knownOpenFindingIds,
+    openIssueTitles: opts.openIssueTitles,
   });
 
   const result = await runIdleTaskClaude({
@@ -777,6 +794,15 @@ export function createBestPracticesTemplate(
         new Set([...existingIds, ...preFiled]),
       );
 
+      // Repo-wide open-issue titles (Issue #537) — the semantic second
+      // line of dedup, so a finding already open under another label is
+      // not re-filed. A gh failure returns an empty list, which renders
+      // `(none)` and leaves the scan running.
+      const openIssueTitles = await listAllOpenIssueTitles(
+        opts.repo,
+        ghCommandFn,
+      );
+
       // 5. Invoke Claude. It files surviving findings via `gh issue
       //    create` directly — no JSON parsing here.
       const scanResult = await runScanFn({
@@ -784,6 +810,7 @@ export function createBestPracticesTemplate(
         workDir: opts.workDir,
         bucket,
         knownOpenFindingIds,
+        openIssueTitles,
         suppressedIds: [],
       });
       if (!scanResult.ok) {

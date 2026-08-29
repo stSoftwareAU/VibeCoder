@@ -302,6 +302,44 @@ footer. Result: an operator opening any idle-task issue — wrapper or finding �
 can answer "which run produced this?" from the issue body alone, without
 trawling the worker logs.
 
+### Cross-label dedup — the open-issue title list
+
+`{{KNOWN_OPEN_FINDING_IDS}}` is the **deterministic first line** of dedup: a
+scan skips any finding whose `<!-- finding-id: … -->` marker is already open
+under that scan's own label. It is blind to a duplicate filed by a *different*
+template or carrying only a workflow label — the `github-actions-audit` scan
+filed a CODEOWNERS finding that had been open for three days under
+`needs-human` alone.
+
+`{{OPEN_ISSUE_TITLES}}` is the **semantic second line** (Issue #537, parent
+#523). Every scan template that files judgement-bearing findings now calls
+[`listAllOpenIssueTitles`](../worker/deno/lib/idle_task_snapshot.ts) in
+`runTask` — one repo-wide `gh issue list --state open --json number,title`,
+whatever the label — and passes the result into its `assemble*Prompt`, which
+renders it with `renderOpenIssueTitles` as one `#<number> — <title>` line per
+issue (`(none)` when empty). A detected duplicate is simply **not filed**; the
+scan neither comments on nor cross-links the existing issue.
+
+Both lists degrade safely: a `gh` failure returns an empty list, the placeholder
+renders `(none)`, and the scan still runs. Titles are untrusted GitHub text, so
+each is scrubbed of delimiter patterns and HTML comments before it enters a
+prompt.
+
+```mermaid
+flowchart LR
+    R["runTask"] --> K["listKnownOpenFindingIds()<br/>label-scoped finding ids"]
+    R --> T["listAllOpenIssueTitles()<br/>repo-wide, any label"]
+    K --> A["assemble*Prompt()"]
+    T --> A
+    A --> P["{{KNOWN_OPEN_FINDING_IDS}}<br/>{{OPEN_ISSUE_TITLES}}"]
+    P --> C["Claude files only<br/>non-duplicate findings"]
+```
+
+The **native** templates (`alert-feed`, `bash-script-refs`, `bash-syntax-audit`,
+`workflow-annotation-scan`) are deliberately excluded: they invoke no LLM and
+file only fixed-id or fingerprinted findings, so they have no
+semantic-duplicate surface for a title list to guard.
+
 ### Wrapper body size limit
 
 GitHub rejects any issue body over **65,536 characters**

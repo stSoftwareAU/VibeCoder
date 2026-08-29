@@ -44,6 +44,10 @@ import {
 import { runIdleTaskClaude } from "./idle_task_claude_budget.ts";
 import { loadPrompt } from "./prompt_manager.ts";
 import { buildAttributionFooter } from "./idle_task_attribution.ts";
+import {
+  type OpenIssueTitle,
+  renderOpenIssueTitles,
+} from "./idle_task_snapshot.ts";
 import { getRunId } from "./run_id.ts";
 import {
   detectLlmUsageForRepo,
@@ -63,6 +67,13 @@ export interface ScanOptions {
   workDir: string;
   /** Stable IDs of findings with an existing open GitHub issue. */
   knownOpenFindingIds: string[];
+  /**
+   * Every issue currently open in the repo, whatever its label — the
+   * cross-label dedup list (Issue #537). `knownOpenFindingIds` stays the
+   * deterministic first line of dedup; these titles are the semantic second
+   * line, so a finding already open under another label is not re-filed.
+   */
+  openIssueTitles: OpenIssueTitle[];
   /** Stable IDs that have been suppressed via prior triage or in-source. */
   suppressedIds: string[];
   /**
@@ -203,6 +214,12 @@ export function buildSecurityScanPrompt(
     attributionFooter?: string;
     /** Rendered LLM-usage gate verdict (see {@link buildLlmGateText}). */
     llmGate?: string;
+    /**
+     * Every issue currently open in the target repo, whatever its label
+     * (Issue #537) — the semantic second line of dedup. An empty list
+     * renders the `(none)` sentinel.
+     */
+    openIssueTitles?: readonly OpenIssueTitle[];
   },
 ): string {
   const suppressed = opts.suppressedIds.length > 0
@@ -213,10 +230,12 @@ export function buildSecurityScanPrompt(
     : "(none)";
   const footer = opts.attributionFooter ?? "";
   const llmGate = opts.llmGate ?? "";
+  const openIssues = renderOpenIssueTitles(opts.openIssueTitles ?? []);
 
   return template
     .replaceAll("{{SUPPRESSED_IDS}}", suppressed)
     .replaceAll("{{KNOWN_OPEN_FINDING_IDS}}", known)
+    .replaceAll("{{OPEN_ISSUE_TITLES}}", openIssues)
     .replaceAll("{{ATTRIBUTION_FOOTER}}", footer)
     .replaceAll("{{LLM_GATE}}", llmGate);
 }
@@ -303,6 +322,7 @@ export async function runSecurityScan(
   const prompt = buildSecurityScanPrompt(promptResult.value, {
     suppressedIds: opts.suppressedIds,
     knownOpenFindingIds: opts.knownOpenFindingIds,
+    openIssueTitles: opts.openIssueTitles,
     attributionFooter: buildAttributionFooter({
       template: "security-scan",
       runId: getRunId(),
