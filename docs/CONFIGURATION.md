@@ -474,6 +474,30 @@ than parsing `.config.json`, so the precedence cannot drift between hosts:
 deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 ```
 
+### 🔄 Host-Side Checkout Update
+
+Before each launch, the launcher updates the worker checkout itself — `git
+fetch origin`, then a hard reset to `origin/<default-branch>` and a
+`git clean -fd` (Issue #512). The container therefore never has to write to
+`/workspace` to update itself, which is what lets that mount become read-only
+(Issue #509). The branch is read from the checkout's own `origin/HEAD`.
+
+```bash
+deno run --allow-env --allow-read --allow-write --allow-run \
+  worker/deno/mod.ts worker-checkout-update --base-dir "$(pwd)"
+```
+
+- **A failed update is a warning, not a refused launch.** An unreachable
+  remote is reported on stderr and in `run_core.log`, and the worker launches
+  on the checkout it already has.
+- **The update discards uncommitted work in that checkout**, exactly as the
+  in-container reset always has. Set `VIBE_SKIP_CHECKOUT_UPDATE=1` for a
+  checkout where that is wrong — a development tree someone is working in, or
+  a CI tree that is a pull-request merge commit and must not be reset to the
+  default branch mid-run. The skip is reported, never silent. Give the worker
+  its own dedicated clone rather than relying on the skip
+  (see [Deployment](DEPLOYMENT.md)).
+
 ### 🧠 Phase Model Overrides
 
 Each phase of the worker's Claude invocations has a default model tier. You can

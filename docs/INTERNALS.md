@@ -163,24 +163,33 @@ Deno. Both launchers follow the same steps:
 
 1. **Locates Deno** — `run.sh` also bootstraps PATH for minimal cron/launchd
    environments (common Homebrew and Deno locations).
-2. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
+2. **Updates the worker checkout** — `deno run … mod.ts worker-checkout-update`
+   fetches `origin` and resets the checkout to `origin/<default-branch>`,
+   discarding local modifications and untracked files, on the **host** and
+   before anything is launched (Issue #512). The branch comes from the
+   checkout's own `origin/HEAD`; `--default-branch` names it explicitly. A
+   failed update is a loud warning on stderr and in `run_core.log`, never a
+   refused launch — a host that cannot reach GitHub still launches the worker
+   on the checkout it has. `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for
+   a development checkout or a CI tree, which must not be reset mid-run.
+3. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
    resolves and validates the container runtime, computes the content-derived
    image reference, and constructs the fixed least-privilege mount set. No
    supported runtime is a loud non-zero exit; there is no host mode to fall back
    to (Issue #4).
-3. **Builds the image** when that reference is absent locally, and skips the
+4. **Builds the image** when that reference is absent locally, and skips the
    build when it is present, then **prunes every other `vibe-coder` tag** — the
    reference this checkout resolves to is the only one a future launch of it can
    use, so the tags it superseded are deleted rather than left to fill the disk.
-4. **Reaps a leaked container** — before the build, any `vibe-coder-*` container
+5. **Reaps a leaked container** — before the build, any `vibe-coder-*` container
    older than the watchdog deadline, or with no live launcher process behind it,
    is killed.
-5. **Launches the container**, propagates termination to it so the Deno driver's
+6. **Launches the container**, propagates termination to it so the Deno driver's
    graceful shutdown still runs (`run.sh` forwards `SIGTERM`/`SIGINT`; on
    Windows the console control event reaches the runtime CLI directly and
    `run.ps1` stops the container by name when its own pipeline is stopped), and
    exits with the container's exit status.
-6. **Waits under a deadline** — the plan carries a `watchdog` value derived from
+7. **Waits under a deadline** — the plan carries a `watchdog` value derived from
    the supervisor's own cap (`VIBE_RUN_MAX_SECONDS`, the worker's maximum run
    duration) plus a margin, so raising the cap raises the watchdog with it. A
    container that outlives the deadline is reaped by `container-reap` and the

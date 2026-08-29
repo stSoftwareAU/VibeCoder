@@ -858,16 +858,23 @@ being restated in shell — code running *inside* the container cannot broaden
 its own mounts or capabilities by editing the launcher.
 
 It resolves the run mode first so that a configuration naming a
-removed mode fails loud in one place (Issue #4) — then builds the launch plan
-below. There is no other branch: the worker runs in the container or not at
-all.
+removed mode fails loud in one place (Issue #4), then updates the worker
+checkout host-side (Issue #512) — `worker-checkout-update` fetches `origin`
+and resets the checkout to `origin/<default-branch>`, so the container never
+has to write to `/workspace` to update itself — and then builds the launch
+plan below. A failed update warns and the launch continues on the existing
+checkout; `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for a development
+checkout or a CI tree. There is no other branch: the worker runs in the
+container or not at all.
 
 ```mermaid
 flowchart TD
     S["🖥️ loop.sh / launchd / cron / systemd"] --> R["run.sh"]
     R --> M{"run-mode<br/>(VIBE_RUN_MODE → run_mode → container)"}
     M -->|"native / seatbelt (removed, Issue #4)"| NV["❌ exit non-zero<br/>(removal explained)"]
-    M -->|container| P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
+    M -->|container| U["worker-checkout-update<br/>(host-side reset to origin/HEAD)"]
+    U -->|"failed — warn only"| P
+    U --> P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
     P -->|no runtime| X["❌ exit non-zero<br/>(no host fallback)"]
     P --> E{"image reference<br/>present?"}
     E -->|no| B["🐳 build"]
