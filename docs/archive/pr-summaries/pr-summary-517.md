@@ -16,10 +16,13 @@ Rust best practices, GitHub spec-kit (#510) and the
 [Caveman](https://github.com/JuliusBrussee/caveman) verbosity idea — are all
 credited.
 
-The document states the three boundaries the issue asked for: attribution never
-goes in a prompt template, nothing is fetched at run time (that would be a
+The document states the three boundaries the issue asked for: attribution does
+not go in a prompt template, nothing is fetched at run time (that would be a
 supply-chain vector), and a human approves each idea before it reaches a prompt.
-**No prompt template was changed by this PR.**
+**No prompt template was changed by this PR.** Rule 1 also records the one
+honest exception a reviewer will find by grepping — the best-practices bucket
+prompts carry a short "link, do not restate" list of canonical guides so a
+*finding* can cite them, which is a working instruction rather than credit.
 
 To stop the credit list rotting, `worker/deno/lib/references_doc.ts` parses the
 credit tables into data and fails loud on a malformed row, so the tests can hold
