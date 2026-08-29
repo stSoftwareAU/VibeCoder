@@ -228,6 +228,7 @@ Every path written inside the container, and the class it was assigned:
 | repository clones, build artefacts, worker state | `…/auto-issue-work` | unchanged | persistent — the `vibe-work` volume |
 | worker logs | `${HOME}/logs` | unchanged | persistent — the log mount |
 | the driver's PID file (Issue #514) | `/workspace/.run.pid` — the checkout, now read-only | `${HOME}/logs/.run.pid` | persistent — the log mount, so the guard still bounds one driver per host |
+| the startup orphaned-branch sweep (Issue #514) | `git fetch --prune` and `git branch -d` in the process working directory, which the entrypoint sets to the checkout | not relocated — the sweep probes the git directory first and skips with a named reason | host-side work: the host updates the checkout before each launch (Issue #512) |
 
 **Each relocation degrades loudly.** When a target cannot be created or
 written, the entrypoint names the path it refused and the fallback it took, in
