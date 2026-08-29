@@ -160,11 +160,19 @@ function statusOf(entry: string): ClosureEntry["status"] | null {
   return best?.status ?? null;
 }
 
+// Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
+// is a ReDoS surface Semgrep blocks on, and only these two labels exist.
+const LABEL_PATTERNS = {
+  evidence: /evidence\s*[:\-—]\s*(.*)$/i,
+  reason: /reason\s*[:\-—]\s*(.*)$/i,
+} as const;
+
 /** Whether a labelled field (`evidence:`, `reason:`) is present and filled. */
-function hasFilledLabel(entry: string, label: string): boolean {
-  const match = entry.match(
-    new RegExp(`${label}\\s*[:\\-—]\\s*(.*)$`, "i"),
-  );
+function hasFilledLabel(
+  entry: string,
+  label: keyof typeof LABEL_PATTERNS,
+): boolean {
+  const match = entry.match(LABEL_PATTERNS[label]);
   if (!match) return false;
   return match[1]!.replace(/[`*_\s—-]/g, "") !== "";
 }
