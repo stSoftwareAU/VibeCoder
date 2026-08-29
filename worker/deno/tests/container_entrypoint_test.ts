@@ -1199,3 +1199,92 @@ Deno.test("entrypoint - a launch completes with the image layer read-only (Issue
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("entrypoint - a launch completes with the worker checkout mounted read-only (Issue #514)", async () => {
+  // The acceptance shape of Issue #514: /workspace crosses the boundary
+  // read-only, so the entrypoint may only ever READ the checkout. Staging the
+  // driver copies out of it, and PROMPTS_DIR points back into it — neither
+  // needs a write, and the launch must reach the driver with no EROFS.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  const checkout = `${dir}/repo`;
+  try {
+    const argvFile = `${dir}/argv.txt`;
+    await Deno.mkdir(`${dir}/bin`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/bin/deno`,
+      "#!/bin/bash\n" +
+        `{ printf 'PROMPTS_DIR=%s\\n' "\${PROMPTS_DIR:-}"; printf '%s\\n' "$@"; } > "${argvFile}"\n` +
+        "exit 0\n",
+    );
+    await Deno.chmod(`${dir}/bin/deno`, 0o755);
+    await fakeRepo(dir);
+    await Deno.mkdir(`${checkout}/prompts`, { recursive: true });
+    await Deno.mkdir(`${dir}/home`, { recursive: true });
+    // The checkout tree, immutable from the inside — directories first would
+    // lock us out of the ones below, so the deepest are chmod'd first.
+    for (
+      const path of [
+        `${checkout}/prompts`,
+        `${checkout}/worker/deno`,
+        `${checkout}/worker`,
+        checkout,
+      ]
+    ) {
+      await Deno.chmod(path, 0o555);
+    }
+
+    let outcome;
+    try {
+      outcome = await runEntrypoint({
+        dir,
+        path: `${dir}/bin:/usr/bin:/bin`,
+        env: { VIBE_BASE_DIR: checkout },
+      });
+    } finally {
+      for (
+        const path of [
+          checkout,
+          `${checkout}/worker`,
+          `${checkout}/worker/deno`,
+          `${checkout}/prompts`,
+        ]
+      ) {
+        await Deno.chmod(path, 0o755);
+      }
+    }
+
+    assertEquals(outcome.code, 0, outcome.stderr);
+    for (const refusal of ["Read-only file system", "Permission denied"]) {
+      assert(
+        !outcome.stderr.includes(refusal),
+        `${refusal} in stderr: ${outcome.stderr}`,
+      );
+    }
+    // Nothing degraded: no writer needed the checkout in the first place.
+    assert(!outcome.stderr.includes("Warning:"), outcome.stderr);
+
+    const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
+    // The driver runs from the staged copy, which was read out of the
+    // read-only mount…
+    assert(argv.includes(`${scratchRoot(dir)}/worker-src/worker/deno/mod.ts`));
+    assert(argv.includes("run-entrypoint"));
+    // …and the prompts are still resolved in the checkout itself.
+    assert(argv.includes(`PROMPTS_DIR=${checkout}/prompts`));
+    // The base directory the driver is pointed at is unchanged.
+    assert(argv.includes(checkout));
+
+    // The staged copy must be writable even though its source was not: `cp
+    // -R` carries the mode bits across, and the next launch's `rm -rf` needs
+    // the write bit on every directory it empties.
+    const stagedDir = `${scratchRoot(dir)}/worker-src/worker/deno`;
+    const mode = (await Deno.stat(stagedDir)).mode ?? 0;
+    assertEquals(
+      mode & 0o200,
+      0o200,
+      `the staged copy at ${stagedDir} is not writable — the next launch ` +
+        `could not replace it`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

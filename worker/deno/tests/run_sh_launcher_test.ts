@@ -84,7 +84,9 @@ Deno.test("run.sh - launches the container with exactly the permitted mounts", a
     assertEquals(args[0], "run");
 
     assertEquals(mountValues(args), [
-      `${REPO_ROOT}:${TARGETS.base}`,
+      // The checkout is read-only (Issue #514): the worker never modifies
+      // the code it is running.
+      `${REPO_ROOT}:${TARGETS.base}:ro`,
       // The work dir and its approval-state sibling ride named volumes
       // (Issue #4186): no host directory holds the worker's repositories.
       `${WORK_VOLUME_NAME}:${TARGETS.work}`,

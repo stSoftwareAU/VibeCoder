@@ -39,6 +39,7 @@ import {
   formatPidFileContent,
   readBootId,
   type RunGuardResult,
+  runPidFilePath,
 } from "./run_entrypoint.ts";
 import {
   appendRunCoreLogLine,
@@ -210,6 +211,11 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
     evaluateRunGuard: (pidFile, maxRunSeconds) =>
       defaultEvaluateRunGuard(pidFile, maxRunSeconds),
     claimPidFile: async (pidFile, pid) => {
+      // The PID file lives in the log directory (Issue #514), which a
+      // first-ever host run has not created yet — the bootstrap's log init
+      // does that at step 3, after this claim.
+      const parent = pidFile.slice(0, pidFile.lastIndexOf("/"));
+      if (parent !== "") await Deno.mkdir(parent, { recursive: true });
       // Boot id beside the PID: inside a container the worker is always
       // PID 1, so the guard needs the boot to tell a live claim from a
       // stale file left by a dead VM (see evaluateRunGuard).
@@ -393,10 +399,14 @@ export async function runWorker(
   const pid = options.pid ?? Deno.pid;
   const maxRunSeconds = options.maxRunSeconds ?? DEFAULT_MAX_RUN_SECONDS;
   const repoDir = options.baseDir;
-  const pidFile = `${repoDir}/.run.pid`;
   const env = options.env ?? ((name: string) => Deno.env.get(name));
   const home = env("HOME") ?? env("USERPROFILE") ?? "";
   const logDir = `${home}/logs`;
+  // In the log directory, never the checkout (Issue #514): /workspace is
+  // mounted read-only, so a PID file there is an EROFS failure on every
+  // containerised launch. One log directory per host keeps the guard's
+  // one-driver-per-host meaning unchanged.
+  const pidFile = runPidFilePath(logDir);
   const workDir = env("WORK_DIR") ?? `${home}/auto-issue-work`;
   const tmpDir = env("TMPDIR") ?? "/tmp";
 

@@ -261,9 +261,16 @@ if [[ -n "${HOME:-}" ]]; then
   #    — per-launch by construction, so scratch is exactly its class.
   LOCAL_SRC="${SCRATCH_ROOT:+${SCRATCH_ROOT}/worker-src}"
   LOCAL_SRC="${LOCAL_SRC:-${HOME}/.worker-src}"
+  #    `chmod -R u+w` after the copy (Issue #514): the checkout is mounted
+  #    read-only, `cp -R` carries the source's mode bits, and `rm -rf` cannot
+  #    empty a directory it has no write bit on — so without this the NEXT
+  #    launch's rm above fails and the worker falls back to virtiofs for ever
+  #    on a runtime whose scratch root is the durable volume (Apple
+  #    container takes no tmpfs).
   if rm -rf "${LOCAL_SRC}" 2>/dev/null &&
     mkdir -p "${LOCAL_SRC}/worker" 2>/dev/null &&
-    cp -R "${BASE_DIR}/worker/deno" "${LOCAL_SRC}/worker/" 2>/dev/null; then
+    cp -R "${BASE_DIR}/worker/deno" "${LOCAL_SRC}/worker/" 2>/dev/null &&
+    chmod -R u+w "${LOCAL_SRC}" 2>/dev/null; then
     DRIVER="${LOCAL_SRC}/worker/deno/mod.ts"
     LOCKFILE="${LOCAL_SRC}/worker/deno/deno.lock"
     # Repo assets stay in the checkout (Issue #4302 regression): modules

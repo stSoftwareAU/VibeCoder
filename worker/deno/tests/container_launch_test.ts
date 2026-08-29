@@ -105,7 +105,9 @@ Deno.test("buildContainerLaunchPlan - mounts exactly the permitted host paths", 
   assertEquals(
     plan.mounts.map((mount) => [mount.source, mount.target, !!mount.readOnly]),
     [
-      ["/opt/VibeCoder", targets.base, false],
+      // The checkout is read-only (Issue #514): the worker never modifies
+      // the code it is running.
+      ["/opt/VibeCoder", targets.base, true],
       // The work dir and its approval-state sibling ride named volumes
       // (Issue #4186): fast guest-owned filesystems, no host directory.
       [WORK_VOLUME_NAME, targets.work, false],
@@ -126,7 +128,7 @@ Deno.test("buildContainerLaunchPlan - mounts exactly the permitted host paths", 
   );
 
   assertEquals(mountValues(plan.runArgs), [
-    `/opt/VibeCoder:${targets.base}`,
+    `/opt/VibeCoder:${targets.base}:ro`,
     `${WORK_VOLUME_NAME}:${targets.work}`,
     `${APPROVAL_STATE_VOLUME_NAME}:${targets.approvalState}`,
     `/home/operator/logs:${targets.logs}`,
@@ -486,10 +488,56 @@ Deno.test("buildContainerLaunchPlan - a stripped Containerfile path is what --fi
 });
 
 Deno.test("buildContainerLaunchPlan - the launcher only ensures the read/write host mounts", () => {
-  // The work dir moved onto a named volume (Issue #4186), so the log
-  // directory is the only host directory left for the launcher to create.
+  // The work dir moved onto a named volume (Issue #4186) and the checkout is
+  // read-only (Issue #514), so the log directory is the only host directory
+  // left for the launcher to create — on the read-only test alone, with no
+  // second overlapping exclusion for the checkout.
   const plan = buildContainerLaunchPlan(inputs());
   assertEquals(plan.ensureDirectories, ["/home/operator/logs"]);
+  assert(
+    !plan.ensureDirectories.includes("/opt/VibeCoder"),
+    "the launcher must never create or touch the read-only checkout mount",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The worker checkout is read-only (Issue #514)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildContainerLaunchPlan - mounts the worker checkout read-only in every runtime dialect (Issue #514)", () => {
+  const targets = containerTargetPaths(MANIFEST);
+
+  // Every supported dialect, not just the one the test host happens to run:
+  // the read-only marker is spelled by the dialect, so a runtime added with
+  // a different suffix must still render the checkout mount read-only.
+  for (const kind of ["docker", "podman", "apple-container"] as const) {
+    const descriptor = descriptorFor(kind);
+    const plan = buildContainerLaunchPlan(inputs({ descriptor }));
+
+    const checkout = plan.mounts.find((mount) => mount.target === targets.base);
+    assert(checkout, `${kind}: the plan must mount the checkout`);
+    assertEquals(
+      checkout.readOnly,
+      true,
+      `${kind}: the checkout mount must be read-only`,
+    );
+
+    // And the flag must actually survive into the rendered arguments — a
+    // ContainerMount field the dialect never spells would contain nothing.
+    const suffix = descriptor.dialect.readOnlyMountSuffix;
+    assertEquals(
+      mountValues(plan.runArgs)[0],
+      `/opt/VibeCoder:${targets.base}${suffix}`,
+      `${kind}: the rendered checkout mount must carry ${suffix}`,
+    );
+
+    // The rendered stream the launchers read carries it too, so neither
+    // run.sh nor run.ps1 can drop it on the way to the runtime.
+    assertStringIncludes(
+      renderContainerLaunchPlan(plan),
+      `run=/opt/VibeCoder:${targets.base}${suffix}\0`,
+    );
+  }
 });
 
 Deno.test("buildContainerLaunchPlan - refuses to mount the host home directory", () => {
@@ -733,7 +781,7 @@ Deno.test("buildContainerLaunchPlan - Windows hosts mount the same targets", () 
   const targets = containerTargetPaths(MANIFEST);
 
   assertEquals(mountValues(plan.runArgs), [
-    `C:\\VibeCoder:${targets.base}`,
+    `C:\\VibeCoder:${targets.base}:ro`,
     // Named volumes are runtime objects, not host paths: their spelling is
     // identical on every host (Issue #4186).
     `${WORK_VOLUME_NAME}:${targets.work}`,
@@ -895,13 +943,15 @@ Deno.test("buildContainerLaunchPlan - exposes only the active provider's credent
   assertEquals(
     readOnly.map((mount) => mount.source),
     [
+      // The checkout leads the read-only set since Issue #514.
+      "/opt/VibeCoder",
       "/home/operator/.vibe-coder/run-config",
       "/home/operator/.vibe-coder/credentials/gh",
       "/home/operator/.vibe-coder/credentials/next-provider",
     ],
   );
   assertEquals(
-    readOnly[2]?.target,
+    readOnly[3]?.target,
     `${targets.credentials}/next-provider`,
   );
   // The other provider's material stays on the host.
