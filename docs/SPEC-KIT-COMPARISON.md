@@ -62,7 +62,7 @@ this assessment was worth doing.
 | `/speckit.analyze` — cross-artefact consistency | Adversarial self-critique that is deliberately never published | **Gap** — the judgement exists, the artefact does not |
 | `/speckit.implement` | `prompts/issue/v35.md` plus the phase pipeline and `./quality.sh` | Present |
 | `/speckit.converge` — assess code against intent, append remaining work | Nothing. Only bounded mechanical retries (quality 2×, CI 3×, grill-me 5×) | **Gap** |
-| `/speckit.checklist` — "unit tests for English" | Acceptance-criteria checkboxes in issues; one line of prose guidance in grill-me | **Gap** |
+| `/speckit.checklist` — "unit tests for English" | Acceptance-criteria checkboxes in issues; the grill-me requirements-quality rubric (four named classes, deterministic pre-pass) | Present, scoped to grill-me |
 | `bug` extension — `assess → fix → test` | One pipeline for every tier; `bug` is a descriptive label only | **Gap**, narrowly |
 | `assess` extension — go / needs-clarification / kill | Scattered partial gates; kill authority reserved for humans | Partial, by design |
 
@@ -98,9 +98,16 @@ requirements with a verb but no observable outcome, terminology drift.
 
 Grill-me converges when the model judges there is nothing meaningful left to ask
 (`docs/workflows/grill-me.md:76,89` — "more meaningful questions?" → "No more
-questions"), bounded only by the five-round safety cap (`:402`). The only quality
-guidance on the result is a single line — `prompts/grill-me/v12.md:160`. Named
-classes turn one round's luck into a repeatable check.
+questions"), bounded only by the five-round safety cap (`:402`). Until #519 the
+only quality guidance on the result was a single line of prose in the grill-me
+template. Named classes turn one round's luck into a repeatable check.
+
+**Adopted** (#519): `worker/deno/lib/requirements_rubric.ts` runs a
+deterministic pre-pass over the understanding and the grill-me template applies
+the same four named classes to the understanding it writes each round. A flagged
+item becomes a question in that round; no Ready comment is posted while one is
+outstanding. See [the rubric section of the grill-me
+manual](workflows/grill-me.md#-requirements-quality-rubric).
 
 ### 3. Publish the coverage table and gate it (from `/speckit.analyze`) — #520
 
