@@ -42,14 +42,20 @@ code before it was written down:
   `:164` states the critique is never published.
 - **The bounded-loop position behind the converge rejection.**
   `worker/deno/lib/phases/quality_gate_remediation_phase.ts:298` —
-  `const maxAttempts = 2`.
+  `const maxAttempts = 2`; `worker/deno/lib/config_defaults.ts:454` —
+  `maxAutoFixAttempts: 3`; `docs/workflows/grill-me.md:402` —
+  `maxGrillMeRounds` `5`.
 - **The trust boundary behind the constitution rejection.**
   `worker/deno/lib/repo_context_reader.ts:165` fences repo context as advisory,
   never authoritative.
 - spec-kit was read from a shallow clone of `github/spec-kit@main`
   (`templates/commands/*.md`, `templates/*-template.md`,
   `extensions/bug/`, `extensions/assess/`), not from memory. The clone lived in
-  `/tmp` and is not part of this change.
+  `/tmp` and is not part of this change. Every quoted line was re-checked
+  against that clone: `extensions/bug/README.md:76` (the `not-run` guardrail),
+  `templates/commands/checklist.md:9` ("Unit Tests for English"),
+  `templates/commands/converge.md:153-155` (the `contradicts` / `unrequested`
+  gap classes) and `templates/spec-template.md:16` (the "viable MVP" rule).
 
 The two pipelines side by side, as committed in the doc:
 

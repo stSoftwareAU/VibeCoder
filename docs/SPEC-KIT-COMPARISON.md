@@ -97,9 +97,10 @@ adjectives with no measurable criterion, unresolved placeholders,
 requirements with a verb but no observable outcome, terminology drift.
 
 Grill-me converges when the model judges there is nothing meaningful left to ask
-(`docs/workflows/grill-me.md:36-38`). The only quality guidance on the result is
-a single line — `prompts/grill-me/v12.md:160`. Named classes turn one round's
-luck into a repeatable check.
+(`docs/workflows/grill-me.md:76,89` — "more meaningful questions?" → "No more
+questions"), bounded only by the five-round safety cap (`:402`). The only quality
+guidance on the result is a single line — `prompts/grill-me/v12.md:160`. Named
+classes turn one round's luck into a repeatable check.
 
 ### 3. Publish the coverage table and gate it (from `/speckit.analyze`) — #520
 
@@ -174,7 +175,9 @@ safety property for a verdict a human still has to confirm.
 is adopted (#518); re-running implement until a model reports "converged" is not.
 Every loop in this worker is bounded on purpose — quality remediation is capped
 at two attempts (`worker/deno/lib/phases/quality_gate_remediation_phase.ts:298`),
-CI fixes at three, grill-me at five. An unbounded semantic loop on an unattended
+CI fixes at three (`maxAutoFixAttempts`, `worker/deno/lib/config_defaults.ts:454`)
+and grill-me at five (`maxGrillMeRounds`,
+`docs/workflows/grill-me.md:402`). An unbounded semantic loop on an unattended
 machine spends the budget without a human able to stop it.
 
 **spec-kit's CLI, templates and extension system.** Out of scope by the issue's
