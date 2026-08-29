@@ -130,7 +130,10 @@ Deno.test("validateAcceptanceClosure - summary omitting the block fails the gate
   assertEquals(result.applicable, true);
   assertEquals(result.valid, false);
   assertEquals(result.criteria.length, 2);
-  assertStringIncludes(result.problems.join("\n"), "no `## Acceptance Criteria`");
+  assertStringIncludes(
+    result.problems.join("\n"),
+    "no `## Acceptance Criteria`",
+  );
 });
 
 Deno.test("validateAcceptanceClosure - summary with a complete block passes", () => {

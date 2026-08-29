@@ -974,10 +974,9 @@ async function completionBody(
     );
     return {
       status: "failure",
-      reason:
-        `Acceptance criteria not closed out in the PR summary: ${
-          closure.problems[0] ?? "closure block missing"
-        }`,
+      reason: `Acceptance criteria not closed out in the PR summary: ${
+        closure.problems[0] ?? "closure block missing"
+      }`,
     };
   }
 
