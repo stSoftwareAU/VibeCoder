@@ -1534,6 +1534,72 @@ flowchart TD
     style PR fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+### 🧬 Stale-lineage rebase (`stale_branch_lineage.ts`)
+
+Two runs held one issue branch. Writer A rebased and force-pushed (silently
+dropping a commit writer B had made); writer B never saw it, kept committing on
+the pre-rebase lineage, and 2 seconds after the merge reaped the branch it
+**re-created that branch** and opened a duplicate PR. The squash means the
+branch's old commits are not ancestors of the base, so identical content
+collides — `CONFLICT (add/add) docs/…` — and no `git merge` can resolve that
+shape. The PR sat `CONFLICTING`, could not run CI, and was two attempts from
+`needs-human`. A wedge that needs a human hand is itself the bug.
+
+[stale_branch_lineage.ts](../worker/deno/lib/stale_branch_lineage.ts) is the
+guard the completion phase runs **before it pushes**. The shape is detectable
+from one `gh` read and two ancestry tests:
+
+1. a **merged** PR was raised from this head ref;
+2. its merge commit is contained in the base branch;
+3. the branch tip does **not** contain that merge commit.
+
+(1)+(2) mean the base already carries a squash of this branch's work; (3) means
+this branch never learnt about it. A branch that *was* rebased onto the
+post-merge base contains the merge commit, so legitimate follow-up work on a
+reused branch name is never flagged. Ancestry is unanswerable on a `--depth=1`
+clone, so `ensureHistoryDepth()` runs first (a no-op on a full clone) — an
+unanswerable test would otherwise read as "not stale", the silent miss the guard
+exists to close.
+
+The recovery replays content rather than picking a side: the branch is reset to
+the current base and each of its commits is cherry-picked back, with any commit
+whose content the base already carries applying as an empty change and being
+dropped. Three post-conditions keep that safe:
+
+- **No unexplained deletion.** If the result deletes a file the base has and no
+  replayed commit removes, the heal is refused and the branch restored. On the
+  original incident, "resolve in favour of the PR side" would have reverted a
+  different issue's merged work; this check is what catches it.
+- **No side-picking.** A cherry-pick conflict restores the branch and refuses —
+  the same stance `pr_merge_conflict_scan.ts` takes.
+- **Lease-protected republish.** The healed branch is force-pushed with
+  `--force-with-lease` pinned to the remote SHA read *before* the rebase, so a
+  writer whose remote head moved underneath it stops instead of destroying the
+  other writer's commits. When the merge reaped the branch there is nothing to
+  force past: the lying remote-tracking ref is dropped and the push is a plain
+  one, so a concurrent re-creation rejects it as non-fast-forward.
+
+A refusal is a loud phase failure, never a silent push — pushing the branch is
+what opens the unmergeable PR. Every read failure is `unknown`: the run carries
+on and the reason is logged, because this guard gates finished, quality-gated
+work and a `gh` hiccup must not withhold it.
+
+```mermaid
+flowchart TD
+    P["completion phase:<br/>about to push"] --> M{"merged PR from<br/>this head ref?"}
+    M -- no --> OK["push as normal"]
+    M -- yes --> A{"its squash in base<br/>but not in branch?"}
+    A -- no --> OK
+    A -- "unreadable" --> W["log 'unknown'<br/>push as normal"]
+    A -- yes --> R["reset to base,<br/>replay commits,<br/>drop the already-merged ones"]
+    R --> D{"deletes a base file<br/>nothing replayed removes?"}
+    D -- yes --> X["restore branch<br/>fail loudly"]
+    D -- no --> L["push --force-with-lease<br/>pinned to the observed head"]
+    L --> OK
+    style X fill:#c1121f,stroke:#780000,color:#fff
+    style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### ⚠️ Failure handling
 
 PR comment processing uses a two-attempt system:
@@ -2760,6 +2826,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [timeout_tracker.ts](../worker/deno/lib/timeout_tracker.ts)                                                       | Per-repository timeout tracking                                                                                                                                                      |
 |                             | [stale_workflow_detector.ts](../worker/deno/lib/stale_workflow_detector.ts)                                       | Stale workflow label detection and cleanup                                                                                                                                           |
 |                             | [pr_branch_lock.ts](../worker/deno/lib/pr_branch_lock.ts)                                                         | Distributed lock for PR branch updates and CI fixes — acquire, renew, release                                                                                                        |
+|                             | [stale_branch_lineage.ts](../worker/deno/lib/stale_branch_lineage.ts)                                             | Detect a branch whose work the base already carries as a squash, and rebase it past that merge before the push                                                                        |
 | **Security scan**           |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [security_scanner.ts](../worker/deno/lib/security_scanner.ts)                                                     | Four-phase scan executor — loads + substitutes the prompt, runs Claude with Write/Edit disallowed and Bash allowed so Claude can call `gh issue create` (outcome-only contract,)     |
 |                             | [idle_task_templates/security_scan_template.ts](../worker/deno/lib/idle_task_templates/security_scan_template.ts) | Idle-task template wrapper — snapshots open `security`-labelled issues before and after the scan, diffs to compute newly-filed issues, renders the close-comment summary             |
