@@ -633,6 +633,53 @@ never re-run indefinitely.
 [handle_no_changes_phase.ts](../../worker/deno/lib/phases/handle_no_changes_phase.ts)
 (signal b).
 
+## ✅ Acceptance-criteria closure before the PR
+
+The planner writes a `## Acceptance Criteria` checklist into every published
+sub-issue, and until Issue #518 nothing downstream ever read it back: the
+implementing run never saw the criteria as a target, and the PR summary never
+said which of them were met, so a reviewer had to re-derive the list by hand.
+Adopted from GitHub spec-kit's `/speckit.converge` — the *assessment* half of it,
+inside the existing implementation run rather than as a new loop (see
+[SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
+
+**What the run must produce.** When the issue body carries a
+`## Acceptance Criteria` section, `prompts/issue/v36.md` requires the run to walk
+each criterion before writing the PR summary and record the assessment as a
+`## Acceptance Criteria` block in
+`docs/archive/pr-summaries/pr-summary-<issue>.md`:
+
+- **`met`** — satisfied by this diff, naming the file or test that evidences it.
+- **`partial`** — evidence plus a one-line reason for what is still outstanding.
+- **`missing`** — a one-line reason why it is not done.
+- **`unrequested`** — a change in the diff not traceable to the issue, with a
+  one-line reason. This is the output surface the prose "Change Scope" rule never
+  had: scope creep is named in the PR rather than found at review.
+
+**The gate.** [`acceptance_criteria_gate.ts`](../../worker/deno/lib/acceptance_criteria_gate.ts)
+parses both artefacts and blocks PR creation in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
+when a criteria-bearing issue produces a summary with no closure block, with
+fewer assessments than criteria, with a `met`/`partial` entry that names no
+evidence, or with a gap that carries no reason — an unexplained gap is a failure
+to surface, not a pass. The gate comments on the issue naming every rule broken
+and the required shape, so the next attempt is productive. Issues with **no**
+acceptance criteria are unaffected: the gate does not apply and nothing changes.
+
+```mermaid
+flowchart TD
+    P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/v36.md"]
+    I --> S["PR summary carries<br/>## Acceptance Criteria block"]
+    S --> G{"Closure gate<br/>every criterion assessed,<br/>evidence + reasons present?"}
+    G -->|yes| PR["PR created"]
+    G -->|no| B["Blocked: comment names<br/>each rule broken; run fails"]
+    N["Issue with no criteria"] --> PR
+    style P fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style B fill:#c45858,stroke:#6b2020,color:#fff
+```
+
 ## 🩹 Orphaned milestone merge — self-heal, then bounce
 
 A merged PR is not a landed change. When a child PR merges into

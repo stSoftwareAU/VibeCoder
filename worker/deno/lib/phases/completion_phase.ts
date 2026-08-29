@@ -36,6 +36,10 @@ import {
   findScreenshotReferences,
 } from "../pr_evidence.ts";
 import { resolveImagePaths } from "../image_path_resolver.ts";
+import {
+  buildClosureGateComment,
+  validateAcceptanceClosure,
+} from "../acceptance_criteria_gate.ts";
 import { decideCompletionPr, type LinkedPr } from "../pr_run_provenance.ts";
 import {
   ensureIssueClosedIfPrMerged,
@@ -942,6 +946,38 @@ async function completionBody(
     } catch {
       logger.warn("Failed to remove needs-screenshot label (non-fatal)");
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Acceptance-criteria closure gate (Issue #518).
+  //
+  // The planner writes a `## Acceptance Criteria` checklist into every
+  // sub-issue and nothing used to read it back. When the issue carries
+  // criteria, the summary must close each one out as met / partial / missing
+  // with the evidence observed, and explain every gap — an unexplained gap is
+  // a failure to surface, not a pass. Issues with no criteria are unaffected.
+  // ---------------------------------------------------------------------
+  const closure = validateAcceptanceClosure({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+  });
+  if (closure.applicable && !closure.valid) {
+    logger.warn("Acceptance-criteria closure gate blocked PR creation", {
+      criteria: closure.criteria.length,
+      problems: closure.problems,
+    });
+    const client = deps.github.createClient(logger);
+    await client.postComment(
+      repo,
+      issueNumber,
+      buildClosureGateComment(closure),
+    );
+    return {
+      status: "failure",
+      reason: `Acceptance criteria not closed out in the PR summary: ${
+        closure.problems[0] ?? "closure block missing"
+      }`,
+    };
   }
 
   // ---------------------------------------------------------------------
