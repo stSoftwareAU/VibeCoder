@@ -282,14 +282,18 @@ async function appendLine(filePath: string, line: string): Promise<void> {
 }
 
 /**
- * Default git reset sequence, mirroring the old bash chain:
+ * The git reset sequence, mirroring the old bash chain:
  *   git fetch origin && git checkout <branch> &&
  *   git reset --hard origin/<branch> && git clean -fd
  *
  * Output is appended to `pull.log`. The first failing command short-circuits
  * and returns a fail-loud error (Issue #3234).
+ *
+ * Exported because the host-side `worker-checkout-update` command (Issue
+ * #512) performs exactly this sequence before each container launch — one
+ * implementation, so the host and the in-container prelude cannot drift.
  */
-async function defaultResetToDefaultBranch(
+export async function resetCheckoutToDefaultBranch(
   repoDir: string,
   branch: string,
   logDir: string,
@@ -580,7 +584,7 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
     gzipPriorWorkerLogs: (logDir, currentLogFile) =>
       gzipOldWorkerLogs(logDir, { currentLogFile }),
     appendRunCoreLog: appendRunCoreLogLine,
-    resetToDefaultBranch: defaultResetToDefaultBranch,
+    resetToDefaultBranch: resetCheckoutToDefaultBranch,
     describeCheckoutState: defaultDescribeCheckoutState,
     readBootstrapFailureStreak: defaultReadBootstrapFailureStreak,
     writeBootstrapFailureStreak: defaultWriteBootstrapFailureStreak,
