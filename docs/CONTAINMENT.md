@@ -68,7 +68,7 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 
 | Source                       | In container                                    | Mode |
 | ---------------------------- | ----------------------------------------------- | ---- |
-| the worker checkout          | `/workspace`                                    | `rw` |
+| the worker checkout          | `/workspace`                                    | `ro` |
 | volume `vibe-work`           | `/home/vibe/auto-issue-work`                    | `rw` |
 | volume `vibe-approval-state` | `/home/vibe/auto-issue-work-approval-state`     | `rw` |
 | the worker log directory     | `/home/vibe/logs`                               | `rw` |
@@ -77,8 +77,14 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 | `…/credentials/<provider>`   | `/home/vibe/.vibe-coder/credentials/<provider>` | `ro` |
 
 - **The checkout is the worker's own code**, not host data: the image ships
-  only the entrypoint, so without it there is no driver to run and no tree for
-  the bootstrap to self-update.
+  only the entrypoint, so without it there is no driver to run. It is mounted
+  **read-only** (Issue #514) — there is no reason the Vibe Coder should ever
+  modify the running code. The checkout is updated on the *host* before launch
+  (Issue #512) and the in-container `git reset` that once forced this mount
+  read/write is gone (Issue #513), so any write to `/workspace` from inside is
+  a bug: it now fails loudly with `EROFS` rather than quietly changing the code
+  the next cycle runs. The driver's PID file moved to the log directory for
+  the same reason (see the inventory below).
 - **The workspace is a named volume, not a host directory**.
   The work dir — repo clones, build churn, agent transcripts, session
   stores — and its content-approval sibling live on runtime-managed volumes
@@ -221,6 +227,7 @@ Every path written inside the container, and the class it was assigned:
 | the crash-notification rate limit | `${HOME}/.vibe-coder` — the root-owned parent of the credential mounts, so already refused | `…/auto-issue-work/.crash-state` | persistent — it must outlive the restart it throttles |
 | repository clones, build artefacts, worker state | `…/auto-issue-work` | unchanged | persistent — the `vibe-work` volume |
 | worker logs | `${HOME}/logs` | unchanged | persistent — the log mount |
+| the driver's PID file (Issue #514) | `/workspace/.run.pid` — the checkout, now read-only | `${HOME}/logs/.run.pid` | persistent — the log mount, so the guard still bounds one driver per host |
 
 **Each relocation degrades loudly.** When a target cannot be created or
 written, the entrypoint names the path it refused and the fallback it took, in

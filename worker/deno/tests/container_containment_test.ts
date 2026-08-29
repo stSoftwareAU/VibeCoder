@@ -471,7 +471,13 @@ async function buildHostFixture(
     );
   }
 
-  await makeSharedDir(checkout);
+  // World-writable, and with a `.git` of its own: the checkout mount is
+  // read-only (Issue #514), and only the mount flag — never host ownership —
+  // may be what makes the container's write probe fail.
+  await makeSharedDir(checkout, 0o777);
+  await makeSharedDir(`${checkout}/.git`, 0o777);
+  await Deno.writeTextFile(`${checkout}/.git/HEAD`, "ref: refs/heads/main\n");
+  await Deno.chmod(`${checkout}/.git/HEAD`, 0o666);
   const configToken = `config-${token}`;
   const configFile = `${checkout}/.config.json`;
   await Deno.writeTextFile(
@@ -685,6 +691,22 @@ function mountProbes(fixture: HostFixture): Probe[] {
       id: "log-directory",
       target: targets.logs,
       why: "the log directory is mounted read/write",
+    },
+    {
+      // Issue #514: the worker never modifies the code it is running, so the
+      // checkout crosses the boundary read-only.
+      kind: "ro-dir",
+      id: "worker-checkout",
+      target: targets.base,
+      why: "the worker checkout is mounted read-only",
+    },
+    {
+      // `.git` explicitly: a writable `.git` is enough to rewrite the tree
+      // the next cycle checks out, even when the working files are not.
+      kind: "ro-dir",
+      id: "worker-checkout-git",
+      target: `${targets.base}/.git`,
+      why: "the checkout's .git is mounted read-only",
     },
     {
       kind: "ro-file",
@@ -1320,4 +1342,23 @@ Deno.test("containment harness - every prohibited location and socket is probed 
     socketProbes().every((probe) => probe.kind === "socket"),
     "A runtime socket must be probed for absence, not merely readability.",
   );
+});
+
+Deno.test("containment harness - the worker checkout and its .git are probed read-only (Issue #514)", () => {
+  // Runs without a container runtime, so the probe table itself is guarded
+  // even where the live containment run is skipped: a future edit that drops
+  // these probes cannot make the read-only checkout untested by accident.
+  const targets = containerTargetPaths(MANIFEST);
+  const probes = mountProbes({ canaryName: "canary.txt" } as HostFixture);
+
+  for (const target of [targets.base, `${targets.base}/.git`]) {
+    const probe = probes.find((candidate) => candidate.target === target);
+    assert(probe, `${target} has no containment probe of its own.`);
+    assertEquals(
+      probe.kind,
+      "ro-dir",
+      `${target} must be probed read-only — the worker never modifies the ` +
+        `code it is running.`,
+    );
+  }
 });

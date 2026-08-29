@@ -797,6 +797,8 @@ state is the GitHub `idle-task` issue itself.
 ## 🔄 Checking if worker is running
 
 ```bash
-cat .run.pid  # Shows PID if running
-ps -p $(cat .run.pid) 2>/dev/null && echo "Running" || echo "Not running"
+# The driver's PID file lives in the log directory, not the checkout
+# (Issue #514): /workspace is mounted read-only inside the container.
+cat ~/logs/.run.pid  # Shows PID if running
+ps -p $(head -1 ~/logs/.run.pid) 2>/dev/null && echo "Running" || echo "Not running"
 ```

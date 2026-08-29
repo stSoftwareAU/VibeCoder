@@ -900,7 +900,7 @@ flowchart TD
 
 | Source (host path or named volume) | In container                   | Mode |
 | ---------------------------- | ------------------------------------ | ---- |
-| the worker checkout          | `/workspace`                         | rw   |
+| the worker checkout          | `/workspace`                         | ro   |
 | volume `vibe-work`           | `/home/vibe/auto-issue-work`         | rw   |
 | volume `vibe-approval-state` | `…/auto-issue-work-approval-state`   | rw   |
 | the worker log directory     | `/home/vibe/logs`                    | rw   |
@@ -912,8 +912,10 @@ One credential mount per **enabled** provider, so a
 multi-provider run carries three of them and a default run exactly one.
 
 The checkout is the worker's own code, not host data: the image ships only the
-entrypoint, so without it there is no driver to run and no tree for the
-bootstrap to self-update. The rest is the persistent state: named volumes
+entrypoint, so without it there is no driver to run. It is mounted
+**read-only** (Issue #514) — the checkout is updated on the host before launch,
+so nothing inside the container has any business writing to it. The rest is the
+persistent state: named volumes
 for the workspace and the approval snapshots (no browsable copy of the
 worker's repositories on the host, and no host `~/auto-issue-work`), host
 directories for the logs and configuration. Their in-container paths are

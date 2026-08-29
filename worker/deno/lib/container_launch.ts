@@ -13,7 +13,7 @@
  *
  * | Source                     | In container                       | Mode |
  * | -------------------------- | ---------------------------------- | ---- |
- * | the worker checkout        | `/workspace`                       | rw   |
+ * | the worker checkout        | `/workspace`                       | ro   |
  * | volume `vibe-work`         | `/home/vibe/auto-issue-work`       | rw   |
  * | volume `vibe-approval-state`| `…/auto-issue-work-approval-state`| rw   |
  * | the worker log directory   | `/home/vibe/logs`                  | rw   |
@@ -23,8 +23,9 @@
  *
  * The first is the worker's own code, not host data: the image ships only the
  * entrypoint, so without the checkout at the manifest `workdir` there is no
- * driver to run and no way for the bootstrap to self-update. The rest are the
- * persistent state Issue #4060 enumerates. Their in-container paths are
+ * driver to run. It is mounted **read-only** (Issue #514) — the Vibe Coder
+ * never modifies the running code. The rest are the persistent state
+ * Issue #4060 enumerates. Their in-container paths are
  * deliberately the ones the worker resolves for itself from `HOME`, so no
  * environment plumbing is needed to point it at them.
  *
@@ -703,9 +704,14 @@ export function buildContainerLaunchPlan(
   const style = pathStyleFor(hostPaths.baseDir);
   const base = normalise(hostPaths.baseDir, style);
   const mounts: ContainerMount[] = [
-    // The worker's own checkout: the driver it executes and the tree its
-    // bootstrap self-updates. Read/write for that reason alone.
-    { source: base, target: targets.base },
+    // The worker's own checkout: the driver it executes, and nothing else.
+    // Read-only (Issue #514) — there is no reason the Vibe Coder should ever
+    // modify the running code. The last intentional in-container writer was
+    // the bootstrap prelude's git reset; Issue #512 moved the checkout update
+    // to the host and Issue #513 retired the reset, so a write to /workspace
+    // now is a bug, and this mount makes it fail loudly with EROFS instead of
+    // silently changing the code the next cycle runs.
+    { source: base, target: targets.base, readOnly: true },
     // The work dir and its approval-state sibling ride named volumes
     // (Issue #4186): guest-owned filesystems at native speed, durable
     // across containers and image upgrades, and no browsable copy of the
@@ -894,13 +900,14 @@ export function buildContainerLaunchPlan(
     watchdogSeconds: Math.floor(inputs.watchdogSeconds),
     mounts,
     // Only the read/write host mounts are the launcher's to create — since
-    // Issue #4186 that is the log directory alone. A missing config file or
-    // credential directory is a loud failure, not something to conjure an
-    // empty replacement for.
+    // Issue #4186 that is the log directory alone. One filter, one reason:
+    // the checkout used to need a second `!== base` exclusion, and since
+    // Issue #514 made it read-only the read-only test already covers it. A
+    // missing config file or credential directory is a loud failure, not
+    // something to conjure an empty replacement for.
     ensureDirectories: mounts
       .filter((mount) => !mount.volume && !mount.readOnly)
-      .map((mount) => mount.source)
-      .filter((source) => source !== base),
+      .map((mount) => mount.source),
     volumes: volumeMounts.map((mount) => mount.source),
     initArgs,
     imageInspectArgs: [...dialect.imageInspectArgs, image],
