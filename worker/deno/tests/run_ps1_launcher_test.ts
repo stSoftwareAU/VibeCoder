@@ -525,9 +525,7 @@ Deno.test({
       assert(update > -1 && plan > -1, `deno order: ${order.join(", ")}`);
       assert(
         update < plan,
-        `the checkout update must precede the launch plan: ${
-          order.join(", ")
-        }`,
+        `the checkout update must precede the launch plan: ${order.join(", ")}`,
       );
     } finally {
       await harness.cleanup();
