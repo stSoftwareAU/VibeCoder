@@ -21,9 +21,10 @@ set -euo pipefail
 #
 # Steps:
 #   1. Locate Deno on the host (the only host tool this script needs).
-#   2. Build the launch plan (runtime detection, image reference, mounts).
-#   3. Build the image when the content-derived reference is absent.
-#   4. Launch the container, propagate SIGTERM/SIGINT, and exit with the
+#   2. Update the worker checkout to origin's default branch (Issue #512).
+#   3. Build the launch plan (runtime detection, image reference, mounts).
+#   4. Build the image when the content-derived reference is absent.
+#   5. Launch the container, propagate SIGTERM/SIGINT, and exit with the
 #      container's exit status so loop.sh / launchd / cron / systemd see real
 #      failures.
 #
@@ -42,6 +43,11 @@ set -euo pipefail
 #              this launcher - and loop.sh behind it - for three hours on
 #              host-23. The wait now runs under the plan's `watchdog` deadline,
 #              and a stale worker container is reaped before the launch.
+# Issue #512:  The worker checkout is updated here, on the host, before the
+#              launch plan is built - the prerequisite for mounting it
+#              read-only (Issue #509). A failed update is a warning, never a
+#              refused launch, and VIBE_SKIP_CHECKOUT_UPDATE turns it off for
+#              a development checkout or a CI tree.
 
 BASE_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${BASE_DIR}"
@@ -217,6 +223,17 @@ wait_for_child() {
   return "${status}"
 }
 
+# One line per launcher decision in the worker's own host log, so a fleet host
+# that keeps failing a step is visible without reading stderr. Best-effort: an
+# unwritable log must never fail a launch.
+log_run_core() {
+  # The log directory is created by the launch plan later in the run, so it
+  # may not exist yet at the first line written (Issue #512).
+  mkdir -p "${HOME}/logs" 2>/dev/null || true
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
+    >>"${HOME}/logs/run_core.log" 2>/dev/null || true
+}
+
 # The run mode - container, the only one (Issue #4). Still resolved by Deno
 # rather than parsed here, so a .config.json (or VIBE_RUN_MODE) that names a
 # removed mode fails loud in one place with the removal explained, and never
@@ -235,6 +252,27 @@ fi
 if [[ "${RUN_MODE}" != "container" ]]; then
   echo "Error: unrecognised run mode: ${RUN_MODE}" >&2
   exit 1
+fi
+
+# Update the worker checkout on the host, before the container is launched
+# (Issue #512). The same update happens inside the container today, which is
+# the only reason /workspace has to be mounted read-write - and the fleet
+# self-update rewrites this very script, code the host executes, so that mount
+# is a container->host escape path. Doing it here is the prerequisite for
+# mounting the checkout read-only (Issue #509).
+#
+# Failure is not fatal: a host that cannot reach GitHub still launches the
+# worker on the checkout it already has. It says so loudly on stderr and in
+# the run-core log rather than passing quietly (Issue #3234).
+checkout_update_status=0
+bounded 300 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-write --allow-run \
+  "${BASE_DIR}/worker/deno/mod.ts" worker-checkout-update \
+  --base-dir "${BASE_DIR}" </dev/null >&2 || checkout_update_status=$?
+if ((checkout_update_status != 0)); then
+  echo "[run.sh] warning: could not update the worker checkout (status ${checkout_update_status}) - launching on the existing checkout" >&2
+  log_run_core "worker-checkout-update: failed (status ${checkout_update_status}) - launching on the existing checkout"
 fi
 # The plan resolves and validates the container runtime, computes the
 # content-derived image reference, and constructs the fixed least-privilege
@@ -351,14 +389,6 @@ if ((reap_status == ANOTHER_WORKER_RUNNING_EXIT)); then
 elif ((reap_status != 0)); then
   echo "[run.sh] warning: the pre-launch container reaper did not complete" >&2
 fi
-
-# One line per build-heal decision in the worker's own host log, so a fleet
-# host that keeps restarting its builder is visible without reading stderr.
-# Best-effort: an unwritable log must never fail a launch.
-log_run_core() {
-  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
-    >>"${HOME}/logs/run_core.log" 2>/dev/null || true
-}
 
 # Build the image, streaming the output and capturing it for the heal.
 # Returns the build's own exit status, not tee's.

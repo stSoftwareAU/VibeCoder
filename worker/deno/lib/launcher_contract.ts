@@ -21,6 +21,11 @@
  * Nothing about containment is relaxed: every broadening, mount and plan-key
  * rule is exactly as strict as before.
  *
+ * **Checkout update (Issue #512).** Both launchers update the worker checkout
+ * on the host, before the launch plan is built. A launcher that leaves that to
+ * the container keeps `/workspace` read-write, so a missing update step is a
+ * fault here too.
+ *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
@@ -96,6 +101,19 @@ export const LAUNCHER_RUN_MODE_MARKERS: readonly string[] = [
   "VIBE_RUN_MODE",
 ];
 
+/**
+ * Source markers of the host-side checkout update (Issue #512).
+ *
+ * The worker checkout is updated by the **host**, before the launch plan is
+ * built, through the `worker-checkout-update` Deno sub-command. A launcher
+ * that skips it would leave the update to the container — which is the only
+ * reason `/workspace` has to be mounted read-write, and so a container→host
+ * escape path (Issue #509).
+ */
+export const LAUNCHER_CHECKOUT_UPDATE_MARKERS: readonly string[] = [
+  "worker-checkout-update",
+];
+
 /** Mount flags a launcher must never pass for itself. */
 export const LAUNCHER_MOUNT_FLAGS: readonly string[] = ["--volume", "--mount"];
 
@@ -109,6 +127,8 @@ export interface LauncherContract {
   delegatesToLaunchPlan: boolean;
   /** True when the launcher asks the run-mode resolver which mode to run in. */
   consultsRunMode: boolean;
+  /** True when the launcher updates the worker checkout itself (Issue #512). */
+  updatesCheckout: boolean;
   /** Plan keys the launcher handles, in the canonical order. */
   planKeys: string[];
   /** Broadening markers found — empty is the only acceptable result. */
@@ -177,12 +197,16 @@ export function extractLauncherContract(
   const consultsRunMode = LAUNCHER_RUN_MODE_MARKERS.some((marker) =>
     code.some((line) => line.includes(marker))
   );
+  const updatesCheckout = LAUNCHER_CHECKOUT_UPDATE_MARKERS.some((marker) =>
+    code.some((line) => line.includes(marker))
+  );
 
   return {
     name,
     dialect,
     delegatesToLaunchPlan: source.includes("container-launch-plan"),
     consultsRunMode,
+    updatesCheckout,
     planKeys: LAUNCH_PLAN_KEYS.filter((key) =>
       handlesPlanKey(source, key, dialect)
     ),
@@ -207,6 +231,7 @@ function describe(values: string[]): string {
 export type LauncherComparedField =
   | "delegatesToLaunchPlan"
   | "consultsRunMode"
+  | "updatesCheckout"
   | "planKeys"
   | "broadeningMarkers"
   | "nativeExecutionMarkers"
@@ -216,6 +241,7 @@ export type LauncherComparedField =
 const COMPARED_FIELDS: Record<LauncherComparedField, string> = {
   delegatesToLaunchPlan: "launch-plan delegation",
   consultsRunMode: "run-mode consultation",
+  updatesCheckout: "host-side checkout update",
   planKeys: "handled launch-plan keys",
   broadeningMarkers: "privilege/exposure markers",
   nativeExecutionMarkers: "native execution markers",
@@ -315,6 +341,14 @@ export function launcherContractFaults(contract: LauncherContract): string[] {
       `${contract.name} never consults the run-mode resolver (the ` +
         `${LAUNCHER_RUN_MODE_MARKERS[0]} command), so a configuration naming ` +
         `a removed mode would not fail loud (Issues #4146, #4)`,
+    );
+  }
+  if (!contract.updatesCheckout) {
+    faults.push(
+      `${contract.name} never updates the worker checkout (the ` +
+        `${LAUNCHER_CHECKOUT_UPDATE_MARKERS[0]} command), so the update is ` +
+        `left to the container and the checkout cannot be mounted read-only ` +
+        `(Issues #512, #509)`,
     );
   }
   if (contract.hardcodedMountFlags.length > 0) {

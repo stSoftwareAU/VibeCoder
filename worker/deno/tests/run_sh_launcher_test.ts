@@ -37,6 +37,7 @@ import {
   BASH_LAUNCHER,
   buildCount,
   builderHealed,
+  denoInvocationOrder,
   type Harness,
   initCount,
   invocationOrder,
@@ -662,6 +663,60 @@ Deno.test("run.sh - fails loud when the credential directory is absent", async (
     assert(outcome.code !== 0, "a missing credential directory must fail");
     assertStringIncludes(outcome.stderr, "credentials");
     assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Host-side checkout update (Issue #512)
+// ---------------------------------------------------------------------------
+
+Deno.test("run.sh - updates the worker checkout before it builds the launch plan (Issue #512)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "worker-checkout-update");
+    assert(args, `the checkout was never updated: ${outcome.stderr}`);
+    assertEquals(args[args.indexOf("--base-dir") + 1], REPO_ROOT);
+
+    // Order matters: the plan - and the image reference it derives from the
+    // checkout's own contents - must be built from the updated tree.
+    const order = await denoInvocationOrder(harness);
+    const update = order.indexOf("worker-checkout-update");
+    const plan = order.indexOf("container-launch-plan");
+    assert(update > -1 && plan > -1, `deno order: ${order.join(", ")}`);
+    assert(
+      update < plan,
+      `the checkout update must precede the launch plan: ${order.join(", ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a failed checkout update warns and launches on the existing checkout (Issue #512)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_CHECKOUT_UPDATE_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    // Not fatal by design: a host that cannot reach GitHub still works.
+    assertEquals(
+      outcome.code,
+      0,
+      `a failed update must not abort the launch: ${outcome.stderr}`,
+    );
+    assertStringIncludes(outcome.stderr, "could not update the worker");
+    assert(
+      await recorded(harness, "run"),
+      "the container must still be launched",
+    );
+    // Loud, not quiet: the failure reaches the host log too (Issue #3234).
+    assertStringIncludes(await runCoreLog(harness), "worker-checkout-update");
   } finally {
     await harness.cleanup();
   }
