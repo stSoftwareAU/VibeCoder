@@ -49,6 +49,27 @@
  * all — its secret cannot be read from inside the container — and enabling one
  * needs no edit to the mount construction here.
  *
+ * ## The read-only root filesystem
+ *
+ * Where the runtime understands it, the container root filesystem is mounted
+ * **immutable** (`--read-only`, Issue #516) and the only writable places left
+ * are the mounts above, the named volumes, and the scratch tmpfs mounts in
+ * {@link SCRATCH_TMPFS_MOUNTS}. A compromise inside the container can then
+ * persist nothing that survives the launch it happened in.
+ *
+ * `--read-only` and those tmpfs mounts are **one decision, not two**: a
+ * read-only root with no writable scratch is a container that cannot run.
+ * Tmpfs support is therefore a *precondition* of read-only support — a
+ * dialect claiming one without the other is refused loudly rather than
+ * silently emitting half the pair — and a dialect that takes no tmpfs gets
+ * **neither**. Apple `container` is that dialect (`supportsTmpfs: false`,
+ * `supportsReadOnly: false`): each container there is its own lightweight VM,
+ * which is the compensating control, and `container/entrypoint.sh` resolves
+ * its scratch root onto the `vibe-work` volume instead (Issue #515).
+ * {@link assertRunArgumentsContained} then re-checks the finished list — the
+ * flag must be present for a supporting dialect and can never appear without
+ * its scratch — so neither half can be dropped by a later edit.
+ *
  * ## What it refuses
  *
  * Building a plan throws — loudly, per Issue #3234 — rather than emitting a
@@ -367,6 +388,31 @@ export const FORBIDDEN_RUN_FLAGS: readonly string[] = [
   "--net=host",
 ];
 
+/**
+ * The writable scratch a read-only root filesystem is given in its place
+ * (Issue #516), in the order they are passed.
+ *
+ * Each is a tmpfs, so it is per-launch by construction and dies with the
+ * container — the durable state is on the mounts and the named volumes.
+ * `nosuid,nodev` everywhere, and `exec` only where it is genuinely needed:
+ *
+ * - `/tmp` keeps `exec` and `mode=1777`. It is the entrypoint's scratch root
+ *   (`VIBE_SCRATCH_DIR`), `TMPDIR`, and the browser profile, and the agent
+ *   runs scratch scripts it writes there.
+ * - `/var/tmp` is pure data — POSIX's other world-writable scratch directory,
+ *   which tools reach for without asking and which nothing in the writable-path
+ *   inventory owns — so it is `noexec`.
+ *
+ * `/run` is deliberately **not** here: the image ships it root-owned `0755`
+ * and the worker runs as an unprivileged account, so it was never writable
+ * from inside the container and a tmpfs would only hand a root this container
+ * does not have somewhere to write.
+ */
+export const SCRATCH_TMPFS_MOUNTS: readonly string[] = [
+  "/tmp:rw,nosuid,nodev,exec,mode=1777",
+  "/var/tmp:rw,nosuid,nodev,noexec,mode=1777",
+];
+
 /** Path fragments that identify a container-runtime control socket. */
 const RUNTIME_SOCKET_HINTS: readonly string[] = [
   "docker.sock",
@@ -546,8 +592,19 @@ function assertMountSourcePermitted(
   }
 }
 
-/** Reject an argument list that would broaden the container's privileges. */
-function assertRunArgumentsContained(args: string[]): void {
+/**
+ * Reject an argument list that would broaden the container's privileges.
+ *
+ * @param args - The finished argument list
+ * @param expectReadOnlyRoot - True when this list runs on a dialect that
+ *   supports an immutable root filesystem, so `--read-only` must be present.
+ *   The read-only root is a containment control, not a nicety: without this
+ *   check a later edit could drop it and nothing would notice (Issue #516).
+ */
+function assertRunArgumentsContained(
+  args: string[],
+  expectReadOnlyRoot = false,
+): void {
   for (const arg of args) {
     const lower = arg.toLowerCase();
     if (FORBIDDEN_RUN_FLAGS.includes(lower)) {
@@ -560,6 +617,29 @@ function assertRunArgumentsContained(args: string[]): void {
       throw new Error(
         `Refusing to launch: run arguments request host namespace/network ` +
           `access (${arg}).`,
+      );
+    }
+  }
+
+  const readOnly = args.includes("--read-only");
+  if (expectReadOnlyRoot && !readOnly) {
+    throw new Error(
+      `Refusing to launch: the runtime supports an immutable root filesystem ` +
+        `but the run arguments do not carry --read-only (Issue #516).`,
+    );
+  }
+  // Never the flag without its scratch: a read-only root with nowhere to
+  // write is a container that cannot run, so the pairing is checked here as
+  // well as gated at the point it is emitted.
+  if (readOnly) {
+    const missing = SCRATCH_TMPFS_MOUNTS.filter((mount) =>
+      !args.includes(mount)
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `Refusing to launch: --read-only was requested without the scratch ` +
+          `tmpfs mounts it depends on (missing: ${missing.join(", ")}) — the ` +
+          `container would have nowhere writable to run (Issue #516).`,
       );
     }
   }
@@ -793,9 +873,26 @@ export function buildContainerLaunchPlan(
   if (dialect.supportsSecurityOpt) {
     runArgs.push("--security-opt", "no-new-privileges");
   }
-  // A writable tmpfs keeps the container root filesystem disposable.
+  // The immutable root filesystem and the scratch it needs are ONE decision
+  // (Issue #516): `--read-only` without a writable tmpfs is a container that
+  // cannot run, so a dialect that takes no tmpfs gets neither half. Apple
+  // container is that dialect — its per-container VM is the compensating
+  // control, and the entrypoint puts its scratch on the vibe-work volume.
+  if (dialect.supportsReadOnly && !dialect.supportsTmpfs) {
+    throw new Error(
+      `Refusing to launch: the ${descriptor.displayName} dialect asks for a ` +
+        `read-only root filesystem but supports no tmpfs, so the container ` +
+        `would have nowhere writable to run (Issue #516).`,
+    );
+  }
+  const readOnlyRoot = dialect.supportsReadOnly;
+  if (readOnlyRoot) runArgs.push("--read-only");
+  // The scratch that flag depends on. The guard above makes tmpfs support a
+  // precondition of read-only support, so `--read-only` can never be emitted
+  // without these mounts; a runtime that took a tmpfs but no `--read-only`
+  // still gets a disposable root, exactly as before.
   if (dialect.supportsTmpfs) {
-    runArgs.push("--tmpfs", "/tmp:rw,nosuid,nodev,exec,mode=1777");
+    for (const mount of SCRATCH_TMPFS_MOUNTS) runArgs.push("--tmpfs", mount);
   }
 
   for (const mount of mounts) {
@@ -845,7 +942,7 @@ export function buildContainerLaunchPlan(
   // Last, so the launcher can append the worker's own arguments after it.
   runArgs.push(image);
 
-  assertRunArgumentsContained(runArgs);
+  assertRunArgumentsContained(runArgs, readOnlyRoot);
 
   // The volume init (Issues #4186, #229): a fresh named volume is
   // root-owned and the worker runs as the manifest's unprivileged account,
@@ -855,7 +952,11 @@ export function buildContainerLaunchPlan(
   // (see container/volume-init.sh) and reports one it cannot repair with
   // exit 3 so the launcher can recreate it. Only the volumes and the image
   // are visible to this run: no host mount, no credentials, no network use.
-  // Idempotent, so the launchers re-run it every launch.
+  // Idempotent, so the launchers re-run it every launch. Deliberately not
+  // `--read-only` (Issue #516): it runs as root, where a read-only root is
+  // remountable and therefore not a boundary, and its `fsck` repair path
+  // needs the image's own scratch. The containment control that matters here
+  // is the mount set — volumes and image only.
   const volumeMounts = mounts.filter((mount) => mount.volume);
   const initArgs: string[] = [
     "run",

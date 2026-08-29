@@ -457,9 +457,9 @@ The command reports the executable on stdout and, with `OUTPUT_JSON=true`, the
 whole descriptor: `kind`, `executable`, `probed`, and the `dialect` the
 launchers need — `mountFlag`, `readOnlyMountSuffix`, the image-inspect
 sub-command (`image inspect` for Docker/Podman, `images inspect` for Apple
-`container`), and whether `--userns`, `--security-opt`, `--cap-drop` and
-`--tmpfs` are understood (Apple `container` supports none of them: each
-container is already its own lightweight VM). Passing
+`container`), and whether `--userns`, `--security-opt`, `--cap-drop`,
+`--tmpfs` and `--read-only` are understood (Apple `container` supports none of
+them: each container is already its own lightweight VM). Passing
 `--platform <darwin|linux|windows>` resolves for another platform, and
 `worker/deno/lib/container_runtime.ts` takes both the platform and the probe as
 parameters, so `worker/deno/tests/container_runtime_test.ts` exercises every
@@ -969,8 +969,15 @@ most the last minute, and the warning tells you the VM needs more memory
 - No `--privileged`, no host networking, no published ports — outbound only,
   on the runtime's bridge network.
 - `--cap-drop ALL` and `--security-opt no-new-privileges` where the runtime
-  understands them, and a writable `tmpfs` for `/tmp` so the container root
-  filesystem stays disposable. `--rm` removes the container on exit.
+  understands them. `--rm` removes the container on exit.
+- **`--read-only`** where the runtime understands it (Issue #516): the root
+  filesystem is immutable, and the writable exceptions are the mounts, the
+  named volumes and two scratch `tmpfs` mounts — `/tmp`
+  (`rw,nosuid,nodev,exec,mode=1777`) and `/var/tmp`
+  (`rw,nosuid,nodev,noexec,mode=1777`). The flag and its `tmpfs` mounts are one
+  decision: a runtime that takes no `tmpfs` (Apple `container`) gets neither,
+  and a dialect claiming one without the other is refused loudly. See
+  [Containment](CONTAINMENT.md#the-container-root-filesystem-is-read-only).
 - The image is rebuilt only when its content-derived reference is absent
   locally (`image inspect` / `images inspect`).
 - `SIGTERM` and `SIGINT` are forwarded to the container so the Deno driver's

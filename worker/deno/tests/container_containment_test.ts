@@ -43,6 +43,7 @@ import {
   containerTargetPaths,
   FORBIDDEN_RUN_FLAGS,
   resolveContainerLaunchHostPaths,
+  SCRATCH_TMPFS_MOUNTS,
 } from "../lib/container_launch.ts";
 import {
   CONTAINER_RUNTIMES,
@@ -738,6 +739,49 @@ function mountProbes(fixture: HostFixture): Probe[] {
 }
 
 /**
+ * The read-only root filesystem and the writable exceptions it keeps
+ * (Issue #516).
+ *
+ * Empty for a runtime whose plan carries no `--read-only` (Apple `container`),
+ * so the suite asserts what this plan actually asked the runtime for rather
+ * than a property the runtime was never given.
+ *
+ * `${HOME}` is the discriminating probe: the image ships it owned by the
+ * worker's own account, so it is writable on a writable root and immutable
+ * only because the root filesystem is.
+ */
+function readOnlyRootProbes(plan: ContainerLaunchPlan): Probe[] {
+  if (!plan.runArgs.includes("--read-only")) return [];
+  const containerHome = `/home/${MANIFEST.user.name}`;
+  return [
+    {
+      kind: "ro-dir",
+      id: "read-only-root-home",
+      target: containerHome,
+      why: "the container HOME is on the image layer, which is read-only",
+    },
+    {
+      kind: "ro-dir",
+      id: "read-only-root-usr-local-bin",
+      target: "/usr/local/bin",
+      why: "no binary may be planted on the image's PATH",
+    },
+    {
+      kind: "rw",
+      id: "scratch-tmp",
+      target: "/tmp",
+      why: "/tmp is the scratch tmpfs the read-only root depends on",
+    },
+    {
+      kind: "rw",
+      id: "scratch-var-tmp",
+      target: "/var/tmp",
+      why: "/var/tmp is the second scratch tmpfs",
+    },
+  ];
+}
+
+/**
  * Render the probe table.
  *
  * @throws When an identifier or path carries a tab or newline, which the
@@ -876,6 +920,7 @@ Deno.test({
         ...prohibitedProbes(fixture),
         ...socketProbes(),
         ...mountProbes(fixture),
+        ...readOnlyRootProbes(fixture.plan),
       ];
       await Deno.writeTextFile(
         `${fixture.checkout}/containment-probes.tsv`,
@@ -1361,4 +1406,36 @@ Deno.test("containment harness - the worker checkout and its .git are probed rea
         `code it is running.`,
     );
   }
+});
+
+Deno.test("containment harness - the read-only root and its writable exceptions are probed (Issue #516)", () => {
+  // Also runs without a container runtime, so the probe set is guarded even
+  // where the live run is skipped.
+  const probes = readOnlyRootProbes(samplePlan());
+  const containerHome = `/home/${MANIFEST.user.name}`;
+
+  const home = probes.find((probe) => probe.target === containerHome);
+  assert(home, `${containerHome} has no read-only root probe.`);
+  assertEquals(
+    home.kind,
+    "ro-dir",
+    "the container HOME is on the image layer and must be immutable",
+  );
+  // Every declared scratch mount is probed writable — a read-only root with
+  // no writable scratch is a container that cannot run.
+  for (const mount of SCRATCH_TMPFS_MOUNTS) {
+    const path = mount.split(":")[0]!;
+    const probe = probes.find((candidate) => candidate.target === path);
+    assert(probe, `The scratch tmpfs ${path} has no containment probe.`);
+    assertEquals(probe.kind, "rw", `${path} must be probed writable.`);
+  }
+
+  // A runtime whose plan carries no --read-only is not asserted against a
+  // property it was never given (Apple container takes neither the flag nor
+  // a tmpfs).
+  const writableRoot: ContainerLaunchPlan = {
+    ...samplePlan(),
+    runArgs: samplePlan().runArgs.filter((arg) => arg !== "--read-only"),
+  };
+  assertEquals(readOnlyRootProbes(writableRoot), []);
 });

@@ -26,6 +26,7 @@ import {
   renderContainerLaunchPlan,
   resolveContainerLaunchHostPaths,
   resolveContainerResources,
+  SCRATCH_TMPFS_MOUNTS,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
@@ -402,6 +403,79 @@ Deno.test("buildContainerLaunchPlan - starts the container with least privilege"
   assertEquals(
     plan.runArgs[plan.runArgs.length - 1],
     "vibe-coder:0123456789ab",
+  );
+});
+
+/** `--tmpfs <spec>` values from a rendered argument list. */
+function tmpfsValues(args: string[]): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--tmpfs") values.push(args[i + 1] ?? "");
+  }
+  return values;
+}
+
+Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with its scratch tmpfs (Issue #516)", () => {
+  // The standing gate against a silent revert: an immutable root filesystem
+  // means a compromise inside the container can persist nothing beyond the
+  // per-launch tmpfs and the volumes it is meant to write.
+  for (const kind of ["docker", "podman"] as const) {
+    const plan = buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor(kind) }),
+    );
+    assertEquals(
+      plan.runArgs.includes("--read-only"),
+      true,
+      `${kind} supports an immutable root filesystem and must be given one`,
+    );
+    // The flag and its scratch are one decision: every declared mount is
+    // present, in order, and nothing else is.
+    assertEquals(tmpfsValues(plan.runArgs), [...SCRATCH_TMPFS_MOUNTS]);
+    assertEquals(tmpfsValues(plan.runArgs), [
+      "/tmp:rw,nosuid,nodev,exec,mode=1777",
+      "/var/tmp:rw,nosuid,nodev,noexec,mode=1777",
+    ]);
+    // Hardened the same way as the /tmp entry that predates this issue, and
+    // `exec` only where the agent genuinely runs what it writes.
+    for (const value of tmpfsValues(plan.runArgs)) {
+      assertStringIncludes(value, "nosuid");
+      assertStringIncludes(value, "nodev");
+    }
+    // The rendered plan carries them through to the launcher verbatim.
+    const parsed = parseContainerLaunchPlanText(
+      renderContainerLaunchPlan(plan),
+    );
+    assertEquals(parsed.run.includes("--read-only"), true);
+    assertEquals(tmpfsValues(parsed.run), [...SCRATCH_TMPFS_MOUNTS]);
+  }
+});
+
+Deno.test("buildContainerLaunchPlan - a runtime with no tmpfs gets neither --read-only nor scratch (Issue #516)", () => {
+  // Apple container: no tmpfs and no --read-only, and the two must move
+  // together — a read-only root with nowhere writable is a broken container.
+  // Its per-container VM is the compensating control, and the entrypoint
+  // puts the scratch root on the vibe-work volume there (Issue #515).
+  const plan = buildContainerLaunchPlan(
+    inputs({ descriptor: descriptorFor("apple-container") }),
+  );
+  assertEquals(plan.runArgs.includes("--read-only"), false);
+  assertEquals(tmpfsValues(plan.runArgs), []);
+});
+
+Deno.test("buildContainerLaunchPlan - refuses a read-only root with no tmpfs to write on (Issue #516)", () => {
+  // A dialect claiming --read-only support without tmpfs support is a
+  // configuration error, not a reason to emit half the pair: it fails loud
+  // rather than silently dropping the containment control or launching a
+  // container that cannot write anywhere.
+  const descriptor = descriptorFor("docker");
+  const broken: ContainerRuntimeDescriptor = {
+    ...descriptor,
+    dialect: { ...descriptor.dialect, supportsTmpfs: false },
+  };
+  assertThrows(
+    () => buildContainerLaunchPlan(inputs({ descriptor: broken })),
+    Error,
+    "nowhere writable to run",
   );
 });
 
