@@ -17,6 +17,7 @@ import {
   notifyCrashViaWebhook,
   recordNotificationSent,
   resolveCrashStateDir,
+  sendCrashNotification,
   shouldRateLimitNotification,
   signalNameFromExitCode,
 } from "../lib/crash_notification.ts";
@@ -616,4 +617,85 @@ Deno.test("recordNotificationSent - reports failure rather than silently losing 
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ============================================================================
+// sendCrashNotification — `notified` must mean somebody was told (Issue #556)
+// ============================================================================
+
+Deno.test("crash notification - a crash with no channel is not reported as notified", async () => {
+  // The live failure: a launcher crash has no in-flight issue, this host has
+  // no webhook, and the orchestrator answered `notified: true` anyway. Its
+  // caller then treated the incident as reported and suppressed every later
+  // failure of the streak — GRQ-23 was down for ten hours with nobody told.
+  const stateDir = await makeTempDir();
+  try {
+    const result = await sendCrashNotification(
+      testConfig(stateDir),
+      testParams({ repo: "", issueNumber: 0, exitCode: 1 }),
+    );
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.notified, false);
+    assertEquals(result.value.reason, "no_channel");
+
+    // And no cooldown was started: nothing was said, so the next attempt must
+    // not be refused against a notification that never happened.
+    assertEquals(
+      await shouldRateLimitNotification(testConfig(stateDir)),
+      false,
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("crash notification - a delivered webhook counts as notified and starts the cooldown", async () => {
+  const stateDir = await makeTempDir();
+  const config = {
+    ...testConfig(stateDir),
+    webhookUrl: "https://example.invalid/hook",
+  };
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response("", { status: 200 }))) as typeof fetch;
+    const result = await sendCrashNotification(
+      config,
+      testParams({ repo: "", issueNumber: 0, exitCode: 1 }),
+    );
+    assertEquals(result.ok, true);
+    if (!result.ok) {
+      return;
+    }
+    assertEquals(result.value.notified, true);
+    assertEquals(await shouldRateLimitNotification(config), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("notifyCrashViaIssueComment - reports whether a comment was actually posted", async () => {
+  const config = testConfig("/tmp");
+  const suppressed = await notifyCrashViaIssueComment(
+    config,
+    testParams({ repo: "", issueNumber: 0 }),
+    () => Promise.resolve(),
+  );
+  assertEquals(suppressed.ok && suppressed.value.delivered, false);
+
+  const posted = await notifyCrashViaIssueComment(
+    config,
+    testParams({ repo: "org/myrepo", issueNumber: 7 }),
+    () => Promise.resolve(),
+  );
+  assertEquals(posted.ok && posted.value.delivered, true);
+
+  const refused = await notifyCrashViaIssueComment(
+    config,
+    testParams({ repo: "org/myrepo", issueNumber: 7 }),
+    () => Promise.reject(new Error("gh exited 1")),
+  );
+  assertEquals(refused.ok && refused.value.delivered, false);
 });

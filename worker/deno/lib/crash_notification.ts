@@ -466,9 +466,12 @@ export async function notifyCrashViaIssueComment(
   params: CrashNotificationParams,
   runGh: GhCommentRunner = defaultGhCommentRunner,
   queryGh: GhQueryRunner = defaultGhQueryRunner,
-): Promise<Result<void>> {
+): Promise<Result<{ delivered: boolean }>> {
   if (!params.repo || !params.issueNumber) {
-    return { ok: true, value: undefined };
+    // Nothing was posted, and the caller must be told so (Issue #556): a
+    // host-level failure has no in-flight issue, and reporting that silence
+    // as a delivered notification is how a ten-hour outage went unreported.
+    return { ok: true, value: { delivered: false } };
   }
 
   const message = buildCrashMessage(config, params);
@@ -499,7 +502,7 @@ export async function notifyCrashViaIssueComment(
           "-f",
           `body=${message}`,
         ]);
-        return { ok: true, value: undefined };
+        return { ok: true, value: { delivered: true } };
       }
     }
 
@@ -512,13 +515,13 @@ export async function notifyCrashViaIssueComment(
       "--body",
       message,
     ]);
-    return { ok: true, value: undefined };
+    return { ok: true, value: { delivered: true } };
   } catch (err) {
     recordFaultEvent(
       "catch_block_warning",
       `crash notification via issue comment failed: ${err}`,
     );
-    return { ok: true, value: undefined };
+    return { ok: true, value: { delivered: false } };
   }
 }
 
@@ -540,9 +543,9 @@ export async function notifyCrashViaWebhook(
   config: CrashNotificationConfig,
   params: CrashNotificationParams,
   fetchFn: WebhookFetch = fetch,
-): Promise<Result<void>> {
+): Promise<Result<{ delivered: boolean }>> {
   if (!config.webhookUrl) {
-    return { ok: true, value: undefined };
+    return { ok: true, value: { delivered: false } };
   }
 
   const workerId = config.workerName || "unknown";
@@ -571,13 +574,13 @@ export async function notifyCrashViaWebhook(
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
-    return { ok: true, value: undefined };
+    return { ok: true, value: { delivered: true } };
   } catch (err) {
     recordFaultEvent(
       "catch_block_warning",
       `crash notification via webhook failed: ${err}`,
     );
-    return { ok: true, value: undefined };
+    return { ok: true, value: { delivered: false } };
   }
 }
 
@@ -589,7 +592,14 @@ export async function notifyCrashViaWebhook(
  *   2. Checks rate limiting to prevent spam
  *   3. Posts to GitHub issue comment (if an issue was in progress)
  *   4. Posts to webhook (if configured)
- *   5. Records the notification timestamp
+ *   5. Records the notification timestamp — only when something was delivered
+ *
+ * `notified` says what actually reached a human (Issue #556). Both channels
+ * are optional: a crash with no in-flight issue on a host with no webhook has
+ * nowhere to report, and answering `notified: true` there told the caller an
+ * incident had been raised when none had. The caller then suppressed every
+ * later failure of the streak as "already reported" — the shape of the
+ * ten-hour GRQ-23 outage nobody was told about.
  */
 export async function sendCrashNotification(
   config: CrashNotificationConfig,
@@ -607,10 +617,18 @@ export async function sendCrashNotification(
   }
 
   // Post GitHub issue comment
-  await notifyCrashViaIssueComment(config, params);
+  const comment = await notifyCrashViaIssueComment(config, params);
 
   // Post to webhook if configured
-  await notifyCrashViaWebhook(config, params);
+  const webhook = await notifyCrashViaWebhook(config, params);
+
+  const delivered = (comment.ok && comment.value.delivered) ||
+    (webhook.ok && webhook.value.delivered);
+  if (!delivered) {
+    // No cooldown either: nothing was said, so the next attempt must not be
+    // rate-limited against a notification that never happened.
+    return { ok: true, value: { notified: false, reason: "no_channel" } };
+  }
 
   // Record that we sent a notification. A failure here means the next crash
   // in the loop is NOT rate-limited, so it is said out loud rather than

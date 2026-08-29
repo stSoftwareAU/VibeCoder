@@ -30,13 +30,17 @@ import {
   appendRunCoreLogLine,
   resolveOriginDefaultBranch,
 } from "./run_bootstrap.ts";
-import { spawnGh } from "./gh_spawn.ts";
 import {
-  GH_CREDENTIAL_SUBDIR,
-  GH_HOSTS_FILE,
-  GH_RUNTIME_CONFIG_SUFFIX,
-  SCRATCH_DIR_ENV,
-} from "./credential_preflight.ts";
+  escalationHostId,
+  fileOrCommentIssue,
+  parseOriginRepo,
+  resolveEscalationGhEnv,
+  resolveOriginRepo,
+} from "./host_escalation.ts";
+
+// Re-exported for the callers and tests that knew this helper by its old
+// home; the channel itself now lives in host_escalation.ts (Issue #556).
+export { parseOriginRepo };
 
 /**
  * Consecutive update failures before the host escalates through the control
@@ -243,30 +247,6 @@ async function defaultWriteFailureStreak(
   }
 }
 
-/** Parse `owner/repo` out of a git origin URL (SSH or HTTPS). */
-export function parseOriginRepo(url: string): string | null {
-  const match = url.trim().match(
-    /github\.com[/:]([^/\s]+\/[^/\s]+?)(?:\.git)?$/,
-  );
-  return match ? match[1]! : null;
-}
-
-/** The host's own identity for the escalation title. */
-function escalationHostId(): string {
-  let fromEnv: string | undefined;
-  try {
-    fromEnv = Deno.env.get("VIBE_HOST_ID")?.trim();
-  } catch {
-    fromEnv = undefined;
-  }
-  if (fromEnv) return fromEnv;
-  try {
-    return Deno.hostname().split(".")[0] || "unknown-host";
-  } catch {
-    return "unknown-host";
-  }
-}
-
 /**
  * Enrich a bare git error with the collision diagnosis (Issue #4204): when the
  * checkout looks like an active development tree — dirty, or parked on another
@@ -292,48 +272,16 @@ export function diagnoseUpdateFailure(
 
 /**
  * File (or comment on) a deduplicated GitHub issue naming the crash-loop
- * (Issue #4204). Goes through the `spawnGh` chokepoint like every other
- * worker write. The update runs before the worker's configuration is loaded,
- * so `GH_CONFIG_DIR` may not be established yet — a staged runtime copy under
- * the home directory is pointed at explicitly when present.
+ * (Issue #4204). Rides the shared host-escalation channel in
+ * `host_escalation.ts` (Issue #556), which goes through the `spawnGh`
+ * chokepoint like every other worker write and resolves the staged
+ * `GH_CONFIG_DIR` this update runs before the configuration load establishes.
  */
 export async function escalateCheckoutUpdateFailure(
   context: CheckoutUpdateEscalationContext,
 ): Promise<void> {
-  const origin = await runGitCommand(["remote", "get-url", "origin"], {
-    cwd: context.repoDir,
-  });
-  if (!origin.ok || origin.value.code !== 0) {
-    throw new Error("cannot resolve the checkout's origin remote");
-  }
-  const repo = parseOriginRepo(origin.value.stdout);
-  if (!repo) {
-    throw new Error(
-      `origin is not a GitHub repository: ${origin.value.stdout.trim()}`,
-    );
-  }
-
-  const env: Record<string, string> = {};
-  if (!Deno.env.get("GH_CONFIG_DIR")) {
-    const home = Deno.env.get("HOME");
-    const scratch = Deno.env.get(SCRATCH_DIR_ENV);
-    // Both staging locations: the entrypoint moved the copy to the scratch
-    // root when the container root filesystem became read-only (Issue #515),
-    // and the legacy path stays for a host or an older image.
-    const candidates = [
-      scratch ? `${scratch}/${GH_CREDENTIAL_SUBDIR}` : undefined,
-      home ? `${home}/${GH_RUNTIME_CONFIG_SUFFIX}` : undefined,
-    ].filter((dir): dir is string => dir !== undefined);
-    for (const candidate of candidates) {
-      try {
-        await Deno.stat(`${candidate}/${GH_HOSTS_FILE}`);
-        env.GH_CONFIG_DIR = candidate;
-        break;
-      } catch {
-        // No staged copy here — try the next, else let gh resolve its own.
-      }
-    }
-  }
+  const repo = await resolveOriginRepo(context.repoDir);
+  const env = await resolveEscalationGhEnv();
 
   const host = escalationHostId();
   const title = `Worker checkout update failing on ${host}`;
@@ -357,59 +305,7 @@ export async function escalateCheckoutUpdateFailure(
     "docs/DEPLOYMENT.md (Dedicated clone).",
   ].join("\n");
 
-  // Dedup by exact title: comment on an existing open report, else create.
-  const listed = await spawnGh(
-    [
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `in:title \"${title}\"`,
-      "--json",
-      "number,title",
-    ],
-    { env },
-  );
-  let existing: number | undefined;
-  if (listed.code === 0) {
-    try {
-      const issues = JSON.parse(listed.stdout) as {
-        number: number;
-        title: string;
-      }[];
-      existing = issues.find((issue) => issue.title === title)?.number;
-    } catch {
-      // Unparseable listing — fall through to creation.
-    }
-  }
-
-  const result = existing
-    ? await spawnGh(
-      [
-        "issue",
-        "comment",
-        `${existing}`,
-        "--repo",
-        repo,
-        "--body",
-        body,
-      ],
-      { env },
-    )
-    : await spawnGh(
-      ["issue", "create", "--repo", repo, "--title", title, "--body", body],
-      { env },
-    );
-  if (result.code !== 0) {
-    throw new Error(
-      `gh issue ${
-        existing ? "comment" : "create"
-      } exited ${result.code}: ${result.stderr.trim()}`,
-    );
-  }
+  await fileOrCommentIssue({ repo, title, body, env });
 }
 
 /** Build the production dependency set for {@link updateCheckout}. */
