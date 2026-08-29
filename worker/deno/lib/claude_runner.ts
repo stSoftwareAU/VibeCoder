@@ -95,14 +95,18 @@ import {
   maybeCreateAgentTranscriptWriter,
 } from "./agent_transcript.ts";
 import {
+  combineExternalEvidence,
   combineTreeEvidence,
   decideProgressExtension,
+  type ExternalProgressSample,
+  type ExternalProgressState,
   nextProgressCheckDelayMs,
   progressCheckIntervalMs,
   type ProgressExtensionOptions,
   type TreeProgressSample,
   type TreeProgressState,
 } from "./progress_extension.ts";
+import { shouldWindDown } from "./wind_down_notice.ts";
 import {
   buildExtensionTelemetry,
   buildTimeoutKillMessage,
@@ -1234,6 +1238,15 @@ export async function runClaudeWithTimeout(
     let lastTreeSample:
       | { outcome: TreeProgressState; atMs: number }
       | undefined;
+    // The same for external work (Issue #508): a descendant process burning
+    // CPU is progress even when the checkout never moves, and an interim
+    // reading is carried into the next deadline decision for one interval.
+    let lastExternalSample:
+      | { outcome: ExternalProgressState; atMs: number }
+      | undefined;
+    // Whether the agent has already been handed a wind-down notice, so the
+    // log says it once while the notice itself is refreshed on every check.
+    let windDownLogged = false;
 
     // Extension telemetry (Issue #4298) is produced only when the feature is
     // genuinely active: no opt-in, or a policy present but disabled, means no
@@ -1301,8 +1314,78 @@ export async function runClaudeWithTimeout(
     };
 
     /**
-     * An interim check inside the budget (Issue #4295): sample the working
-     * tree and re-arm. It can never kill — the deadline is what guards the
+     * Ask the external-work probe about this agent's own process tree
+     * (Issue #508).
+     *
+     * Never throws: a probe fault is read as `unknown`, which is not evidence
+     * of progress and so can never earn an extension. Returns `undefined`
+     * when no probe is wired, which is how every caller before #508 keeps the
+     * tree-only decision it always had.
+     */
+    const probeExternal = async (
+      opts: ProgressExtensionOptions,
+      kind: "interim" | "deadline",
+    ): Promise<ExternalProgressState | undefined> => {
+      if (!opts.externalProbe) return undefined;
+      try {
+        return await opts.externalProbe(childPid);
+      } catch (err) {
+        logger?.warn(
+          `[progress-extension] ${kind} external-progress probe failed: ${
+            err instanceof Error ? err.message : String(err)
+          } — treating as unknown`,
+        );
+        return "unknown";
+      }
+    };
+
+    /**
+     * Hand the agent its remaining budget as the run nears the hard cap
+     * (Issue #508).
+     *
+     * The agent cannot be interrupted mid-session, so the notice is written
+     * where it can read it between polls of a long-running job. Refreshed on
+     * every check inside the window; logged once. A sink that throws is
+     * logged and ignored — telling the agent about its budget must never
+     * decide whether the run lives.
+     */
+    const maybeWindDown = async (
+      opts: ProgressExtensionOptions,
+      nowMs: number,
+    ): Promise<void> => {
+      if (!opts.onWindDown || opts.ceilingMs === undefined) return;
+      const remainingSeconds = Math.max(
+        0,
+        Math.round((opts.ceilingMs - nowMs) / 1000),
+      );
+      if (!shouldWindDown(remainingSeconds, opts.windDownSeconds)) return;
+      const notice = {
+        remainingSeconds,
+        elapsedSeconds: Math.round((nowMs - startMs) / 1000),
+        extensionsGranted,
+      };
+      try {
+        await opts.onWindDown(notice);
+      } catch (err) {
+        logger?.warn(
+          `[progress-extension] wind-down notice could not be delivered: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return;
+      }
+      if (windDownLogged) return;
+      windDownLogged = true;
+      logger?.info(
+        `[progress-extension] wind-down notice written: ` +
+          `${remainingSeconds}s of runway left before the run hard cap, so ` +
+          `the agent can stop waiting and preserve its work in progress`,
+      );
+    };
+
+    /**
+     * An interim check inside the budget (Issue #4295): sample the progress
+     * signals and re-arm. It can never kill — the deadline is what guards the
      * budget — so a fault only downgrades the sample to `unknown`.
      */
     const sampleTree = async (
@@ -1319,8 +1402,15 @@ export async function runClaudeWithTimeout(
         );
         outcome = "unknown";
       }
+      const external = await probeExternal(opts, "interim");
       if (timedOut || runFinished) return;
-      lastTreeSample = { outcome, atMs: Date.now() };
+      const atMs = Date.now();
+      lastTreeSample = { outcome, atMs };
+      if (external !== undefined) {
+        lastExternalSample = { outcome: external, atMs };
+      }
+      await maybeWindDown(opts, atMs);
+      if (timedOut || runFinished) return;
       armHardWatchdog();
     };
 
@@ -1345,9 +1435,14 @@ export async function runClaudeWithTimeout(
         );
         treeState = "unknown";
       }
+      const externalState = await probeExternal(opts, "deadline");
       if (timedOut || runFinished) return;
 
       const nowMs = Date.now();
+      // Written before the decision, so an agent the cap is about to stop has
+      // its remaining budget in hand rather than only in the worker log.
+      await maybeWindDown(opts, nowMs);
+      if (timedOut || runFinished) return;
       // Fold in the last interim sample (Issue #4295) and spend it: evidence
       // may justify one grant, never every grant after it.
       const sample: TreeProgressSample | undefined = lastTreeSample
@@ -1362,6 +1457,18 @@ export async function runClaudeWithTimeout(
         sample,
         opts.policy,
       );
+      // The same fold for external work (Issue #508), and spent the same way.
+      const externalSample: ExternalProgressSample | undefined =
+        lastExternalSample
+          ? {
+            outcome: lastExternalSample.outcome,
+            ageMs: nowMs - lastExternalSample.atMs,
+          }
+          : undefined;
+      lastExternalSample = undefined;
+      const combinedExternalState = externalState === undefined
+        ? undefined
+        : combineExternalEvidence(externalState, externalSample, opts.policy);
       const snapshot = progress.snapshot();
       const decision = decideProgressExtension({
         nowMs,
@@ -1371,6 +1478,9 @@ export async function runClaudeWithTimeout(
           ? { lastToolCallAtMs: snapshot.lastToolCallAtMs }
           : {}),
         treeState: combinedTreeState,
+        ...(combinedExternalState !== undefined
+          ? { externalState: combinedExternalState }
+          : {}),
         extensionsGranted,
         // The supervisor's wall-clock cap (Issue #421): a grant that would
         // cross it is clamped to it, and a run with no runway left is

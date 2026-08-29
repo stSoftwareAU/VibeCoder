@@ -48,6 +48,7 @@ import {
   buildSecurityFixGateFeedbackSection,
   type SecurityFixGateBlock,
 } from "./security_fix_gate_feedback.ts";
+import { WIND_DOWN_PROMPT_SECTION } from "./wind_down_notice.ts";
 
 /**
  * Structured prompt parts for Claude prompt caching (Issue #1262).
@@ -506,6 +507,11 @@ Do NOT skip screenshots. Do NOT describe visual changes in words only. The PR va
     ? `\n${buildSecurityFixGateFeedbackSection(securityGateBlock)}\n`
     : "";
 
+  // The run-budget channel (Issue #508). The worker writes the wind-down
+  // notice into the checkout as the run nears its hard cap; nothing else
+  // tells a live agent that channel exists, so the prompt names it up front.
+  const windDownSection = `\n${WIND_DOWN_PROMPT_SECTION}\n`;
+
   const customSection = buildCustomInstructionsSection(customInstructions);
 
   // Build recent activity section (Issue #1326), tagged so the injected
@@ -621,7 +627,7 @@ ${delimiters.untrustedEnd}
 ${ciFailureSection}${
       buildBoundaryIntegrityInstruction(delimiters.boundaryId, untrustedBlocks)
     }
-${screenshotRetryNotice}${securityContractSection}${securityGateRetrySection}${milestoneInstructions}${recentActivitySection}
+${screenshotRetryNotice}${securityContractSection}${securityGateRetrySection}${windDownSection}${milestoneInstructions}${recentActivitySection}
 ${issueTemplate}
 ${agentsMdInstruction}
 `;

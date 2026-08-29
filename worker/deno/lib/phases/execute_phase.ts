@@ -425,8 +425,9 @@ async function executeClaudeBody(
   logger.info(`Run hard cap: ${describeRunHardCap(hardCap, Date.now())}`);
 
   // Re-armable deadline for issue work only (Issue #4296, part of #4290):
-  // while the agent shows both recent tool activity and a working tree that
-  // is actually advancing, the hard deadline moves instead of killing. With
+  // while the agent shows recent tool activity and progress — a working tree
+  // that is advancing, or a descendant process doing work outside the
+  // checkout (Issue #508) — the hard deadline moves instead of killing. With
   // truncation gone the operator's flag is the only gate (Issue #420);
   // `undefined` leaves the timeout exactly as it was, which is what every
   // other phase gets.

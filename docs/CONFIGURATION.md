@@ -718,7 +718,7 @@ unless explicitly overridden.
 | Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | A tool call older than this is no longer evidence of activity. Must be at least `progress_extension_check_seconds`. |
-| Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between working-tree samples while a run is inside its budget, so a stalled checkout is noticed within a check interval rather than a whole grant. Must be positive. |
+| Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
@@ -1006,7 +1006,7 @@ Issue work,  0 ──── deadline (1h) ──── deadline+15m ────
 extension    │  ·   ·   ·   ·   ·  │  ·   ·   ·   ·   │  ·   ·   ·  
 enabled:     │  └ tree sampled every 5 min (progress_extension_check_seconds)
              │                     │                  │
-             │        both signals hold? ── yes ──> +progress_extension_grant_seconds
+             │        still progressing? ── yes ──> +progress_extension_grant_seconds
              │                     │                  │
              │                     └── no ──────────> SIGTERM (hard timeout)
              │
@@ -1032,18 +1032,32 @@ Example — override just the Claude timeout to 2 hours:
 however much useful work it was doing. That is not the shipped behaviour —
 `progress_extension_enabled` defaults to `true` (Issue #422), so the hard
 deadline for **issue work only** is re-armable: when it expires the worker asks
-two independent questions and only kills if either answer is no:
+whether the agent is alive and whether anything is actually progressing, and
+only kills if either answer is no:
 
 - **Is the agent still calling tools?** The stream-json progress tracker
   reports the last tool call; older than `progress_extension_stall_seconds`
-  counts as stalled.
-- **Is the checkout actually changing?** A read-only `git status` / `rev-parse`
-  / `diff --shortstat` fingerprint is compared with the one taken at the
-  previous check. `advanced` is progress; `unchanged` is not, and a probe that
-  cannot answer (`unknown` — not a repo, git missing, timed out) is **not**
-  treated as progress either.
+  counts as stalled. This must always hold.
+- **Is anything progressing?** Two independent signals, and *either* one is
+  enough:
+  - **The checkout is changing.** A read-only `git status` / `rev-parse` /
+    `diff --shortstat` fingerprint is compared with the one taken at the
+    previous check. `advanced` is progress; `unchanged` is not, and a probe
+    that cannot answer (`unknown` — not a repo, git missing, timed out) is
+    **not** treated as progress either. An `unknown` tree still kills outright.
+  - **A descendant process is doing work** (Issue #508). One
+    `ps -eo pid=,ppid=,time=` read is walked into the agent's own subtree and
+    the CPU time those descendants have accumulated is compared with the
+    previous read. CPU burnt between two checks is work; a subtree that burns
+    none — a `sleep 60` poll loop with nothing behind it — is not, and a read
+    that fails is `unknown` and never earns an extension.
 
-Both must hold. Each grant moves the deadline `progress_extension_grant_seconds`
+The second signal is why an agent supervising a long-running job it started —
+a training run, an evolution sweep, a build — is no longer killed for changing
+nothing in the checkout while it waits. An agent with tool calls, no tree delta
+*and* no working descendant is still refused, exactly as before.
+
+Each grant moves the deadline `progress_extension_grant_seconds`
 from *now*, so a run that stalls dies within one grant of stalling, and each
 grant logs one `[progress-extension]` line naming the reason, the elapsed time,
 the extension count and the new deadline. There is deliberately no ceiling on
@@ -1078,6 +1092,21 @@ only place a still-progressing agent is stopped. Extensions are bounded by it:
   run, or `run.sh` invoked outside `loop.sh`), there is **no ceiling** and
   extensions behave exactly as they did before. The run-start `Run hard cap:`
   line says which of the two applies.
+
+#### The agent is told to wind down before the cap (Issue #508)
+
+An agent cannot be interrupted mid-session — its stdin carries the prompt and
+is closed — so the remaining budget is written where it can read it. Inside the
+last **600 s** of runway the worker writes `.vibe-run-budget.md` into the
+checkout and refreshes it at every later check: seconds remaining, elapsed,
+extensions granted, and the instruction to stop waiting, commit and push, and
+leave a resumable note. The issue prompt tells the agent to read that file
+between polls of any long-running job.
+
+The name is hidden, so the enforced `.gitignore` keeps it out of every commit
+and `git status` never reports it — writing it cannot move the working-tree
+probe. Any notice left by a previous run is cleared when the next execute phase
+starts.
 
 #### A capped run is released, not failed (Issue #424)
 
@@ -1125,9 +1154,13 @@ flowchart TD
     B -->|no| K[Kill — hard-timeout]
     B -->|yes| C{Last tool call within<br/>stall window?}
     C -->|no| K
-    C -->|yes| D{Working tree advanced<br/>this check or last?}
-    D -->|unchanged or unknown| K
+    C -->|yes| U{Working-tree probe<br/>could answer?}
+    U -->|unknown| K
+    U -->|yes| D{Working tree advanced<br/>this check or last?}
     D -->|advanced| F{Runway left before<br/>the run hard cap?}
+    D -->|unchanged| X{Descendant process<br/>burnt CPU?}
+    X -->|idle or unknown| K
+    X -->|active| F
     F -->|none| K
     F -->|less than a grant| G[Extend to the ceiling — clamped<br/>re-arm the watchdog, log the line]
     F -->|a full grant, or no cap| E[Extend deadline by the grant<br/>re-arm the watchdog, log the line]

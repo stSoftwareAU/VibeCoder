@@ -24,6 +24,7 @@ import {
   stripScreenshotInstructions,
 } from "../lib/prompt_builder.ts";
 import { loadPrompt } from "../lib/prompt_manager.ts";
+import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -827,6 +828,25 @@ Deno.test("prompt builder - CI fix prompt sanitises delimiter injection in check
       result.value.prompt.includes("---END UNTRUSTED USER CONTENT---"),
       false,
     );
+  }
+});
+
+Deno.test("prompt builder - issue prompt tells the agent where its remaining budget is written (Issue #508)", async () => {
+  const result = await buildIssuePrompt({
+    repo: "owner/repo",
+    issueNumber: "508",
+    issueTitle: "Test",
+    issueBody: "Body",
+    issueLabels: "bug",
+    qualityInstructions: "",
+    promptsDir: PROMPTS_DIR,
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    // Without this the wind-down notice is invisible: nothing else tells a
+    // live agent that a budget channel exists at all.
+    assertStringIncludes(result.value.prompt, WIND_DOWN_NOTICE_FILENAME);
+    assertStringIncludes(result.value.prompt, "Run Budget");
   }
 });
 

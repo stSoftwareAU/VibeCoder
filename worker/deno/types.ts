@@ -201,8 +201,9 @@ export interface WorkerConfig {
   /** Tool-activity stall window in seconds (Issue #4296). */
   progressExtensionStallSeconds?: number;
   /**
-   * Seconds between working-tree samples while a run is inside its budget
-   * (Issue #4295). Never longer than `progressExtensionStallSeconds`.
+   * Seconds between progress samples — working tree and descendant CPU —
+   * while a run is inside its budget (Issue #4295, Issue #508). Never longer
+   * than `progressExtensionStallSeconds`.
    */
   progressExtensionCheckSeconds?: number;
   /**
