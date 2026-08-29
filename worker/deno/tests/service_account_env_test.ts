@@ -340,3 +340,108 @@ Deno.test("resolveServiceAccountEnv - nothing mounted keeps the configured dir s
   );
   assertEquals(env.GH_CONFIG_DIR, "/home/vibe/.config/gh-vibe");
 });
+
+// ---------------------------------------------------------------------------
+// The staged copy this launch actually made (Issue #509 / #515). The
+// read-only-root milestone moved the entrypoint's writable gh copy from
+// ${HOME}/.config/gh-runtime to ${VIBE_SCRATCH_DIR}/gh. A resolver that knew
+// only the legacy path fell through to the READ-ONLY credential mount, and
+// every fleet run then died at startup: "failed to write config after
+// migration: open …/credentials/gh/hosts.yml: read-only file system", surfaced
+// only as "could not resolve authenticated GitHub user".
+// ---------------------------------------------------------------------------
+
+Deno.test("resolveServiceAccountEnv - the entrypoint's staged copy wins over the read-only mount", () => {
+  const present = new Set([
+    "/tmp/vibe-scratch/gh/hosts.yml",
+    "/home/vibe/.vibe-coder/credentials/gh/hosts.yml",
+  ]);
+  const env = resolveServiceAccountEnv(
+    { ghConfigDir: "~/.config/gh-vibe", sshKeyPath: "" },
+    "/home/vibe",
+    {
+      inContainer: true,
+      probe: { exists: (path) => present.has(path) },
+      stagedGhConfigDirs: ["/tmp/vibe-scratch/gh"],
+    },
+  );
+  assertEquals(env.GH_CONFIG_DIR, "/tmp/vibe-scratch/gh");
+});
+
+Deno.test("resolveServiceAccountEnv - a staged candidate without hosts.yml is skipped", () => {
+  const present = new Set(["/home/vibe/.config/gh-runtime/hosts.yml"]);
+  const env = resolveServiceAccountEnv(
+    { ghConfigDir: "~/.config/gh-vibe", sshKeyPath: "" },
+    "/home/vibe",
+    {
+      inContainer: true,
+      probe: { exists: (path) => present.has(path) },
+      stagedGhConfigDirs: ["/tmp/vibe-scratch/gh"],
+    },
+  );
+  assertEquals(env.GH_CONFIG_DIR, "/home/vibe/.config/gh-runtime");
+});
+
+Deno.test("applyServiceAccountEnv - an unwritable gh config dir is restaged writable", async () => {
+  // The end of the live failure: the only hosts.yml the container can see is
+  // on the read-only mount. gh migrates its config on first use, so handing
+  // that directory over is a startup failure — a writable copy must be made.
+  const previousGh = Deno.env.get("GH_CONFIG_DIR");
+  const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
+  const previousTmp = Deno.env.get("TMPDIR");
+  const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
+  const home = await Deno.makeTempDir();
+  const tmp = await Deno.makeTempDir();
+  const mounted = `${home}/.vibe-coder/credentials/gh`;
+  try {
+    await Deno.mkdir(mounted, { recursive: true });
+    await Deno.writeTextFile(`${mounted}/hosts.yml`, "github.com:\n");
+    // Read-only directory: writing the probe file inside it must fail.
+    await Deno.chmod(mounted, 0o500);
+    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
+    Deno.env.set("TMPDIR", tmp);
+    Deno.env.delete("VIBE_SCRATCH_DIR");
+    Deno.env.delete("GH_CONFIG_DIR");
+    applyServiceAccountEnv(
+      buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
+      home,
+    );
+    const applied = Deno.env.get("GH_CONFIG_DIR");
+    assertEquals(applied, `${tmp}/vibe-gh-config`);
+    assertEquals(
+      await Deno.readTextFile(`${applied}/hosts.yml`),
+      "github.com:\n",
+    );
+  } finally {
+    restoreEnv("GH_CONFIG_DIR", previousGh);
+    restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
+    restoreEnv("TMPDIR", previousTmp);
+    restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
+    await Deno.chmod(mounted, 0o700);
+    await Deno.remove(home, { recursive: true });
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("applyServiceAccountEnv - a writable gh config dir is left alone", async () => {
+  const previousGh = Deno.env.get("GH_CONFIG_DIR");
+  const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
+  const home = await Deno.makeTempDir();
+  try {
+    const staged = `${home}/scratch/gh`;
+    await Deno.mkdir(staged, { recursive: true });
+    await Deno.writeTextFile(`${staged}/hosts.yml`, "github.com:\n");
+    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
+    // What the entrypoint exports: the staged copy it made this launch.
+    Deno.env.set("GH_CONFIG_DIR", staged);
+    applyServiceAccountEnv(
+      buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
+      home,
+    );
+    assertEquals(Deno.env.get("GH_CONFIG_DIR"), staged);
+  } finally {
+    restoreEnv("GH_CONFIG_DIR", previousGh);
+    restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
+    await Deno.remove(home, { recursive: true });
+  }
+});
