@@ -27,6 +27,7 @@ import {
   GH_CREDENTIAL_SUBDIR,
   GH_HOSTS_FILE,
   GH_RUNTIME_CONFIG_SUFFIX,
+  SCRATCH_DIR_ENV,
 } from "./credential_preflight.ts";
 
 /** Resolved env entries; absent when the operator did not configure them. */
@@ -62,6 +63,14 @@ export interface ServiceAccountEnvOptions {
    * the image environment, which {@link applyServiceAccountEnv} reads.
    */
   inContainer?: boolean;
+  /**
+   * Directories to try before the legacy `~/.config/gh-runtime` copy when the
+   * configured path is absent — the entrypoint's own staged copy, wherever
+   * this launch put it (Issue #515: it moved to `${VIBE_SCRATCH_DIR}/gh` when
+   * the container root filesystem became read-only). Highest priority first.
+   * Candidates without a `hosts.yml` are skipped.
+   */
+  stagedGhConfigDirs?: string[];
 }
 
 /** Real filesystem probe used by {@link applyServiceAccountEnv}. */
@@ -113,7 +122,18 @@ export function resolveServiceAccountEnv(
       const runtime = `${home}/${GH_RUNTIME_CONFIG_SUFFIX}`;
       const mounted = `${home}/${DEFAULT_CREDENTIAL_DIR_SUFFIX}/` +
         GH_CREDENTIAL_SUBDIR;
-      if (probe.exists(`${runtime}/${GH_HOSTS_FILE}`)) {
+      // The staged copies this launch actually made come first (Issue #515):
+      // the entrypoint no longer writes ${runtime} — that path is the image
+      // layer — so a resolver that only knows the legacy location silently
+      // falls through to the READ-ONLY mount, and gh's first-use config
+      // migration then dies with "failed to write config after migration:
+      // … read-only file system" (observed live, Issue #509 milestone).
+      const staged = (options.stagedGhConfigDirs ?? []).find((candidate) =>
+        candidate.length > 0 && probe.exists(`${candidate}/${GH_HOSTS_FILE}`)
+      );
+      if (staged) {
+        env.GH_CONFIG_DIR = staged;
+      } else if (probe.exists(`${runtime}/${GH_HOSTS_FILE}`)) {
         env.GH_CONFIG_DIR = runtime;
       } else if (probe.exists(`${mounted}/${GH_HOSTS_FILE}`)) {
         env.GH_CONFIG_DIR = mounted;
@@ -151,14 +171,92 @@ export function applyServiceAccountEnv(
   config: Pick<WorkerConfig, "ghConfigDir" | "sshKeyPath">,
   home: string = Deno.env.get("HOME") ?? "",
 ): void {
+  const inContainer = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
   const env = resolveServiceAccountEnv(config, home, {
     probe: fsProbe,
-    inContainer: Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined,
+    inContainer,
+    stagedGhConfigDirs: stagedGhConfigDirsFromEnv(),
   });
   if (env.GH_CONFIG_DIR !== undefined) {
-    Deno.env.set("GH_CONFIG_DIR", env.GH_CONFIG_DIR);
+    // gh writes its config migration on first use, so a read-only directory
+    // here is a startup failure, not a degraded mode (Issue #509): stage a
+    // writable copy rather than hand gh a directory it cannot write.
+    Deno.env.set(
+      "GH_CONFIG_DIR",
+      inContainer ? ensureWritableGhConfigDir(env.GH_CONFIG_DIR) : env
+        .GH_CONFIG_DIR,
+    );
   }
   if (env.GIT_SSH_COMMAND !== undefined) {
     Deno.env.set("GIT_SSH_COMMAND", env.GIT_SSH_COMMAND);
   }
+}
+
+/**
+ * Where THIS launch staged the writable `gh` copy, highest priority first.
+ *
+ * The container entrypoint exports both variables; on the host neither is set
+ * and the list is empty, so nothing changes there.
+ */
+function stagedGhConfigDirsFromEnv(): string[] {
+  const scratch = Deno.env.get(SCRATCH_DIR_ENV);
+  return [
+    Deno.env.get("GH_CONFIG_DIR"),
+    scratch ? `${scratch}/${GH_CREDENTIAL_SUBDIR}` : undefined,
+  ].filter((dir): dir is string => dir !== undefined && dir.length > 0);
+}
+
+/** True when a file can be created inside `dir` (probe written and removed). */
+function isWritableDir(dir: string): boolean {
+  const probePath = `${dir}/.vibe-write-probe`;
+  try {
+    Deno.writeTextFileSync(probePath, "");
+    Deno.removeSync(probePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return a `GH_CONFIG_DIR` gh can write to.
+ *
+ * The resolved directory is returned untouched when it is already writable.
+ * Otherwise — the read-only credential mount is the case that reaches here —
+ * its `hosts.yml` is copied to the first writable staging candidate. This is
+ * the worker's own belt to the entrypoint's braces: the two encode the same
+ * staging decision in different languages, and when they disagree the run
+ * dies at `gh api user` with a message no log carried (Issue #509).
+ */
+function ensureWritableGhConfigDir(dir: string): string {
+  if (isWritableDir(dir)) return dir;
+  const tmp = Deno.env.get("TMPDIR")?.replace(/\/+$/, "") ?? "/tmp";
+  const scratch = Deno.env.get(SCRATCH_DIR_ENV);
+  const candidates = [
+    `${tmp}/vibe-gh-config`,
+    scratch ? `${scratch}/gh-config` : undefined,
+  ].filter((candidate): candidate is string => candidate !== undefined);
+  for (const candidate of candidates) {
+    try {
+      Deno.mkdirSync(candidate, { recursive: true, mode: 0o700 });
+      Deno.copyFileSync(
+        `${dir}/${GH_HOSTS_FILE}`,
+        `${candidate}/${GH_HOSTS_FILE}`,
+      );
+      Deno.chmodSync(`${candidate}/${GH_HOSTS_FILE}`, 0o600);
+      console.error(
+        `[SECURITY] gh config dir ${dir} is not writable — staged a ` +
+          `container-local copy at ${candidate} (Issue #509)`,
+      );
+      return candidate;
+    } catch {
+      // Try the next candidate; the caller's gh call stays the loud failure.
+    }
+  }
+  console.error(
+    `[SECURITY] gh config dir ${dir} is not writable and no staging ` +
+      `candidate could be created (${candidates.join(", ")}) — gh will fail ` +
+      `its first-use config migration`,
+  );
+  return dir;
 }

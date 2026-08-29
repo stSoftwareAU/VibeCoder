@@ -31,7 +31,12 @@ import {
   resolveOriginDefaultBranch,
 } from "./run_bootstrap.ts";
 import { spawnGh } from "./gh_spawn.ts";
-import { GH_RUNTIME_CONFIG_SUFFIX } from "./credential_preflight.ts";
+import {
+  GH_CREDENTIAL_SUBDIR,
+  GH_HOSTS_FILE,
+  GH_RUNTIME_CONFIG_SUFFIX,
+  SCRATCH_DIR_ENV,
+} from "./credential_preflight.ts";
 
 /**
  * Consecutive update failures before the host escalates through the control
@@ -311,13 +316,21 @@ export async function escalateCheckoutUpdateFailure(
   const env: Record<string, string> = {};
   if (!Deno.env.get("GH_CONFIG_DIR")) {
     const home = Deno.env.get("HOME");
-    if (home) {
-      const runtimeDir = `${home}/${GH_RUNTIME_CONFIG_SUFFIX}`;
+    const scratch = Deno.env.get(SCRATCH_DIR_ENV);
+    // Both staging locations: the entrypoint moved the copy to the scratch
+    // root when the container root filesystem became read-only (Issue #515),
+    // and the legacy path stays for a host or an older image.
+    const candidates = [
+      scratch ? `${scratch}/${GH_CREDENTIAL_SUBDIR}` : undefined,
+      home ? `${home}/${GH_RUNTIME_CONFIG_SUFFIX}` : undefined,
+    ].filter((dir): dir is string => dir !== undefined);
+    for (const candidate of candidates) {
       try {
-        await Deno.stat(`${runtimeDir}/hosts.yml`);
-        env.GH_CONFIG_DIR = runtimeDir;
+        await Deno.stat(`${candidate}/${GH_HOSTS_FILE}`);
+        env.GH_CONFIG_DIR = candidate;
+        break;
       } catch {
-        // No staged runtime copy — let gh resolve its own configuration.
+        // No staged copy here — try the next, else let gh resolve its own.
       }
     }
   }

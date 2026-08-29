@@ -250,7 +250,20 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
     },
     resolveGithubUser: async () => {
       const result = await getGithubUser();
-      return result.ok && result.value ? result.value : null;
+      if (result.ok && result.value) return result.value;
+      // Say WHY, with the configuration that produced it (Issue #509): the
+      // read-only-root milestone moved the staged gh config and every run
+      // died here reporting only "could not resolve authenticated GitHub
+      // user" — gh's own "failed to write config after migration: … read-only
+      // file system" reached no log at all.
+      const reason = result.ok
+        ? "gh returned an empty login"
+        : result.error.message;
+      logger.error(
+        `[run-worker] gh could not resolve the authenticated user: ${reason} ` +
+          `(GH_CONFIG_DIR=${Deno.env.get("GH_CONFIG_DIR") ?? "<unset>"})`,
+      );
+      return null;
     },
     assertIdentity: (githubUser, config) => {
       try {

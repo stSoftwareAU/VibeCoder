@@ -62,6 +62,17 @@ export const GH_CREDENTIAL_SUBDIR = "gh";
  */
 export const GH_RUNTIME_CONFIG_SUFFIX = ".config/gh-runtime";
 
+/**
+ * Environment variable naming the container's per-launch scratch root.
+ *
+ * Exported by `container/entrypoint.sh` (Issue #515). Since the checkout and
+ * the container root filesystem became read-only (Issue #509) the entrypoint
+ * stages the writable gh copy at `${VIBE_SCRATCH_DIR}/${GH_CREDENTIAL_SUBDIR}`
+ * instead of {@link GH_RUNTIME_CONFIG_SUFFIX}, so any resolver looking for
+ * that copy must look here first.
+ */
+export const SCRATCH_DIR_ENV = "VIBE_SCRATCH_DIR";
+
 /** File inside {@link GH_CREDENTIAL_SUBDIR} holding the host token. */
 export const GH_HOSTS_FILE = "hosts.yml";
 
