@@ -29,6 +29,7 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   buildCount,
   builderHealed,
+  denoInvocationOrder,
   type Harness,
   type LaunchOutcome,
   mountValues,
@@ -498,6 +499,62 @@ Deno.test({
       assertEquals(await buildCount(harness), 1);
       assertEquals(await builderHealed(harness), false);
       assertEquals(await recorded(harness, "run"), null);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - updates the worker checkout before it builds the launch plan (Issue #512)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      const args = await recorded(harness, "worker-checkout-update");
+      assert(args, `the checkout was never updated: ${outcome.stderr}`);
+      assertEquals(args[args.indexOf("--base-dir") + 1], REPO_ROOT);
+
+      const order = await denoInvocationOrder(harness);
+      const update = order.indexOf("worker-checkout-update");
+      const plan = order.indexOf("container-launch-plan");
+      assert(update > -1 && plan > -1, `deno order: ${order.join(", ")}`);
+      assert(
+        update < plan,
+        `the checkout update must precede the launch plan: ${order.join(", ")}`,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a failed checkout update warns and launches on the existing checkout (Issue #512)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_CHECKOUT_UPDATE_EXIT: "1",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(
+        outcome.code,
+        0,
+        `a failed update must not abort the launch: ${outcome.stderr}`,
+      );
+      assertStringIncludes(outcome.stderr, "could not update the worker");
+      assert(
+        await recorded(harness, "run"),
+        "the container must still be launched",
+      );
+      assertStringIncludes(await runCoreLog(harness), "worker-checkout-update");
     } finally {
       await harness.cleanup();
     }

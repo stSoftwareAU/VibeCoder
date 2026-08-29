@@ -577,6 +577,11 @@ jobs:
           # outcome recorder would count a deliberate CI failure against the
           # host and escalate it to GitHub (Issue #4072).
           VIBE_SUPERVISOR_RECORDS_OUTCOME: validate-scripts
+          # This checkout is the pull request's merge commit, not a worker
+          # checkout: the launcher's host-side update would reset it to the
+          # default branch and the smoke test would stop testing this PR
+          # (Issue #512).
+          VIBE_SKIP_CHECKOUT_UPDATE: "1"
         run: |
           set -euo pipefail
           echo "=== no-runtime smoke: no runtime, no host fallback ==="
