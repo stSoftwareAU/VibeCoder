@@ -1,0 +1,16 @@
+{
+  "incident": "stSoftwareAU/NEAT-AI-Rebase 2026-08-28",
+  "issue": "VibeCoder#499",
+  "observed": "[idle-census] repo=stSoftwareAU/NEAT-AI-Rebase work_on=0 low_priority=28 merged_pr_blocked=1 inversion_signal=true",
+  "note": "NEAT-AI-Rebase#48 carried work-on and was named by merged PR #49, so the scan refused it on every cycle while it parked the repo's entire low-priority backlog. The census counted that backlog as claimable and escalated the disagreement as 'the claim scan keeps refusing this work'. The field backlog held 28 low-priority issues; three stand in for them here, because the disagreement does not depend on the count.",
+  "state": {
+    "repo": "stSoftwareAU/NEAT-AI-Rebase",
+    "issues": [
+      { "number": 48, "tier": "work-on", "gate": "merged-pr-permanent" },
+      { "number": 50, "tier": "low-priority" },
+      { "number": 51, "tier": "low-priority" },
+      { "number": 52, "tier": "low-priority" }
+    ]
+  },
+  "expect": { "claimable": [50, 51, 52], "scanClaims": true }
+}

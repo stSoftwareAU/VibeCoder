@@ -1,0 +1,16 @@
+{
+  "incident": "stSoftwareAU/NEAT-AI 2026-08-23",
+  "issue": "VibeCoder#3852",
+  "observed": "[idle-census] repo=stSoftwareAU/NEAT-AI work_on=4 inversion_signal=true — while the scan logged milestone-occupied=4 and the audit logged claimable=0 reason=stream_occupied",
+  "note": "The opposite direction to #499: here the scan was right and the census was wrong. Every work-on issue sat in a work stream already hosting a worker-assigned issue, so the scan refused all four; the census did not model stream occupancy and filed an issue against a repo whose work was simply already being done. The disagreement, not the issue numbers, is what this records.",
+  "state": {
+    "repo": "stSoftwareAU/NEAT-AI",
+    "issues": [
+      { "number": 101, "tier": "work-on", "gate": "milestone-occupied" },
+      { "number": 102, "tier": "work-on", "gate": "milestone-occupied" },
+      { "number": 103, "tier": "work-on", "gate": "milestone-occupied" },
+      { "number": 104, "tier": "work-on", "gate": "milestone-occupied" }
+    ]
+  },
+  "expect": { "claimable": [], "scanClaims": false }
+}

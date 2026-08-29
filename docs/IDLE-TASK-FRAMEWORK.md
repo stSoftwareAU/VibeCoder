@@ -583,8 +583,28 @@ GRQ#4419 each went without.
 That guard covers the **collection** gates only. Tier-3 suppression is applied
 in `selectHighestPriority`, so it never reaches `logIssueSkipped` and carries no
 `SkipReason` for the map to demand a verdict on — which is how Issue #499 slipped
-past a compiler check built for exactly this class of bug. Selection-stage gates
-have to be mirrored by hand, and `idle_decision_census_test.ts` pins each one.
+past a compiler check built for exactly this class of bug.
+
+Issue #524 closes that second hole the same way, on a second axis.
+`SKIP_REASON_CLEARING` in
+[`skip_reason_clearing.ts`](../worker/deno/lib/skip_reason_clearing.ts) is a
+total map over the same `SkipReason` union declaring how each gate's refusal is
+lifted — `self`, `permanent` or `human` — and **both** instruments derive their
+suppression rule from it, rather than each restating which gates carve out. Only
+a `self`-clearing gate parks the lower tiers, so a 25th gate cannot rejoin the
+suppression signal without somebody declaring that it clears by itself.
+`skip_reason_clearing_test.ts` pins the rule and the two maps' key sets;
+`idle_decision_census_test.ts` still pins the census's own mirroring.
+
+The census-vs-scan comparison itself also runs in CI now, not only on the fleet.
+`claim_path_differential_test.ts` replays generated repo states — every pair of
+`modelled` gates, with the `run-local` axes held constant — through
+`buildIdleDecisionCensus` and the real `findOldestIssue`, and fails on any
+disagreement. `claim_path_incident_test.ts` does the same for each recorded
+field state under
+[`tests/fixtures/claim_path_incidents/`](../worker/deno/tests/fixtures/claim_path_incidents/README.md),
+so a state that once produced an inversion alert can never produce one silently
+again.
 
 Two deliberate limits keep both instruments cheap probes rather than a second
 scan: only **merged** PRs count (a closed-unmerged PR blocks for a cooldown

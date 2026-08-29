@@ -166,6 +166,7 @@ import {
   checkRepoAvailability,
   type RepoIssueInfo,
 } from "./repo_availability.ts";
+import { suppressesLowerTiers } from "./skip_reason_clearing.ts";
 
 // ---------------------------------------------------------------------------
 // Public data shape
@@ -610,13 +611,14 @@ function occupiedStreamsFor(
  * `low-priority` issues counted as claimable cycle after cycle while the scan
  * — correctly, given the rule as it then stood — claimed none of them.
  *
- * The two documented carve-outs are applied, so the census suppresses exactly
- * where the scan does: an issue whose sole blocker is an open dependency
- * (#2610) and one refused permanently by a merged fleet PR (#499) do not
- * suppress. Gates the census cannot see (label author, content integrity) are
- * not modelled, which makes this *over*-count suppressors and therefore
- * *under*-count claimable work — the bounded-harm direction this module
- * already prefers.
+ * Issue #524: *which* gates suppress is not restated here. Each census-visible
+ * refusal is mapped to its skip reason and put through
+ * {@link suppressesLowerTiers}, the same declaration the scan derives its own
+ * rule from — so the two instruments cannot disagree about a gate, and a 25th
+ * gate cannot be classified on one side only. Gates the census cannot see
+ * (label author, content integrity) are still not modelled, which makes this
+ * *over*-count suppressors and therefore *under*-count claimable work — the
+ * bounded-harm direction this module already prefers.
  */
 function hasSuppressingWorkOn(
   issues: CensusIssue[],
@@ -626,12 +628,30 @@ function hasSuppressingWorkOn(
 ): boolean {
   return issues.some((issue) => {
     if (!isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel)) return false;
-    if (isMergedPrBlocked(issue, mergedPRs)) return false;
-    if (isDependencyBlockedByOpenIssue(issue, repo, openIssueNumbers)) {
-      return false;
-    }
-    return true;
+    return suppressesLowerTiers(
+      censusVisibleRefusal(issue, mergedPRs, repo, openIssueNumbers),
+    );
   });
+}
+
+/**
+ * The gate that refuses `issue`, as far as the census can see it
+ * (Issue #524), or `undefined` when nothing the census models refuses it.
+ *
+ * Ordered to match the scan's own precedence, so an issue refused for a more
+ * fundamental reason is attributed to that reason.
+ */
+function censusVisibleRefusal(
+  issue: CensusIssue,
+  mergedPRs: ClosedPR[],
+  repo: string,
+  openIssueNumbers: ReadonlySet<number>,
+): SkipReason | undefined {
+  if (isMergedPrBlocked(issue, mergedPRs)) return "merged-pr-permanent";
+  if (isDependencyBlockedByOpenIssue(issue, repo, openIssueNumbers)) {
+    return "dependency-blocked";
+  }
+  return undefined;
 }
 
 /** Count unblocked issues per priority label for one repo. */
