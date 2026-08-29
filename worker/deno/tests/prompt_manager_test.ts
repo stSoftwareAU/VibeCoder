@@ -7,6 +7,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   getLatestVersion,
+  getOptionalPlaceholders,
   getPromptsDir,
   getRequiredPlaceholders,
   listPromptVersions,
@@ -219,6 +220,110 @@ Deno.test("prompt manager - validates issue template without CODING_GUIDELINES",
 Deno.test("prompt manager - validates coding_guidelines with no placeholders needed", () => {
   const result = validatePromptTemplate("coding_guidelines", "Any content");
   assertEquals(result.ok, true);
+});
+
+// --- OPEN_ISSUE_TITLES optional placeholder tests (Issue #536) ---
+//
+// The scan types that file findings share the all-open-issues dedup block.
+// `{{OPEN_ISSUE_TITLES}}` is registered as *optional*: a prompt version that
+// carries it validates, and every version shipped before it still validates.
+
+/** Scan template types that may carry the all-open-issues dedup block. */
+const SCAN_TYPES_WITH_OPEN_ISSUE_TITLES = [
+  "security_scan",
+  "best_practices",
+  "test_audit",
+  "github_actions_audit",
+  "supply_chain_readiness",
+  "supply_chain_detection",
+  "orphan_deps",
+  "documentation_audit",
+  "private_repo_reference_audit",
+  "doc_coverage",
+  "duplicated_knowledge",
+  "dead_code",
+  "deprecated_api",
+  "format_drift",
+];
+
+/** Render a minimal body carrying every required placeholder for a type. */
+function scanBody(templateType: string, extra = ""): string {
+  const required = getRequiredPlaceholders(templateType);
+  assertEquals(required.ok, true, `type '${templateType}' is unregistered`);
+  const blocks = required.ok
+    ? required.value.map((p) => `{{${p}}}`).join("\n")
+    : "";
+  return `Scan instructions\n${blocks}\n${extra}`;
+}
+
+Deno.test("prompt manager - OPEN_ISSUE_TITLES is optional for every scan type", () => {
+  for (const type of SCAN_TYPES_WITH_OPEN_ISSUE_TITLES) {
+    const optional = getOptionalPlaceholders(type);
+    assertEquals(optional.ok, true, `Failed for type '${type}'`);
+    if (optional.ok) {
+      assertEquals(
+        optional.value.includes("OPEN_ISSUE_TITLES"),
+        true,
+        `OPEN_ISSUE_TITLES missing from optional placeholders for '${type}'`,
+      );
+    }
+
+    // Optional, never required — registering it as required would
+    // retroactively invalidate every already-shipped prompt version.
+    const required = getRequiredPlaceholders(type);
+    assertEquals(required.ok, true, `Failed for type '${type}'`);
+    if (required.ok) {
+      assertEquals(
+        required.value.includes("OPEN_ISSUE_TITLES"),
+        false,
+        `OPEN_ISSUE_TITLES must not be required for '${type}'`,
+      );
+    }
+  }
+});
+
+Deno.test("prompt manager - accepts a scan body carrying OPEN_ISSUE_TITLES", () => {
+  for (const type of SCAN_TYPES_WITH_OPEN_ISSUE_TITLES) {
+    const result = validatePromptTemplate(
+      type,
+      scanBody(type, "Already open:\n{{OPEN_ISSUE_TITLES}}"),
+    );
+    assertEquals(result.ok, true, `Rejected OPEN_ISSUE_TITLES for '${type}'`);
+  }
+});
+
+Deno.test("prompt manager - accepts a scan body without OPEN_ISSUE_TITLES", () => {
+  for (const type of SCAN_TYPES_WITH_OPEN_ISSUE_TITLES) {
+    const result = validatePromptTemplate(type, scanBody(type));
+    assertEquals(
+      result.ok,
+      true,
+      `Body without OPEN_ISSUE_TITLES rejected for '${type}'`,
+    );
+  }
+});
+
+Deno.test("prompt manager - every shipped scan version still validates", async () => {
+  for (const type of SCAN_TYPES_WITH_OPEN_ISSUE_TITLES) {
+    const versions = await listPromptVersions(type, PROMPTS_DIR);
+    assertEquals(versions.ok, true, `No versions listed for '${type}'`);
+    if (!versions.ok) continue;
+
+    for (const version of versions.value) {
+      const loaded = await loadPrompt(type, version, PROMPTS_DIR);
+      assertEquals(loaded.ok, true, `Failed to load ${type}/${version}`);
+      if (!loaded.ok) continue;
+
+      const result = validatePromptTemplate(type, loaded.value);
+      assertEquals(
+        result.ok,
+        true,
+        `${type}/${version} failed validation: ${
+          result.ok ? "" : result.error.message
+        }`,
+      );
+    }
+  }
 });
 
 // --- validateAllPromptTemplates tests ---
