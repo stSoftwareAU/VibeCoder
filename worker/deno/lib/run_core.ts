@@ -256,6 +256,15 @@ export interface RunCoreResult {
    * could not authenticate must not report itself healthy.
    */
   lastHealthCheckPassed: boolean;
+  /**
+   * Issue #563: the loop died on an unhandled error rather than finishing.
+   *
+   * A run that lost its GitHub credentials fourteen minutes in reported
+   * `COMPLETED: Run complete: Fatal error: …` and a zero exit status, so the
+   * supervisor's backoff, escalation and self-heal — every one of which reads
+   * the launcher's exit status — saw a clean run. A crash must be a crash.
+   */
+  fatalError: boolean;
 }
 
 /** Mutable progress tracker for a scan cycle. */
@@ -3230,6 +3239,8 @@ export async function runCoreLoop(
 
   let plannedShutdown = false;
   let exitedOnFailures = false;
+  // Set only on the unhandled-error path below (Issue #563).
+  let fatalError = false;
   let shutdownRequested = false;
   /** Set when the daily spend ceiling stopped the cycle (Issue #3648). */
   let spendCeilingReached = false;
@@ -3259,6 +3270,7 @@ export async function runCoreLoop(
       plannedShutdown,
       skippedDueToPidLock: false,
       exitedOnFailures,
+      fatalError,
       issuesProcessed: tracker.issuesProcessed,
       durationSeconds,
       exitReason: reason,
@@ -3352,6 +3364,7 @@ export async function runCoreLoop(
       plannedShutdown: true,
       skippedDueToPidLock: true,
       exitedOnFailures: false,
+      fatalError: false,
       issuesProcessed: 0,
       durationSeconds: 0,
       exitReason: pidCheck.message,
@@ -4348,6 +4361,9 @@ export async function runCoreLoop(
     try {
       await deps.sendCrashNotification(message);
     } catch { /* best-effort */ }
+    // Issue #563: the result must carry the crash, or the launcher records a
+    // clean run and the host neither backs off nor escalates.
+    fatalError = true;
     return buildResult(`Fatal error: ${message}`);
   } finally {
     // --- Cleanup ---
