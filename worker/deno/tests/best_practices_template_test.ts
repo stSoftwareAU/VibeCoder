@@ -126,10 +126,9 @@ function makeGhStub(scenario: {
         JSON.stringify(nums.map((n) => ({ number: n }))),
       );
     }
-    // Known-open lookup: `issue list --label best-practices --json number,body`
+    // Known-open lookup: `issue list --json number,body` — repo-wide since
+    // Issue #539, so it carries no `--label` argument.
     const isKnownOpen = args[0] === "issue" && args[1] === "list" &&
-      args.includes("--label") &&
-      args[args.indexOf("--label") + 1] === "best-practices" &&
       args.includes("--json") &&
       args[args.indexOf("--json") + 1] === "number,body";
     if (isKnownOpen) {

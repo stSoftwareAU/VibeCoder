@@ -741,7 +741,7 @@ export function createBestPracticesTemplate(
           // #2990/#2991). A closed prior issue does not block re-filing.
           const filed = await fileFindingOnce({
             repo: opts.repo,
-            label: BEST_PRACTICES_LABEL,
+            logLabel: BEST_PRACTICES_LABEL,
             findingId: `BP-LINTER-${bucket}`,
             ghCommandFn,
             fileFn: () =>

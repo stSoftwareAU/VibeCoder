@@ -20,6 +20,13 @@
  * empty result is returned, so an operator can tell a genuinely-empty repo
  * apart from a transient gh hiccup that produced unparseable output.
  *
+ * Scope (Issue #539): the before/after snapshot is still label-scoped — it
+ * measures what one scan filed — but both `finding-id` look-ups are now
+ * **repo-wide**. The marker is the dedup key and the label is not part of it,
+ * so an open duplicate stays deduped after the issue is relabelled. Their
+ * `logLabel` parameter names the calling scan in log lines only; it filters
+ * nothing.
+ *
  * Australian English used throughout (behaviour, organisation, authorised).
  */
 
@@ -246,21 +253,48 @@ export function diffNewlyFiled(
 }
 
 /**
- * Return the known-open finding ids in `repo`, read from the
- * `<!-- finding-id: <idPrefix>… -->` body marker every filed finding carries.
+ * Ceiling on the repo-wide open-issue body list both finding-id look-ups read.
  *
- * Four templates share the `BP-` id prefix (best-practices, test-audit,
- * github-actions-audit, supply-chain-readiness — the per-template
- * discriminator keeps the hashes distinct), so `idPrefix` defaults to `"BP-"`.
- * A gh failure or malformed payload returns an empty array — the worst case is
- * Claude re-files a finding, which the snapshot diff still catches.
+ * Lower than {@link DEFAULT_OPEN_ISSUE_TITLE_LIMIT} on purpose: these queries
+ * fetch whole issue **bodies**, which are an order of magnitude heavier than
+ * titles, and the query is now repo-wide rather than label-narrowed. Hitting
+ * the bound is logged loudly rather than silently truncating dedup coverage.
  */
-export async function listKnownOpenFindingIds(
+const OPEN_ISSUE_BODY_LIMIT = 200;
+
+/**
+ * Hardcoded finding-id marker pattern — no dynamic `RegExp`, no ReDoS risk.
+ * Shared safely by both look-ups: `String.prototype.matchAll` iterates over an
+ * internal clone, so the `g` flag carries no `lastIndex` state between calls.
+ * Prefix filtering is done with `startsWith()`, never by building a regex.
+ */
+const FINDING_ID_RE = /<!--\s*finding-id:\s*([A-Za-z0-9-]+)\s*-->/gi;
+
+/** An open issue reduced to the two fields the finding-id look-ups need. */
+interface OpenIssueBody {
+  number: number;
+  body: string;
+}
+
+/**
+ * Fetch every open issue in `repo` as `{ number, body }`, regardless of label
+ * (Issue #539).
+ *
+ * Both finding-id look-ups below used to add `--label`, so a finding whose
+ * issue had been relabelled — triaged into `needs-human`, say — was invisible
+ * to the dedup guard and got re-filed (NEAT-AI-Rebase #37). The marker is the
+ * key; the label is not part of it, so no `--label` argument is issued.
+ *
+ * A gh failure or malformed payload yields `[]`, which each caller turns into
+ * its own safe empty result. Hitting {@link OPEN_ISSUE_BODY_LIMIT} is logged
+ * loudly with `logLabel`, because a truncated list is indistinguishable from
+ * "no duplicate exists" and would re-open the duplicate-filing bug.
+ */
+async function listOpenIssueBodies(
   repo: string,
-  label: string,
+  logLabel: string,
   ghCommandFn: (args: string[]) => Promise<string>,
-  idPrefix = "BP-",
-): Promise<string[]> {
+): Promise<OpenIssueBody[]> {
   let raw: string;
   try {
     raw = await ghCommandFn([
@@ -270,25 +304,70 @@ export async function listKnownOpenFindingIds(
       repo,
       "--state",
       "open",
-      "--label",
-      label,
       "--json",
       "number,body",
       "--limit",
-      "200",
+      String(OPEN_ISSUE_BODY_LIMIT),
     ]);
   } catch {
     return [];
   }
-  // Hardcoded regex — no dynamic RegExp, no ReDoS risk.
-  // Prefix filtering is done via startsWith() below.
-  const FINDING_ID_RE = /<!--\s*finding-id:\s*([A-Za-z0-9-]+)\s*-->/gi;
-  const ids: string[] = [];
-  for (const item of parseGhJsonArray(raw, `list ${label} finding ids`)) {
+
+  const entries = parseGhJsonArray(raw, logLabel);
+  const issues: OpenIssueBody[] = [];
+  for (const item of entries) {
     if (item === null || typeof item !== "object") continue;
+    const n = (item as { number?: unknown }).number;
     const body = (item as { body?: unknown }).body;
+    if (typeof n !== "number" || !Number.isFinite(n)) continue;
     if (typeof body !== "string") continue;
-    for (const m of body.matchAll(FINDING_ID_RE)) {
+    issues.push({ number: n, body });
+  }
+
+  if (entries.length >= OPEN_ISSUE_BODY_LIMIT) {
+    console.error(
+      `[idle-task-snapshot] ${logLabel}: ${repo}: open-issue list hit the ` +
+        `${OPEN_ISSUE_BODY_LIMIT}-issue limit — finding-id dedup is ` +
+        `TRUNCATED and duplicates beyond it will not be seen. Raise the ` +
+        `limit for this repo.`,
+    );
+  }
+  return issues;
+}
+
+/**
+ * Return the known-open finding ids in `repo`, read from the
+ * `<!-- finding-id: <idPrefix>… -->` body marker every filed finding carries.
+ *
+ * Repo-wide since Issue #539: every **open** issue is inspected regardless of
+ * label, so an already-tracked finding stays deduped after its issue is
+ * relabelled. `logLabel` names the calling scan in log lines only — it is
+ * **not** a result filter.
+ *
+ * Four templates share the `BP-` id prefix (best-practices, test-audit,
+ * github-actions-audit, supply-chain-readiness — the per-template
+ * discriminator keeps the hashes distinct), so `idPrefix` defaults to `"BP-"`.
+ * That prefix now does load-bearing work: the repo-wide payload also carries
+ * other scans' ids (`SEC-…`, `SWEEP-…`), and only ids matching `idPrefix`
+ * belong in this scan's skip-list.
+ *
+ * A gh failure or malformed payload returns an empty array — the worst case is
+ * Claude re-files a finding, which the snapshot diff still catches.
+ */
+export async function listKnownOpenFindingIds(
+  repo: string,
+  logLabel: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  idPrefix = "BP-",
+): Promise<string[]> {
+  const issues = await listOpenIssueBodies(
+    repo,
+    `list ${logLabel} finding ids`,
+    ghCommandFn,
+  );
+  const ids: string[] = [];
+  for (const issue of issues) {
+    for (const m of issue.body.matchAll(FINDING_ID_RE)) {
       const id = m[1];
       if (id && id.startsWith(idPrefix)) ids.push(id);
     }
@@ -297,13 +376,18 @@ export async function listKnownOpenFindingIds(
 }
 
 /**
- * Return the number of an **open** issue in `repo` carrying both `label` and
- * the `<!-- finding-id: <findingId> -->` body marker, or `null` when none
- * exists.
+ * Return the number of an **open** issue in `repo` carrying the
+ * `<!-- finding-id: <findingId> -->` body marker, or `null` when none exists.
  *
  * This is the pre-file dedup look-up (Issue #2882): the pre-filers call
  * `gh issue create` directly, so without it the same `finding-id` could yield
  * two open issues (observed for `BP-LINTER-typescript` — private-repo-14#2990/#2991).
+ *
+ * The look-up is repo-wide since Issue #539 — the finding id is the key, and
+ * the label is not part of it. A label-scoped query missed an open duplicate
+ * the moment the issue was relabelled or triaged into `needs-human`, which is
+ * exactly how NEAT-AI-Rebase #37 was re-filed. `logLabel` names the calling
+ * scan in log lines only; it does **not** filter results.
  *
  * Dedup is against **open** issues only: a finding whose prior issue was
  * **closed** (fixed) may legitimately re-file if it recurs, so a closed match
@@ -314,39 +398,18 @@ export async function listKnownOpenFindingIds(
  */
 export async function findOpenIssueByFindingId(
   repo: string,
-  label: string,
+  logLabel: string,
   findingId: string,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<number | null> {
-  let raw: string;
-  try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--label",
-      label,
-      "--json",
-      "number,body",
-      "--limit",
-      "200",
-    ]);
-  } catch {
-    return null;
-  }
-  // Hardcoded regex — no dynamic RegExp, no ReDoS risk.
-  const FINDING_ID_RE = /<!--\s*finding-id:\s*([A-Za-z0-9-]+)\s*-->/gi;
-  for (const item of parseGhJsonArray(raw, `find ${label} ${findingId}`)) {
-    if (item === null || typeof item !== "object") continue;
-    const body = (item as { body?: unknown }).body;
-    const n = (item as { number?: unknown }).number;
-    if (typeof body !== "string") continue;
-    if (typeof n !== "number" || !Number.isFinite(n)) continue;
-    for (const m of body.matchAll(FINDING_ID_RE)) {
-      if (m[1] === findingId) return n;
+  const issues = await listOpenIssueBodies(
+    repo,
+    `find ${logLabel} ${findingId}`,
+    ghCommandFn,
+  );
+  for (const issue of issues) {
+    for (const m of issue.body.matchAll(FINDING_ID_RE)) {
+      if (m[1] === findingId) return issue.number;
     }
   }
   return null;
@@ -373,6 +436,9 @@ export interface FileFindingOnceResult {
  *
  * Closed prior issues are not matched (open-only look-up), so a genuinely
  * recurring finding whose previous issue was fixed/closed re-files normally.
+ * The look-up is repo-wide (Issue #539): `logLabel` is carried for log lines
+ * only and filters nothing, so a duplicate wearing a different label is still
+ * found.
  *
  * Returns `null` only when no open duplicate existed **and** `fileFn` returned
  * `null` (a gh create failure) — the caller logs and continues, matching the
@@ -382,7 +448,8 @@ export interface FileFindingOnceResult {
 export async function fileFindingOnce(
   params: {
     repo: string;
-    label: string;
+    /** The calling scan's label — used in log lines only, never as a filter. */
+    logLabel: string;
     findingId: string;
     ghCommandFn: (args: string[]) => Promise<string>;
     fileFn: () => Promise<{ number: number; findingId: string } | null>;
@@ -390,7 +457,7 @@ export async function fileFindingOnce(
 ): Promise<FileFindingOnceResult | null> {
   const existing = await findOpenIssueByFindingId(
     params.repo,
-    params.label,
+    params.logLabel,
     params.findingId,
     params.ghCommandFn,
   );

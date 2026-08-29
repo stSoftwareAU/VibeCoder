@@ -235,7 +235,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `orphan-deps` | (constant) | Always present; used by the dedup, snapshot, and known-open queries. Colour `0E8A16`. |
+| `orphan-deps` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup and known-open look-ups are repo-wide (Issue #539) and do not filter on it. Colour `0E8A16`. |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 
 There is **no `lang:<bucket>` label** — the scan is single-scope and

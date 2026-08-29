@@ -245,7 +245,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `test-audit` | (constant) | Always present; used by the dedup, snapshot, and known-open queries. |
+| `test-audit` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup and known-open look-ups are repo-wide (Issue #539) and do not filter on it. |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 
 Unlike the best-practices scan there is **no `lang:<bucket>` label** —
