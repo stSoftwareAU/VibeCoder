@@ -29,13 +29,108 @@ if [[ ! -f "${DRIVER}" ]]; then
   exit 1
 fi
 
+# --- Writable-path policy (Issue #515) --------------------------------------
+# Nothing may write to the container's image layer: the root filesystem is to
+# be mounted read-only (Issue #509), so every writer this script owns — and
+# every dot-directory / XDG default the agent CLIs and package managers reach
+# for — is relocated to one of two container-managed roots.
+#
+#   VIBE_SCRATCH_DIR  Per-launch scratch, cleared on every start. Preferred
+#     home is /tmp, a tmpfs where the runtime provides one. Apple `container`
+#     reports supportsTmpfs: false (worker/deno/lib/container_runtime.ts), so
+#     there /tmp is ordinary root filesystem and stops being writable the
+#     moment the root goes read-only — the vibe-work volume is the fallback
+#     that works on a runtime taking no tmpfs at all.
+#   VIBE_STATE_DIR  Caches worth keeping between launches, on the vibe-work
+#     volume. /tmp is the loud fallback (cold caches every launch).
+#
+# Every resolution warns loudly when it cannot use its preferred target, in
+# the same shape as the durable-Deno-cache warning below. When no candidate is
+# writable the legacy ${HOME} paths are kept and the warning says so, so a
+# read-only root fails at the first write rather than silently degrading.
+
+# Echo the first candidate directory that can be created and written to.
+# Empty candidates are skipped; each rejection is reported. Returns 1 when
+# none is usable, so the caller can keep the legacy path and say why.
+vibe_first_writable_dir() {
+  local label="$1"
+  shift
+  local candidate
+  for candidate in "$@"; do
+    [[ -n "${candidate}" ]] || continue
+    if mkdir -p "${candidate}" 2>/dev/null && [[ -w "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    echo "Warning: ${label} cannot use ${candidate} (not writable) — trying the next candidate" >&2
+  done
+  return 1
+}
+
+VIBE_WORK_ROOT="${HOME:-/home/vibe}/auto-issue-work"
+TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
+
+SCRATCH_ROOT="$(
+  vibe_first_writable_dir "per-launch scratch root" \
+    "${VIBE_SCRATCH_DIR:-}" \
+    "${TMP_SCRATCH_ROOT}" \
+    "${VIBE_WORK_ROOT}/.container-scratch"
+)" || SCRATCH_ROOT=""
+
+if [[ -n "${SCRATCH_ROOT}" ]]; then
+  # Per-launch by construction: on the volume fallback the previous
+  # container's scratch is still on disk, and it is not this launch's state.
+  if ! { rm -rf "${SCRATCH_ROOT}" 2>/dev/null && mkdir -p "${SCRATCH_ROOT}" 2>/dev/null; }; then
+    echo "Warning: could not clear the scratch root at ${SCRATCH_ROOT} — a previous launch's leftovers may remain" >&2
+  fi
+  export VIBE_SCRATCH_DIR="${SCRATCH_ROOT}"
+  # git's global config: `git config --global` writes ${HOME}/.gitconfig
+  # otherwise, and the identity/transport it records is recomputed on every
+  # launch from the mounted credential — scratch, not state.
+  export GIT_CONFIG_GLOBAL="${SCRATCH_ROOT}/gitconfig"
+  export XDG_CONFIG_HOME="${SCRATCH_ROOT}/config"
+  if [[ "${SCRATCH_ROOT}" != "${TMP_SCRATCH_ROOT}" ]]; then
+    # /tmp was refused, so every mktemp/Deno.makeTempDir in the container
+    # needs somewhere else to land as well.
+    export TMPDIR="${SCRATCH_ROOT}/tmp"
+    mkdir -p "${TMPDIR}" 2>/dev/null ||
+      echo "Warning: could not create ${TMPDIR} — temporary files have nowhere writable to go" >&2
+    echo "entrypoint: /tmp is not writable — scratch and TMPDIR relocated to ${SCRATCH_ROOT} (Issue #515)" >&2
+  fi
+else
+  echo "Warning: no writable scratch root (tried ${TMP_SCRATCH_ROOT} and ${VIBE_WORK_ROOT}/.container-scratch) — falling back to the legacy \${HOME} paths, which need a writable root filesystem" >&2
+fi
+
+STATE_ROOT="$(
+  vibe_first_writable_dir "durable state root" \
+    "${VIBE_STATE_DIR:-}" \
+    "${VIBE_WORK_ROOT}/.container-state" \
+    "${SCRATCH_ROOT:+${SCRATCH_ROOT}/state}"
+)" || STATE_ROOT=""
+
+if [[ -n "${STATE_ROOT}" ]]; then
+  export VIBE_STATE_DIR="${STATE_ROOT}"
+  # The dot-directories every other tool in the image reaches for. Left at
+  # their defaults they all land under ${HOME} on the image layer.
+  export XDG_CACHE_HOME="${STATE_ROOT}/cache"
+  export XDG_DATA_HOME="${STATE_ROOT}/data"
+  export XDG_STATE_HOME="${STATE_ROOT}/state"
+  export CARGO_HOME="${STATE_ROOT}/cargo"
+  export npm_config_cache="${STATE_ROOT}/npm"
+else
+  echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their \${HOME} defaults and need a writable root filesystem" >&2
+fi
+
 # Trust the mounted repositories. The runtime maps mount roots as root-owned
 # while files map to the container user, so git's dubious-ownership guard
 # refuses /workspace and every worker-managed clone ("fatal: detected dubious
 # ownership"). Inside this single-purpose container the only repositories
 # visible ARE the worker's own mounts, so the container-scoped wildcard trust
 # gives away nothing. `command -v` guard: the image always ships git, but the
-# entrypoint tests run with a minimal PATH.
+# entrypoint tests run with a minimal PATH. Deliberately AFTER the
+# writable-path policy above: this is the first `git config --global` of the
+# launch, and without GIT_CONFIG_GLOBAL it writes ${HOME}/.gitconfig on the
+# image layer (Issue #515).
 if command -v git >/dev/null 2>&1; then
   git config --global --add safe.directory '*' ||
     echo "Warning: could not set git safe.directory — git may refuse the mounted repositories" >&2
@@ -46,15 +141,16 @@ fi
 # are rewritten to HTTPS and gh becomes git's credential helper. Warn-only —
 # bootstrap's own git fetch remains the loud failure when auth is broken.
 #
-# The mounted credential is copied into a writable VM-local directory first
-# (under ~/.config — the runtime creates ~/.vibe-coder root-owned for the
-# mount targets, so nothing can be created beside them):
+# The mounted credential is copied into a writable per-launch directory first:
 # gh performs a config migration WRITE on first use, and every run is a fresh
 # VM, so a read-only GH_CONFIG_DIR can never satisfy it (observed live:
 # "failed to write config after migration: … read-only file system"). The
 # copy never leaves the VM and the read-only mount stays the source of truth.
+# It lives under the scratch root (Issue #515) — ~/.config is the image layer,
+# and the copy is regenerated from the mount on every launch anyway.
 GH_CRED_DIR="${HOME:-/home/vibe}/.vibe-coder/credentials/gh"
-GH_RUNTIME_DIR="${HOME:-/home/vibe}/.config/gh-runtime"
+GH_RUNTIME_DIR="${SCRATCH_ROOT:+${SCRATCH_ROOT}/gh}"
+GH_RUNTIME_DIR="${GH_RUNTIME_DIR:-${HOME:-/home/vibe}/.config/gh-runtime}"
 if [[ -f "${GH_CRED_DIR}/hosts.yml" ]]; then
   {
     mkdir -p "${GH_RUNTIME_DIR}" &&
@@ -144,8 +240,14 @@ if [[ -n "${HOME:-}" ]]; then
     if [[ "${seeded}" == "true" ]]; then
       echo "entrypoint: seeded the Deno cache at ${DENO_CACHE_DIR} from ${DENO_SEED_DIR} (Issue #4392)" >&2
     fi
+  elif [[ -n "${SCRATCH_ROOT}" ]]; then
+    # Never the image default (${DENO_DIR} baked at /home/vibe/.cache/deno):
+    # that is the image layer, unwritable once the root filesystem is
+    # read-only (Issue #515). Scratch is cold every launch but it works.
+    export DENO_DIR="${SCRATCH_ROOT}/deno-cache"
+    echo "Warning: could not use durable Deno cache at ${DENO_CACHE_DIR} — falling back to ${DENO_DIR} (cold cache every launch)" >&2
   else
-    echo "Warning: could not use durable Deno cache at ${DENO_CACHE_DIR} — falling back to the image default (cold cache every launch)" >&2
+    echo "Warning: could not use durable Deno cache at ${DENO_CACHE_DIR} and no scratch root is writable — falling back to the image default (cold cache every launch, and nothing at all once the root filesystem is read-only)" >&2
   fi
 
   # 2. Run the driver from VM-local storage instead of the virtiofs mount:
@@ -154,7 +256,11 @@ if [[ -n "${HOME:-}" ]]; then
   #    The mounted checkout stays the source of truth — --base-dir still
   #    points at it for repo-root assets — and a copy failure falls back
   #    loudly to running from the mount, exactly as before.
-  LOCAL_SRC="${HOME}/.worker-src"
+  #    It lands under the scratch root (Issue #515): ${HOME}/.worker-src was
+  #    the image layer, and the tree is rm -rf'd and re-copied on every start
+  #    — per-launch by construction, so scratch is exactly its class.
+  LOCAL_SRC="${SCRATCH_ROOT:+${SCRATCH_ROOT}/worker-src}"
+  LOCAL_SRC="${LOCAL_SRC:-${HOME}/.worker-src}"
   if rm -rf "${LOCAL_SRC}" 2>/dev/null &&
     mkdir -p "${LOCAL_SRC}/worker" 2>/dev/null &&
     cp -R "${BASE_DIR}/worker/deno" "${LOCAL_SRC}/worker/" 2>/dev/null; then

@@ -31,6 +31,15 @@ async function stubDeno(dir: string): Promise<string> {
   return argvFile;
 }
 
+/**
+ * The per-launch scratch root the entrypoint resolves for a test run
+ * (Issue #515) — `${TMPDIR}/vibe-scratch`, with TMPDIR isolated per case by
+ * {@link runEntrypoint}.
+ */
+function scratchRoot(dir: string): string {
+  return `${dir}/tmp/vibe-scratch`;
+}
+
 /** Create a throwaway repo layout the entrypoint can point at. */
 async function fakeRepo(dir: string): Promise<void> {
   await Deno.mkdir(`${dir}/repo/worker/deno`, { recursive: true });
@@ -55,9 +64,14 @@ async function runEntrypoint(
   // credential: false in CI, true on every worker host, where the branch
   // then needs mkdir/cp/sed that a stub-only PATH does not provide and the
   // entrypoint exits 127.
+  // TMPDIR is isolated for the same reason (Issue #515): the entrypoint's
+  // per-launch scratch root defaults to ${TMPDIR:-/tmp}/vibe-scratch, so a
+  // case that leaves TMPDIR unset would write into — and race other cases
+  // over — the host's real /tmp.
   const env: Record<string, string> = {
     PATH: opts.path,
     HOME: `${opts.dir}/home`,
+    TMPDIR: `${opts.dir}/tmp`,
     ...(opts.env ?? {}),
   };
   if (opts.homeless) delete env.HOME;
@@ -331,7 +345,7 @@ Deno.test("entrypoint - rewrites SSH remotes to HTTPS with the mounted gh token"
 
     // The writable runtime copy is staged for gh's own config migration.
     assertEquals(
-      await Deno.readTextFile(`${dir}/home/.config/gh-runtime/hosts.yml`),
+      await Deno.readTextFile(`${scratchRoot(dir)}/gh/hosts.yml`),
       "github.com:\n",
     );
     // The driver still execs after the transport setup.
@@ -382,9 +396,11 @@ Deno.test("entrypoint - exports GH_CONFIG_DIR so raw scripts inherit gh auth (Is
       env: { VIBE_BASE_DIR: `${dir}/repo`, HOME: `${dir}/home` },
     });
     assertEquals(outcome.code, 0, outcome.stderr);
+    // Under the scratch root, not ~/.config: the image layer goes read-only
+    // (Issue #515) and the staged copy is regenerated from the mount anyway.
     assertEquals(
       (await Deno.readTextFile(envFile)).trim(),
-      `${dir}/home/.config/gh-runtime`,
+      `${scratchRoot(dir)}/gh`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -632,15 +648,17 @@ Deno.test("entrypoint - with HOME set, stages the worker source locally and uses
     const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
     // Durable cache on the work volume, not the ephemeral overlay.
     assertEquals(argv[0], `DENO_DIR=${home}/auto-issue-work/.deno-cache`);
-    // Driver and lockfile come from the VM-local staged copy.
+    // Driver and lockfile come from the staged copy on the scratch root
+    // (Issue #515 moved it off ${HOME}, which is the image layer).
+    const staged = `${scratchRoot(dir)}/worker-src`;
     assert(
-      argv.includes(`${home}/.worker-src/worker/deno/mod.ts`),
+      argv.includes(`${staged}/worker/deno/mod.ts`),
       `driver not staged locally: ${argv.join(" ")}`,
     );
-    assert(argv.includes(`--lock=${home}/.worker-src/worker/deno/deno.lock`));
+    assert(argv.includes(`--lock=${staged}/worker/deno/deno.lock`));
     // The staged copy really exists and matches the source.
     assertEquals(
-      await Deno.readTextFile(`${home}/.worker-src/worker/deno/mod.ts`),
+      await Deno.readTextFile(`${staged}/worker/deno/mod.ts`),
       "// stub\n",
     );
     // --base-dir still names the mounted checkout (repo-root assets).
@@ -682,10 +700,11 @@ Deno.test("entrypoint - a fresh launch replaces a stale staged copy (Issue #4302
     const argvFile = await stubDenoWithEnv(dir);
     await fakeRepo(dir);
     const home = `${dir}/home`;
+    const staged = `${scratchRoot(dir)}/worker-src`;
     // A leftover staged copy from a previous (different) build.
-    await Deno.mkdir(`${home}/.worker-src/worker/deno`, { recursive: true });
+    await Deno.mkdir(`${staged}/worker/deno`, { recursive: true });
     await Deno.writeTextFile(
-      `${home}/.worker-src/worker/deno/mod.ts`,
+      `${staged}/worker/deno/mod.ts`,
       "// stale previous build\n",
     );
 
@@ -698,11 +717,11 @@ Deno.test("entrypoint - a fresh launch replaces a stale staged copy (Issue #4302
     });
     assertEquals(code, 0);
     assertEquals(
-      await Deno.readTextFile(`${home}/.worker-src/worker/deno/mod.ts`),
+      await Deno.readTextFile(`${staged}/worker/deno/mod.ts`),
       "// stub\n",
     );
     const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
-    assert(argv.includes(`${home}/.worker-src/worker/deno/mod.ts`));
+    assert(argv.includes(`${staged}/worker/deno/mod.ts`));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -759,7 +778,7 @@ Deno.test("entrypoint - staging the source exports PROMPTS_DIR at the checkout, 
     const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
     assertEquals(argv[0], `PROMPTS_DIR=${dir}/repo/prompts`);
     // …while the driver itself runs from the staged copy.
-    assert(argv.includes(`${home}/.worker-src/worker/deno/mod.ts`));
+    assert(argv.includes(`${scratchRoot(dir)}/worker-src/worker/deno/mod.ts`));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -906,6 +925,276 @@ Deno.test("entrypoint - no seed directory in the image → nothing seeded, no fa
     });
     assertEquals(code, 0, stderr);
     assert(!stderr.includes("seeded"), stderr);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #515 — no in-container write outside /tmp and the mounted volumes
+// ---------------------------------------------------------------------------
+//
+// The container root filesystem is to be mounted read-only (Issue #509), so
+// every writer the entrypoint owns must land on a container-managed root: the
+// per-launch scratch root (a tmpfs where the runtime provides one) or the
+// durable state root on the `vibe-work` volume. Nothing may be written under
+// ${HOME}, which is an image layer.
+
+/** Stub `deno` that dumps the relocated environment it inherited. */
+async function stubDenoDumpingEnv(
+  dir: string,
+  names: string[],
+): Promise<string> {
+  const binDir = `${dir}/bin`;
+  const envFile = `${dir}/driver-env.txt`;
+  await Deno.mkdir(binDir, { recursive: true });
+  const dumps = names
+    .map((name) => `printf '${name}=%s\\n' "\${${name}:-}"`)
+    .join("; ");
+  await Deno.writeTextFile(
+    `${binDir}/deno`,
+    `#!/bin/bash\n{ ${dumps}; } > "${envFile}"\nexit 0\n`,
+  );
+  await Deno.chmod(`${binDir}/deno`, 0o755);
+  return envFile;
+}
+
+/** Parse the `KEY=value` dump written by {@link stubDenoDumpingEnv}. */
+function parseEnvDump(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of text.trim().split("\n")) {
+    const index = line.indexOf("=");
+    if (index > 0) env[line.slice(0, index)] = line.slice(index + 1);
+  }
+  return env;
+}
+
+Deno.test("entrypoint - writes nothing under HOME: the staged source, the git config and the gh copy all land on the scratch root (Issue #515)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    await stubDeno(dir);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    // A mounted gh credential, so the staging branch actually runs.
+    await Deno.mkdir(`${home}/.vibe-coder/credentials/gh`, { recursive: true });
+    await Deno.writeTextFile(
+      `${home}/.vibe-coder/credentials/gh/hosts.yml`,
+      "github.com:\n    user: vibe-bot\n",
+    );
+
+    // The REAL git, so `git config --global` writes where it truly would.
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo`, HOME: home },
+    });
+    assertEquals(code, 0, stderr);
+
+    const scratch = scratchRoot(dir);
+    // Every writer landed on the scratch root…
+    assertEquals(
+      await Deno.readTextFile(`${scratch}/worker-src/worker/deno/mod.ts`),
+      "// stub\n",
+    );
+    assertEquals(await exists(`${scratch}/gh/hosts.yml`), true);
+    const gitconfig = await Deno.readTextFile(`${scratch}/gitconfig`);
+    assertStringIncludes(gitconfig, "[safe]");
+    assertStringIncludes(gitconfig, "vibe-bot");
+
+    // …and nothing was written to the image layer under ${HOME}.
+    for (
+      const legacy of [
+        `${home}/.worker-src`,
+        `${home}/.gitconfig`,
+        `${home}/.config/gh-runtime`,
+        `${home}/.cache`,
+      ]
+    ) {
+      assertEquals(await exists(legacy), false, `${legacy} was written`);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - the tool caches every CLI reaches for are relocated off the image layer (Issue #515)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const envFile = await stubDenoDumpingEnv(dir, [
+      "VIBE_SCRATCH_DIR",
+      "VIBE_STATE_DIR",
+      "GIT_CONFIG_GLOBAL",
+      "XDG_CONFIG_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_DATA_HOME",
+      "XDG_STATE_HOME",
+      "CARGO_HOME",
+      "npm_config_cache",
+      "TMPDIR",
+    ]);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    await Deno.mkdir(home, { recursive: true });
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo`, HOME: home },
+    });
+    assertEquals(code, 0, stderr);
+
+    const scratch = scratchRoot(dir);
+    const state = `${home}/auto-issue-work/.container-state`;
+    const env = parseEnvDump(await Deno.readTextFile(envFile));
+    assertEquals(env["VIBE_SCRATCH_DIR"], scratch);
+    assertEquals(env["VIBE_STATE_DIR"], state);
+    // Per-launch, recomputed from the mounted credential every start.
+    assertEquals(env["GIT_CONFIG_GLOBAL"], `${scratch}/gitconfig`);
+    assertEquals(env["XDG_CONFIG_HOME"], `${scratch}/config`);
+    // Worth keeping between launches — the vibe-work volume.
+    assertEquals(env["XDG_CACHE_HOME"], `${state}/cache`);
+    assertEquals(env["XDG_DATA_HOME"], `${state}/data`);
+    assertEquals(env["XDG_STATE_HOME"], `${state}/state`);
+    assertEquals(env["CARGO_HOME"], `${state}/cargo`);
+    assertEquals(env["npm_config_cache"], `${state}/npm`);
+    // /tmp was usable, so temporary files are left exactly where they were.
+    assertEquals(env["TMPDIR"], `${dir}/tmp`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - an unusable /tmp degrades loudly onto the work volume, never silently (Issue #515)", async () => {
+  // Apple `container` reports supportsTmpfs: false, so on that runtime /tmp
+  // is ordinary root filesystem and stops being writable the moment the root
+  // goes read-only. A regular file standing in for the TMPDIR parent makes
+  // `mkdir -p` fail for root and non-root alike.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const envFile = await stubDenoDumpingEnv(dir, [
+      "VIBE_SCRATCH_DIR",
+      "TMPDIR",
+    ]);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    await Deno.mkdir(home, { recursive: true });
+    await Deno.writeTextFile(`${dir}/not-a-dir`, "");
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: home,
+        TMPDIR: `${dir}/not-a-dir/tmp`,
+      },
+    });
+    assertEquals(code, 0, stderr);
+
+    const volumeScratch = `${home}/auto-issue-work/.container-scratch`;
+    const env = parseEnvDump(await Deno.readTextFile(envFile));
+    assertEquals(env["VIBE_SCRATCH_DIR"], volumeScratch);
+    // mktemp and Deno.makeTempDir need somewhere writable too.
+    assertEquals(env["TMPDIR"], `${volumeScratch}/tmp`);
+    assertEquals(await exists(`${volumeScratch}/tmp`), true);
+    // The staged source followed the scratch root onto the volume.
+    assertEquals(
+      await Deno.readTextFile(
+        `${volumeScratch}/worker-src/worker/deno/mod.ts`,
+      ),
+      "// stub\n",
+    );
+    // Loud, not silent.
+    assertStringIncludes(stderr, "not writable");
+    assertStringIncludes(stderr, volumeScratch);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - an unusable durable Deno cache falls back to the scratch root, not the image default (Issue #515)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDenoWithEnv(dir);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    await Deno.mkdir(home, { recursive: true });
+    await Deno.writeTextFile(`${dir}/not-a-dir`, "");
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: home,
+        VIBE_DENO_CACHE_DIR: `${dir}/not-a-dir/cache`,
+      },
+    });
+    assertEquals(code, 0, stderr);
+
+    const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
+    // The image default (/home/vibe/.cache/deno) is the image layer, so the
+    // fallback must be the scratch root instead — and must say so.
+    assertEquals(argv[0], `DENO_DIR=${scratchRoot(dir)}/deno-cache`);
+    assertStringIncludes(stderr, "could not use durable Deno cache");
+    assertStringIncludes(stderr, `${scratchRoot(dir)}/deno-cache`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - a launch completes with the image layer read-only (Issue #515)", async () => {
+  // The acceptance shape of Issue #509 in miniature: ${HOME} — the image
+  // layer — is made read-only, leaving only /tmp and the already-created
+  // mount targets writable. The launch must reach the driver with no EROFS
+  // and no permission refusal, and must say which fallbacks it took.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDenoWithEnv(dir);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    // The mounts the runtime creates before the container starts: the work
+    // volume and the read-only credential directory.
+    await Deno.mkdir(`${home}/auto-issue-work`, { recursive: true });
+    await Deno.mkdir(`${home}/.vibe-coder/credentials/gh`, { recursive: true });
+    await Deno.writeTextFile(
+      `${home}/.vibe-coder/credentials/gh/hosts.yml`,
+      "github.com:\n    user: vibe-bot\n",
+    );
+    await Deno.chmod(home, 0o555);
+
+    let outcome;
+    try {
+      outcome = await runEntrypoint({
+        dir,
+        path: `${dir}/bin:/usr/bin:/bin`,
+        env: { VIBE_BASE_DIR: `${dir}/repo`, HOME: home },
+      });
+    } finally {
+      await Deno.chmod(home, 0o755);
+    }
+
+    assertEquals(outcome.code, 0, outcome.stderr);
+    for (const refusal of ["Read-only file system", "Permission denied"]) {
+      assert(
+        !outcome.stderr.includes(refusal),
+        `${refusal} in stderr: ${outcome.stderr}`,
+      );
+    }
+    // Nothing degraded: every writer had a target that is not the image
+    // layer, so the launch is the ordinary one.
+    assert(!outcome.stderr.includes("Warning:"), outcome.stderr);
+    const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
+    // The durable cache and the tool caches on the writable volume mount…
+    assertEquals(argv[0], `DENO_DIR=${home}/auto-issue-work/.deno-cache`);
+    assertEquals(
+      await exists(`${home}/auto-issue-work/.container-state`),
+      true,
+    );
+    // …the per-launch copies on the tmpfs, and the driver actually ran.
+    assert(argv.includes(`${scratchRoot(dir)}/worker-src/worker/deno/mod.ts`));
+    assert(argv.includes("run-entrypoint"));
+    assertEquals(await exists(`${scratchRoot(dir)}/gh/hosts.yml`), true);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
