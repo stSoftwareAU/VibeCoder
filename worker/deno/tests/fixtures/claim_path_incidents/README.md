@@ -24,7 +24,9 @@ with this shape (the schema is `RecordedIncident` in
   "note": "anything abridged, and why it is not material",
   "state": {
     "repo": "stSoftwareAU/EXAMPLE",
-    "issues": [{ "number": 48, "tier": "work-on", "gate": "merged-pr-permanent" }]
+    "issues": [
+      { "number": 48, "tier": "work-on", "gate": "merged-pr-permanent" }
+    ]
   },
   "expect": { "claimable": [60, 61], "scanClaims": true }
 }
