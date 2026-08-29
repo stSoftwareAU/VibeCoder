@@ -64,6 +64,7 @@ import {
   formatSupersededReason,
 } from "../superseding_pr.ts";
 import { claimStaleOutcome, supersededOutcome } from "../run_outcome.ts";
+import { healStaleBranchLineage } from "../stale_branch_lineage.ts";
 import {
   checkClaimFreshness,
   type ClaimFreshness,
@@ -558,6 +559,49 @@ async function completionBody(
     );
   }
 
+  // The single resolved base for this PR — used by the stale-lineage guard
+  // below, the ahead-count guard, the milestone footer (Issue #3911), and
+  // `gh pr create --base`, so they can never disagree.
+  const baseBranch = state.milestoneBranch ?? state.defaultBranch;
+
+  // Stale-lineage guard (Issue #534) — before anything is pushed. Two runs
+  // held one issue branch: the first rebased, force-pushed and squash-merged;
+  // the second never saw it, re-created the reaped branch from the pre-rebase
+  // lineage and opened a PR that could never merge (identical content collides
+  // with its own squash), wedged on a two-attempt path to `needs-human`. The
+  // guard rebases the branch past the squash and republishes it, so what
+  // reaches `gh pr create` carries only the genuinely unmerged commits.
+  const lineage = await healStaleBranchLineage({
+    repo,
+    branch: state.branchName,
+    baseBranch,
+    runGit: deps.git.runGitCommand,
+    runGh: deps.github.runGhCommand,
+    cwd: state.repoPath,
+    warn: (m: string) => logger.warn(m),
+  });
+  if (lineage.kind === "refused") {
+    return {
+      status: "failure",
+      reason:
+        `Refusing to push \`${state.branchName}\`: ${lineage.detail} (Issue #534)`,
+    };
+  }
+  if (lineage.kind === "healed") {
+    logger.warn(
+      `SELF-HEALING: '${state.branchName}' was rebased past a squash merge ` +
+        `before this run's PR (Issue #534)`,
+      {
+        detail: lineage.detail,
+        previousHead: lineage.previousHead,
+        newHead: lineage.newHead,
+        replayed: lineage.replayed.length,
+        dropped: lineage.dropped.length,
+        pushed: lineage.pushed,
+      },
+    );
+  }
+
   // Push branch
   const pushResult = await deps.git.pushUnpushedCommits(state.branchName, {
     cwd: state.repoPath,
@@ -602,10 +646,6 @@ async function completionBody(
   // and again on private-repo-22#42 from another path. Bail out here with a
   // clear, diagnostic failure so the worker reports an actionable cause
   // instead of a misleading PR-creation error.
-  // The single resolved base for this PR — used for the ahead-count guard, the
-  // milestone footer (Issue #3911), and `gh pr create --base` below, so all
-  // three can never disagree.
-  const baseBranch = state.milestoneBranch ?? state.defaultBranch;
   // Issue #68: the ahead-count runs against a LOCAL ref, but a milestone base
   // is present in this clone only as `origin/<base>` — the clone was set up on
   // the issue branch from the remote milestone, so the bare name is an unknown
