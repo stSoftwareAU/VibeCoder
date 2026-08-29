@@ -1198,6 +1198,29 @@ Deno.test("run_core - non-rate-limit errors still hit fatal path", async () => {
   );
   assertEquals(hasFatalLog, true);
   assertStringIncludes(result.exitReason, "Fatal");
+  // Issue #563: the crash must reach the launcher. A run that died in its
+  // main loop reported `COMPLETED` and exit 0, so the supervisor's backoff,
+  // escalation and self-heal all read it as a clean run.
+  assertEquals(result.fatalError, true);
+});
+
+Deno.test("run_core - a clean run does not claim a fatal error (Issue #563)", async () => {
+  let nowValue = 0;
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      // One cycle, then past the run duration so the loop ends cleanly.
+      nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  const result = await runCoreLoop(config, deps);
+
+  assertEquals(result.fatalError, false);
 });
 
 // ---------------------------------------------------------------------------

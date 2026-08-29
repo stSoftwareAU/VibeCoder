@@ -747,6 +747,15 @@ export async function main(args: string[] = Deno.args): Promise<void> {
   }
 
   outputResult(result.value, logger);
+
+  // Issue #563: exit explicitly rather than waiting for the event loop to
+  // drain. `outputResult` already exits on a failure; a SUCCESSFUL command
+  // used to just return, leaving the process to end only once every handle
+  // was released. One stray timer is all it takes: the run-entrypoint driver
+  // printed "COMPLETED: Run complete" and then held its container — and the
+  // host behind it — for 1h35m, until a human stopped it. The command is
+  // finished by the time we are here, so the run's status is the process's.
+  Deno.exit(0);
 }
 
 /**
