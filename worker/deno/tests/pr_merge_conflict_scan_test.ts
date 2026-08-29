@@ -14,6 +14,7 @@ import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
+  conflictPrKey,
   countDisruptedAttempts,
   DEFAULT_CONFLICT_COOLDOWN_HOURS,
   findConflictingPr,
@@ -602,4 +603,42 @@ Deno.test("findConflictingPr - a repo whose listing fails does not stall the sca
 
   assert(result.ok);
   assertEquals(result.value?.prNumber, 48);
+});
+
+// ---------------------------------------------------------------------------
+// The drain's exclusion set (Issue #561). The pass now calls this scan
+// repeatedly within one cycle; without an exclusion the second call returns
+// the PR the first one just took.
+// ---------------------------------------------------------------------------
+
+Deno.test("findConflictingPr - an excluded PR is passed over for the next due one", async () => {
+  const fake = makeFakeGh(makeState({
+    prs: [
+      { number: 10, headRefName: "issue-10", baseRefName: "main" },
+      { number: 11, headRefName: "issue-11", baseRefName: "main" },
+    ],
+    mergeable: { 10: "CONFLICTING", 11: "CONFLICTING" },
+    labels: { 10: [], 11: [] },
+    comments: { 10: [], 11: [] },
+  }));
+
+  const first = await findConflictingPr(makeOptions(fake));
+  assert(first.ok);
+  assertEquals(first.value?.prNumber, 10);
+
+  const second = await findConflictingPr(
+    makeOptions(fake, { exclude: new Set(["org/repo#10"]) }),
+  );
+  assert(second.ok);
+  assertEquals(second.value?.prNumber, 11);
+
+  const third = await findConflictingPr(
+    makeOptions(fake, { exclude: new Set(["org/repo#10", "org/repo#11"]) }),
+  );
+  assert(third.ok);
+  assertEquals(third.value, null);
+});
+
+Deno.test("conflictPrKey - the exclusion key names repo and number", () => {
+  assertEquals(conflictPrKey("org/repo", 42), "org/repo#42");
 });

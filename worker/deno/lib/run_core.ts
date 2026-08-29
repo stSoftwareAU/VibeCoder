@@ -392,7 +392,9 @@ export interface RunCoreDeps {
    * Optional — when absent the priority is a no-op, so a host wired without
    * the conflict pass runs every other priority unchanged.
    */
-  findAndProcessMergeConflict?: () => Promise<Result<PriorityHandlerResult>>;
+  findAndProcessMergeConflict?: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
 
   // Priority 1.62: Nudge stalled CI on Vibe Coder PRs (Issue #2100)
   nudgeStalledCi: () => Promise<Result<void>>;
@@ -1232,8 +1234,11 @@ export function buildPriorityDispatchTable(
       name: "Resolve PR Merge Conflicts",
       agentBacked: true,
       maintenanceLane: true,
-      execute: () =>
-        deps.findAndProcessMergeConflict?.() ??
+      // The cycle deadline is passed through (Issue #561): the pass drains
+      // every due conflict rather than one per cycle, and needs to know how
+      // much of the cycle is left before starting another agent run.
+      execute: (opts?: HandlerExecuteOptions) =>
+        deps.findAndProcessMergeConflict?.(opts) ??
           Promise.resolve({
             ok: true as const,
             value: { processed: false },

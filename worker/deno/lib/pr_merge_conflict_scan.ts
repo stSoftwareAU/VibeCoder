@@ -171,6 +171,22 @@ export interface FindConflictingPrOptions {
   needsHumanLabel?: string;
   /** Clock override (epoch milliseconds). */
   nowMs?: () => number;
+  /**
+   * PRs this cycle has already taken or deferred, as `owner/repo#number`
+   * (Issue #561).
+   *
+   * The pass drains its queue within a cycle, so it calls this scan
+   * repeatedly. Without an exclusion set the next call re-selects the PR the
+   * caller just handled — or the one whose repository an issue slot holds —
+   * and the drain spins on it instead of moving on. Build the keys with
+   * {@link conflictPrKey}.
+   */
+  exclude?: ReadonlySet<string>;
+}
+
+/** The `owner/repo#number` key {@link FindConflictingPrOptions.exclude} uses. */
+export function conflictPrKey(repo: string, prNumber: number): string {
+  return `${repo}#${prNumber}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +614,7 @@ export async function findConflictingPr(
     maxDisruptedAttempts = DEFAULT_MAX_DISRUPTED_ATTEMPTS,
     needsHumanLabel = NEEDS_HUMAN_LABEL,
     nowMs = () => Date.now(),
+    exclude,
   } = options;
 
   // The pass pushes a merge commit to the PR branch, so it is scoped to
@@ -635,6 +652,10 @@ export async function findConflictingPr(
 
     for (const pr of prs) {
       if (states.get(pr.number) !== "CONFLICTING") continue;
+      // Already handled or deferred by this cycle's drain (Issue #561). The
+      // skip is before the label call: the PR was labelled on the pass that
+      // selected it.
+      if (exclude?.has(conflictPrKey(repo, pr.number))) continue;
 
       let labels: string[];
       try {
