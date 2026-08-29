@@ -197,6 +197,40 @@ Deno.test("agent_progress - snapshot: one tool call, then many, with the last ca
   assertEquals(snap.lastToolCallAtMs, 1_005_000);
 });
 
+Deno.test("agent_progress - snapshot: a tool call is stamped with its own chunk's time, so lastToolCallAtMs never overtakes lastChunkAtMs (Issue #508)", () => {
+  // A clock that ticks on every read — the real millisecond tick that used to
+  // land between feed()'s chunk stamp and the tool call's own Date.now(),
+  // leaving the tool call dated after the chunk that carried it.
+  let clock = 1_000_000;
+  const tracker = new AgentProgressTracker({
+    phase: "execute",
+    log: () => undefined,
+    now: () => ++clock,
+  });
+  tracker.feed(toolUseLine("Read", { file_path: "a.ts" }));
+  const snap = tracker.snapshot();
+  assertEquals(snap.toolCalls, 1);
+  assert(snap.lastToolCallAtMs !== undefined);
+  assertEquals(
+    snap.lastToolCallAtMs,
+    snap.lastChunkAtMs,
+    "a tool call carries the timestamp of the chunk it arrived in",
+  );
+
+  // The invariant holds across many tool calls in one chunk too.
+  tracker.feed(
+    `${toolUseLine("Bash", { command: "one" })}\n${
+      toolUseLine("Bash", { command: "two" })
+    }`,
+  );
+  const later = tracker.snapshot();
+  assertEquals(later.toolCalls, 3);
+  assert(
+    later.lastChunkAtMs >= later.lastToolCallAtMs!,
+    `chunk ${later.lastChunkAtMs} must not precede tool call ${later.lastToolCallAtMs}`,
+  );
+});
+
 Deno.test("agent_progress - snapshot: a tool_use line split across two feeds counts once, at the completing chunk's time (Issue #4293)", () => {
   let clock = 1_000_000;
   const tracker = new AgentProgressTracker({
