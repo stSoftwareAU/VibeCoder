@@ -11,9 +11,11 @@ import { assert, assertEquals } from "@std/assert";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import {
   buildProgressExtension,
+  createRollingDescendantProbe,
   createRollingTreeProbe,
 } from "../lib/progress_extension_runtime.ts";
 import { probeWorktreeFingerprint } from "../lib/worktree_progress.ts";
+import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
 
 /** Run a git command in `cwd`, failing loudly when it does not succeed. */
 async function git(cwd: string, ...args: string[]): Promise<void> {
@@ -121,6 +123,82 @@ Deno.test("buildProgressExtension - carries the run hard cap ceiling when one is
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("buildProgressExtension - wires the external probe and the wind-down notice (Issue #508)", async () => {
+  const dir = await makeRepo();
+  try {
+    const built = await buildProgressExtension({
+      progressExtensionEnabled: true,
+      progressExtensionGrantSeconds: 900,
+      progressExtensionStallSeconds: 300,
+    }, dir);
+    assert(built, "an enabled config must produce the option");
+    assert(
+      built.externalProbe,
+      "a supervising agent's descendants must be visible to the gate",
+    );
+    // The live probe against this process: the first call takes the baseline.
+    assertEquals(await built.externalProbe(Deno.pid), "unknown");
+
+    assert(built.onWindDown, "the agent must have a budget channel");
+    await built.onWindDown({
+      remainingSeconds: 240,
+      elapsedSeconds: 3_600,
+      extensionsGranted: 2,
+    });
+    const notice = await Deno.readTextFile(
+      `${dir}/${WIND_DOWN_NOTICE_FILENAME}`,
+    );
+    assert(notice.includes("240"), notice);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("createRollingDescendantProbe - CPU burnt by a descendant reads as active work (Issue #508)", async () => {
+  let cpuSeconds = 100;
+  /** `HH:MM:SS`, as `ps -o time=` prints it. */
+  const cpuTime = (seconds: number): string =>
+    `${String(Math.floor(seconds / 3600)).padStart(2, "0")}:` +
+    `${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}:` +
+    `${String(seconds % 60).padStart(2, "0")}`;
+  // A stable table: the agent (pid 200) with one child that accumulates CPU
+  // between reads.
+  const probe = createRollingDescendantProbe({
+    runPs: () =>
+      Promise.resolve(
+        `  200     1 00:10:00\n  300   200 ${cpuTime(cpuSeconds)}`,
+      ),
+  });
+
+  assertEquals(
+    await probe(200),
+    "unknown",
+    "the first read has no window to compare against",
+  );
+  assertEquals(await probe(200), "idle", "no CPU burnt between the reads");
+  cpuSeconds = 130;
+  assertEquals(await probe(200), "active");
+  assertEquals(await probe(200), "idle", "the delta is spent, not repeated");
+});
+
+Deno.test("createRollingDescendantProbe - a failed read is unknown and keeps the baseline (Issue #508)", async () => {
+  let table = "  200     1 00:10:00\n  300   200 00:00:10";
+  const probe = createRollingDescendantProbe({
+    runPs: () =>
+      table === ""
+        ? Promise.reject(new Error("ps failed"))
+        : Promise.resolve(table),
+  });
+
+  assertEquals(await probe(200), "unknown", "baseline");
+  table = "";
+  assertEquals(await probe(200), "unknown", "a broken read is never progress");
+  // The baseline survived the failure, so the next good read still compares
+  // against the CPU seen before it rather than fabricating a delta.
+  table = "  200     1 00:10:00\n  300   200 00:00:10";
+  assertEquals(await probe(200), "idle");
 });
 
 Deno.test("createRollingTreeProbe - compares against the previous check, not the baseline", async () => {

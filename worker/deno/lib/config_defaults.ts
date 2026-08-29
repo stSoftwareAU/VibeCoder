@@ -208,8 +208,9 @@ export const OPERATIONAL_DEFAULTS = {
    * **On by default** (Issue #422, parent #397): killing a claim that is
    * demonstrably progressing throws the run's work away, so the
    * `claudeTimeout` kill for **issue work only** is deferred while the run
-   * shows both recent tool activity and a working tree that actually
-   * advanced. Every other phase keeps its unconditional cap.
+   * shows recent tool activity together with progress — a working tree that
+   * actually advanced, or a descendant process doing work outside the
+   * checkout (Issue #508). Every other phase keeps its unconditional cap.
    *
    * The chain is bounded, not open-ended: every grant is clamped to the
    * supervisor hard cap `VIBE_RUN_MAX_SECONDS` (Issue #421), the no-output
@@ -223,7 +224,8 @@ export const OPERATIONAL_DEFAULTS = {
   /** A tool call older than this is no longer evidence of activity (#4296). */
   progressExtensionStallSeconds: 300,
   /**
-   * How often the working tree is sampled between deadline checks (#4295).
+   * How often progress is sampled between deadline checks (#4295): the
+   * working tree, and the agent's descendant CPU (Issue #508).
    *
    * Bounds how stale the tree verdict can be when the deadline decision is
    * taken, so a run that stops changing the checkout is noticed within a

@@ -1,0 +1,141 @@
+/**
+ * Tests for the wind-down notice (Issue #508).
+ *
+ * An agent approaching the run hard cap is told the remaining budget so it can
+ * stop waiting on a long job, record what it has learnt and leave a resumable
+ * note — instead of being SIGKILLed mid-poll with no account of what it was
+ * waiting for.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import { assert, assertEquals } from "@std/assert";
+import {
+  buildWindDownNotice,
+  clearWindDownNotice,
+  DEFAULT_WIND_DOWN_SECONDS,
+  shouldWindDown,
+  WIND_DOWN_NOTICE_FILENAME,
+  WIND_DOWN_PROMPT_SECTION,
+  writeWindDownNotice,
+} from "../lib/wind_down_notice.ts";
+
+Deno.test("shouldWindDown - fires at and under the window, not above it", () => {
+  assertEquals(shouldWindDown(601, 600), false);
+  assertEquals(shouldWindDown(600, 600), true);
+  assertEquals(shouldWindDown(0, 600), true);
+  assertEquals(
+    shouldWindDown(DEFAULT_WIND_DOWN_SECONDS),
+    true,
+    "the default window applies when none is configured",
+  );
+});
+
+Deno.test("buildWindDownNotice - names the remaining budget and what to do with it", () => {
+  const notice = buildWindDownNotice({
+    remainingSeconds: 420,
+    elapsedSeconds: 5_400,
+    extensionsGranted: 3,
+  });
+  assert(
+    notice.includes("420"),
+    `the remaining budget must be stated: ${notice}`,
+  );
+  assert(notice.includes("5400"), "the elapsed time must be stated");
+  assert(notice.includes("3"), "the extensions granted must be stated");
+  assert(
+    /stop waiting/i.test(notice),
+    "the agent must be told to stop waiting on the long job",
+  );
+  assert(
+    /commit/i.test(notice),
+    "the agent must be told to preserve its work in progress",
+  );
+});
+
+Deno.test("writeWindDownNotice - writes the notice where the agent can read it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "wind_down_" });
+  try {
+    await writeWindDownNotice(dir, {
+      remainingSeconds: 300,
+      elapsedSeconds: 7_200,
+      extensionsGranted: 4,
+    });
+    const written = await Deno.readTextFile(
+      `${dir}/${WIND_DOWN_NOTICE_FILENAME}`,
+    );
+    assert(written.includes("300"), written);
+
+    // Refreshed in place as the runway shrinks — one file, never a pile.
+    await writeWindDownNotice(dir, {
+      remainingSeconds: 120,
+      elapsedSeconds: 7_400,
+      extensionsGranted: 4,
+    });
+    const refreshed = await Deno.readTextFile(
+      `${dir}/${WIND_DOWN_NOTICE_FILENAME}`,
+    );
+    assert(refreshed.includes("120"), refreshed);
+    assert(!refreshed.includes("remaining: 300s"), "stale text must be gone");
+    const entries: string[] = [];
+    for await (const entry of Deno.readDir(dir)) entries.push(entry.name);
+    assertEquals(entries, [WIND_DOWN_NOTICE_FILENAME]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("writeWindDownNotice - a directory that cannot be written fails loud", async () => {
+  let threw = false;
+  try {
+    await writeWindDownNotice("/nonexistent-dir-for-508", {
+      remainingSeconds: 60,
+      elapsedSeconds: 100,
+      extensionsGranted: 0,
+    });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a failed write must surface, never be swallowed");
+});
+
+Deno.test("clearWindDownNotice - a notice from the last run never reaches the next agent", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "wind_down_stale_" });
+  try {
+    await writeWindDownNotice(dir, {
+      remainingSeconds: 60,
+      elapsedSeconds: 10_000,
+      extensionsGranted: 7,
+    });
+    await clearWindDownNotice(dir);
+    let found = true;
+    try {
+      await Deno.stat(`${dir}/${WIND_DOWN_NOTICE_FILENAME}`);
+    } catch {
+      found = false;
+    }
+    assertEquals(found, false, "the stale notice must be gone");
+    // Clearing a checkout that never had one is a no-op, not a failure.
+    await clearWindDownNotice(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("WIND_DOWN_PROMPT_SECTION - tells the agent the file exists and never to commit it", () => {
+  assert(
+    WIND_DOWN_PROMPT_SECTION.includes(WIND_DOWN_NOTICE_FILENAME),
+    "the agent must be told the exact filename to read",
+  );
+  assert(
+    /never commit|do not commit/i.test(WIND_DOWN_PROMPT_SECTION),
+    "the notice is worker state, not a deliverable",
+  );
+});
+
+Deno.test("the notice file is hidden, so the enforced .gitignore keeps it out of every commit", () => {
+  assert(
+    WIND_DOWN_NOTICE_FILENAME.startsWith("."),
+    "gitignore_enforcer.ts ignores every hidden path by default",
+  );
+});

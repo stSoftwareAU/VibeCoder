@@ -109,17 +109,24 @@ export class AgentProgressTracker {
   feed(text: string): void {
     // Every chunk advances the chunk clock (Issue #4293) — including chunks
     // with no tool_use, so a caller can tell prose from silence.
-    this.#lastChunkMs = this.#now();
+    //
+    // The clock is read ONCE and that reading dates both the chunk and every
+    // tool call found in it (Issue #508). Reading it again per tool call let a
+    // millisecond tick land in between, dating the call after the chunk that
+    // carried it and breaking the lastToolCallAtMs <= lastChunkAtMs invariant
+    // the progress-extension gate relies on.
+    const atMs = this.#now();
+    this.#lastChunkMs = atMs;
     this.#carry += text;
     const pieces = this.#carry.split("\n");
     this.#carry = pieces.pop() ?? "";
     for (const line of pieces) {
-      if (line.includes('"tool_use"')) this.#recordToolUses(line);
+      if (line.includes('"tool_use"')) this.#recordToolUses(line, atMs);
     }
     this.#maybeEmit();
   }
 
-  #recordToolUses(line: string): void {
+  #recordToolUses(line: string, atMs: number): void {
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
@@ -140,7 +147,7 @@ export class AgentProgressTracker {
         this.#toolCalls++;
         this.#lastTool = {
           summary: detail ? `${name} ${detail}` : name,
-          atMs: this.#now(),
+          atMs,
         };
       }
     }

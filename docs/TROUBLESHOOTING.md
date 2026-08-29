@@ -634,10 +634,12 @@ kept making progress. Reconstruct what happened from three places:
    ```
 
    The clause after the semicolon is the signal that stalled: stale tool
-   activity, an unchanged working tree, or a working-tree probe that could not
-   answer (`unknown` is never treated as progress). A trailing `Ns late` is the
-    starved-timer signal and is measured against the **final** deadline —
-   an extended run that dies on time reports no lateness.
+   activity, an unchanged working tree *with no descendant process doing work*
+   (`working tree unchanged and no descendant process doing work (external
+   idle) despite tool activity 31s ago`, Issue #508), or a working-tree probe
+   that could not answer (`unknown` is never treated as progress). A trailing
+   `Ns late` is the starved-timer signal and is measured against the **final**
+   deadline — an extended run that dies on time reports no lateness.
 
 3. **The issue** — the failure comment carries the same extension history, and
    the `## Issue run model stats` comment carries a **Deadline extensions**
@@ -694,6 +696,23 @@ order they appear:
    run hard cap reached — no runway left before the supervisor terminates this
    run, so stopping now to preserve work in progress
    ```
+
+Before that refusal the agent is handed its remaining budget so it can stop
+waiting deliberately (Issue #508). Grep for it:
+
+```bash
+grep 'wind-down notice written' ~/logs/worker-*.log
+```
+
+```text
+[progress-extension] wind-down notice written: 420s of runway left before the
+run hard cap, so the agent can stop waiting and preserve its work in progress
+```
+
+The notice itself is `.vibe-run-budget.md` in the agent's checkout, refreshed
+on every check inside the last ten minutes of runway and cleared at the start
+of the next run. It is hidden, so the enforced `.gitignore` keeps it out of
+every commit.
 
 If the `Run hard cap:` line instead says the cap is not set, the run was
 uncapped and no ceiling applied: `VIBE_RUN_MAX_SECONDS` is `0`, or the worker

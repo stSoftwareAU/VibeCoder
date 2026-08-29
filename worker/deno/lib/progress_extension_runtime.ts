@@ -14,11 +14,23 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  compareDescendantCpu,
+  type DescendantCpuSnapshot,
+  type DescendantProbeOptions,
+  probeDescendantCpu,
+} from "./descendant_progress.ts";
 import type {
+  ExternalProgressState,
   ProgressExtensionOptions,
   TreeProgressState,
 } from "./progress_extension.ts";
 import type { RunDeadlineReporter } from "./run_deadline.ts";
+import {
+  clearWindDownNotice,
+  type RunBudgetNotice,
+  writeWindDownNotice,
+} from "./wind_down_notice.ts";
 import {
   compareWorktreeFingerprints,
   probeWorktreeFingerprint,
@@ -60,6 +72,37 @@ export function createRollingTreeProbe(
 }
 
 /**
+ * Build a rolling descendant-CPU probe (Issue #508).
+ *
+ * The twin of {@link createRollingTreeProbe} for work that happens outside
+ * the checkout: each call reads the agent's descendant subtree and compares
+ * it with the previous read, so the verdict describes the window since the
+ * last check.
+ *
+ * The first call has nothing to compare against, so it answers `unknown` and
+ * records the baseline: no comparison window has been observed yet, and an
+ * unmeasured signal never earns an extension (Issue #4294's direction).
+ * A failed read leaves the baseline alone, so one transient `ps` failure
+ * cannot fabricate an `active` verdict on the next check.
+ *
+ * @param options - Probe overrides, injected by tests.
+ * @returns A probe suitable for `ProgressExtensionOptions.externalProbe`.
+ */
+export function createRollingDescendantProbe(
+  options?: DescendantProbeOptions,
+): (agentPid: number) => Promise<ExternalProgressState> {
+  let previous: DescendantCpuSnapshot | undefined;
+  return async (agentPid: number) => {
+    const current = await probeDescendantCpu(agentPid, options);
+    const outcome: ExternalProgressState = previous === undefined
+      ? "unknown"
+      : compareDescendantCpu(previous, current).outcome;
+    if (current.ok) previous = current;
+    return outcome;
+  };
+}
+
+/**
  * Build the runner's opt-in progress-extension option from config.
  *
  * @param config - Worker config (or the subset above).
@@ -93,6 +136,10 @@ export async function buildProgressExtension(
   // the behaviour #4296 shipped.
   const checkSeconds = config.progressExtensionCheckSeconds ?? 0;
 
+  // A checkout is reused between runs, so a notice from the last one would
+  // have this agent winding down before it has read the issue (Issue #508).
+  await clearWindDownNotice(repoDir);
+
   const baseline = await probeWorktreeFingerprint(repoDir);
   return {
     policy: {
@@ -102,6 +149,13 @@ export async function buildProgressExtension(
       ...(checkSeconds > 0 ? { checkSeconds } : {}),
     },
     treeProbe: createRollingTreeProbe(repoDir, baseline),
+    // Work outside the checkout counts too (Issue #508): an agent supervising
+    // a job it started is progressing, not spinning.
+    externalProbe: createRollingDescendantProbe(),
+    // The one channel a live agent has for its remaining budget: a file it
+    // can read between polls of a long-running job (Issue #508).
+    onWindDown: (notice: RunBudgetNotice) =>
+      writeWindDownNotice(repoDir, notice),
     ...(onExtension ? { onExtension } : {}),
     ...(ceilingMs !== undefined ? { ceilingMs } : {}),
   };
