@@ -255,19 +255,23 @@ if [[ "${RUN_MODE}" != "container" ]]; then
 fi
 
 # Update the worker checkout on the host, before the container is launched
-# (Issue #512). The same update happens inside the container today, which is
-# the only reason /workspace has to be mounted read-write - and the fleet
-# self-update rewrites this very script, code the host executes, so that mount
-# is a container->host escape path. Doing it here is the prerequisite for
-# mounting the checkout read-only (Issue #509).
+# (Issue #512). This is the only update of that checkout since Issue #513
+# retired the in-container reset: nothing inside the container writes to
+# /workspace, which is what lets that mount be read-only (Issue #509) - and it
+# has to be, because the fleet self-update rewrites this very script, code the
+# host executes.
 #
 # Failure is not fatal: a host that cannot reach GitHub still launches the
 # worker on the checkout it already has. It says so loudly on stderr and in
-# the run-core log rather than passing quietly (Issue #3234).
+# the run-core log rather than passing quietly (Issue #3234), and three
+# consecutive failures raise a GitHub issue naming this host (Issue #4204).
+#
+# --allow-sys=hostname: that escalation titles its issue with the host id, so
+# each host gets its own report instead of every host sharing one.
 checkout_update_status=0
 bounded 300 "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
-  --allow-env --allow-read --allow-write --allow-run \
+  --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
   "${BASE_DIR}/worker/deno/mod.ts" worker-checkout-update \
   --base-dir "${BASE_DIR}" </dev/null >&2 || checkout_update_status=$?
 if ((checkout_update_status != 0)); then

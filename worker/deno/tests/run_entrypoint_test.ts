@@ -229,10 +229,11 @@ Deno.test("run-entrypoint command - blocked guard yields exit 0 without a shadow
     // the REAL command with production deps end-to-end, so HOME (and its
     // Windows twin) is pointed at the fixture for the duration: the real
     // bootstrap otherwise resolves logDir from the operator's actual HOME
-    // and litters the production ~/logs with worker-<pid>.log stubs,
-    // run_core.log "Git reset failed" entries and — since #4206 — real
-    // bootstrap-failure-streak increments that can fire the control-plane
-    // escalation from inside the test suite (Issue #4209). Observed live on
+    // and litters the production ~/logs with worker-<pid>.log stubs and
+    // run_core.log entries (Issue #4209). The bootstrap no longer touches the
+    // checkout or the failure streak at all — that moved to the host-side
+    // update with Issue #513 — but the log pollution alone was enough:
+    // observed live on
     // host-23: the leaked stubs were indistinguishable from a crash-looping
     // worker and cost hours of misdirected diagnosis.
     // The real bootstrap also exports PATH, VIBE_RUN_ID, WORKER_LOG_FILE,

@@ -2,20 +2,19 @@
  * worker-checkout-update command (Issue #512).
  *
  * Updates the Vibe Coder checkout to `origin/<default-branch>` **on the
- * host**, before each container launch. The same update happens inside the
- * container today (the bootstrap prelude's git reset), which is the only
- * reason `/workspace` has to be mounted read-write — and because the fleet
- * self-update rewrites `run.sh`, code the *host* executes, that mount is a
- * container→host escape path. Doing the update here is the prerequisite for
- * mounting the checkout read-only (Issue #509).
+ * host**, before each container launch. This is now the *only* update of that
+ * checkout: Issue #513 retired the in-container bootstrap reset, so no process
+ * inside the container writes to `/workspace` and the mount can be read-only
+ * (Issue #509) — which matters because the fleet self-update rewrites
+ * `run.sh`, code the *host* executes.
  *
- * The sequence and the branch resolution are the prelude's, not a restatement
- * of them: {@link resetCheckoutToDefaultBranch} runs `git fetch origin` →
+ * The work lives in {@link updateCheckout}: `git fetch origin` →
  * `git checkout <branch>` → `git reset --hard origin/<branch>` →
- * `git clean -fd`, and {@link resolveOriginDefaultBranch} reads `origin/HEAD`,
- * repairing a clone that lacks it with `git remote set-head origin --auto`.
- * `--default-branch` names the branch explicitly when a host wants to
- * override that.
+ * `git clean -fd`, with the branch read from `origin/HEAD` (repairing a clone
+ * that lacks it with `git remote set-head origin --auto`), the Issue #4204
+ * "active development tree" diagnosis, and the consecutive-failure escalation
+ * that came across with the reset. `--default-branch` names the branch
+ * explicitly when a host wants to override that.
  *
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run \
@@ -36,10 +35,7 @@
  */
 
 import type { Command, CommandResult } from "../types.ts";
-import {
-  resetCheckoutToDefaultBranch,
-  resolveOriginDefaultBranch,
-} from "../lib/run_bootstrap.ts";
+import { updateCheckout } from "../lib/checkout_update.ts";
 
 /** Environment variable that turns the update off (see the module doc). */
 export const SKIP_CHECKOUT_UPDATE_ENV = "VIBE_SKIP_CHECKOUT_UPDATE";
@@ -133,34 +129,23 @@ export async function updateWorkerCheckout(
     };
   }
 
-  const logDir = optionalString(args["log-dir"]) ?? defaultLogDir();
+  const outcome = await updateCheckout({
+    repoDir,
+    logDir: optionalString(args["log-dir"]) ?? defaultLogDir(),
+    defaultBranch: optionalString(args["default-branch"]),
+  });
 
-  let branch = optionalString(args["default-branch"]);
-  if (!branch) {
-    const resolved = await resolveOriginDefaultBranch(repoDir);
-    if (!resolved.ok) {
-      return {
-        success: false,
-        message: `cannot resolve the default branch of ${repoDir}: ` +
-          `${resolved.error.message} (pass --default-branch to name it)`,
-      };
-    }
-    branch = resolved.value;
-  }
-
-  const reset = await resetCheckoutToDefaultBranch(repoDir, branch, logDir);
-  if (!reset.ok) {
+  if (!outcome.ok) {
     return {
       success: false,
-      message: `cannot update ${repoDir} to origin/${branch}: ` +
-        reset.error.message,
-      data: { repoDir, branch, updated: false },
+      message: outcome.error ?? `cannot update ${repoDir}`,
+      data: { repoDir, branch: outcome.branch, updated: false },
     };
   }
 
   return {
     success: true,
-    message: `updated ${repoDir} to origin/${branch}`,
-    data: { repoDir, branch, updated: true },
+    message: `updated ${repoDir} to origin/${outcome.branch}`,
+    data: { repoDir, branch: outcome.branch, updated: true },
   };
 }

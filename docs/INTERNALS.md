@@ -170,7 +170,9 @@ Deno. Both launchers follow the same steps:
    checkout's own `origin/HEAD`; `--default-branch` names it explicitly. A
    failed update is a loud warning on stderr and in `run_core.log`, never a
    refused launch — a host that cannot reach GitHub still launches the worker
-   on the checkout it has. `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for
+   on the checkout it has; three consecutive failures raise one GitHub issue
+   naming the host and the collision (Issue #4204, migrated here with the
+   reset by Issue #513). `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for
    a development checkout or a CI tree, which must not be reset mid-run.
 3. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
    resolves and validates the container runtime, computes the content-derived
@@ -202,8 +204,10 @@ Deno. Both launchers follow the same steps:
 Inside the container, `container/entrypoint.sh` `exec`s
 `deno run … worker/deno/mod.ts run-entrypoint`. There is no bash on the runtime
 path, and because Deno loads its modules at process start the running driver is
-immune to the mid-run `git reset` its bootstrap performs — the property the old
-`worker/.run_core.sh` shadow-copy provided, now for free. The two launchers are
+immune to any mid-run change to the checkout — the property the old
+`worker/.run_core.sh` shadow-copy provided, now for free. Since Issue #513 the
+prelude writes nothing to the checkout at all: the launcher updates it on the
+host before the container starts. The two launchers are
 held to one contract by `worker/deno/tests/launcher_parity_test.ts`, which fails
 when their mount sets, read-only flags, network settings or privilege flags
 diverge, or when either can run the worker on the host at all. Containment is
@@ -225,10 +229,14 @@ bash `worker/run_core.sh` conductor. It sequences:
 2. **Bootstrap prelude** —
    [run_bootstrap.ts](../worker/deno/lib/run_bootstrap.ts) performs, in-process,
    PATH bootstrap → run-id / `VIBE_RUN_ID` → worker log init (plus gzip of prior
-   runs' logs,) → git reset to the checkout's own default branch, resolved from
-   `origin/HEAD` (self-healing; `--default-branch` overrides) → software-update
-   check. A failed git reset aborts the run rather than run on stale code
-   (fail-loud,).
+   runs' logs,) → the checkout's default branch, **read** from `origin/HEAD` and
+   reported for the orphaned-branch clean-up (`--default-branch` overrides) →
+   software-update check. Nothing here writes to the checkout (Issue #513): the
+   git reset it used to perform now runs host-side, before the container
+   launches, which is what lets `/workspace` be mounted read-only. The
+   software-update check is gated only by `--skip-software-update` /
+   `SKIP_SOFTWARE_UPDATE`, and an unreadable `origin/HEAD` is logged loud and
+   costs the orphaned-branch clean-up, not the run.
 3. **Config validation + GitHub-user resolution + gh-scope publication** —
    fail-loud on invalid config or an unresolvable user; the active token's OAuth
    scopes are logged with a `[SECURITY]` tag.
@@ -2790,7 +2798,8 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [file_utils.ts](../worker/deno/lib/file_utils.ts)                                                                 | Atomic file writes                                                                                                                                                                   |
 |                             | [temp_utils.ts](../worker/deno/lib/temp_utils.ts)                                                                 | Safe temporary file creation and cleanup                                                                                                                                             |
 |                             | [path_bootstrap.ts](../worker/deno/lib/path_bootstrap.ts)                                                         | PATH setup for cross-platform tool discovery                                                                                                                                         |
-|                             | [run_bootstrap.ts](../worker/deno/lib/run_bootstrap.ts)                                                           | Worker bootstrap prelude orchestration — PATH, run-id, log init, git reset, updates                                                                                                  |
+|                             | [run_bootstrap.ts](../worker/deno/lib/run_bootstrap.ts)                                                           | Worker bootstrap prelude orchestration — PATH, run-id, log init, default branch, updates                                                                                             |
+|                             | [checkout_update.ts](../worker/deno/lib/checkout_update.ts)                                                       | Host-side worker-checkout update and its consecutive-failure escalation (Issues #512, #513)                                                                                          |
 |                             | [security.ts](../worker/deno/lib/security.ts)                                                                     | Input validation and sanitisation                                                                                                                                                    |
 |                             | [validation.ts](../worker/deno/lib/validation.ts)                                                                 | General validation utilities                                                                                                                                                         |
 |                             | [command_args.ts](../worker/deno/lib/command_args.ts)                                                             | Command argument parsing                                                                                                                                                             |

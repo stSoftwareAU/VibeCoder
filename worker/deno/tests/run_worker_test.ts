@@ -46,7 +46,13 @@ function okBootstrap(): BootstrapResult {
       WORKER_LOG_FILE: "",
       LOG_FILE: "",
     },
-    stepsRun: ["path", "run-id", "log-init", "git-reset", "software-update"],
+    stepsRun: [
+      "path",
+      "run-id",
+      "log-init",
+      "default-branch",
+      "software-update",
+    ],
     defaultBranch: "main",
   };
 }
@@ -321,8 +327,8 @@ Deno.test("runWorker - bootstrap failure aborts before the loop (fail-loud)", as
             WORKER_LOG_FILE: "",
             LOG_FILE: "",
           },
-          stepsRun: ["path", "run-id", "log-init", "git-reset"],
-          error: "git reset --hard origin/main failed",
+          stepsRun: ["path", "run-id", "log-init"],
+          error: "worker log initialisation failed",
           defaultBranch: "main",
         });
       },

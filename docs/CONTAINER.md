@@ -860,9 +860,9 @@ its own mounts or capabilities by editing the launcher.
 It resolves the run mode first so that a configuration naming a
 removed mode fails loud in one place (Issue #4), then updates the worker
 checkout host-side (Issue #512) — `worker-checkout-update` fetches `origin`
-and resets the checkout to `origin/<default-branch>`, so the container never
-has to write to `/workspace` to update itself — and then builds the launch
-plan below. A failed update warns and the launch continues on the existing
+and resets the checkout to `origin/<default-branch>`, the only update of that
+checkout since Issue #513 retired the in-container reset, so nothing inside
+the container writes to `/workspace` — and then builds the launch plan below. A failed update warns and the launch continues on the existing
 checkout; `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for a development
 checkout or a CI tree. There is no other branch: the worker runs in the
 container or not at all.
