@@ -1,4 +1,4 @@
-# Spec-Kit Comparison
+# 🔍 Spec-Kit Comparison
 
 A point-in-time assessment of [GitHub spec-kit](https://github.com/github/spec-kit)
 against the Vibe Coder workflow, done to answer one question: **are there good
