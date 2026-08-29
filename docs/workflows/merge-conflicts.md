@@ -196,6 +196,25 @@ the whole stuck set at a glance. The branch updater's "needs a real merge"
 warning now fires **once per PR per process** rather than on every ~2.5-minute
 pass, because the label is the queue.
 
+## 🚰 One cycle empties the queue
+
+The pass takes **every** conflicting PR that is due, not one per cycle
+(Issue #561). A conflicting PR is a PR CI will not run on, and the open-PR gate
+holds new issue claims behind open PRs, so draining conflicts one per cycle —
+most of an hour once issue work is running — throttled issue throughput too.
+
+Three bounds keep the drain from becoming a monopoly:
+
+| Bound | Value | Why |
+| --- | --- | --- |
+| Cycle deadline | 10 minutes must remain | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. |
+| Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
+| Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
+
+The per-PR budgets are unchanged: the 4-hour cooldown, two concluded attempts
+and `needs-human` are the scan's, and the drain only decides how many of the
+PRs already due get taken now.
+
 ## 🔒 Cross-host locking
 
 The pass takes the same `BRANCH_UPDATE_LOCK` PR lock the branch updater and the
@@ -209,6 +228,8 @@ branch at the same time. A host that loses the race returns immediately.
 - [CI fix](ci-fix.md) — the queue that takes over once CI can run again.
 - `worker/deno/lib/pr_merge_conflict_scan.ts` and
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
+- `worker/deno/lib/merge_conflict_drain.ts` — the per-cycle drain loop and its
+  three bounds.
 - `worker/deno/lib/dependency_conflict_apply.ts` — the deterministic pass the
   processor runs before the agent: it applies the registered rules, regenerates
   the lock files whose manifest resolved, stages what it resolved, and returns
