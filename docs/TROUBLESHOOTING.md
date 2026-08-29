@@ -65,6 +65,17 @@ A rebuild takes several minutes. If the build itself fails, `run.sh` records
 self-heal escalation reports that phase through GitHub after two consecutive
 failures.
 
+### Where a launcher failure is reported
+
+A launcher that fails before claiming work has no issue to comment on, so the
+escalation files (or comments on) an issue in the worker's own repository,
+titled `Vibe Coder launcher failing on <host> (<phase>)` — one issue per host
+per phase, updated on the decaying re-notify schedule rather than re-filed
+(Issue #556). A crash *during* an issue still reports on that issue. If neither
+channel can deliver, the attempt is queued and the streak carries it, and
+`self-heal-summary` shows it as `escalation_undeliverable` — a host that cannot
+report is itself the thing to look at.
+
 ### The image store is filling the disk
 
 It should not: every launch prunes each `vibe-coder` tag other than the one this

@@ -10,7 +10,7 @@
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run --allow-net \
  *     mod.ts container-restart-backoff --exit-status 91 \
- *     [--phase-file ~/.vibe-coder/last-launch-phase] \
+ *     [--phase-file ~/.vibe-coder/last-launch-phase] [--repo-dir .] \
  *     [--log-dir ~/logs] [--quota-pause-sleep-seconds 3600] \
  *     [--base-sleep-seconds 60] [--work-dir /path]
  *
@@ -140,6 +140,10 @@ export const containerRestartBackoffCommand: Command = {
       crashConfig,
       repo: optionalString(args["repo"]),
       issueNumber: optionalNumber(args["issue-number"]),
+      // A launcher failure has no issue in flight to report on, so the
+      // fallback channel is the worker's own repository — named by the
+      // checkout the supervisor invokes this from (Issue #556).
+      repoDir: optionalString(args["repo-dir"]) ?? Deno.cwd(),
     });
 
     // The message is the supervisor's sleep interval and nothing else.
