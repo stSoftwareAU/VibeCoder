@@ -285,7 +285,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `github-actions-audit` | (constant) | Always present; used by the dedup, snapshot, and known-open queries. The template seeds the label on first use (it is not seeded elsewhere). |
+| `github-actions-audit` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup and known-open look-ups are repo-wide (Issue #539) and do not filter on it. The template seeds the label on first use (it is not seeded elsewhere). |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 
 Unlike the best-practices scan there is **no `lang:<bucket>` label** —

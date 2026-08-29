@@ -141,8 +141,10 @@ workflow label (`label_security.ts` strips accidents on the next scan).
 
 Each gate class has a stable `BP-`-prefixed id, and `fileFindingOnce` skips a
 gate that already has an **open** issue — one missing gate never yields two open
-issues. A closed prior issue does not block re-filing, so a genuinely recurring
-gap re-files.
+issues. The look-up is repo-wide (Issue #539): the `finding-id` marker is the
+key, so an open duplicate still suppresses the re-file after the issue is
+relabelled or triaged into `needs-human`. A closed prior issue does not block
+re-filing, so a genuinely recurring gap re-files.
 
 ## In-code suppression
 

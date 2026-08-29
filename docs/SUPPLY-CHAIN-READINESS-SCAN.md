@@ -264,7 +264,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `supply-chain-readiness` | (constant) | Always present; used by the dedup, snapshot, and known-open queries. Colour `5319E7`. |
+| `supply-chain-readiness` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup and known-open look-ups are repo-wide (Issue #539) and do not filter on it. Colour `5319E7`. |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 
 There is **no `lang:<bucket>` label** — the scan is single-scope and

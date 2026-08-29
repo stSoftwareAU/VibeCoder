@@ -516,7 +516,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `best-practices` | (constant) | Always present; used by the dedup and snapshot queries. |
+| `best-practices` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup look-up is repo-wide (Issue #539) and does not filter on it. |
 | `lang:<bucket>` | `lang:rust`, `lang:typescript`, `lang:react`, `lang:java`, `lang:html`, `lang:aws-cloudformation`, `lang:terraform`, `lang:general` | The bucket the finding belongs to. Matches the wrapper's bucket marker. |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 

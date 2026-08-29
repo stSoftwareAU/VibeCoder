@@ -767,7 +767,7 @@ export function createGitHubActionsAuditTemplate(
           // two open issues. A closed prior issue does not block re-filing.
           const filed = await fileFindingOnce({
             repo: opts.repo,
-            label: GITHUB_ACTIONS_AUDIT_LABEL,
+            logLabel: GITHUB_ACTIONS_AUDIT_LABEL,
             findingId: "BP-LINTER-github-actions",
             ghCommandFn,
             fileFn: () =>

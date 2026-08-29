@@ -179,6 +179,89 @@ Deno.test("listKnownOpenFindingIds - honours a custom id prefix", async () => {
   assertEquals(ids, ["SEC-aabbccddeeff"]);
 });
 
+Deno.test("listKnownOpenFindingIds - queries every open issue with no label filter", async () => {
+  let captured: string[] = [];
+  const gh = (args: string[]) => {
+    captured = args;
+    return Promise.resolve("[]");
+  };
+  await listKnownOpenFindingIds("o/r", "best-practices", gh);
+  assertEquals(captured.includes("--label"), false);
+  assertEquals(captured[captured.indexOf("--repo") + 1], "o/r");
+  assertEquals(captured[captured.indexOf("--state") + 1], "open");
+  assertEquals(captured[captured.indexOf("--json") + 1], "number,body");
+  assertEquals(captured[captured.indexOf("--limit") + 1], "200");
+});
+
+Deno.test("listKnownOpenFindingIds - collects ids from issues wearing another label", async () => {
+  // A label-scoped query would come back empty: this repo's only matching
+  // issue was triaged into `needs-human` and lost the scan's own label.
+  const gh = (args: string[]) => {
+    if (args.includes("--label")) return Promise.resolve("[]");
+    return Promise.resolve(
+      JSON.stringify([
+        { number: 37, body: "<!-- finding-id: BP-CODEOWNERS01 -->" },
+      ]),
+    );
+  };
+  assertEquals(await listKnownOpenFindingIds("o/r", "best-practices", gh), [
+    "BP-CODEOWNERS01",
+  ]);
+});
+
+Deno.test("listKnownOpenFindingIds - ignores foreign-prefix ids from other scans", async () => {
+  // Repo-wide now, so another scan's ids are in the payload — the idPrefix
+  // filter is what keeps them out of this scan's skip-list.
+  const gh = (_args: string[]) =>
+    Promise.resolve(
+      JSON.stringify([
+        { number: 1, body: "<!-- finding-id: SEC-aabbccddeeff -->" },
+        { number: 2, body: "<!-- finding-id: SWEEP-112233 -->" },
+        { number: 3, body: "<!-- finding-id: BP-keepthis01 -->" },
+      ]),
+    );
+  assertEquals(await listKnownOpenFindingIds("o/r", "best-practices", gh), [
+    "BP-keepthis01",
+  ]);
+});
+
+Deno.test("listKnownOpenFindingIds - hitting the limit logs a loud truncation warning", async () => {
+  const issues = Array.from({ length: 200 }, (_v, i) => ({
+    number: i + 1,
+    body: `<!-- finding-id: BP-bulk${i} -->`,
+  }));
+  let ids: string[] = [];
+  const lines = await captureErrors(async () => {
+    ids = await listKnownOpenFindingIds(
+      "o/r",
+      "best-practices",
+      (_a) => Promise.resolve(JSON.stringify(issues)),
+    );
+  });
+  assertEquals(ids.length, 200);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0] ?? "", "[idle-task-snapshot]");
+  assertStringIncludes(lines[0] ?? "", "o/r");
+  assertStringIncludes(lines[0] ?? "", "200");
+  assertStringIncludes(lines[0] ?? "", "TRUNCATED");
+});
+
+Deno.test("listKnownOpenFindingIds - staying under the limit logs nothing", async () => {
+  const lines = await captureErrors(async () => {
+    await listKnownOpenFindingIds(
+      "o/r",
+      "best-practices",
+      (_a) =>
+        Promise.resolve(
+          JSON.stringify([
+            { number: 1, body: "<!-- finding-id: BP-underlimit -->" },
+          ]),
+        ),
+    );
+  });
+  assertEquals(lines, []);
+});
+
 Deno.test("listKnownOpenFindingIds - gh failure returns empty array", async () => {
   const gh = (_args: string[]): Promise<string> =>
     Promise.reject(new Error("network down"));
@@ -243,6 +326,81 @@ Deno.test("findOpenIssueByFindingId - gh failure returns null", async () => {
     await findOpenIssueByFindingId("o/r", "best-practices", "BP-x", gh),
     null,
   );
+});
+
+Deno.test("findOpenIssueByFindingId - queries every open issue with no label filter", async () => {
+  let captured: string[] = [];
+  const gh = (args: string[]) => {
+    captured = args;
+    return Promise.resolve("[]");
+  };
+  await findOpenIssueByFindingId("o/r", "best-practices", "BP-x", gh);
+  assertEquals(captured.includes("--label"), false);
+  assertEquals(captured[captured.indexOf("--repo") + 1], "o/r");
+  assertEquals(captured[captured.indexOf("--state") + 1], "open");
+  assertEquals(captured[captured.indexOf("--json") + 1], "number,body");
+  assertEquals(captured[captured.indexOf("--limit") + 1], "200");
+});
+
+Deno.test("findOpenIssueByFindingId - matches an open issue wearing another label", async () => {
+  // The regression: the marker is still in the body, but the issue was
+  // relabelled (NEAT-AI-Rebase #37 triaged into `needs-human`), so a
+  // label-scoped query could not see it and the finding was re-filed.
+  const gh = (args: string[]) => {
+    if (args.includes("--label")) return Promise.resolve("[]");
+    return Promise.resolve(
+      JSON.stringify([
+        { number: 37, body: "<!-- finding-id: BP-CODEOWNERS01 -->" },
+      ]),
+    );
+  };
+  assertEquals(
+    await findOpenIssueByFindingId(
+      "o/r",
+      "best-practices",
+      "BP-CODEOWNERS01",
+      gh,
+    ),
+    37,
+  );
+});
+
+Deno.test("findOpenIssueByFindingId - malformed JSON returns null and logs the parse failure", async () => {
+  let result: number | null = 1;
+  const lines = await captureErrors(async () => {
+    result = await findOpenIssueByFindingId(
+      "o/r",
+      "best-practices",
+      "BP-x",
+      (_a) => Promise.resolve("}{ broken"),
+    );
+  });
+  assertEquals(result, null);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0] ?? "", "[idle-task-snapshot]");
+  assertStringIncludes(lines[0] ?? "", "failed to parse gh JSON payload");
+});
+
+Deno.test("findOpenIssueByFindingId - hitting the limit logs a loud truncation warning", async () => {
+  const issues = Array.from({ length: 200 }, (_v, i) => ({
+    number: i + 1,
+    body: `<!-- finding-id: BP-bulk${i} -->`,
+  }));
+  let result: number | null = null;
+  const lines = await captureErrors(async () => {
+    result = await findOpenIssueByFindingId(
+      "o/r",
+      "best-practices",
+      "BP-bulk7",
+      (_a) => Promise.resolve(JSON.stringify(issues)),
+    );
+  });
+  assertEquals(result, 8);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0] ?? "", "[idle-task-snapshot]");
+  assertStringIncludes(lines[0] ?? "", "o/r");
+  assertStringIncludes(lines[0] ?? "", "200");
+  assertStringIncludes(lines[0] ?? "", "TRUNCATED");
 });
 
 // --- listAllOpenIssueTitles -------------------------------------------------
@@ -445,7 +603,7 @@ Deno.test("fileFindingOnce - skips filing when an open issue with the id exists"
     );
   const result = await fileFindingOnce({
     repo: "o/r",
-    label: "best-practices",
+    logLabel: "best-practices",
     findingId: "BP-LINTER-typescript",
     ghCommandFn: gh,
     fileFn: () => {
@@ -464,6 +622,34 @@ Deno.test("fileFindingOnce - skips filing when an open issue with the id exists"
   });
 });
 
+Deno.test("fileFindingOnce - skips filing when the open duplicate wears another label", async () => {
+  let fileCalls = 0;
+  const gh = (args: string[]) => {
+    if (args.includes("--label")) return Promise.resolve("[]");
+    return Promise.resolve(
+      JSON.stringify([
+        { number: 37, body: "<!-- finding-id: BP-CODEOWNERS01 -->" },
+      ]),
+    );
+  };
+  const result = await fileFindingOnce({
+    repo: "o/r",
+    logLabel: "github-actions-audit",
+    findingId: "BP-CODEOWNERS01",
+    ghCommandFn: gh,
+    fileFn: () => {
+      fileCalls++;
+      return Promise.resolve({ number: 64, findingId: "BP-CODEOWNERS01" });
+    },
+  });
+  assertEquals(fileCalls, 0);
+  assertEquals(result, {
+    number: 37,
+    findingId: "BP-CODEOWNERS01",
+    skipped: true,
+  });
+});
+
 Deno.test("fileFindingOnce - files when only a closed issue carries the id", async () => {
   // gh `--state open` returns no match (the prior issue was closed), so the
   // file path runs.
@@ -471,7 +657,7 @@ Deno.test("fileFindingOnce - files when only a closed issue carries the id", asy
   const gh = (_args: string[]) => Promise.resolve("[]");
   const result = await fileFindingOnce({
     repo: "o/r",
-    label: "best-practices",
+    logLabel: "best-practices",
     findingId: "BP-LINTER-typescript",
     ghCommandFn: gh,
     fileFn: () => {
@@ -494,7 +680,7 @@ Deno.test("fileFindingOnce - returns null when no duplicate exists and fileFn fa
   const gh = (_args: string[]) => Promise.resolve("[]");
   const result = await fileFindingOnce({
     repo: "o/r",
-    label: "best-practices",
+    logLabel: "best-practices",
     findingId: "BP-LINTER-rust",
     ghCommandFn: gh,
     fileFn: () => Promise.resolve(null),
