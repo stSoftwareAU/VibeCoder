@@ -948,6 +948,49 @@ endpoint is logged and yields nothing. Wording avoids the literal
 `secret_scanning*: value` and `id-token: write` pairs the outbound secret
 masker rewrites.
 
+### Native worker-token privilege check
+
+The settings pre-filer asks whether the repository is locked down enough;
+this asks the opposite question — whether the worker's own token is trusted
+too much (Issue #599). The operator's hard constraint is that the Vibe Coder
+must never be able to change a GitHub ruleset: rulesets are how a human keeps
+builds clean before a merge, so a worker that can edit them can also erase the
+gate protecting the fleet. Until this check existed the constraint held only
+because the worker did not call those endpoints.
+
+`lib/worker_token_privilege_scanner.ts` verifies it actively and read-only.
+It reads `repos/{owner}/{repo}` and inspects `.permissions`: `admin` or
+`maintain` true means the token can create, edit and delete rulesets and
+change repository settings. Only when one of those is granted does it spend
+two further reads to name the grant precisely — the token's identity (`user`)
+and, for a GitHub App installation token, the installation's `administration`
+and `repository_hooks` permissions (`repos/{owner}/{repo}/installation`).
+
+The finding is one stable escalation per repo,
+`BP-WORKER-TOKEN-CAN-EDIT-RULESETS`, filed with `needs-human`, `security` and
+`severity:high`; the stable id means a re-run updates rather than re-files.
+The remedy in the body is the human one: downgrade the service account to
+`write`/`push` on the repository, or narrow the App installation's
+`administration` permission.
+
+Two invariants hold:
+
+- **No write, ever.** The check never creates, modifies or deletes a ruleset
+  to test access — it reads the permission surface only.
+- **Fail loud.** A lookup that errors, or a repository payload with no
+  `.permissions` object, is logged through `onLookupFailure` and yields no
+  finding. Unknown scope is never reported as "verified safe".
+
+```mermaid
+flowchart TD
+    A["gh api repos/owner/name<br/>(read-only)"] --> B{".permissions readable?"}
+    B -- no --> E["log error<br/>no finding — never 'safe'"]
+    B -- yes --> C{"admin or maintain?"}
+    C -- no --> D["no finding"]
+    C -- yes --> F["read identity + App grants"]
+    F --> G["file BP-WORKER-TOKEN-CAN-EDIT-RULESETS<br/>needs-human · security · severity:high"]
+```
+
 ### Closing the settings findings: `repo-settings-harden`
 
 The settings pre-filer reports; `mod.ts repo-settings-harden --repo owner/name`
@@ -993,8 +1036,8 @@ runner-deprecation finding, each native SHA-pin finding, each native
 permissions finding, each native script-injection finding, each native
 workflow-trigger finding, each native checkout-persist-credentials
 finding, each native broad-artefact-upload finding, each native
-milestone-branch-filter finding, and each native unpinned-CI-install
-finding take one slot apiece, leaving the remainder for Claude's findings. The cap is hard
+milestone-branch-filter finding, each native unpinned-CI-install finding,
+and the worker-token privilege escalation take one slot apiece, leaving the remainder for Claude's findings. The cap is hard
 — surplus candidates are silently dropped.
 
 **No overflow tracker.** Like the best-practices and test-audit scans —
