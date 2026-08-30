@@ -557,6 +557,12 @@ default, and what every host did before the key existed — follows the latest.
   them.
 - **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
   see the resolved mode without re-parsing `.config.json`.
+- **Frozen holds the checkout at the pin.** Before each launch the host-side
+  checkout update leaves the worker checkout on `pinned_ref` instead of
+  resetting it to the tip of the default branch, and says so in `run_core.log`
+  (Issue #624) — see [Host-Side Checkout Update](#-host-side-checkout-update).
+  Because the container image reference is derived from the checkout's
+  content, a frozen checkout holds the image steady too.
 
 ```mermaid
 flowchart LR
@@ -596,6 +602,10 @@ Issue #513 retired the in-container reset, so nothing inside the container
 writes to `/workspace` and that mount can become read-only (Issue #509). The
 branch is read from the checkout's own `origin/HEAD`.
 
+The command runs before the launch plan is built, and so before the
+configuration load, so it reads `update_mode` and `pinned_ref` out of
+`.config.json` under `--base-dir` itself.
+
 ```bash
 deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
   worker/deno/mod.ts worker-checkout-update --base-dir "$(pwd)"
@@ -617,6 +627,33 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   The streak lives in `~/logs/checkout-update-failure-streak` and a successful
   update resets it to zero. `--allow-sys=hostname` is what lets that title name
   the host; without it every host would share one report.
+- **A frozen host is held at its pin instead** (Issue #624). Under
+  `update_mode: "frozen"` the reset to `origin/<default-branch>` would defeat
+  the pin, so the command fetches (a tag pushed since the last launch has to
+  resolve), then checks the checkout out onto `pinned_ref` — commit SHA or tag,
+  detached HEAD included — and appends
+  `Checkout update skipped: update_mode=frozen, pinned to <ref>` to
+  `run_core.log`. The skip is never silent.
+- **A checkout already on the pin is not written to at all.** `HEAD` resolving
+  to `pinned_ref` means no fetch, no checkout, no clean — just the log line —
+  so a launch never churns the tree.
+- **A pin that does not resolve is loud.** An unknown `pinned_ref`, an
+  unreadable or malformed `.config.json`, an unrecognised `update_mode` or a
+  `frozen` host with no `pinned_ref` exits non-zero naming the offending value;
+  the launcher warns and launches on the existing checkout, which is still the
+  pinned one. Three such runs escalate through the same streak above.
+- **`VIBE_SKIP_CHECKOUT_UPDATE` wins over both modes**, with its usual message.
+
+```mermaid
+flowchart TD
+    S{"VIBE_SKIP_CHECKOUT_UPDATE"} -->|set| K["skip everything, say so"]
+    S -->|unset| M{"update_mode in<br/>.config.json"}
+    M -->|dynamic / absent| D["fetch → checkout branch →<br/>reset --hard origin/branch → clean"]
+    M -->|frozen| H{"HEAD == pinned_ref?"}
+    H -->|yes| L["log the skip only —<br/>no git write"]
+    H -->|no| F["fetch --tags → checkout --detach ref →<br/>reset --hard ref → clean"]
+    F -->|ref unresolvable| X["exit non-zero naming the ref —<br/>launcher warns, launches on the pin"]
+```
 
 ### 🧠 Phase Model Overrides
 

@@ -187,6 +187,13 @@ Deno. Both launchers follow the same steps:
    naming the host and the collision (Issue #4204, migrated here with the
    reset by Issue #513). `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for
    a development checkout or a CI tree, which must not be reset mid-run.
+   A host whose `.config.json` says `update_mode: "frozen"` is held at
+   `pinned_ref` instead of reset to the tip — the command reads that file
+   itself, because it runs before the configuration load — and logs
+   `Checkout update skipped: update_mode=frozen, pinned to <ref>` rather than
+   skipping silently (Issue #624). A checkout already on the pin is not
+   written to; a pin that does not resolve is the same loud warning as any
+   other failure, and the launch continues on the pinned checkout it has.
 3. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
    resolves and validates the container runtime, computes the content-derived
    image reference, and constructs the fixed least-privilege mount set. No
