@@ -27,6 +27,14 @@ this feature exists to avoid:
 ./setup.sh --remove-repo owner/repo                  # remove one
 ```
 
+On Windows, the same three through `setup.ps1`, as named parameters:
+
+```powershell
+.\setup.ps1 -ListRepos
+.\setup.ps1 -AddRepo owner/repo
+.\setup.ps1 -RemoveRepo owner/repo
+```
+
 Each short-circuits before any prompt, install or sync, and exits non-zero on
 failure so it can be scripted. Both writes are idempotent: adding a repository
 already present, or removing one that is not listed, changes nothing and says
