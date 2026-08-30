@@ -6,13 +6,15 @@
  * injected gh mock — no real network.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AddRepoDeps,
   type AddRepoFsDeps,
   type AddRepoTargetStatus,
   addRepoToMonitoredList,
+  listMonitoredRepos,
   parseAddRepoTitle,
+  removeRepoFromMonitoredList,
   validateAddRepoTarget,
 } from "../lib/add_repo.ts";
 import type { CommandOutput } from "../setup/collaborator_precheck.ts";
@@ -274,4 +276,155 @@ Deno.test("addRepoToMonitoredList - returns err on invalid JSON", async () => {
     fsDeps(store),
   );
   assertEquals(result.ok, false);
+});
+
+// ===========================================================================
+// removeRepoFromMonitoredList / listMonitoredRepos (Issue #672)
+//
+// Adding was automated for the `add-repo:` issue path years before removing
+// was reachable at all — removing only ever meant an operator editing
+// .config.json by hand, which is the asymmetry that let the list drift.
+// ===========================================================================
+
+function fsWith(content: string): {
+  deps: AddRepoFsDeps;
+  written: () => string;
+} {
+  let written = content;
+  return {
+    deps: {
+      readTextFile: () => Promise.resolve(written),
+      writeTextFile: (_p: string, data: string) => {
+        written = data;
+        return Promise.resolve();
+      },
+    } as AddRepoFsDeps,
+    written: () => written,
+  };
+}
+
+Deno.test("removeRepoFromMonitoredList - removes the repo and its repo_config", async () => {
+  const fs = fsWith(JSON.stringify({
+    repos: ["owner/keep", "owner/drop"],
+    repo_config: {
+      "owner/drop": { nice: -10 },
+      "owner/keep": { nice: -10 },
+    },
+  }));
+
+  const result = await removeRepoFromMonitoredList(
+    "owner/drop",
+    "/cfg.json",
+    fs.deps,
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.removed, true);
+  // Leaving the repo_config behind would accumulate settings for
+  // repositories nobody monitors, indistinguishable from a parked entry.
+  assertEquals(result.value.repoConfigRemoved, true);
+
+  const after = JSON.parse(fs.written());
+  assertEquals(after.repos, ["owner/keep"]);
+  assertEquals(Object.keys(after.repo_config), ["owner/keep"]);
+});
+
+Deno.test("removeRepoFromMonitoredList - a repo with no repo_config still removes", async () => {
+  const fs = fsWith(JSON.stringify({
+    repos: ["owner/a", "owner/b"],
+    repo_config: { "owner/a": { nice: -10 } },
+  }));
+
+  const result = await removeRepoFromMonitoredList(
+    "owner/b",
+    "/cfg.json",
+    fs.deps,
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.removed, true);
+  assertEquals(result.value.repoConfigRemoved, false);
+  assertEquals(JSON.parse(fs.written()).repos, ["owner/a"]);
+});
+
+Deno.test("removeRepoFromMonitoredList - removing an absent repo rewrites nothing", async () => {
+  const original = JSON.stringify({ repos: ["owner/a"] });
+  const fs = fsWith(original);
+
+  const result = await removeRepoFromMonitoredList(
+    "owner/never-listed",
+    "/cfg.json",
+    fs.deps,
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.removed, false);
+  // Idempotent AND non-destructive: an unnecessary rewrite would reformat the
+  // operator's file for nothing.
+  assertEquals(fs.written(), original);
+});
+
+Deno.test("removeRepoFromMonitoredList - rejects a malformed slug before writing", async () => {
+  const original = JSON.stringify({ repos: ["owner/a"] });
+  const fs = fsWith(original);
+
+  const result = await removeRepoFromMonitoredList(
+    "not a repo",
+    "/cfg.json",
+    fs.deps,
+  );
+
+  assertEquals(result.ok, false);
+  assertEquals(fs.written(), original);
+});
+
+Deno.test("removeRepoFromMonitoredList - an unreadable config FAILS rather than reporting success", async () => {
+  // Unlike add, a missing config is not benign here: reporting success would
+  // tell the operator their repository is gone when nothing was ever read.
+  const deps = {
+    readTextFile: () => Promise.reject(new Error("No such file or directory")),
+    writeTextFile: () => Promise.resolve(),
+  } as AddRepoFsDeps;
+
+  const result = await removeRepoFromMonitoredList(
+    "owner/a",
+    "/gone.json",
+    deps,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "Failed to read");
+  }
+});
+
+Deno.test("removeRepoFromMonitoredList - invalid JSON is refused, not overwritten", async () => {
+  const original = "{ this is not json";
+  const fs = fsWith(original);
+
+  const result = await removeRepoFromMonitoredList(
+    "owner/a",
+    "/cfg.json",
+    fs.deps,
+  );
+
+  assertEquals(result.ok, false);
+  // The operator's file survives intact — a config that cannot be parsed is
+  // more likely mid-edit than corrupt.
+  assertEquals(fs.written(), original);
+});
+
+Deno.test("listMonitoredRepos - reports the repos in config order", async () => {
+  const fs = fsWith(JSON.stringify({ repos: ["owner/b", "owner/a"] }));
+  const result = await listMonitoredRepos("/cfg.json", fs.deps);
+  assert(result.ok);
+  // Config order, not sorted: it is what the operator will see when editing.
+  assertEquals(result.value, ["owner/b", "owner/a"]);
+});
+
+Deno.test("listMonitoredRepos - a config with no repos key lists nothing", async () => {
+  const fs = fsWith(JSON.stringify({ allowed_authors: ["nleck"] }));
+  const result = await listMonitoredRepos("/cfg.json", fs.deps);
+  assert(result.ok);
+  assertEquals(result.value, []);
 });

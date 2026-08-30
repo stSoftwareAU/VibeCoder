@@ -1054,6 +1054,27 @@ main() {
         esac
     done
 
+    # Issue #672: adding or removing ONE repository must not mean sitting
+    # through the whole wizard. The operator said it plainly — "I don't use it
+    # for adding repos" — and hand-editing .config.json is what the wizard was
+    # meant to prevent. These short-circuit before any prompt, install or sync.
+    case "${1:-}" in
+        --add-repo)
+            [[ -n "${2:-}" ]] || { print_error "--add-repo needs owner/repo"; exit 1; }
+            run_setup_cli repos --add "$2"
+            return $?
+            ;;
+        --remove-repo)
+            [[ -n "${2:-}" ]] || { print_error "--remove-repo needs owner/repo"; exit 1; }
+            run_setup_cli repos --remove "$2"
+            return $?
+            ;;
+        --list-repos)
+            run_setup_cli repos
+            return $?
+            ;;
+    esac
+
     # Prerequisites check via Deno
     if [[ "${auto_install}" == "true" ]]; then
         run_setup_cli prerequisites --auto-install
