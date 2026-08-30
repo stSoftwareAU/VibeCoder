@@ -36,6 +36,8 @@ import {
 } from "../lib/crash_notification.ts";
 import { setSelfHealEventsWorkDir } from "../lib/self_heal_events.ts";
 import { consumeQuotaPauseMarker } from "../lib/quota_pause.ts";
+import { resolveRunHostId } from "../lib/run_mode_record.ts";
+import { formatLogTail } from "../lib/launcher_failure_evidence.ts";
 
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -69,6 +71,14 @@ function logDir(): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
   return `${home}/logs`;
 }
+
+/**
+ * How much of the failing run's log to quote (Issue #633).
+ *
+ * Enough to show what the run was doing when it stopped, short enough that
+ * the alert stays readable in a GitHub comment.
+ */
+const LAUNCH_LOG_TAIL_LINES = 40;
 
 export const containerRestartBackoffCommand: Command = {
   name: "container-restart-backoff",
@@ -118,8 +128,34 @@ export const containerRestartBackoffCommand: Command = {
       optionalString(args["log-dir"]) ?? logDir(),
     );
 
+    // Issue #633: the alert named `unknown-host` and quoted no log, so it
+    // carried nothing that was not already in the state file. Both were
+    // knowable.
+    //
+    // The host comes from the same resolver the run's own log line uses
+    // (Issue #4189), so the alert and the log agree on the machine's name.
+    const hostId = resolveRunHostId();
+
+    // The log tail is the launcher's own per-cycle worker log, in $HOME/logs
+    // — the one directory the host and the container share, because the work
+    // directory rides a named volume the host cannot read. When the worker
+    // dies early that file holds only its header line, and saying so is
+    // itself the finding: it means the run died before reaching anything
+    // that logs.
+    const launchLog = optionalString(args["launch-log"]);
+    const logTail = launchLog
+      ? await formatLogTail({
+        path: launchLog,
+        maxLines: LAUNCH_LOG_TAIL_LINES,
+      }, {
+        readTextFile: (path: string) => Deno.readTextFile(path),
+      })
+      : undefined;
+
     const outcome = await recordContainerRestartOutcome({
       workDir,
+      hostId,
+      ...(logTail !== undefined ? { logTail } : {}),
       exitStatus,
       phaseMarker: await readLaunchPhaseMarker(phaseFile),
       quotaPause,

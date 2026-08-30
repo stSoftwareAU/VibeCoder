@@ -160,6 +160,13 @@ unfixed code and passes after the fix, and state that linkage in the PR summary.
 - **Do not** reduce iteration counts to make "performance tests" faster in unit
   tests. If you need to confirm performance, create proper benchmarks and
   include results in the PR summary.
+- **Guard super-linearity by shape, not by clock** — catastrophic backtracking
+  has no wrong output, only a runtime one, so a few tests must measure. Use
+  [`tests/support/growth.ts`](worker/deno/tests/support/growth.ts)
+  (`assertLinearGrowth`), which times the same work at size N and 4N and fails
+  only when the cost grew faster than the input. A slower fleet host inflates
+  both readings and stays green; an absolute millisecond budget does not
+  (Issue #530).
 
 ## Quality Gates
 

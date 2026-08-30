@@ -706,6 +706,20 @@ export interface RepoConfig {
    * close a `security`-labelled finding (Issue #3540).
    */
   skipSecurityFixCheck?: boolean;
+  /**
+   * Credentials this repository's own checks need (Issues #573, #574).
+   *
+   * Scoped here rather than ambient: since Issue #572 the child environment
+   * is built from an allowlist, so a repository whose quality gate needs a
+   * cloud credential declares it and only that repository receives it.
+   * Prefer `mint` — a credential that expires cannot be spent by a leak.
+   */
+  qualityCredentials?: {
+    /** Command whose stdout is `KEY=value` lines, run once per use. */
+    mint?: string;
+    /** Names taken from the worker's environment. Long-lived; declared. */
+    passthrough?: string[];
+  };
   /** Docker image for running quality checks in a container (Issue #1228) */
   dockerImage?: string;
   /** Per-repo quality check timeout in seconds (Issue #1228) */
