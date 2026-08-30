@@ -1327,12 +1327,18 @@ as mergeable.
 6. Fetches check annotations and returns the highest-priority failure.
 
 **Retry tracking** — uses local state files in `$CI_CHECK_STATE_DIR` (default
-`$WORK_DIR/.ci_check_state`, resolved to an absolute path by
+`$WORK_DIR/.ci_check_state`, resolved to an **always absolute** path by
 [ci_check_state_dir.ts](../worker/deno/lib/ci_check_state_dir.ts) — Issue #552).
 Each check run ID has a `.retries` file recording how many times it has been
 attempted. `record_ci_check_retry()` increments the counter before each fix
-attempt, and fails loud naming the directory when it cannot: an unwritable
-state directory stops every automatic CI fix.
+attempt.
+
+The **scan** and the **processor** must resolve the same directory. The scan
+reads the retry counters the processor writes, and clears the auto-fix attempt
+budget recorded against a PR once that PR reports green. While the scan kept a
+relative default it addressed a different store: the cap was never observed, a
+spent auto-fix budget was never cleared, and the lane escalated red checks to a
+human rather than fixing them.
 
 **Priority** — runs at priority 1.55 in the main loop, after spelling fixes
 (1.5) but before branch updates (1.6).
