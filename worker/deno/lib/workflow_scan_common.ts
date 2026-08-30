@@ -289,6 +289,13 @@ export interface FileWorkflowFindingOptions {
   runId: string;
   /** Injected gh CLI runner. */
   ghCommandFn: GhCommandFn;
+  /**
+   * Extra labels beyond `github-actions-audit` and `severity:<level>`, for a
+   * finding whose fix is not a code change — the worker-token privilege
+   * escalation passes `needs-human` and `security` (Issue #599). Every label
+   * passed must be one the worker may apply (`worker_label_guard.ts`).
+   */
+  extraLabels?: readonly string[];
 }
 
 /**
@@ -306,8 +313,9 @@ export interface FileWorkflowFindingOptions {
  *   - The attribution footer as the final line, separated by a blank
  *     line.
  *
- * Attaches exactly the `github-actions-audit` label plus one
- * `severity:<level>` label — never an operational workflow label.
+ * Attaches the `github-actions-audit` label, one `severity:<level>` label,
+ * and any caller-supplied `extraLabels` — never an operational workflow
+ * label the worker may not apply.
  *
  * Returns `{ number, findingId }` on success, or `null` when the gh call
  * throws or its output does not contain an `/issues/<n>` URL — the
@@ -359,6 +367,9 @@ export async function fileWorkflowFinding(
     "--label",
     `severity:${opts.severity}`,
   ];
+  for (const extra of opts.extraLabels ?? []) {
+    args.push("--label", extra);
+  }
 
   let raw: string;
   try {

@@ -185,7 +185,8 @@ flowchart LR
 **Productivity with quality:** The worker is told to follow **TDD** (Test-Driven
 Development), **KISS** (Keep It Simple), **DRY** (Don't Repeat Yourself), and
 the rest of the playbook — and every PR runs the full quality gate
-(`./quality.sh`: `deno test`, `deno lint`, `deno check`, `deno fmt --check`).
+(`./quality.sh`: `deno test`, `deno lint`, `deno check`, `deno fmt --check`,
+and semgrep over the changed files).
 Have your cake and eat it too: more throughput, same (or better) gates. Full
 coding standards: [Coding Standards](CODING-STANDARDS.md).
 
@@ -351,6 +352,13 @@ Optional: [shellcheck](https://github.com/koalaman/shellcheck) is **not** run by
 `./quality.sh` — bash linting is owned by each repo's own CI, and
 this repo lints its shell scripts in the `validate-scripts` GitHub Actions
 workflow. Install it only if you want to reproduce that CI check locally.
+
+Optional: [semgrep](https://semgrep.dev/docs/getting-started/quickstart) **is**
+run by `./quality.sh`, over the branch's changed files, using the same
+`p/default` ruleset as the blocking `semgrep.yml` PR check (Issue #559). It is
+not baked into the image, so without it the stage reports `SKIPPED` and names
+the remedy. Install it (`pipx install semgrep`) to meet SAST findings before
+the push instead of after it.
 
 ## 📚 One set of instructions
 

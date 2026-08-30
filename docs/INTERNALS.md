@@ -116,9 +116,22 @@ The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
 `worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
 launcher that locates Deno and delegates. The gate runs: prompt immutability,
 benchmark audit, `deno test`, `deno lint`, `deno check`, `deno fmt --check`,
-plus mermaid, markdownlint, and the docs prompt-version checks. Shell-script
-linting is **not** run by the worker — it is delegated to each target repo's own
-CI.
+plus mermaid, markdownlint, semgrep, and the docs prompt-version checks.
+Shell-script linting is **not** run by the worker — it is delegated to each
+target repo's own CI.
+
+The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
+the gap that let two PRs sit blocked on the same
+`detect-non-literal-regexp` rule: `semgrep.yml` is a blocking PR check, so
+before this the first sight of a SAST finding was a red PR. It runs the same
+`p/default` ruleset over the branch's changed files only — the diff against the
+merge-base with the remote's default branch, plus uncommitted and untracked
+files — using a `semgrep` binary on PATH, or a container runtime that
+**already holds** the CI-pinned `SEMGREP_IMAGE` (never pulling it mid-gate).
+No semgrep, no git work tree, an unreachable rule registry, or a scan past the
+300s deadline each report `SKIPPED` with the reason named; `--strict` promotes
+that to a failure. A non-zero exit that is none of those is `FAILED` — an
+unreadable or empty report is never read as "clean".
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output

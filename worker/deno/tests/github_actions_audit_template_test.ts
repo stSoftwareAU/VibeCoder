@@ -50,6 +50,7 @@ import type { Logger } from "../types.ts";
 import type { Result } from "../types.ts";
 import type { DeprecationFinding } from "../lib/runner_deprecation_scanner.ts";
 import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
+import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
 
 // Point the default-branch persistent cache at a throwaway temp path so
 // the trigger pre-filer's default resolver (Issue #2587) never reads or
@@ -194,6 +195,15 @@ function makeGhStub(scenario: {
       }
       if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
         return Promise.resolve(JSON.stringify({
+          // Issue #599: the same payload carries the worker token's own
+          // permissions. `push` without `admin`/`maintain` is the correctly
+          // scoped token, so the privilege scanner stays silent here.
+          permissions: {
+            admin: false,
+            maintain: false,
+            push: true,
+            pull: true,
+          },
           security_and_analysis: {
             secret_scanning: { status: "enabled" },
             secret_scanning_push_protection: { status: "enabled" },
@@ -1788,6 +1798,278 @@ Deno.test(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Native gitleaks-drift pre-filer (Issue #598, part of #566)
+// ---------------------------------------------------------------------------
+
+/** A gitleaks workflow with the given action ref and branch filter. */
+function gitleaksFixture(ref: string, branches: string[]) {
+  const rawText = [
+    "name: Gitleaks",
+    "on:",
+    "  pull_request:",
+    `    branches: [${branches.join(", ")}]`,
+    "permissions:",
+    "  contents: read",
+    "jobs:",
+    "  gitleaks:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    `      - uses: gitleaks/gitleaks-action@${ref}`,
+    "      - name: Gitleaks (open-source CLI fallback)",
+    "        run: ./gitleaks git --redact --no-banner --exit-code 1 .",
+  ].join("\n");
+  return {
+    path: ".github/workflows/gitleaks.yml",
+    rawText,
+    parsed: {
+      name: "Gitleaks",
+      on: { pull_request: { branches } },
+      permissions: { contents: "read" },
+      jobs: {
+        gitleaks: {
+          "runs-on": "ubuntu-latest",
+          steps: [
+            { uses: `gitleaks/gitleaks-action@${ref}` },
+            {
+              name: "Gitleaks (open-source CLI fallback)",
+              run: "./gitleaks git --redact --no-banner --exit-code 1 .",
+            },
+          ],
+        },
+      },
+    },
+    kind: "workflow" as const,
+  };
+}
+
+Deno.test(
+  "runTask - gitleaks pre-filer files a stale action pin and joins seenIds",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [970],
+      knownOpen: [],
+      issueCreateNumbers: [970],
+    });
+    let scanReceived: { knownOpen: string[] } | undefined;
+    // SHA-pinned (so the SHA-pin pre-filer stays quiet) but not the SHA
+    // `pinnedAction()` resolves today, and milestone-covered so the branch
+    // finding stays quiet — isolating the stale-pin finding.
+    const stale = gitleaksFixture("c".repeat(40), [
+      "Develop",
+      "main",
+      "milestone/*",
+    ]);
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([stale]),
+      runScanFn: (opts) => {
+        scanReceived = { knownOpen: [...opts.knownOpenFindingIds] };
+        return Promise.resolve({ ok: true, value: true });
+      },
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    const c = creates[0]!;
+    assertStringIncludes(
+      c.body,
+      "<!-- finding-id: BP-GITLEAKS-ACTION-STALE-gitleaks -->",
+    );
+    assert(c.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
+    assert(c.labels.includes("severity:medium"));
+    // The pre-filed id is in Claude's known-open list so the LLM does not
+    // double-file it.
+    assert(scanReceived !== undefined);
+    assert(
+      scanReceived!.knownOpen.includes("BP-GITLEAKS-ACTION-STALE-gitleaks"),
+    );
+  },
+);
+
+Deno.test(
+  "runTask - gitleaks branch gap is not double-filed beside the milestone finding",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [971],
+      knownOpen: [],
+      issueCreateNumbers: [971],
+    });
+    // `["*"]` never matches `milestone/<slug>`, so both the milestone
+    // pre-filer and the gitleaks drift scanner see the same gap. Only the
+    // milestone finding may be filed. The action is pinned to the current
+    // SHA and the CLI fallback is present, so no other drift class fires.
+    const current = PINNED_ACTIONS["gitleaks/gitleaks-action"]!.sha;
+    const drifted = gitleaksFixture(current, ['"*"']);
+    drifted.parsed.on.pull_request.branches = ["*"];
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([drifted]),
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    assertStringIncludes(
+      creates[0]!.body,
+      "<!-- finding-id: BP-MILESTONE-FILTER-gitleaks -->",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - gitleaks PR-coverage pre-filer files the finding and joins seenIds (Issue #601)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [972],
+      knownOpen: [],
+      issueCreateNumbers: [972],
+    });
+    // Canonical shape, so no drift class fires — this isolates the
+    // observed-coverage finding.
+    const current = PINNED_ACTIONS["gitleaks/gitleaks-action"]!.sha;
+    const canonical = gitleaksFixture(current, [
+      "Develop",
+      "main",
+      "milestone/*",
+    ]);
+    let scanReceived: { knownOpen: string[] } | undefined;
+    let coverageArgs: { repo: string; fileCount: number } | undefined;
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([canonical]),
+      scanGitleaksPrCoverageFn: (repo, files, _ghFn, options) => {
+        coverageArgs = { repo, fileCount: files.length };
+        assert(
+          !Array.from(options.knownOpenFindingIds).includes(
+            "BP-GITLEAKS-NOT-OBSERVED",
+          ),
+        );
+        return Promise.resolve([{
+          findingId: "BP-GITLEAKS-NOT-OBSERVED",
+          severity: "medium" as const,
+          title:
+            "🟠 Gitleaks workflow is present but never reported on a recent pull request",
+          file: ".github/workflows/gitleaks.yml",
+          lines: 3,
+          whyItMatters: "why",
+          suggestedFix: "fix",
+          evidence: "Sampled #12, #11; no gitleaks check reported.",
+        }]);
+      },
+      runScanFn: (opts) => {
+        scanReceived = { knownOpen: [...opts.knownOpenFindingIds] };
+        return Promise.resolve({ ok: true, value: true });
+      },
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(coverageArgs, { repo: "org/repo", fileCount: 1 });
+    assertEquals(
+      creates.length,
+      1,
+      JSON.stringify(creates.map((c) => c.title)),
+    );
+    const created = creates[0]!;
+    assertStringIncludes(
+      created.body,
+      "<!-- finding-id: BP-GITLEAKS-NOT-OBSERVED -->",
+    );
+    assertStringIncludes(created.body, "#12");
+    assert(created.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
+    assert(created.labels.includes("severity:medium"));
+    assert(scanReceived!.knownOpen.includes("BP-GITLEAKS-NOT-OBSERVED"));
+  },
+);
+
+Deno.test(
+  "runTask - a degraded gitleaks coverage sample is logged, never silent (Issue #601)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+      knownOpen: [],
+      issueCreateNumbers: [], // must NOT be called
+    });
+    const { logger, records } = makeLogger();
+    const current = PINNED_ACTIONS["gitleaks/gitleaks-action"]!.sha;
+    const canonical = gitleaksFixture(current, [
+      "Develop",
+      "main",
+      "milestone/*",
+    ]);
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([canonical]),
+      scanGitleaksPrCoverageFn: (_repo, _files, _ghFn, options) => {
+        options.onSamplingNote(
+          "gitleaks PR coverage: could not list closed pull requests for " +
+            "org/repo: HTTP 403: Forbidden — coverage is unknown, not clean",
+        );
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    assert(
+      records.some((r) =>
+        r.startsWith("warn:") && r.includes("HTTP 403: Forbidden")
+      ),
+      JSON.stringify(records),
+    );
+  },
+);
+
 Deno.test(
   "runTask - artefact-upload pre-filer leaves a scoped path untouched",
   async () => {
@@ -2597,6 +2879,118 @@ Deno.test(
         e.includes("settings exploded")
       ),
       JSON.stringify(errors),
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Worker-token privilege escalation (Issue #599)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "runTask - an over-privileged worker token is filed as a needs-human security escalation (Issue #599)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+      issueCreateNumbers: [910],
+    });
+    const { logger, records } = makeLogger();
+    const ensured: string[] = [];
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      scanRepoSettingsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      ensureFindingLabelsFn: (_repo, labels) => {
+        ensured.push(...labels);
+        return Promise.resolve();
+      },
+      scanWorkerTokenPrivilegesFn: (repo, _gh, options) => {
+        assertEquals(repo, "org/repo");
+        assert(
+          !Array.from(options.knownOpenFindingIds).includes(
+            "BP-WORKER-TOKEN-CAN-EDIT-RULESETS",
+          ),
+        );
+        return Promise.resolve([{
+          findingId: "BP-WORKER-TOKEN-CAN-EDIT-RULESETS",
+          severity: "high" as const,
+          title:
+            "🔴 The worker's GitHub token holds `admin` on org/repo — it can delete the ruleset that gates merges",
+          file: "worker GitHub token",
+          lines: 0,
+          whyItMatters: "why",
+          suggestedFix: "Human action — downgrade to write.",
+          evidence: "repos/org/repo .permissions: admin=true",
+          labels: ["needs-human", "security"] as const,
+        }]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    const created = creates[0]!;
+    assert(created.title.includes("ruleset"), created.title);
+    for (const label of ["needs-human", "security", "severity:high"]) {
+      assert(created.labels.includes(label), created.labels.join(","));
+    }
+    assertEquals(ensured.sort(), ["needs-human", "security"]);
+    assertEquals(records.filter((r) => r.startsWith("error:")), []);
+  },
+);
+
+Deno.test(
+  "runTask - a failing worker-token privilege check is logged loud and files nothing (Issue #599)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+    });
+    const { logger, records } = makeLogger();
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      scanRepoSettingsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      scanWorkerTokenPrivilegesFn: (_repo, _gh, options) => {
+        options.onLookupFailure("repos/org/repo (.permissions)", "HTTP 403");
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    assert(
+      records.some((r) =>
+        r.startsWith("error:") &&
+        r.includes("worker token privilege lookup failed") &&
+        r.includes("HTTP 403")
+      ),
+      JSON.stringify(records),
     );
   },
 );

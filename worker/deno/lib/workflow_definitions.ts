@@ -84,7 +84,7 @@ const gitleaks: WorkflowSpec = {
   suggestedFilename: "gitleaks.yml",
   category: "security",
   // Mirrors the canonical pattern in stSoftwareAU/private-repo-14
-  // (.github/workflows/quality.yml). gitleaks-action@v2 fails with
+  // (.github/workflows/quality.yml). gitleaks-action@v3 fails with
   // ErrLicense on organisation-owned repos when GITLEAKS_LICENSE is
   // unset (Issue #1636), so the licence env var is wired through.
   // Dependabot-authored PRs never receive Actions secrets, so the
@@ -95,7 +95,11 @@ const gitleaks: WorkflowSpec = {
   // pinned to 40-character commit SHAs per the supply-chain hardening
   // policy (Issue #1756) — tag hijack on actions/checkout or
   // gitleaks-action would otherwise give an attacker access to every
-  // secret available to CI.
+  // secret available to CI. Issue #594 refreshed the template against
+  // this repository's own gitleaks.yml: milestone-aware branch filter,
+  // credential persistence disabled on checkout, and a cancelling
+  // concurrency group. `worker/deno/tests/gitleaks_template_conformance_test.ts`
+  // locks those invariants.
   template: `name: Gitleaks
 
 # Detect secrets in pull request diffs.
@@ -105,19 +109,40 @@ const gitleaks: WorkflowSpec = {
 # actions are pinned to 40-character commit SHAs (Issue #1756) so a
 # hijacked tag cannot exfiltrate CI secrets.
 #
-# gitleaks-action@v2 requires an organisation licence (GITLEAKS_LICENSE)
-# on org-owned repos. Dependabot-authored PRs do not receive Actions
-# secrets, so the licence is empty for them and the action exits with
-# ErrLicense (Issue #2981). For those licence-less runs we fall back to
-# the free, open-source gitleaks CLI, which needs no licence.
+# gitleaks-action@v3 requires an organisation licence (GITLEAKS_LICENSE)
+# on org-owned repos (v2 behaved the same way). Dependabot-authored PRs
+# do not receive Actions secrets, so the licence is empty for them and
+# the action exits with ErrLicense before scanning (Issue #2981). For
+# those licence-less runs we fall back to the free, open-source gitleaks
+# CLI, which needs no licence.
+#
+# Deliberately omitted (Issue #594) so the template runs unmodified on a
+# freshly set-up repository, which has neither of them yet:
+#   - the \`environment: scanning-secrets\` gate this repository's own copy
+#     uses to scope the licence secret — add it once the GitHub
+#     Environment exists;
+#   - \`GITLEAKS_CONFIG: .github/gitleaks.toml\` — add it once the repo
+#     commits an allowlist config, and pass \`--config\` to the CLI
+#     fallback so both scanners share it.
 
 on:
   pull_request:
-    branches: ["*"]
+    # A GitHub branch filter \`*\` never matches a \`/\`, so the former
+    # \`["*"]\` read as "every branch" while silently skipping every
+    # \`milestone/<slug>\` PR (Issue #1300) — the dominant merge path. The
+    # targets are listed explicitly instead (Issues #3360, #594).
+    branches: [Develop, main, milestone/*]
 
 permissions:
   contents: read
   pull-requests: read
+
+# Only the latest commit's result matters for a PR check, so a per-ref
+# group with cancellation stops rapid pushes spawning parallel,
+# redundant runs (Issue #2972).
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gitleaks:
@@ -131,6 +156,9 @@ jobs:
     steps:
       - uses: ${pinnedAction("actions/checkout")}
         with:
+          # Nothing here pushes, so the job token must not be left behind
+          # in .git/config where a later step could read it.
+          persist-credentials: false
           fetch-depth: 0
       # Fetch the PR base branch so the computed commit range
       # (\`<base_sha>..<head_sha>\`) resolves on the runner. Without this
