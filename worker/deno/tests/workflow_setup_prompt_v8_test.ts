@@ -131,7 +131,9 @@ Deno.test("workflow_setup v8 - carries every required placeholder", async () => 
 // --- Gap 1: the branch filter must reach milestone PRs ---
 
 Deno.test("workflow_setup v8 - the canonical example filters on milestone branches", async () => {
-  const branches = pullRequestBranches(canonicalGitleaksExample(await loadV8()));
+  const branches = pullRequestBranches(
+    canonicalGitleaksExample(await loadV8()),
+  );
   assert(
     Array.isArray(branches),
     "the example must declare an explicit pull_request branch filter",
