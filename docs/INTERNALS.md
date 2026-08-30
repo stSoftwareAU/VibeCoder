@@ -133,10 +133,10 @@ No semgrep, no git work tree, an unreachable rule registry, or a scan past the
 that to a failure. A non-zero exit that is none of those is `FAILED` — an
 unreadable or empty report is never read as "clean".
 
-The agent container bakes `semgrep` at exactly `SEMGREP_IMAGE_TAG` (Issue
-#650), so a fleet run scans instead of skipping — before that the image shipped
-no `semgrep` binary and no container runtime, and the stage `SKIP`ped every
-time. See [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
+The agent container bakes `semgrep` at exactly `SEMGREP_IMAGE_TAG`
+(Issue #650), so a fleet run scans instead of skipping — before that the image
+shipped no `semgrep` binary and no container runtime, and the stage `SKIP`ped
+every time. See [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output
