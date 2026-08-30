@@ -53,6 +53,10 @@ import {
 } from "./milestone_branch_filter_scanner.ts";
 import { pinnedAction } from "./pinned_actions.ts";
 import {
+  checkNamesFromWorkflow,
+  requiredStatusCheckSection,
+} from "./required_status_check_guidance.ts";
+import {
   isFindingSuppressed,
   type WorkflowFile,
   type WorkflowFindingSeverity,
@@ -285,6 +289,16 @@ export function scanGitleaksDrift(
     }
     findings.push({
       ...finding,
+      // Currency is only half the gap: a corrected copy still blocks nothing
+      // until its check is required by the rulesets gating merges, so every
+      // finding carries that human action too (Issue #600). The check names
+      // come from the scanned file itself, so the guidance quotes what this
+      // repo's workflow actually reports.
+      suggestedFix: `${finding.suggestedFix}\n\n${
+        requiredStatusCheckSection(
+          checkNamesFromWorkflow(file.rawText, file.path),
+        )
+      }`,
       workflowPath: file.path,
       file: file.path,
       severity: "medium",

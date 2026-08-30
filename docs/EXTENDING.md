@@ -221,6 +221,23 @@ Universal specs (applied to every repo regardless of language) include:
 Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
 see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
 
+### Security specs tell the human how to make the check block merges
+
+Adding a workflow only makes its scan advisory — a red run reports and the
+PR merges anyway. So every issue raised for a `category: "security"` spec
+(missing **and** partial-match) carries a "Make this scan block merges"
+section built by
+`worker/deno/lib/required_status_check_guidance.ts`: the check
+name derived from the spec's own template (`Gitleaks / gitleaks`), where to
+add it (Settings → Rules → Rulesets → Require status checks to pass), and
+that both the **default-branch** ruleset and the `milestone/**` ruleset need
+it — a ruleset covering the default branch alone leaves every milestone PR
+merging unblocked. The section states plainly that a **human** must make the
+change: the worker's token is deliberately denied ruleset permissions, so it
+cannot and must not. Quality and dependency-update specs are unaffected.
+The prose sits above the deduplication tag and does not change it, so no
+existing issue is re-filed.
+
 ### Pinning third-party actions in templates
 
 Every emitted template references third-party CI components by immutable
