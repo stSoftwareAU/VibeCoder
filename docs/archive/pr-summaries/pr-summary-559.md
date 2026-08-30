@@ -123,12 +123,17 @@ carries shellcheck, actionlint, cargo-deny, node, npm, markdownlint-cli2 and
 rust — no semgrep), so in fleet runs this stage reports `SKIPPED`, not a scan.
 Installing it is separate container work: semgrep is a Python application, and
 the image has no Python toolchain, so it needs its own pinned-manifest entry,
-a `container_manifest_test.ts` update and a `docs/CONTAINER.md` entry. That is
-deliberately not folded into this change. The follow-up issue for it could not
-be filed from this run — every `gh` call is refused with
+a `container_manifest_test.ts` update and a container-docs entry. That is
+deliberately not folded into this change.
+
+**The follow-up issue for that container work is still unfiled.** Two runs have
+now tried: every `gh` write is refused with
 `[SECURITY] [GH_GUARD_ERROR] guard could not evaluate this gh command`, because
-the guard's own module (`/tmp/vibe-scratch/worker-src/worker/deno/lib/gh_guard_cli.ts`)
-is missing from this container.
+the guard's own module
+(`/tmp/vibe-scratch/worker-src/worker/deno/lib/gh_guard_cli.ts`) is missing from
+this container — the directory holds only `mod.ts` and `deno.lock`. The issue
+body that could not be posted is reproduced in this PR's final message so it can
+be filed by hand.
 
 ## Test Plan
 
