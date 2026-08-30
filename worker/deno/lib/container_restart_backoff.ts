@@ -64,6 +64,22 @@ import {
   fileOrCommentIssue,
   resolveOriginRepo,
 } from "./host_escalation.ts";
+import {
+  explainExitStatus,
+  knownWorkerStatuses,
+} from "./launcher_failure_evidence.ts";
+
+/**
+ * Statuses the worker's own commands return deliberately (Issue #633).
+ *
+ * Duplicated as literals rather than imported: `container_build_heal.ts` and
+ * `container_reap.ts` are commands, and this library is imported BY them —
+ * importing back would be a cycle. The values are asserted against their
+ * sources in the tests, so a drift fails there rather than silently making
+ * an alert wrong.
+ */
+const BUILD_NOT_HEALABLE_STATUS = 3;
+const ANOTHER_WORKER_RUNNING_STATUS = 4;
 
 /** Module name used for the self-heal events this file emits. */
 export const SELF_HEAL_MODULE = "container_restart";
@@ -780,6 +796,12 @@ export interface ContainerEscalationInput {
   issueNumber?: number;
   /** Optional host-side log tail to append. */
   logTail?: string;
+  /**
+   * The machine this alert is about (Issue #633). Resolved by
+   * `resolveRunHostId()`, the same source the run's own log line uses, so the
+   * alert and the log agree. Omitted only when it genuinely cannot be read.
+   */
+  hostId?: string;
   /** Unix seconds the streak began — identifies the report (Issue #343). */
   streakStartedAt?: number;
   /** Escalations already delivered for this streak (Issue #343). */
@@ -808,10 +830,26 @@ export function buildContainerEscalationParams(
   const priorEscalations = Math.max(0, input.priorEscalations ?? 0);
   const lines = [
     "Vibe Coder container self-heal escalation",
+    // Issue #633: the host is knowable and was not being said. The same run
+    // writes `run mode: container host=GRQ-23` to its own log, and an alert
+    // that cannot name the machine is close to useless in a fleet reporting
+    // into one shared repository.
+    ...(input.hostId ? [`Host: ${input.hostId}`] : []),
     `Failure phase: ${input.phase} (${description})`,
     `Consecutive launcher failures: ${input.consecutiveFailures} ` +
     `(escalation threshold ${input.threshold})`,
     `Last launcher exit status: ${input.exitStatus}`,
+    // Issue #633: rule things out. Establishing that 255 could not have come
+    // from worker code took a manual trace through four files; it is one
+    // line here, and it points the reader at the runtime instead.
+    explainExitStatus(
+      input.exitStatus,
+      knownWorkerStatuses(
+        QUOTA_PAUSE_EXIT_STATUS,
+        BUILD_NOT_HEALABLE_STATUS,
+        ANOTHER_WORKER_RUNNING_STATUS,
+      ),
+    ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,
   ];
 
@@ -949,6 +987,8 @@ export interface RecordContainerOutcomeOptions {
   issueNumber?: number;
   /** Optional host log tail to include in the escalation. */
   logTail?: string;
+  /** The machine this alert is about (Issue #633). */
+  hostId?: string;
   /** Clock seam, in Unix seconds. */
   now?: () => number;
   /** Notification seam (tests inject a recorder). */
@@ -1210,6 +1250,7 @@ export async function recordContainerRestartOutcome(
     repo: target?.repo,
     issueNumber: target?.issueNumber,
     logTail: options.logTail,
+    ...(options.hostId ? { hostId: options.hostId } : {}),
     streakStartedAt: decision.state.streakStartedAt,
     priorEscalations: plan.delivered,
     ...(carried

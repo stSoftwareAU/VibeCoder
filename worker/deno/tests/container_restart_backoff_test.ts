@@ -1059,3 +1059,63 @@ Deno.test({
     }
   },
 });
+
+// ===========================================================================
+// Issue #633 — the alert must name the host and explain the status
+// ===========================================================================
+
+Deno.test("buildContainerEscalationParams - names the host it is about", () => {
+  // The real alert said "unknown-host". The host is knowable: the same run
+  // writes `run mode: container host=GRQ-23` to its own log.
+  const params = buildContainerEscalationParams({
+    phase: "worker_run",
+    exitStatus: 255,
+    consecutiveFailures: 3,
+    backoffSeconds: 240,
+    threshold: 3,
+    hostId: "GRQ-23",
+  });
+
+  assertStringIncludes(params.logTail, "Host: GRQ-23");
+});
+
+Deno.test("buildContainerEscalationParams - says 255 did not come from the worker", () => {
+  const params = buildContainerEscalationParams({
+    phase: "worker_run",
+    exitStatus: 255,
+    consecutiveFailures: 3,
+    backoffSeconds: 240,
+    threshold: 3,
+  });
+
+  // One line that rules out half the search space.
+  assertStringIncludes(params.logTail, "NOT one the worker produces");
+  assertStringIncludes(params.logTail, "container runtime client");
+});
+
+Deno.test("buildContainerEscalationParams - a worker-produced status is not blamed on the runtime", () => {
+  const params = buildContainerEscalationParams({
+    phase: "worker_run",
+    exitStatus: 1,
+    consecutiveFailures: 3,
+    backoffSeconds: 240,
+    threshold: 3,
+  });
+
+  assertStringIncludes(params.logTail, "produces deliberately");
+  assertEquals(params.logTail.includes("container runtime client"), false);
+});
+
+Deno.test("buildContainerEscalationParams - an absent host omits the line rather than guessing", () => {
+  // "Host: unknown" reads as a fact about the host. An absent line reads as
+  // what it is: the launcher could not tell.
+  const params = buildContainerEscalationParams({
+    phase: "worker_run",
+    exitStatus: 255,
+    consecutiveFailures: 3,
+    backoffSeconds: 240,
+    threshold: 3,
+  });
+
+  assertEquals(params.logTail.includes("Host:"), false);
+});
