@@ -240,6 +240,13 @@ const OUTCOME_LABELS: readonly LabelDefinition[] = [
     description: "PR conflicts with its base branch and needs a real merge",
     category: "content",
   },
+  {
+    name: "escalated",
+    colour: "d4c5f9",
+    description:
+      "The fleet filed this PR's blockage as work; it is not waiting on a human",
+    category: "content",
+  },
 ];
 
 /**
