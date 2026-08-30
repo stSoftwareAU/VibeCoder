@@ -26,7 +26,6 @@ import {
   renderContainerLaunchPlan,
   resolveContainerLaunchHostPaths,
   resolveContainerResources,
-  SCRATCH_TMPFS_MOUNTS,
   scratchTmpfsMounts,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
