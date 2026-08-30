@@ -111,6 +111,38 @@ export function parseMintedCredentials(stdout: string): Record<string, string> {
 }
 
 /**
+ * Production dependencies: the mint command is run through the operator's
+ * shell, because what an operator writes in configuration is a command line
+ * (`aws sts assume-role … --output env`), not an argv array.
+ *
+ * The command is trusted configuration, not repository content — it comes
+ * from the fleet's own `repo_config`, which only the operator can write. It
+ * is deliberately NOT reachable from anything a pull request can influence.
+ *
+ * stdout is captured rather than inherited, so a minted secret goes into the
+ * child environment and never into the run's log.
+ */
+export function createDefaultCredentialDeps(): RepoCredentialDeps {
+  return {
+    run: async (command: string) => {
+      const proc = new Deno.Command("/bin/sh", {
+        args: ["-c", command],
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const result = await proc.output();
+      return {
+        code: result.code,
+        stdout: new TextDecoder().decode(result.stdout),
+        stderr: new TextDecoder().decode(result.stderr),
+      };
+    },
+    readEnv: (name: string) => Deno.env.get(name),
+    warn: (message: string) => console.warn(message),
+  };
+}
+
+/**
  * Resolve the credentials one repository's checks may see.
  *
  * @returns The variables, or an error when a declared mint command failed —
@@ -120,7 +152,7 @@ export function parseMintedCredentials(stdout: string): Record<string, string> {
 export async function resolveRepoCredentials(
   repo: string,
   spec: RepoCredentialSpec | undefined,
-  deps: RepoCredentialDeps,
+  deps: RepoCredentialDeps = createDefaultCredentialDeps(),
 ): Promise<Result<ResolvedRepoCredentials>> {
   const empty: ResolvedRepoCredentials = {
     env: {},
