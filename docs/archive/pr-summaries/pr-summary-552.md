@@ -65,16 +65,19 @@ the flow:
 
 ```mermaid
 flowchart TD
-    G["PR reports green"] --> C["scan: clearAutoFixAttemptsForLocus(stateDir)"]
-    F["semgrep fails on a PR"] --> S["scan: getCiCheckRetryCount(stateDir)"]
-    S --> P["processCiFailure(stateDir)<br/>records retries + auto-fix attempts"]
-    C -.->|"before: '.ci_check_state' under<br/>the read-only cwd — cleared nothing"| X["budget stays spent<br/>→ escalateToHuman<br/>'hey fix xyz'"]
-    S -.->|"before: always read 0"| Y["cap never enforced,<br/>no max-retries comment"]
-    C -->|"after: ${WORK_DIR}/.ci_check_state"| P
+    F["semgrep fails on a PR"] --> S["scan: read the retry cap"]
+    G["the PR later reports green"] --> C["scan: clear the auto-fix budget"]
+    S --> P["fix: record retries and auto-fix attempts"]
+    C --> P
+    S -.->|"before: a store nothing wrote —<br/>always read 0"| Y["cap never enforced,<br/>no max-retries comment"]
+    C -.->|"before: the wrong directory —<br/>cleared nothing"| X["budget stays spent<br/>→ escalate to a human<br/>'hey fix xyz'"]
     style X fill:#c45858,stroke:#6b2020,color:#fff
     style Y fill:#c45858,stroke:#6b2020,color:#fff
     style P fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
+
+Solid arrows are the fixed lane — one store, shared by the scan and the fix.
+Dotted arrows are what the split store did instead.
 
 Both new scanner tests were confirmed to **fail against the unfixed code** —
 reverting `pr_maintenance.ts` to `stateDir = ".ci_check_state"` gives:
