@@ -222,6 +222,7 @@ import {
   resolveCrashStateDir,
   sendCrashNotification as crashNotifyFn,
 } from "./crash_notification.ts";
+import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import {
   clearHeartbeat as libClearHeartbeat,
   detectAndRecoverStuckIssues as recoverStuckFn,
