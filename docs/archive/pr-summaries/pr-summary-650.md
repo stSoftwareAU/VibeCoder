@@ -52,34 +52,52 @@ flowchart LR
 ```
 
 **1. The Containerfile's install steps run end to end** — the same commands,
-with `/opt/semgrep` → `/tmp/opt-semgrep` and `/usr/local/bin` → `/tmp/bin` so
-they run unprivileged inside the agent container (aarch64, Debian trixie):
+with the venv prefix redirected to a writable path so they run unprivileged
+inside the agent container itself (aarch64, Debian trixie 13, ruby 3.4.10,
+python3 3.13.5). The premise the design rests on is confirmed there too:
+`import venv` succeeds and `import ensurepip` raises `ModuleNotFoundError`,
+which is why pip is a pinned artefact rather than an `ensurepip` bootstrap.
 
 ```text
 /tmp/pip-26.2.1-py3-none-any.whl: OK
-/tmp/sg/semgrep-1.173.0-...-none-manylinux_2_34_aarch64.whl: OK
-BUILD STEP OK: semgrep 1.173.0
+/tmp/sg/semgrep-1.173.0-cp310...py314-none-manylinux_2_34_aarch64.whl: OK
+1.173.0
+VERSION ASSERT OK
+351M    <venv>
 ```
 
-Both checksums are the committed pins, and the final `semgrep --version |
-grep -qxF "${SEMGREP_VERSION}"` assertion passed.
+Both checksums are the committed pins — pip resolved the wheel from the index
+and the committed `arm64` digest matched the bytes — and the final
+`semgrep --version | grep -qxF "${SEMGREP_VERSION}"` assertion passed. The
+351 MB measured is the ~350 MB the docs record.
 
 **2. The gate stage scans instead of skipping** — `runSemgrepCheck()` over this
-branch's changed files, with that semgrep on PATH:
+branch's changed files, before and after putting that semgrep on PATH:
 
 ```text
-status: PASSED
-semgrep: PASSED (3 changed file(s), p/default via semgrep 1.173.0 on PATH)
+before: SKIPPED (semgrep is not installed and no container runtime holds
+        semgrep/semgrep:1.173.0@sha256:67319956… — install semgrep …)
+after:  PASSED (3 changed file(s), p/default via semgrep 1.173.0 on PATH)
 ```
 
 No drift note in the output, i.e. the installed version is the CI pin — which
 is the issue's "done when".
 
-**3. Full gate** — `./quality.sh` reports `semgrep PASSED` (it reported
-`SKIPPED` before this change) and every other stage passes. 36 unrelated
-failures in `gh_spawn_test.ts`, `service_account_env_test.ts` and
-`run_core*_test.ts` reproduce identically on the parent commit (this sandbox's
-`gh` guard shim and container permissions), so they are pre-existing.
+**3. Full gate** — `./quality.sh` with that semgrep on PATH:
+
+```text
+✓ semgrep: PASSED (6.8s)
+✗ deno tests: FAILED (605.3s)   16007 passed | 36 failed
+✓ deno lint / deno type check / deno fmt / markdownlint / mermaid: PASSED
+```
+
+The `semgrep` stage is the line the issue is about — `PASSED`, not `SKIPPED`.
+The 36 test failures are pre-existing and unrelated: `gh_spawn_test.ts`,
+`service_account_env_test.ts` and `run_core_rate_limit_resume_test.ts` fail
+identically when the same files are run on `origin/main` in a clean worktree
+(this sandbox's `gh` guard shim, an unwritable `gh` config dir, and a GitHub
+API rate limit). `worker/deno/tests/container_manifest_test.ts` — the file this
+change touches — is 87 passed / 0 failed.
 
 `docs/audits/dependency-inventory.md` is regenerated
 (`supply-chain-gate --write-inventory`) with the two new pins, which the
