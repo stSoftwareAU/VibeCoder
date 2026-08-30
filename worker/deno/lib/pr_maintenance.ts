@@ -41,6 +41,7 @@ export {
 } from "./pr_feedback_supersede.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
+import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchAllIssues } from "./issue_query.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
@@ -246,7 +247,11 @@ export interface CloseIssuesResult {
 export interface CiCheckScanOptions extends PrScanOptions {
   /** Maximum retries per check failure (default: 3). */
   maxRetries?: number;
-  /** State directory for retry tracking. */
+  /**
+   * State directory for retry tracking. Defaults to
+   * {@link resolveCiCheckStateDir} — an absolute path inside the work
+   * directory, never relative to the process cwd (Issue #552).
+   */
   stateDir?: string;
   /** Function to get a repo's default branch. */
   getDefaultBranch?: (repo: string) => Promise<string>;
@@ -1029,7 +1034,9 @@ export async function findFailedCiChecks(
     ghCommandFn,
     shuffleRepos,
     maxRetries = 3,
-    stateDir = ".ci_check_state",
+    // Issue #552: absolute, inside the writable work directory — the old
+    // relative default resolved against a read-only cwd in container mode.
+    stateDir = resolveCiCheckStateDir(),
     getDefaultBranch,
     prAuthors,
     allowedAuthors,

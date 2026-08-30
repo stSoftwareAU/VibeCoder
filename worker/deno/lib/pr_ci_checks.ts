@@ -57,21 +57,36 @@ export async function recordCiCheckRetry(
   repo: string,
   checkId: string,
 ): Promise<number> {
-  await Deno.mkdir(stateDir, { recursive: true });
   const safeRepo = sanitiseRepoName(repo);
   const stateFile = `${stateDir}/${safeRepo}_${checkId}.retries`;
 
-  let currentCount = 0;
   try {
-    const content = await Deno.readTextFile(stateFile);
-    currentCount = parseInt(content.trim(), 10) || 0;
-  } catch {
-    // File doesn't exist yet
-  }
+    await Deno.mkdir(stateDir, { recursive: true });
 
-  const newCount = currentCount + 1;
-  await Deno.writeTextFile(stateFile, String(newCount));
-  return newCount;
+    let currentCount = 0;
+    try {
+      const content = await Deno.readTextFile(stateFile);
+      currentCount = parseInt(content.trim(), 10) || 0;
+    } catch {
+      // File doesn't exist yet — this is the first attempt.
+    }
+
+    const newCount = currentCount + 1;
+    await Deno.writeTextFile(stateFile, String(newCount));
+    return newCount;
+  } catch (error: unknown) {
+    // Fail loud, naming the directory (Issue #552): an unwritable state
+    // directory aborts every automatic CI fix, and the bare
+    // "Read-only file system … '.ci_check_state/…'" this used to throw gave
+    // no clue which directory the worker meant or why the lane went quiet.
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Failed to record the CI check retry for ${repo} check ${checkId} in ` +
+        `'${stateDir}': ${msg}. The CI-fix lane needs a writable state ` +
+        `directory inside the work directory (Issue #552).`,
+      { cause: error },
+    );
+  }
 }
 
 /**

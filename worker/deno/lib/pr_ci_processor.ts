@@ -48,6 +48,7 @@ import {
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
 import { classifyCiFailure } from "./ci_failure_classifier.ts";
+import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import {
   type AutoFixAttempt,
   buildAutoFixCapSummary,
@@ -162,7 +163,11 @@ export interface CiProcessorDeps {
    * resets on every push.
    */
   maxAutoFixAttempts?: number;
-  /** State directory for CI retry tracking. */
+  /**
+   * State directory for CI retry tracking. Defaults to
+   * {@link resolveCiCheckStateDir} — an absolute path inside the work
+   * directory, never relative to the process cwd (Issue #552).
+   */
   stateDir?: string;
   /** Claude model override. */
   claudeModel?: string;
@@ -219,7 +224,6 @@ const DEFAULT_MAX_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT =
   OPERATIONAL_DEFAULTS.claudeNoOutputTimeout;
 const DEFAULT_MAX_CI_RETRIES = 3;
-const DEFAULT_STATE_DIR = ".ci_check_state";
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -417,7 +421,9 @@ async function _processCiFailureLocked(
     logger,
     deps,
     maxCiRetries = DEFAULT_MAX_CI_RETRIES,
-    stateDir = DEFAULT_STATE_DIR,
+    // Issue #552: absolute, inside the writable work directory — never
+    // relative to a cwd that is read-only in container mode.
+    stateDir = resolveCiCheckStateDir(),
     ghCommandFn,
   } = processorDeps;
 
@@ -565,7 +571,7 @@ async function _processCiWithHeartbeat(
     maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
     maxCiRetries = DEFAULT_MAX_CI_RETRIES,
     maxAutoFixAttempts = DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
-    stateDir = DEFAULT_STATE_DIR,
+    stateDir = resolveCiCheckStateDir(),
   } = processorDeps;
 
   // Decode and format annotations
