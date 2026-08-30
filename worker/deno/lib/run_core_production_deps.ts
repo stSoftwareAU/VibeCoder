@@ -3628,6 +3628,9 @@ async function syncMilestoneBranchesFn(
         milestoneBranch,
         defaultBranch,
         { cwd: `${workDir}/${repo.split("/")[1]}` },
+        // Issue #589: named so the sync can raise a PR when a repository
+        // rule refuses the direct push.
+        repo,
       );
     },
     localCloneExistsFn,
