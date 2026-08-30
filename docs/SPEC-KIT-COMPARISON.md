@@ -172,6 +172,17 @@ A milestone that stops part-way therefore delivers whatever the dependency graph
 unblocked first, which may be nothing usable. Naming one MVP slice — or stating
 plainly that no slice is independently valuable — costs the planner a sentence.
 
+**Adopted** (#522): the publish turn marks exactly one entry in the summary
+comment's sub-issue list `**MVP slice**` with what value it delivers alone — or
+carries an explicit `No independently valuable slice — <reason>` line — and
+orders the list MVP-first without ever placing a sub-issue ahead of one it
+`Depends on`. [`mvp_slice_gate.ts`](../worker/deno/lib/mvp_slice_gate.ts)
+enforces both at the same `closePlanningIssue()` chokepoint as the coverage
+gate, escalating through the shared `escalateToHuman()` path. See [the MVP-slice
+section of the planning
+manual](workflows/planning-and-questions.md#-mvp-slice-marker-and-gate-issue-522).
+No new comment type, no new label.
+
 ## Considered and rejected
 
 Five ideas assessed and deliberately not adopted. Each rejection is a design
