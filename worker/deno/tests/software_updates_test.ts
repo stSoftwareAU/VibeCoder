@@ -18,7 +18,7 @@
  * quarantine tests below and by `tool_release_age_test.ts`.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   checkSoftwareUpdates,
   classifyUpdateError,
@@ -28,11 +28,15 @@ import {
   DEFAULT_UPDATE_RETRY_MAX_ATTEMPTS,
   DEFAULT_UPDATE_TIMEOUT_SECONDS,
   getLastSuccessfulUpdate,
+  ghReleaseArchive,
+  installPinnedVersion,
   isVersionBelowFloor,
   parseSemver,
   recordFloorUpdateAttempt,
   recordSuccessfulUpdate,
   recordUpdateCheck,
+  resolveDynamicVersion,
+  resolveDynamicVersions,
   runUpdateWithRetry,
   runWithTimeout,
   shouldAttemptFloorUpdate,
@@ -42,6 +46,7 @@ import {
   updateClaudeCli,
   updateDeno,
   updateGhCli,
+  versionMatchesExactly,
 } from "../lib/software_updates.ts";
 import {
   describeChannel,
@@ -1713,4 +1718,356 @@ Deno.test("checkSoftwareUpdates - the container stamp suppresses every caller", 
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------- Exact-version (pinned) installs (Issue #623) ----------
+
+/**
+ * Runner that answers by command shape rather than by call order.
+ *
+ * The pinned-install path interleaves version reads with install steps, so a
+ * positional queue would be brittle. Every response is scripted here — no test
+ * reaches a real network, installer, or binary.
+ */
+function makePinnedRunner(
+  handler: (cmd: string[]) => { exitCode: number; output: string } | Error,
+  calls: RunCall[],
+): (
+  cmd: string[],
+  timeoutSeconds: number,
+) => Promise<Result<{ exitCode: number; output: string }>> {
+  return (cmd, timeoutSeconds) => {
+    calls.push({ cmd, timeoutSeconds });
+    const response = handler(cmd);
+    if (response instanceof Error) {
+      return Promise.resolve({ ok: false, error: response });
+    }
+    return Promise.resolve({ ok: true, value: response });
+  };
+}
+
+/** Version output that reports `version` for `tool`, changing after install. */
+function versionSequence(versions: string[]): () => string {
+  let index = 0;
+  return () => versions[Math.min(index++, versions.length - 1)]!;
+}
+
+Deno.test("updateClaudeCli - targetVersion installs that exact npm tarball", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger, infos } = testLogger();
+    const calls: RunCall[] = [];
+    const claudeVersion = versionSequence([
+      "2.1.100 (Claude Code)",
+      "2.1.200 (Claude Code)",
+    ]);
+    await updateClaudeCli(logger, {
+      targetVersion: "2.1.200",
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      retry: {
+        runFn: makePinnedRunner((cmd) => {
+          if (cmd[0] === "claude") {
+            return { exitCode: 0, output: claudeVersion() };
+          }
+          return { exitCode: 0, output: "" };
+        }, calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+
+    const curl = calls.find((c) => c.cmd[0] === "curl");
+    assertStringIncludes(
+      curl?.cmd.at(-1) ?? "",
+      "@anthropic-ai/claude-code/-/claude-code-2.1.200.tgz",
+    );
+    const npm = calls.find((c) => c.cmd[0] === "npm");
+    assertEquals(npm?.cmd.slice(0, 4), [
+      "npm",
+      "install",
+      "-g",
+      "--ignore-scripts",
+    ]);
+    assertEquals(npm?.cmd.at(-1), curl?.cmd[3]);
+    // The staged tarball is cleaned up rather than left on the host.
+    assertEquals(calls.some((c) => c.cmd[0] === "rm"), true);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), 1700000000);
+    assertEquals(
+      infos.some((m) => m.includes("now at the pinned version 2.1.200")),
+      true,
+    );
+    // The unpinned `claude update` path is not taken.
+    assertEquals(
+      calls.some((c) => c.cmd[0] === "claude" && c.cmd[1] === "update"),
+      false,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateClaudeCli - a tool already at the pinned version is left alone", async () => {
+  const { logger, infos } = testLogger();
+  const calls: RunCall[] = [];
+  await updateClaudeCli(logger, {
+    targetVersion: "2.1.200",
+    retry: {
+      runFn: makePinnedRunner(
+        () => ({ exitCode: 0, output: "2.1.200 (Claude Code)" }),
+        calls,
+      ),
+      sleepFn: () => Promise.resolve(),
+    },
+  });
+  assertEquals(calls.map((c) => c.cmd), [["claude", "--version"]]);
+  assertEquals(
+    infos.some((m) => m.includes("already at the pinned version 2.1.200")),
+    true,
+  );
+});
+
+Deno.test("updateClaudeCli - a version mismatch after install fails loud", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    const error = await assertRejects(
+      () =>
+        updateClaudeCli(logger, {
+          targetVersion: "2.1.200",
+          timestampDir: tmpDir,
+          retry: {
+            runFn: makePinnedRunner((cmd) => {
+              if (cmd[0] === "claude") {
+                return { exitCode: 0, output: "2.1.100 (Claude Code)" };
+              }
+              return { exitCode: 0, output: "" };
+            }, calls),
+            sleepFn: () => Promise.resolve(),
+          },
+        }),
+      Error,
+    );
+    assertStringIncludes(error.message, "requested 2.1.200");
+    assertStringIncludes(error.message, "installed 2.1.100");
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateClaudeCli - a failed pinned install fails loud", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    const error = await assertRejects(
+      () =>
+        updateClaudeCli(logger, {
+          targetVersion: "2.1.200",
+          timestampDir: tmpDir,
+          retry: {
+            maxAttempts: 1,
+            runFn: makePinnedRunner((cmd) => {
+              if (cmd[0] === "claude") {
+                return { exitCode: 0, output: "2.1.100 (Claude Code)" };
+              }
+              if (cmd[0] === "curl") {
+                return { exitCode: 22, output: "HTTP 404 not found" };
+              }
+              return { exitCode: 0, output: "" };
+            }, calls),
+            sleepFn: () => Promise.resolve(),
+          },
+        }),
+      Error,
+    );
+    assertStringIncludes(error.message, "pinned install of 2.1.200 failed");
+    assertStringIncludes(error.message, "curl");
+    // The install step never runs once the download failed.
+    assertEquals(calls.some((c) => c.cmd[0] === "npm"), false);
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "claude"), null);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("installPinnedVersion - a malformed version is refused before any command", async () => {
+  const { logger } = testLogger();
+  const calls: RunCall[] = [];
+  const error = await assertRejects(
+    () =>
+      installPinnedVersion(logger, "claude", "2.1.200; rm -rf /", {
+        retry: {
+          runFn: makePinnedRunner(() => ({ exitCode: 0, output: "" }), calls),
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "is not a valid version");
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("updateGhCli - targetVersion installs that exact release archive", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    const ghVersion = versionSequence([
+      "gh version 2.60.0 (2026-01-01)",
+      "gh version 2.62.0 (2026-02-02)",
+    ]);
+    await updateGhCli(logger, {
+      targetVersion: "2.62.0",
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      retry: {
+        runFn: makePinnedRunner((cmd) => {
+          if (cmd[0] === "gh") return { exitCode: 0, output: ghVersion() };
+          if (cmd[0] === "which") {
+            return { exitCode: 0, output: "/usr/local/bin/gh\n" };
+          }
+          return { exitCode: 0, output: "" };
+        }, calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+
+    const curl = calls.find((c) => c.cmd[0] === "curl");
+    assertStringIncludes(curl?.cmd.at(-1) ?? "", "cli/cli/releases/download/");
+    assertStringIncludes(curl?.cmd.at(-1) ?? "", "gh_2.62.0_");
+    const install = calls.find((c) => c.cmd[0] === "install");
+    assertEquals(install?.cmd.slice(0, 3), ["install", "-m", "0755"]);
+    assertStringIncludes(install?.cmd[3] ?? "", "gh_2.62.0_");
+    assertEquals(install?.cmd.at(-1), "/usr/local/bin/gh");
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "gh"), 1700000000);
+    // Neither brew nor the extension sweep runs on the pinned path.
+    assertEquals(calls.some((c) => c.cmd[0] === "brew"), false);
+    assertEquals(calls.some((c) => c.cmd[1] === "extension"), false);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateGhCli - an unlocatable gh binary fails loud", async () => {
+  const { logger } = testLogger();
+  const calls: RunCall[] = [];
+  const error = await assertRejects(
+    () =>
+      updateGhCli(logger, {
+        targetVersion: "2.62.0",
+        retry: {
+          runFn: makePinnedRunner((cmd) => {
+            if (cmd[0] === "gh") {
+              return { exitCode: 0, output: "gh version 2.60.0 (2026-01-01)" };
+            }
+            return { exitCode: 1, output: "" };
+          }, calls),
+          sleepFn: () => Promise.resolve(),
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "could not be located");
+  assertEquals(calls.some((c) => c.cmd[0] === "curl"), false);
+});
+
+Deno.test("ghReleaseArchive - names the published archive per platform", () => {
+  assertEquals(ghReleaseArchive("2.62.0", "linux", "x86_64"), {
+    dir: "gh_2.62.0_linux_amd64",
+    archive: "gh_2.62.0_linux_amd64.tar.gz",
+    zipped: false,
+    url:
+      "https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz",
+  });
+  const mac = ghReleaseArchive("2.62.0", "darwin", "aarch64");
+  assertEquals(mac?.dir, "gh_2.62.0_macOS_arm64");
+  assertEquals(mac?.zipped, true);
+  assertEquals(ghReleaseArchive("2.62.0", "windows", "x86_64"), null);
+  assertEquals(ghReleaseArchive("2.62.0", "linux", "riscv64"), null);
+});
+
+Deno.test("updateDeno - targetVersion pins the upgrade instead of the gate verdict", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    const denoVersion = versionSequence([
+      "deno 2.5.0 (stable)",
+      "deno 2.6.1 (stable)",
+    ]);
+    await updateDeno(logger, {
+      targetVersion: "2.6.1",
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      // A gate that would block the unpinned path is irrelevant when pinned.
+      ageGate: closedGate(),
+      retry: {
+        runFn: makePinnedRunner((cmd) => {
+          if (cmd[1] === "--version") {
+            return { exitCode: 0, output: denoVersion() };
+          }
+          return { exitCode: 0, output: "" };
+        }, calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(
+      calls.some((c) => c.cmd.join(" ") === "deno upgrade 2.6.1"),
+      true,
+    );
+    assertEquals(getLastSuccessfulUpdate(tmpDir, "deno"), 1700000000);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateDeno - no targetVersion still pins to the gate verdict", async () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const { logger } = testLogger();
+    const calls: RunCall[] = [];
+    await updateDeno(logger, {
+      timestampDir: tmpDir,
+      now: () => 1700000000,
+      ageGate: openGate("9.9.9"),
+      retry: {
+        runFn: makePinnedRunner(() => ({ exitCode: 0, output: "" }), calls),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(calls[0]?.cmd, ["which", "deno"]);
+    assertEquals(calls[1]?.cmd, ["deno", "upgrade", "9.9.9"]);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveDynamicVersions - reports what dynamic mode would install now", async () => {
+  const { logger } = testLogger();
+  const candidates = await resolveDynamicVersions(logger, {
+    ageGate: openGate("7.7.7"),
+  });
+  assertEquals(candidates.map((c) => c.tool), ["claude", "gh", "deno"]);
+  assertEquals(candidates.every((c) => c.version === "7.7.7"), true);
+  assertEquals(candidates.every((c) => c.eligible), true);
+});
+
+Deno.test("resolveDynamicVersion - an unresolvable version is reported as a failure", async () => {
+  const { logger } = testLogger();
+  const candidate = await resolveDynamicVersion(logger, "gh", {
+    ageGate: closedGate(true),
+  });
+  assertEquals(candidate.version, null);
+  assertEquals(candidate.eligible, false);
+  assertStringIncludes(candidate.reason, "Could not resolve");
+});
+
+Deno.test("versionMatchesExactly - exact match, mismatch, and unparseable", () => {
+  assertEquals(versionMatchesExactly("2.1.200 (Claude Code)", "2.1.200"), true);
+  assertEquals(
+    versionMatchesExactly("2.1.100 (Claude Code)", "2.1.200"),
+    false,
+  );
+  assertEquals(versionMatchesExactly("unknown", "2.1.200"), null);
 });
