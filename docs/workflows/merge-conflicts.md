@@ -215,6 +215,20 @@ The per-PR budgets are unchanged: the 4-hour cooldown, two concluded attempts
 and `needs-human` are the scan's, and the drain only decides how many of the
 PRs already due get taken now.
 
+## 🏷️ `needs-human` is a veto, so a mechanical stall does not get one
+
+The scan skips any PR carrying `needs-human`. That is correct for what the
+label now means — a human must decide — but it made the label a
+**cross-subsystem veto**: one lane's judgement about red CI removed a PR from
+this lane's queue, for a reason this lane had no part in. VibeCoder #549 was
+stranded exactly that way (Issue #569).
+
+A PR that is behind, conflicting, red or unmergeable is **work**. Those
+blockages are now filed as issues the fleet can claim
+(`worker/deno/lib/escalate_as_work.ts`), and the PR carries the non-vetoing
+`escalated` marker instead. `needs-human` is reserved for what genuinely needs
+a person: a policy call, a credential, confirming intent.
+
 ## 🔒 Cross-host locking
 
 The pass takes the same `BRANCH_UPDATE_LOCK` PR lock the branch updater and the
