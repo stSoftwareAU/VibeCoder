@@ -190,6 +190,7 @@ Deno.test("docs/REFERENCES.md credits the known seed sources", () => {
       "https://owasp.org/Top10/2025/",
       "https://github.com/github/spec-kit",
       "https://github.com/JuliusBrussee/caveman",
+      "https://github.com/mattpocock/skills",
       "https://rust-lang.github.io/api-guidelines/",
     ]
   ) {
