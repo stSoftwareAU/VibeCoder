@@ -260,10 +260,15 @@ identically.
   matches the title to
   [`bestPracticesTemplate.buildIssueTitle(repo)`](../worker/deno/lib/idle_task_templates/best_practices_template.ts).
 - **Body:** the latest `prompts/best_practices/vN.md` template with
-  the three placeholders substituted at file time — `{{BUCKET}}`,
-  `{{SUPPRESSED_IDS}}`, `{{KNOWN_OPEN_FINDING_IDS}}` — plus the
-  matching `prompts/best_practices/buckets/<bucket>.md` guide inlined
-  under a `## Bucket Guide — <bucket> (inlined)` section so the
+  the four placeholders substituted at file time — `{{BUCKET}}`,
+  `{{SUPPRESSED_IDS}}`, `{{KNOWN_OPEN_FINDING_IDS}}` and
+  `{{OPEN_ISSUE_TITLES}}` (the two dedup lists render as `(none)` on the
+  wrapper itself and are rebuilt from live issues at claim time,
+  **repo-wide and label-blind** — see
+  [Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)
+  for the bounds, the loud `TRUNCATED` log, and the silent-skip rule) —
+  plus the matching `prompts/best_practices/buckets/<bucket>.md` guide
+  inlined under a `## Bucket Guide — <bucket> (inlined)` section so the
   wrapper is fully self-contained.
 - **Bucket marker line:** a single `**Bucket:** `<bucket>`` line at
   the top of the body. `runTask()` recovers the bucket from this line
@@ -516,7 +521,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `best-practices` | (constant) | Always present; used by the dedup and snapshot queries. |
+| `best-practices` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup look-up is repo-wide (Issue #539) and does not filter on it. |
 | `lang:<bucket>` | `lang:rust`, `lang:typescript`, `lang:react`, `lang:java`, `lang:html`, `lang:aws-cloudformation`, `lang:terraform`, `lang:general` | The bucket the finding belongs to. Matches the wrapper's bucket marker. |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 

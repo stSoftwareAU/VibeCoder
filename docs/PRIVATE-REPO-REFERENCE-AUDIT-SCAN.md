@@ -113,6 +113,7 @@ A candidate that belongs to a sibling scan is left to that scan.
 | Wrapper title             | `Run a private-repo reference audit`                           |
 | Findings label            | `private-repo-reference` + one `severity:*`                    |
 | Prompt                    | `prompts/private_repo_reference_audit/` (latest version)       |
+| Dedup                     | `{{KNOWN_OPEN_FINDING_IDS}}` + `{{OPEN_ISSUE_TITLES}}` — both repo-wide, `(none)` when empty ([contract](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)) |
 | Raises a PR?              | No — issue-only (`skipMilestone: true`)                        |
 | Applies to                | **Public repos only** (visibility read at scan time)          |
 | Cadence                   | Once per repo per week (`cooldownHours: 168`)                  |

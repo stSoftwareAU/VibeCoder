@@ -33,6 +33,8 @@ import {
   type ScanError,
   type ScanOk,
 } from "../lib/security_scanner.ts";
+import { listAllOpenIssueTitles } from "../lib/idle_task_snapshot.ts";
+import { runGhCommand } from "../lib/github.ts";
 
 /** Split a comma-separated CLI arg into a trimmed, non-empty list. */
 function splitCsv(value: unknown): string[] {
@@ -76,11 +78,19 @@ export const runSecurityScanCommand: Command = {
       ? Number(timeoutRaw)
       : undefined;
 
+    // Repo-wide open-issue titles (Issue #537) — the semantic second line of
+    // dedup. A gh failure returns an empty list, which renders `(none)`.
+    const openIssueTitles = await listAllOpenIssueTitles(
+      repo,
+      (ghArgs) => runGhCommand(ghArgs),
+    );
+
     const result = await runSecurityScan({
       repo,
       workDir,
       suppressedIds,
       knownOpenFindingIds,
+      openIssueTitles,
       ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
     });
 

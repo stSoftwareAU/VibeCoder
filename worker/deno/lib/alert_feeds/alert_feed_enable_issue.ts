@@ -284,7 +284,7 @@ export async function maybeFileEnableFeedIssue(
 
   const result = await fileFindingOnce({
     repo,
-    label: ENABLE_FEED_LABEL,
+    logLabel: ENABLE_FEED_LABEL,
     findingId,
     ghCommandFn,
     fileFn: () =>

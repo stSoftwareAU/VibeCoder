@@ -151,7 +151,10 @@ Deno.test("quality_gate_phase - spawns with a built environment, never an inheri
   const source = await Deno.readTextFile(
     new URL("../lib/quality_gate_phase.ts", import.meta.url),
   );
-  assertStringIncludes(source, "buildUntrustedCommandEnv()");
+  // Built from the allowlist, with only the credentials this repository
+  // declared layered on top (Issues #573, #574) — never inherited.
+  assertStringIncludes(source, "buildUntrustedCommandEnv({");
+  assertStringIncludes(source, "overrides: repoCredentialEnv");
   // `clearEnv` is what makes the allowlist real: without it Deno merges the
   // built env over the inherited one and every credential is still there.
   assertStringIncludes(source, "clearEnv: true");
