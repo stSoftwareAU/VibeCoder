@@ -500,3 +500,131 @@ pwshTest("setup.ps1 - dot-sourcing runs no setup step", async () => {
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+// ===========================================================================
+// Issue #672 — the Windows launcher gains the same single-repo flags
+//
+// The operator's correction: "remember to do the windows version not just the
+// Mac/Linux version". The first cut of this feature shipped the flags in
+// setup.sh alone, which is precisely the drift these tests exist to stop.
+// ===========================================================================
+
+Deno.test({
+  name: "setup.ps1 - declares the single-repo parameters (Issue #672)",
+  ignore: PWSH === null,
+  async fn() {
+    // Parsed from the file's AST rather than dot-sourced: introspection must
+    // not depend on deno being on PATH, which the shared harness deliberately
+    // strips.
+    const script = `
+      $tokens = $null; $errors = $null
+      $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        ${JSON.stringify(SETUP_PS1)}, [ref]$tokens, [ref]$errors)
+      if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }
+      ($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -join ","
+    `;
+    const proc = await new Deno.Command(PWSH!, {
+      args: ["-NoProfile", "-NonInteractive", "-Command", script],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const run = {
+      code: proc.code,
+      output: new TextDecoder().decode(proc.stdout) +
+        new TextDecoder().decode(proc.stderr),
+    };
+    assertEquals(run.code, 0, run.output);
+    // Named parameters, the PowerShell idiom — not the bash `--add-repo`.
+    assertStringIncludes(run.output, "AddRepo");
+    assertStringIncludes(run.output, "RemoveRepo");
+    assertStringIncludes(run.output, "ListRepos");
+  },
+});
+
+Deno.test({
+  name:
+    "setup.ps1 - -ListRepos prints the repositories rather than swallowing them (Issue #672)",
+  ignore: PWSH === null,
+  async fn() {
+    // The bug this caught: wrapping the call in `if (-not (...))` captures the
+    // CLI's output into the condition, so the operator saw NOTHING while the
+    // command silently succeeded. For a query, the output is the whole answer.
+    const dir = await Deno.makeTempDir({ prefix: "vibe-ps1-repos-" });
+    try {
+      const configPath = `${dir}/.config.json`;
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          allowed_authors: ["nleck"],
+          repos: ["owner/alpha", "owner/beta"],
+        }),
+      );
+
+      const proc = await new Deno.Command(PWSH!, {
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-File",
+          SETUP_PS1,
+          "-ListRepos",
+        ],
+        env: { ...Deno.env.toObject(), CONFIG_FILE: configPath },
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+
+      const text = new TextDecoder().decode(proc.stdout) +
+        new TextDecoder().decode(proc.stderr);
+      assertEquals(proc.code, 0, text);
+      assertStringIncludes(text, "owner/alpha");
+      assertStringIncludes(text, "owner/beta");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "setup.ps1 - -AddRepo and -RemoveRepo edit the config and set the exit code (Issue #672)",
+  ignore: PWSH === null,
+  async fn() {
+    const dir = await Deno.makeTempDir({ prefix: "vibe-ps1-repos-" });
+    try {
+      const configPath = `${dir}/.config.json`;
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          allowed_authors: ["nleck"],
+          repos: ["owner/keep"],
+          repo_config: { "owner/drop": { nice: -10 } },
+        }),
+      );
+
+      const run = async (...args: string[]) => {
+        const proc = await new Deno.Command(PWSH!, {
+          args: ["-NoProfile", "-NonInteractive", "-File", SETUP_PS1, ...args],
+          env: { ...Deno.env.toObject(), CONFIG_FILE: configPath },
+          stdout: "piped",
+          stderr: "piped",
+        }).output();
+        return proc.code;
+      };
+
+      assertEquals(await run("-AddRepo", "owner/drop"), 0);
+      let config = JSON.parse(await Deno.readTextFile(configPath));
+      assert(config.repos.includes("owner/drop"));
+
+      assertEquals(await run("-RemoveRepo", "owner/drop"), 0);
+      config = JSON.parse(await Deno.readTextFile(configPath));
+      assertEquals(config.repos, ["owner/keep"]);
+      // The repo_config entry goes with it, exactly as the bash path does.
+      assertEquals(Object.hasOwn(config.repo_config, "owner/drop"), false);
+
+      // A malformed slug must fail loudly so a script can branch on it.
+      assertEquals(await run("-AddRepo", "not a repo"), 1);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
