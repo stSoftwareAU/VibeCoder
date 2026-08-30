@@ -340,11 +340,15 @@ Deno.test("entrypoint - rewrites SSH remotes to HTTPS with the mounted gh token"
 
     const gitArgv = (await Deno.readTextFile(gitArgvFile)).trim().split("\n")
       .map((line) => line.trim());
+    // --replace-all on both multi-valued keys (Issue #635). The global config
+    // survives the run, so a plain set fails from the second launch onward
+    // with "cannot overwrite multiple values with a single value" — taking
+    // the credential helper down with it through the && chain.
     assertEquals(gitArgv, [
       "config --global --add safe.directory *",
-      "config --global url.https://github.com/.insteadOf git@github.com:",
+      "config --global --replace-all url.https://github.com/.insteadOf git@github.com:",
       "config --global --add url.https://github.com/.insteadOf ssh://git@github.com/",
-      "config --global credential.https://github.com.helper",
+      "config --global --replace-all credential.https://github.com.helper",
       "config --global --add credential.https://github.com.helper !gh auth git-credential",
     ]);
     // The helper is written directly — `gh auth setup-git` would attempt a
@@ -1300,6 +1304,81 @@ Deno.test("entrypoint - a launch completes with the worker checkout mounted read
       0o200,
       `the staged copy at ${stagedDir} is not writable — the next launch ` +
         `could not replace it`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - a second launch still configures the credential helper (Issue #635)", async () => {
+  // Observed live on the fleet: every launch after the first printed
+  //
+  //   warning: url.https://github.com/.insteadof has multiple values
+  //   error: cannot overwrite multiple values with a single value
+  //   Warning: could not configure the HTTPS git transport
+  //
+  // The global config now survives the run in ${STATE_ROOT}/gitconfig, so
+  // from the second launch the plain `git config` set hit a key that already
+  // held two values and failed. The `&&` chain then short-circuited BEFORE
+  // the credential helper, leaving git with no way to authenticate for the
+  // whole cycle — the failure class of Issue #564.
+  //
+  // Real git here, not the argv-recording stub: the bug was in git's own
+  // multi-value semantics, and a stub that exits 0 cannot see it.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    await stubDeno(dir);
+    const ghRecordFile = `${dir}/gh-record.txt`;
+    await Deno.writeTextFile(
+      `${dir}/bin/gh`,
+      `#!/bin/bash\nprintf '%s\\n' "$*" >> "${ghRecordFile}"\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/gh`, 0o755);
+    await fakeRepo(dir);
+    await Deno.mkdir(`${dir}/home/.vibe-coder/credentials/gh`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${dir}/home/.vibe-coder/credentials/gh/hosts.yml`,
+      "github.com:\n",
+    );
+
+    // Real git, and the same HOME both times — a persisted global config is
+    // the whole point.
+    const env = { VIBE_BASE_DIR: `${dir}/repo`, HOME: `${dir}/home` };
+    // The stub dir carries deno and gh; git is deliberately NOT stubbed, so
+    // the real one from /usr/bin answers and its multi-value rules apply.
+    const path = `${dir}/bin:/usr/bin:/bin`;
+    const first = await runEntrypoint({ dir, path, env });
+    assertEquals(first.code, 0, first.stderr);
+
+    const second = await runEntrypoint({ dir, path, env });
+    assertEquals(second.code, 0, second.stderr);
+
+    // The exact strings the fleet printed must not come back.
+    assertEquals(
+      second.stderr.includes("could not configure the HTTPS git transport"),
+      false,
+      `second launch reported a broken git transport:\n${second.stderr}`,
+    );
+    assertEquals(
+      second.stderr.includes("cannot overwrite multiple values"),
+      false,
+      `second launch hit the multi-value set:\n${second.stderr}`,
+    );
+
+    // And the config is right, not merely quiet: the helper git actually
+    // needs to authenticate is present after both launches, exactly once.
+    const config = await Deno.readTextFile(`${stateRoot(dir)}/gitconfig`);
+    assertEquals(
+      (config.match(/!gh auth git-credential/g) ?? []).length,
+      1,
+      `credential helper should be configured exactly once:\n${config}`,
+    );
+    assertEquals(
+      (config.match(/insteadOf = git@github\.com:/g) ?? []).length,
+      1,
+      `SSH rewrite should be configured exactly once:\n${config}`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
