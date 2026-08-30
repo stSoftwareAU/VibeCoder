@@ -141,15 +141,22 @@ fi
 # are rewritten to HTTPS and gh becomes git's credential helper. Warn-only —
 # bootstrap's own git fetch remains the loud failure when auth is broken.
 #
-# The mounted credential is copied into a writable per-launch directory first:
-# gh performs a config migration WRITE on first use, and every run is a fresh
+# The mounted credential is copied into a writable directory first: gh
+# performs a config migration WRITE on first use, and every run is a fresh
 # VM, so a read-only GH_CONFIG_DIR can never satisfy it (observed live:
 # "failed to write config after migration: … read-only file system"). The
 # copy never leaves the VM and the read-only mount stays the source of truth.
-# It lives under the scratch root (Issue #515) — ~/.config is the image layer,
-# and the copy is regenerated from the mount on every launch anyway.
+#
+# It lives under the DURABLE STATE root, not the scratch root (Issue #564).
+# Scratch is /tmp — mode 1777, the coding agents' own scratch and TMPDIR,
+# where their test suites left 2860 directories in a single run. The worker's
+# live credential sat in the middle of that churn and was deleted 14 minutes
+# into a run: every gh call and every git push failed from that moment and
+# the run died with the intact credential still on the mount. A credential
+# the agent can delete is a credential the run will lose.
 GH_CRED_DIR="${HOME:-/home/vibe}/.vibe-coder/credentials/gh"
-GH_RUNTIME_DIR="${SCRATCH_ROOT:+${SCRATCH_ROOT}/gh}"
+GH_RUNTIME_DIR="${STATE_ROOT:+${STATE_ROOT}/gh}"
+GH_RUNTIME_DIR="${GH_RUNTIME_DIR:-${SCRATCH_ROOT:+${SCRATCH_ROOT}/gh}}"
 GH_RUNTIME_DIR="${GH_RUNTIME_DIR:-${HOME:-/home/vibe}/.config/gh-runtime}"
 if [[ -f "${GH_CRED_DIR}/hosts.yml" ]]; then
   {

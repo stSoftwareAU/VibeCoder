@@ -251,7 +251,7 @@ Every path written inside the container, and the class it was assigned:
 | ------ | --- | --- | ----- |
 | the staged worker source (Issue #4302) | `${HOME}/.worker-src` | `${VIBE_SCRATCH_DIR}/worker-src` | scratch — `rm -rf`'d and re-copied every start |
 | git's global config (`safe.directory`, the HTTPS rewrite, the identity) | `${HOME}/.gitconfig` | `${VIBE_SCRATCH_DIR}/gitconfig` via `GIT_CONFIG_GLOBAL` | scratch — recomputed from the mounted credential every start |
-| the writable `gh` config copy (Issue #4220) | `${HOME}/.config/gh-runtime` | `${VIBE_SCRATCH_DIR}/gh` via `GH_CONFIG_DIR` | scratch — re-copied from the read-only mount every start |
+| the writable `gh` config copy (Issue #4220) | `${HOME}/.config/gh-runtime` | `${VIBE_STATE_DIR}/gh` via `GH_CONFIG_DIR` | durable state — re-copied from the read-only mount every start, and re-staged from it mid-run if it goes missing (Issue #564) |
 | temporary files (`mktemp`, `Deno.makeTempDir`) | `/tmp` | `/tmp`, or `${VIBE_SCRATCH_DIR}/tmp` via `TMPDIR` when `/tmp` is refused | scratch |
 | the browser profile | `/tmp/vibe-playwright-profile` | unchanged | scratch |
 | the Deno cache (Issue #4302) | `…/auto-issue-work/.deno-cache`, falling back to the image's `DENO_DIR` | unchanged, falling back to `${VIBE_SCRATCH_DIR}/deno-cache` | persistent — on the volume |
