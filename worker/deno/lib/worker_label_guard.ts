@@ -46,7 +46,12 @@ import type { Result } from "../types.ts";
  * `worker/deno/setup/`:
  *   - `failed`, `failed-once` — failure tracking (`label_failure.ts`,
  *     `label_question_failure.ts`, `claim_issue.ts`).
- *   - `needs-human` — worker → human escalation
+ *   - `needs-human` — worker → human escalation, for a DECISION a person must
+ *     make (a policy call, a credential, confirming intent)
+ *   - `escalated` — the fleet filed this PR's blockage as work and is still
+ *     the actor (Issue #569). Deliberately distinct from `needs-human`, which
+ *     other lanes treat as "hands off": a mechanical stall must not remove a
+ *     PR from the queue of the lane that could fix it
  *     (`needs_human_escalation.ts`, `gh_escalation_client.ts`).
  *   - `needs-screenshot` — screenshot-gate signal (UI changes).
  *   - `idle-task` — the only operational label the worker self-applies
@@ -72,6 +77,7 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "failed",
   "failed-once",
   "needs-human",
+  "escalated",
   "needs-screenshot",
   "idle-task",
   "negative-result",

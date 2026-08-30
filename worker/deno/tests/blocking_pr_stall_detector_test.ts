@@ -535,3 +535,62 @@ Deno.test("scan ignores an open PR that blocks no work-on issue", async () => {
   assertEquals(comments.length, 0);
   assertEquals(writes.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// A mechanical stall is work, not a decision (Issue #569). VibeCoder #549 was
+// escalated here for a two-hour-old semgrep failure — which the CI-fix lane
+// exists to repair — and the `needs-human` that followed then locked the PR
+// out of the merge-conflict lane, which skips any PR carrying that label.
+// ---------------------------------------------------------------------------
+
+Deno.test("escalateBlockingPrStall - files the stall as work and never applies needs-human", async () => {
+  const comments: string[] = [];
+  const writes: string[][] = [];
+  const filed: { prNumber: number; summary: string }[] = [];
+
+  const result = await escalateBlockingPrStall(redCiStall(), {
+    ghCommandFn: buildEscalationGh(comments, writes),
+    needsHumanLabel: "needs-human",
+    ensureLabelExists: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+    escalateWork: (escalation) => {
+      filed.push({
+        prNumber: escalation.prNumber,
+        summary: escalation.summary,
+      });
+      return Promise.resolve({
+        ok: true as const,
+        value: { issueNumber: 601, filed: true },
+      });
+    },
+    logger,
+  });
+
+  assert(result.ok, "the escalation must not fail");
+  // The blockage went to the work queue…
+  assertEquals(filed.length, 1);
+  assertEquals(filed[0]?.prNumber, 103);
+  assertStringIncludes(filed[0]?.summary ?? "", "CI is red");
+
+  // …and `needs-human` — the cross-subsystem veto that strands a PR in every
+  // OTHER lane — was never applied.
+  const labelWrites = writes
+    .filter((args) => (args[3] ?? "").endsWith("/labels"))
+    .flat()
+    .filter((arg) => arg.startsWith("labels[]="))
+    .map((arg) => arg.slice("labels[]=".length));
+
+  assertEquals(
+    labelWrites.includes("needs-human"),
+    false,
+    `a mechanical stall must not veto the other lanes: ${
+      labelWrites.join(", ")
+    }`,
+  );
+  // The PR still carries a marker, so the queue stays visible on the artefact.
+  assertEquals(
+    labelWrites,
+    ["escalated"],
+    "the PR gets the non-vetoing marker and nothing else",
+  );
+});

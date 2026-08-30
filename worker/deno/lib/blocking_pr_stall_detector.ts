@@ -39,6 +39,11 @@ import {
   getBlockingPRForIssue,
 } from "./issue_query.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
+import {
+  escalateAsWork,
+  ESCALATED_AS_WORK_LABEL,
+  type WorkEscalation,
+} from "./escalate_as_work.ts";
 
 /** Default stall threshold: 2 hours (Issue #4025). */
 export const DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS = 7200;
@@ -261,6 +266,13 @@ export function buildBlockingPrStallReason(
 }
 
 /** Next step printed in the escalation comment. */
+/** Short noun phrase naming the stall, for the escalation issue's title. */
+export function describeStallSummary(reason: BlockingPrStallReason): string {
+  return reason === "red-ci"
+    ? "CI is red and no fix has landed"
+    : "an authorised comment is unanswered";
+}
+
 export const BLOCKING_PR_STALL_NEXT_STEP =
   "Push a fix, reply to the outstanding comment, or close the PR — whichever " +
   "unblocks it — so the deferred `work-on` issues can be picked up again.";
@@ -273,8 +285,17 @@ export const BLOCKING_PR_STALL_NEXT_STEP =
 export interface EscalateBlockingPrStallDeps {
   /** Injected `gh` CLI runner. */
   ghCommandFn: (args: string[]) => Promise<string>;
-  /** Label name to apply — typically `config.needsHumanLabel`. */
+  /**
+   * Retained for callers that still pass it. NOT applied to a stalled PR any
+   * more (Issue #569) — a mechanical stall is filed as work instead.
+   */
   needsHumanLabel: string;
+  /** Non-vetoing marker for the PR. Defaults to `escalated`. */
+  escalatedLabel?: string;
+  /** Files the blockage into the work queue. Injected by tests. */
+  escalateWork?: (
+    escalation: WorkEscalation,
+  ) => Promise<Result<{ issueNumber: number; filed: boolean }>>;
   /** GitHub login used in the comment footer. */
   githubUser?: string;
   /** Optional `ensureLabelExists` override (tests). */
@@ -316,7 +337,14 @@ export async function escalateBlockingPrStall(
   stall: BlockingPrStall,
   deps: EscalateBlockingPrStallDeps,
 ): Promise<Result<EscalateBlockingPrStallOutcome>> {
-  const { ghCommandFn, needsHumanLabel, githubUser, logger } = deps;
+  const { ghCommandFn, needsHumanLabel: _unusedLabel, githubUser, logger } =
+    deps;
+  // Issue #569: the PR gets a marker that vetoes no other lane; the blockage
+  // itself goes to the work queue. `needsHumanLabel` stays on the options for
+  // the callers that still pass it, and is deliberately not applied here.
+  const escalatedLabel = deps.escalatedLabel ?? ESCALATED_AS_WORK_LABEL;
+  const escalateWork = deps.escalateWork ??
+    ((escalation: WorkEscalation) => escalateAsWork(escalation, { logger }));
 
   let capEscalated: boolean;
   try {
@@ -373,18 +401,41 @@ export async function escalateBlockingPrStall(
     }
     if (alreadyPosted) continue;
 
+    // Issue #569: this stall is WORK, not a decision. A PR red for two hours
+    // or carrying an unanswered comment is exactly what the CI-fix and
+    // PR-feedback lanes exist for, so it is filed into the fleet's own queue
+    // and the PR keeps a non-vetoing marker. The old `needs-human` here was
+    // doubly wrong: it declared a human necessary for a mechanical failure,
+    // AND it removed the PR from the merge-conflict lane, which skips any PR
+    // carrying that label. VibeCoder #549 was stranded exactly that way.
+    const filed = await escalateWork({
+      repo: stall.repo,
+      prNumber: stall.prNumber,
+      summary: describeStallSummary(signal.reason),
+      reason: buildBlockingPrStallReason(stall, signal),
+      nextStep: BLOCKING_PR_STALL_NEXT_STEP,
+    });
+    if (!filed.ok) {
+      logger.warn?.("Could not file the blocking-PR stall as work", {
+        repo: stall.repo,
+        prNumber: stall.prNumber,
+        error: filed.error.message,
+      });
+    }
+
     const escalation = await escalateToHuman({
       ghClient,
       repo: stall.repo,
       target: { kind: "pr", number: stall.prNumber },
-      needsHumanLabel,
+      needsHumanLabel: escalatedLabel,
       heading: "Blocking PR has stalled",
       reason: buildBlockingPrStallReason(stall, signal),
       nextStep: BLOCKING_PR_STALL_NEXT_STEP,
       dedupKey: blockingPrStallDedupKey(signal.reason),
       ensureLabelColour: "d4c5f9",
       ensureLabelDescription:
-        "Worker could not progress this autonomously; human review required",
+        "The fleet filed this PR's blockage as work; it is not waiting on a " +
+        "human decision",
       ...(githubUser !== undefined ? { githubUser } : {}),
       ...(deps.ensureLabelExists !== undefined
         ? { deps: { github: { ensureLabelExists: deps.ensureLabelExists } } }
