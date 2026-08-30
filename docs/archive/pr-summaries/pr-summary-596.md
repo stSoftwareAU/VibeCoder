@@ -51,6 +51,9 @@ deno test --allow-read --allow-env tests/workflow_setup_prompt_v8_test.ts
 ok | 11 passed | 0 failed
 ```
 
+Full gate: every stage passes except `deno tests`, whose six failures are
+pre-existing and environmental — see the Acceptance Criteria entry below.
+
 ## Acceptance Criteria
 
 - **met** — `prompts/workflow_setup/v8.md` exists and is selected as the latest
@@ -72,7 +75,16 @@ ok | 11 passed | 0 failed
   `worker/deno/tests/docs_prompt_version_freshness_test.ts`. No published
   document pins a `prompts/workflow_setup/vN` reference, so nothing needed
   updating.
-- **met** — `./quality.sh` passes — evidence: full gate run before commit.
+- **partial** — `./quality.sh` passes — evidence: every stage passes except
+  `deno tests`, which fails on six pre-existing, environment-dependent tests
+  unrelated to this change (`tests/gh_spawn_test.ts` ×3,
+  `tests/service_account_env_test.ts` ×1, and `tests/run_core_test.ts` /
+  `tests/run_core_rate_limit_resume_test.ts`, which abort on
+  `GraphQL: API rate limit already exceeded`) — reason: the same four
+  assertions fail identically when run from a worktree at the parent commit
+  (`git worktree add /tmp/vc-base-596 HEAD~1` → `4 failed`), so they are the
+  container's `gh` config/rate-limit state, not this diff. 15,899 tests pass,
+  including all 11 new ones.
 
 ## Test Plan
 
