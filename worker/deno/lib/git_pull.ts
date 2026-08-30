@@ -270,6 +270,10 @@ export async function syncMilestoneBranchWithDefault(
   // Ensure the local default branch is current
   await ensureDefaultBranchCurrent(defaultBranch, options);
 
+  // What the sync discarded on its way in, reported with its outcome
+  // (Issue #568). Empty on the ordinary path.
+  let dirtyNote = "";
+
   // Check out the milestone branch
   const currentBranchResult = await runGitCommand(
     ["rev-parse", "--abbrev-ref", "HEAD"],
@@ -286,6 +290,33 @@ export async function syncMilestoneBranchWithDefault(
     // branch from `origin/<milestoneBranch>` when the branch was created
     // remotely after the clone.
     await runGitCommand(["fetch", "origin", milestoneBranch], options);
+
+    // Issue #568: the shared `${WORK_DIR}/<repo>` clone is scratch, not a
+    // workspace anyone's work survives in — a timed-out claim or an
+    // abandoned pass routinely leaves it dirty, and `git checkout` then
+    // refuses ("Your local changes to the following files would be
+    // overwritten"). The sync recorded `sync_failed` and moved on, so the
+    // milestone branch drifted behind the default line until a human noticed
+    // — which is exactly the drift that produces the conflicting child PRs
+    // the merge-conflict lane then spends agent time on.
+    //
+    // Discarding here is safe BECAUSE the clone is shared scratch: every
+    // caller re-derives what it needs, and the repository lease (Issue #213)
+    // is what stops an issue slot's real work being in this tree at the same
+    // time. What is discarded is named, so a surprise is diagnosable rather
+    // than silent.
+    const dirty = await runGitCommand(["status", "--porcelain"], options);
+    if (dirty.ok && dirty.value.code === 0 && dirty.value.stdout.trim()) {
+      const files = dirty.value.stdout.trim().split("\n");
+      await runGitCommand(["reset", "--hard"], options);
+      await runGitCommand(["clean", "-fd"], options);
+      dirtyNote = `SELF-HEALING: discarded ${files.length} uncommitted ` +
+        `change(s) in the shared clone before checkout (${
+          // Porcelain v1 is a two-character status field, then the path.
+          files.slice(0, 3).map((line) => line.slice(2).trim()).join(", ")}${
+          files.length > 3 ? `, +${files.length - 3} more` : ""
+        }) — `;
+    }
 
     const checkoutResult = await runGitCommand(
       ["checkout", milestoneBranch],
@@ -318,7 +349,7 @@ export async function syncMilestoneBranchWithDefault(
   // push, and the branch stays unpushable until a human intervenes. The remote
   // is authoritative for a milestone branch, so fast-forward where possible and
   // reset to the remote ref otherwise.
-  let selfHealNote = "";
+  let selfHealNote = dirtyNote;
   await runGitCommand(["fetch", "origin", milestoneBranch], options);
   const remoteRefResult = await runGitCommand(
     [
