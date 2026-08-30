@@ -169,7 +169,47 @@ fi
 # the run died with the intact credential still on the mount. A credential
 # the agent can delete is a credential the run will lose.
 GH_CRED_DIR="${HOME:-/home/vibe}/.vibe-coder/credentials/gh"
-GH_RUNTIME_DIR="${STATE_ROOT:+${STATE_ROOT}/gh}"
+# --- The secrets mount (Issue #570) ------------------------------------------
+# A memory-backed mount of its own, away from the agents' scratch, is where
+# every runtime with a secrets primitive puts credentials: Docker and Podman
+# `--secret` land at /run/secrets, Kubernetes mounts a Secret on tmpfs,
+# systemd's LoadCredential= uses $CREDENTIALS_DIRECTORY. Nothing touches disk,
+# nothing enters an image layer, nothing survives the container.
+#
+# Two things have to be checked rather than assumed. Apple container 1.2.2
+# accepts `--tmpfs path:options` and takes the WHOLE string as the path, so
+# the launcher sends it the bare path (container_launch.ts) and the mode is
+# applied here. And a tmpfs the runtime silently failed to mount leaves an
+# ordinary directory on the read-only root, which is not writable — so the
+# mount is probed, not trusted.
+VIBE_SECRETS_DIR="/run/vibe-secrets"
+if [[ ! -d "${VIBE_SECRETS_DIR}" ]]; then
+  # The runtime offered no such mount — a dialect that takes no tmpfs at all
+  # (Apple container), or a harness. The durable state root is the designed
+  # fallback, so this is not a fault and is not reported as one.
+  VIBE_SECRETS_DIR=""
+elif touch "${VIBE_SECRETS_DIR}/.probe" 2>/dev/null; then
+  rm -f "${VIBE_SECRETS_DIR}/.probe"
+  # Best-effort, and it genuinely fails on Apple container: the runtime mounts
+  # the tmpfs root-owned `1777` and an unprivileged process cannot chmod what
+  # it does not own ("Operation not permitted"). The mount's own mode is
+  # therefore not the protection — the per-credential directory the worker
+  # creates inside it is, and that one it owns and sets to 0700. What the
+  # mount buys regardless is separation: it is not the `/tmp` the coding
+  # agents and their test suites scribble 3000 entries into (Issue #564).
+  chmod 0700 "${VIBE_SECRETS_DIR}" 2>/dev/null || true
+  export VIBE_SECRETS_DIR
+else
+  # It EXISTS and cannot be written: the runtime was asked for a tmpfs and
+  # left an ordinary directory on the read-only root. That is a fault, and a
+  # silent one — the credential would be staged nowhere and the first gh call
+  # would fail with no clue why.
+  echo "Warning: ${VIBE_SECRETS_DIR} exists but is not writable — the tmpfs the launcher asked for did not mount; credentials fall back to the durable state root, shared with the agents' work volume (Issue #570)" >&2
+  VIBE_SECRETS_DIR=""
+fi
+
+GH_RUNTIME_DIR="${VIBE_SECRETS_DIR:+${VIBE_SECRETS_DIR}/gh}"
+GH_RUNTIME_DIR="${GH_RUNTIME_DIR:-${STATE_ROOT:+${STATE_ROOT}/gh}}"
 GH_RUNTIME_DIR="${GH_RUNTIME_DIR:-${SCRATCH_ROOT:+${SCRATCH_ROOT}/gh}}"
 GH_RUNTIME_DIR="${GH_RUNTIME_DIR:-${HOME:-/home/vibe}/.config/gh-runtime}"
 if [[ -f "${GH_CRED_DIR}/hosts.yml" ]]; then

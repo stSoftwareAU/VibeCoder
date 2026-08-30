@@ -44,6 +44,7 @@ import {
   FORBIDDEN_RUN_FLAGS,
   resolveContainerLaunchHostPaths,
   SCRATCH_TMPFS_MOUNTS,
+  SECRETS_MOUNT_PATH,
 } from "../lib/container_launch.ts";
 import {
   CONTAINER_RUNTIMES,
@@ -777,6 +778,14 @@ function readOnlyRootProbes(plan: ContainerLaunchPlan): Probe[] {
       id: "scratch-var-tmp",
       target: "/var/tmp",
       why: "/var/tmp is the second scratch tmpfs",
+    },
+    {
+      kind: "rw",
+      id: "secrets-mount",
+      target: SECRETS_MOUNT_PATH,
+      why:
+        `${SECRETS_MOUNT_PATH} is the credentials tmpfs, separate from the ` +
+        `agents' scratch (Issue #570)`,
     },
   ];
 }

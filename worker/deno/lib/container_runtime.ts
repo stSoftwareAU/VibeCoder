@@ -78,6 +78,23 @@ export interface ContainerRuntimeDialect {
   /** Whether `--tmpfs <mount>` is understood. */
   supportsTmpfs: boolean;
   /**
+   * Whether `--tmpfs` honours the `path:options` form (Issue #570).
+   *
+   * Docker and Podman parse the options and mount accordingly. Apple
+   * `container` 1.2.2 does NOT: it takes the whole string as the mount PATH,
+   * so `--tmpfs /run/vibe-secrets:rw,mode=0700` silently mounts a directory
+   * *named* `/run/vibe-secrets:rw,mode=0700` and the intended path does not
+   * exist —
+   *
+   *     tmpfs on /run/vibe-secrets:rw,nosuid,nodev,mode=0700 type tmpfs (rw)
+   *     touch: cannot touch '/run/vibe-secrets/probe': No such file or directory
+   *
+   * — which is worse than refusing the flag, because it looks like it worked.
+   * A dialect that ignores the options gets the bare path and the entrypoint
+   * applies the permissions itself.
+   */
+  tmpfsHonoursOptions: boolean;
+  /**
    * Whether `--read-only` (an immutable container root filesystem) is
    * understood (Issue #516).
    *
@@ -285,6 +302,8 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   supportsSecurityOpt: true,
   supportsCapDrop: true,
   supportsTmpfs: true,
+  // Docker and Podman parse `path:options` and mount accordingly.
+  tmpfsHonoursOptions: true,
   supportsReadOnly: true,
   // Explicit rather than implicit: the launcher asks for bridge networking so
   // a reviewer can see host networking was never requested.
@@ -328,6 +347,9 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   supportsSecurityOpt: false,
   supportsCapDrop: false,
   supportsTmpfs: false,
+  // Measured on 1.2.2: the flag is accepted and the options become part of
+  // the mount path (Issue #570).
+  tmpfsHonoursOptions: false,
   supportsReadOnly: false,
   // Singular `image` — `container images ...` is not a subcommand on Apple
   // container 1.2.2: the CLI resolves it as a plugin named `container-images`,
