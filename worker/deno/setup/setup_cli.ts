@@ -946,12 +946,17 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
         );
         const missing = findings.find((f) => f.code === "no-milestone-ruleset");
         if (missing && (await askCreateMilestoneRuleset(r.repo))) {
-          // Setup runs with the operator's own credentials, which is the only
-          // reason this can write: creating a ruleset needs `admin`, and the
-          // worker's service account has `write` (Issue #586).
+          // Deliberately WITHOUT `ghConfigDir` (Issue #592). That option points
+          // gh at the worker's service-account configuration, which holds
+          // `write` — and GitHub answers a ruleset write from a non-admin with
+          // 404, not 403, so every create failed as "gh: Not Found (HTTP 404)"
+          // with nothing naming the cause. Creating a ruleset needs `admin`,
+          // and the operator running setup is the one who has it, so this
+          // single call uses their ambient credentials. The reads either
+          // identity can do.
           const created = await createMilestoneRuleset(
             r.repo,
-            createSetupGhJson(ghConfigDir),
+            createSetupGhJson(),
           );
           if (!created.ok) {
             printWarning(

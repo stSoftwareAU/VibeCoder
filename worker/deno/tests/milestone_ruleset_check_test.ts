@@ -336,3 +336,42 @@ Deno.test("assessMilestoneRuleset - checks that do report raise nothing", () => 
   );
   assertEquals(findings.map((f) => f.code), ["configured"]);
 });
+
+Deno.test("createMilestoneRuleset - a 404 is explained as a permission problem (Issue #592)", async () => {
+  // GitHub answers a ruleset write from a non-admin with 404, not 403. Every
+  // repository in a fleet setup run failed with the bare "gh: Not Found
+  // (HTTP 404)", which named neither the cause nor the fix.
+  const result = await createMilestoneRuleset(
+    "org/repo",
+    () => Promise.reject(new Error("gh: Not Found (HTTP 404)")),
+    {
+      rulesets: [ruleset({
+        conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
+        rules: [{
+          type: "required_status_checks",
+          parameters: { required_status_checks: [{ context: "semgrep" }] },
+        }],
+      })],
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "ADMIN on org/repo");
+  assertStringIncludes(result.error.message, "'write', which is not enough");
+});
+
+Deno.test("setup_cli - the ruleset write uses the operator's credentials, not the service account's", async () => {
+  // The service-account gh config holds `write`; creating a ruleset needs
+  // admin. Passing `ghConfigDir` here is what produced the 404 storm.
+  const source = await Deno.readTextFile(
+    new URL("../setup/setup_cli.ts", import.meta.url),
+  );
+  const createIndex = source.indexOf("await createMilestoneRuleset(");
+  assert(createIndex !== -1, "setup must still offer to create the ruleset");
+  const call = source.slice(createIndex, createIndex + 200);
+  assertStringIncludes(call, "createSetupGhJson()");
+  assert(
+    !/createSetupGhJson\(ghConfigDir\)/.test(call),
+    "the create must not run as the service account (Issue #592)",
+  );
+});
