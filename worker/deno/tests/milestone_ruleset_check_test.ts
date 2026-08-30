@@ -77,7 +77,7 @@ Deno.test("assessMilestoneRuleset - no covering ruleset means auto-merge cannot 
   assertStringIncludes(findings[0]!.message, "auto-merge");
 });
 
-Deno.test("assessMilestoneRuleset - a gated branch the worker cannot push is an ERROR", () => {
+Deno.test("assessMilestoneRuleset - a gated branch the service account cannot push is reported against the WORKER", () => {
   // The operator's live configuration: `main` extended to cover
   // `milestone/**`, with a RepositoryRole(admin) bypass — and a service
   // account holding only `write`. The milestone sync's direct push dies.
@@ -102,8 +102,11 @@ Deno.test("assessMilestoneRuleset - a gated branch the worker cannot push is an 
 
   const blocked = findings.find((f) => f.code === "direct-push-blocked");
   assert(blocked, "the blocked push must be reported");
-  assertEquals(blocked.severity, "error");
+  // Refusing the service account is the intended policy — an admin may
+  // bypass, the fleet may not — so this is not an error against the ruleset.
+  assertEquals(blocked.severity, "warning");
   assertStringIncludes(blocked.message, "REJECTED");
+  assertStringIncludes(blocked.message, "RULESET is right");
 });
 
 Deno.test("assessMilestoneRuleset - a RepositoryRole bypass the account satisfies is clean", () => {

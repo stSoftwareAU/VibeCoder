@@ -140,19 +140,12 @@ function createSetupGhJson(ghConfigDir?: string) {
 /**
  * Ask whether to create the missing `milestone/**` ruleset (Issue #586).
  *
- * Setup is non-interactive by design — it runs on unattended machines
- * (Issue #269) — so a blocking prompt would hang a scripted run. It asks only
- * when there is a terminal to ask on; otherwise `VIBE_SETUP_MILESTONE_RULESET`
- * is the scripted consent, and without either the check simply warns and
- * changes nothing.
+ * Setup asks its own questions — this is one of them. Without a terminal to
+ * ask on there is no consent to infer, so the check warns and changes
+ * nothing: a scripted run can never hang here, and never writes a ruleset
+ * nobody agreed to.
  */
 async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
-  const scripted = Deno.env.get("VIBE_SETUP_MILESTONE_RULESET")?.trim()
-    .toLowerCase();
-  if (scripted === "1" || scripted === "true" || scripted === "yes") {
-    return true;
-  }
-  if (scripted !== undefined && scripted.length > 0) return false;
   if (!Deno.stdin.isTerminal()) return false;
 
   await Deno.stdout.write(
@@ -1004,9 +997,10 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
     );
     if (milestoneRulesetErrors > 0) {
       printWarning(
-        `${milestoneRulesetErrors} repo(s) have a \`milestone/**\` ruleset ` +
-          `the worker cannot push through — the milestone branch sync will ` +
-          `fail there until a bypass actor is added (Issue #586).`,
+        `${milestoneRulesetErrors} repo(s) gate \`milestone/**\` against the ` +
+          `service account, which is the intended policy — but the milestone ` +
+          `branch sync still pushes directly, so it fails there until the ` +
+          `sync raises a pull request instead (Issue #589).`,
       );
     }
     // Per-repo failures are non-fatal but signalled so setup.sh prints its

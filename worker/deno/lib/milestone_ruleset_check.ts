@@ -235,24 +235,25 @@ export function assessMilestoneRuleset(
       const bypass = serviceAccountCanBypass(ruleset, account);
       if (!bypass.bypasses) {
         findings.push({
-          severity: bypass.unproven ? "warning" : "error",
+          // Not an error against the ruleset: refusing the service account is
+          // the intended policy (an admin may bypass, the fleet may not). It
+          // is a warning about the worker, which still pushes directly.
+          severity: "warning",
           code: "direct-push-blocked",
           message: bypass.unproven
-            ? `ruleset '${name}' blocks direct pushes to \`milestone/**\` ` +
-              `and carries a bypass this check cannot resolve (a User, Team, ` +
-              `Integration or OrganizationAdmin actor). If it does not cover ` +
-              `'${account.login}', the milestone branch sync — which merges ` +
-              `the default branch in and pushes the result — will fail on ` +
-              `every milestone branch (Issue #586).`
-            : `ruleset '${name}' blocks direct pushes to \`milestone/**\` ` +
-              `and '${account.login}' (permission ` +
-              `'${account.permission ?? "unknown"}') is not a bypass actor. ` +
-              `The milestone branch sync merges the default branch into each ` +
-              `milestone branch and pushes the result; that push will be ` +
-              `REJECTED, so milestone branches will drift behind the default ` +
-              `line. Add '${account.login}' as a bypass actor on this ` +
-              `ruleset, or raise its permission to match the RepositoryRole ` +
-              `bypass it already has (Issue #586).`,
+            ? `ruleset '${name}' gates \`milestone/**\` and carries a bypass ` +
+              `this check cannot resolve (a User, Team, Integration or ` +
+              `OrganizationAdmin actor). If it exempts '${account.login}', ` +
+              `the service account can push past the gate — which the ` +
+              `operator's policy forbids: an admin may bypass, the fleet may ` +
+              `not (Issue #586).`
+            : `ruleset '${name}' gates \`milestone/**\` and ` +
+              `'${account.login}' (permission ` +
+              `'${account.permission ?? "unknown"}') correctly cannot bypass ` +
+              `it. The milestone branch sync still pushes directly, so that ` +
+              `push is REJECTED and milestone branches drift behind the ` +
+              `default line. The RULESET is right; the sync must raise a pull ` +
+              `request instead of pushing (Issue #589).`,
         });
       }
     }
