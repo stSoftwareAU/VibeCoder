@@ -86,6 +86,36 @@ semgrep/semgrep:1.173.0@sha256:6731995…cb77a — install semgrep
 ok | 22 passed | 0 failed (548ms)
 ```
 
+`./quality.sh < /dev/null` — every stage green except `deno tests`, whose
+failures are **pre-existing and environmental**, not from this change:
+
+```text
+  workflow hygiene               PASSED
+  markdownlint                   PASSED
+  mermaid                        PASSED
+  docs prompt versions           PASSED
+  semgrep                        SKIPPED
+  deno tests                     FAILED
+  deno lint                      PASSED
+  deno type check                PASSED
+  deno fmt                       PASSED
+```
+
+The full suite reports `15925 passed | 36 failed`, and every named failure needs
+a working `gh` this container does not have — every `gh` call is refused with
+`[SECURITY] [GH_GUARD_ERROR] guard could not evaluate this gh command` because
+the guard's own module is missing:
+
+- `tests/gh_spawn_test.ts` ×3 — spawn the real `gh --version`, which the broken
+  guard refuses.
+- `tests/run_core_test.ts`, `tests/run_core_rate_limit_resume_test.ts` —
+  `API rate limit already exceeded`.
+- `tests/service_account_env_test.ts` — the container presets `GH_CONFIG_DIR`.
+
+Checked out at `HEAD~1` (before this change) in a scratch worktree, the same
+tests fail identically — `FAILED | 31 passed | 4 failed`, the same four names —
+so they are not this change's doing.
+
 ### Reviewer note — the fleet container has no semgrep
 
 The agent container does not ship a `semgrep` binary (`container/tools.json`
