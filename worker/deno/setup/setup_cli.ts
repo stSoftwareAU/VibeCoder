@@ -24,6 +24,7 @@
  *   verify-monitored-collaborator  Precheck worker collaborator access on every repo
  *   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
  *   repos              List monitored repositories; --add / --remove one (Issue #672)
+ *   update-mode        Ask for the update mode, pinned ref and tool versions (Issue #626)
  *   hooks              Install pre-commit hook and git exclude patterns
  *   all                Run full setup (default)
  *
@@ -83,6 +84,7 @@ import {
   formatBackfillSummary,
 } from "../lib/idle_task_backfill.ts";
 import { loadExistingConfig } from "./config_setup.ts";
+import { runUpdateModeSetup } from "./update_mode_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { readConfiguredRunMode } from "../commands/run_mode.ts";
 
@@ -349,6 +351,52 @@ async function runConfig(configPath: string): Promise<boolean> {
     printWarning(warning);
   }
   return result.ok;
+}
+
+/**
+ * `update-mode`: ask whether this host follows the tip or is frozen at a pin,
+ * and record the answer in `.config.json` (Issue #626).
+ *
+ * `setup.sh` delegates the whole conversation here and keeps no mode logic of
+ * its own, in the same shape as `run.sh` → `worker-checkout-update`.
+ */
+async function runUpdateMode(
+  scriptDir: string,
+  configPath: string,
+): Promise<boolean> {
+  const result = await runUpdateModeSetup({
+    repoDir: scriptDir,
+    configPath,
+  });
+  if (!result.ok) {
+    printError(result.error.message);
+    return false;
+  }
+
+  const { settings, changed, prompted } = result.value;
+  const mode = settings.update_mode ?? "dynamic";
+  if (!prompted) {
+    printInfo(
+      changed
+        ? `Update mode defaulted to ${mode} (no terminal to ask at).`
+        : `Update mode left at ${mode} (no terminal to ask at).`,
+    );
+    return true;
+  }
+
+  if (mode === "frozen") {
+    const versions = settings.pinned_tool_versions ?? {};
+    printSuccess(
+      `Update mode: frozen at ${settings.pinned_ref} — claude ` +
+        `${versions.claude}, gh ${versions.gh}, deno ${versions.deno}.`,
+    );
+  } else {
+    printSuccess(
+      "Update mode: dynamic — this host follows the tip and the latest tools.",
+    );
+  }
+  if (!changed) printInfo(`${configPath} already said this — left untouched.`);
+  return true;
 }
 
 async function runHooks(scriptDir: string): Promise<boolean> {
@@ -1231,6 +1279,8 @@ Subcommands:
   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
   backfill-idle-task-labels  Apply idle-task label to existing security-scan wrappers
   repos           List monitored repositories (--add owner/repo, --remove owner/repo)
+  update-mode     Ask for the update mode (dynamic/frozen) and, when frozen,
+                  the pinned ref and the exact Claude CLI / gh / Deno versions
   hooks           Install pre-commit hook and git exclude patterns
   scheduled-task  Register the Windows Task Scheduler entry (--status / --uninstall to query or remove it)
   all             Run full setup (default)`,
@@ -1336,6 +1386,9 @@ if (import.meta.main) {
       break;
     case "repos":
       ok = await runRepos(configPath, addRepo, removeRepo);
+      break;
+    case "update-mode":
+      ok = await runUpdateMode(scriptDir, configPath);
       break;
     case "hooks":
       ok = await runHooks(scriptDir);

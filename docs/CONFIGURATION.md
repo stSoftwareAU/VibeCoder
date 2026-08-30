@@ -555,6 +555,17 @@ default, and what every host did before the key existed — follows the latest.
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
+- **Setup asks for all of it.** `./setup.sh` runs `setup update-mode`, which
+  asks for the mode and — when the answer is `frozen` — for the pinned ref and
+  one exact version per tool. The ref is validated by resolving it in the
+  worker checkout after a fetch, so a ref that does not resolve is rejected by
+  name and nothing invalid reaches the file. Each version prompt defaults to
+  what `dynamic` mode would install today, and blank accepts the default
+  everywhere, so a re-run that presses Enter throughout leaves `.config.json`
+  unchanged. A run with no terminal never asks: existing values are left alone
+  and a fresh config is defaulted to `dynamic`. `setup.ps1` does not ask yet —
+  a Windows host sets these keys by hand. See
+  [Setup — what the automated setup does](SETUP.md#what-the-automated-setup-does).
 - **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
   see the resolved mode without re-parsing `.config.json`.
 - **Frozen holds the checkout at the pin.** Before each launch the host-side
