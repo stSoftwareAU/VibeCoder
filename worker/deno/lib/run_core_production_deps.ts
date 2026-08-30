@@ -547,6 +547,18 @@ export async function createProductionRunCoreDeps(
     threshold: 3,
   };
 
+  // Issue #580: the CI-check state lives on the work volume, not on a relative
+  // path under the read-only checkout. The volume root rather than a repo
+  // clone, so the counters survive a re-clone.
+  //
+  // Issue #552: resolved ONCE and shared, because the scanner and the
+  // processor must address the same store. While the scanner kept the old
+  // relative default it read retry counters that were never written there and
+  // its green-build sweep cleared auto-fix budgets in a directory the
+  // processor never touched — so a spent budget was never reset and the lane
+  // escalated to a human instead of fixing the check.
+  const ciCheckStateDir = resolveCiCheckStateDir(workDir);
+
   // Stable machine identifier used by GitHub heartbeat markers (Issue #1454)
   const machineId = await getMachineId(workDir);
   // Issue #253: trusted-author sets are a per-cycle snapshot, not values
@@ -1455,10 +1467,10 @@ export async function createProductionRunCoreDeps(
         cache: issueCache,
         shuffleRepos: shuffleArray,
         maxRetries: 3,
-        // Issue #552: one absolute, writable store shared with the processor
-        // below. The old relative default resolved against the read-only
-        // `--base-dir` mount, so every CI fix aborted before it started.
-        stateDir: resolveCiCheckStateDir({ workDir }),
+        // Issue #552: the same store the processor below writes, so the
+        // retry cap is actually observed and a green build really does clear
+        // the auto-fix budget recorded against that PR.
+        stateDir: ciCheckStateDir,
         prAuthors: fleetPrAuthorInput.fleetPrAuthors,
         allowedAuthors: fleetPrAuthorInput.allowedAuthors,
       });
@@ -1535,11 +1547,10 @@ export async function createProductionRunCoreDeps(
             maxRateLimitRetries: config.maxRateLimitRetries,
             // Issue #3582: cap auto-fix attempts per stable failure signature.
             maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
-            // The same absolute store the scan above reads, so the retry
-            // counter survives a read-only working directory, and the volume
-            // root rather than the repo clone so the bound survives a
-            // re-clone (Issues #552, #580).
-            stateDir: resolveCiCheckStateDir({ workDir }),
+            // Issue #580: the retry counters live on the work volume, not on
+            // a relative path under the read-only checkout. Issue #552: the
+            // same store the scan above reads.
+            stateDir: ciCheckStateDir,
             repoConfigs: config.repoConfig,
             // Issue #3754: cross-host PR lock so two hosts cannot fix the
             // same PR's CI failure concurrently.
