@@ -242,3 +242,93 @@ export function isGhAuthMissingFailure(
     stderr.includes("no accounts configured") ||
     stderr.includes("authentication token not found");
 }
+
+// ---------------------------------------------------------------------------
+// The git half (Issue #564, second failure)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when a finished `git` call failed for want of credentials or identity.
+ *
+ * `gh` and `git` fail differently and independently — a run was found with a
+ * working `gh api user` and a `git fetch` that could not authenticate, because
+ * the staged global config had been reduced to its `safe.directory` line while
+ * `hosts.yml` was intact. Recognising only the `gh` shape misses that entirely.
+ */
+export function isGitAuthMissingFailure(
+  result: { code: number; stderr: string },
+): boolean {
+  if (result.code === 0) return false;
+  const stderr = result.stderr.toLowerCase();
+  return stderr.includes("could not read username") ||
+    stderr.includes("terminal prompts disabled") ||
+    stderr.includes("please tell me who you are") ||
+    stderr.includes("unable to auto-detect email address") ||
+    stderr.includes("authentication failed");
+}
+
+/** The transport, credential helper and identity the entrypoint stages. */
+export interface GitGlobalConfigEntry {
+  args: string[];
+  /** True when the entry is added to a multi-valued key. */
+  add?: boolean;
+}
+
+/**
+ * The global git configuration the container needs, rebuilt from the mount.
+ *
+ * Mirrors `container/entrypoint.sh`: SSH remotes rewritten to HTTPS, `gh` as
+ * the credential helper, and an identity taken from the mounted credential.
+ * Returns an empty list when the mount names no user — nothing is guessed.
+ *
+ * @param login - The service-account login, from the mounted `hosts.yml`.
+ */
+export function gitGlobalConfigEntries(
+  login: string | null,
+): GitGlobalConfigEntry[] {
+  const entries: GitGlobalConfigEntry[] = [
+    { args: ["--global", "--add", "safe.directory", "*"], add: true },
+    {
+      args: [
+        "--global",
+        "url.https://github.com/.insteadOf",
+        "git@github.com:",
+      ],
+    },
+    {
+      args: ["--global", "credential.https://github.com.helper", ""],
+    },
+    {
+      args: [
+        "--global",
+        "--add",
+        "credential.https://github.com.helper",
+        "!gh auth git-credential",
+      ],
+      add: true,
+    },
+  ];
+  if (login) {
+    entries.push({ args: ["--global", "user.name", login] });
+    entries.push({
+      args: ["--global", "user.email", `${login}@users.noreply.github.com`],
+    });
+  }
+  return entries;
+}
+
+/**
+ * The service-account login recorded in the mounted `hosts.yml`.
+ *
+ * The same `sed` the entrypoint uses, in TypeScript: the first `user:` line.
+ */
+export function mountedGitLogin(
+  home: string,
+  io: GhCredentialStageIo = productionIo,
+): string | null {
+  const raw = io.readFile(mountedHostsPath(home));
+  if (raw === null) return null;
+  const text = new TextDecoder().decode(raw);
+  const match = text.match(/^\s*user:\s*(\S+)\s*$/m);
+  return match ? match[1]! : null;
+}

@@ -15,8 +15,11 @@ import { assert, assertEquals } from "@std/assert";
 import {
   ensureUsableGhConfigDir,
   type GhCredentialStageIo,
+  gitGlobalConfigEntries,
   isGhAuthMissingFailure,
   isGhConfigDirUsable,
+  isGitAuthMissingFailure,
+  mountedGitLogin,
   mountedHostsPath,
   restageGhConfigDir,
   stagingCandidates,
@@ -176,4 +179,68 @@ Deno.test("isGhAuthMissingFailure - recognises what gh says when it has no crede
     false,
   );
   assertEquals(isGhAuthMissingFailure({ code: 0, stderr: "" }), false);
+});
+
+// ---------------------------------------------------------------------------
+// The git half (Issue #564, second failure). A run was found with a working
+// `gh api user` and a `git fetch` that could not authenticate: `hosts.yml` was
+// intact while the staged global git config had been reduced to its
+// `safe.directory` line, losing the credential helper and the identity.
+// ---------------------------------------------------------------------------
+
+Deno.test("isGitAuthMissingFailure - recognises git's own ways of saying it has no credential", () => {
+  const shapes = [
+    "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    "fatal: could not read Username for 'https://github.com': No such device or address",
+    "fatal: unable to auto-detect email address (got 'vibe@host.(none)')",
+    "*** Please tell me who you are.",
+    "remote: Authentication failed for 'https://github.com/org/repo.git/'",
+  ];
+  for (const stderr of shapes) {
+    assertEquals(
+      isGitAuthMissingFailure({ code: 128, stderr }),
+      true,
+      `not recognised: ${stderr}`,
+    );
+  }
+  // A merge conflict is a failure, not an auth failure — it must never
+  // trigger a credential rebuild and a retry.
+  assertEquals(
+    isGitAuthMissingFailure({
+      code: 1,
+      stderr: "CONFLICT (content): Merge conflict in deno.lock",
+    }),
+    false,
+  );
+  assertEquals(isGitAuthMissingFailure({ code: 0, stderr: "" }), false);
+});
+
+Deno.test("gitGlobalConfigEntries - rebuilds transport, helper and identity", () => {
+  const entries = gitGlobalConfigEntries("VibeCoderST");
+  const flat = entries.map((e) => e.args.join(" "));
+  assert(flat.some((a) => a.includes("safe.directory")));
+  assert(flat.some((a) => a.includes("insteadOf")));
+  assert(flat.some((a) => a.includes("!gh auth git-credential")));
+  assert(flat.some((a) => a.includes("user.name VibeCoderST")));
+  assert(
+    flat.some((a) =>
+      a.includes("user.email VibeCoderST@users.noreply.github.com")
+    ),
+  );
+});
+
+Deno.test("gitGlobalConfigEntries - an unknown login contributes no identity", () => {
+  // Nothing is guessed: a mount that names no user gets the transport and the
+  // helper, and the identity failure stays loud.
+  const flat = gitGlobalConfigEntries(null).map((e) => e.args.join(" "));
+  assert(flat.some((a) => a.includes("!gh auth git-credential")));
+  assertEquals(flat.some((a) => a.includes("user.email")), false);
+});
+
+Deno.test("mountedGitLogin - reads the service account out of the mounted hosts.yml", () => {
+  const io = fakeIo({
+    [MOUNT]: "github.com:\n    user: VibeCoderST\n    oauth_token: t\n",
+  });
+  assertEquals(mountedGitLogin(HOME, io), "VibeCoderST");
+  assertEquals(mountedGitLogin(HOME, fakeIo({})), null);
 });
