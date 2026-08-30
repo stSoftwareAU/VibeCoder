@@ -106,6 +106,14 @@ Deno.test("rebuildBranchHistory - collapses to one commit and force-pushes with 
   const push = git.calls.find((c) => c[0] === "push");
   assert(push?.includes("--force-with-lease"));
   assertEquals(push?.includes("--force"), false);
+  // Issue #12: built by git_ref_args.ts, so `--end-of-options` separates the
+  // flags from the positionals. A dash-leading branch name must never reach
+  // git as a flag — least of all on the one call that force-pushes.
+  assert(push?.includes("--end-of-options"));
+  assertEquals(
+    push?.indexOf("--end-of-options")! < push?.indexOf("fix/secret-scan")!,
+    true,
+  );
 });
 
 Deno.test("rebuildBranchHistory - rebuilds onto the merge base, not the base tip", async () => {

@@ -24,6 +24,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { assertSafeGitRef, buildPushArgs } from "./git_ref_args.ts";
 
 /** Git access — injected so the guards can be tested without a repository. */
 export interface HistoryRewriteDeps {
@@ -127,6 +128,19 @@ export async function rebuildBranchHistory(
 ): Promise<Result<HistoryRewriteOutcome>> {
   const { branchName, baseBranch, cwd } = request;
   const options = cwd !== undefined ? { cwd } : undefined;
+
+  // Both names are interpolated into refs below (`origin/<base>`,
+  // `<sha>..HEAD`), so they are validated before any of it runs. The builders
+  // do this for the argv they own; these two interpolations are ours.
+  try {
+    assertSafeGitRef(branchName, "history rewrite branch");
+    assertSafeGitRef(baseBranch, "history rewrite base branch");
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
 
   if (!isOwnedBranch(branchName, baseBranch)) {
     return {
@@ -255,8 +269,13 @@ export async function rebuildBranchHistory(
     };
   }
 
+  // Issue #12: the argv goes through the builder, which adds
+  // `--end-of-options` before the positionals. Without it a dash-leading
+  // branch name reaches git as a flag rather than a refspec — and this is the
+  // one call in this module that force-pushes, so it is the worst possible
+  // place to hand git an argument it might read as an option.
   const push = await deps.runGitCommand(
-    ["push", "--force-with-lease", "origin", branchName],
+    buildPushArgs("origin", branchName, { forceWithLease: true }),
     options,
   );
   if (!push.ok || push.value.code !== 0) {
