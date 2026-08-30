@@ -267,10 +267,12 @@ export function scanGitleaksDrift(
   const findings: GitleaksDriftFinding[] = [];
   const emit = (
     workflow: GitleaksWorkflow,
-    finding: Omit<
-      GitleaksDriftFinding,
-      "findingId" | "workflowPath" | "file" | "severity"
-    > & { findingId: string },
+    finding:
+      & Omit<
+        GitleaksDriftFinding,
+        "findingId" | "workflowPath" | "file" | "severity"
+      >
+      & { findingId: string },
   ) => {
     const { file } = workflow;
     if (suppressed.has(finding.findingId)) return;
@@ -345,8 +347,8 @@ function branchFinding(file: WorkflowFile, slug: string): PartialFinding {
       "This repo's gitleaks copy has drifted: its `pull_request` branch " +
       "filter matches no `milestone/<slug>` branch, so secret scanning " +
       "never runs on milestone sub-issue PRs — the dominant merge path. A " +
-      "GitHub branch filter `*` never matches a `/`, so the common `[\"*\"]` " +
-      "spelling reads as \"every branch\" while silently skipping all of " +
+      'GitHub branch filter `*` never matches a `/`, so the common `["*"]` ' +
+      'spelling reads as "every branch" while silently skipping all of ' +
       "them. The workflow audit still counts the file as present, which is " +
       "exactly how a stale copy passes while scanning almost nothing.",
     suggestedFix: `Add \`${MILESTONE_GLOB}\` to this workflow's ` +
@@ -368,8 +370,7 @@ function noPrTriggerFinding(file: WorkflowFile, slug: string): PartialFinding {
     title: `${MEDIUM_EMOJI} Gitleaks never runs on pull requests ` +
       `(\`${file.path}\`)`,
     lines: line,
-    whyItMatters:
-      "This is the repo's only gitleaks workflow and it has no " +
+    whyItMatters: "This is the repo's only gitleaks workflow and it has no " +
       "`pull_request` trigger, so no pull request is ever scanned for " +
       "secrets: a leaked credential is caught by the next scheduled run at " +
       "the earliest, after it has already been merged and pushed. The " +
@@ -443,7 +444,7 @@ function noFallbackFinding(file: WorkflowFile, slug: string): PartialFinding {
       "      - name: Gitleaks (open-source CLI fallback)\n" +
       "        if: env.GITLEAKS_LICENSE == ''\n        run: |\n" +
       "          ./gitleaks git --redact --no-banner --exit-code 1 \\\n" +
-      "            --log-opts=\"${BASE_SHA}..${HEAD_SHA}\" .\n```\n\n" +
+      '            --log-opts="${BASE_SHA}..${HEAD_SHA}" .\n```\n\n' +
       "Download the CLI by pinned version and verify it against its " +
       "published SHA-256 checksum, as the canonical template does. Expose " +
       "`GITLEAKS_LICENSE` at job level so the step-level `if:` can branch " +
