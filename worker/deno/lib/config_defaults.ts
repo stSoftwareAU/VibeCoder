@@ -523,9 +523,6 @@ export const DEFAULT_UPDATE_MODE: UpdateMode = "dynamic";
  */
 export const PINNED_TOOLS = ["claude", "gh", "deno"] as const;
 
-/** A tool named in {@link PINNED_TOOLS}. */
-export type PinnedTool = typeof PINNED_TOOLS[number];
-
 /**
  * Default per-repo `nice` value (Issue #2772, part of #2771).
  *

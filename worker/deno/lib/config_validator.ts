@@ -8,11 +8,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
 
-import type {
-  ConfigFile,
-  PinnedToolVersions,
-  WorkerConfig,
-} from "../types.ts";
+import type { ConfigFile, PinnedToolVersions, WorkerConfig } from "../types.ts";
 import { EXCLUSION_TEAM_PATTERN } from "./validation.ts";
 import { isBotLogin } from "./trust_exclusions.ts";
 import { PINNED_TOOLS, UPDATE_MODES } from "./config_defaults.ts";

@@ -118,7 +118,10 @@ Deno.test("update mode - dynamic ignores stale pin fields rather than rejecting 
       const config = await loadConfig(configPath);
       assertEquals(config.updateMode, "dynamic");
       // The pins stay readable so a host can flip back to frozen by hand.
-      assertEquals(config.pinnedRef, "3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3");
+      assertEquals(
+        config.pinnedRef,
+        "3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3",
+      );
     },
   );
 });
@@ -155,7 +158,9 @@ async function assertLoadFails(
     for (const fragment of expectedFragments) {
       assert(
         error.message.includes(fragment),
-        `expected error to name ${JSON.stringify(fragment)}, got: ${error.message}`,
+        `expected error to name ${
+          JSON.stringify(fragment)
+        }, got: ${error.message}`,
       );
     }
   });
@@ -231,7 +236,11 @@ Deno.test("update mode - a pinned ref carrying a command substitution fails loud
 Deno.test("update mode - a tool version carrying whitespace fails loud", async () => {
   await assertLoadFails(
     frozenConfig({
-      pinned_tool_versions: { claude: "2.0.76 beta", gh: "2.62.0", deno: "2.5.4" },
+      pinned_tool_versions: {
+        claude: "2.0.76 beta",
+        gh: "2.62.0",
+        deno: "2.5.4",
+      },
     }),
     "pinned_tool_versions.claude",
   );
