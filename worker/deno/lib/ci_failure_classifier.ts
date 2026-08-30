@@ -13,15 +13,36 @@
  *                          e.g. ETIMEDOUT, ENOTFOUND, 5xx — and runtime "Error:"
  *                          prefixes from such failures should not be misread as
  *                          lint findings).
- *   2. code-fix-required  (lint/check tool name match or actionable code-fix
+ *   2. history-rewrite-required
+ *                         (secret scanners judge the COMMIT RANGE, not the
+ *                          working tree — see below. Ranked above code-fix
+ *                          because a gitleaks log carries "error:"-shaped text
+ *                          that would otherwise route it to a fix that cannot
+ *                          work).
+ *   3. code-fix-required  (lint/check tool name match or actionable code-fix
  *                          patterns — semgrep, eslint, ReDoS, type errors, etc.).
- *   3. timing             (often a downstream symptom of #1 or a slow test).
- *   4. unknown            (fallback — caller should attempt a code fix).
+ *   4. timing             (often a downstream symptom of #1 or a slow test).
+ *   5. unknown            (fallback — caller should attempt a code fix).
  */
 
 /** Top-level routing categories. */
 export type CiFailureCategory =
   | "code-fix-required"
+  /**
+   * The verdict is a property of the branch's commit range, not its working
+   * tree, so no follow-up commit can clear it (Issue #630).
+   *
+   * Secret scanners run with `fetch-depth: 0` and scan every commit in the
+   * branch. Correcting the file and committing the correction leaves the
+   * original commit — and the secret in its diff — exactly where it was, so
+   * the check fails again, identically, naming a commit that has already been
+   * superseded. A fix loop that does not know this retries forever and ends
+   * at `needs-human`, which is itself a workflow failure.
+   *
+   * The fix is to correct the content AND rebuild the branch so the finding
+   * exists in no commit.
+   */
+  | "history-rewrite-required"
   | "timing"
   | "infrastructure"
   | "unknown";
@@ -60,6 +81,41 @@ const CODE_FIX_CHECK_NAMES: ReadonlyArray<string> = [
   "tsc",
   "type-check",
   "typecheck",
+];
+
+/**
+ * Check names whose verdict covers the commit range (Issue #630).
+ *
+ * Matched as substrings of the lower-cased check name, so "gitleaks",
+ * "Full-history secrets sweep (gitleaks + trufflehog)" and a repo's own
+ * "secret-scan / pr" all land here.
+ */
+const HISTORY_REWRITE_CHECK_NAMES: ReadonlyArray<string> = [
+  "gitleaks",
+  "trufflehog",
+  "secrets sweep",
+  "secret scan",
+  "secret-scan",
+  "detect-secrets",
+  "ggshield",
+];
+
+/**
+ * Text that identifies a range-scoped secret finding even when the check is
+ * named something this table has never seen — a repository is free to call
+ * its scanner "security". The fingerprint line is the strongest signal: its
+ * `<sha>:<file>:<rule>:<line>` shape names the commit the finding lives in,
+ * which is precisely what makes it unfixable by a further commit.
+ */
+const HISTORY_REWRITE_TEXT_PATTERNS: ReadonlyArray<string> = [
+  "leaks found",
+  "secrets detected",
+  "verified secret",
+];
+
+/** Fingerprint lines: `Fingerprint: <40-hex>:<path>:<rule>:<line>`. */
+const HISTORY_REWRITE_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
+  /fingerprint:\s*[0-9a-f]{40}:/i,
 ];
 
 /** Substring matches against any annotation/log text (case-insensitive). */
@@ -139,6 +195,37 @@ export function classifyCiFailure(
       category: "infrastructure",
       reason: `infrastructure failure: ${matchedInfra[0]}`,
       signals: [`check:${lowerName}`, ...matchedInfra.map((m) => `text:${m}`)],
+    };
+  }
+
+  // ---- History-rewrite signals (Issue #630) ----
+  // Deliberately ahead of code-fix: a gitleaks log contains "error:"-shaped
+  // text, and routing it to a code fix produces a loop that cannot terminate.
+  const matchedHistoryCheck = HISTORY_REWRITE_CHECK_NAMES.find((p) =>
+    lowerName.includes(p)
+  );
+  const matchedHistoryText = HISTORY_REWRITE_TEXT_PATTERNS.filter((p) =>
+    haystack.includes(p)
+  );
+  const matchedHistoryRegex = HISTORY_REWRITE_REGEX_PATTERNS.filter((re) =>
+    re.test(haystack)
+  );
+  if (
+    matchedHistoryCheck !== undefined || matchedHistoryText.length > 0 ||
+    matchedHistoryRegex.length > 0
+  ) {
+    return {
+      category: "history-rewrite-required",
+      reason: matchedHistoryCheck !== undefined
+        ? `secret scan '${matchedHistoryCheck}' judges the commit range, not the working tree`
+        : `secret finding in the commit range: ${
+          matchedHistoryText[0] ?? "commit fingerprint"
+        }`,
+      signals: [
+        `check:${lowerName}`,
+        ...matchedHistoryText.map((m) => `text:${m}`),
+        ...matchedHistoryRegex.map((re) => `regex:${re.source}`),
+      ],
     };
   }
 

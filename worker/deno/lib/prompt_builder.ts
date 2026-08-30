@@ -1622,9 +1622,27 @@ export function formatCiFailureClassification(
     : "- (no signals matched — the category rests on the check name alone. " +
       "This is weak evidence: deviate if the logs point elsewhere, and say " +
       "so in `.pr_response_message`.)";
+  // Issue #630: this category needs an instruction, not just a label. The
+  // run's instinct is to fix the file and stop, which is correct — but it
+  // must NOT try to rewrite history itself. The worker collapses the branch
+  // and force-pushes with a lease after the fix lands, under guards a coding
+  // run has no way to check.
+  const historyNote = classification.category === "history-rewrite-required"
+    ? [
+      "- **What to do:** correct the offending content in the working tree " +
+      "and commit it normally. This check scans every commit in the branch, " +
+      "so your fix alone will not clear it — the worker rebuilds the branch " +
+      "history afterwards. Do NOT run `git rebase`, `git reset`, " +
+      "`git commit --amend` or any force-push yourself.",
+      "- **Never** paste the flagged value into a commit message, a comment, " +
+      "or `.pr_response_message`. Refer to it by variable or file name. The " +
+      "point of the rebuild is that the value stops existing.",
+    ]
+    : [];
   return [
     `- **Category:** \`${classification.category}\``,
     `- **Reason:** ${classification.reason}`,
+    ...historyNote,
     "- **Matched signals:**",
     signalsBlock,
   ].join("\n");

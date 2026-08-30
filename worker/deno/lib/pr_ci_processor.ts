@@ -48,6 +48,10 @@ import {
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
 import { classifyCiFailure } from "./ci_failure_classifier.ts";
+import {
+  buildRewriteCommitMessage,
+  rebuildBranchHistory,
+} from "./branch_history_rewrite.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import {
   type AutoFixAttempt,
@@ -982,6 +986,76 @@ async function _processCiWithHeartbeat(
     }
   }
 
+  // Issue #630: a secret scanner judges the COMMIT RANGE, not the working
+  // tree. The content is corrected and pushed by now, and the check would
+  // still fail on the original commit's diff — so the branch is collapsed to
+  // a single commit and force-pushed with a lease. Without this the fix loop
+  // re-commits the same correction until the attempt cap and ends at
+  // `needs-human`, a wedge caused entirely by the wrong model of the check.
+  let historyRewritten = false;
+  if (
+    failureClassification.category === "history-rewrite-required" &&
+    hasChanges && pushSucceeded
+  ) {
+    // One rebuild per underlying failure. A finding that survives a rebuild
+    // is not in this branch, so rebuilding again would be the same wrong
+    // answer given twice — escalate with the evidence instead.
+    const alreadyRebuilt = priorAttempts.some(
+      (attempt) => attempt.category === "history-rewrite-required",
+    );
+    if (alreadyRebuilt) {
+      logger.warn(
+        "Secret finding survived a history rebuild — it is in the base branch",
+        { repo, prNumber, checkName, branchName: input.branchName },
+      );
+    } else {
+      const defaultBranchResult = await deps.git.getRepoDefaultBranch(
+        repo,
+        processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+      );
+      if (!defaultBranchResult.ok) {
+        logger.warn("Could not resolve the base branch for a history rebuild", {
+          repo,
+          prNumber,
+          error: defaultBranchResult.error.message,
+        });
+      } else {
+        const rebuild = await rebuildBranchHistory({
+          branchName: input.branchName,
+          baseBranch: defaultBranchResult.value,
+          commitMessage: buildRewriteCommitMessage(checkName, prNumber),
+          ...(processorDeps.workDir !== undefined
+            ? { cwd: processorDeps.workDir }
+            : {}),
+        }, {
+          runGitCommand: (args, options) =>
+            deps.git.runGitCommand(args, options ?? {}),
+          logger,
+        });
+        if (rebuild.ok) {
+          historyRewritten = true;
+          logger.info("Rebuilt branch history to clear a secret finding", {
+            repo,
+            prNumber,
+            checkName,
+            collapsedCommits: rebuild.value.collapsedCommits,
+          });
+        } else {
+          // The corrected content is already pushed, so the PR is no worse
+          // than before — it will simply fail the same check again. Say why
+          // rather than letting the next cycle rediscover it.
+          logger.warn("History rebuild refused or failed", {
+            repo,
+            prNumber,
+            checkName,
+            branchName: input.branchName,
+            error: rebuild.error.message,
+          });
+        }
+      }
+    }
+  }
+
   // Re-enable auto-merge after pushing fix
   if (hasChanges && pushSucceeded) {
     try {
@@ -1055,8 +1129,17 @@ async function _processCiWithHeartbeat(
 
   // Reply with outcome — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded) {
-    const body = customMessage ??
+    const base = customMessage ??
       `I've pushed a fix for the CI failure (**${checkName}**). Please review the changes.`;
+    // Issue #630: a force-push that silently rewrote the branch would be an
+    // unpleasant surprise for anyone with it checked out. Say so, and say why.
+    const body = historyRewritten
+      ? `${base}\n\n**The branch history was rebuilt.** \`${checkName}\` scans every commit ` +
+        `in the branch, not the working tree, so correcting the content in a further commit ` +
+        `would have left the finding in the earlier commit's diff and the check would have ` +
+        `failed again. The branch is now a single commit and was force-pushed with a lease. ` +
+        `If you have it checked out, re-fetch rather than pulling.`
+      : base;
     await replyToComment(repo, prNumber, body, deps);
   } else if (hasChanges && !pushSucceeded) {
     // Issue #211: carry the failing recovery step and git's stderr into the
