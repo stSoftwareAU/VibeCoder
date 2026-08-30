@@ -340,6 +340,27 @@ The **native** templates (`alert-feed`, `bash-script-refs`, `bash-syntax-audit`,
 file only fixed-id or fingerprinted findings, so they have no
 semantic-duplicate surface for a title list to guard.
 
+#### Adding a template — the conformance test enforces this
+
+[`idle_task_scan_dedup_conformance_test.ts`](../worker/deno/tests/idle_task_scan_dedup_conformance_test.ts)
+(Issue #540) walks `listTemplates()` — the **live** registry, not a
+hand-maintained list — and drives each scan template's `runTask` through
+recording stubs. Per template it asserts the repo-wide lookup happened, that its
+result reached the scan runner and then the prompt via the template's own
+`assemble*Prompt`, and the negative: a dedup list sourced from a `--label`-scoped
+query fails.
+
+So a new template must do one of two things before CI goes green:
+
+- **wire it up** — add a `HARNESSES` entry naming its factory and its prompt
+  assembler; or
+- **exempt it** — add it to `NON_PARTICIPATING` with a stated reason (the four
+  native templates above are the existing entries).
+
+An implicit skip is not available, which is the point: wiring seventeen
+templates up once does not stop the eighteenth being written against the old,
+label-scoped pattern.
+
 ### Wrapper body size limit
 
 GitHub rejects any issue body over **65,536 characters**
