@@ -292,6 +292,9 @@ explicitly overridden.
 | `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
 | `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
 | `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
+| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. |
+| `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
+| `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in — Java and Maven are the first expected use. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or `JAVA_HOME` at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked Java + Maven example](CONTAINER.md#deployer-supplied-build-time-tools). |
@@ -506,6 +509,53 @@ than parsing `.config.json`, so the precedence cannot drift between hosts:
 
 ```bash
 deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
+```
+
+### 🧊 Update Mode
+
+`update_mode` names how a host tracks Vibe Coder releases. `dynamic` — the
+default, and what every host did before the key existed — follows the latest.
+`frozen` holds the host at a pinned checkout with pinned tool versions.
+
+```json
+{
+  "update_mode": "frozen",
+  "pinned_ref": "3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3",
+  "pinned_tool_versions": {
+    "claude": "2.0.76",
+    "gh": "2.62.0",
+    "deno": "2.5.4"
+  }
+}
+```
+
+- **Absent means dynamic.** A `.config.json` with none of the three keys loads
+  with `update_mode` resolved to `dynamic` and no warning, so an existing host
+  is unchanged.
+- **Frozen is all-or-nothing.** `frozen` without `pinned_ref`, or with a
+  missing or blank entry for `claude`, `gh` or `deno`, fails loudly at config
+  load naming the field that is missing. A half-pinned host would drift on
+  whatever was left out, which is the failure the pin exists to prevent.
+- **Hand-editable, and checked.** Both the ref and the versions are meant to be
+  edited in `.config.json` without re-running setup. They are handed to `git`
+  and to tool installers, so each must start with a letter or digit and contain
+  only letters, digits and `. _ + - / @`; whitespace and shell metacharacters
+  are refused rather than passed through.
+- **Dynamic ignores the pins, it does not reject them.** Flipping back to
+  `dynamic` needs one edit — the stale pins stay in the file and nothing reads
+  them.
+- **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
+  see the resolved mode without re-parsing `.config.json`.
+
+```mermaid
+flowchart LR
+    C[".config.json"] --> R{"update_mode"}
+    R -->|absent| D["dynamic (default)"]
+    R -->|dynamic| D
+    R -->|frozen| P{"pinned_ref +<br/>all 3 tool versions?"}
+    P -->|yes| F["frozen"]
+    P -->|no / malformed| X["fail loud —<br/>field named"]
+    R -->|anything else| X
 ```
 
 ### 🔄 Host-Side Checkout Update

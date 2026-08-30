@@ -11,7 +11,7 @@
  *   compile time and call sites no longer need `as WorkerConfig` rescue casts.
  */
 
-import type { WorkerConfig } from "../types.ts";
+import type { UpdateMode, WorkerConfig } from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
@@ -497,6 +497,34 @@ export const DEFAULT_WORKER_NAME = "" as const;
  * When false, repos are scanned in configured order for per-worker priority.
  */
 export const DEFAULT_SHUFFLE_REPOS = true as const;
+
+/**
+ * Every update mode a host may be configured with (Issue #622, part of #583).
+ *
+ * `dynamic` tracks the latest Vibe Coder; `frozen` holds the host at a pinned
+ * checkout and pinned tool versions. Named here so the validator can list the
+ * accepted values in its fail-loud message.
+ */
+export const UPDATE_MODES: readonly UpdateMode[] = ["dynamic", "frozen"];
+
+/**
+ * Default update mode (Issue #622, part of #583).
+ *
+ * `dynamic` is what every host did before the key existed, so an existing
+ * `.config.json` with no update-mode keys behaves exactly as it does today.
+ */
+export const DEFAULT_UPDATE_MODE: UpdateMode = "dynamic";
+
+/**
+ * Tools whose exact version a frozen host pins (Issue #622, part of #583).
+ *
+ * All three are required under `update_mode: "frozen"` — a host that pinned
+ * only some of them would silently drift on the rest.
+ */
+export const PINNED_TOOLS = ["claude", "gh", "deno"] as const;
+
+/** A tool named in {@link PINNED_TOOLS}. */
+export type PinnedTool = typeof PINNED_TOOLS[number];
 
 /**
  * Default per-repo `nice` value (Issue #2772, part of #2771).
@@ -1301,6 +1329,9 @@ export function buildDefaultWorkerConfig(
     workDir: "",
     // Issue #4146: containment is the default — native is an explicit opt-in.
     runMode: DEFAULT_RUN_MODE,
+    // Issue #622: dynamic is what every host did before the key existed, so
+    // an unconfigured host tracks the latest exactly as it always has.
+    updateMode: DEFAULT_UPDATE_MODE,
     // Issue #4067: the coding-agent provider seam defaults to Claude.
     agentProvider: DEFAULT_AGENT_PROVIDER_ID,
     // Issue #4108: only the active provider is enabled unless a deployment

@@ -41,6 +41,10 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "fleet_pr_authors",
   "repo_config",
   "run_mode",
+  // Update mode and its pins (Issue #622, part of #583).
+  "update_mode",
+  "pinned_ref",
+  "pinned_tool_versions",
   "agent_provider",
   "agent_providers",
   "claude_model",

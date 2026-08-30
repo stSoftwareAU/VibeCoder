@@ -8,9 +8,14 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
 
-import type { ConfigFile, WorkerConfig } from "../types.ts";
+import type {
+  ConfigFile,
+  PinnedToolVersions,
+  WorkerConfig,
+} from "../types.ts";
 import { EXCLUSION_TEAM_PATTERN } from "./validation.ts";
 import { isBotLogin } from "./trust_exclusions.ts";
+import { PINNED_TOOLS, UPDATE_MODES } from "./config_defaults.ts";
 
 /**
  * Validation result with structured errors and warnings.
@@ -247,6 +252,106 @@ export function warnInsecureConfig(config: WorkerConfig): string[] {
 }
 
 // =============================================================================
+// Update Mode Validation (Issue #622, part of #583)
+// =============================================================================
+
+/**
+ * Shape a pinned ref or tool version must take (Issue #622).
+ *
+ * Both are later handed to `git` and to tool installers, so the allowlist is
+ * deliberately narrow: start with a letter or digit, then letters, digits and
+ * `. _ + - / @`. That covers every commit SHA, tag (`v1.2.3`,
+ * `release/2026-01`) and version string (`2.0.76`, `1.0.0-beta.1`) while
+ * rejecting whitespace and every shell metacharacter.
+ */
+const PIN_VALUE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+@/-]*$/;
+
+/**
+ * Resolved update-mode settings to validate (Issue #622).
+ *
+ * `updateMode` is deliberately a plain `string` so a hand-edited
+ * `.config.json` carrying a bogus mode is validated, not type-asserted away.
+ */
+export interface UpdateModeSettings {
+  /** Resolved `update_mode`; absent means the `dynamic` default. */
+  updateMode?: string;
+  /** Resolved `pinned_ref`, when the operator set one. */
+  pinnedRef?: string;
+  /** Resolved `pinned_tool_versions`, when the operator set one. */
+  pinnedToolVersions?: PinnedToolVersions;
+}
+
+/**
+ * Validate the update-mode settings, failing loud on a bad hand-edit
+ * (Issue #622, part of #583).
+ *
+ * The pinned ref and tool versions are meant to be hand-editable without
+ * re-running setup, so a typo has to be caught at config-load time rather
+ * than silently checking out the wrong thing.
+ *
+ * In `dynamic` mode the pin fields are ignored entirely — a host that flips
+ * back to dynamic keeps its stale pins without being refused.
+ *
+ * @param settings - Resolved update-mode settings
+ * @returns Error messages naming the offending field (empty when valid)
+ */
+export function validateUpdateModeSettings(
+  settings: UpdateModeSettings,
+): string[] {
+  const mode = settings.updateMode;
+  if (
+    mode !== undefined &&
+    !(UPDATE_MODES as readonly string[]).includes(mode)
+  ) {
+    return [
+      `Invalid update_mode ${JSON.stringify(mode)}. ` +
+      `Accepted values: ${UPDATE_MODES.join(", ")}.`,
+    ];
+  }
+
+  // Dynamic hosts ignore the pins, so a stale one is never an error.
+  if (mode !== "frozen") return [];
+
+  const errors: string[] = [];
+
+  const ref = settings.pinnedRef;
+  if (ref === undefined || ref.trim() === "") {
+    errors.push(
+      'update_mode "frozen" requires pinned_ref — the commit SHA or tag the ' +
+        "worker checkout is held at.",
+    );
+  } else {
+    errors.push(...pinValueErrors("pinned_ref", ref));
+  }
+
+  const versions = settings.pinnedToolVersions ?? {};
+  for (const tool of PINNED_TOOLS) {
+    const version = versions[tool];
+    if (version === undefined || version.trim() === "") {
+      errors.push(
+        `update_mode "frozen" requires pinned_tool_versions.${tool} — the ` +
+          `exact ${tool} version a frozen host installs.`,
+      );
+      continue;
+    }
+    errors.push(...pinValueErrors(`pinned_tool_versions.${tool}`, version));
+  }
+
+  return errors;
+}
+
+/** Reject a pin value that could not be safely handed to git or an installer. */
+function pinValueErrors(field: string, value: string): string[] {
+  if (PIN_VALUE_PATTERN.test(value)) return [];
+  return [
+    `Invalid ${field} ${JSON.stringify(value)}. It is passed to git and to ` +
+    "tool installers, so it must start with a letter or digit and contain " +
+    "only letters, digits and . _ + - / @ — no whitespace or shell " +
+    "metacharacters.",
+  ];
+}
+
+// =============================================================================
 // GitHub App Configuration Validation (Issue #957)
 // =============================================================================
 
@@ -384,6 +489,14 @@ export function validateConfigFull(
       );
     }
   }
+
+  // Step 1c: update mode and its pins (Issue #622). Validated from the
+  // resolved config so a caller that assembled one itself is covered too.
+  errors.push(...validateUpdateModeSettings({
+    updateMode: config.updateMode,
+    pinnedRef: config.pinnedRef,
+    pinnedToolVersions: config.pinnedToolVersions,
+  }));
 
   // Step 2: Validate username formats for allowed authors
   for (const author of config.allowedAuthors) {
