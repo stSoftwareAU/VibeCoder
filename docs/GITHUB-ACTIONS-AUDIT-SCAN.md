@@ -844,6 +844,14 @@ scanner emits `BP-MILESTONE-FILTER-<basename>` for the same file and the same
 gap. The drift scanner runs immediately after it and drops its own branch
 finding whenever that id is already open or was filed this run.
 
+Every finding's **Suggested fix** also carries the "Make this scan block
+merges" section: refreshing the YAML fixes what gitleaks scans,
+but the scan still blocks nothing until its check
+(`Gitleaks / gitleaks`, derived from the scanned file's own workflow and job
+names) is a required status check on the ruleset gating the **default
+branch** *and* the one gating `milestone/**`. A human owns that change —
+the worker's token is deliberately denied ruleset permissions.
+
 Each surviving finding is filed at `severity:medium` via the shared
 `fileWorkflowFinding` helper, deduplicated against the known-open ids plus
 all earlier pre-files. An in-source `best-practice-ignore: BP-GITLEAKS-…`
