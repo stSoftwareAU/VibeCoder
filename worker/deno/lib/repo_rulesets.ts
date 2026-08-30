@@ -59,19 +59,33 @@ export interface RulesetSummary {
   source_type?: string;
 }
 
+/** A bypass actor, as the ruleset create/update calls accept it. */
+export interface RulesetBypassActorBody {
+  actor_type: "RepositoryRole" | "Team" | "Integration" | "OrganizationAdmin";
+  actor_id: number;
+  bypass_mode: "always" | "pull_request";
+}
+
+/** One rule in a ruleset body. */
+export type RulesetRuleBody =
+  | {
+    type: "required_status_checks";
+    parameters: {
+      strict_required_status_checks_policy: boolean;
+      required_status_checks: Array<{ context: string }>;
+    };
+  }
+  | { type: "deletion" | "non_fast_forward" };
+
 /** Body accepted by the ruleset create (`POST`) and update (`PUT`) calls. */
 export interface RulesetBody {
   name: string;
   target: "branch";
   enforcement: "active";
   conditions: { ref_name: { include: string[]; exclude: string[] } };
-  rules: Array<{
-    type: "required_status_checks";
-    parameters: {
-      strict_required_status_checks_policy: boolean;
-      required_status_checks: Array<{ context: string }>;
-    };
-  }>;
+  rules: RulesetRuleBody[];
+  /** Actors exempt from the rules. Omitted when nothing is exempt. */
+  bypass_actors?: RulesetBypassActorBody[];
 }
 
 /** Success/failure envelope so callers never have to catch. */
@@ -256,6 +270,48 @@ export function buildDefaultBranchRulesetBody(
         },
       },
     ],
+  };
+}
+
+/** Ref pattern the milestone ruleset targets. */
+export const MILESTONE_REF_PATTERN = "refs/heads/milestone/**";
+
+/**
+ * Build the body for the `milestone/**` ruleset.
+ *
+ * Deliberately carries NO `pull_request` rule: milestone branches are the
+ * fleet's own collection branches, and a review gate there would put a human
+ * in front of every child PR — review belongs on the default branch (Issue
+ * #586). Required checks alone are what makes a milestone PR auto-mergeable,
+ * which is the whole point.
+ *
+ * `deletion` and `non_fast_forward` mirror the default-branch ruleset: a
+ * collection branch that can be force-pushed or deleted loses the chain.
+ */
+export function buildMilestoneRulesetBody(
+  name: string,
+  contexts: string[],
+  bypassActors: RulesetBypassActorBody[] = [],
+): RulesetBody {
+  return {
+    name,
+    target: "branch",
+    enforcement: "active",
+    conditions: {
+      ref_name: { include: [MILESTONE_REF_PATTERN], exclude: [] },
+    },
+    rules: [
+      { type: "deletion" },
+      { type: "non_fast_forward" },
+      {
+        type: "required_status_checks",
+        parameters: {
+          strict_required_status_checks_policy: true,
+          required_status_checks: contexts.map((context) => ({ context })),
+        },
+      },
+    ],
+    ...(bypassActors.length > 0 ? { bypass_actors: bypassActors } : {}),
   };
 }
 

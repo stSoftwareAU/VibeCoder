@@ -410,3 +410,19 @@ Deno.test("auto_fix_attempt_tracker - global and per-repo overrides are honoured
   // Non-positive per-repo values are guarded back to the global setting.
   assertEquals(resolveMaxAutoFixAttempts(config, "owner/bad"), 5);
 });
+
+Deno.test("recordAutoFixAttempt - a read-only state directory does not abort the repair (Issue #580)", async () => {
+  // Sibling of the retry counter: an unguarded write here would take the
+  // CI-fix lane down the same way. The attempt number must still come back.
+  const root = await Deno.makeTempDir();
+  const stateDir = `${root}/state`;
+  try {
+    await Deno.mkdir(stateDir);
+    await Deno.chmod(stateDir, 0o500);
+    const attempts = await recordAutoFixAttempt(stateDir, "sig-abc", attempt());
+    assertEquals(attempts, 1);
+  } finally {
+    await Deno.chmod(stateDir, 0o700);
+    await Deno.remove(root, { recursive: true });
+  }
+});

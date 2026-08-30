@@ -63,6 +63,11 @@ import { syncBestPracticesForAllRepos } from "./best_practices_sync.ts";
 import { relabelBestPracticesForAllRepos } from "./best_practices_relabel.ts";
 import { syncGitignoreForAllRepos } from "./gitignore_sync.ts";
 import { verifyMonitoredCollaborators } from "./collaborator_precheck.ts";
+import {
+  checkMilestoneRuleset,
+  createMilestoneRuleset,
+  MILESTONE_RULESET_NAME,
+} from "../lib/milestone_ruleset_check.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
 import {
   backfillIdleTaskLabels,
@@ -92,6 +97,70 @@ function printSuccess(msg: string): void {
 
 function printWarning(msg: string): void {
   console.log(`${YELLOW}⚠${NC}  ${msg}`);
+}
+
+/**
+ * `gh` executor for the read-only milestone-ruleset check (Issue #586).
+ *
+ * Its own runner rather than the sync's: that one returns a structured
+ * `CommandOutput`, while the ruleset reads want raw JSON on stdout and a
+ * throw on failure, matching the `GhJson` seam.
+ */
+function createSetupGhJson(ghConfigDir?: string) {
+  return async (args: string[], stdin?: string): Promise<string> => {
+    const env = ghConfigDir
+      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
+      : undefined;
+    const command = new Deno.Command("gh", {
+      args,
+      stdin: stdin === undefined ? "null" : "piped",
+      stdout: "piped",
+      stderr: "piped",
+      ...(env ? { env } : {}),
+    });
+    if (stdin !== undefined) {
+      const child = command.spawn();
+      const writer = child.stdin.getWriter();
+      await writer.write(new TextEncoder().encode(stdin));
+      await writer.close();
+      const piped = await child.output();
+      const decode = new TextDecoder();
+      if (!piped.success) throw new Error(decode.decode(piped.stderr).trim());
+      return decode.decode(piped.stdout);
+    }
+    const output = await command.output();
+    const decoder = new TextDecoder();
+    if (!output.success) {
+      throw new Error(decoder.decode(output.stderr).trim());
+    }
+    return decoder.decode(output.stdout);
+  };
+}
+
+/**
+ * Ask whether to create the missing `milestone/**` ruleset (Issue #586).
+ *
+ * Setup asks its own questions — this is one of them. Without a terminal to
+ * ask on there is no consent to infer, so the check warns and changes
+ * nothing: a scripted run can never hang here, and never writes a ruleset
+ * nobody agreed to.
+ */
+async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
+  if (!Deno.stdin.isTerminal()) return false;
+
+  await Deno.stdout.write(
+    new TextEncoder().encode(
+      `${YELLOW}?${NC}  ${repo}: no ruleset covers \`milestone/**\`, so ` +
+        `GitHub cannot arm auto-merge on a milestone PR.\n` +
+        `   Create one mirroring the default-branch checks? [y/N] `,
+    ),
+  );
+  const buffer = new Uint8Array(16);
+  const read = await Deno.stdin.read(buffer);
+  if (read === null) return false;
+  const answer = new TextDecoder().decode(buffer.subarray(0, read)).trim()
+    .toLowerCase();
+  return answer === "y" || answer === "yes";
 }
 
 function printError(msg: string): void {
@@ -827,6 +896,7 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
       repos,
       ghConfigDir,
     });
+    let milestoneRulesetErrors = 0;
     for (const r of summary.results) {
       if (!r.ok) {
         printWarning(
@@ -862,6 +932,56 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
           `${r.repo} (${r.visibility}, ${r.branch}): already covered by a ruleset (no change)`,
         );
       }
+      // Issue #586: milestone branches are the operator's to configure — the
+      // worker never writes their ruleset, because getting it wrong freezes
+      // every milestone branch in the fleet. Setup reads it and says what is
+      // wrong, so a misconfiguration is caught here rather than by a milestone
+      // sync failing on the hour.
+      const milestoneLogin = (config.service_accounts ?? [])[0];
+      if (milestoneLogin) {
+        const findings = await checkMilestoneRuleset(
+          r.repo,
+          milestoneLogin,
+          createSetupGhJson(ghConfigDir),
+        );
+        const missing = findings.find((f) => f.code === "no-milestone-ruleset");
+        if (missing && (await askCreateMilestoneRuleset(r.repo))) {
+          // Setup runs with the operator's own credentials, which is the only
+          // reason this can write: creating a ruleset needs `admin`, and the
+          // worker's service account has `write` (Issue #586).
+          const created = await createMilestoneRuleset(
+            r.repo,
+            createSetupGhJson(ghConfigDir),
+          );
+          if (!created.ok) {
+            printWarning(
+              `${r.repo}: could not create the milestone ruleset: ` +
+                `${created.error.message}`,
+            );
+          } else if (created.created) {
+            printSuccess(
+              `${r.repo}: created the "${MILESTONE_RULESET_NAME}" ruleset ` +
+                `requiring ${created.contexts.length} check(s) on ` +
+                `\`milestone/**\` — milestone PRs are auto-mergeable`,
+            );
+            continue;
+          } else {
+            printInfo(
+              `${r.repo}: milestone ruleset not created — ${created.reason}`,
+            );
+          }
+        }
+        for (const finding of findings) {
+          const line = `${r.repo}: ${finding.message}`;
+          if (finding.severity === "error") {
+            printError(line);
+            milestoneRulesetErrors++;
+          } else if (finding.severity === "warning") {
+            printWarning(line);
+          }
+          // `info` is the healthy case — reported only in the summary below.
+        }
+      }
       // Classic protection is never written or deleted by the worker; a
       // leftover rule is surfaced so an operator can clear it (Issue #4163).
       if (r.legacyClassicProtection) {
@@ -875,6 +995,14 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
     printInfo(
       `Ruleset sync: ${summary.configured} configured (${summary.changed} changed), ${summary.failed} failed (of ${summary.total})`,
     );
+    if (milestoneRulesetErrors > 0) {
+      printWarning(
+        `${milestoneRulesetErrors} repo(s) gate \`milestone/**\` against the ` +
+          `service account, which is the intended policy — but the milestone ` +
+          `branch sync still pushes directly, so it fails there until the ` +
+          `sync raises a pull request instead (Issue #589).`,
+      );
+    }
     // Per-repo failures are non-fatal but signalled so setup.sh prints its
     // warning line.
     return summary.failed === 0;

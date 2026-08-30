@@ -388,6 +388,29 @@ Deno.test("processMergeConflict - refuses to push a tree that still has conflict
   );
 });
 
+Deno.test("processMergeConflict - the marker check is scoped to the conflicted files (Issue #584)", async () => {
+  // A tree-wide grep rejects a correct resolution in any repository that
+  // legitimately contains marker-shaped lines. GRQ carries
+  // `docs/JSON_Merge_Conflict_Prevention.md` — a document *about* merge
+  // conflicts whose worked example opens `<<<<<<< Updated upstream` — so
+  // every conflict there was aborted after being resolved.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+  );
+
+  assert(result.ok);
+  const grep = captured.gitArgs.find((a) => a[0] === "grep");
+  assert(grep, "the marker check must run");
+  const separator = grep.indexOf("--");
+  assert(
+    separator !== -1,
+    `the grep must be path-scoped, got: ${grep.join(" ")}`,
+  );
+  // Exactly the files this merge conflicted in, and nothing else.
+  assertEquals(grep.slice(separator + 1), ["SECURITY.md"]);
+});
+
 Deno.test("processMergeConflict - refuses to push when the agent leaves paths unmerged", async () => {
   const { captured, result } = await runProcessor(
     makeInput(),
