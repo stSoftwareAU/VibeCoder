@@ -49,6 +49,25 @@ deno test tests/github_actions_audit_template_test.ts
   ok | 54 passed | 0 failed (246ms)
 ```
 
+`./quality.sh` passes every check except `deno tests`, which fails on this
+container for reasons that predate this branch: `tests/gh_spawn_test.ts`,
+`tests/service_account_env_test.ts` and `tests/run_core_test.ts` depend on a
+real `gh` binary, the container's `gh` config path, and a live GitHub token
+(the uncaught error is `GraphQL: API rate limit already exceeded`). Running
+those three files from a clean worktree at the branch point (`f340d35`)
+reproduces the identical failures, so they are environmental, not a
+regression:
+
+```
+# at f340d35 (base), before any change from this branch
+FAILED | 58 passed | 29 failed (762ms)
+  spawnGh - production runner tolerates a discarded stderr (Issue #3748)
+  spawnGh - production runner tolerates discarding both streams (Issue #3748)
+  spawnGh - production runner tolerates discarded streams on the stdin path (Issue #3748)
+  ./tests/run_core_test.ts (uncaught error)
+  applyServiceAccountEnv - an unwritable gh config dir is restaged writable
+```
+
 The dedupe guard was verified as a genuine regression test, not a passing
 accident: with the `knownOpen.has(milestoneId)` guard removed, both
 `worker/deno/tests/gitleaks_drift_scanner_test.ts::scanGitleaksDrift - branch

@@ -184,7 +184,6 @@ function usesGitleaksAction(value: string): boolean {
  */
 interface GitleaksWorkflow {
   file: WorkflowFile;
-  steps: StepText[];
   /** Uses the licensed `gitleaks/gitleaks-action`. */
   usesAction: boolean;
   /** Runs the open-source gitleaks CLI in a `run:` step. */
@@ -199,7 +198,7 @@ function asGitleaksWorkflow(file: WorkflowFile): GitleaksWorkflow | null {
   const usesAction = steps.some((s) => usesGitleaksAction(s.uses));
   const usesCli = steps.some((s) => CLI_INVOCATION.test(s.run));
   if (!usesAction && !usesCli) return null;
-  return { file, steps, usesAction, usesCli };
+  return { file, usesAction, usesCli };
 }
 
 /** Every `gitleaks-action` call-site in a file: line number and ref. */
@@ -223,6 +222,12 @@ function lineOfOnKey(rawText: string): number {
   }
   return 1;
 }
+
+/** A finding body before the per-file fields are attached. */
+type PartialFinding = Omit<
+  GitleaksDriftFinding,
+  "workflowPath" | "file" | "severity"
+>;
 
 /**
  * Scan every gitleaks workflow in the repo and return one
@@ -265,16 +270,7 @@ export function scanGitleaksDrift(
   );
 
   const findings: GitleaksDriftFinding[] = [];
-  const emit = (
-    workflow: GitleaksWorkflow,
-    finding:
-      & Omit<
-        GitleaksDriftFinding,
-        "findingId" | "workflowPath" | "file" | "severity"
-      >
-      & { findingId: string },
-  ) => {
-    const { file } = workflow;
+  const emit = (file: WorkflowFile, finding: PartialFinding) => {
     if (suppressed.has(finding.findingId)) return;
     if (knownOpen.has(finding.findingId)) return;
     if (
@@ -306,20 +302,20 @@ export function scanGitleaksDrift(
       // test workflow — which a gitleaks copy does.
       const milestoneId = milestoneFindingIdForPath(file.path);
       if (!knownOpen.has(milestoneId) && !suppressed.has(milestoneId)) {
-        emit(workflow, branchFinding(file, slug));
+        emit(file, branchFinding(file, slug));
       }
     } else if (coverage === "none" && !anyPrTrigger) {
-      emit(workflow, noPrTriggerFinding(file, slug));
+      emit(file, noPrTriggerFinding(file, slug));
     }
 
     const staleSites = actionCallSites(file.rawText)
       .filter((site) => site.ref !== CURRENT_ACTION_SHA);
     if (staleSites.length > 0) {
-      emit(workflow, staleActionFinding(file, slug, staleSites));
+      emit(file, staleActionFinding(file, slug, staleSites));
     }
 
     if (workflow.usesAction && !workflow.usesCli) {
-      emit(workflow, noFallbackFinding(file, slug));
+      emit(file, noFallbackFinding(file, slug));
     }
   }
 
@@ -330,11 +326,6 @@ export function scanGitleaksDrift(
 // ---------------------------------------------------------------------------
 // Finding bodies
 // ---------------------------------------------------------------------------
-
-type PartialFinding = Omit<
-  GitleaksDriftFinding,
-  "workflowPath" | "file" | "severity"
->;
 
 function branchFinding(file: WorkflowFile, slug: string): PartialFinding {
   const line = lineOfPullRequestFilter(file.rawText.split("\n"));
