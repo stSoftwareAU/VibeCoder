@@ -481,7 +481,7 @@ Deno.test("syncMilestoneBranchWithDefault - a non-conflict merge failure is a fa
   }
 });
 
-Deno.test("syncMilestoneBranchWithDefault - a blocked checkout surfaces git's stderr (Issue #49)", async () => {
+Deno.test("syncMilestoneBranchWithDefault - a dirty shallow clone is healed rather than blocking the sync (Issues #49, #568)", async () => {
   const tmpDir = await createTempDir();
   try {
     const { remotePath, localPath: seedPath } = await setupTestRepos(tmpDir);
@@ -513,8 +513,12 @@ Deno.test("syncMilestoneBranchWithDefault - a blocked checkout surfaces git's st
     });
 
     // The shallow clone has a DIRTY tree: an untracked `milestone.ts` (as a
-    // timed-out prior claim might leave). `git checkout milestone/v1-0` refuses
-    // to overwrite it — the exact production scenario.
+    // timed-out prior claim might leave). `git checkout milestone/v1-0` used
+    // to refuse to overwrite it, and Issue #49 made that refusal legible by
+    // surfacing git's own stderr. Issue #568 went further: the shared clone is
+    // scratch, so the sync discards the leftovers and proceeds instead of
+    // reporting a failure nothing acted on. The #49 stderr surfacing remains
+    // for a checkout that fails for any OTHER reason.
     await Deno.writeTextFile(
       `${shallowPath}/milestone.ts`,
       "leftover uncommitted work\n",
@@ -526,13 +530,21 @@ Deno.test("syncMilestoneBranchWithDefault - a blocked checkout surfaces git's st
       { cwd: shallowPath },
     );
 
-    assertEquals(result.ok, false, "a blocked checkout must fail");
-    if (!result.ok) {
-      // The message names the branch AND carries git's own diagnosis.
-      assertStringIncludes(result.error.message, "milestone/v1-0");
-      assertStringIncludes(result.error.message, "overwritten");
-      assertStringIncludes(result.error.message, "milestone.ts");
+    assertEquals(result.ok, true, "the dirty tree must be healed, not fatal");
+    if (result.ok) {
+      // It says what it discarded, so a surprise stays diagnosable.
+      assertStringIncludes(result.value, "SELF-HEALING");
+      assertStringIncludes(result.value, "milestone.ts");
     }
+    // The branch really is checked out, carrying the remote's own file.
+    const branch = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: shallowPath,
+    });
+    assertEquals(branch.ok && branch.value.stdout.trim(), "milestone/v1-0");
+    assertStringIncludes(
+      await Deno.readTextFile(`${shallowPath}/milestone.ts`),
+      "export const m = 1;",
+    );
   } finally {
     await cleanup(tmpDir);
   }
