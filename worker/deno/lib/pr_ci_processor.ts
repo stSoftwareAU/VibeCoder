@@ -219,7 +219,39 @@ const DEFAULT_MAX_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT =
   OPERATIONAL_DEFAULTS.claudeNoOutputTimeout;
 const DEFAULT_MAX_CI_RETRIES = 3;
-const DEFAULT_STATE_DIR = ".ci_check_state";
+/**
+ * Leaf name of the CI retry-state directory.
+ *
+ * Never used bare: {@link resolveCiCheckStateDir} puts it somewhere writable.
+ */
+export const CI_CHECK_STATE_DIR_NAME = ".ci_check_state";
+
+/**
+ * Where the CI retry counters belong (Issue #580).
+ *
+ * They used to be a bare relative path, resolved against the process CWD —
+ * which is the worker checkout, mounted READ-ONLY since Issue #514. Every
+ * CI-fix pass then died on its first counter write:
+ *
+ *     ERROR: [m1] Error in priority 1.55 (CI Fix): Read-only file system
+ *            (os error 30): writefile '.ci_check_state/....retries'
+ *
+ * so the fleet could not repair a single red check, and the stall watchdog
+ * escalated PRs to humans for failures it had made itself unable to fix.
+ *
+ * The counters bound retries across container restarts, so they belong on the
+ * work volume — durable and writable — not on scratch and not on the CWD.
+ *
+ * @param workDir - The resolved work directory (the volume mount).
+ * @param env - Environment lookup, injectable for testing.
+ */
+export function resolveCiCheckStateDir(
+  workDir?: string,
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): string {
+  const base = workDir?.trim() || env("WORK_DIR")?.trim();
+  return base ? `${base}/${CI_CHECK_STATE_DIR_NAME}` : CI_CHECK_STATE_DIR_NAME;
+}
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -417,7 +449,7 @@ async function _processCiFailureLocked(
     logger,
     deps,
     maxCiRetries = DEFAULT_MAX_CI_RETRIES,
-    stateDir = DEFAULT_STATE_DIR,
+    stateDir = resolveCiCheckStateDir(),
     ghCommandFn,
   } = processorDeps;
 
@@ -565,7 +597,7 @@ async function _processCiWithHeartbeat(
     maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
     maxCiRetries = DEFAULT_MAX_CI_RETRIES,
     maxAutoFixAttempts = DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
-    stateDir = DEFAULT_STATE_DIR,
+    stateDir = resolveCiCheckStateDir(),
   } = processorDeps;
 
   // Decode and format annotations
