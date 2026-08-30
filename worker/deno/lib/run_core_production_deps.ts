@@ -740,6 +740,32 @@ export async function createProductionRunCoreDeps(
     issueRetryCooldown: 600,
   };
 
+  /**
+   * The holds this run puts on an issue whatever GitHub says (Issue #655):
+   * the persisted retry cooldown, plus this run's processed-issue registry.
+   *
+   * One source of truth for two readers — the claim scan filters its
+   * candidates against it, and the idle-decision census models it. They
+   * diverged before: the registry's entries live as long as the process, so
+   * `stSoftwareAU/VibeCoder` logged `work_on=2 inversion_signal=true` cycle
+   * after cycle for two issues the scan was silently and correctly refusing,
+   * and escalated it to a human as a bug in the scan.
+   */
+  const loadRunLocalHolds = async (): Promise<
+    (repo: string, issueNumber: number) => boolean
+  > => {
+    const cooldownState = await loadCooldownState(
+      cooldownConfig.workDir,
+      cooldownConfig.issueRetryCooldown,
+    );
+    const cooldownSet = new Set(
+      cooldownState.entries.map((e) => `${e.repo}|${e.issueNumber}`),
+    );
+    return (repo, issueNumber) =>
+      cooldownSet.has(`${repo}|${issueNumber}`) ||
+      processedIssues.has(repo, issueNumber);
+  };
+
   const circuitBreakerConfig: CircuitBreakerConfig = {
     workDir,
     threshold: 5,
@@ -2390,14 +2416,9 @@ export async function createProductionRunCoreDeps(
       excludeIssues?: ReadonlySet<string>;
       onScanSummary?: (summary: DiagnosticSummary) => void;
     }) {
-      // Load cooldown state once before scanning (synchronous check per issue)
-      const cooldownState = await loadCooldownState(
-        cooldownConfig.workDir,
-        cooldownConfig.issueRetryCooldown,
-      );
-      const cooldownSet = new Set(
-        cooldownState.entries.map((e) => `${e.repo}|${e.issueNumber}`),
-      );
+      // Load the run-local holds once before scanning (synchronous check
+      // per issue). Issue #655: the same set the census models.
+      const runLocalHold = await loadRunLocalHolds();
       const result = await findOldestIssue(config, {
         githubUser,
         ghCommandFn: runGhCommand,
@@ -2414,8 +2435,7 @@ export async function createProductionRunCoreDeps(
         // the runway left. The worker log states the real reason; the
         // finder's own counts tally it with the cooldown skips.
         isIssueInCooldown: (repo, num) =>
-          cooldownSet.has(`${repo}|${num}`) ||
-          processedIssues.has(repo, num) ||
+          runLocalHold(repo, num) ||
           options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
         // Repositories held by sibling slots (Issue #4176): skipped so no
         // two slots share a clone.
@@ -3266,6 +3286,12 @@ export async function createProductionRunCoreDeps(
         "./idle_detect_diagnostics.ts"
       );
       try {
+        // Issue #655: the same holds the claim scan and the census read, so
+        // the audit stops counting work this run is itself withholding — the
+        // over-count that kept `mis_classification` firing, and the audit's
+        // own `claimableTotal` suppressing the idle-task filer, for the life
+        // of the process.
+        const runLocalHold = await loadRunLocalHolds();
         const result = await auditClaimableState({
           repos,
           workerUser: githubUser,
@@ -3282,6 +3308,10 @@ export async function createProductionRunCoreDeps(
           // permanently by the scan, so counting it as claimable kept the
           // `mis_classification` ALERT firing against a scan that was right.
           mergedPRsFn: fetchMergedPRsForCensus,
+          // Issue #655: this run's persisted retry cooldown and its
+          // processed-issue registry, resolved above from the one hold set
+          // `findNextIssue` filters its candidates against.
+          runLocalHoldFn: runLocalHold,
           // Issue #479: while a host-level gate is active the scan never ran,
           // so `mis_classification` is guaranteed to fire and says nothing.
           // Read from the same signals the census and the fleet-board note
@@ -3318,6 +3348,9 @@ export async function createProductionRunCoreDeps(
     ) => {
       try {
         const host = `${Deno.hostname()}:${Deno.pid}`;
+        // Issue #655: the same holds the claim scan filtered its candidates
+        // against, so the two instruments cannot disagree about them.
+        const runLocalHold = await loadRunLocalHolds();
         const perRepo = await Promise.all(
           repos.map(async (repo) => {
             const issues = await fetchAllIssues(repo, issueCache);
@@ -3377,6 +3410,16 @@ export async function createProductionRunCoreDeps(
               })),
               openPRs,
               mergedPRs,
+              // Issue #655: the candidates `find_oldest_issue.ts` drops after
+              // every collector has passed them — a persisted retry cooldown,
+              // or an issue this run has already finished with. Unmodelled,
+              // they held `inversion_signal=true` open for the life of the
+              // process.
+              runLocalHolds: new Set(
+                issues
+                  .filter((i) => runLocalHold(repo, i.number))
+                  .map((i) => i.number),
+              ),
             };
           }),
         );

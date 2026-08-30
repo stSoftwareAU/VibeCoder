@@ -28,6 +28,9 @@
  *    default-stream issue, so no other issue is affected.
  *  - `merged-pr-permanent` — a merged fleet PR names the issue in its title.
  *  - `dependency-blocked` — the issue body names an open dependency issue.
+ *  - `cooldown` — this run is holding the issue back (Issue #655): the scan
+ *    filters it out via `isIssueInCooldown`, and the census is handed the
+ *    same set as `runLocalHolds`.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -50,6 +53,7 @@ export const MODELLED_GATES = [
   "pr-blocked",
   "merged-pr-permanent",
   "dependency-blocked",
+  "cooldown",
 ] as const;
 
 /** A modelled gate, or `none` for an issue nothing refuses. */
@@ -198,6 +202,13 @@ export function renderOpenPRs(state: RepoState): OpenPR[] {
     }));
 }
 
+/** The issues this run is holding back, from the state's `cooldown` gates. */
+export function renderRunLocalHolds(state: RepoState): Set<number> {
+  return new Set(
+    state.issues.filter((i) => i.gate === "cooldown").map((i) => i.number),
+  );
+}
+
 /** The fleet's merged PRs implied by the state's `merged-pr-permanent` gates. */
 export function renderMergedPRs(state: RepoState): ClosedPR[] {
   return state.issues
@@ -229,6 +240,7 @@ export function toCensusInput(
     })),
     openPRs: renderOpenPRs(state),
     mergedPRs: renderMergedPRs(state),
+    runLocalHolds: renderRunLocalHolds(state),
     ...overrides,
   };
 }
@@ -338,10 +350,12 @@ export interface ScanOutcome {
 /**
  * Run the real claim path (`findOldestIssue`) over a described state.
  *
- * Every run-local axis is held constant — no cooldowns, no deprioritisation,
- * no in-flight holds, a configured content-approval store — so the only thing
- * that varies between states is the modelled gates. That is what makes the
- * comparison against the census well defined.
+ * Every remaining run-local axis is held constant — no deprioritisation, no
+ * in-flight holds, a configured content-approval store — so the only thing
+ * that varies between states is the modelled gates. Issue #655 moved the
+ * retry cooldown out of that constant set and into the modelled gates: the
+ * scan and the census now read the same hold set, so a state where they
+ * disagree about it fails here rather than on the fleet three cycles later.
  */
 export async function runClaimScan(state: RepoState): Promise<ScanOutcome> {
   const config: WorkerConfig = {
@@ -355,6 +369,7 @@ export async function runClaimScan(state: RepoState): Promise<ScanOutcome> {
     workDir: Deno.makeTempDirSync({ prefix: "claim-path-workdir-" }),
     shuffleRepos: false,
   };
+  const runLocalHolds = renderRunLocalHolds(state);
   const result = await findOldestIssue(config, {
     githubUser: WORKER_USER,
     ghCommandFn: toMockGh(state),
@@ -362,6 +377,8 @@ export async function runClaimScan(state: RepoState): Promise<ScanOutcome> {
       Deno.makeTempDirSync({ prefix: "claim-path-cache-" }),
       600,
     ),
+    // Issue #655: the same holds the census is handed above.
+    isIssueInCooldown: (_repo, num) => runLocalHolds.has(num),
     // Deterministic tie-breaking so a state's outcome is reproducible.
     selectionOptions: { randomFn: () => 0, randomPoolSize: 3 },
   });

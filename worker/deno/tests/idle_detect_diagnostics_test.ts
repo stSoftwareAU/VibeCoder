@@ -1019,3 +1019,161 @@ Deno.test("auditClaimableState - a failing merged-PR fetch never blocks the audi
 
   assertEquals(result.claimableTotal, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Run-local holds (Issue #655)
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyIssues - a run-local hold excludes the issue (Issue #655)", () => {
+  const verdicts = classifyIssues(
+    [{ number: 622, labels: ["work-on"], assignees: [], milestone: "" }],
+    { workerUser: "vibe", runLocalHolds: new Set([622]) },
+  );
+
+  assertEquals(verdicts[0]?.claimable, false);
+  assertEquals(verdicts[0]?.excludedBy, "run_local_hold");
+});
+
+Deno.test("classifyIssues - a hold removes only the issues it names (Issue #655)", () => {
+  const verdicts = classifyIssues(
+    [
+      { number: 622, labels: ["work-on"], assignees: [], milestone: "" },
+      { number: 700, labels: ["work-on"], assignees: [], milestone: "" },
+    ],
+    { workerUser: "vibe", runLocalHolds: new Set([622]) },
+  );
+
+  assertEquals(verdicts[0]?.claimable, false);
+  assertEquals(verdicts[1]?.claimable, true);
+});
+
+Deno.test("classifyIssues - a more fundamental gate outlives a hold (Issue #655)", () => {
+  // The hold is applied last, mirroring the scan and the census: an issue
+  // refused for a more fundamental reason keeps that reason.
+  const verdicts = classifyIssues(
+    [{
+      number: 622,
+      labels: ["work-on"],
+      assignees: ["someone"],
+      milestone: "",
+    }],
+    { workerUser: "vibe", runLocalHolds: new Set([622]) },
+  );
+
+  assertEquals(verdicts[0]?.excludedBy, "assignee_filter");
+});
+
+Deno.test("classifyIssues - no hold set preserves the pre-#655 verdict", () => {
+  const verdicts = classifyIssues(
+    [{ number: 622, labels: ["work-on"], assignees: [], milestone: "" }],
+    { workerUser: "vibe" },
+  );
+
+  assertEquals(verdicts[0]?.claimable, true);
+});
+
+Deno.test("pickDominantReason - run_local_hold ranks under the PR gates (Issue #655)", () => {
+  assertEquals(
+    pickDominantReason([
+      {
+        number: 1,
+        claimable: false,
+        excludedBy: "run_local_hold",
+        milestone: "",
+      },
+      { number: 2, claimable: false, excludedBy: "pr_blocked", milestone: "" },
+    ]),
+    "pr_blocked",
+  );
+  // ...and over the gates applied before it.
+  assertEquals(
+    pickDominantReason([
+      {
+        number: 1,
+        claimable: false,
+        excludedBy: "stream_occupied",
+        milestone: "",
+      },
+      {
+        number: 2,
+        claimable: false,
+        excludedBy: "run_local_hold",
+        milestone: "",
+      },
+    ]),
+    "run_local_hold",
+  );
+});
+
+Deno.test("auditClaimableState - a run-held backlog raises no ALERT (Issue #655)", async () => {
+  // The 2026-08-30 VibeCoder state: two `work-on` issues with no
+  // GitHub-visible blocker that this run had already handed back, so the
+  // claim scan refused them as `cooldown` on every later cycle.
+  const logs: string[] = [];
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/VibeCoder"],
+    workerUser: "vibe",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        { number: 622, labels: [{ name: "work-on" }], assignees: [] },
+        { number: 623, labels: [{ name: "work-on" }], assignees: [] },
+      ])),
+    runLocalHoldFn: (repo, num) =>
+      repo === "stSoftwareAU/VibeCoder" && (num === 622 || num === 623),
+    log: (line) => logs.push(line),
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  assertEquals(result.claimableTotal, 0);
+  assertEquals(result.misClassification, false);
+  assert(
+    logs.some((l) => l.includes("reason=run_local_hold")),
+    `the per-repo line must say why; got:\n${logs.join("\n")}`,
+  );
+});
+
+Deno.test("auditClaimableState - a hold is scoped to the repo it names (Issue #655)", async () => {
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/VibeCoder"],
+    workerUser: "vibe",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        { number: 622, labels: [{ name: "work-on" }], assignees: [] },
+      ])),
+    // Same issue number, different repo — must not exclude anything here.
+    runLocalHoldFn: (repo, num) => repo === "stSoftwareAU/GRQ" && num === 622,
+    log: () => {},
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  assertEquals(result.claimableTotal, 1);
+});
+
+Deno.test("auditClaimableState - a throwing hold source never blocks the audit (Issue #655)", async () => {
+  // Fail-safe by the same rule as the PR fetches: a hold source that throws
+  // restores the old over-count rather than reporting nothing to do.
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/VibeCoder"],
+    workerUser: "vibe",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        { number: 622, labels: [{ name: "work-on" }], assignees: [] },
+      ])),
+    runLocalHoldFn: () => {
+      throw new Error("cooldown state unreadable");
+    },
+    log: () => {},
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  assertEquals(result.claimableTotal, 1);
+});

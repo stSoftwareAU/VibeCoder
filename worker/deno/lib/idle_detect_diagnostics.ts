@@ -33,14 +33,28 @@
  *      milestone-aware rule (`getBlockingPRForIssue`), unless the issue
  *      carries `ignore-open-prs` (Issue #4223). Requires the caller to
  *      supply PRs via `openPRsFn`; without them this gate is skipped.
+ *   6. This run is not holding the issue back (Issue #655) — the
+ *      `isIssueInCooldown` predicate `find_oldest_issue.ts` filters every
+ *      tier's candidates against, covering the persisted retry cooldown and
+ *      the per-run processed-issue registry. Requires the caller to supply
+ *      `runLocalHoldFn`; without it this gate is skipped.
  *
- * The probe deliberately stops short of cooldown / closed-PR filters
- * (which are run-local) so the diagnostic answers the cross-fleet
- * question "is there work GitHub *could* hand to a worker right now?"
- * rather than "did this particular worker pick something up this
- * cycle?".
+ * The probe deliberately stops short of the remaining run-local filters
+ * (the closed-PR cooldown, the per-cycle adaptive floor) so the diagnostic
+ * answers the cross-fleet question "is there work GitHub *could* hand to a
+ * worker right now?" rather than "did this particular worker pick something
+ * up this cycle?".
  *
- * Gate 5 is not one of those run-local filters. An issue whose PR is
+ * Gate 6 is the exception that proves the rule, and it is here because the
+ * registry's entries live as long as the process does. On 2026-08-30 two
+ * `stSoftwareAU/VibeCoder` issues this run had already handed back were
+ * refused silently by the scan on every later cycle while the audit went on
+ * counting them, so `mis_classification` fired for the life of the run and
+ * the audit's own `claimableTotal` suppressed the idle-task filer with it
+ * (VibeCoder#655). The census models the same hold set from the same
+ * source, so the three instruments cannot drift apart again.
+ *
+ * Gate 5 is not one of those run-local filters either. An issue whose PR is
  * already open and awaiting review is work GitHub *cannot* hand to a
  * worker, and open PRs awaiting review are this fleet's normal steady
  * state — so without it the audit disagreed with a correct scan on
@@ -127,6 +141,8 @@ export type ClaimableSkipReason =
   | "pr_blocked"
   /** Every candidate is named by a merged fleet PR (GRQ#4419). */
   | "merged_pr_blocked"
+  /** Every candidate is held back by this run itself (Issue #655). */
+  | "run_local_hold"
   | "probe_error";
 
 /**
@@ -281,7 +297,9 @@ export type IssueExclusionReason =
   | "stream_occupied"
   | "pr_blocked"
   /** Named by a merged fleet PR — a permanent skip (GRQ#4419). */
-  | "merged_pr_blocked";
+  | "merged_pr_blocked"
+  /** Held back by this run's own cooldown / processed-issue registry (#655). */
+  | "run_local_hold";
 
 export interface IssueVerdict {
   number: number;
@@ -310,6 +328,17 @@ export interface ClassifyOptions {
    * no issue is excluded by this gate — the same fail-safe as `openPRs`.
    */
   mergedPRs?: readonly ClosedPR[];
+  /**
+   * Issue numbers this run is holding back whatever GitHub says (Issue
+   * #655) — the set `find_oldest_issue.ts` filters every tier's candidates
+   * against once the collectors have passed them.
+   *
+   * Omitted or empty means "no data" and no issue is excluded by this gate,
+   * the same fail-safe as `openPRs`: under-counting blockers merely alerts
+   * on work that will not be claimed, whereas inventing them would hide the
+   * mis-classification this audit exists to catch.
+   */
+  runLocalHolds?: ReadonlySet<number>;
 }
 
 /**
@@ -331,6 +360,7 @@ export function classifyIssues(
   const blockingSet = new Set(BLOCKING_LABELS);
   const openPRs = opts.openPRs ?? [];
   const mergedPRs = opts.mergedPRs ?? [];
+  const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
 
   // Streams occupied by the worker = milestones (or "" for the default
   // branch stream) that already host a worker-assigned open issue.
@@ -412,6 +442,19 @@ export function classifyIssues(
       });
       continue;
     }
+    // Issue #655: last of the gates, mirroring the scan — `isIssueInCooldown`
+    // runs on the candidates every collector has already passed, so an issue
+    // refused for a more fundamental reason keeps that reason and
+    // `run_local_hold` marks only work this run is itself withholding.
+    if (runLocalHolds.has(issue.number)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "run_local_hold",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
     // No wrapper-title gate: `idle-task` is just the lowest work-trigger
     // priority, so any unblocked, unassigned idle-task issue is
     // claimable here — matching the collector
@@ -451,6 +494,13 @@ export function pickDominantReason(
   // re-labelling the issue, so it is the more actionable answer.
   if (seen.has("merged_pr_blocked")) return "merged_pr_blocked";
   if (seen.has("pr_blocked")) return "pr_blocked";
+  // Issue #655: below the two PR gates, above everything applied before it.
+  // Both PR gates describe fleet state that outlives this process and may
+  // need a human; a run-local hold clears itself when the run ends or the
+  // cooldown expires, so it is the less urgent answer of the three — but it
+  // is only ever set on an issue nothing else refused, which makes it more
+  // specific than stream occupancy and the filters above that.
+  if (seen.has("run_local_hold")) return "run_local_hold";
   if (seen.has("stream_occupied")) return "stream_occupied";
   if (seen.has("assignee_filter")) return "assignee_filter";
   if (seen.has("blocking_label")) return "blocking_label";
@@ -571,6 +621,18 @@ export interface AuditClaimableStateOptions {
    * exactly as before this option existed.
    */
   mergedPRsFn?: (repo: string) => Promise<readonly ClosedPR[]>;
+  /**
+   * True when this run is holding `issueNumber` in `repo` back regardless of
+   * what GitHub says (Issue #655) — the same `isIssueInCooldown` predicate
+   * the claim scan filters its candidates against.
+   *
+   * Production wires this to the one hold set the scan and the census also
+   * read, so all three instruments agree. The predicate is called per issue
+   * and must be cheap; a throw is caught and falls back to no hold, exactly
+   * as the PR fetches do — omitting the gate restores the old over-count
+   * rather than silently reporting a repo as having nothing to do.
+   */
+  runLocalHoldFn?: (repo: string, issueNumber: number) => boolean;
   /** Progress log sink. Defaults to `console.log`. */
   log?: (line: string) => void;
   /** Hostname source — exposed for tests. Defaults to `Deno.hostname()`. */
@@ -696,10 +758,28 @@ export async function auditClaimableState(
       }
     }
 
+    // Issue #655: resolve this run's own holds for the repo, so work the
+    // claim scan is silently and correctly refusing is not counted as
+    // claimable for the life of the process. Best-effort by the same rule as
+    // the two fetches above.
+    let runLocalHolds = new Set<number>();
+    if (opts.runLocalHoldFn) {
+      try {
+        runLocalHolds = new Set(
+          issues
+            .filter((i) => opts.runLocalHoldFn!(repo, i.number))
+            .map((i) => i.number),
+        );
+      } catch {
+        runLocalHolds = new Set<number>();
+      }
+    }
+
     const verdicts = classifyIssues(issues, {
       workerUser: opts.workerUser,
       openPRs,
       mergedPRs,
+      runLocalHolds,
     });
     const claimableCount = verdicts.filter((v) => v.claimable).length;
     const reason: ClaimableSkipReason = claimableCount > 0
