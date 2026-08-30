@@ -70,6 +70,25 @@
  *     `milestone_branch_filter_scanner.ts`, so milestone sub-issue PRs are
  *     never merged past the gate unchecked. Per Issue #3239 isolation the
  *     YAML fix rides a normal per-repo worker PR — no cross-repo gate.
+ *   - **Native gitleaks-drift pre-filer (Issue #598, part of #566).** The
+ *     `gitleaks` spec detects presence by pattern, so a stale per-repo copy
+ *     passes the audit for merely mentioning gitleaks. Each drifted copy —
+ *     milestone-blind branch filter, stale `gitleaks-action` pin, no
+ *     licence-less CLI fallback, or no `pull_request` trigger at all —
+ *     becomes its own `severity:medium` issue via
+ *     `gitleaks_drift_scanner.ts`. It runs straight after the
+ *     milestone-branch-filter pre-filer so the branch gap is never filed
+ *     twice.
+ *   - **Observed gitleaks coverage (Issue #601, part of #566).** Presence
+ *     is not execution: a committed workflow never runs when Actions are
+ *     disabled, the workflow is disabled in the UI, its branch filter
+ *     misses the PRs' base, or its YAML does not parse. The repo's recent
+ *     closed PRs are sampled and their check runs read via
+ *     `gitleaks_pr_coverage_scanner.ts`; when no gitleaks check reported
+ *     on any of them a single `severity:medium`
+ *     `BP-GITLEAKS-NOT-OBSERVED` issue is filed, naming the sampled PRs. A
+ *     partial or failed sample is logged and stated in the evidence,
+ *     never reported as clean.
  *   - **Native unpinned-CI-install pre-filer (Issue #3668, split out of
  *     #3642).** Each `run:`-level package install with no exact version
  *     pin (`npm install -g <pkg>`, `npx --yes <pkg>`, `gem install
@@ -155,6 +174,14 @@ import {
   scanMilestoneBranchFilters,
 } from "../milestone_branch_filter_scanner.ts";
 import {
+  type GitleaksDriftFinding,
+  scanGitleaksDrift,
+} from "../gitleaks_drift_scanner.ts";
+import {
+  type GitleaksPrCoverageFinding,
+  scanGitleaksPrCoverage,
+} from "../gitleaks_pr_coverage_scanner.ts";
+import {
   type CiInstallPinFinding,
   scanCiInstallPins,
 } from "../ci_install_pin_scanner.ts";
@@ -166,6 +193,10 @@ import {
   type RepoSettingsFinding,
   scanRepoSettings,
 } from "../repo_settings_scanner.ts";
+import {
+  scanWorkerTokenPrivileges,
+  type WorkerTokenPrivilegeFinding,
+} from "../worker_token_privilege_scanner.ts";
 import { getRepoDefaultBranch } from "../shell_helpers.ts";
 import {
   fileWorkflowFinding,
@@ -290,6 +321,21 @@ export interface GitHubActionsAuditTemplateDeps {
    */
   readWorkflowFilesFn?: (workDir: string) => Promise<WorkflowFile[]>;
   /**
+   * Observed gitleaks coverage on recent PRs (Issue #601). Defaults to
+   * `scanGitleaksPrCoverage`; tests inject a stub. Read-only — it lists
+   * closed PRs and reads their check runs, and files nothing when the repo
+   * has no gitleaks workflow.
+   */
+  scanGitleaksPrCoverageFn?: (
+    repo: string,
+    files: readonly WorkflowFile[],
+    ghCommandFn: GhCommandFn,
+    options: {
+      knownOpenFindingIds: Iterable<string>;
+      onSamplingNote: (note: string) => void;
+    },
+  ) => Promise<GitleaksPrCoverageFinding[]>;
+  /**
    * GHSA cross-check of pinned actions (Issue #4405). Defaults to
    * `scanActionAdvisories` over `ghCommandFn`; tests inject a stub.
    */
@@ -315,6 +361,29 @@ export interface GitHubActionsAuditTemplateDeps {
       requiredActionPatterns?: readonly string[];
     },
   ) => Promise<RepoSettingsFinding[]>;
+  /**
+   * Worker-token privilege check (Issue #599). Defaults to
+   * `scanWorkerTokenPrivileges`; tests inject a stub. Read-only — it never
+   * probes ruleset access with a write.
+   */
+  scanWorkerTokenPrivilegesFn?: (
+    repo: string,
+    ghCommandFn: GhCommandFn,
+    options: {
+      knownOpenFindingIds: Iterable<string>;
+      onLookupFailure: (what: string, reason: string) => void;
+    },
+  ) => Promise<WorkerTokenPrivilegeFinding[]>;
+  /**
+   * Ensure the escalation labels a worker-token finding carries
+   * (`needs-human`, `security`) exist in the target repo before it is filed
+   * — `gh issue create` fails outright on an unknown label. Defaults to
+   * `ensureLabelExists` per label; tests inject a stub.
+   */
+  ensureFindingLabelsFn?: (
+    repo: string,
+    labels: readonly string[],
+  ) => Promise<void>;
   /**
    * `<owner>/<repo>@*` patterns the workflows need, following composite
    * actions' own `uses:` (Issue #4424). Defaults to reading each action's
@@ -688,6 +757,14 @@ export function createGitHubActionsAuditTemplate(
     ((repo, gh) => defaultScanRunnerDeprecations(repo, gh));
   const readWorkflowFilesFn = deps.readWorkflowFilesFn ??
     ((workDir) => defaultReadWorkflowFiles(workDir));
+  const scanGitleaksPrCoverageFn = deps.scanGitleaksPrCoverageFn ??
+    ((repo, files, gh, options) =>
+      scanGitleaksPrCoverage(repo, {
+        files,
+        ghCommandFn: gh,
+        knownOpenFindingIds: options.knownOpenFindingIds,
+        onSamplingNote: options.onSamplingNote,
+      }));
   const scanActionAdvisoriesFn = deps.scanActionAdvisoriesFn ??
     ((files, gh, known, onLookupFailure) =>
       scanActionAdvisories(files, {
@@ -704,6 +781,29 @@ export function createGitHubActionsAuditTemplate(
   const runScanFn = deps.runScanFn ??
     ((opts) => runGitHubActionsAuditScan(opts, loadPromptFn));
   const logger = deps.logger ?? defaultLogger;
+  const scanWorkerTokenPrivilegesFn = deps.scanWorkerTokenPrivilegesFn ??
+    ((repo, gh, options) => scanWorkerTokenPrivileges(repo, gh, options));
+  const ensureFindingLabelsFn = deps.ensureFindingLabelsFn ??
+    (async (repo: string, labels: readonly string[]) => {
+      for (const label of labels) {
+        const ensured = await defaultEnsureLabelExists(
+          repo,
+          label,
+          undefined,
+          undefined,
+          { ghCommandFn },
+        );
+        if (!ensured.ok) {
+          // Loud, not fatal: the label may already exist, so still attempt
+          // the filing — but never let the failure pass unrecorded.
+          logger.error(
+            `github-actions-audit: could not ensure label ${label} in ${repo}: ` +
+              ensured.error.message,
+            { repo, template: NAME },
+          );
+        }
+      }
+    });
 
   async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
     const loaded = await loadPromptFn(PROMPT_NAME);
@@ -1091,6 +1191,92 @@ export function createGitHubActionsAuditTemplate(
           }
         }
 
+        // 5h2. Native gitleaks-drift pre-filer (Issue #598, part of #566).
+        //      The `gitleaks` workflow spec detects presence by pattern, so
+        //      a copy pushed months ago with `branches: ["*"]` and
+        //      `gitleaks-action@v2` scores as fully covered while scanning
+        //      almost nothing — presence is not currency. Flag each
+        //      per-repo copy that has drifted from the canonical shape:
+        //      milestone-blind branch filter, stale action pin, no
+        //      licence-less CLI fallback, or no `pull_request` trigger at
+        //      all. Runs immediately after 5h so the milestone ids just
+        //      filed are in `seenIds` and the branch gap is never filed
+        //      twice. Per Issue #3239 isolation the YAML fix rides a normal
+        //      per-repo worker PR — the scan only reports.
+        const gitleaksFindings: GitleaksDriftFinding[] = scanGitleaksDrift(
+          files,
+          { knownOpenFindingIds: seenIds },
+        );
+        for (const finding of gitleaksFindings) {
+          if (seenIds.has(finding.findingId)) continue;
+          const filed = await fileWorkflowFinding({
+            repo: opts.repo,
+            findingId: finding.findingId,
+            severity: finding.severity,
+            title: finding.title,
+            file: finding.file,
+            lines: finding.lines,
+            whyItMatters: finding.whyItMatters,
+            suggestedFix: finding.suggestedFix,
+            evidence: finding.evidence,
+            template: NAME,
+            runId,
+            ghCommandFn,
+          });
+          if (filed !== null) {
+            preFiled.push(filed.findingId);
+            seenIds.add(filed.findingId);
+          }
+        }
+
+        // 5h3. Observed gitleaks coverage on recent PRs (Issue #601, part
+        //      of #566). 5h2 asks whether the committed copy has drifted;
+        //      this asks whether it ever *ran*. A workflow file can be
+        //      present and never execute — Actions disabled, the workflow
+        //      disabled in the UI, a branch filter that misses the PRs'
+        //      base, an `if:` that never fires, a YAML error that stops it
+        //      being registered — and every one of those reads as "present"
+        //      to the file-content audit. Sample the repo's recent closed
+        //      PRs and file one `severity:medium` finding when no gitleaks
+        //      check reported on any of them. Runs after 5h2 so a drifted
+        //      copy is reported by its own class first. A degraded sample is
+        //      logged, never reported as clean.
+        const coverageFindings: GitleaksPrCoverageFinding[] =
+          await scanGitleaksPrCoverageFn(
+            opts.repo,
+            files,
+            ghCommandFn,
+            {
+              knownOpenFindingIds: seenIds,
+              onSamplingNote: (note) =>
+                logger.warn(
+                  `github-actions-audit: ${note}`,
+                  { repo: opts.repo, template: NAME, runId },
+                ),
+            },
+          );
+        for (const finding of coverageFindings) {
+          if (seenIds.has(finding.findingId)) continue;
+          const filed = await fileWorkflowFinding({
+            repo: opts.repo,
+            findingId: finding.findingId,
+            severity: finding.severity,
+            title: finding.title,
+            file: finding.file,
+            lines: finding.lines,
+            whyItMatters: finding.whyItMatters,
+            suggestedFix: finding.suggestedFix,
+            evidence: finding.evidence,
+            template: NAME,
+            runId,
+            ghCommandFn,
+          });
+          if (filed !== null) {
+            preFiled.push(filed.findingId);
+            seenIds.add(filed.findingId);
+          }
+        }
+
         // 5i. Native unpinned-CI-install pre-filer (Issue #3668, split out
         //     of #3642). Flag every `run:`-level package install with no
         //     exact version pin (`npm install -g <pkg>`, `npx --yes <pkg>`,
@@ -1250,6 +1436,65 @@ export function createGitHubActionsAuditTemplate(
         const message = err instanceof Error ? err.message : String(err);
         logger.error(
           `github-actions-audit: repository-settings pre-filer failed: ${message}`,
+          { repo: opts.repo, template: NAME, runId },
+        );
+      }
+
+      // 5l. Worker-token privilege check (Issue #599, part of #566). The
+      //     opposite direction to 5k: that asks whether the repository is
+      //     locked down enough, this asks whether the worker's own token is
+      //     trusted too much. `admin`/`maintain` on the repo carries the
+      //     rulesets API, so the worker could delete the required-status-check
+      //     ruleset that gates merges. Read-only — no ruleset is ever probed
+      //     with a write — and a lookup that fails is logged loud and yields
+      //     nothing, never a "verified safe".
+      try {
+        const tokenFindings = await scanWorkerTokenPrivilegesFn(
+          opts.repo,
+          ghCommandFn,
+          {
+            knownOpenFindingIds: seenIds,
+            onLookupFailure: (what, reason) =>
+              logger.error(
+                `github-actions-audit: worker token privilege lookup failed (${what}): ${reason}`,
+                { repo: opts.repo, template: NAME, runId },
+              ),
+          },
+        );
+        for (const finding of tokenFindings) {
+          if (seenIds.has(finding.findingId)) continue;
+          await ensureFindingLabelsFn(opts.repo, finding.labels);
+          const filed = await fileWorkflowFinding({
+            repo: opts.repo,
+            findingId: finding.findingId,
+            severity: finding.severity,
+            title: finding.title,
+            file: finding.file,
+            lines: finding.lines,
+            whyItMatters: finding.whyItMatters,
+            suggestedFix: finding.suggestedFix,
+            evidence: finding.evidence,
+            extraLabels: finding.labels,
+            template: NAME,
+            runId,
+            ghCommandFn,
+          });
+          if (filed === null) {
+            // An over-privileged token that files nothing must not look like
+            // a clean audit — say so.
+            logger.error(
+              `github-actions-audit: worker-token escalation ${finding.findingId} could not be filed in ${opts.repo}`,
+              { repo: opts.repo, template: NAME, runId },
+            );
+            continue;
+          }
+          preFiled.push(filed.findingId);
+          seenIds.add(filed.findingId);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(
+          `github-actions-audit: worker-token privilege pre-filer failed: ${message}`,
           { repo: opts.repo, template: NAME, runId },
         );
       }

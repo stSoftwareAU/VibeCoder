@@ -23,6 +23,10 @@ import {
   capabilityLabelForGroup,
   type WorkflowSpec,
 } from "../lib/workflow_definitions.ts";
+import {
+  checkNamesFromWorkflow,
+  requiredStatusCheckSection,
+} from "../lib/required_status_check_guidance.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -183,8 +187,30 @@ function categoryLabel(spec: WorkflowSpec): string {
     : "✅ Quality";
 }
 
+/**
+ * Human-action guidance making a security spec's check *block* merges
+ * (Issue #600).
+ *
+ * Security scans are the ones whose result must gate a merge, so only
+ * `category: "security"` specs carry the section — a quality or
+ * dependency-update recommendation gets an empty string and its body is
+ * unchanged. The check name is derived from the spec's own template, so it
+ * always matches what the workflow the issue recommends actually reports.
+ *
+ * Returned with a leading blank-line separator so callers can interpolate it
+ * directly.
+ */
+function requiredCheckGuidance(spec: WorkflowSpec): string {
+  if (spec.category !== "security") return "";
+  const checkNames = checkNamesFromWorkflow(
+    spec.template,
+    `.github/workflows/${spec.suggestedFilename}`,
+  );
+  return `\n${requiredStatusCheckSection(checkNames)}\n`;
+}
+
 /** Build the issue body for a missing workflow. */
-function issueBody(spec: WorkflowSpec): string {
+export function issueBody(spec: WorkflowSpec): string {
   const tag = deduplicationTag(spec.id);
 
   return `## ${spec.name}
@@ -213,7 +239,7 @@ ${spec.template.trim()}
 1. Copy the YAML template above
 2. Save it as \`.github/workflows/${spec.suggestedFilename}\`
 3. Commit and push to the default branch
-
+${requiredCheckGuidance(spec)}
 ---
 *Raised automatically by VibeCoder workflow sync.*
 ${tag}`;
@@ -287,7 +313,7 @@ ${spec.template.trim()}
 2. If the capability is genuinely missing, add an implementation for it — copy the relevant step from the suggested template above, or use any equivalent configuration that performs the same capability.
 3. If every capability is in fact present via alternatives, close this issue as not-applicable. No workflow change is needed.
 4. Otherwise, commit the additions to the default branch.
-
+${requiredCheckGuidance(spec)}
 ---
 *Raised automatically by VibeCoder workflow sync.*
 ${tag}`;

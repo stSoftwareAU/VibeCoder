@@ -89,6 +89,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * Slug of a workflow's basename, as used in per-workflow finding ids
+ * (`.github/workflows/gitleaks.yml` → `gitleaks`).
+ *
+ * Exported so sibling per-workflow pre-filers — the gitleaks-drift scanner
+ * (Issue #598) — mint ids the same way instead of re-deriving the rule.
+ */
+export function workflowIdSlug(path: string): string {
+  return slugify(workflowBasename(path));
+}
+
+/**
+ * The stable id this scanner would emit for `path`.
+ *
+ * Exported so the gitleaks-drift scanner (Issue #598) can suppress its own
+ * branch-gap finding when this scanner already owns the same gap for the
+ * same workflow file.
+ */
+export function milestoneFindingIdForPath(path: string): string {
+  return `BP-MILESTONE-FILTER-${workflowIdSlug(path)}`;
+}
+
 /** Slugify a path fragment into `[a-z0-9-]` for the stable id. */
 function slugify(value: string): string {
   return value
@@ -171,6 +193,24 @@ function milestoneCoverage(
   return "covered";
 }
 
+/**
+ * Milestone-PR coverage of a whole parsed workflow — `readOnBlock` plus
+ * {@link milestoneCoverage}.
+ *
+ *   - `"covered"` — milestone PRs run this workflow.
+ *   - `"gap"`     — it gates PRs but skips milestone branches.
+ *   - `"none"`    — no `pull_request` trigger at all (or an unusable root).
+ *
+ * Exported so the gitleaks-drift scanner (Issue #598) reuses this exact
+ * decision rather than duplicating the branch-filter reasoning.
+ */
+export function workflowMilestoneCoverage(
+  parsed: unknown,
+): "covered" | "gap" | "none" {
+  if (!isRecord(parsed)) return "none";
+  return milestoneCoverage(readOnBlock(parsed));
+}
+
 /** Best-effort: 1-based line of a top-level `key:` (no indentation). */
 function lineOfTopLevelKey(lines: readonly string[], key: string): number {
   for (let i = 0; i < lines.length; i++) {
@@ -185,8 +225,11 @@ function lineOfTopLevelKey(lines: readonly string[], key: string): number {
  * Best-effort: 1-based line of the `branches:` key under
  * `on: pull_request:`, falling back to the `pull_request:` line, then the
  * `on:` line, then line 1. Used only to anchor suppression and evidence.
+ *
+ * Exported for the gitleaks-drift scanner (Issue #598), which anchors its
+ * branch-gap finding on the same line.
  */
-function lineOfPullRequestFilter(lines: readonly string[]): number {
+export function lineOfPullRequestFilter(lines: readonly string[]): number {
   const onLine = lineOfTopLevelKey(lines, "on");
   let prLine = onLine;
   // Start at the 0-based index of the `on:` line (onLine is 1-based) so the
@@ -246,11 +289,9 @@ export function scanMilestoneBranchFilters(
       continue;
     }
 
-    const onBlock = readOnBlock(file.parsed);
-    if (milestoneCoverage(onBlock) !== "gap") continue;
+    if (workflowMilestoneCoverage(file.parsed) !== "gap") continue;
 
-    const basename = slugify(workflowBasename(file.path));
-    const findingId = `BP-MILESTONE-FILTER-${basename}`;
+    const findingId = milestoneFindingIdForPath(file.path);
     if (suppressed.has(findingId)) continue;
     if (knownOpen.has(findingId)) continue;
 
