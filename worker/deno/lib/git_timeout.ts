@@ -11,6 +11,12 @@
  */
 
 import type { Result } from "../types.ts";
+import {
+  ensureUsableGhConfigDir,
+  gitGlobalConfigEntries,
+  isGitAuthMissingFailure,
+  mountedGitLogin,
+} from "./gh_credential_stage.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
 import { auditGitMutation } from "./audit_hook.ts";
 
@@ -89,6 +95,59 @@ export function isGitTimeout(exitCode: number): boolean {
  * @param options - Options for the command execution
  * @returns Result containing the command output or an error
  */
+/**
+ * Git-auth repairs this process will perform (Issue #564).
+ *
+ * Bounded for the same reason as the `gh` re-stage: a credential that keeps
+ * vanishing is a fault to report, and a genuinely revoked one must fail
+ * rather than be rebuilt on every call for the rest of the run.
+ */
+export const MAX_GIT_AUTH_REPAIRS = 3;
+
+let gitAuthRepairs = 0;
+
+/** Reset the git-auth repair budget. Tests only. */
+export function resetGitAuthRepairs(): void {
+  gitAuthRepairs = 0;
+}
+
+/**
+ * Rebuild the credential helper, HTTPS transport and identity from the mount.
+ *
+ * Writes through `git config --global`, so it lands wherever
+ * `GIT_CONFIG_GLOBAL` points — the staged copy the container owns.
+ *
+ * @returns True when something was written and a retry is worth making.
+ */
+async function repairGitAuthEnvironment(): Promise<boolean> {
+  // The helper shells out to `gh`, so its configuration has to be sound too.
+  ensureUsableGhConfigDir();
+
+  const home = Deno.env.get("HOME") ?? "";
+  const login = mountedGitLogin(home);
+  let wrote = false;
+  for (const entry of gitGlobalConfigEntries(login)) {
+    try {
+      const command = new Deno.Command("git", {
+        args: ["config", ...entry.args],
+        stdout: "null",
+        stderr: "null",
+      });
+      const result = await command.output();
+      if (result.code === 0) wrote = true;
+    } catch {
+      // Best-effort: the caller's own failure stays the loud one.
+    }
+  }
+  if (wrote) {
+    console.error(
+      "[SECURITY] git lost its credential helper or identity — rebuilt from " +
+        "the read-only credential mount (Issue #564)",
+    );
+  }
+  return wrote;
+}
+
 export async function runGitCommand(
   args: string[],
   options: GitCommandOptions = {},
@@ -122,6 +181,25 @@ export async function runGitCommand(
     // work on the broken volume.
     if (process.code !== 0) {
       noteGitOutputForVolumeFault(args, stderr, stdout);
+    }
+
+    // Issue #564: git lost its credential helper and identity mid-run while
+    // `gh` still worked — the staged global config had been reduced to its
+    // `safe.directory` line. Rebuild both from the read-only mount and retry
+    // once. A call that failed for want of credentials did nothing, so the
+    // retry is safe, and every git caller inherits the recovery.
+    if (
+      isGitAuthMissingFailure({ code: process.code, stderr }) &&
+      gitAuthRepairs < MAX_GIT_AUTH_REPAIRS
+    ) {
+      gitAuthRepairs++;
+      if (await repairGitAuthEnvironment()) {
+        const retry = await runGitCommand(args, options);
+        if (retry.ok) {
+          await auditGitMutation(args, retry.value.code);
+          return retry;
+        }
+      }
     }
 
     // Issue #2380: journal `git push` mutations to the audit log.

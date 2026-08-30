@@ -342,6 +342,36 @@ function acceptedScopeBullets(understanding: string): string[] {
   return bullets;
 }
 
+/**
+ * Split a bullet into lower-case word tokens.
+ *
+ * Whole-word matching without a regex built from data: `new RegExp(`\\b${m}\\b`)`
+ * constructs a pattern per marker per bullet, which semgrep's
+ * `detect-non-literal-regexp` rule flags — correctly, since a marker list that
+ * ever came from configuration would make the ReDoS surface real. Tokens do
+ * the same job with a fixed pattern.
+ */
+function wordTokens(text: string): string[] {
+  return text.match(/[a-z0-9]+/g) ?? [];
+}
+
+/**
+ * Whether the text carries an observable-outcome marker as whole words.
+ *
+ * Multi-word markers (`so that`) match as a contiguous token run, which is
+ * what the word-boundary regex did.
+ */
+function containsObservableMarker(lower: string): boolean {
+  const tokens = wordTokens(lower);
+  return OBSERVABLE_MARKERS.some((marker) => {
+    const markerTokens = wordTokens(marker);
+    if (markerTokens.length === 0) return false;
+    return tokens.some((_, index) =>
+      markerTokens.every((part, offset) => tokens[index + offset] === part)
+    );
+  });
+}
+
 /** Flag accepted-scope items that name an action but no observable outcome. */
 function detectUnobservableScopeItems(understanding: string): RubricFinding[] {
   const findings: RubricFinding[] = [];
@@ -349,9 +379,7 @@ function detectUnobservableScopeItems(understanding: string): RubricFinding[] {
   for (const bullet of acceptedScopeBullets(understanding)) {
     const lower = bullet.toLowerCase();
     if (/\d/.test(lower)) continue;
-    if (OBSERVABLE_MARKERS.some((m) => new RegExp(`\\b${m}\\b`).test(lower))) {
-      continue;
-    }
+    if (containsObservableMarker(lower)) continue;
     const firstWord = lower.replace(/^to\s+/, "").match(/^[a-z]+/)?.[0] ?? "";
     if (!VAGUE_VERBS.includes(firstWord)) continue;
 

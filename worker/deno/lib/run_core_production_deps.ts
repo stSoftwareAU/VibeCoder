@@ -18,12 +18,14 @@ import {
 } from "./issue_worker_types.ts";
 import type {
   DiscoveredIssue,
+  HandlerExecuteOptions,
   PriorityHandlerResult,
   RunCoreConfig,
   RunCoreDeps,
 } from "./run_core.ts";
 import { createDefaultRunCoreConfig } from "./run_core.ts";
 import { acquireMaintenanceRepoLease } from "./maintenance_lane.ts";
+import { drainConflictingPrs } from "./merge_conflict_drain.ts";
 import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 
 // Config & logging
@@ -1794,96 +1796,98 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 1.61: Resolve conflicting PRs (Issue #84) --
-    async findAndProcessMergeConflict() {
-      const scan = await findConflictingPr({
-        githubUser,
-        allowedAuthors: fleetPrAuthorInput.allowedAuthors,
-        fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
-        repos,
+    //
+    // Drains the queue rather than taking one PR per cycle (Issue #561) —
+    // see `merge_conflict_drain.ts` for the bounds and why they are what
+    // they are. This wiring supplies the three side effects: the scan, the
+    // repository lease, and one resolution.
+    async findAndProcessMergeConflict(opts?: HandlerExecuteOptions) {
+      const drain = await drainConflictingPrs({
         logger,
-        isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
-        ghCommandFn: runGhCommand,
-        // Shared PR-list cache (Issue #4303): one superset listing per
-        // repo×author serves every Priority-1.x scan this cycle.
-        cache: issueCache,
-        shuffleRepos: shuffleArray,
-        // Issue #395: the scan escalates a repeatedly disrupted conflict
-        // itself, so it needs the configured escalation label.
-        needsHumanLabel: config.needsHumanLabel,
-      });
-
-      if (!scan.ok || scan.value === null) {
-        return { ok: true, value: { processed: false } };
-      }
-
-      const conflict = scan.value;
-
-      // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
-      // merge, so this pass and an issue slot never write one tree.
-      const lease = acquireMaintenanceRepoLease(
-        conflict.repo,
-        conflict.prNumber,
-      );
-      if (lease === null) {
-        logger.info(
-          "Deferring merge-conflict resolution: an issue slot holds the repository",
-          { repo: conflict.repo, prNumber: conflict.prNumber },
-        );
-        return { ok: true, value: { processed: false } };
-      }
-      try {
-        const repoSetupResult = await setupRepo(conflict.repo, workDir);
-        if (!repoSetupResult.success) {
-          logger.error("Failed to set up repo for merge-conflict resolution", {
-            repo: conflict.repo,
-            error: repoSetupResult.message,
+        ...(opts?.deadlineEpochMs !== undefined
+          ? { deadlineEpochMs: opts.deadlineEpochMs }
+          : {}),
+        findNext: async (exclude) => {
+          const scan = await findConflictingPr({
+            githubUser,
+            allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+            fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+            repos,
+            logger,
+            isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+            ghCommandFn: runGhCommand,
+            // Shared PR-list cache (Issue #4303): one superset listing per
+            // repo×author serves every Priority-1.x scan this cycle.
+            cache: issueCache,
+            shuffleRepos: shuffleArray,
+            // Issue #395: the scan escalates a repeatedly disrupted conflict
+            // itself, so it needs the configured escalation label.
+            needsHumanLabel: config.needsHumanLabel,
+            exclude,
           });
-          return { ok: true, value: { processed: false } };
-        }
+          return scan.ok ? scan.value : null;
+        },
+        // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
+        // merge, so this pass and an issue slot never write one tree.
+        acquireLease: (conflict) =>
+          acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber),
+        resolve: async (conflict) => {
+          const repoSetupResult = await setupRepo(conflict.repo, workDir);
+          if (!repoSetupResult.success) {
+            logger.error(
+              "Failed to set up repo for merge-conflict resolution",
+              { repo: conflict.repo, error: repoSetupResult.message },
+            );
+            return null;
+          }
 
-        const result = await processMergeConflict(conflict, {
-          logger,
-          deps: workerDeps,
-          workDir: repoSetupResult.message,
-          qualityInstructions: buildQualityInstructions(
-            config.repoConfig,
-            conflict.repo,
-          ),
-          customInstructions: getCustomInstructions(
-            config.repoConfig,
-            conflict.repo,
-          ),
-          claudeTimeout: config.claudeTimeout,
-          claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-          maxRateLimitRetries: config.maxRateLimitRetries,
-          workerId: getWorkerUniqueId(config.workerName),
-          needsHumanLabel: config.needsHumanLabel,
-          repoConfigs: config.repoConfig,
-        });
+          const result = await processMergeConflict(conflict, {
+            logger,
+            deps: workerDeps,
+            workDir: repoSetupResult.message,
+            qualityInstructions: buildQualityInstructions(
+              config.repoConfig,
+              conflict.repo,
+            ),
+            customInstructions: getCustomInstructions(
+              config.repoConfig,
+              conflict.repo,
+            ),
+            claudeTimeout: config.claudeTimeout,
+            claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+            maxRateLimitRetries: config.maxRateLimitRetries,
+            workerId: getWorkerUniqueId(config.workerName),
+            needsHumanLabel: config.needsHumanLabel,
+            repoConfigs: config.repoConfig,
+          });
 
-        if (!result.ok) {
-          logger.error("Merge-conflict resolution failed", {
+          if (!result.ok) {
+            logger.error("Merge-conflict resolution failed", {
+              repo: conflict.repo,
+              prNumber: conflict.prNumber,
+              error: result.error.message,
+            });
+            return null;
+          }
+
+          // A pushed merge changes the PR's state, so the iteration-scoped
+          // open-PR cache must not serve the stale listing (Issue #1799).
+          if (result.value.merged) {
+            await issueCache.invalidate(conflict.repo, "prs_open_all");
+          }
+
+          logger.info(result.value.summary, {
             repo: conflict.repo,
             prNumber: conflict.prNumber,
-            error: result.error.message,
           });
-          return { ok: true, value: { processed: false } };
-        }
+          return {
+            processed: result.value.processed,
+            merged: result.value.merged,
+          };
+        },
+      });
 
-        // A pushed merge changes the PR's state, so the iteration-scoped
-        // open-PR cache must not serve the stale listing (Issue #1799).
-        if (result.value.merged) {
-          await issueCache.invalidate(conflict.repo, "prs_open_all");
-        }
-
-        logger.info(result.value.summary, {
-          repo: conflict.repo,
-          prNumber: conflict.prNumber,
-        });
-        return { ok: true, value: { processed: result.value.processed } };
-      } finally {
-        lease.release();
-      }
+      return { ok: true, value: { processed: drain.processed } };
     },
 
     // -- Priority 1.62: Nudge stalled CI on Vibe Coder PRs (Issue #2100) --

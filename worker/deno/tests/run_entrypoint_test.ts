@@ -375,3 +375,26 @@ Deno.test("formatPidFileContent - carries the PID and the boot id", () => {
   // Unknown boot id degrades to the legacy single-line format.
   assertEquals(formatPidFileContent(42, null), "42\n");
 });
+
+// ---------------------------------------------------------------------------
+// A finished command must end the process (Issue #563). The driver printed
+// "COMPLETED: Run complete" and then held its container — and the host behind
+// it — for 1h35m, because `main()` returned and left the event loop to drain
+// around a stray handle.
+// ---------------------------------------------------------------------------
+
+Deno.test("mod.ts - exits explicitly after a successful command", async () => {
+  const source = await Deno.readTextFile(new URL("../mod.ts", import.meta.url));
+  const outputIndex = source.indexOf("outputResult(result.value, logger);");
+  if (outputIndex === -1) {
+    throw new Error("mod.ts no longer calls outputResult(result.value, …)");
+  }
+  const tail = source.slice(outputIndex);
+  const exitIndex = tail.indexOf("Deno.exit(0)");
+  if (exitIndex === -1) {
+    throw new Error(
+      "mod.ts must exit explicitly after outputResult, so a lingering timer " +
+        "cannot hold the container open after the run reports (Issue #563)",
+    );
+  }
+});

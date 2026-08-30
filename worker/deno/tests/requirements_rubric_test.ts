@@ -320,3 +320,48 @@ Deno.test("buildGrillMePrompt - a clean understanding renders the nothing-flagge
     "the deterministic pre-check flagged nothing",
   );
 });
+
+// --- The token matcher behind the observable-marker check (Issue #519 CI) ---
+
+Deno.test("evaluateRequirementsRubric - observable markers match as whole words", () => {
+  // The check used to build `new RegExp(`\\b${marker}\\b`)` per marker per
+  // bullet, which semgrep's detect-non-literal-regexp blocks. Token matching
+  // replaced it; these pin the behaviour it has to keep.
+
+  // A two-word marker still matches as a contiguous run.
+  const soThat = evaluateRequirementsRubric({
+    title: CLEAN_TITLE,
+    body: body([
+      "### Accepted scope so far",
+      "",
+      "- Update the parser so that malformed input is rejected.",
+    ].join("\n")),
+  });
+  assertEquals(
+    classesOf(soThat).includes("unobservable-scope-item"),
+    false,
+  );
+
+  // No marker at all: the vague verb is flagged, exactly as before.
+  const vague = evaluateRequirementsRubric({
+    title: CLEAN_TITLE,
+    body: body([
+      "### Accepted scope so far",
+      "",
+      "- Improve the parser.",
+    ].join("\n")),
+  });
+  assertEquals(classesOf(vague).includes("unobservable-scope-item"), true);
+
+  // A marker embedded in a longer word is not a marker — the word boundary
+  // the regex enforced, kept by tokenisation.
+  const embedded = evaluateRequirementsRubric({
+    title: CLEAN_TITLE,
+    body: body([
+      "### Accepted scope so far",
+      "",
+      "- Improve the mustard configuration.",
+    ].join("\n")),
+  });
+  assertEquals(classesOf(embedded).includes("unobservable-scope-item"), true);
+});

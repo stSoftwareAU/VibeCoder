@@ -60,8 +60,8 @@ this assessment was worth doing.
 | `/speckit.tasks` → `tasks.md` | Sub-issues with acceptance criteria, `## Failure Detection`, `Depends on #N`, grouped into a milestone | Present, stored in GitHub |
 | `/speckit.taskstoissues` | Native — the planner publishes real sub-issues with dependency edges and a milestone | Already better |
 | `/speckit.analyze` — cross-artefact consistency | Adversarial self-critique that is deliberately never published | **Gap** — the judgement exists, the artefact does not |
-| `/speckit.implement` | `prompts/issue/v35.md` plus the phase pipeline and `./quality.sh` | Present |
-| `/speckit.converge` — assess code against intent, append remaining work | Nothing. Only bounded mechanical retries (quality 2×, CI 3×, grill-me 5×) | **Gap** |
+| `/speckit.implement` | `prompts/issue/v36.md` plus the phase pipeline and `./quality.sh` | Present |
+| `/speckit.converge` — assess code against intent, append remaining work | The assessment half is native: `prompts/issue/v36.md` requires a `## Acceptance Criteria` closure block in the PR summary, gated by `acceptance_criteria_gate.ts` (#518). The iterate-until-clean loop is not adopted | Adopted, assessment only |
 | `/speckit.checklist` — "unit tests for English" | Acceptance-criteria checkboxes in issues; the grill-me requirements-quality rubric (four named classes, deterministic pre-pass) | Present, scoped to grill-me |
 | `bug` extension — `assess → fix → test` | One pipeline for every tier; `bug` is a descriptive label only | **Gap**, narrowly |
 | `assess` extension — go / needs-clarification / kill | Scattered partial gates; kill authority reserved for humans | Partial, by design |
@@ -73,10 +73,10 @@ Five, each filed as its own issue. Each is a native adaptation, not a port.
 ### 1. Close the acceptance-criteria loop (from `/speckit.converge`) — #518
 
 The planner writes a `## Acceptance Criteria` checklist into every sub-issue
-(`prompts/planning/v21.md:95-97`) and **nothing ever reads it again**. Searching
-`worker/deno/lib` and `prompts/issue/v35.md` for "Acceptance Criteria" returns no
-matches. The implementing run never sees the criteria as a target and the PR
-summary never says which were met.
+(`prompts/planning/v21.md:95-97`) and, before #518, **nothing ever read it
+again**: searching `worker/deno/lib` and `prompts/issue/v35.md` <!-- pinned: the state that prompted #518 -->
+for "Acceptance Criteria" returned no matches. The implementing run never saw the
+criteria as a target and the PR summary never said which were met.
 
 spec-kit's converge does exactly this job: read the stated intent, inspect the
 code, and classify each gap as `missing`, `partial`, `contradicts` or
@@ -84,9 +84,12 @@ code, and classify each gap as `missing`, `partial`, `contradicts` or
 worth stealing twice over — the Vibe Coder has a prose "Change Scope" rule with
 no output surface, so scope creep is invisible until review.
 
-Adopted as: a closure block in the PR summary rather than a new loop. Converge's
-iterate-until-clean shape is not adopted — an unattended worker with a budget
-should surface an unmet criterion, not spin on it.
+Adopted as: a closure block in the PR summary rather than a new loop —
+`prompts/issue/v36.md` requires it and `acceptance_criteria_gate.ts` gates it
+before the PR is raised (see
+[issue-processing.md](workflows/issue-processing.md#-acceptance-criteria-closure-before-the-pr)).
+Converge's iterate-until-clean shape is not adopted — an unattended worker with a
+budget should surface an unmet criterion, not spin on it.
 
 ### 2. A requirements-quality rubric for grill-me (from `/speckit.checklist`) — #519
 
@@ -130,7 +133,7 @@ that was not actually performed is reported as `partial` or `not-run`, not
 `verified`."
 
 All work tiers share one pipeline here (`docs/workflows/label-flows.md:226-234`),
-and `bug` is descriptive only. `prompts/issue/v35.md` asks for a regression test,
+and `bug` is descriptive only. `prompts/issue/v36.md` asks for a regression test,
 but a PR claiming one reads identically whether the test was watched to fail
 before the fix or written afterwards — precisely the over-claim the fail-loud
 standard exists to prevent. Adopted as a conditional PR-summary block, not as a

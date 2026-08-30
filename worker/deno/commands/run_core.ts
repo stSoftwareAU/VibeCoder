@@ -170,7 +170,11 @@ export const runCoreCommand: Command = {
       }
 
       return {
-        success: result.plannedShutdown || !result.exitedOnFailures,
+        // Issue #563: a fatal error is a failed run whatever else is true of
+        // it. Without this the launcher read `COMPLETED` and exit 0 for a run
+        // that died in its main loop, so nothing backed off or escalated.
+        success: !result.fatalError &&
+          (result.plannedShutdown || !result.exitedOnFailures),
         message:
           `Run complete: ${result.exitReason} (${result.issuesProcessed} issues processed in ${result.durationSeconds}s)`,
         data: {
