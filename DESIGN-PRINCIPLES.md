@@ -1171,7 +1171,14 @@ that files a `BP-MILESTONE-FILTER-<workflow-basename>` finding at
 (`milestone/<slug>`,), so milestone sub-issue PRs never merge past
 the gate unchecked — the decidable core of v12 prompt check #33; the fix (add
 `milestone/*` to the filter) rides a normal per-repo worker PR per
-isolation. Their ids
+isolation — and a native gitleaks-drift scan
+(`gitleaks_drift_scanner.ts`, Issue #598) that files
+`BP-GITLEAKS-BRANCH-…`, `BP-GITLEAKS-ACTION-STALE-…`,
+`BP-GITLEAKS-NO-FALLBACK-…` and `BP-GITLEAKS-NO-PR-TRIGGER-…` findings at
+`severity:medium` for each per-repo `gitleaks.yml` copy that has drifted from
+the canonical template, because the workflow audit detects gitleaks by
+pattern and so scores a months-old copy as fully covered; its branch finding
+defers to the milestone pre-filer's when both cover the same file. Their ids
 are added to the
 known-open list so Claude does not re-emit them; the v7 prompt SHA-pin
 (#1/#13/#25), permissions (#2/#9/#24), and script-injection (#22) checks are
@@ -1196,7 +1203,8 @@ native checkout-persist-credentials pre-filer files
 broad-artefact-upload pre-filer files
 `BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>` ids; the native
 milestone-branch-filter pre-filer files `BP-MILESTONE-FILTER-<workflow-basename>`
-ids.
+ids; the native gitleaks-drift pre-filer files
+`BP-GITLEAKS-<CLASS>-<workflow-basename>` ids.
 
 **Labels.** Filed issues carry exactly `github-actions-audit` plus one of
 `severity:high|medium|low` — no `lang:*` label (single-scope). The worker is not
