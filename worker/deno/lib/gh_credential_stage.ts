@@ -288,15 +288,27 @@ export function gitGlobalConfigEntries(
 ): GitGlobalConfigEntry[] {
   const entries: GitGlobalConfigEntry[] = [
     { args: ["--global", "--add", "safe.directory", "*"], add: true },
+    // --replace-all, not a plain set (Issue #635). Both of these keys are
+    // multi-valued — the entrypoint adds a second value to each — and the
+    // global config now survives the run in ${STATE_ROOT}/gitconfig. A plain
+    // set against an existing multi-valued key fails with "cannot overwrite
+    // multiple values with a single value", which would make this repair path
+    // fail in exactly the situation it exists to repair.
     {
       args: [
         "--global",
+        "--replace-all",
         "url.https://github.com/.insteadOf",
         "git@github.com:",
       ],
     },
     {
-      args: ["--global", "credential.https://github.com.helper", ""],
+      args: [
+        "--global",
+        "--replace-all",
+        "credential.https://github.com.helper",
+        "",
+      ],
     },
     {
       args: [
