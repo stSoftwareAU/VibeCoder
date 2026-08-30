@@ -47,6 +47,10 @@ docs/SECURITY-TREE-SWEEP.md:
   title: "Vibe Coder: Whole-tree Security Sweep"
   page_icon: "🧹"
 
+docs/RELEASE-TAGGING.md:
+  title: "Vibe Coder: Release Tagging"
+  page_icon: "🏷️"
+
 docs/security-fix-gate-feedback.md:
   title: "Vibe Coder: Security-fix Gate Feedback"
   page_icon: "🔐"
