@@ -18,13 +18,21 @@
  * issue per streak once {@link CHECKOUT_UPDATE_ESCALATION_THRESHOLD}
  * consecutive failures are reached. A success resets the streak to zero.
  *
+ * Under `update_mode: "frozen"` (Issue #624, part of #583) the sequence above
+ * would defeat the pin, so the checkout is held at `pinned_ref` instead: fetch
+ * (so a newly pushed tag resolves), then `git checkout --detach <ref>` →
+ * `git reset --hard <ref>` → `git clean -fd`, and nothing at all when `HEAD`
+ * already resolves to that ref. The skip is logged, never silent, and a ref
+ * that does not resolve is a fail-loud failure counted in the same streak.
+ *
  * Every side effect flows through {@link CheckoutUpdateDeps} so the behaviour
  * can be unit-tested without touching git, the filesystem, or GitHub.
  *
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
 
-import type { Result } from "../types.ts";
+import type { Result, UpdateMode } from "../types.ts";
+import { DEFAULT_UPDATE_MODE } from "./config_defaults.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
   appendRunCoreLogLine,
@@ -88,14 +96,25 @@ export interface CheckoutUpdateOptions {
    * `origin/HEAD` (see {@link resolveOriginDefaultBranch}).
    */
   defaultBranch?: string;
+  /**
+   * How this host tracks releases (Issue #624). Omitted means `dynamic`, so a
+   * caller that knows nothing about update modes behaves exactly as before.
+   */
+  updateMode?: UpdateMode;
+  /** The commit SHA or tag the checkout is held at under `frozen`. */
+  pinnedRef?: string;
 }
 
 /** Outcome of a single checkout update. */
 export interface CheckoutUpdateOutcome {
-  /** Whether the checkout now matches `origin/<branch>`. */
+  /** Whether the checkout is now where this host's update mode says it is. */
   ok: boolean;
-  /** The branch updated to, or "" when it could not be resolved. */
+  /** The branch updated to; "" when frozen, or when it could not be resolved. */
   branch: string;
+  /** The mode the update ran in. */
+  mode: UpdateMode;
+  /** The pinned ref the checkout was held at; "" outside `frozen` mode. */
+  ref: string;
   /** Enriched failure detail when {@link ok} is false. */
   error?: string;
   /** Consecutive failures including this one; 0 after a success. */
@@ -112,6 +131,28 @@ export interface CheckoutUpdateDeps {
   resetToDefaultBranch(
     repoDir: string,
     branch: string,
+    logDir: string,
+  ): Promise<Result<void>>;
+  /**
+   * Fetch `origin` including tags (Issue #624), so a ref pushed since the last
+   * launch can be resolved. Fail-loud on any git failure.
+   */
+  fetchOrigin(repoDir: string, logDir: string): Promise<Result<void>>;
+  /**
+   * Resolve a ref to its commit SHA in the checkout, or `null` when it does
+   * not resolve there (Issue #624). Used both to detect a bad `pinned_ref` and
+   * to skip the git writes when the checkout is already on the pin.
+   */
+  resolveCommit(repoDir: string, ref: string): Promise<string | null>;
+  /** The commit `HEAD` resolves to, or `null` when it cannot be read. */
+  readHeadCommit(repoDir: string): Promise<string | null>;
+  /**
+   * Hold the checkout at the pinned ref (Issue #624) — a detached checkout of
+   * the ref, a hard reset to it, and a clean. Fail-loud on any git failure.
+   */
+  checkoutPinnedRef(
+    repoDir: string,
+    ref: string,
     logDir: string,
   ): Promise<Result<void>>;
   /**
@@ -149,18 +190,67 @@ async function appendLine(filePath: string, line: string): Promise<void> {
  * mounted host directory — never the checkout. The first failing command
  * short-circuits and returns a fail-loud error (Issue #3234).
  */
-export async function resetCheckoutToDefaultBranch(
+export function resetCheckoutToDefaultBranch(
   repoDir: string,
   branch: string,
   logDir: string,
 ): Promise<Result<void>> {
-  const pullLog = `${logDir}/pull.log`;
-  const steps: string[][] = [
+  return runGitSteps(repoDir, logDir, [
     ["fetch", "origin"],
     ["checkout", branch],
     ["reset", "--hard", `origin/${branch}`],
     ["clean", "-fd"],
-  ];
+  ]);
+}
+
+/**
+ * Fetch `origin` with its tags (Issue #624).
+ *
+ * Frozen mode fetches before resolving the pin, because a tag pushed since the
+ * last launch does not exist in the checkout until it is fetched. `--tags` is
+ * what separates this from the dynamic path's plain fetch: a pin is far more
+ * often a tag than a branch tip.
+ */
+export function fetchOrigin(
+  repoDir: string,
+  logDir: string,
+): Promise<Result<void>> {
+  return runGitSteps(repoDir, logDir, [["fetch", "--tags", "origin"]]);
+}
+
+/**
+ * Hold the checkout at `ref` (Issue #624): a detached checkout of the ref, a
+ * hard reset to it, then a clean.
+ *
+ * `--detach` is deliberate — the pin is a commit SHA or a tag, and the
+ * checkout is meant to sit exactly on it rather than on a branch that will
+ * move under it. `--force` is what makes a dirty checkout land on the pin
+ * instead of refusing the launch; as in the dynamic path, uncommitted work in
+ * the checkout is discarded.
+ */
+export function checkoutPinnedRef(
+  repoDir: string,
+  ref: string,
+  logDir: string,
+): Promise<Result<void>> {
+  return runGitSteps(repoDir, logDir, [
+    ["checkout", "--force", "--detach", ref],
+    ["reset", "--hard", ref],
+    ["clean", "-fd"],
+  ]);
+}
+
+/**
+ * Run a git sequence in the checkout, appending output to `pull.log` **under
+ * the log directory** — a mounted host directory, never the checkout. The
+ * first failing command short-circuits with a fail-loud error (Issue #3234).
+ */
+async function runGitSteps(
+  repoDir: string,
+  logDir: string,
+  steps: string[][],
+): Promise<Result<void>> {
+  const pullLog = `${logDir}/pull.log`;
 
   for (const args of steps) {
     const result = await runGitCommand(args, { cwd: repoDir });
@@ -189,6 +279,31 @@ export async function resetCheckoutToDefaultBranch(
   }
 
   return { ok: true, value: undefined };
+}
+
+/**
+ * Resolve `ref` to the commit it names in the checkout (Issue #624).
+ *
+ * `null` means the ref does not resolve there — the bad-pin case the frozen
+ * path fails loudly on. `^{commit}` peels an annotated tag, so a tag and the
+ * SHA it points at compare equal.
+ */
+export async function resolveRefCommit(
+  repoDir: string,
+  ref: string,
+): Promise<string | null> {
+  const result = await runGitCommand(
+    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+    { cwd: repoDir },
+  );
+  if (!result.ok || result.value.code !== 0) return null;
+  const sha = result.value.stdout.trim();
+  return sha.length > 0 ? sha : null;
+}
+
+/** The commit `HEAD` names, or `null` when it cannot be read (Issue #624). */
+export function readHeadCommit(repoDir: string): Promise<string | null> {
+  return resolveRefCommit(repoDir, "HEAD");
 }
 
 /**
@@ -313,6 +428,10 @@ export function createDefaultCheckoutUpdateDeps(): CheckoutUpdateDeps {
   return {
     resolveDefaultBranch: resolveOriginDefaultBranch,
     resetToDefaultBranch: resetCheckoutToDefaultBranch,
+    fetchOrigin,
+    resolveCommit: resolveRefCommit,
+    readHeadCommit,
+    checkoutPinnedRef,
     describeCheckoutState,
     readFailureStreak: defaultReadFailureStreak,
     writeFailureStreak: defaultWriteFailureStreak,
@@ -322,10 +441,64 @@ export function createDefaultCheckoutUpdateDeps(): CheckoutUpdateDeps {
 }
 
 /**
- * Update a checkout to `origin/<default-branch>`, counting consecutive
- * failures and escalating a crash-loop exactly once per streak (#4204).
+ * Hold the checkout at `ref` (frozen mode, Issue #624).
  *
- * @param options - The checkout, the log directory, and an optional branch.
+ * A checkout whose `HEAD` already resolves to the pin is left completely
+ * alone — not even a fetch — so a launch does not churn the tree. Otherwise
+ * origin is fetched (a tag pushed since the last launch only resolves after
+ * that), the ref is resolved, and the checkout is moved onto it.
+ *
+ * @returns The failure detail, or undefined when the checkout is on the pin.
+ */
+async function holdAtPinnedRef(
+  deps: CheckoutUpdateDeps,
+  repoDir: string,
+  logDir: string,
+  ref: string,
+): Promise<string | undefined> {
+  const head = await deps.readHeadCommit(repoDir);
+  const local = await deps.resolveCommit(repoDir, ref);
+  if (local !== null && local === head) return undefined;
+
+  const fetched = await deps.fetchOrigin(repoDir, logDir);
+  if (!fetched.ok) {
+    // A ref that already resolves locally still pins — an offline host is
+    // meant to keep running its pinned code — but the fetch failure is said
+    // out loud rather than swallowed.
+    if (local === null) {
+      return `cannot fetch origin in ${repoDir} to resolve pinned_ref ` +
+        `${ref}: ${fetched.error.message}`;
+    }
+    await deps.log(
+      logDir,
+      `Fetch failed while holding ${repoDir} at pinned_ref ${ref} ` +
+        `(continuing on the ref this checkout already holds): ` +
+        fetched.error.message,
+    );
+  }
+
+  const target = local ?? await deps.resolveCommit(repoDir, ref);
+  if (target === null) {
+    return `pinned_ref ${ref} does not resolve in ${repoDir} — correct ` +
+      `pinned_ref in .config.json (it takes a commit SHA or a tag that ` +
+      `exists on origin), or set update_mode to "dynamic"`;
+  }
+
+  const pinned = await deps.checkoutPinnedRef(repoDir, ref, logDir);
+  if (!pinned.ok) {
+    return `cannot hold ${repoDir} at pinned_ref ${ref}: ${pinned.error.message}`;
+  }
+  return undefined;
+}
+
+/**
+ * Bring a checkout to where this host's update mode says it belongs — the tip
+ * of `origin/<default-branch>` under `dynamic`, the pinned ref under `frozen`
+ * (Issue #624) — counting consecutive failures and escalating a crash-loop
+ * exactly once per streak (#4204).
+ *
+ * @param options - The checkout, the log directory, an optional branch, and
+ *   the update mode with its pinned ref.
  * @param depsOverride - Partial dependency overrides (production defaults fill
  *   the rest). Tests inject a recording set.
  * @returns The outcome, including the streak and whether it escalated.
@@ -339,25 +512,45 @@ export async function updateCheckout(
     ...depsOverride,
   };
   const { repoDir, logDir } = options;
+  const mode = options.updateMode ?? DEFAULT_UPDATE_MODE;
 
-  let branch = options.defaultBranch ?? "";
+  let branch = "";
+  let ref = "";
   let failure: string | undefined;
-  if (branch === "") {
-    const resolved = await deps.resolveDefaultBranch(repoDir);
-    if (resolved.ok) {
-      branch = resolved.value;
-    } else {
-      failure = `cannot resolve the default branch of ${repoDir}: ` +
-        `${resolved.error.message} (pass --default-branch to name it)`;
-    }
-  }
 
-  if (failure === undefined) {
-    await deps.log(logDir, `Updating ${repoDir} to origin/${branch}`);
-    const reset = await deps.resetToDefaultBranch(repoDir, branch, logDir);
-    if (!reset.ok) {
-      failure = `cannot update ${repoDir} to origin/${branch}: ` +
-        reset.error.message;
+  if (mode === "frozen") {
+    ref = options.pinnedRef?.trim() ?? "";
+    // The skip is stated before anything else happens, so `run_core.log`
+    // names the mode and the ref even when the pin then fails to resolve.
+    await deps.log(
+      logDir,
+      ref === ""
+        ? `Checkout update skipped: update_mode=frozen, but no pinned_ref is set`
+        : `Checkout update skipped: update_mode=frozen, pinned to ${ref}`,
+    );
+    failure = ref === ""
+      ? `update_mode is "frozen" but no pinned_ref is set — set pinned_ref ` +
+        `in .config.json to the commit SHA or tag ${repoDir} is held at`
+      : await holdAtPinnedRef(deps, repoDir, logDir, ref);
+  } else {
+    branch = options.defaultBranch ?? "";
+    if (branch === "") {
+      const resolved = await deps.resolveDefaultBranch(repoDir);
+      if (resolved.ok) {
+        branch = resolved.value;
+      } else {
+        failure = `cannot resolve the default branch of ${repoDir}: ` +
+          `${resolved.error.message} (pass --default-branch to name it)`;
+      }
+    }
+
+    if (failure === undefined) {
+      await deps.log(logDir, `Updating ${repoDir} to origin/${branch}`);
+      const reset = await deps.resetToDefaultBranch(repoDir, branch, logDir);
+      if (!reset.ok) {
+        failure = `cannot update ${repoDir} to origin/${branch}: ` +
+          reset.error.message;
+      }
     }
   }
 
@@ -368,7 +561,7 @@ export async function updateCheckout(
     } catch {
       // Best-effort persistence.
     }
-    return { ok: true, branch, streak: 0, escalated: false };
+    return { ok: true, branch, mode, ref, streak: 0, escalated: false };
   }
 
   let checkout: CheckoutState | null = null;
@@ -419,5 +612,5 @@ export async function updateCheckout(
     }
   }
 
-  return { ok: false, branch, error: detail, streak, escalated };
+  return { ok: false, branch, mode, ref, error: detail, streak, escalated };
 }

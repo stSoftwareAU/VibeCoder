@@ -336,8 +336,14 @@ export function validateUpdateModeSettings(
   return errors;
 }
 
-/** Reject a pin value that could not be safely handed to git or an installer. */
-function pinValueErrors(field: string, value: string): string[] {
+/**
+ * Reject a pin value that could not be safely handed to git or an installer.
+ *
+ * Exported because the host-side checkout update reads `pinned_ref` from
+ * `.config.json` itself, before the configuration load runs (Issue #624), and
+ * must apply the same allowlist rather than a second copy of it.
+ */
+export function pinValueErrors(field: string, value: string): string[] {
   if (PIN_VALUE_PATTERN.test(value)) return [];
   return [
     `Invalid ${field} ${JSON.stringify(value)}. It is passed to git and to ` +
