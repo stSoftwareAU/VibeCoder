@@ -79,7 +79,21 @@ background service is offered, where files land — is covered in
    value — the prompts do not lose the environment, and the environment does
    not lose the prompts. A failure here stops the run.
 
-6. **Repository sync phases** — seven subcommands, each acting on the
+6. **Update mode** — `setup update-mode` (Issue #626), bash only for now:
+   `setup.ps1` is unchanged and gains it as a follow-up. It asks whether this
+   host is `dynamic` or `frozen`, defaulting to `dynamic` and, on a re-run, to
+   whatever the host already says. A `frozen` answer asks for the pinned ref —
+   validated by fetching origin and resolving it in this very checkout, so a
+   ref that does not resolve is rejected by name and asked again rather than
+   saved — and then for one exact version per tool, each defaulting to the
+   version `dynamic` mode would install today. Blank accepts the default
+   everywhere, so pressing Enter through a frozen host's prompts leaves
+   `.config.json` byte-for-byte unchanged. Without a terminal nothing is
+   asked: existing values are left alone and a fresh config is defaulted to
+   `dynamic`. What the fields mean is the
+   [Configuration Reference](CONFIGURATION.md#-update-mode)'s job.
+
+7. **Repository sync phases** — seven subcommands, each acting on the
    monitored GitHub repositories rather than the host, each idempotent, and
    each **non-fatal**:
 
@@ -100,12 +114,12 @@ background service is offered, where files land — is covered in
      security-scan wrapper issues that lack it; already-labelled wrappers are
      not touched again.
 
-7. **Hooks** — `setup hooks` installs the pre-commit security hook into the
+8. **Hooks** — `setup hooks` installs the pre-commit security hook into the
    worker's own clone, removes the retired pre-push hook, and updates the
    clone's git exclude patterns. A failure here is **fatal** — the hooks are
    part of the security posture, not a nicety.
 
-8. **Obsolete work-directory clean-up** — handles any leftover host work
+9. **Obsolete work-directory clean-up** — handles any leftover host work
    directories (such as `~/auto-issue-work`) that the container's named
    volumes made obsolete, in two distinct cases. A directory holding nothing
    beyond a stale `.vibe-cache` from an earlier setup is **removed**, with a
@@ -116,7 +130,7 @@ background service is offered, where files land — is covered in
    the command to reclaim the space — deleting operator data is never setup's
    call. Neither case can fail the run.
 
-9. **Background-service offer** — platform-specific and terminal-only: each
+10. **Background-service offer** — platform-specific and terminal-only: each
    platform offers its own supervision mechanism, and declining also offers
    to remove a service an earlier run installed. Which platform offers what
    is covered in
@@ -125,13 +139,13 @@ background service is offered, where files land — is covered in
    [Deployment — Running as a Background Service](DEPLOYMENT.md#-running-as-a-background-service).
    Declining never fails the run.
 
-10. **Optional screenshot support** — runs only when
+11. **Optional screenshot support** — runs only when
     `VIBE_SETUP_SCREENSHOT_SUPPORT=true` is set; otherwise the phase is
     skipped entirely. See
     [Deployment — Screenshot Support Setup](DEPLOYMENT.md#-screenshot-support-setup).
 
 **Fatal versus non-fatal, and why setup is re-runnable.** The sync phases
-(phase 6) warn and continue by design, so a rate-limited or
+(phase 7) warn and continue by design, so a rate-limited or
 partly-permissioned run still finishes configuring the host — only the
 prerequisites probe, the config write and the hooks install stop the run.
 And because every phase is idempotent, the recovery from any warning is
@@ -146,8 +160,9 @@ flowchart TD
     C --> IC["3 · interactive credential top-up<br/>(terminal only)"]
     IC --> IP["4 · interactive configuration prompts<br/>(terminal only)"]
     IP --> W["5 · config write<br/>env first, answers merged over"]
-    W --> L["label-sync"]
-    subgraph SY["6 · repository sync — warn and continue, never fatal"]
+    W --> UM["6 · update mode<br/>dynamic or frozen + pins (terminal only)"]
+    UM --> L["label-sync"]
+    subgraph SY["7 · repository sync — warn and continue, never fatal"]
         L --> WS["workflow-sync"]
         WS --> BS["best-practices-sync"]
         BS --> GI["gitignore-sync"]
@@ -155,11 +170,11 @@ flowchart TD
         VC --> BR["branch-protection-sync"]
         BR --> BF["backfill-idle-task-labels"]
     end
-    BF --> H["7 · hooks (fatal on failure)"]
-    H --> R["8 · work-directory clean-up<br/>(cache-only: removed · real data: reminder)"]
-    R --> SO["9 · background-service offer<br/>(platform-specific, terminal only)"]
+    BF --> H["8 · hooks (fatal on failure)"]
+    H --> R["9 · work-directory clean-up<br/>(cache-only: removed · real data: reminder)"]
+    R --> SO["10 · background-service offer<br/>(platform-specific, terminal only)"]
     SO --> SC{"VIBE_SETUP_SCREENSHOT_SUPPORT<br/>= true?"}
-    SC -->|yes| SS["10 · screenshot support"]
+    SC -->|yes| SS["11 · screenshot support"]
     SC -->|no| D["done"]
     SS --> D
     style X fill:#9d0208,stroke:#6a040f,color:#fff
@@ -182,6 +197,7 @@ what another document owns.
 | Container runtime | Apple `container`, installed **and** started | Docker, then Podman | Docker Desktop, then Podman |
 | Credential/config protection | `chmod` 0700 / 0600 | `chmod` 0700 / 0600 | Inheritance-stripped ACL, current identity only |
 | Background-service offer | LaunchAgent prompt | None at setup time | Scheduled-task prompt |
+| Update-mode prompts | `setup update-mode` | `setup update-mode` | Not yet — `setup.ps1` is unchanged |
 | Home directory | `$HOME` | `$HOME` | `%USERPROFILE%` (then `HOME`) |
 
 **Entry point and invocation.** macOS and Linux run `./setup.sh` under bash;
