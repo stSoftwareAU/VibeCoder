@@ -589,7 +589,7 @@ export function createBashSyntaxAuditTemplate(
         if (suppressedIds.has(finding.findingId)) continue;
         await fileFindingOnce({
           repo: opts.repo,
-          label: BASH_SYNTAX_AUDIT_LABEL,
+          logLabel: BASH_SYNTAX_AUDIT_LABEL,
           findingId: finding.findingId,
           ghCommandFn,
           fileFn: () =>

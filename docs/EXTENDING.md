@@ -366,6 +366,30 @@ graph TD
 
 > **⚠️ Existing versions are immutable:** Do NOT modify an existing `v*.md` file. Once committed, a prompt version is frozen. This is enforced by `quality.sh`.
 
+> **⚠️ Reference prompt directories, never a pinned version:** write
+> `prompts/<type>/` in documentation, not `prompts/<type>/v7.md`. The
+> `docs prompt versions` check in `quality.sh` fails a doc that cites a version
+> older than the one on disk; the wording "from vN onward" or a
+> `<!-- pinned: reason -->` marker is the escape hatch when a specific
+> historical version genuinely must be cited.
+
+### A new idle-task scan prompt inherits the dedup contract
+
+Every scan prompt that files judgement-bearing findings MUST carry **both**
+dedup placeholders — `{{KNOWN_OPEN_FINDING_IDS}}` (finding-id markers) and
+`{{OPEN_ISSUE_TITLES}}` (every open issue as `#<number> — <title>`) — and MUST
+instruct the model to **skip silently**, without commenting or cross-linking,
+any candidate either list already covers. Both lists are fetched **repo-wide**:
+a duplicate is a duplicate whatever label the open issue carries, and scoping
+either query to the scan's own label is the defect that re-filed a finding
+already open under `needs-human`. Both are bounded, so the prompt must also say
+that an absent entry is not proof of novelty. Copy the contract from
+[Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list),
+not from whichever sibling prompt happens to be open in the next tab —
+`worker/deno/tests/idle_task_scan_dedup_conformance_test.ts` and
+`worker/deno/tests/dedup_placeholder_docs_test.ts` fail a template or a doc that
+skips it.
+
 ### Per-model coding-guidelines overlays
 
 The shared `coding_guidelines` template is model-agnostic, so genuinely

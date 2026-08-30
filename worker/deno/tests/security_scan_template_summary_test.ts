@@ -31,6 +31,7 @@ import {
   renderRunSummary,
 } from "../lib/idle_task_templates/security_scan_template.ts";
 import type { ScanError, ScanOk } from "../lib/security_scanner.ts";
+import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
 import type { Result } from "../types.ts";
 
 /**
@@ -249,5 +250,73 @@ Deno.test(
       !Object.hasOwn(captured[0]!, "model"),
       "expected no model key on the scan options",
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Repo-wide open-issue titles (Issue #537)
+// ---------------------------------------------------------------------------
+
+/**
+ * gh stub for the repo-wide open-issue title lookup — `issue list --json
+ * number,title` with neither `--label` nor `--search`. Every other call
+ * returns an empty list, so the snapshot diff stays empty. `fail` makes the
+ * title lookup (and only that lookup) throw.
+ */
+function makeTitleGhStub(
+  titles: Array<{ number: number; title: string }>,
+  fail = false,
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    const jsonIdx = args.indexOf("--json");
+    const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
+    if (
+      jsonField === "number,title" && !args.includes("--label") &&
+      !args.includes("--search")
+    ) {
+      return fail
+        ? Promise.reject(new Error("gh: rate limited"))
+        : Promise.resolve(JSON.stringify(titles));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+Deno.test(
+  "runTask - repo-wide open issue titles reach the scanner",
+  async () => {
+    const seen: OpenIssueTitle[][] = [];
+    const tpl = createSecurityScanTemplate({
+      runSecurityScanFn: (opts) => {
+        seen.push(opts.openIssueTitles);
+        return okScan();
+      },
+      ghCommandFn: makeTitleGhStub([
+        { number: 37, title: "Add a CODEOWNERS file" },
+      ]),
+      emitSarifFn: stubEmitSarif,
+    });
+    const result = await tpl.runTask(runOpts);
+    assert(result.ok);
+    assertEquals(seen, [[{ number: 37, title: "Add a CODEOWNERS file" }]]);
+  },
+);
+
+Deno.test(
+  "runTask - a gh failure listing titles degrades to an empty list",
+  async () => {
+    const seen: OpenIssueTitle[][] = [];
+    const tpl = createSecurityScanTemplate({
+      runSecurityScanFn: (opts) => {
+        seen.push(opts.openIssueTitles);
+        return okScan();
+      },
+      ghCommandFn: makeTitleGhStub([], true),
+      emitSarifFn: stubEmitSarif,
+    });
+    const result = await tpl.runTask(runOpts);
+    // The scan still ran, with the `(none)` sentinel's empty list.
+    assert(result.ok);
+    assertEquals(seen, [[]]);
   },
 );

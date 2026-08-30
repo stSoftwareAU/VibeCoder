@@ -71,6 +71,7 @@ const BASE_OPTS: ScanOptions = {
   repo: "stSoftwareAU/VibeCoder",
   workDir: "/tmp/scan",
   knownOpenFindingIds: ["SEC-known00000a"],
+  openIssueTitles: [],
   suppressedIds: ["SEC-suppressed1"],
 };
 
@@ -467,6 +468,66 @@ Deno.test(
       Object.hasOwn(options, "model"),
       false,
       "expected no --model arg to be requested for an unstamped scan",
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Repo-wide open-issue titles (Issue #537)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildSecurityScanPrompt - open issue titles are substituted", () => {
+  const rendered = buildSecurityScanPrompt(
+    "Already open:\n{{OPEN_ISSUE_TITLES}}",
+    {
+      suppressedIds: [],
+      knownOpenFindingIds: [],
+      openIssueTitles: [
+        { number: 37, title: "Add a CODEOWNERS file" },
+        { number: 64, title: "Repo has no CODEOWNERS" },
+      ],
+    },
+  );
+  assertEquals(rendered.includes("{{OPEN_ISSUE_TITLES}}"), false);
+  assertStringIncludes(rendered, "#37 — Add a CODEOWNERS file");
+  assertStringIncludes(rendered, "#64 — Repo has no CODEOWNERS");
+});
+
+Deno.test(
+  "buildSecurityScanPrompt - an empty open-issue list renders (none)",
+  () => {
+    const rendered = buildSecurityScanPrompt(
+      "Already open:\n{{OPEN_ISSUE_TITLES}}",
+      { suppressedIds: [], knownOpenFindingIds: [], openIssueTitles: [] },
+    );
+    assertEquals(rendered, "Already open:\n(none)");
+  },
+);
+
+Deno.test(
+  "runSecurityScan - the scan options' open issue titles reach the prompt",
+  async () => {
+    const captured: { options?: RunClaudeOptions } = {};
+    const result = await runSecurityScan(
+      {
+        ...BASE_OPTS,
+        openIssueTitles: [{ number: 37, title: "Add a CODEOWNERS file" }],
+      },
+      {
+        loadPromptFn: () =>
+          Promise.resolve({
+            ok: true,
+            value: "Already open:\n{{OPEN_ISSUE_TITLES}}",
+          }),
+        runClaudeFn: fakeRunner("", captured),
+        detectLlmUsageFn: () =>
+          Promise.resolve({ isLlmUsing: false, signals: [] }),
+      },
+    );
+    assertEquals(result.ok, true);
+    assertStringIncludes(
+      captured.options?.prompt ?? "",
+      "#37 — Add a CODEOWNERS file",
     );
   },
 );
