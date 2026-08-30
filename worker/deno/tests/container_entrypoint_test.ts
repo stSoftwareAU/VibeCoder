@@ -1008,7 +1008,10 @@ Deno.test("entrypoint - writes nothing under HOME: the staged source, the git co
     // world-writable /tmp the coding agents scribble in (Issue #564).
     assertEquals(await exists(`${stateRoot(dir)}/gh/hosts.yml`), true);
     assertEquals(await exists(`${scratch}/gh/hosts.yml`), false);
-    const gitconfig = await Deno.readTextFile(`${scratch}/gitconfig`);
+    // The git config is durable state, not scratch (Issue #564): it carries
+    // the credential helper and the identity, and the scratch root has been
+    // seen emptied mid-run.
+    const gitconfig = await Deno.readTextFile(`${stateRoot(dir)}/gitconfig`);
     assertStringIncludes(gitconfig, "[safe]");
     assertStringIncludes(gitconfig, "vibe-bot");
 
@@ -1059,8 +1062,10 @@ Deno.test("entrypoint - the tool caches every CLI reaches for are relocated off 
     const env = parseEnvDump(await Deno.readTextFile(envFile));
     assertEquals(env["VIBE_SCRATCH_DIR"], scratch);
     assertEquals(env["VIBE_STATE_DIR"], state);
-    // Per-launch, recomputed from the mounted credential every start.
-    assertEquals(env["GIT_CONFIG_GLOBAL"], `${scratch}/gitconfig`);
+    // Durable state, not scratch (Issue #564): it carries the credential
+    // helper and the identity, and a config file that exists while missing
+    // its helper reads as configured — the failure that cost hours.
+    assertEquals(env["GIT_CONFIG_GLOBAL"], `${state}/gitconfig`);
     assertEquals(env["XDG_CONFIG_HOME"], `${scratch}/config`);
     // Worth keeping between launches — the vibe-work volume.
     assertEquals(env["XDG_CACHE_HOME"], `${state}/cache`);

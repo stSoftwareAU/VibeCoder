@@ -84,10 +84,6 @@ if [[ -n "${SCRATCH_ROOT}" ]]; then
     echo "Warning: could not clear the scratch root at ${SCRATCH_ROOT} — a previous launch's leftovers may remain" >&2
   fi
   export VIBE_SCRATCH_DIR="${SCRATCH_ROOT}"
-  # git's global config: `git config --global` writes ${HOME}/.gitconfig
-  # otherwise, and the identity/transport it records is recomputed on every
-  # launch from the mounted credential — scratch, not state.
-  export GIT_CONFIG_GLOBAL="${SCRATCH_ROOT}/gitconfig"
   export XDG_CONFIG_HOME="${SCRATCH_ROOT}/config"
   if [[ "${SCRATCH_ROOT}" != "${TMP_SCRATCH_ROOT}" ]]; then
     # /tmp was refused, so every mktemp/Deno.makeTempDir in the container
@@ -110,6 +106,19 @@ STATE_ROOT="$(
 
 if [[ -n "${STATE_ROOT}" ]]; then
   export VIBE_STATE_DIR="${STATE_ROOT}"
+  # git's global config: `git config --global` writes ${HOME}/.gitconfig
+  # otherwise — the image layer. It holds the HTTPS transport, the `gh` credential
+  # helper and the service-account identity, all recomputed at launch from the
+  # mounted credential.
+  #
+  # On the DURABLE STATE root, not scratch (Issue #564). Observed twice on the
+  # fleet: /tmp/vibe-scratch was emptied mid-run, the worker's own
+  # `git config --global --add safe.directory '*'` recreated the file as a
+  # 22-byte stub, and every fetch, push and commit failed for hours with a
+  # perfectly healthy `gh` beside it — because a config file that EXISTS and
+  # is missing its helper reads as configured. Nothing of value is left in the
+  # directory that keeps being wiped.
+  export GIT_CONFIG_GLOBAL="${STATE_ROOT}/gitconfig"
   # The dot-directories every other tool in the image reaches for. Left at
   # their defaults they all land under ${HOME} on the image layer.
   export XDG_CACHE_HOME="${STATE_ROOT}/cache"
@@ -117,6 +126,11 @@ if [[ -n "${STATE_ROOT}" ]]; then
   export XDG_STATE_HOME="${STATE_ROOT}/state"
   export CARGO_HOME="${STATE_ROOT}/cargo"
   export npm_config_cache="${STATE_ROOT}/npm"
+elif [[ -n "${SCRATCH_ROOT}" ]]; then
+  # No durable root: scratch still beats the image layer for the git config,
+  # and the worker rebuilds it from the mount when it is lost (Issue #564).
+  export GIT_CONFIG_GLOBAL="${SCRATCH_ROOT}/gitconfig"
+  echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their \${HOME} defaults and the git config falls back to the scratch root" >&2
 else
   echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their \${HOME} defaults and need a writable root filesystem" >&2
 fi
