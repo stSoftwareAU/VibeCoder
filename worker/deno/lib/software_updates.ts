@@ -25,9 +25,19 @@
  * at that version alone, and throws when the version afterwards does not match.
  * The age gate stays exactly as it was for the unpinned "latest" path, which is
  * still what a caller gets when `targetVersion` is absent.
+ *
+ * `checkSoftwareUpdates` picks between the two from `update_mode` (Issue #625):
+ * `dynamic` — the default — behaves exactly as it always has, while `frozen`
+ * installs the exact `pinned_tool_versions` for all three tools on every
+ * launch, ahead of the interval and floor gates.
  */
 
-import type { Logger, Result } from "../types.ts";
+import type {
+  Logger,
+  PinnedToolVersions,
+  Result,
+  UpdateMode,
+} from "../types.ts";
 import {
   CLAUDE_CLI_NPM_PACKAGE,
   createReleaseAgeGate,
@@ -108,6 +118,18 @@ export interface SoftwareUpdateOptions {
   ageGate?: ReleaseAgeGate;
   /** Injectable environment lookup (tests inject a fixed map). */
   env?: (name: string) => string | undefined;
+  /**
+   * How this host tracks releases (Issue #625, `.config.json` `update_mode`).
+   * Absent or `"dynamic"` leaves every path exactly as it was; `"frozen"`
+   * installs {@link pinnedToolVersions} instead of checking for updates.
+   */
+  updateMode?: UpdateMode;
+  /**
+   * Exact versions a `frozen` host installs (Issue #625, `.config.json`
+   * `pinned_tool_versions`). Ignored in `dynamic` mode, so a host that flipped
+   * back keeps its stale pins without acting on them.
+   */
+  pinnedToolVersions?: PinnedToolVersions;
 }
 
 /**
@@ -598,6 +620,9 @@ const TOOL_CHANNELS: Readonly<Record<PinnedTool, ReleaseChannel>> = {
   deno: { kind: "github", repo: DENO_RELEASE_REPO },
 };
 
+/** Canonical order every tool sweep follows: claude → gh → deno. */
+const UPDATE_TOOLS: readonly PinnedTool[] = ["claude", "gh", "deno"];
+
 /**
  * Version shape accepted as a pinned install target (Issue #623).
  *
@@ -927,9 +952,8 @@ export function resolveDynamicVersions(
   logger: Logger,
   options: ToolUpdateOptions = {},
 ): Promise<DynamicVersionCandidate[]> {
-  const tools: PinnedTool[] = ["claude", "gh", "deno"];
   return Promise.all(
-    tools.map((tool) => resolveDynamicVersion(logger, tool, options)),
+    UPDATE_TOOLS.map((tool) => resolveDynamicVersion(logger, tool, options)),
   );
 }
 
@@ -1192,6 +1216,64 @@ export async function updateDeno(
   }
 }
 
+/** The updater for each tool, shared by the dynamic and frozen paths. */
+const TOOL_UPDATERS: Readonly<
+  Record<PinnedTool, (l: Logger, o: ToolUpdateOptions) => Promise<void>>
+> = {
+  claude: updateClaudeCli,
+  gh: updateGhCli,
+  deno: updateDeno,
+};
+
+/**
+ * Install the exact versions a frozen host is held at (Issue #625).
+ *
+ * Every tool takes the pinned path added in #623, so a tool already at its
+ * version is a no-op and a pinned install that does not land the requested
+ * version throws with both versions named — a launch never quietly continues
+ * on a different version than the one recorded in `.config.json`.
+ *
+ * **The release-age quarantine is deliberately not applied here.** That gate
+ * exists to keep a just-published — possibly hijacked — release out of an
+ * unattended "latest" pull; a frozen version is instead a human's deliberate
+ * choice recorded in config, so there is no unattended selection to guard. The
+ * pinned version is logged at install so the choice stays auditable.
+ *
+ * @throws When a tool has no pinned version, or its pinned install fails.
+ */
+async function installFrozenToolVersions(
+  logger: Logger,
+  pinned: PinnedToolVersions,
+  toolOpts: ToolUpdateOptions,
+  skips: Record<string, boolean>,
+): Promise<void> {
+  for (const tool of UPDATE_TOOLS) {
+    const label = TOOL_LABELS[tool];
+    const version = pinned[tool]?.trim();
+    if (!version) {
+      // Config load already refuses a half-pinned frozen host, so reaching
+      // here means the options were assembled by hand. Continuing would leave
+      // this tool floating on whatever the host happens to have.
+      throw new Error(
+        `update_mode is frozen but ${label} has no pinned version — set ` +
+          `pinned_tool_versions.${tool} rather than leaving the tool to drift`,
+      );
+    }
+    if (skips[tool]) {
+      logger.warn(
+        `${label} is pinned to ${version} (update_mode=frozen) but its ` +
+          `update is suppressed (${
+            SKIP_ENV_NAME[tool] ?? "skip flag"
+          }) — the ` +
+          `host may drift off its pin`,
+      );
+      continue;
+    }
+    logger.info(`${label} pinned to ${version} (update_mode=frozen)`);
+    await TOOL_UPDATERS[tool](logger, { ...toolOpts, targetVersion: version });
+  }
+}
+
 /** Version-reading commands per tool (Issue #2622). */
 const VERSION_COMMANDS: Readonly<Record<string, readonly string[]>> = {
   claude: ["claude", "--version"],
@@ -1366,7 +1448,12 @@ async function verifyFloorAfterUpdate(
 }
 
 /**
- * Orchestrate the software update check (Issues #906, #1496, #2622).
+ * Orchestrate the software update check (Issues #906, #1496, #2622, #625).
+ *
+ * Under `update_mode: "frozen"` (Issue #625) the three tools are installed at
+ * their configured `pinned_tool_versions` and nothing below applies: no
+ * interval, no floor, no release-age quarantine. Everything that follows
+ * describes the `dynamic` default, which is unchanged.
  *
  * Runs an update for a tool when *either* the interval has elapsed *or* the
  * installed version is below a configured floor (`minVersions`). The interval
@@ -1416,6 +1503,37 @@ export async function checkSoftwareUpdates(
   const minVersions = options.minVersions ?? {};
   const readVersion = options.readVersion ??
     makeVersionReader(options.retry?.runFn ?? runWithTimeout);
+
+  const toolOpts: ToolUpdateOptions = {
+    timeout,
+    retry: options.retry,
+    timestampDir,
+    now: nowFn,
+    quarantineHours: options.quarantineHours,
+    ageGate: options.ageGate,
+  };
+  const skips: Record<string, boolean> = {
+    claude: options.skipClaude ?? false,
+    gh: options.skipGh ?? false,
+    deno: options.skipDeno ?? false,
+  };
+
+  // Frozen hosts install their pins on every launch (Issue #625). The interval
+  // and floor gates below are dynamic-mode machinery: a pin is the operator's
+  // recorded decision, and editing `pinned_tool_versions` by hand is the
+  // supported way to move a frozen host, so the edit has to take effect on the
+  // next launch rather than at the end of the weekly cadence. Each install is a
+  // no-op once the tool reports its pinned version, so running every launch
+  // costs one `--version` read per tool.
+  if (options.updateMode === "frozen") {
+    await installFrozenToolVersions(
+      logger,
+      options.pinnedToolVersions ?? {},
+      toolOpts,
+      skips,
+    );
+    return;
+  }
 
   const intervalElapsed = shouldCheckForUpdates(
     timestampDir,
@@ -1474,31 +1592,8 @@ export async function checkSoftwareUpdates(
       })...`,
   );
 
-  const toolOpts: ToolUpdateOptions = {
-    timeout,
-    retry: options.retry,
-    timestampDir,
-    now: nowFn,
-    quarantineHours: options.quarantineHours,
-    ageGate: options.ageGate,
-  };
-
-  const updaters: Record<
-    string,
-    (l: Logger, o: ToolUpdateOptions) => Promise<void>
-  > = {
-    claude: updateClaudeCli,
-    gh: updateGhCli,
-    deno: updateDeno,
-  };
-  const skips: Record<string, boolean> = {
-    claude: options.skipClaude ?? false,
-    gh: options.skipGh ?? false,
-    deno: options.skipDeno ?? false,
-  };
-
   // Preserve the historical claude → gh → deno ordering.
-  for (const tool of ["claude", "gh", "deno"]) {
+  for (const tool of UPDATE_TOOLS) {
     if (!(intervalElapsed || floorTriggered.has(tool))) continue;
     const skip = skips[tool] ?? false;
     const floor = belowFloor.get(tool);
@@ -1509,7 +1604,7 @@ export async function checkSoftwareUpdates(
         })`,
       );
     }
-    await updaters[tool]!(logger, { ...toolOpts, skip });
+    await TOOL_UPDATERS[tool](logger, { ...toolOpts, skip });
     if (floorTriggered.has(tool)) {
       // Record the attempt regardless of outcome so an unreachable floor does
       // not retry-loop every iteration.
@@ -1541,6 +1636,13 @@ export interface SoftwareUpdateConfig {
   updateRetryMaxAttempts?: number;
   /** Exponential backoff delays between retries. */
   updateRetryBackoffSeconds?: readonly number[];
+  /**
+   * How this host tracks releases (Issue #625, `.config.json` `update_mode`).
+   * Absent reads as `dynamic`.
+   */
+  updateMode?: UpdateMode;
+  /** Exact versions a frozen host installs (Issue #625). */
+  pinnedToolVersions?: PinnedToolVersions;
 }
 
 /** Read an optional positive integer from the environment. */
@@ -1579,6 +1681,11 @@ export function softwareUpdateOptionsFromEnv(
     skipGh: getEnv("SKIP_GH_UPDATE") === "true",
     skipDeno: getEnv("SKIP_DENO_UPDATE") === "true",
     quarantineHours: envInt(getEnv, "VIBE_BUMP_QUARANTINE_HOURS"),
+    // Issue #625: the mode and its pins reach every entry point through this
+    // one builder, so a frozen host installs its pins on whichever path
+    // launched it.
+    updateMode: config.updateMode,
+    pinnedToolVersions: config.pinnedToolVersions,
     retry: {
       maxAttempts: config.updateRetryMaxAttempts,
       backoffSeconds: config.updateRetryBackoffSeconds,

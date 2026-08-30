@@ -1016,7 +1016,16 @@ export async function createProductionRunCoreDeps(
           logger,
           softwareUpdateOptionsFromEnv(config),
         );
-      } catch { /* best-effort */ }
+      } catch (err) {
+        // Best-effort for the cycle, but never silent (Issue #625): a frozen
+        // host whose pinned install failed is running on a version its
+        // operator did not choose, and swallowing that leaves no trace.
+        logger.error(
+          `Software update check failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     },
     async checkDiskSpace() {
       try {
