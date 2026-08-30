@@ -18,6 +18,11 @@
  */
 
 import type { Result } from "../types.ts";
+import {
+  advanceLaneRotation,
+  readLaneRotation,
+  rotate,
+} from "./lane_rotation.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import type { FableAvailability } from "./health_check_cache.ts";
 import type { RefreshOutcome } from "./trust_snapshot.ts";
@@ -3907,9 +3912,30 @@ export async function runCoreLoop(
           })();
           // Issue #213: the deferred agent-backed passes run here, beside the
           // pool, each leasing its repository from the pool's own registry.
-          const laneTask = deferredLanePasses.length > 0 && laneRegistry
+          // Issue #608: rotate which pass leads. The four share one slot and
+          // ran in a fixed order, so whoever was last got whatever the others
+          // left — on a busy host, nothing. Conflicts were last, and a
+          // conflicting PR is one CI will not even start on, held behind the
+          // open-PR gate that also holds new issue claims. Rotating costs
+          // nothing and changes no resource bound: still one agent-backed
+          // pass at a time, just not always the same one first.
+          // `WORK_DIR` rather than a dep: the lane's own state belongs beside
+          // the other worker state on the volume, and `run_core` carries no
+          // work-directory of its own.
+          const laneWorkDir = Deno.env.get("WORK_DIR")?.trim() || undefined;
+          const laneOffset = await readLaneRotation(laneWorkDir);
+          const rotatedLanePasses = rotate(deferredLanePasses, laneOffset);
+          if (rotatedLanePasses.length > 1) {
+            await advanceLaneRotation(
+              laneWorkDir,
+              laneOffset,
+              undefined,
+              (message) => deps.logError(message),
+            );
+          }
+          const laneTask = rotatedLanePasses.length > 0 && laneRegistry
             ? runMaintenanceLane(
-              deferredLanePasses,
+              rotatedLanePasses,
               config,
               deps,
               tracker,
