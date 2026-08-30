@@ -57,6 +57,24 @@ if [[ "\${sub}" == "image" || "\${sub}" == "images" ]]; then
     list|ls|rm|delete|remove|prune) sub="image-\${2}" ;;
   esac
 fi
+# The TERM handler goes in BEFORE the invocation is recorded. A test waits for
+# the .args file and then signals the launcher, so the record is the readiness
+# signal: a trap installed later leaves a window where TERM takes its default
+# disposition, the stub dies silently, and neither the marker nor the status
+# the launcher reports ever appears.
+sleep_pid=""
+on_term() {
+  if [[ -n "\${sleep_pid}" ]]; then
+    kill "\${sleep_pid}" 2>/dev/null || true
+  fi
+  # Only a \`run\` is the container the launcher forwards termination to; the
+  # short-lived sub-commands have no marker to write.
+  if [[ "\${sub}" == "run" ]]; then
+    printf 'terminated' > "\${record_dir}/terminated"
+  fi
+  exit "\${STUB_RUN_SIGNAL_EXIT:-143}"
+}
+trap on_term TERM
 printf '%s\\0' "\$@" > "\${record_dir}/\${sub}.args"
 # Which step ran before which is behaviour too (Issue #492): the per-command
 # .args files cannot answer it, so keep an ordered log beside them.
@@ -158,11 +176,11 @@ case "\${sub}" in
       # Streams detached: when this stub is SIGKILLed (the watchdog path of
       # Issue #4173) the orphaned sleep must not hold the launcher's stdout
       # pipe open and stall the test reading it.
+      # The TERM trap installed above kills this sleep on the way out: an
+      # orphan holding the inherited stdout pipe open would stall the test
+      # that spawned the launcher.
       sleep "\${STUB_RUN_SLEEP}" >/dev/null 2>&1 &
       sleep_pid=\$!
-      # Kill the sleep on the way out: an orphan holding the inherited
-      # stdout pipe open would stall the test that spawned the launcher.
-      trap 'kill "\${sleep_pid}" 2>/dev/null; printf "terminated" > "\${record_dir}/terminated"; exit "\${STUB_RUN_SIGNAL_EXIT:-143}"' TERM
       wait "\${sleep_pid}"
     fi
     exit "\${STUB_RUN_EXIT:-0}"
