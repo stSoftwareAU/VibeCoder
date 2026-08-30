@@ -127,11 +127,15 @@ Deno.test("repo_rulesets - the body targets the default branch and requires up-t
   assertEquals(body.target, "branch");
   assertEquals(body.enforcement, "active");
   assertEquals(body.conditions.ref_name.include, ["~DEFAULT_BRANCH"]);
-  assertEquals(
-    body.rules[0]?.parameters.strict_required_status_checks_policy,
-    true,
+  // `rules` is a union now that the milestone body carries `deletion` and
+  // `non_fast_forward` too (Issue #586), so the checks rule is selected by
+  // type rather than by position.
+  const checks = body.rules.find((rule) =>
+    rule.type === "required_status_checks"
   );
-  assertEquals(body.rules[0]?.parameters.required_status_checks, [
+  assert(checks && checks.type === "required_status_checks");
+  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
+  assertEquals(checks.parameters.required_status_checks, [
     { context: "quality" },
   ]);
 });

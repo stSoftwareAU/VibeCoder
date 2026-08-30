@@ -196,21 +196,35 @@ export function parseUnmergedPaths(stdout: string): string[] {
 }
 
 /**
- * Whether the working tree still carries conflict markers.
+ * Whether the resolution left conflict markers in the files it resolved.
+ *
+ * Scoped to `paths` — the files this merge actually conflicted in — and never
+ * the whole tree (Issue #584). A tree-wide grep fails on any repository that
+ * legitimately contains marker-shaped lines: GRQ carries
+ * `docs/JSON_Merge_Conflict_Prevention.md`, a document *about* merge
+ * conflicts, whose worked example opens `<<<<<<< Updated upstream`. Every
+ * conflict in that repository was therefore rejected after a correct
+ * resolution — the deterministic lock rules resolved `deno.lock`, and the
+ * guard then aborted the merge over a documentation file nothing had touched.
  *
  * `git grep` exits 1 when nothing matches, so a zero exit with output is
- * the only "markers remain" signal.
+ * the only "markers remain" signal. An empty `paths` means nothing was
+ * resolved, so there is nothing to check.
  */
 async function hasConflictMarkers(
   run: GitRunner,
   cwd: string,
+  paths: readonly string[],
 ): Promise<boolean> {
+  if (paths.length === 0) return false;
   const result = await git(run, [
     "grep",
     "-l",
     "-I",
     "-E",
     "^(<<<<<<<|>>>>>>>) ",
+    "--",
+    ...paths,
   ], cwd);
   return result.code === 0 && result.stdout.trim().length > 0;
 }
@@ -741,7 +755,7 @@ async function resolveConflict(
         attemptNumber,
       );
     }
-    if (await hasConflictMarkers(run, workDir)) {
+    if (await hasConflictMarkers(run, workDir, conflictedFiles)) {
       await abortMerge(run, workDir);
       return await failAttempt(
         input,

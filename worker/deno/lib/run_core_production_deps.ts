@@ -1535,8 +1535,10 @@ export async function createProductionRunCoreDeps(
             maxRateLimitRetries: config.maxRateLimitRetries,
             // Issue #3582: cap auto-fix attempts per stable failure signature.
             maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
-            // Issue #552: the same absolute store the scan above reads, so
-            // the retry counter survives a read-only working directory.
+            // The same absolute store the scan above reads, so the retry
+            // counter survives a read-only working directory, and the volume
+            // root rather than the repo clone so the bound survives a
+            // re-clone (Issues #552, #580).
             stateDir: resolveCiCheckStateDir({ workDir }),
             repoConfigs: config.repoConfig,
             // Issue #3754: cross-host PR lock so two hosts cannot fix the

@@ -139,23 +139,33 @@ Deno.test("recordCiCheckRetry - writes the counter into the state directory", as
   }
 });
 
-Deno.test("recordCiCheckRetry - an unwritable state directory fails loud and names the path", async () => {
+Deno.test("recordCiCheckRetry - an unwritable state directory warns and lets the repair proceed", async () => {
+  // Issues #552 and #580 met here. #552 made this failure LOUD, naming the
+  // directory and the check; #580 made it non-fatal, because throwing is what
+  // took the whole CI-fix lane down and stopped the fleet repairing any red
+  // check at all. The merged behaviour keeps both: it reports, and it
+  // returns, so the caller still runs the fix with a degraded retry bound.
   const tmpDir = await Deno.makeTempDir();
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  };
   try {
     // A file where the state directory should be — mkdir cannot succeed.
     const blocker = `${tmpDir}/blocker`;
     await Deno.writeTextFile(blocker, "not a directory");
     const stateDir = `${blocker}/${CI_CHECK_STATE_DIR_NAME}`;
 
-    const error = await recordCiCheckRetry(stateDir, "org/repo", "12345")
-      .then(() => undefined, (err: unknown) => err);
+    const count = await recordCiCheckRetry(stateDir, "org/repo", "12345");
+    assertEquals(count, 1, "the repair must proceed with a first attempt");
 
-    assertEquals(error instanceof Error, true);
-    const message = (error as Error).message;
-    assertStringIncludes(message, stateDir);
-    assertStringIncludes(message, "org/repo");
-    assertStringIncludes(message, "12345");
+    const reported = errors.join("\n");
+    assertStringIncludes(reported, stateDir);
+    assertStringIncludes(reported, "org/repo");
+    assertStringIncludes(reported, "12345");
   } finally {
+    console.error = originalError;
     await Deno.remove(tmpDir, { recursive: true });
   }
 });

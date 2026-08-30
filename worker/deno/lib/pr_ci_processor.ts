@@ -48,7 +48,17 @@ import {
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
 import { classifyCiFailure } from "./ci_failure_classifier.ts";
-import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
+import {
+  CI_CHECK_STATE_DIR_NAME,
+  resolveCiCheckStateDir,
+} from "./ci_check_state_dir.ts";
+
+// Re-exported: Issue #580 introduced this name here while Issue #552 was
+// giving it a module of its own. The module is the better home — it always
+// yields an ABSOLUTE path, falling back through the work directory, `HOME`
+// and `/tmp`, where the version defined here degraded to the bare relative
+// name that started the whole failure.
+export { CI_CHECK_STATE_DIR_NAME, resolveCiCheckStateDir };
 import {
   type AutoFixAttempt,
   buildAutoFixCapSummary,
@@ -421,8 +431,8 @@ async function _processCiFailureLocked(
     logger,
     deps,
     maxCiRetries = DEFAULT_MAX_CI_RETRIES,
-    // Issue #552: absolute, inside the writable work directory — never
-    // relative to a cwd that is read-only in container mode.
+    // Absolute, inside the writable work directory — never relative to a cwd
+    // that is read-only in container mode (Issues #552, #580).
     stateDir = resolveCiCheckStateDir(),
     ghCommandFn,
   } = processorDeps;
