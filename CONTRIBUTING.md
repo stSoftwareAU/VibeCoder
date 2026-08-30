@@ -88,9 +88,9 @@ runs:
 ```
 
 This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
-Deno test suite, `deno lint`, `deno fmt --check`, and markdownlint. CI
-additionally runs shellcheck over the repo's shell scripts — the gate
-itself does not. Always redirect stdin from `/dev/null` so
+Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, and
+semgrep. CI additionally runs shellcheck over the repo's shell scripts —
+the gate itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.
 
 Run it in the **foreground** and let it finish — each check reports as it
@@ -103,6 +103,38 @@ CI-enforced workflows live under `.github/workflows/`, including
 `validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
 `semgrep.yml`. A green local `./quality.sh` is the best predictor of a
 green PR.
+
+### Semgrep (SAST) before the push
+
+`semgrep.yml` is a blocking PR check, so a finding it reports costs a
+branch, a push and a review cycle before anyone sees it. The gate runs
+the same `p/default` ruleset locally, over the branch's changed files
+only — the diff against the merge-base with the remote's default branch,
+plus anything uncommitted or untracked.
+
+```mermaid
+flowchart LR
+    E["Edit"] --> Q["./quality.sh<br/>semgrep p/default<br/>(changed files)"]
+    Q -->|finding| E
+    Q -->|clean| P["Push"] --> CI["semgrep.yml<br/>(same ruleset)"]
+    style Q fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **Install it or it skips, loudly.** `pipx install semgrep` puts the
+  binary on PATH; alternatively, a container runtime already holding the
+  CI-pinned image (`semgrep/semgrep:<tag>@<digest>` from
+  `worker/deno/lib/pinned_actions.ts`) is used instead. The image is
+  never pulled by the gate — a mid-run download is exactly the
+  critical-path cost this stage must not add. With neither available the
+  stage reports `SKIPPED` and names both remedies; `--strict` turns that
+  into a failure.
+- **A docs-only change costs nothing.** No scannable changed file means
+  no scan.
+- **`detect-non-literal-regexp` has one standard remedy.** Build the
+  regular expression from a literal, or escape the interpolated value
+  before it reaches the constructor. A dynamic regex over constants the
+  code itself authored is still flagged — change the pattern rather than
+  arguing with the rule (Issue #559).
 
 ### Workflow hygiene
 
