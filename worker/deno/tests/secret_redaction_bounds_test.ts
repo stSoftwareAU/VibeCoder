@@ -16,6 +16,15 @@
  * work is bounded and that a secret at the very end of a large input is
  * still masked.
  *
+ * The bound is asserted on the **shape** of the growth, not on a wall clock
+ * (Issue #530): each hostile shape is redacted at one size and at four times
+ * that size, and the larger run may cost up to twice the proportional time.
+ * A slower fleet host inflates both readings equally and stays green, while a
+ * super-linear rule costs sixteen times the base and still fails loudly. The
+ * previous absolute 2000 ms bound failed the suite on a host 8% slower than
+ * the one it was chosen on, reporting a performance signal as a correctness
+ * error.
+ *
  * Australian English spelling used throughout.
  */
 
@@ -24,40 +33,57 @@ import {
   REDACTION_PLACEHOLDER,
   redactSecrets,
 } from "../lib/secret_redaction.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
-/** Time `redactSecrets(input)` and assert it stayed under `limitMs`. */
-function assertBounded(label: string, input: string, limitMs = 1000): string {
-  const started = performance.now();
-  const out = redactSecrets(input);
-  const elapsed = performance.now() - started;
-  assert(
-    elapsed < limitMs,
-    `${label} took ${elapsed.toFixed(0)} ms (limit ${limitMs} ms) — the ` +
-      "rule is still super-linear",
-  );
-  return out;
+/** Base input size for the growth checks; the scaled run uses four times it. */
+const BASE_CHARS = 16_384;
+
+/** Size multiple between the two measured runs. */
+const SIZE_FACTOR = 4;
+
+/**
+ * Redact `build(BASE_CHARS)` and `build(BASE_CHARS * SIZE_FACTOR)`, assert the
+ * cost grew no faster than the input did, and return the larger run's output
+ * so correctness can be asserted on it too.
+ */
+function assertRedactionLinear(
+  label: string,
+  build: (chars: number) => string,
+): string {
+  return assertLinearGrowth(label, build, redactSecrets, {
+    baseChars: BASE_CHARS,
+    sizeFactor: SIZE_FACTOR,
+    repeats: 2,
+  });
+}
+
+/** The scaled-size input a builder produces, for output comparisons. */
+function scaledInput(build: (chars: number) => string): string {
+  return build(BASE_CHARS * SIZE_FACTOR);
 }
 
 Deno.test("redactSecrets - a long alphanumeric run does not stall the url-userinfo rule", () => {
   // Pre-fix: 1.9 s at 64 Ki, 7.6 s at 128 Ki, growing quadratically.
-  const out = assertBounded("128 KiB of 'a'", "a".repeat(131_072));
-  assertEquals(out.length, 131_072, "benign text must pass through unchanged");
+  const build = (chars: number) => "a".repeat(chars);
+  const out = assertRedactionLinear("alphanumeric run", build);
+  assertEquals(out, scaledInput(build), "benign text must pass through");
 });
 
 Deno.test("redactSecrets - a long hyphen run does not stall the secret-cli-flag rule", () => {
   // Pre-fix: 483 ms at 32 K hyphens, growing quadratically.
-  const out = assertBounded("128 KiB of '-'", "-".repeat(131_072));
-  assertEquals(out.length, 131_072);
+  const build = (chars: number) => "-".repeat(chars);
+  const out = assertRedactionLinear("hyphen run", build);
+  assertEquals(out, scaledInput(build));
 });
 
-Deno.test("redactSecrets - a prompt-injected 500 KB output is redacted promptly", () => {
-  // The Issue #3942 exploit sketch: an injected model summary of ~500 KB of
-  // alphanumerics reaching `publishableSnippet` before it is sliced.
+Deno.test("redactSecrets - a prompt-injected alphanumeric blob is redacted promptly", () => {
+  // The Issue #3942 exploit sketch: an injected model summary of hundreds of
+  // kilobytes of alphanumerics reaching `publishableSnippet` before it is
+  // sliced, with the credential at the very end.
   const secret = "https://user:s3cr3t-token@example.com/repo.git";
-  const out = assertBounded(
-    "500 KB injected output",
-    "a".repeat(500_000) + " " + secret,
-    2000,
+  const out = assertRedactionLinear(
+    "injected blob with a trailing credential",
+    (chars) => "a".repeat(chars) + " " + secret,
   );
   assertEquals(
     out.includes("s3cr3t-token"),
@@ -67,12 +93,11 @@ Deno.test("redactSecrets - a prompt-injected 500 KB output is redacted promptly"
   assertStringIncludes(out, `https://user:${REDACTION_PLACEHOLDER}@`);
 });
 
-Deno.test("redactSecrets - a long sk- charset run stays bounded and is masked (Issue #36)", () => {
+Deno.test("redactSecrets - a long sk- charset run is masked (Issue #36)", () => {
   // The `openai-key` quantifier carries an explicit ceiling, so an oversized
   // charset run is consumed in fixed-size bites instead of one open-ended
   // greedy sweep. The key material still goes.
-  const run = "sk-" + "a".repeat(4096);
-  const out = assertBounded("4 KiB sk- run", run);
+  const out = redactSecrets("sk-" + "a".repeat(4096));
   assert(
     out.includes(REDACTION_PLACEHOLDER),
     "a long sk- run must still be masked",
@@ -84,46 +109,54 @@ Deno.test("redactSecrets - the google-api-key rule masks exactly the 39-characte
   // leaves the surrounding text alone — an open-ended run would swallow the
   // trailing sentence too.
   const key = "AIzaSy" + "c".repeat(33);
-  const out = assertBounded("AIzaSy key in prose", `key ${key} rejected`);
-  assertEquals(out, `key ${REDACTION_PLACEHOLDER} rejected`);
+  assertEquals(
+    redactSecrets(`key ${key} rejected`),
+    `key ${REDACTION_PLACEHOLDER} rejected`,
+  );
 });
 
 Deno.test("redactSecrets - near-miss provider prefixes do not stall the new rules (Issue #36)", () => {
-  const skNearMiss = ("sk-" + "a".repeat(19) + "!").repeat(5_000);
+  const skUnit = "sk-" + "a".repeat(19) + "!";
+  const skBuild = (chars: number) =>
+    skUnit.repeat(Math.floor(chars / skUnit.length));
   assertEquals(
-    assertBounded("115 KiB of near-miss sk- prefixes", skNearMiss),
-    skNearMiss,
+    assertRedactionLinear("near-miss sk- prefixes", skBuild),
+    scaledInput(skBuild),
   );
-  const aizaNearMiss = ("AIzaSy" + "b".repeat(32) + " ").repeat(3_000);
+
+  const aizaUnit = "AIzaSy" + "b".repeat(32) + " ";
+  const aizaBuild = (chars: number) =>
+    aizaUnit.repeat(Math.floor(chars / aizaUnit.length));
   assertEquals(
-    assertBounded("117 KiB of near-miss AIzaSy prefixes", aizaNearMiss),
-    aizaNearMiss,
+    assertRedactionLinear("near-miss AIzaSy prefixes", aizaBuild),
+    scaledInput(aizaBuild),
   );
 });
 
-Deno.test("redactSecrets - a 500 kB near-miss PEM-body blob stays bounded (Issue #196)", () => {
+Deno.test("redactSecrets - a near-miss PEM-body blob stays bounded (Issue #196)", () => {
   // Same shape as the ReDoS test: just-under-floor base64 lines. A
-  // catastrophic-backtracking regression hangs rather than failing a
-  // correctness assertion, so the timing bound is the detector.
+  // catastrophic-backtracking regression has no wrong output, only a
+  // super-linear cost, so the growth check is the detector.
   const unit = "B".repeat(39) + "\n";
-  const hostile = unit.repeat(Math.floor(500_000 / unit.length));
-  const out = assertBounded("500 kB PEM-body near-miss", hostile, 2000);
+  const build = (chars: number) => unit.repeat(Math.floor(chars / unit.length));
   assertEquals(
-    out,
-    hostile,
+    assertRedactionLinear("PEM-body near-miss", build),
+    scaledInput(build),
     "near-miss PEM-body text must pass through unchanged",
   );
 });
 
-Deno.test("redactSecrets - a 500 kB ragged long-line blob stays bounded (Issue #196)", () => {
+Deno.test("redactSecrets - a ragged long-line blob stays bounded (Issue #196)", () => {
   // Lines long enough to enter the pem-body candidate class but never
   // uniform, so a greedy run-match plus a failed uniformity check must
   // still finish in linear time.
   const unit = "A".repeat(40) + "\n" + "B".repeat(41) + "\n" + "C".repeat(42) +
     "\n";
-  const hostile = unit.repeat(Math.floor(500_000 / unit.length));
-  const out = assertBounded("500 kB ragged PEM-body near-miss", hostile, 2000);
-  assertEquals(out, hostile);
+  const build = (chars: number) => unit.repeat(Math.floor(chars / unit.length));
+  assertEquals(
+    assertRedactionLinear("ragged PEM-body near-miss", build),
+    scaledInput(build),
+  );
 });
 
 Deno.test("redactSecrets - url-userinfo still masks the credential for real schemes", () => {
