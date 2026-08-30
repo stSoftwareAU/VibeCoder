@@ -45,6 +45,19 @@ Sub-issues created, MVP slice first (dependencies still lead their dependants):
 2. #102 — Rewrite the query planner (`enhancement`, depends on #101)
 ```
 
+**Quality gate.** `./quality.sh` passes every check except `deno tests`, which
+reports four failures that are **pre-existing and environmental**, not caused by
+this change: `tests/gh_spawn_test.ts` (three `spawnGh` cases whose real `gh`
+calls hit `API rate limit already exceeded`) and
+`tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
+config dir is restaged writable` (the container's `GH_CONFIG_DIR` overrides the
+temp path the test expects). Verified by running both suites in a git worktree
+at the parent commit — same four failures, `FAILED | 31 passed | 4 failed`.
+Every planning suite this change touches passes:
+`tests/planning_processor_test.ts` (114 passed),
+`tests/mvp_slice_gate_test.ts` (32 passed),
+`tests/planning_mvp_prompts_test.ts` (4 passed).
+
 ```mermaid
 flowchart TD
     A[Publish turn posts the summary comment<br/>with the sub-issue list] --> B["closePlanningIssue() reads the parent"]
