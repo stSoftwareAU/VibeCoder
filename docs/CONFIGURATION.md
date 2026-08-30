@@ -541,6 +541,17 @@ default, and what every host did before the key existed — follows the latest.
   and to tool installers, so each must start with a letter or digit and contain
   only letters, digits and `. _ + - / @`; whitespace and shell metacharacters
   are refused rather than passed through.
+- **A frozen launch installs the pins.** Each launch installs `claude`, `gh` and
+  `deno` at exactly the configured versions and logs one line per tool
+  (`Claude CLI pinned to 2.0.76 (update_mode=frozen)`), so editing
+  `pinned_tool_versions` and relaunching is all it takes to move a frozen host.
+  A tool already at its pin is left alone; an install that does not land the
+  requested version fails loudly naming the tool, the requested version and the
+  installed one, so a launch never continues quietly on a version nobody chose.
+  The weekly interval, the version floors and the release-age quarantine are
+  `dynamic`-mode machinery and do not apply — the quarantine keeps an
+  unattended "latest" pull off a just-published release, whereas a pin is a
+  human's recorded choice, logged at install so it stays auditable.
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
@@ -562,6 +573,24 @@ flowchart LR
     P -->|yes| F["frozen"]
     P -->|no / malformed| X["fail loud —<br/>field named"]
     R -->|anything else| X
+```
+
+What the resolved mode does to the tool updates at launch:
+
+```mermaid
+flowchart TD
+    L["Launch → checkSoftwareUpdates"] --> M{"update_mode"}
+    M -->|dynamic| I{"interval elapsed<br/>or below floor?"}
+    I -->|no| S["skip"]
+    I -->|yes| Q["release-age quarantine<br/>→ latest eligible"]
+    M -->|frozen| T["for claude, gh, deno"]
+    T --> A{"already at its pin?"}
+    A -->|yes| N["log 'already at the pinned version'<br/>— no install"]
+    A -->|no| P2["install that exact version<br/>then verify"]
+    P2 --> V{"version matches?"}
+    V -->|yes| K["record success"]
+    V -->|no| E["fail loud — tool,<br/>requested and installed named"]
+    style E fill:#c92a2a,stroke:#7f1d1d,color:#fff
 ```
 
 ### 🔄 Host-Side Checkout Update
