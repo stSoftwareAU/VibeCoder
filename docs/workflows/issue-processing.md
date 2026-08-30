@@ -644,7 +644,7 @@ inside the existing implementation run rather than as a new loop (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
 
 **What the run must produce.** When the issue body carries a
-`## Acceptance Criteria` section, `prompts/issue/v36.md` requires the run to walk
+`## Acceptance Criteria` section, `prompts/issue/v37.md` requires the run to walk
 each criterion before writing the PR summary and record the assessment as a
 `## Acceptance Criteria` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md`:
@@ -668,7 +668,7 @@ acceptance criteria are unaffected: the gate does not apply and nothing changes.
 
 ```mermaid
 flowchart TD
-    P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/v36.md"]
+    P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/v37.md"]
     I --> S["PR summary carries<br/>## Acceptance Criteria block"]
     S --> G{"Closure gate<br/>every criterion assessed,<br/>evidence + reasons present?"}
     G -->|yes| PR["PR created"]
@@ -678,6 +678,62 @@ flowchart TD
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style B fill:#c45858,stroke:#6b2020,color:#fff
+```
+
+## 🐛 Reproduction status on a bug fix
+
+All three work-tier labels run the **same pipeline** and `bug` is a purely
+descriptive label, so until Issue #521 a PR summary that said "added a regression
+test" read identically whether the test had been watched to fail before the fix
+or merely written afterwards — precisely the over-claim the fail-loud standard
+exists to prevent. Adopted from GitHub spec-kit's `bug` extension, whose
+guardrail is worth taking whole: *a reproduction that was not actually performed
+is reported as `partial` or `not-run`, not `verified`* (see
+[SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)). The vocabulary is adopted,
+not the three-command structure: no new label, no new priority tier, no separate
+lane — just a conditional block in the existing PR-summary contract.
+
+**What the run must produce.** When the issue carries the `bug` label,
+`prompts/issue/v37.md` requires a `## Reproduction` block in
+`docs/archive/pr-summaries/pr-summary-<issue>.md` recording three things — the
+symptom, the status, and the regression test that covers it:
+
+```markdown
+## Reproduction
+
+- **symptom** — `parseDate("2024-02-29")` threw `RangeError` on a leap day
+- **status** — `verified` — the regression test was observed failing against the unfixed code and passing after the fix
+- **regression test** — `worker/deno/tests/date_parser_test.ts::parses a leap day`
+```
+
+- **`verified`** — the regression test was actually observed failing against the
+  unfixed code and passing after the fix. Only then.
+- **`partial`** — the symptom was reproduced in part, with a one-line `reason:`
+  for what was not exercised.
+- **`not-run`** — the reproduction was not performed, with a one-line `reason:`.
+  This is a legitimate, reportable outcome, not a failure to hide.
+
+**The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
+parses the block and blocks PR creation in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
+when a `bug`-labelled issue produces a summary with no `## Reproduction` block,
+no symptom, no recognised status, a `verified` claim that names no regression
+test or states no fail-before/pass-after observation, or a downgraded status with
+no reason. The gate comments on the issue naming every rule broken and the
+required shape. Issues **without** the `bug` label are unaffected.
+
+```mermaid
+flowchart TD
+    B["Issue labelled bug"] --> I["Implementation run<br/>prompts/issue/v37.md"]
+    I --> S["PR summary carries<br/>## Reproduction block"]
+    S --> G{"Reproduction gate<br/>symptom + status + test?<br/>verified only if observed?"}
+    G -->|yes| PR["PR created"]
+    G -->|"no"| X["Blocked: comment names<br/>each rule broken; run fails"]
+    N["Issue without the bug label"] --> PR
+    style B fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style X fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
 ## 🩹 Orphaned milestone merge — self-heal, then bounce
