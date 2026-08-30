@@ -22,7 +22,7 @@ The Vibe Coder is an **unattended, GitHub-native** worker. Nobody is at a
 keyboard. GitHub *is* the memory and the control plane — issue bodies, labels,
 comments, sub-issues and milestones — and the phase advances when a label
 changes or a gate passes. Planning prompts are explicitly forbidden from writing
-files (`prompts/planning/v21.md:16`, `prompts/quorum/v1.md:14`); the only
+files (`prompts/planning/`, `prompts/quorum/`); the only
 per-issue Markdown that reaches a repo is the retrospective
 `docs/archive/pr-summaries/pr-summary-<issue>.md`.
 
@@ -73,7 +73,7 @@ Five, each filed as its own issue. Each is a native adaptation, not a port.
 ### 1. Close the acceptance-criteria loop (from `/speckit.converge`) — #518
 
 The planner writes a `## Acceptance Criteria` checklist into every sub-issue
-(`prompts/planning/v21.md:95-97`) and, before #518, **nothing ever read it
+(`prompts/planning/`) and, before #518, **nothing ever read it
 again**: searching `worker/deno/lib` and `prompts/issue/v35.md` <!-- pinned: the state that prompted #518 -->
 for "Acceptance Criteria" returned no matches. The implementing run never saw the
 criteria as a target and the PR summary never said which were met.
@@ -114,7 +114,7 @@ manual](workflows/grill-me.md#-requirements-quality-rubric).
 
 ### 3. Publish the coverage table and gate it (from `/speckit.analyze`) — #520
 
-`prompts/planning_critique/v5.md:15` already asks the critique turn to find
+`prompts/planning_critique/` already asks the critique turn to find
 "asks in the issue with no sub-issue covering them" — but the critique is never
 published (`:164`), so the coverage judgement leaves no artefact and nothing
 fails when an ask is dropped. spec-kit publishes a requirement → task table with
@@ -125,6 +125,15 @@ in the planner until `worker/deno/lib/failure_detection_gate.ts` gated it at the
 single `closePlanningIssue()` chokepoint. Coverage should take the same shape,
 including spec-kit's per-task `source-ref` so a sub-issue traces back to the ask
 it satisfies.
+
+**Adopted** (#520): the publish turn posts a `## Plan Coverage` table on the
+parent (ask → covering sub-issue → note, with deliberately dropped asks kept as
+`Out of scope` rows), each sub-issue's `## Context` carries a matching
+`Covers ask:` line, and `worker/deno/lib/plan_coverage_gate.ts` rejects an
+uncovered, unexplained ask at the same `closePlanningIssue()` chokepoint —
+escalating through the existing `escalateToHuman()` path rather than adding a
+second one. See [the coverage section of the planning
+manual](workflows/planning-and-questions.md#-plan-coverage-table-and-gate-issue-520).
 
 ### 4. Honest reproduction status for bug fixes (from the `bug` extension) — #521
 
@@ -147,7 +156,7 @@ spec-kit's spec template forces every user story to be independently testable �
 tasks template puts a checkpoint after each story.
 
 The Vibe Coder orders sub-issues by *dependency*
-(`prompts/planning/v21.md:83`), which is technical ordering, not value ordering.
+(`prompts/planning/`), which is technical ordering, not value ordering.
 A milestone that stops part-way therefore delivers whatever the dependency graph
 unblocked first, which may be nothing usable. Naming one MVP slice — or stating
 plainly that no slice is independently valuable — costs the planner a sentence.
