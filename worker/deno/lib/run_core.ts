@@ -101,6 +101,10 @@ import {
   formatBuildStamp,
   resolveWorkerBuildInfo,
 } from "./worker_build_info.ts";
+import {
+  formatTransientNetworkHalt,
+  isTransientNetworkFailure,
+} from "./transient_network_failure.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -4380,6 +4384,18 @@ export async function runCoreLoop(
         `Main loop halting: primary rate limit reached outer catch${resetFragment} — will retry on next cycle. ${message}`,
       );
       return buildResult("Primary rate limit exhausted");
+    }
+
+    // Issue #644: a transient network failure is not a crash. A run that has
+    // done 7.5 minutes of startup and then loses one GraphQL POST to
+    // "unexpected EOF" is ending because the network went away, not because
+    // anything broke — the same reasoning as the rate-limit branch above, and
+    // it exits the same way. Recorded as a crash it spends the launcher's
+    // escalation budget on a fault nobody can act on, and buries the real
+    // ones: five consecutive "failures" on GRQ-23 were all one flaky link.
+    if (isTransientNetworkFailure(message)) {
+      deps.log(formatTransientNetworkHalt(message, tracker.issuesProcessed));
+      return buildResult("Transient network failure");
     }
 
     // Unexpected fatal error
