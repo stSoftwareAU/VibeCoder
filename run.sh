@@ -183,12 +183,26 @@ trap on_exit EXIT
 # shell would take the EXIT trap - and with it the outcome record above - away.
 CHILD_PID=""
 RUNTIME=""
+# Set around the background launch below, because bash runs a trap at a command
+# boundary and CHILD_PID is assigned on the line after the launch: a signal
+# landing in that window has a child to forward to but no PID to forward with
+# (Issue #668). While this is set the signal is held rather than re-raised, and
+# delivered by deliver_pending_signal as soon as the PID is known.
+LAUNCH_IN_FLIGHT=""
+PENDING_SIGNAL=""
 # Invoked indirectly by the traps below; shellcheck cannot see that call, and
 # reports it as unreachable/never-invoked (SC2317 on older versions, SC2329 on
 # newer ones).
 # shellcheck disable=SC2317,SC2329
 forward_signal() {
   local signal="$1"
+  if [[ -z "${CHILD_PID}" && -n "${LAUNCH_IN_FLIGHT}" ]]; then
+    # The child exists (or is a fork away) and only its PID is missing, so
+    # hold the signal here. Held, never dropped: the launch site delivers it
+    # the moment CHILD_PID is assigned.
+    PENDING_SIGNAL="${signal}"
+    return
+  fi
   if [[ -z "${CHILD_PID}" ]]; then
     # Nothing has been launched yet, so there is nothing to forward to. Take
     # the signal's default disposition rather than swallowing it: a launcher
@@ -207,6 +221,16 @@ forward_signal() {
 }
 trap 'forward_signal TERM' TERM
 trap 'forward_signal INT' INT
+
+# Deliver a signal held while the launch was in flight (Issue #668). Called
+# once, immediately after CHILD_PID is assigned, so the shutdown request
+# reaches the container instead of being lost with the window that held it.
+deliver_pending_signal() {
+  local signal="${PENDING_SIGNAL}"
+  PENDING_SIGNAL=""
+  [[ -n "${signal}" ]] || return 0
+  forward_signal "${signal}"
+}
 
 # wait returns 128+signum when a trap interrupts it without reaping the child,
 # so keep waiting until the child process is really gone.
@@ -872,8 +896,11 @@ WEDGE_MARKER="$(mktemp "${TMPDIR:-/tmp}/vibe-wedge.XXXXXX")"
 
 record_phase container_run
 
+LAUNCH_IN_FLIGHT=1
 "${RUNTIME}" "${run_args[@]}" "$@" </dev/null &
 CHILD_PID=$!
+LAUNCH_IN_FLIGHT=""
+deliver_pending_signal
 
 watchdog_reap_on_deadline "${CHILD_PID}" &
 WATCHDOG_PID=$!

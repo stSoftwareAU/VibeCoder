@@ -79,6 +79,15 @@ printf '%s\\0' "\$@" > "\${record_dir}/\${sub}.args"
 # Which step ran before which is behaviour too (Issue #492): the per-command
 # .args files cannot answer it, so keep an ordered log beside them.
 printf '%s\\n' "\${sub}" >> "\${record_dir}/order.log"
+# Stall one sub-command (\`run\` unless \`STUB_READY_DELAY_SUB\` names another)
+# between its readiness record and the work it gates (Issue #668). A CI runner
+# carrying four shards deschedules this stub for exactly this long, so a test
+# sets the stall to hold the stub inside that window on purpose and prove the
+# record really does mean "ready to be signalled".
+if [[ -n "\${STUB_READY_DELAY:-}" &&
+  "\${sub}" == "\${STUB_READY_DELAY_SUB:-run}" ]]; then
+  sleep "\${STUB_READY_DELAY}"
+fi
 case "\${sub}" in
   image-prune)
     # The store prune's dangling-layer pass (Issue #227): nothing to reclaim.
@@ -244,13 +253,29 @@ function denoStubSource(full: boolean): string {
   const extraIntercepts = full
     ? `
     run-entrypoint)
+      # The TERM handler goes in BEFORE the invocation is recorded, for the
+      # same reason as the runtime stub above (Issue #668): a test waits for
+      # the record and then signals, so a trap installed after it leaves a
+      # window where TERM takes its default disposition, the stub dies
+      # silently, and the marker the test reads is never written.
+      sleep_pid=""
+      on_term() {
+        if [[ -n "\${sleep_pid}" ]]; then
+          # An orphaned sleep holding the inherited stdout pipe open would
+          # stall the test that spawned the launcher.
+          kill "\${sleep_pid}" 2>/dev/null || true
+        fi
+        printf 'terminated' > "\${record_dir}/entrypoint-terminated"
+        exit "\${STUB_ENTRYPOINT_SIGNAL_EXIT:-143}"
+      }
+      trap on_term TERM
       printf '%s\\0' "\$@" > "\${record_dir}/run-entrypoint.args"
+      if [[ -n "\${STUB_READY_DELAY:-}" ]]; then
+        sleep "\${STUB_READY_DELAY}"
+      fi
       if [[ -n "\${STUB_ENTRYPOINT_SLEEP:-}" ]]; then
         sleep "\${STUB_ENTRYPOINT_SLEEP}" &
         sleep_pid=\$!
-        # Kill the sleep on the way out: an orphan holding the inherited
-        # stdout pipe open would stall the test that spawned the launcher.
-        trap 'kill "\${sleep_pid}" 2>/dev/null; printf "terminated" > "\${record_dir}/entrypoint-terminated"; exit "\${STUB_ENTRYPOINT_SIGNAL_EXIT:-143}"' TERM
         wait "\${sleep_pid}"
       fi
       exit "\${STUB_ENTRYPOINT_EXIT:-0}"
@@ -396,6 +421,21 @@ export async function setupHarness(
       } catch { /* best-effort */ }
     },
   };
+}
+
+/**
+ * Path to one of the harness's stub executables (Issue #668).
+ *
+ * The stubs are normally reached through the launcher's `PATH`; a test that
+ * asserts on a stub's own behaviour — that its readiness record really does
+ * mean "ready to be signalled" — runs it directly instead.
+ *
+ * @param harness - The harness holding the stubs
+ * @param name - Stub executable (`container`, `docker`, `podman`, `deno`)
+ * @returns The absolute path to that stub
+ */
+export function stubPath(harness: Harness, name: string): string {
+  return `${harness.tmpDir}/bin/${name}`;
 }
 
 /**
