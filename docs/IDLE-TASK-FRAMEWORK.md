@@ -311,8 +311,8 @@ template or carrying only a workflow label — the `github-actions-audit` scan
 filed a CODEOWNERS finding that had been open for three days under
 `needs-human` alone.
 
-`{{OPEN_ISSUE_TITLES}}` is the **semantic second line** (Issue #537, parent
-#523). Every scan template that files judgement-bearing findings now calls
+`{{OPEN_ISSUE_TITLES}}` is the **semantic second line** (Issue #537,
+parent #523). Every scan template that files judgement-bearing findings calls
 [`listAllOpenIssueTitles`](../worker/deno/lib/idle_task_snapshot.ts) in
 `runTask` — one repo-wide `gh issue list --state open --json number,title`,
 whatever the label — and passes the result into its `assemble*Prompt`, which
