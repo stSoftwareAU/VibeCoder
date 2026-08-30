@@ -195,6 +195,15 @@ function makeGhStub(scenario: {
       }
       if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
         return Promise.resolve(JSON.stringify({
+          // Issue #599: the same payload carries the worker token's own
+          // permissions. `push` without `admin`/`maintain` is the correctly
+          // scoped token, so the privilege scanner stays silent here.
+          permissions: {
+            admin: false,
+            maintain: false,
+            push: true,
+            pull: true,
+          },
           security_and_analysis: {
             secret_scanning: { status: "enabled" },
             secret_scanning_push_protection: { status: "enabled" },
@@ -2741,6 +2750,118 @@ Deno.test(
         e.includes("settings exploded")
       ),
       JSON.stringify(errors),
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Worker-token privilege escalation (Issue #599)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "runTask - an over-privileged worker token is filed as a needs-human security escalation (Issue #599)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+      issueCreateNumbers: [910],
+    });
+    const { logger, records } = makeLogger();
+    const ensured: string[] = [];
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      scanRepoSettingsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      ensureFindingLabelsFn: (_repo, labels) => {
+        ensured.push(...labels);
+        return Promise.resolve();
+      },
+      scanWorkerTokenPrivilegesFn: (repo, _gh, options) => {
+        assertEquals(repo, "org/repo");
+        assert(
+          !Array.from(options.knownOpenFindingIds).includes(
+            "BP-WORKER-TOKEN-CAN-EDIT-RULESETS",
+          ),
+        );
+        return Promise.resolve([{
+          findingId: "BP-WORKER-TOKEN-CAN-EDIT-RULESETS",
+          severity: "high" as const,
+          title:
+            "🔴 The worker's GitHub token holds `admin` on org/repo — it can delete the ruleset that gates merges",
+          file: "worker GitHub token",
+          lines: 0,
+          whyItMatters: "why",
+          suggestedFix: "Human action — downgrade to write.",
+          evidence: "repos/org/repo .permissions: admin=true",
+          labels: ["needs-human", "security"] as const,
+        }]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    const created = creates[0]!;
+    assert(created.title.includes("ruleset"), created.title);
+    for (const label of ["needs-human", "security", "severity:high"]) {
+      assert(created.labels.includes(label), created.labels.join(","));
+    }
+    assertEquals(ensured.sort(), ["needs-human", "security"]);
+    assertEquals(records.filter((r) => r.startsWith("error:")), []);
+  },
+);
+
+Deno.test(
+  "runTask - a failing worker-token privilege check is logged loud and files nothing (Issue #599)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+    });
+    const { logger, records } = makeLogger();
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      scanRepoSettingsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      scanWorkerTokenPrivilegesFn: (_repo, _gh, options) => {
+        options.onLookupFailure("repos/org/repo (.permissions)", "HTTP 403");
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    assert(
+      records.some((r) =>
+        r.startsWith("error:") &&
+        r.includes("worker token privilege lookup failed") &&
+        r.includes("HTTP 403")
+      ),
+      JSON.stringify(records),
     );
   },
 );

@@ -179,6 +179,10 @@ import {
   type RepoSettingsFinding,
   scanRepoSettings,
 } from "../repo_settings_scanner.ts";
+import {
+  scanWorkerTokenPrivileges,
+  type WorkerTokenPrivilegeFinding,
+} from "../worker_token_privilege_scanner.ts";
 import { getRepoDefaultBranch } from "../shell_helpers.ts";
 import {
   fileWorkflowFinding,
@@ -328,6 +332,29 @@ export interface GitHubActionsAuditTemplateDeps {
       requiredActionPatterns?: readonly string[];
     },
   ) => Promise<RepoSettingsFinding[]>;
+  /**
+   * Worker-token privilege check (Issue #599). Defaults to
+   * `scanWorkerTokenPrivileges`; tests inject a stub. Read-only — it never
+   * probes ruleset access with a write.
+   */
+  scanWorkerTokenPrivilegesFn?: (
+    repo: string,
+    ghCommandFn: GhCommandFn,
+    options: {
+      knownOpenFindingIds: Iterable<string>;
+      onLookupFailure: (what: string, reason: string) => void;
+    },
+  ) => Promise<WorkerTokenPrivilegeFinding[]>;
+  /**
+   * Ensure the escalation labels a worker-token finding carries
+   * (`needs-human`, `security`) exist in the target repo before it is filed
+   * — `gh issue create` fails outright on an unknown label. Defaults to
+   * `ensureLabelExists` per label; tests inject a stub.
+   */
+  ensureFindingLabelsFn?: (
+    repo: string,
+    labels: readonly string[],
+  ) => Promise<void>;
   /**
    * `<owner>/<repo>@*` patterns the workflows need, following composite
    * actions' own `uses:` (Issue #4424). Defaults to reading each action's
@@ -717,6 +744,29 @@ export function createGitHubActionsAuditTemplate(
   const runScanFn = deps.runScanFn ??
     ((opts) => runGitHubActionsAuditScan(opts, loadPromptFn));
   const logger = deps.logger ?? defaultLogger;
+  const scanWorkerTokenPrivilegesFn = deps.scanWorkerTokenPrivilegesFn ??
+    ((repo, gh, options) => scanWorkerTokenPrivileges(repo, gh, options));
+  const ensureFindingLabelsFn = deps.ensureFindingLabelsFn ??
+    (async (repo: string, labels: readonly string[]) => {
+      for (const label of labels) {
+        const ensured = await defaultEnsureLabelExists(
+          repo,
+          label,
+          undefined,
+          undefined,
+          { ghCommandFn },
+        );
+        if (!ensured.ok) {
+          // Loud, not fatal: the label may already exist, so still attempt
+          // the filing — but never let the failure pass unrecorded.
+          logger.error(
+            `github-actions-audit: could not ensure label ${label} in ${repo}: ` +
+              ensured.error.message,
+            { repo, template: NAME },
+          );
+        }
+      }
+    });
 
   async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
     const loaded = await loadPromptFn(PROMPT_NAME);
@@ -1301,6 +1351,65 @@ export function createGitHubActionsAuditTemplate(
         const message = err instanceof Error ? err.message : String(err);
         logger.error(
           `github-actions-audit: repository-settings pre-filer failed: ${message}`,
+          { repo: opts.repo, template: NAME, runId },
+        );
+      }
+
+      // 5l. Worker-token privilege check (Issue #599, part of #566). The
+      //     opposite direction to 5k: that asks whether the repository is
+      //     locked down enough, this asks whether the worker's own token is
+      //     trusted too much. `admin`/`maintain` on the repo carries the
+      //     rulesets API, so the worker could delete the required-status-check
+      //     ruleset that gates merges. Read-only — no ruleset is ever probed
+      //     with a write — and a lookup that fails is logged loud and yields
+      //     nothing, never a "verified safe".
+      try {
+        const tokenFindings = await scanWorkerTokenPrivilegesFn(
+          opts.repo,
+          ghCommandFn,
+          {
+            knownOpenFindingIds: seenIds,
+            onLookupFailure: (what, reason) =>
+              logger.error(
+                `github-actions-audit: worker token privilege lookup failed (${what}): ${reason}`,
+                { repo: opts.repo, template: NAME, runId },
+              ),
+          },
+        );
+        for (const finding of tokenFindings) {
+          if (seenIds.has(finding.findingId)) continue;
+          await ensureFindingLabelsFn(opts.repo, finding.labels);
+          const filed = await fileWorkflowFinding({
+            repo: opts.repo,
+            findingId: finding.findingId,
+            severity: finding.severity,
+            title: finding.title,
+            file: finding.file,
+            lines: finding.lines,
+            whyItMatters: finding.whyItMatters,
+            suggestedFix: finding.suggestedFix,
+            evidence: finding.evidence,
+            extraLabels: finding.labels,
+            template: NAME,
+            runId,
+            ghCommandFn,
+          });
+          if (filed === null) {
+            // An over-privileged token that files nothing must not look like
+            // a clean audit — say so.
+            logger.error(
+              `github-actions-audit: worker-token escalation ${finding.findingId} could not be filed in ${opts.repo}`,
+              { repo: opts.repo, template: NAME, runId },
+            );
+            continue;
+          }
+          preFiled.push(filed.findingId);
+          seenIds.add(filed.findingId);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(
+          `github-actions-audit: worker-token privilege pre-filer failed: ${message}`,
           { repo: opts.repo, template: NAME, runId },
         );
       }
