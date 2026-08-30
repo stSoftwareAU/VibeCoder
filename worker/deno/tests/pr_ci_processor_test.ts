@@ -1437,11 +1437,21 @@ Deno.test("resolveCiCheckStateDir - lands on the work volume, not the read-only 
     ),
     "/volume/.ci_check_state",
   );
-  // Nothing configured: the legacy relative name, which is the only case a
-  // read-only CWD can still break — and the writers now fail open.
+  // Issue #552 changed this last case deliberately. It used to return the
+  // legacy relative name, which the scanner and the processor could then
+  // resolve to different directories — so the retry cap was read from a store
+  // nothing wrote to. The resolver is now always absolute: HOME first, then a
+  // writable last resort.
+  assertEquals(
+    resolveCiCheckStateDir(
+      undefined,
+      (n) => n === "HOME" ? "/home/vibe" : undefined,
+    ),
+    "/home/vibe/auto-issue-work/.ci_check_state",
+  );
   assertEquals(
     resolveCiCheckStateDir(undefined, () => undefined),
-    ".ci_check_state",
+    "/tmp/auto-issue-work/.ci_check_state",
   );
 });
 
