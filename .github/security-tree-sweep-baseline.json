@@ -52,7 +52,7 @@
     {
       "path": "worker/deno/lib/auto_fix_attempt_tracker.ts",
       "rule": "incomplete-sanitization",
-      "line": 425,
+      "line": 437,
       "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
     },
     {
@@ -147,24 +147,9 @@
       "reason": "Test assertions that generated text contains issue URLs are not sanitisation (Issue #4409 CodeQL triage)."
     },
     {
-      "path": "worker/deno/tests/security_scan_prompt_v16_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "reason": "Test assertions that prompt text mentions a host are not sanitisation (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/tests/security_scan_prompt_v17_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "reason": "Test assertions that prompt text mentions a host are not sanitisation (Issue #4409 CodeQL triage)."
-    },
-    {
       "path": "worker/deno/tests/claim_pr_comment_test.ts",
       "rule": "incomplete-multi-character-sanitization",
       "reason": "A test fixture builder, not production sanitisation (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/tests/github_actions_audit_prompt_v17_test.ts",
-      "rule": "incomplete-sanitization",
-      "reason": "A test-only string normalisation before an assertion, not production sanitisation (Issue #4409 CodeQL triage)."
     },
     {
       "path": "worker/deno/tests/export_branding_test.ts",
@@ -211,6 +196,12 @@
       "path": "worker/deno/tests/issue_worker_test.ts",
       "rule": "incomplete-url-substring-sanitization",
       "reason": "Test assertions that a posted comment body contains the cross-repo PR URL are not sanitisation (same triage as `planning_processor_test.ts` and `batch_api_test.ts`)."
+    },
+    {
+      "path": "worker/deno/tests/setup_credential_provisioning_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "line": 148,
+      "reason": "Test assertion, not sanitisation: it checks that the DeepSeek warning NAMES `platform.deepseek.com` so an operator knows where to get a key. No URL is parsed, trusted or acted on — the string is the message under test (Issue #4193 triage, js/incomplete-url-substring-sanitization)."
     }
   ],
   "accepted": [
@@ -220,6 +211,24 @@
       "line": 69,
       "reason": "The `minimumReleaseAge: \"0\"` the rule flags is the documented first-party exemption for stSoftwareAU/* packages only (Issue #2124); every third-party ecosystem keeps the 24 hours set at the top of the file. Not the emergency override path (docs/security-advisory-triage.md).",
       "issue": 2124
+    },
+    {
+      "path": "worker/deno/lib/file_lock.ts",
+      "rule": "trivial-conditional",
+      "line": 250,
+      "reason": "`held` is provably true here — the acquire loop only `break`s after setting it and every other exit throws — so the rule is correct. Kept deliberately: the release path states the invariant it depends on, and a future exit added to that loop would make the guard load-bearing. A code-quality observation, not a security finding (js/trivial-conditional)."
+    },
+    {
+      "path": "worker/deno/lib/claude_runner.ts",
+      "rule": "trivial-conditional",
+      "line": 1413,
+      "reason": "`timedOut`/`runFinished` are closure flags set from timer and completion callbacks, so the re-check before arming the next watchdog is not redundant at runtime even where the analyser proves it constant along one path. A code-quality observation, not a security finding (js/trivial-conditional)."
+    },
+    {
+      "path": "worker/deno/lib/claude_runner.ts",
+      "rule": "trivial-conditional",
+      "line": 1445,
+      "reason": "Same guard as line 1413, on the wind-down path: the flags are mutated by async callbacks between the two checks, which is the reason both exist. A code-quality observation, not a security finding (js/trivial-conditional)."
     }
   ]
 }

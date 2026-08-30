@@ -215,6 +215,38 @@ The per-PR budgets are unchanged: the 4-hour cooldown, two concluded attempts
 and `needs-human` are the scan's, and the drain only decides how many of the
 PRs already due get taken now.
 
+## 🏷️ `needs-human` is a veto, so a mechanical stall does not get one
+
+The scan skips any PR carrying `needs-human`. That is correct for what the
+label now means — a human must decide — but it made the label a
+**cross-subsystem veto**: one lane's judgement about red CI removed a PR from
+this lane's queue, for a reason this lane had no part in. VibeCoder #549 was
+stranded exactly that way (Issue #569).
+
+A PR that is behind, conflicting, red or unmergeable is **work**. Those
+blockages are now filed as issues the fleet can claim
+(`worker/deno/lib/escalate_as_work.ts`), and the PR carries the non-vetoing
+`escalated` marker instead. `needs-human` is reserved for what genuinely needs
+a person: a policy call, a credential, confirming intent.
+
+## 🔁 The lane rotates, so this pass is not always last
+
+The four agent-backed passes share one lane slot. They used to run in a fixed
+order with conflict resolution last, so it got whatever the others left — on a
+busy host, nothing:
+
+```text
+04:16:44Z [m1] Priority 1.55: CI Fix
+04:26:44Z [m1] [watchdog] CI Fix exceeded hard timeout 600s — abandoning
+04:26:44Z [m1] stop reason=deadline — Resolve PR Merge Conflicts … defer
+```
+
+The order now rotates by one each cycle (`worker/deno/lib/lane_rotation.ts`),
+so every pass leads once per turn. The offset is persisted on the work volume
+because runs get as few as one lane cycle each, and a run-local counter would
+leave a single-cycle host always leading with the same pass. Nothing about the
+resource bound changes: still one agent-backed pass at a time.
+
 ## 🔒 Cross-host locking
 
 The pass takes the same `BRANCH_UPDATE_LOCK` PR lock the branch updater and the

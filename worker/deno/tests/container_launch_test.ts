@@ -26,7 +26,7 @@ import {
   renderContainerLaunchPlan,
   resolveContainerLaunchHostPaths,
   resolveContainerResources,
-  SCRATCH_TMPFS_MOUNTS,
+  scratchTmpfsMounts,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
@@ -430,10 +430,20 @@ Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with 
     );
     // The flag and its scratch are one decision: every declared mount is
     // present, in order, and nothing else is.
-    assertEquals(tmpfsValues(plan.runArgs), [...SCRATCH_TMPFS_MOUNTS]);
+    // The secrets mount carries the container user, so the declared list is
+    // compared after substitution (Issue #570).
+    assertEquals(
+      tmpfsValues(plan.runArgs),
+      scratchTmpfsMounts(MANIFEST.user),
+    );
     assertEquals(tmpfsValues(plan.runArgs), [
       "/tmp:rw,nosuid,nodev,exec,mode=1777",
       "/var/tmp:rw,nosuid,nodev,noexec,mode=1777",
+      // The credentials, on their own mount away from the agents' scratch,
+      // OWNED by the worker — a mode=0700 tmpfs mounted root-owned is
+      // unusable by an unprivileged process, which the live containment
+      // probe caught in CI.
+      `/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700,uid=${MANIFEST.user.uid},gid=${MANIFEST.user.gid}`,
     ]);
     // Hardened the same way as the /tmp entry that predates this issue, and
     // `exec` only where the agent genuinely runs what it writes.
@@ -446,7 +456,8 @@ Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with 
       renderContainerLaunchPlan(plan),
     );
     assertEquals(parsed.run.includes("--read-only"), true);
-    assertEquals(tmpfsValues(parsed.run), [...SCRATCH_TMPFS_MOUNTS]);
+    // Substituted, since that is what the rendered plan carries.
+    assertEquals(tmpfsValues(parsed.run), scratchTmpfsMounts(MANIFEST.user));
   }
 });
 
