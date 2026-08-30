@@ -70,6 +70,15 @@
  *     `milestone_branch_filter_scanner.ts`, so milestone sub-issue PRs are
  *     never merged past the gate unchecked. Per Issue #3239 isolation the
  *     YAML fix rides a normal per-repo worker PR — no cross-repo gate.
+ *   - **Native gitleaks-drift pre-filer (Issue #598, part of #566).** The
+ *     `gitleaks` spec detects presence by pattern, so a stale per-repo copy
+ *     passes the audit for merely mentioning gitleaks. Each drifted copy —
+ *     milestone-blind branch filter, stale `gitleaks-action` pin, no
+ *     licence-less CLI fallback, or no `pull_request` trigger at all —
+ *     becomes its own `severity:medium` issue via
+ *     `gitleaks_drift_scanner.ts`. It runs straight after the
+ *     milestone-branch-filter pre-filer so the branch gap is never filed
+ *     twice.
  *   - **Native unpinned-CI-install pre-filer (Issue #3668, split out of
  *     #3642).** Each `run:`-level package install with no exact version
  *     pin (`npm install -g <pkg>`, `npx --yes <pkg>`, `gem install
@@ -154,6 +163,10 @@ import {
   type MilestoneBranchFilterFinding,
   scanMilestoneBranchFilters,
 } from "../milestone_branch_filter_scanner.ts";
+import {
+  type GitleaksDriftFinding,
+  scanGitleaksDrift,
+} from "../gitleaks_drift_scanner.ts";
 import {
   type CiInstallPinFinding,
   scanCiInstallPins,
@@ -1070,6 +1083,44 @@ export function createGitHubActionsAuditTemplate(
             knownOpenFindingIds: seenIds,
           });
         for (const finding of milestoneFindings) {
+          if (seenIds.has(finding.findingId)) continue;
+          const filed = await fileWorkflowFinding({
+            repo: opts.repo,
+            findingId: finding.findingId,
+            severity: finding.severity,
+            title: finding.title,
+            file: finding.file,
+            lines: finding.lines,
+            whyItMatters: finding.whyItMatters,
+            suggestedFix: finding.suggestedFix,
+            evidence: finding.evidence,
+            template: NAME,
+            runId,
+            ghCommandFn,
+          });
+          if (filed !== null) {
+            preFiled.push(filed.findingId);
+            seenIds.add(filed.findingId);
+          }
+        }
+
+        // 5h2. Native gitleaks-drift pre-filer (Issue #598, part of #566).
+        //      The `gitleaks` workflow spec detects presence by pattern, so
+        //      a copy pushed months ago with `branches: ["*"]` and
+        //      `gitleaks-action@v2` scores as fully covered while scanning
+        //      almost nothing — presence is not currency. Flag each
+        //      per-repo copy that has drifted from the canonical shape:
+        //      milestone-blind branch filter, stale action pin, no
+        //      licence-less CLI fallback, or no `pull_request` trigger at
+        //      all. Runs immediately after 5h so the milestone ids just
+        //      filed are in `seenIds` and the branch gap is never filed
+        //      twice. Per Issue #3239 isolation the YAML fix rides a normal
+        //      per-repo worker PR — the scan only reports.
+        const gitleaksFindings: GitleaksDriftFinding[] = scanGitleaksDrift(
+          files,
+          { knownOpenFindingIds: seenIds },
+        );
+        for (const finding of gitleaksFindings) {
           if (seenIds.has(finding.findingId)) continue;
           const filed = await fileWorkflowFinding({
             repo: opts.repo,

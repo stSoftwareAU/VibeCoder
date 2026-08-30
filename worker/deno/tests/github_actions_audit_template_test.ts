@@ -50,6 +50,7 @@ import type { Logger } from "../types.ts";
 import type { Result } from "../types.ts";
 import type { DeprecationFinding } from "../lib/runner_deprecation_scanner.ts";
 import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
+import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
 
 // Point the default-branch persistent cache at a throwaway temp path so
 // the trigger pre-filer's default resolver (Issue #2587) never reads or
@@ -1785,6 +1786,149 @@ Deno.test(
 
     assert(result.ok);
     assertEquals(creates.length, 0);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Native gitleaks-drift pre-filer (Issue #598, part of #566)
+// ---------------------------------------------------------------------------
+
+/** A gitleaks workflow with the given action ref and branch filter. */
+function gitleaksFixture(ref: string, branches: string[]) {
+  const rawText = [
+    "name: Gitleaks",
+    "on:",
+    "  pull_request:",
+    `    branches: [${branches.join(", ")}]`,
+    "permissions:",
+    "  contents: read",
+    "jobs:",
+    "  gitleaks:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    `      - uses: gitleaks/gitleaks-action@${ref}`,
+    "      - name: Gitleaks (open-source CLI fallback)",
+    "        run: ./gitleaks git --redact --no-banner --exit-code 1 .",
+  ].join("\n");
+  return {
+    path: ".github/workflows/gitleaks.yml",
+    rawText,
+    parsed: {
+      name: "Gitleaks",
+      on: { pull_request: { branches } },
+      permissions: { contents: "read" },
+      jobs: {
+        gitleaks: {
+          "runs-on": "ubuntu-latest",
+          steps: [
+            { uses: `gitleaks/gitleaks-action@${ref}` },
+            {
+              name: "Gitleaks (open-source CLI fallback)",
+              run: "./gitleaks git --redact --no-banner --exit-code 1 .",
+            },
+          ],
+        },
+      },
+    },
+    kind: "workflow" as const,
+  };
+}
+
+Deno.test(
+  "runTask - gitleaks pre-filer files a stale action pin and joins seenIds",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [970],
+      knownOpen: [],
+      issueCreateNumbers: [970],
+    });
+    let scanReceived: { knownOpen: string[] } | undefined;
+    // SHA-pinned (so the SHA-pin pre-filer stays quiet) but not the SHA
+    // `pinnedAction()` resolves today, and milestone-covered so the branch
+    // finding stays quiet — isolating the stale-pin finding.
+    const stale = gitleaksFixture("c".repeat(40), [
+      "Develop",
+      "main",
+      "milestone/*",
+    ]);
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([stale]),
+      runScanFn: (opts) => {
+        scanReceived = { knownOpen: [...opts.knownOpenFindingIds] };
+        return Promise.resolve({ ok: true, value: true });
+      },
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    const c = creates[0]!;
+    assertStringIncludes(
+      c.body,
+      "<!-- finding-id: BP-GITLEAKS-ACTION-STALE-gitleaks -->",
+    );
+    assert(c.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
+    assert(c.labels.includes("severity:medium"));
+    // The pre-filed id is in Claude's known-open list so the LLM does not
+    // double-file it.
+    assert(scanReceived !== undefined);
+    assert(
+      scanReceived!.knownOpen.includes("BP-GITLEAKS-ACTION-STALE-gitleaks"),
+    );
+  },
+);
+
+Deno.test(
+  "runTask - gitleaks branch gap is not double-filed beside the milestone finding",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [971],
+      knownOpen: [],
+      issueCreateNumbers: [971],
+    });
+    // `["*"]` never matches `milestone/<slug>`, so both the milestone
+    // pre-filer and the gitleaks drift scanner see the same gap. Only the
+    // milestone finding may be filed. The action is pinned to the current
+    // SHA and the CLI fallback is present, so no other drift class fires.
+    const current = PINNED_ACTIONS["gitleaks/gitleaks-action"]!.sha;
+    const drifted = gitleaksFixture(current, ['"*"']);
+    drifted.parsed.on.pull_request.branches = ["*"];
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([drifted]),
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    assertStringIncludes(
+      creates[0]!.body,
+      "<!-- finding-id: BP-MILESTONE-FILTER-gitleaks -->",
+    );
   },
 );
 
