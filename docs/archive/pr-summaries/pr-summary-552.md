@@ -58,7 +58,23 @@ ok | 9 passed | 0 failed
 deno task test tests/pr_ci_processor_test.ts tests/pr_maintenance_test.ts \
                 tests/pr_ci_processor_lock_test.ts tests/pr_ci_processor_auto_fix_cap_test.ts
 ok | 99 passed | 0 failed
+
+deno task test        # full suite
+FAILED | 15469 passed (4 steps) | 4 failed | 38 ignored (9m56s)
 ```
+
+`./quality.sh` passes every stage except `deno tests`, whose 4 failures are
+sandbox artefacts unrelated to this diff and reproduce on an unmodified tree:
+
+- `gh_spawn_test.ts` ×3 — they run the real `gh --version`, which the agent
+  container's guard wrapper refuses (`[SECURITY] [GH_GUARD_ERROR] guard could
+  not evaluate this gh command`) because its scratch module is missing.
+- `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
+  dir is restaged writable` — it reads the ambient `VIBE_STATE_DIR`, which the
+  container exports; the test passes under `env -u VIBE_STATE_DIR`.
+
+Neither touches the CI-check state directory, `gh` spawning, or anything else in
+this change.
 
 ## Test Plan
 
