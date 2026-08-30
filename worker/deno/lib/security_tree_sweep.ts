@@ -102,6 +102,8 @@ export interface SweepCluster {
   path: string;
   lineStart: number | null;
   lineEnd: number | null;
+  /** Normalised source line at `lineStart`, when the tree could be read. */
+  snippet?: string;
   /** Highest severity any source reported. */
   severity: SweepSeverity;
   /** Highest confidence any source reported. */
@@ -125,8 +127,25 @@ export interface SweepBaselineEntry {
   path: string;
   /** Rule family (e.g. `command-injection`) or a tool-native rule id. */
   rule: string;
-  /** Optional line anchor; matches within the dedup line window. */
+  /**
+   * Optional line anchor; matches within the dedup line window.
+   *
+   * Advisory once {@link SweepBaselineEntry.snippet} is present (Issue #619):
+   * a line number describes the file's current layout, not the finding, so an
+   * edit anywhere above invalidates it.
+   */
   line?: number;
+  /**
+   * Normalised source line the finding sits on — the finding's fingerprint.
+   *
+   * Matched instead of `line` when present, so an unrelated insertion above
+   * the finding cannot fail the gate. Twice in one night a line-pinned entry
+   * blocked a PR that touched neither the finding nor its file: the code was
+   * unchanged and only the numbers moved (Issues #609, #618). Compare with
+   * {@link normaliseSnippet}, which collapses whitespace so reformatting is
+   * not drift either.
+   */
+  snippet?: string;
   /** Why this entry exists — mandatory. */
   reason: string;
 }
@@ -933,13 +952,91 @@ function validateEntry(
     errors.push(`${label}: "line" must be a positive line number`);
     valid = false;
   }
+  // Issue #619: the fingerprint, when the entry carries one. Rejected loudly
+  // if it is present but not usable text — an entry that silently lost its
+  // fingerprint would fall back to the line anchor and reintroduce the drift
+  // this exists to end.
+  const snippet = entry["snippet"];
+  if (snippet !== undefined && typeof snippet !== "string") {
+    errors.push(`${label}: "snippet" must be a string when present`);
+    valid = false;
+  }
   if (!valid) return null;
   return {
     path: normalisePath(path),
     rule,
     reason,
     ...(typeof line === "number" ? { line: Math.floor(line) } : {}),
+    ...(typeof snippet === "string" && snippet.trim().length > 0
+      ? { snippet: normaliseSnippet(snippet) }
+      : {}),
   };
+}
+
+/**
+ * Normalise a source line so a fingerprint survives reformatting.
+ *
+ * Whitespace is collapsed and the ends trimmed: an indentation change or a
+ * line rewrapped by a formatter is not a different finding. Everything else
+ * is kept, so genuinely changed code no longer matches — which is the case
+ * where a baseline entry SHOULD go stale.
+ */
+export function normaliseSnippet(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Attach each cluster's own source line, read from the scanned tree.
+ *
+ * Injected reader, so classification stays pure and testable. A file that
+ * cannot be read leaves the cluster without a snippet, which falls back to
+ * the line anchor exactly as before — a sweep must not fail because a path
+ * moved.
+ */
+export function attachClusterSnippets(
+  clusters: readonly SweepCluster[],
+  readLine: (path: string, line: number) => string | null,
+): SweepCluster[] {
+  return clusters.map((cluster) => {
+    if (cluster.lineStart === null) return cluster;
+    const text = readLine(cluster.path, cluster.lineStart);
+    if (text === null) return cluster;
+    const snippet = normaliseSnippet(text);
+    return snippet.length > 0 ? { ...cluster, snippet } : cluster;
+  });
+}
+
+/**
+ * Read one 1-based line from a file in the scanned tree.
+ *
+ * Cached per file: a sweep clusters many findings into the same handful of
+ * files, and re-reading each one per finding would turn a cheap lookup into
+ * the slowest part of classification.
+ */
+const treeLineCache = new Map<string, string[] | null>();
+
+function readTreeLine(
+  repoDir: string,
+  path: string,
+  line: number,
+): string | null {
+  const key = `${repoDir}/${path}`;
+  let lines = treeLineCache.get(key);
+  if (lines === undefined) {
+    try {
+      lines = Deno.readTextFileSync(key).split("\n");
+    } catch {
+      lines = null;
+    }
+    treeLineCache.set(key, lines);
+  }
+  if (lines === null) return null;
+  return lines[line - 1] ?? null;
+}
+
+/** Clear the per-file line cache. Tests only. */
+export function _resetTreeLineCache(): void {
+  treeLineCache.clear();
 }
 
 /** Human-readable identity of a baseline entry, for stale reporting. */
@@ -958,6 +1055,13 @@ function entryMatches(
   const ruleHit = entry.rule === cluster.family ||
     cluster.findings.some((f) => f.ruleId === entry.rule);
   if (!ruleHit) return false;
+  // Issue #619: the fingerprint wins outright when both sides carry one. The
+  // line is then advisory — it moved twice in one night without the finding
+  // changing at all, and each time the gate failed a PR that had touched
+  // neither.
+  if (entry.snippet !== undefined && cluster.snippet !== undefined) {
+    return normaliseSnippet(entry.snippet) === cluster.snippet;
+  }
   if (entry.line === undefined) return true;
   const anchor = entry.line;
   return cluster.findings.some((f) =>
@@ -1775,7 +1879,13 @@ export async function runSecurityTreeSweep(
     });
   }
 
-  const clusters = await dedupeFindings(findings);
+  const clusters = attachClusterSnippets(
+    await dedupeFindings(findings),
+    // Issue #619: one small read per finding, from the tree already on disk.
+    // A missing or short file leaves the cluster unfingerprinted, which falls
+    // back to the line anchor rather than failing the sweep.
+    (path, line) => readTreeLine(options.repoDir, path, line),
+  );
   const { rows, newRows, staleEntries } = classifyClusters(clusters, baseline);
 
   // Dedup against the issues already open, whichever mode we are in — the
