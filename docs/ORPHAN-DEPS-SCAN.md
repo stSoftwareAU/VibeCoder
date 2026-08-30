@@ -202,10 +202,13 @@ with the `idle-task` label and the worker will run it identically.
   matches the title to
   [`orphanDepsTemplate.buildIssueTitle(repo)`](../worker/deno/lib/idle_task_templates/orphan_deps_template.ts).
 - **Body:** the latest `prompts/orphan_deps/` template with the
-  placeholders substituted at file time — `{{SUPPRESSED_IDS}}` and
-  `{{KNOWN_OPEN_FINDING_IDS}}` (both render as `(none)` on the wrapper
-  itself; the real known-open list is rebuilt from live issues at claim
-  time) plus the `{{ATTRIBUTION_FOOTER}}` line.
+  placeholders substituted at file time — `{{SUPPRESSED_IDS}}`,
+  `{{KNOWN_OPEN_FINDING_IDS}}` and `{{OPEN_ISSUE_TITLES}}` (all render as
+  `(none)` on the wrapper itself; both dedup lists are rebuilt from live
+  issues at claim time, **repo-wide and label-blind** — see
+  [Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)
+  for the bounds, the loud `TRUNCATED` log, and the silent-skip rule) plus
+  the `{{ATTRIBUTION_FOOTER}}` line.
 - **Body fingerprint:** the prompt's H1 begins
   `# Orphan-Dependency Scan …`, matched by `ORPHAN_DEPS_BODY_FINGERPRINT`
   so dispatch recognises the wrapper even if the title was edited (body-fingerprint dispatch).

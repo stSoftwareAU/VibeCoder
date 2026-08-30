@@ -216,11 +216,13 @@ with the `idle-task` label and the worker will run it identically.
 - **Title:** the literal string `Run a test-audit scan`. Dispatch
   matches the title to
   [`testAuditTemplate.buildIssueTitle(repo)`](../worker/deno/lib/idle_task_templates/test_audit_template.ts).
-- **Body:** the latest `prompts/test_audit/` template with the two
-  placeholders substituted at file time — `{{SUPPRESSED_IDS}}` and
-  `{{KNOWN_OPEN_FINDING_IDS}}` (both render as `(none)` on the wrapper
-  itself; the real known-open list is rebuilt from live issues at claim
-  time).
+- **Body:** the latest `prompts/test_audit/` template with the three
+  placeholders substituted at file time — `{{SUPPRESSED_IDS}}`,
+  `{{KNOWN_OPEN_FINDING_IDS}}` and `{{OPEN_ISSUE_TITLES}}` (all render as
+  `(none)` on the wrapper itself; both dedup lists are rebuilt from live
+  issues at claim time, **repo-wide and label-blind** — see
+  [Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)
+  for the bounds, the loud `TRUNCATED` log, and the silent-skip rule).
 - **Body fingerprint:** the prompt's H1 begins `# Test-Audit …`, matched
   by `TEST_AUDIT_BODY_FINGERPRINT` so dispatch recognises the wrapper
   even if the title was edited (body-fingerprint dispatch).

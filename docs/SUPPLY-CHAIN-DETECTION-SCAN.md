@@ -192,6 +192,15 @@ reuse the **`security-scan-ignore: SEC-…`** grammar recognised by
 pre-substituted into the `{{SUPPRESSED_IDS}}` placeholder so Claude drops
 the finding in Phase 3 triage on the next run.
 
+Suppression is separate from **dedup**, which the prompt also carries:
+`{{KNOWN_OPEN_FINDING_IDS}}` (finding-id markers) and
+`{{OPEN_ISSUE_TITLES}}` (every open issue as `#<number> — <title>`), both
+**repo-wide and label-blind**, both rendering `(none)` when empty. A
+candidate matching either list is **skipped silently** — never filed,
+never commented on, never cross-linked. Both lists are bounded and a
+truncation is logged loudly; see
+[Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list).
+
 ```jsonc
 // security-scan-ignore: SEC-1234567890ab — author=nigel expires=2026-12-31 postinstall builds a native
 // addon; the script is vetted and pulls no network resources.
