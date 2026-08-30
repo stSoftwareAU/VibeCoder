@@ -54,7 +54,7 @@ sequenceDiagram
     S->>S: config write + interactive merge
     S->>D: run_setup_cli update-mode
     alt no terminal
-        D->>C: fresh config → update_mode dynamic;<br/>existing values untouched
+        D->>C: fresh config → update_mode dynamic,<br/>existing values untouched
     else terminal
         D->>O: update mode (dynamic/frozen) [current]
         O-->>D: blank = default
