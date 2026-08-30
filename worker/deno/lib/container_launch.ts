@@ -408,10 +408,49 @@ export const FORBIDDEN_RUN_FLAGS: readonly string[] = [
  * from inside the container and a tmpfs would only hand a root this container
  * does not have somewhere to write.
  */
+/**
+ * Where the container keeps its credential copies (Issue #570).
+ *
+ * `/run` by convention: it is tmpfs by definition, and every runtime with a
+ * secrets primitive puts them there.
+ */
+export const SECRETS_MOUNT_PATH = "/run/vibe-secrets";
+
 export const SCRATCH_TMPFS_MOUNTS: readonly string[] = [
   "/tmp:rw,nosuid,nodev,exec,mode=1777",
   "/var/tmp:rw,nosuid,nodev,noexec,mode=1777",
+  // The credential copies, on their own mount away from the agents' scratch
+  // (Issue #570). `/run` is where every runtime with a secrets primitive puts
+  // them — Docker and Podman `--secret` land at `/run/secrets`, Kubernetes
+  // mounts a Secret on tmpfs, systemd's `LoadCredential=` uses
+  // `$CREDENTIALS_DIRECTORY` — and for the same reasons: memory-backed, so
+  // nothing touches disk, enters an image layer or survives the container.
+  //
+  // `noexec` and `mode=0700`: a credential is data, and only the worker's own
+  // account has business reading it. The agents' `/tmp` above is `1777` and
+  // `exec` precisely because they need that; the secrets mount is the
+  // opposite of it in both respects. Issue #564 is what this prevents — the
+  // gh credential was staged in that world-writable `/tmp` and deleted
+  // mid-run by something in the agents' churn.
+  `${SECRETS_MOUNT_PATH}:rw,nosuid,nodev,noexec,mode=0700`,
 ];
+
+/**
+ * The `--tmpfs` value this dialect will actually honour (Issue #570).
+ *
+ * A dialect that ignores the `path:options` form gets the bare path: passing
+ * options it does not parse mounts a directory *named* for the whole string
+ * and leaves the intended path absent — a failure that looks like success.
+ * The entrypoint applies the permissions there instead.
+ */
+export function tmpfsArgument(
+  dialect: { tmpfsHonoursOptions: boolean },
+  mount: string,
+): string {
+  if (dialect.tmpfsHonoursOptions) return mount;
+  const separator = mount.indexOf(":");
+  return separator === -1 ? mount : mount.slice(0, separator);
+}
 
 /** Path fragments that identify a container-runtime control socket. */
 const RUNTIME_SOCKET_HINTS: readonly string[] = [
@@ -892,7 +931,9 @@ export function buildContainerLaunchPlan(
   // without these mounts; a runtime that took a tmpfs but no `--read-only`
   // still gets a disposable root, exactly as before.
   if (dialect.supportsTmpfs) {
-    for (const mount of SCRATCH_TMPFS_MOUNTS) runArgs.push("--tmpfs", mount);
+    for (const mount of SCRATCH_TMPFS_MOUNTS) {
+      runArgs.push("--tmpfs", tmpfsArgument(dialect, mount));
+    }
   }
 
   for (const mount of mounts) {

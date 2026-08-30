@@ -434,6 +434,9 @@ Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with 
     assertEquals(tmpfsValues(plan.runArgs), [
       "/tmp:rw,nosuid,nodev,exec,mode=1777",
       "/var/tmp:rw,nosuid,nodev,noexec,mode=1777",
+      // The credentials, on their own mount away from the agents' scratch
+      // (Issue #570).
+      "/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700",
     ]);
     // Hardened the same way as the /tmp entry that predates this issue, and
     // `exec` only where the agent genuinely runs what it writes.
