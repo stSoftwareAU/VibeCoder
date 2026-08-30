@@ -28,6 +28,11 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
+import {
+  buildMilestoneRulesetBody,
+  type RulesetBypassActorBody,
+} from "./repo_rulesets.ts";
+
 /** Ref patterns that count as covering the milestone branches. */
 const MILESTONE_REF_PATTERNS: readonly string[] = [
   "refs/heads/milestone/**",
@@ -290,7 +295,7 @@ export function assessMilestoneRuleset(
 // ---------------------------------------------------------------------------
 
 /** `gh` executor seam, matching `repo_rulesets.ts`. */
-export type GhJson = (args: string[]) => Promise<string>;
+export type GhJson = (args: string[], stdin?: string) => Promise<string>;
 
 /**
  * Read every ruleset on the repository in DETAIL shape.
@@ -373,4 +378,115 @@ export async function checkMilestoneRuleset(
     login,
     ...(permission !== undefined ? { permission } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Creating the ruleset when it is missing (Issue #586)
+// ---------------------------------------------------------------------------
+
+/** Name of the milestone ruleset the worker creates when asked. */
+export const MILESTONE_RULESET_NAME = "Vibe Coder milestone branches";
+
+/** Outcome of {@link createMilestoneRuleset}. */
+export type CreateMilestoneResult =
+  | { ok: true; created: true; contexts: string[] }
+  | { ok: true; created: false; reason: string }
+  | { ok: false; error: Error };
+
+/**
+ * Create the `milestone/**` ruleset, mirroring the repository's own
+ * default-branch gate.
+ *
+ * The required contexts are taken from the default-branch ruleset that is
+ * already in place, so both gates agree on what "green" means and a milestone
+ * PR is held to the same bar as the PR that eventually merges the collection.
+ * When no default-branch ruleset exists there is nothing to mirror and nothing
+ * is written — a guessed check set would block every milestone PR on a context
+ * that never reports.
+ *
+ * Setup runs with the operator's own credentials, which is why this can write
+ * at all: the worker's service account has `write`, and creating a ruleset
+ * needs `admin`.
+ */
+export async function createMilestoneRuleset(
+  repo: string,
+  ghFn: GhJson,
+  options: {
+    /** Injected for tests; production reads the live rulesets. */
+    rulesets?: RulesetDetail[];
+    /** Bypass actors to carry over (defaults to the default branch's). */
+    bypassActors?: RulesetBypassActorBody[];
+  } = {},
+): Promise<CreateMilestoneResult> {
+  const rulesets = options.rulesets ?? await fetchRulesetDetails(repo, ghFn);
+
+  if (rulesets.some(coversMilestoneBranches)) {
+    return { ok: true, created: false, reason: "already covered" };
+  }
+
+  // Mirror the default-branch gate rather than invent one.
+  const defaultBranchRuleset = rulesets.find((r) =>
+    (r.conditions?.ref_name?.include ?? []).some((pattern) =>
+      pattern === "~DEFAULT_BRANCH" || pattern.startsWith("refs/heads/")
+    ) &&
+    (r.rules ?? []).some((rule) =>
+      rule.type === "required_status_checks" &&
+      (rule.parameters?.required_status_checks ?? []).length > 0
+    )
+  );
+  if (!defaultBranchRuleset) {
+    return {
+      ok: true,
+      created: false,
+      reason:
+        "no existing ruleset requires status checks, so there is no check set " +
+        "to mirror — a guessed one would block every milestone PR on a " +
+        "context that never reports",
+    };
+  }
+
+  const contexts = (defaultBranchRuleset.rules ?? [])
+    .filter((rule) => rule.type === "required_status_checks")
+    .flatMap((rule) => rule.parameters?.required_status_checks ?? [])
+    .map((check) => check.context)
+    .filter((context): context is string => typeof context === "string");
+
+  const bypassActors = options.bypassActors ??
+    (defaultBranchRuleset.bypass_actors ?? [])
+      .filter((actor): actor is Required<RulesetBypassActor> =>
+        actor.actor_type !== undefined && actor.actor_id !== undefined &&
+        actor.bypass_mode !== undefined
+      )
+      .filter((actor) =>
+        actor.actor_type === "RepositoryRole" || actor.actor_type === "Team" ||
+        actor.actor_type === "Integration" ||
+        actor.actor_type === "OrganizationAdmin"
+      )
+      .map((actor) => ({
+        actor_type: actor.actor_type as RulesetBypassActorBody["actor_type"],
+        actor_id: actor.actor_id,
+        bypass_mode: actor.bypass_mode as RulesetBypassActorBody["bypass_mode"],
+      }));
+
+  const body = buildMilestoneRulesetBody(
+    MILESTONE_RULESET_NAME,
+    contexts,
+    bypassActors,
+  );
+
+  try {
+    await ghFn([
+      "api",
+      "-X",
+      "POST",
+      `repos/${repo}/rulesets`,
+      "--input",
+      "-",
+      "--jq",
+      ".id",
+    ], JSON.stringify(body));
+    return { ok: true, created: true, contexts };
+  } catch (error) {
+    return { ok: false, error: error as Error };
+  }
 }
