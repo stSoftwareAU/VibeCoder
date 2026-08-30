@@ -77,6 +77,7 @@ weight.
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
+| `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 
 Two consequences worth knowing:
 
@@ -92,6 +93,13 @@ Two consequences worth knowing:
   nothing updates at run time. FLEET-taxation's gate would otherwise call
   `rustup update stable`, so the image sets `QUALITY_SKIP_RUST_UPDATE=1` and
   that gate uses the baked toolchain.
+- **`semgrep` is pinned to the version CI runs, not the newest.** It must
+  match `SEMGREP_IMAGE_TAG` in `worker/deno/lib/pinned_actions.ts` — the image
+  `.github/workflows/semgrep.yml` runs — so a local pass predicts a CI pass;
+  the manifest test fails the gate on drift. It is a Python wheel installed
+  into a `/opt/semgrep` virtualenv rather than a single binary, and at roughly
+  350 MB it is the image's largest toolchain — see
+  [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
 
 Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
 provider need; the worker itself is Deno. Its layer is built **before** the

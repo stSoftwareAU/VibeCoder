@@ -43,8 +43,14 @@
 # scripted `.\setup.ps1 -AutoInstall` installs what it can without a terminal
 # to prompt on. Deliberately a per-invocation switch, never an environment
 # variable.
+# Issue #672: adding or removing ONE repository must not mean sitting through
+# the whole wizard. Named parameters rather than bare flags, because that is
+# what a PowerShell caller expects — `-AddRepo owner/repo`, not `--add-repo`.
 param(
-    [switch] $AutoInstall
+    [switch] $AutoInstall,
+    [string] $AddRepo,
+    [string] $RemoveRepo,
+    [switch] $ListRepos
 )
 
 Set-StrictMode -Version Latest
@@ -787,6 +793,37 @@ function Invoke-VibeSetupCliCapture {
 
 <#
 .SYNOPSIS
+    Run a setup CLI subcommand, letting its output reach the console.
+
+.DESCRIPTION
+    Issue #672. `Invoke-VibeSetupCli` returns a boolean on the same stream the
+    CLI writes to, so `if (-not (Invoke-VibeSetupCli ...))` captures the output
+    into the condition and the operator sees nothing. That is harmless for a
+    step whose output is progress chatter; it is fatal for a query like
+    `repos`, whose output IS the answer.
+
+    This form writes nothing itself and returns only the exit status, so the
+    caller can branch without swallowing what the operator asked for.
+#>
+function Invoke-VibeSetupCliPassthrough {
+    param([Parameter(Mandatory = $true)][string[]] $Arguments)
+
+    $deno = Get-VibeDenoCommand
+    if (-not $deno) {
+        Write-VibeError "deno is required but not installed."
+        Write-VibeInfo "Install it with: winget install --exact --id DenoLand.Deno --source winget"
+        return 1
+    }
+
+    $argv = @("run", "--frozen", "--lock=$DenoLock", "--allow-all", $SetupCli) +
+        $Arguments +
+        @("--script-dir", $ScriptDir, "--config-path", $ConfigFile)
+    & $deno @argv | Out-Host
+    return $LASTEXITCODE
+}
+
+<#
+.SYNOPSIS
     Run a setup CLI subcommand that setup cannot continue without.
 #>
 function Invoke-VibeSetupCliOrExit {
@@ -1179,6 +1216,20 @@ function Invoke-VibeScheduledTaskPrompt {
 ################################################################################
 
 function Invoke-VibeSetupMain {
+    # Issue #672: the single-repository paths short-circuit before any prompt,
+    # install or sync, and set the exit code so they can be scripted. The
+    # operator's point was that they were hand-editing .config.json instead of
+    # using this script, which is the one thing it exists to prevent.
+    if ($AddRepo) {
+        exit (Invoke-VibeSetupCliPassthrough -Arguments @("repos", "--add", $AddRepo))
+    }
+    if ($RemoveRepo) {
+        exit (Invoke-VibeSetupCliPassthrough -Arguments @("repos", "--remove", $RemoveRepo))
+    }
+    if ($ListRepos) {
+        exit (Invoke-VibeSetupCliPassthrough -Arguments @("repos"))
+    }
+
     # Prerequisites check via Deno — a gap here stops setup (Issue #3234).
     # -AutoInstall consents in advance to every offered install (Issue #33).
     if ($AutoInstall) {

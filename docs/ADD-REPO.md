@@ -14,6 +14,41 @@ failure paths, and the timing and secrets caveats.
 > `stSoftwareAU/private-repo-11` purely as an illustration — any `owner/repo` slug the
 > worker can reach with triage access works identically.
 
+## At the keyboard: `./setup.sh --add-repo` / `--remove-repo`
+
+The issue-driven flow below is for onboarding **without shell access**. An
+operator sitting at the host does not need it, and should not have to sit
+through the full setup wizard — or hand-edit `.config.json`, which is the thing
+this feature exists to avoid:
+
+```bash
+./setup.sh --list-repos                              # what is monitored now
+./setup.sh --add-repo owner/repo                     # add one
+./setup.sh --remove-repo owner/repo                  # remove one
+```
+
+On Windows, the same three through `setup.ps1`, as named parameters:
+
+```powershell
+.\setup.ps1 -ListRepos
+.\setup.ps1 -AddRepo owner/repo
+.\setup.ps1 -RemoveRepo owner/repo
+```
+
+Each short-circuits before any prompt, install or sync, and exits non-zero on
+failure so it can be scripted. Both writes are idempotent: adding a repository
+already present, or removing one that is not listed, changes nothing and says
+so.
+
+`--remove-repo` also drops the repository's `repo_config` entry, so settings do
+not accumulate for repositories nobody monitors. It does **not** touch open PRs,
+branches or issues in that repository — it only stops the worker looking at it.
+
+`--add-repo` validates the slug's shape but does **not** probe GitHub: telling
+you what is in a local file should not require credentials. It also does not
+seed the idle-task wrappers — the command to do that is printed after a
+successful add, or use the issue-driven flow below, which does everything.
+
 ## How to trigger
 
 File a GitHub issue in `stSoftwareAU/VibeCoder` whose **title** is:

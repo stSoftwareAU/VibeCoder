@@ -41,6 +41,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | gemini | provider | 0.55.1 | noarch: 4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e | exact version + SHA-256 verified |
 | gh | tool | 2.97.0 | amd64: a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112<br>arm64: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 | exact version + SHA-256 verified |
 | jq | tool | 1.8.2 | amd64: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f<br>arm64: 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 | exact version + SHA-256 verified |
+| pip | tool | 26.2.1 | noarch: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e | exact version + SHA-256 verified |
 | playwright-core | tool | 1.61.0-alpha-1778188671000 | chromium_amd64: 4f5dfbb09cc103573be201e870573fe53f36b1de076ac649049c421bb5b31e69<br>chromium_arm64: 549844a1f15687f91486645079ec0e495a880687e6813e2d42ef4d044782d589<br>noarch: d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516 | exact version + SHA-256 verified |
 | actionlint | toolchain | 1.7.12 | amd64: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8<br>arm64: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 | exact version + SHA-256 verified |
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
@@ -48,6 +49,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | node | toolchain | 24.19.0 | amd64: 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647<br>arm64: 01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc | exact version + SHA-256 verified |
 | npm | toolchain | 12.0.2 | noarch: 5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1 | exact version + SHA-256 verified |
 | rust | toolchain | 1.98.0 | amd64: aa30409afa67bd1ada244cefd82c7980e6a65bc113bb978e934b2413c75e3900<br>arm64: 5fbb4282403046d52a4672765c6761a809bf9f33e699b17e6eb7a93ab7770cc3<br>clippy_amd64: 22a5d1ed834c3b94cd5f5b0a7d1c804ca1124b7c1fadaf25583e452e6426ebd7<br>clippy_arm64: 2333ba7932e2bc473f8cc05a41e3d4c65543fc6834ca61da4be5590457e52a9b<br>rustfmt_amd64: 0f425a5e8e9826840f4105d71f2e758f55ff21cb1805670dffd2c93e8e0a9a95<br>rustfmt_arm64: 61f29320c8bc790bcf5f82020b7487bb5c6427bed76fd0a9b7241cf1249eaf51 | exact version + SHA-256 verified |
+| semgrep | toolchain | 1.173.0 | amd64: cb21aa06246bdd79d3e9e7f9118ec7baecb1be39cf89c46e07af13b4128d7b79<br>arm64: e1a508dd8bccaff05482bb2968d4ae84a432f932e502d3caccdb3d525da51f22 | exact version + SHA-256 verified |
 | shellcheck | toolchain | 0.11.0 | amd64: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198<br>arm64: 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 | exact version + SHA-256 verified |
 
 ## Worker Deno dependencies

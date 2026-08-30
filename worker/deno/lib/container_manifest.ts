@@ -138,7 +138,9 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * private-repo-14 crates) drive `cargo`/`cargo-clippy`/`rustfmt` and hard-fail without
  * `cargo-deny`, every gate carrying shell scripts runs `shellcheck`, private-repo-14-
  * scorer runs `actionlint`, and this repo's own gate drives `markdownlint-cli2`
- * against `.markdownlint-cli2.jsonc`. Each must be supplied by a manifest
+ * against `.markdownlint-cli2.jsonc` and `semgrep` over the branch's changed
+ * files (Issue #650 — without the binary that SAST stage SKIPs on every fleet
+ * run and findings are met only in CI). Each must be supplied by a manifest
  * toolchain, so the image never falls back to a host-installed equivalent.
  */
 export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
@@ -150,6 +152,7 @@ export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "shellcheck",
   "actionlint",
   "markdownlint-cli2",
+  "semgrep",
 ];
 
 /** Aliases that resolve to "whatever upstream published most recently". */

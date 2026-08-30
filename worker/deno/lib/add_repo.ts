@@ -242,3 +242,144 @@ export async function addRepoToMonitoredList(
 
   return { ok: true, value: { added: true } };
 }
+
+/**
+ * Remove a repository from the monitored list (Issue #672).
+ *
+ * The counterpart to {@link addRepoToMonitoredList}. Adding was automated
+ * years before removing was, because adding arrives as an `add-repo:` issue
+ * and removing only ever arrived as an operator editing JSON by hand — which
+ * is exactly the asymmetry that made the list drift.
+ *
+ * Also drops the repository's `repo_config` entry, if it has one. Leaving it
+ * behind would accumulate settings for repositories nobody monitors, and the
+ * next reader cannot tell a deliberate parked entry from forgotten debris.
+ *
+ * Idempotent: removing a repository that is not listed reports
+ * `{ removed: false }` and rewrites nothing.
+ *
+ * @param repo - The `owner/repo` slug to remove (untrusted; re-validated).
+ * @param configPath - Path to the `.config.json` file.
+ * @param deps - Injected filesystem functions (defaults to real Deno I/O).
+ */
+export async function removeRepoFromMonitoredList(
+  repo: string,
+  configPath: string,
+  deps: AddRepoFsDeps = defaultFsDeps,
+): Promise<Result<{ removed: boolean; repoConfigRemoved: boolean }>> {
+  const slug = repo.trim();
+
+  if (!REPO_SLUG_PATTERN.test(slug)) {
+    return {
+      ok: false,
+      error: new Error(
+        `Invalid repository slug "${repo}": expected owner/repo format.`,
+      ),
+    };
+  }
+
+  let raw = "";
+  try {
+    raw = await deps.readTextFile(configPath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Unlike add, a missing config is NOT benign here: there is no list to
+    // remove from, and silently reporting success would tell the operator
+    // their repository is gone when nothing was ever read.
+    return {
+      ok: false,
+      error: new Error(`Failed to read ${configPath}: ${message}`),
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      ok: false,
+      error: new Error(`Config file ${configPath} contains invalid JSON.`),
+    };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: new Error(`Config file ${configPath} is not a JSON object.`),
+    };
+  }
+  const config = parsed as Record<string, unknown>;
+
+  const existing = Array.isArray(config.repos)
+    ? (config.repos as unknown[]).filter(
+      (r): r is string => typeof r === "string",
+    )
+    : [];
+
+  if (!existing.includes(slug)) {
+    return { ok: true, value: { removed: false, repoConfigRemoved: false } };
+  }
+
+  config.repos = existing.filter((r) => r !== slug);
+
+  let repoConfigRemoved = false;
+  const repoConfig = config.repo_config;
+  if (
+    typeof repoConfig === "object" && repoConfig !== null &&
+    !Array.isArray(repoConfig) &&
+    Object.hasOwn(repoConfig as Record<string, unknown>, slug)
+  ) {
+    delete (repoConfig as Record<string, unknown>)[slug];
+    repoConfigRemoved = true;
+  }
+
+  try {
+    await deps.writeTextFile(
+      configPath,
+      JSON.stringify(config, null, 2) + "\n",
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: new Error(`Failed to write ${configPath}: ${message}`),
+    };
+  }
+
+  return { ok: true, value: { removed: true, repoConfigRemoved } };
+}
+
+/**
+ * The monitored repositories, in config order (Issue #672).
+ *
+ * Read-only: `--list-repos` exists so an operator can see what they are about
+ * to change without opening the file, which is the step the old flow skipped.
+ */
+export async function listMonitoredRepos(
+  configPath: string,
+  deps: AddRepoFsDeps = defaultFsDeps,
+): Promise<Result<string[]>> {
+  let raw = "";
+  try {
+    raw = await deps.readTextFile(configPath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: new Error(`Failed to read ${configPath}: ${message}`),
+    };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const repos = Array.isArray(parsed.repos)
+      ? (parsed.repos as unknown[]).filter(
+        (r): r is string => typeof r === "string",
+      )
+      : [];
+    return { ok: true, value: repos };
+  } catch {
+    return {
+      ok: false,
+      error: new Error(`Config file ${configPath} contains invalid JSON.`),
+    };
+  }
+}

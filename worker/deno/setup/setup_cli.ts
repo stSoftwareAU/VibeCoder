@@ -23,6 +23,7 @@
  *   gitignore-sync     Apply canonical .gitignore + .gitattributes safety blocks to monitored repos
  *   verify-monitored-collaborator  Precheck worker collaborator access on every repo
  *   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
+ *   repos              List monitored repositories; --add / --remove one (Issue #672)
  *   hooks              Install pre-commit hook and git exclude patterns
  *   all                Run full setup (default)
  *
@@ -56,6 +57,11 @@ import {
   setupScheduledTask,
 } from "./scheduled_task.ts";
 import { setupPlaywrightMcp } from "./screenshot.ts";
+import {
+  addRepoToMonitoredList,
+  listMonitoredRepos,
+  removeRepoFromMonitoredList,
+} from "../lib/add_repo.ts";
 import { syncLabelsForAllRepos } from "./label_sync.ts";
 import { reconcileLabelColoursForAllRepos } from "./label_colour_reconcile.ts";
 import { syncWorkflowsForAllRepos } from "./workflow_sync.ts";
@@ -1132,6 +1138,78 @@ async function runAll(
 
 // ── Main ────────────────────────────────────────────────────────────────
 
+/**
+ * Add, remove or list monitored repositories (Issue #672).
+ *
+ * The operator-facing half of a flow that was only ever automated for the
+ * `add-repo:` issue path. Adding a repository by hand meant editing
+ * `.config.json` — and removing one had no path at all — so the list drifted
+ * and a mistyped slug was found by the next run rather than at the keyboard.
+ *
+ * `--add` validates the slug's shape before anything is written. It does NOT
+ * probe GitHub: that needs credentials this command should not require to
+ * tell you what is in a local file, and `process-add-repo` already does the
+ * full validation for the issue-driven path.
+ */
+async function runRepos(
+  configPath: string,
+  addRepo: string,
+  removeRepo: string,
+): Promise<boolean> {
+  if (addRepo) {
+    const result = await addRepoToMonitoredList(addRepo, configPath);
+    if (!result.ok) {
+      printError(result.error.message);
+      return false;
+    }
+    if (result.value.added) {
+      printSuccess(`Added ${addRepo} to the monitored repositories.`);
+      printInfo(
+        "It is picked up on the next cycle. Seed its idle-task wrappers with: " +
+          `deno run --allow-all worker/deno/mod.ts raise-all-idle-tasks --monitored-repos ${addRepo}`,
+      );
+    } else {
+      printInfo(`${addRepo} is already monitored — nothing changed.`);
+    }
+    return true;
+  }
+
+  if (removeRepo) {
+    const result = await removeRepoFromMonitoredList(removeRepo, configPath);
+    if (!result.ok) {
+      printError(result.error.message);
+      return false;
+    }
+    if (result.value.removed) {
+      printSuccess(`Removed ${removeRepo} from the monitored repositories.`);
+      if (result.value.repoConfigRemoved) {
+        printInfo(`Its repo_config entry was removed too.`);
+      }
+      printInfo(
+        "Open PRs and branches in that repository are left alone — this only " +
+          "stops the worker looking at it.",
+      );
+    } else {
+      printInfo(`${removeRepo} was not in the list — nothing changed.`);
+    }
+    return true;
+  }
+
+  // Neither flag: list. Seeing the list is the step the old flow skipped.
+  const listed = await listMonitoredRepos(configPath);
+  if (!listed.ok) {
+    printError(listed.error.message);
+    return false;
+  }
+  if (listed.value.length === 0) {
+    printInfo("No repositories are monitored yet.");
+    return true;
+  }
+  printInfo(`${listed.value.length} monitored repositories:`);
+  for (const repo of listed.value) console.log(`  ${repo}`);
+  return true;
+}
+
 function usage(): void {
   console.log(
     `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
@@ -1152,6 +1230,7 @@ Subcommands:
   verify-monitored-collaborator  Precheck worker collaborator access on every repo
   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
   backfill-idle-task-labels  Apply idle-task label to existing security-scan wrappers
+  repos           List monitored repositories (--add owner/repo, --remove owner/repo)
   hooks           Install pre-commit hook and git exclude patterns
   scheduled-task  Register the Windows Task Scheduler entry (--status / --uninstall to query or remove it)
   all             Run full setup (default)`,
@@ -1170,6 +1249,8 @@ if (import.meta.main) {
   let uninstall = false;
   let status = false;
   let autoInstall = false;
+  let addRepo = "";
+  let removeRepo = "";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--script-dir" && args[i + 1]) {
@@ -1189,6 +1270,10 @@ if (import.meta.main) {
       status = true;
     } else if (args[i] === "--auto-install") {
       autoInstall = true;
+    } else if (args[i] === "--add" && args[i + 1]) {
+      addRepo = args[++i]!;
+    } else if (args[i] === "--remove" && args[i + 1]) {
+      removeRepo = args[++i]!;
     }
   }
 
@@ -1248,6 +1333,9 @@ if (import.meta.main) {
       break;
     case "backfill-idle-task-labels":
       ok = await runBackfillIdleTaskLabels(configPath);
+      break;
+    case "repos":
+      ok = await runRepos(configPath, addRepo, removeRepo);
       break;
     case "hooks":
       ok = await runHooks(scriptDir);
