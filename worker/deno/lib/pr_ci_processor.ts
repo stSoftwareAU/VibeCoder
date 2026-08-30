@@ -48,6 +48,7 @@ import {
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
 import { classifyCiFailure } from "./ci_failure_classifier.ts";
+import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import {
   type AutoFixAttempt,
   buildAutoFixCapSummary,
@@ -162,7 +163,11 @@ export interface CiProcessorDeps {
    * resets on every push.
    */
   maxAutoFixAttempts?: number;
-  /** State directory for CI retry tracking. */
+  /**
+   * State directory for CI retry tracking. Defaults to
+   * {@link resolveCiCheckStateDir} — an absolute path inside the work
+   * directory, never relative to the process cwd (Issue #552).
+   */
   stateDir?: string;
   /** Claude model override. */
   claudeModel?: string;
@@ -219,39 +224,14 @@ const DEFAULT_MAX_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT =
   OPERATIONAL_DEFAULTS.claudeNoOutputTimeout;
 const DEFAULT_MAX_CI_RETRIES = 3;
-/**
- * Leaf name of the CI retry-state directory.
- *
- * Never used bare: {@link resolveCiCheckStateDir} puts it somewhere writable.
- */
-export const CI_CHECK_STATE_DIR_NAME = ".ci_check_state";
 
-/**
- * Where the CI retry counters belong (Issue #580).
- *
- * They used to be a bare relative path, resolved against the process CWD —
- * which is the worker checkout, mounted READ-ONLY since Issue #514. Every
- * CI-fix pass then died on its first counter write:
- *
- *     ERROR: [m1] Error in priority 1.55 (CI Fix): Read-only file system
- *            (os error 30): writefile '.ci_check_state/....retries'
- *
- * so the fleet could not repair a single red check, and the stall watchdog
- * escalated PRs to humans for failures it had made itself unable to fix.
- *
- * The counters bound retries across container restarts, so they belong on the
- * work volume — durable and writable — not on scratch and not on the CWD.
- *
- * @param workDir - The resolved work directory (the volume mount).
- * @param env - Environment lookup, injectable for testing.
- */
-export function resolveCiCheckStateDir(
-  workDir?: string,
-  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
-): string {
-  const base = workDir?.trim() || env("WORK_DIR")?.trim();
-  return base ? `${base}/${CI_CHECK_STATE_DIR_NAME}` : CI_CHECK_STATE_DIR_NAME;
-}
+// Issue #580 introduced the resolver here; Issue #552 moved it into its own
+// module so `pr_maintenance` can share it without importing this one. Both
+// names stay exported from here for the callers that already import them.
+export {
+  CI_CHECK_STATE_DIR_NAME,
+  resolveCiCheckStateDir,
+} from "./ci_check_state_dir.ts";
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -449,6 +429,8 @@ async function _processCiFailureLocked(
     logger,
     deps,
     maxCiRetries = DEFAULT_MAX_CI_RETRIES,
+    // Issue #552: absolute, inside the writable work directory — never
+    // relative to a cwd that is read-only in container mode.
     stateDir = resolveCiCheckStateDir(),
     ghCommandFn,
   } = processorDeps;

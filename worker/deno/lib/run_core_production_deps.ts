@@ -1454,6 +1454,10 @@ export async function createProductionRunCoreDeps(
         cache: issueCache,
         shuffleRepos: shuffleArray,
         maxRetries: 3,
+        // Issue #552: one absolute, writable store shared with the processor
+        // below. The old relative default resolved against the read-only
+        // `--base-dir` mount, so every CI fix aborted before it started.
+        stateDir: resolveCiCheckStateDir({ workDir }),
         prAuthors: fleetPrAuthorInput.fleetPrAuthors,
         allowedAuthors: fleetPrAuthorInput.allowedAuthors,
       });
@@ -1530,6 +1534,9 @@ export async function createProductionRunCoreDeps(
             maxRateLimitRetries: config.maxRateLimitRetries,
             // Issue #3582: cap auto-fix attempts per stable failure signature.
             maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
+            // Issue #552: the same absolute store the scan above reads, so
+            // the retry counter survives a read-only working directory.
+            stateDir: resolveCiCheckStateDir({ workDir }),
             repoConfigs: config.repoConfig,
             // Issue #3754: cross-host PR lock so two hosts cannot fix the
             // same PR's CI failure concurrently.
