@@ -274,9 +274,11 @@ state files — no last-scanned timestamps, no idle-cycle counter, no scan lock)
 
    - **Title:** the literal string `Run a security scan`.
    - **Body:** the latest `prompts/security_scan/` template with
-     the two remaining placeholders (`{{SUPPRESSED_IDS}}`,
-     `{{KNOWN_OPEN_FINDING_IDS}}`) substituted at file time — no hidden
-     marker, no parameters block. Language detection now happens inside
+     the three remaining placeholders (`{{SUPPRESSED_IDS}}`,
+     `{{KNOWN_OPEN_FINDING_IDS}}`, `{{OPEN_ISSUE_TITLES}}`) substituted
+     at file time — no hidden marker, no parameters block. The two dedup
+     lists render as `(none)` on the wrapper itself and are rebuilt from
+     live issues at claim time. Language detection now happens inside
      the scanning agent during the Phase 1 inventory step (free-form
      filesystem inspection), so the worker no longer substitutes a
      language list at raise time. retired the `{{REPO_FULL_NAME}}`
@@ -468,17 +470,27 @@ will re-detect the same root cause and either skip it (still open),
 re-file it (closed + re-introduced after the dedup window), or omit
 it entirely (suppression marker now present).
 
-Claude also receives two dedup lists at prompt-build time so it can
+Claude also receives three lists at prompt-build time so it can
 prune candidates before Phase 4 fires its `gh issue create` calls:
 
 - `{{KNOWN_OPEN_FINDING_IDS}}` — stable ids of currently-open
-  scanner-filed issues in the repo.
+  scanner-filed issues in the repo, read **repo-wide** from the
+  `<!-- finding-id: … -->` body marker regardless of label.
+- `{{OPEN_ISSUE_TITLES}}` — every open issue in the repo as
+  `#<number> — <title>`, again **repo-wide and label-blind**, so a
+  finding already tracked under another scan's label (or typed by a
+  human) is recognised semantically.
 - `{{SUPPRESSED_IDS}}` — stable ids appearing in an in-source
   `security-scan-ignore: SEC-…` comment (grammar in
   [`worker/deno/lib/suppression_comments.ts`](../worker/deno/lib/suppression_comments.ts)).
 
-Suppressed and known-open findings are dropped silently in Phase 3
-triage and are never filed.
+Each renders `(none)` when empty. Suppressed and already-open findings
+are dropped **silently** in Phase 3 triage — never filed, and never
+commented on or cross-linked to the existing issue. Both dedup lists are
+bounded (300 titles, 200 finding-id bodies) and hitting the bound is
+logged loudly; see
+[Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)
+in the framework manual.
 
 ## Close-comment shape
 

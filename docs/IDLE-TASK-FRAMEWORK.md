@@ -215,9 +215,13 @@ internal templates. The `security-scan` template, for example, files its wrapper
 as:
 
 - **Title:** `Run a security scan`
-- **Body:** the latest `prompts/security_scan/` template with the two remaining
+- **Body:** the latest `prompts/security_scan/` template with the remaining
   placeholders substituted at file time — `{{SUPPRESSED_IDS}}`,
-  `{{KNOWN_OPEN_FINDING_IDS}}` (retired `{{REPO_FULL_NAME}}`).
+  `{{KNOWN_OPEN_FINDING_IDS}}` and `{{OPEN_ISSUE_TITLES}}` (retired
+  `{{REPO_FULL_NAME}}`). The two dedup placeholders render `(none)` on the
+  wrapper itself; both real lists are rebuilt repo-wide from live issues at
+  claim time — see
+  [Cross-label dedup](#cross-label-dedup--the-open-issue-title-list).
   Language detection now happens inside the scanning agent during the Phase 1
   inventory step (free-form filesystem inspection), so the worker no longer
   substitutes a language list at raise time.
@@ -304,35 +308,87 @@ trawling the worker logs.
 
 ### Cross-label dedup — the open-issue title list
 
-`{{KNOWN_OPEN_FINDING_IDS}}` is the **deterministic first line** of dedup: a
-scan skips any finding whose `<!-- finding-id: … -->` marker is already open
-under that scan's own label. It is blind to a duplicate filed by a *different*
-template or carrying only a workflow label — the `github-actions-audit` scan
-filed a CODEOWNERS finding that had been open for three days under
-`needs-human` alone.
+Dedup is **two lines, both repo-wide**. Neither is scoped to the scan's own
+label: a finding already open under a *different* template's label, or under a
+workflow label alone, is still a duplicate.
+
+`{{KNOWN_OPEN_FINDING_IDS}}` is the **deterministic first line**: a scan skips
+any finding whose `<!-- finding-id: … -->` marker is already open in the repo.
+[`listKnownOpenFindingIds`](../worker/deno/lib/idle_task_snapshot.ts) — and its
+pre-file sibling `findOpenIssueByFindingId` — issue **no** `--label` argument
+(Issue #539); the marker is the key and the label is not part of it. They used
+to narrow by label, which is exactly how a relabelled finding
+(`github-actions-audit` triaged into `needs-human`) was re-filed as
+NEAT-AI-Rebase #64 over the still-open #37. The `logLabel` argument names the
+calling scan in log lines only — it never filters results — and the `idPrefix`
+argument (default `BP-`) keeps another scan's ids (`SEC-…`, `SWEEP-…`) out of
+this scan's skip-list.
 
 `{{OPEN_ISSUE_TITLES}}` is the **semantic second line** (Issue #537,
-parent #523). Every scan template that files judgement-bearing findings calls
+parent #523). It catches the duplicate the marker cannot: the same problem filed
+under a different id, or typed by a human. Every scan template that files
+judgement-bearing findings calls
 [`listAllOpenIssueTitles`](../worker/deno/lib/idle_task_snapshot.ts) in
 `runTask` — one repo-wide `gh issue list --state open --json number,title`,
 whatever the label — and passes the result into its `assemble*Prompt`, which
 renders it with `renderOpenIssueTitles` as one `#<number> — <title>` line per
-issue (`(none)` when empty). A detected duplicate is simply **not filed**; the
-scan neither comments on nor cross-links the existing issue.
+issue (`(none)` when empty). Titles are capped at 160 characters with a visible
+`…`, and a title scrubbed to nothing renders `(untitled)` rather than a blank
+line.
+
+Dedup is against **open** issues only, and a detected duplicate is **silently
+skipped**: the scan does not file the finding, and it neither comments on nor
+cross-links the existing issue. The only trace is the absence of a new issue, so
+an operator asking "why did this scan file nothing?" reads the open issues, not
+a scan comment. A finding whose earlier issue was **closed** may legitimately
+re-file if the problem recurs.
 
 Both lists degrade safely: a `gh` failure returns an empty list, the placeholder
 renders `(none)`, and the scan still runs. Titles are untrusted GitHub text, so
 each is scrubbed of delimiter patterns and HTML comments before it enters a
-prompt.
+prompt — no forged `<!-- finding-id: … -->` marker can form inside one.
+
+#### Both lists are bounded — and say so loudly
+
+Neither query is unbounded, so on a busy repo the skip-list can be **shorter
+than the repo's open issues**:
+
+| List                          | Bound         | Why                                            |
+| ----------------------------- | ------------- | ---------------------------------------------- |
+| `{{OPEN_ISSUE_TITLES}}`       | 300 issues    | `--limit` on the title query (caller-overridable via `opts.limit`) |
+| `{{KNOWN_OPEN_FINDING_IDS}}`  | 200 issues    | whole issue **bodies** are an order of magnitude heavier than titles |
+
+Hitting either bound is **logged loudly** on stderr, never truncated silently —
+a truncated skip-list reads to the model exactly like "no duplicate found":
+
+```text
+[idle-task-snapshot] listAllOpenIssueTitles: owner/repo: open-issue list hit the
+300-issue limit — the dedup skip-list is TRUNCATED and duplicates beyond it will
+not be seen. Raise the limit for this repo.
+```
+
+```text
+[idle-task-snapshot] list <scan> finding ids: owner/repo: open-issue list hit the
+200-issue limit — finding-id dedup is TRUNCATED and duplicates beyond it will not
+be seen. Raise the limit for this repo.
+```
+
+So when a scan files a finding that was already open, **check the run log for a
+`TRUNCATED` line first**: on a repo with more open issues than the bound, the
+duplicate simply fell outside the window the model was shown. The fix is to
+raise the limit for that repo (or to close the backlog), not to re-scope the
+query by label.
 
 ```mermaid
 flowchart LR
-    R["runTask"] --> K["listKnownOpenFindingIds()<br/>label-scoped finding ids"]
-    R --> T["listAllOpenIssueTitles()<br/>repo-wide, any label"]
+    R["runTask"] --> K["listKnownOpenFindingIds()<br/>repo-wide, any label<br/>≤ 200 issues"]
+    R --> T["listAllOpenIssueTitles()<br/>repo-wide, any label<br/>≤ 300 issues"]
     K --> A["assemble*Prompt()"]
     T --> A
     A --> P["{{KNOWN_OPEN_FINDING_IDS}}<br/>{{OPEN_ISSUE_TITLES}}"]
-    P --> C["Claude files only<br/>non-duplicate findings"]
+    P --> C["Claude silently skips duplicates,<br/>files only new findings"]
+    K -. bound hit .-> L["stderr: … is TRUNCATED …"]
+    T -. bound hit .-> L
 ```
 
 The **native** templates (`alert-feed`, `bash-script-refs`, `bash-syntax-audit`,
@@ -360,6 +416,21 @@ So a new template must do one of two things before CI goes green:
 An implicit skip is not available, which is the point: wiring seventeen
 templates up once does not stop the eighteenth being written against the old,
 label-scoped pattern.
+
+Wiring a template up means all four of:
+
+1. **Fetch both lists repo-wide in `runTask`** — `listKnownOpenFindingIds` and
+   `listAllOpenIssueTitles`, neither with a `--label` argument.
+2. **Pass both into `assemble*Prompt`**, rendering the title list with
+   `renderOpenIssueTitles` so an empty repo yields `(none)`.
+3. **Carry both placeholders in the prompt** —
+   `prompts/<type>/` must substitute `{{KNOWN_OPEN_FINDING_IDS}}` *and*
+   `{{OPEN_ISSUE_TITLES}}`, and instruct the model to **skip** — not comment on,
+   not cross-link — any finding already covered by either list, whatever label
+   that issue carries.
+4. **Document both in the template's scan doc**, beside the `(none)`-on-empty
+   note. `tests/dedup_placeholder_docs_test.ts` fails when a published doc
+   names `{{KNOWN_OPEN_FINDING_IDS}}` without `{{OPEN_ISSUE_TITLES}}`.
 
 ### Wrapper body size limit
 
@@ -1650,7 +1721,19 @@ claim-handler all behave identically without any further plumbing.
    import "./idle_task_templates/my_template.ts";
    ```
 
-3. **Add tests** under `worker/deno/tests/`:
+3. **Wire up the two-line dedup contract** — mandatory for any template that
+   files judgement-bearing findings, and enforced by
+   [`idle_task_scan_dedup_conformance_test.ts`](../worker/deno/tests/idle_task_scan_dedup_conformance_test.ts):
+   fetch `listKnownOpenFindingIds` **and** `listAllOpenIssueTitles` repo-wide
+   (no `--label`), pass both into `assemble*Prompt`, substitute
+   `{{KNOWN_OPEN_FINDING_IDS}}` and `{{OPEN_ISSUE_TITLES}}` in the prompt, and
+   list both in the template's scan doc. A template with no semantic-duplicate
+   surface (a **native**, no-LLM detector filing fixed-id findings) is exempted
+   instead, by name and with a reason, in the conformance test's
+   `NON_PARTICIPATING` set — never by saying nothing. Full contract:
+   [Cross-label dedup](#cross-label-dedup--the-open-issue-title-list).
+
+4. **Add tests** under `worker/deno/tests/`:
    - A unit test that calls `registerTemplate(myTemplate)` and asserts
      `getTemplate("my-template")` returns the same instance.
    - A test that exercises `buildIssueTitle` + `buildIssueBody` and asserts the
@@ -1659,7 +1742,7 @@ claim-handler all behave identically without any further plumbing.
    - A test that drives `runTask()` against a stubbed workspace and asserts the
      returned `IdleTaskRunResult`.
 
-4. **Run the quality gate** — `./quality.sh < /dev/null` must pass before
+5. **Run the quality gate** — `./quality.sh < /dev/null` must pass before
    raising a PR.
 
 The framework intentionally keeps the template surface small: implementations
