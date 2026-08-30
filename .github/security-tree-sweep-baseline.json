@@ -16,7 +16,7 @@
     {
       "path": "worker/deno/lib/planning_processor.ts",
       "rule": "unsafe-regex",
-      "line": 176,
+      "line": 191,
       "reason": "The interpolated repository slug is escaped with the standard metacharacter replace immediately above the `new RegExp`, so no pattern syntax can reach the compiler (Issue #4193 triage of semgrep detect-non-literal-regexp)."
     },
     {
@@ -111,7 +111,7 @@
     {
       "path": "worker/deno/lib/planning_processor.ts",
       "rule": "unsafe-regex",
-      "line": 124,
+      "line": 139,
       "reason": "The pattern requires `/` immediately after `github.com`, so a look-alike host (`github.com.evil/`) does not match; the extracted URLs are then validated against the repository slug downstream (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
     },
     {
