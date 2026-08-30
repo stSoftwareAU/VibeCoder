@@ -93,8 +93,33 @@ export interface MilestoneRulesetFinding {
     | "direct-push-blocked"
     | "review-required"
     | "ruleset-disabled"
+    | "unreportable-checks"
     | "configured";
   message: string;
+}
+
+/**
+ * Findings for required contexts that no PR into the branch ever reports.
+ *
+ * A required check that cannot report blocks its PRs for ever, and nothing
+ * says so — the PR reads `MERGEABLE` and `BLOCKED` with no failing check to
+ * point at. GRQ #4560 sat exactly there: its `milestone/**` ruleset required
+ * `gitleaks` and `semgrep`, while eight workflows filtered their PR base with
+ * `branches: ["*"]` — a single-segment glob that never matches
+ * `milestone/4340-…`. Only `actionlint`, which used `["**"]`, ever ran.
+ *
+ * @param required - Contexts the ruleset demands.
+ * @param reported - Check names seen on a recent PR into the same branch
+ *   pattern; an empty list means nothing could be sampled, and nothing is
+ *   claimed.
+ */
+export function unreportableChecks(
+  required: readonly string[],
+  reported: readonly string[],
+): string[] {
+  if (reported.length === 0) return [];
+  const seen = new Set(reported);
+  return required.filter((context) => !seen.has(context));
 }
 
 /** Repository-role ids GitHub uses in a `RepositoryRole` bypass actor. */
@@ -180,6 +205,12 @@ export function serviceAccountCanBypass(
 export function assessMilestoneRuleset(
   rulesets: readonly RulesetDetail[],
   account: ServiceAccountContext,
+  /**
+   * Check names observed on a recent PR into a milestone branch, used to catch
+   * a required context that can never report. Omit when none could be sampled
+   * — the check is then skipped rather than guessed at.
+   */
+  reportedChecks: readonly string[] = [],
 ): MilestoneRulesetFinding[] {
   const covering = rulesets.filter(coversMilestoneBranches);
 
@@ -256,6 +287,26 @@ export function assessMilestoneRuleset(
               `request instead of pushing (Issue #589).`,
         });
       }
+    }
+
+    const missing = unreportableChecks(
+      contexts.map((c) => c.context).filter((c): c is string =>
+        typeof c === "string"
+      ),
+      reportedChecks,
+    );
+    if (missing.length > 0) {
+      findings.push({
+        severity: "error",
+        code: "unreportable-checks",
+        message:
+          `ruleset '${name}' requires ${missing.length} check(s) that no ` +
+          `milestone PR reports: ${missing.join(", ")}. Those PRs will read ` +
+          `MERGEABLE and BLOCKED for ever, with no failing check to point ` +
+          `at. Usually a workflow filtering its PR base with ` +
+          '`branches: ["*"]`, which matches one path segment and so never ' +
+          'matches `milestone/...` — `["**"]` does (Issue #586).',
+      });
     }
 
     const approvals = pullRequest?.parameters?.required_approving_review_count;
@@ -371,14 +422,63 @@ export async function checkMilestoneRuleset(
   login: string,
   ghFn: GhJson,
 ): Promise<MilestoneRulesetFinding[]> {
-  const [rulesets, permission] = await Promise.all([
+  const [rulesets, permission, reportedChecks] = await Promise.all([
     fetchRulesetDetails(repo, ghFn),
     fetchServiceAccountPermission(repo, login, ghFn),
+    fetchMilestonePrCheckNames(repo, ghFn),
   ]);
   return assessMilestoneRuleset(rulesets, {
     login,
     ...(permission !== undefined ? { permission } : {}),
-  });
+  }, reportedChecks);
+}
+
+/**
+ * Check names seen on the most recent PR into a milestone branch.
+ *
+ * The sample is what makes {@link unreportableChecks} answerable: a required
+ * context is only provably unreportable against a PR that actually ran. Open
+ * PRs first, then merged ones, because a merged PR's checks are the strongest
+ * evidence of what the base really runs.
+ *
+ * @returns The check names, or an empty list when no milestone PR could be
+ *   sampled — in which case nothing is claimed.
+ */
+export async function fetchMilestonePrCheckNames(
+  repo: string,
+  ghFn: GhJson,
+): Promise<string[]> {
+  for (const state of ["open", "merged"]) {
+    try {
+      const raw = await ghFn([
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        state,
+        "--search",
+        "base:milestone",
+        "--limit",
+        "1",
+        "--json",
+        "statusCheckRollup",
+      ]);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed) || parsed.length === 0) continue;
+      const rollup = parsed[0]?.statusCheckRollup;
+      if (!Array.isArray(rollup) || rollup.length === 0) continue;
+      const names = rollup
+        .map((check: { name?: string; context?: string }) =>
+          check.name ?? check.context
+        )
+        .filter((name: unknown): name is string => typeof name === "string");
+      if (names.length > 0) return names;
+    } catch {
+      // A listing that cannot be read proves nothing; try the next state.
+    }
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
