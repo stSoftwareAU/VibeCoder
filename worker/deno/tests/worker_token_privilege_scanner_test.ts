@@ -185,8 +185,12 @@ Deno.test("scanWorkerTokenPrivileges - an unreadable identity is reported but th
 });
 
 Deno.test("scanWorkerTokenPrivileges - an already-open finding id is not re-filed (Issue #599)", async () => {
-  const findings = await scanWorkerTokenPrivileges("org/repo", ghFor(ADMIN).gh, {
-    knownOpenFindingIds: [WORKER_TOKEN_RULESET_FINDING_ID],
-  });
+  const findings = await scanWorkerTokenPrivileges(
+    "org/repo",
+    ghFor(ADMIN).gh,
+    {
+      knownOpenFindingIds: [WORKER_TOKEN_RULESET_FINDING_ID],
+    },
+  );
   assertEquals(findings, []);
 });

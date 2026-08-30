@@ -180,7 +180,9 @@ export async function scanWorkerTokenPrivileges(
     findingId: WORKER_TOKEN_RULESET_FINDING_ID,
     severity: "high",
     title:
-      `🔴 The worker's GitHub token holds \`${granted[0]}\` on ${repo} — it can ` +
+      `🔴 The worker's GitHub token holds \`${
+        granted[0]
+      }\` on ${repo} — it can ` +
       "delete the ruleset that gates merges",
     file: "worker GitHub token",
     lines: 0,
