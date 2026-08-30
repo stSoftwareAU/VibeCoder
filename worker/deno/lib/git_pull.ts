@@ -11,6 +11,11 @@
 
 import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
+import { spawnGh } from "./gh_spawn.ts";
+import {
+  isRuleViolationPush,
+  raiseMilestoneSyncPr,
+} from "./milestone_sync_pr.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { buildBranchDeleteArgs } from "./git_branch_args.ts";
 import {
@@ -241,6 +246,67 @@ export async function syncFeatureBranchWithDefault(
 }
 
 /**
+ * Push the synced milestone branch, falling back to a pull request when a
+ * repository rule refuses the push (Issue #589).
+ *
+ * The gate that refuses the push is the same one that makes a PR into that
+ * branch auto-mergeable (Issue #586), so the fallback lands the identical
+ * merge unattended rather than failing the sync. A repository whose milestone
+ * branches are ungated never reaches the fallback.
+ *
+ * @returns A note to append to the sync's outcome, empty on the ordinary path.
+ */
+async function pushSyncedMilestoneBranch(
+  milestoneBranch: string,
+  defaultBranch: string,
+  options: GitCommandOptions,
+  repo?: string,
+): Promise<string> {
+  const push = await runGitCommand(
+    ["push", "origin", milestoneBranch],
+    options,
+  );
+  if (push.ok && push.value.code === 0) return "";
+
+  const stderr = push.ok ? push.value.stderr : push.error.message;
+  if (!isRuleViolationPush(stderr)) return "";
+
+  if (!repo) {
+    return `PUSH REFUSED by a repository rule and no repository was named, ` +
+      `so no sync PR could be raised (Issue #589) — `;
+  }
+
+  const raised = await raiseMilestoneSyncPr(
+    repo,
+    milestoneBranch,
+    defaultBranch,
+    {
+      git: async (args) => {
+        const result = await runGitCommand(args, options);
+        return result.ok
+          ? { code: result.value.code, stderr: result.value.stderr }
+          : { code: 1, stderr: result.error.message };
+      },
+      gh: async (args) => {
+        const result = await spawnGh(args);
+        if (!result.success) {
+          throw new Error(result.stderr.trim() || `gh exited ${result.code}`);
+        }
+        return result.stdout;
+      },
+    },
+  );
+  if (!raised.ok) {
+    return `PUSH REFUSED by a repository rule and the sync PR could not be ` +
+      `raised: ${raised.error.message} (Issue #589) — `;
+  }
+  return raised.value.opened
+    ? `RAISED a sync PR from '${raised.value.branch}' — the branch is gated, ` +
+      `so the push became a pull request (Issue #589) — `
+    : `UPDATED the open sync PR from '${raised.value.branch}' (Issue #589) — `;
+}
+
+/**
  * Sync a milestone branch with the default branch (Issue #422, #605).
  *
  * Uses merge (not rebase) to preserve milestone commit history.
@@ -254,6 +320,12 @@ export async function syncMilestoneBranchWithDefault(
   milestoneBranch: string,
   defaultBranch: string,
   options: GitCommandOptions = {},
+  /**
+   * `owner/repo`, needed only to raise a sync PR when a repository rule
+   * refuses the push (Issue #589). Absent keeps the previous behaviour and
+   * says so in the outcome rather than failing silently.
+   */
+  repo?: string,
 ): Promise<Result<string>> {
   // Pre-check disk space before pull/merge (Issue #1174)
   if (options.cwd) {
@@ -413,12 +485,18 @@ export async function syncMilestoneBranchWithDefault(
   );
 
   if (mergeResult.ok && mergeResult.value.code === 0) {
-    // Push the synced milestone branch (Issue #605)
-    await runGitCommand(["push", "origin", milestoneBranch], options);
+    // Push the synced milestone branch (Issue #605), or raise a PR for it
+    // where a repository rule refuses the push (Issue #589).
+    const cleanPushNote = await pushSyncedMilestoneBranch(
+      milestoneBranch,
+      defaultBranch,
+      options,
+      repo,
+    );
     return {
       ok: true,
       value:
-        `${selfHealNote}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)`,
+        `${selfHealNote}${cleanPushNote}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)`,
     };
   }
 
@@ -432,11 +510,16 @@ export async function syncMilestoneBranchWithDefault(
   );
 
   if (retryResult.ok && retryResult.value.code === 0) {
-    await runGitCommand(["push", "origin", milestoneBranch], options);
+    const pushNote = await pushSyncedMilestoneBranch(
+      milestoneBranch,
+      defaultBranch,
+      options,
+      repo,
+    );
     return {
       ok: true,
       value:
-        `${selfHealNote}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
+        `${selfHealNote}${pushNote}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
     };
   }
 
@@ -506,11 +589,16 @@ export async function syncMilestoneBranchWithDefault(
     }
   }
 
-  await runGitCommand(["push", "origin", milestoneBranch], options);
+  const resolvedPushNote = await pushSyncedMilestoneBranch(
+    milestoneBranch,
+    defaultBranch,
+    options,
+    repo,
+  );
   return {
     ok: true,
     value:
-      `${selfHealNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
+      `${selfHealNote}${resolvedPushNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
   };
 }
 
