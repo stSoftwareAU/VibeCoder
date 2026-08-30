@@ -1900,3 +1900,101 @@ Deno.test("#460 - the same repo claimed twice is recorded once", () => {
   tracker.recordClaim("stSoftwareAU/GRQ");
   assertEquals(tracker.claimedRepos.size, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Tests — a transient network failure is not a crash (Issue #644)
+//
+// A run on GRQ-23 did 7.5 minutes of startup, reached its maintenance lane,
+// and died on one blip:
+//
+//   Fatal error in main loop: gh command failed (exit 1):
+//   Post "https://api.github.com/graphql": unexpected EOF
+//
+// Zero issues processed, and the launcher counted a crash — five consecutive
+// by the time anyone looked, every one of them the same flaky link.
+// ---------------------------------------------------------------------------
+
+Deno.test("run_core - a transient network failure halts without claiming a crash (Issue #644)", async () => {
+  let crashNotifications = 0;
+  const errorLines: string[] = [];
+  const logLines: string[] = [];
+  let nowValue = 0;
+
+  const deps = createMockDeps({
+    log: (msg: string) => logLines.push(msg),
+    logError: (msg: string) => errorLines.push(msg),
+    findNextIssue: () => {
+      throw new Error(
+        `gh command failed (exit 1): Post "https://api.github.com/graphql": unexpected EOF`,
+      );
+    },
+    sendCrashNotification: () => {
+      crashNotifications++;
+      return Promise.resolve();
+    },
+    now: () => nowValue,
+    sleep: () => {
+      nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  const result = await runCoreLoop(config, deps);
+
+  // The crux: the launcher must not read this as a crash. Recorded as one it
+  // spends the escalation budget on a fault nobody can act on, and buries the
+  // real ones behind a streak of flaky-link "failures".
+  assertEquals(result.fatalError, false);
+  assertEquals(crashNotifications, 0);
+  assertEquals(
+    errorLines.some((l) => l.includes("Fatal error in main loop")),
+    false,
+    `must not log a fatal error: ${errorLines.join(" | ")}`,
+  );
+
+  // And it must say what actually happened, so nobody goes hunting for a
+  // worker fault that was never there.
+  assertStringIncludes(result.exitReason, "Transient network");
+  assert(
+    logLines.some((l) => l.includes("the network failed, not the worker")),
+    `expected a network-halt line, got: ${logLines.join(" | ")}`,
+  );
+});
+
+Deno.test("run_core - a genuine fault is still fatal, network patterns notwithstanding (Issue #644)", async () => {
+  // The guard against the opposite mistake: a real bug must not be waved
+  // through as a blip just because this classification exists.
+  let crashNotifications = 0;
+  const errorLines: string[] = [];
+  let nowValue = 0;
+
+  const deps = createMockDeps({
+    logError: (msg: string) => errorLines.push(msg),
+    findNextIssue: () => {
+      throw new Error(
+        "HTTP 404: Not Found (https://api.github.com/repos/org/gone)",
+      );
+    },
+    sendCrashNotification: () => {
+      crashNotifications++;
+      return Promise.resolve();
+    },
+    now: () => nowValue,
+    sleep: () => {
+      nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  const result = await runCoreLoop(config, deps);
+
+  assertEquals(result.fatalError, true);
+  assertEquals(crashNotifications, 1);
+  assertStringIncludes(result.exitReason, "Fatal");
+});
