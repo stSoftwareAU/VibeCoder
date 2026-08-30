@@ -77,6 +77,20 @@ const claudeFixed: Partial<ClaudeDeps> = {
     })) as unknown as ClaudeDeps["runClaudeWithRetry"],
 };
 
+/**
+ * Issue #579: a claim that the push landed is now made against the REMOTE,
+ * not against local state. Tests that assert a successful push therefore say
+ * so explicitly — clean local state, and a moved HEAD, are no longer
+ * sufficient evidence on their own.
+ */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
+
 Deno.test("processCiFailure - rebases onto the moved head, pushes, and posts no 'check the branch' comment (Issue #211)", async () => {
   const tmpDir = await Deno.makeTempDir();
   const bodies: string[] = [];
@@ -115,6 +129,7 @@ Deno.test("processCiFailure - rebases onto the moved head, pushes, and posts no 
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);

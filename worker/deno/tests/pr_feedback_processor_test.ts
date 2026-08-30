@@ -7,7 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildFeedbackCommitMessage,
   decodeCommentBody,
@@ -60,6 +60,20 @@ function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
 // ============================================================================
 // decodeCommentBody
 // ============================================================================
+
+/**
+ * Issue #579: a claim that the push landed is now made against the REMOTE,
+ * not against local state. Tests that assert a successful push therefore say
+ * so explicitly — the whole point is that clean local state is no longer
+ * sufficient evidence.
+ */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
 
 Deno.test("decodeCommentBody - decodes valid base64", () => {
   const encoded = btoa("Hello World");
@@ -143,6 +157,7 @@ Deno.test("processPrFeedback - succeeds with mock Claude output", async () => {
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
     qualityInstructions: "",
   };
 
@@ -302,6 +317,7 @@ Deno.test("processPrFeedback - proceeds when claim won", async () => {
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
     workerId: "my-worker",
   };
 
@@ -642,6 +658,7 @@ Deno.test("processPrFeedback - pushes commits after Claude makes changes (Issue 
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
   const input = makeInput();
@@ -800,6 +817,7 @@ Deno.test("processPrFeedback - uses .pr_response_message as comment body when pr
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processPrFeedback(makeInput(), processorDeps);
@@ -864,6 +882,7 @@ Deno.test("processPrFeedback - falls back to default message when .pr_response_m
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processPrFeedback(makeInput(), processorDeps);
@@ -999,4 +1018,179 @@ Deno.test("processPrFeedback - reports no changes when Claude does nothing (Issu
     true,
     "commitAndPushPending is always invoked as the final-mile guard (Issue #1643)",
   );
+});
+
+// ===========================================================================
+// Issue #579 — a completion claim must be verified against the remote
+//
+// PR #549: the agent posted "Unblocked — both things holding this PR are
+// fixed and pushed" at 00:40:26Z. The branch's last commit was 21:23:04Z and
+// nothing had been pushed; git auth had failed silently. A run that fails
+// loudly gets retried. A run that reports success is finished — the claim
+// goes on the PR, the budget is spent, and the lane moves on.
+// ===========================================================================
+
+Deno.test("processPrFeedback - a local commit with a failed push never claims success (Issue #579)", async () => {
+  let commentBody = "";
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: (args: string[]) => {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0 && args[bodyIdx + 1]) commentBody = args[bodyIdx + 1]!;
+      return Promise.resolve("");
+    },
+  };
+
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      // The exact incident shape: the push helper fails outright, so no
+      // unpushed count is ever measured...
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("could not read Username for 'https://github.com'"),
+        })) as unknown as GitDeps["commitAndPushPending"],
+      // ...while Claude's own local commit moves HEAD. Before this fix, the
+      // unmeasured count defaulted to 0, `0 === 0 && hasChanges` was true,
+      // and the processor claimed the push had landed.
+      branchHeadChanged: (() =>
+        Promise.resolve({ ok: true, value: true })) as unknown as GitDeps[
+          "branchHeadChanged"
+        ],
+    },
+  });
+
+  const result = await processPrFeedback(makeInput(), {
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-repo",
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.changesPushed, false);
+  }
+  // The claim the incident produced must not appear.
+  assertEquals(
+    commentBody.includes("I've pushed"),
+    false,
+    `must not claim a push landed; got: ${commentBody}`,
+  );
+  assertStringIncludes(commentBody, "failed to push");
+  assertStringIncludes(commentBody, "NOT on the remote");
+});
+
+Deno.test("processPrFeedback - a push the remote does not confirm is reported, not claimed (Issue #579)", async () => {
+  let commentBody = "";
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: (args: string[]) => {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0 && args[bodyIdx + 1]) commentBody = args[bodyIdx + 1]!;
+      return Promise.resolve("");
+    },
+  };
+
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      // Local state says the push was clean...
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  const result = await processPrFeedback(makeInput(), {
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-repo",
+    // ...and the remote disagrees. Local signals cannot see this, which is
+    // why the claim is made against the remote.
+    verifyPushFn: () =>
+      Promise.resolve({
+        landed: false,
+        reason: "'fix/x' on the remote is at deadbeef, local is at cafebabe",
+      }),
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.changesPushed, false);
+  assertEquals(commentBody.includes("I've pushed"), false);
+  // The reason reaches the reader — Issue #211's lesson applied here.
+  assertStringIncludes(commentBody, "on the remote is at deadbeef");
+});
+
+Deno.test("processPrFeedback - a verified push claims success and names the SHA (Issue #579)", async () => {
+  let commentBody = "";
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: (args: string[]) => {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0 && args[bodyIdx + 1]) commentBody = args[bodyIdx + 1]!;
+      return Promise.resolve("");
+    },
+  };
+
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  const result = await processPrFeedback(makeInput(), {
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-repo",
+    verifyPushFn: () =>
+      Promise.resolve({
+        landed: true,
+        localSha: "abc12345".padEnd(40, "0"),
+        remoteSha: "abc12345".padEnd(40, "0"),
+        reason: "verified",
+      }),
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.changesPushed, true);
+  // The SHA makes a stale claim falsifiable at a glance.
+  assertStringIncludes(commentBody, "abc12345");
+  assertStringIncludes(commentBody, "Verified on the remote");
 });

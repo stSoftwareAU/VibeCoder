@@ -49,6 +49,33 @@ export VIBE_STATE_DIR VIBE_LAUNCH_PHASE_FILE
 
 WORKER_MOD="${SCRIPT_DIR}/worker/deno/mod.ts"
 
+# Issue #633: where each cycle's console output is captured, so a failed
+# launch has evidence to report. $HOME/logs is the directory the host and the
+# container already share — the work volume is not readable from the host.
+# Set empty per cycle until the file is known to be writable.
+LAUNCH_LOG_DIR="${LAUNCH_LOG_DIR:-${LOG_DIR:-${HOME}/logs}}"
+mkdir -p "${LAUNCH_LOG_DIR}" 2>/dev/null || true
+LAUNCH_LOG=""
+
+# Keep the newest 50 and no more: these are diagnostics, not an archive, and
+# an unbounded directory on the host is its own incident (Issue #633).
+prune_launch_logs() {
+    local keep=50
+    # The epoch is in the filename, so the glob's own lexical order IS
+    # chronological order — no `ls` parsing, and no assumption about mtime.
+    local logs=()
+    local candidate
+    for candidate in "${LAUNCH_LOG_DIR}"/launch-*.log; do
+        [[ -f "${candidate}" ]] && logs+=("${candidate}")
+    done
+    local excess=$(( ${#logs[@]} - keep ))
+    ((excess > 0)) || return 0
+    local i
+    for ((i = 0; i < excess; i++)); do
+        rm -f "${logs[i]}" 2>/dev/null || true
+    done
+}
+
 DENO_CMD=""
 for candidate in deno "${HOME:-/tmp}/.deno/bin/deno" /opt/homebrew/bin/deno /usr/local/bin/deno; do
     if command -v "${candidate}" >/dev/null 2>&1; then
@@ -80,11 +107,17 @@ next_sleep_seconds() {
         return
     fi
 
+    # --allow-sys=hostname: the alert names the machine it is about (Issue
+    # #633). Without it `resolveRunHostId()` cannot read the hostname and the
+    # report says "unknown-host", which is close to useless in a fleet whose
+    # hosts all report into one repository.
     seconds="$(${TIMEOUT_PREFIX[@]+"${TIMEOUT_PREFIX[@]}"} "${DENO_CMD}" run \
         --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
         --allow-env --allow-read --allow-write --allow-run --allow-net \
+        --allow-sys=hostname \
         "${WORKER_MOD}" container-restart-backoff \
         --exit-status "${status}" \
+        ${LAUNCH_LOG:+--launch-log "${LAUNCH_LOG}"} \
         --base-sleep-seconds "${LOOP_SLEEP_SECONDS}" </dev/null 2>/dev/null)"
 
     seconds="${seconds##*$'\n'}"
@@ -331,7 +364,32 @@ while true; do
     # computes and the deadline the supervisor enforces describe the same run.
     VIBE_RUN_STARTED_EPOCH="$(date +%s)"
     export VIBE_RUN_STARTED_EPOCH
-    run_under_deadline ./run.sh || run_status=$?
+    # Issue #633: capture this cycle's console output so a failed launch has
+    # evidence to report. The worker's own $HOME/logs/worker-*.log is written
+    # by the worker, so a run that dies early leaves only its header line
+    # there — the launcher's console output is the ONLY record of what the
+    # entrypoint and the runtime said, and it is where the failure appears.
+    # tee keeps it on stdout too, so the operator watching the terminal sees
+    # exactly what they saw before.
+    prune_launch_logs
+    LAUNCH_LOG="${LAUNCH_LOG_DIR}/launch-${VIBE_RUN_STARTED_EPOCH}.log"
+    if ! : >"${LAUNCH_LOG}" 2>/dev/null; then
+        # Never fail a cycle over its own diagnostics.
+        echo "loop.sh: cannot write ${LAUNCH_LOG} — this cycle's launch log" \
+            "will not be captured" >&2
+        LAUNCH_LOG=""
+    fi
+    if [[ -n "${LAUNCH_LOG}" ]]; then
+        # No `|| true` here: running `true` on failure REPLACES PIPESTATUS
+        # with its own (0), losing the launcher's exit status entirely — the
+        # supervisor would then treat every crash as a clean run. This script
+        # deliberately does not `set -e` (see the header), so the bare
+        # pipeline is safe as written.
+        run_under_deadline ./run.sh 2>&1 | tee -a "${LAUNCH_LOG}"
+        run_status="${PIPESTATUS[0]}"
+    else
+        run_under_deadline ./run.sh || run_status=$?
+    fi
     kill "${probe_pid}" 2>/dev/null || true
     wait "${probe_pid}" 2>/dev/null || true
     if [[ "${run_status}" -eq "${RUN_DEADLINE_EXIT}" ]] || \

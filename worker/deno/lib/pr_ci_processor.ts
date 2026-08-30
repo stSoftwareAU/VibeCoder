@@ -48,6 +48,15 @@ import {
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
 import { classifyCiFailure } from "./ci_failure_classifier.ts";
+import {
+  buildRewriteCommitMessage,
+  rebuildBranchHistory,
+} from "./branch_history_rewrite.ts";
+import {
+  formatVerifiedPushSuffix,
+  type PushVerification,
+  verifyPushLanded,
+} from "./push_claim_verification.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import {
   type AutoFixAttempt,
@@ -191,6 +200,15 @@ export interface CiProcessorDeps {
   repoConfigs?: Record<string, RepoConfig>;
   /** Function to run the quality gate (injectable for testing — Issue #1456). */
   qualityGateFn?: (params: QualityGateParams) => Promise<QualityGateRunResult>;
+  /**
+   * Override the remote push verification (Issue #579). Injected by tests so
+   * the "a failed push produces no success claim" regression can be exercised
+   * without a repository; production leaves it undefined.
+   */
+  verifyPushFn?: (
+    branchName: string,
+    options?: { cwd?: string },
+  ) => Promise<PushVerification>;
   /**
    * Injectable PR failure action dispatcher (Issue #1893). Defaults to
    * {@link runPrFailureActions}. Tests inject a fake to avoid hitting
@@ -890,7 +908,11 @@ async function _processCiWithHeartbeat(
 
   let pushSucceeded = false;
   let hasChanges = postQualityResult.committedChanges;
-  let finalUnpushedAfterPush = 0;
+  // Issue #579: `undefined` means NOT MEASURED, which is not the same as
+  // measured-and-zero. Initialised to 0, a failed commit-and-push left this
+  // at 0, and a local commit moving HEAD then produced `pushSucceeded = true`
+  // for a push that never ran — the shape of the PR #549 incident.
+  let finalUnpushedAfterPush: number | undefined;
   // Issue #211: why the branch is still not on origin — the failing recovery
   // step and git's own words. Reaches both the log and the PR comment, so a
   // human never gets a bare "please check the branch status" again.
@@ -975,10 +997,143 @@ async function _processCiWithHeartbeat(
         beforeSha,
       });
       hasChanges = true;
-      // Recompute pushSucceeded from the new hasChanges. Claude's own push
-      // means nothing is unpushed locally, so trust the recorded
-      // finalUnpushedCount from the final-mile call.
+      // A moved HEAD proves a commit exists locally. It proves nothing about
+      // the remote — which is the whole of Issue #579 — so this only
+      // re-opens the question, and the verification below answers it.
       pushSucceeded = finalUnpushedAfterPush === 0;
+    }
+  }
+
+  // Issue #579: confirm against the REMOTE before any of this is claimed. An
+  // unpushed count that was never taken is not a count of zero, and a local
+  // commit moves HEAD whether or not the push ran. When the remote cannot be
+  // reached — the incident's exact condition, a broken git credential — the
+  // answer is "no evidence it landed", never success.
+  //
+  // This runs BEFORE the history rebuild below, which is gated on
+  // `pushSucceeded`: rebuilding and force-pushing a branch whose ordinary
+  // push never landed would be rewriting history on the strength of a claim
+  // that has just been shown to be false.
+  let pushVerification: PushVerification | undefined;
+  const verifyFn = processorDeps.verifyPushFn ?? verifyPushLanded;
+  if (hasChanges && pushSucceeded) {
+    pushVerification = await verifyFn(input.branchName, {
+      ...(processorDeps.workDir !== undefined
+        ? { cwd: processorDeps.workDir }
+        : {}),
+    });
+    pushSucceeded = pushVerification.landed;
+    if (!pushSucceeded) {
+      pushFailureDetail = pushVerification.reason;
+      logger.error(
+        "Local state looked pushed but the remote does not agree — not claiming success",
+        {
+          repo,
+          prNumber,
+          branchName: input.branchName,
+          reason: pushVerification.reason,
+        },
+      );
+    } else {
+      logger.info("Push verified against the remote", {
+        repo,
+        prNumber,
+        branchName: input.branchName,
+        remoteSha: pushVerification.remoteSha,
+      });
+    }
+  }
+
+  // Issue #630: a secret scanner judges the COMMIT RANGE, not the working
+  // tree. The content is corrected and pushed by now, and the check would
+  // still fail on the original commit's diff — so the branch is collapsed to
+  // a single commit and force-pushed with a lease. Without this the fix loop
+  // re-commits the same correction until the attempt cap and ends at
+  // `needs-human`, a wedge caused entirely by the wrong model of the check.
+  let historyRewritten = false;
+  if (
+    failureClassification.category === "history-rewrite-required" &&
+    hasChanges && pushSucceeded
+  ) {
+    // One rebuild per underlying failure. A finding that survives a rebuild
+    // is not in this branch, so rebuilding again would be the same wrong
+    // answer given twice — escalate with the evidence instead.
+    const alreadyRebuilt = priorAttempts.some(
+      (attempt) => attempt.category === "history-rewrite-required",
+    );
+    if (alreadyRebuilt) {
+      logger.warn(
+        "Secret finding survived a history rebuild — it is in the base branch",
+        { repo, prNumber, checkName, branchName: input.branchName },
+      );
+    } else {
+      const defaultBranchResult = await deps.git.getRepoDefaultBranch(
+        repo,
+        processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+      );
+      if (!defaultBranchResult.ok) {
+        logger.warn("Could not resolve the base branch for a history rebuild", {
+          repo,
+          prNumber,
+          error: defaultBranchResult.error.message,
+        });
+      } else {
+        const rebuild = await rebuildBranchHistory({
+          branchName: input.branchName,
+          baseBranch: defaultBranchResult.value,
+          commitMessage: buildRewriteCommitMessage(checkName, prNumber),
+          ...(processorDeps.workDir !== undefined
+            ? { cwd: processorDeps.workDir }
+            : {}),
+        }, {
+          runGitCommand: (args, options) =>
+            deps.git.runGitCommand(args, options ?? {}),
+          logger,
+        });
+        if (rebuild.ok) {
+          historyRewritten = true;
+          logger.info("Rebuilt branch history to clear a secret finding", {
+            repo,
+            prNumber,
+            checkName,
+            collapsedCommits: rebuild.value.collapsedCommits,
+          });
+          // The rebuild force-pushed a NEW commit, so the SHA verified above
+          // is now stale. Re-verify rather than report it: naming a commit
+          // that is no longer the branch head is precisely the false claim
+          // Issue #579 exists to prevent, and a rebuild is the one path that
+          // makes an honest verification go stale.
+          pushVerification = await verifyFn(input.branchName, {
+            ...(processorDeps.workDir !== undefined
+              ? { cwd: processorDeps.workDir }
+              : {}),
+          });
+          pushSucceeded = pushVerification.landed;
+          if (!pushSucceeded) {
+            pushFailureDetail = pushVerification.reason;
+            logger.error(
+              "History was rebuilt but the remote does not show it — not claiming success",
+              {
+                repo,
+                prNumber,
+                branchName: input.branchName,
+                reason: pushVerification.reason,
+              },
+            );
+          }
+        } else {
+          // The corrected content is already pushed, so the PR is no worse
+          // than before — it will simply fail the same check again. Say why
+          // rather than letting the next cycle rediscover it.
+          logger.warn("History rebuild refused or failed", {
+            repo,
+            prNumber,
+            checkName,
+            branchName: input.branchName,
+            error: rebuild.error.message,
+          });
+        }
+      }
     }
   }
 
@@ -1055,8 +1210,22 @@ async function _processCiWithHeartbeat(
 
   // Reply with outcome — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded) {
-    const body = customMessage ??
+    const base = customMessage ??
       `I've pushed a fix for the CI failure (**${checkName}**). Please review the changes.`;
+    // Issue #630: a force-push that silently rewrote the branch would be an
+    // unpleasant surprise for anyone with it checked out. Say so, and say why.
+    const rebuilt = historyRewritten
+      ? `${base}\n\n**The branch history was rebuilt.** \`${checkName}\` scans every commit ` +
+        `in the branch, not the working tree, so correcting the content in a further commit ` +
+        `would have left the finding in the earlier commit's diff and the check would have ` +
+        `failed again. The branch is now a single commit and was force-pushed with a lease. ` +
+        `If you have it checked out, re-fetch rather than pulling.`
+      : base;
+    // Issue #579: carry the SHA the claim was verified against, so a stale
+    // claim is falsifiable at a glance rather than by a human comparing the
+    // comment against `git log`.
+    const body = rebuilt +
+      (pushVerification ? formatVerifiedPushSuffix(pushVerification) : "");
     await replyToComment(repo, prNumber, body, deps);
   } else if (hasChanges && !pushSucceeded) {
     // Issue #211: carry the failing recovery step and git's stderr into the

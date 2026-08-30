@@ -2502,8 +2502,30 @@ Deno.test("completion - updates existing PR body on issue-number recovery (Issue
 });
 
 Deno.test("completion - updates existing PR labels on recovery (Issue #1189)", async () => {
+  // The issue is `bug`-labelled, so the reproduction-status gate (Issue #521)
+  // now requires a `## Reproduction` block in the PR summary before the PR is
+  // raised or recovered. The summary file is written here so this test keeps
+  // exercising label propagation rather than the new gate.
+  const repoPath = await Deno.makeTempDir();
+  await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+    recursive: true,
+  });
+  await Deno.writeTextFile(
+    `${repoPath}/docs/archive/pr-summaries/pr-summary-42.md`,
+    `## Summary
+
+Fixed the login button. Closes #42.
+
+## Reproduction
+
+- **symptom** — the login button did nothing on click
+- **status** — \`verified\` — the regression test failed against the unfixed code and passes after the fix
+- **regression test** — \`tests/auth/login_test.ts::submits the form\`
+`,
+  );
+
   const ctx = makeContext({ issueLabels: ["bug", "priority-high"] });
-  const state = makeState();
+  const state = makeState({ repoPath });
   let labelsCaptured: string[] = [];
   const deps = createMockDeps({
     pr: {
@@ -2534,6 +2556,8 @@ Deno.test("completion - updates existing PR labels on recovery (Issue #1189)", a
     true,
     "All issue labels should be applied",
   );
+
+  await Deno.remove(repoPath, { recursive: true });
 });
 
 Deno.test("completion - defence-in-depth re-checks by issue number after branch check fails (Issue #1189)", async () => {

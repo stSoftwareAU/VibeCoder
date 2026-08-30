@@ -35,6 +35,7 @@ import {
 import { planningProcessorCommand } from "../commands/planning_processor.ts";
 import { validateFailureDetectionCriteria } from "../lib/failure_detection_gate.ts";
 import { COVERAGE_TABLE_REQUIREMENT } from "../lib/plan_coverage_gate.ts";
+import { MVP_SLICE_REQUIREMENT } from "../lib/mvp_slice_gate.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
@@ -59,6 +60,9 @@ function coverageReadResponse(): string {
     comments: [{
       body: [
         "## Plan published",
+        "",
+        "1. #131 — Break the issue down (`enhancement`) — **MVP slice**: the decomposition lands even if nothing after it does",
+        "2. #132 — Carry it into the gate (`enhancement`, depends on #131)",
         "",
         "## Plan Coverage",
         "",
@@ -4530,7 +4534,18 @@ Deno.test("fallback publish prompts carry the shared coverage-table requirement 
 function coverageReadWith(table: string[]): string {
   return JSON.stringify({
     body: "Parent",
-    comments: [{ body: ["## Plan published", "", ...table].join("\n") }],
+    comments: [{
+      body: [
+        "## Plan published",
+        "",
+        // Issue #522: the MVP-slice gate reads the same summary comment, so
+        // the fixture carries a compliant slice marker — these tests are about
+        // coverage, not about the slice.
+        "1. #101 — Auth module (`enhancement`) — **MVP slice**: login works end to end on its own",
+        "",
+        ...table,
+      ].join("\n"),
+    }],
   });
 }
 
@@ -4686,6 +4701,164 @@ Deno.test("processIssuePlanning - a fully covered plan closes the parent (Issue 
 
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value.uncoveredAsks, undefined);
+  assertEquals(closedIssue, true);
+  assertEquals(labels.includes("needs-human"), false);
+});
+
+// ============================================================================
+// MVP-slice requirement + gate wired at closePlanningIssue() (Issue #522)
+// ============================================================================
+
+Deno.test("fallback publish prompts carry the shared MVP-slice requirement (Issue #522)", () => {
+  const singleInvocation = buildSingleInvocationPlanningPrompt({
+    repo: "org/repo",
+    issueNumber: 522,
+    issueTitle: "Name the MVP slice",
+    issueBody: "Needs sub-issues.",
+  });
+  const critiqueFallback = buildCritiqueFallbackPublishPrompt({
+    repo: "org/repo",
+    issueNumber: 522,
+  });
+
+  // Both in-code fallbacks publish sub-issues, and the MVP-slice gate runs on
+  // whatever they publish — so both must state the rule, from the one shared
+  // constant that sits beside the gate implementing it.
+  assertStringIncludes(singleInvocation, MVP_SLICE_REQUIREMENT);
+  assertStringIncludes(critiqueFallback, MVP_SLICE_REQUIREMENT);
+});
+
+/** A parent read whose summary comment carries `list` plus a covered table. */
+function mvpReadWith(list: string[]): string {
+  return JSON.stringify({
+    body: "Parent",
+    comments: [{
+      body: [
+        "## Plan published",
+        "",
+        ...list,
+        "",
+        "## Plan Coverage",
+        "",
+        "| Ask | Covered by | Notes |",
+        "| --- | --- | --- |",
+        "| Add the auth module | #101 | |",
+      ].join("\n"),
+    }],
+  });
+}
+
+/** Stub client recording the labels and comments the gates apply. */
+function makeGateClient(labels: string[], comments: string[]) {
+  return {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: (_r: string, _n: number, label: string) => {
+      labels.push(label);
+      return Promise.resolve();
+    },
+    removeLabel: () => Promise.resolve(),
+    postComment: (_r: string, _n: number, body: string) => {
+      comments.push(body);
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+}
+
+/** Run a planning close against a parent whose plan list is `list`. */
+async function runPlanningWithList(list: string[]): Promise<{
+  result: Awaited<ReturnType<typeof processIssuePlanning>>;
+  closedIssue: boolean;
+  labels: string[];
+  comments: string[];
+}> {
+  const ctx = makeContext();
+  const claudeOutput = `Created the following sub-issues:
+- https://github.com/org/repo/issues/101 — Auth module`;
+  let closedIssue = false;
+  const labels: string[] = [];
+  const comments: string[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: { output: claudeOutput, exitCode: 0, timedOut: false },
+        }),
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) return Promise.resolve(mvpReadWith(list));
+        if (args.includes("close")) closedIssue = true;
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient: makeGateClient(labels, comments),
+    logger: deps.logger,
+    deps,
+  });
+  return { result, closedIssue, labels, comments };
+}
+
+Deno.test("processIssuePlanning - a plan naming no MVP slice leaves the parent open and escalates (Issue #522)", async () => {
+  const { result, closedIssue, labels, comments } = await runPlanningWithList([
+    "1. #101 — Auth module (`enhancement`)",
+  ]);
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    // The plan is published, so the run still succeeds …
+    assertEquals(result.value.processed, true);
+    // … but the missing slice is reported and a human is asked to decide.
+    assertEquals(result.value.mvpSliceOffences?.length, 1);
+    assertStringIncludes(
+      result.value.mvpSliceOffences?.[0] ?? "",
+      "No independently valuable slice",
+    );
+  }
+  assertEquals(closedIssue, false);
+  assertEquals(labels.includes("needs-human"), true);
+  assertEquals(comments.some((c) => c.includes("MVP slice")), true);
+});
+
+Deno.test("processIssuePlanning - a plan naming one MVP slice closes the parent (Issue #522)", async () => {
+  const { result, closedIssue, labels } = await runPlanningWithList([
+    "1. #101 — Auth module (`enhancement`) — **MVP slice**: login works end to end on its own",
+  ]);
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.mvpSliceOffences, undefined);
+  assertEquals(closedIssue, true);
+  assertEquals(labels.includes("needs-human"), false);
+});
+
+Deno.test("processIssuePlanning - an explicit no-slice statement closes the parent (Issue #522)", async () => {
+  const { result, closedIssue, labels } = await runPlanningWithList([
+    "1. #101 — Auth module (`enhancement`)",
+    "",
+    "No independently valuable slice — a mechanical module move; nothing ships until every importer is repointed.",
+  ]);
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.mvpSliceOffences, undefined);
   assertEquals(closedIssue, true);
   assertEquals(labels.includes("needs-human"), false);
 });

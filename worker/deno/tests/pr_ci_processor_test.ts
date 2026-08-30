@@ -72,6 +72,20 @@ function makeInput(overrides?: Partial<CiFixInput>): CiFixInput {
 // formatCiAnnotations
 // ============================================================================
 
+/**
+ * Issue #579: a claim that the push landed is now made against the REMOTE,
+ * not against local state. Tests that assert a successful push therefore say
+ * so explicitly — clean local state, and a moved HEAD, are no longer
+ * sufficient evidence on their own.
+ */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
+
 Deno.test("formatCiAnnotations - formats CI failure details", () => {
   const annotations: CheckAnnotation[] = [
     { path: "tests/main_test.ts", start_line: 42, message: "Assertion failed" },
@@ -139,6 +153,7 @@ Deno.test("processCiFailure - succeeds with mock Claude output", async () => {
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -451,6 +466,7 @@ Deno.test("processCiFailure - pushes commits even when Claude output is empty (I
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -614,6 +630,7 @@ Deno.test("processCiFailure - pushes commits after Claude makes changes (Issue #
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const input = makeInput();
@@ -779,6 +796,7 @@ Deno.test("processCiFailure - uses .pr_response_message as comment body when pre
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -844,6 +862,7 @@ Deno.test("processCiFailure - falls back to default message when .pr_response_me
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -922,6 +941,7 @@ Deno.test("processCiFailure - recovers from push rejection and reports success (
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
