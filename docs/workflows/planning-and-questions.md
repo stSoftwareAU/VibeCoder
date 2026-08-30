@@ -473,6 +473,73 @@ flowchart TD
     H -->|yes, budget deferred| K["Keep label · no attempt spent"]
 ```
 
+#### 🗂️ Plan-coverage table and gate (Issue #520)
+
+The critique turn has always been asked to hunt for "**missing work** — asks in
+the issue with no sub-issue covering them", but the critique is deliberately
+never published, so that judgement left **no artefact**: nobody could see which
+ask maps to which sub-issue, and nothing failed when an ask was dropped. A
+silently uncovered requirement looked exactly like a complete plan. Coverage now
+takes the same shape as `## Failure Detection` did — a published artefact plus a
+deterministic gate at the single `closePlanningIssue()` chokepoint.
+
+**The artefact.** The publish turn (`prompts/planning_critique/` v6 onward)
+posts a `## Plan Coverage` table inside its summary comment on the parent — one
+row per ask in the issue's accepted scope (its `## Current Understanding` where
+it has one, otherwise the asks in the body):
+
+```markdown
+## Plan Coverage
+
+| Ask | Covered by | Notes |
+| --- | --- | --- |
+| Cache query results in-process | #101 | |
+| Rewrite the query planner | #102 | Depends on #101 |
+| Add a cache-eviction policy | Out of scope | The issue mentions it only as future work |
+```
+
+An ask deliberately left out of the plan is a **row too**, marked `Out of scope`
+with the reason — never omitted, because an omitted ask is indistinguishable
+from a forgotten one. Each sub-issue's `## Context` carries a matching
+`Covers ask:` line (draft template `prompts/planning/` v22 onward), so a
+reviewer can follow sub-issue → ask → parent.
+
+**The gate.** `worker/deno/lib/plan_coverage_gate.ts` re-reads the parent at
+`closePlanningIssue()` — the same chokepoint as the Failure-Detection gate,
+never a second one — and locates the table by its **column signature** (an
+ask column and a covering-sub-issue column), so a reworded heading cannot hide
+it. A row **passes** when `Covered by` names at least one sub-issue (`#N` or a
+GitHub issue URL), or when the ask is marked `Out of scope` **and** a reason is
+given. A row **fails** when the cell is empty, reads `None` / `TBD`, or is left
+as a bracketed placeholder — mirroring how the Failure-Detection gate rejects a
+bracketed placeholder — and a bare `Out of scope` with no reason fails too. A
+**missing** table, a table with **no rows**, and a parent that cannot be read
+all fail: absence of the artefact is not evidence of coverage.
+
+**The outcome — no second escalation path.** An uncovered ask needs a decision
+no self-repair can make (create the missing sub-issue, or accept the ask as out
+of scope), so the gate routes through the existing `escalateToHuman()`
+chokepoint: `needs-human` plus one explanation comment naming every offending
+ask and why. The parent is left **open** (reopened when the planner closed it
+inline) and the run still completes with `uncoveredAsks` on its result — the
+plan is published and usable, exactly as with a partial Failure-Detection
+repair. The gate deliberately does **not** borrow
+`needs-failure-detection-repair`: that label's resume pass re-gates Failure
+Detection only, so it would find nothing to repair and clear the label, burying
+the coverage defect. Both in-code fallback publish prompts interpolate the same
+`COVERAGE_TABLE_REQUIREMENT` constant that lives beside the gate, so a degraded
+run does not publish a plan the gate is bound to reject.
+
+```mermaid
+flowchart TD
+    A[Publish turn posts the summary comment<br/>with the ## Plan Coverage table] --> B["closePlanningIssue() reads the parent"]
+    B --> C{Table found with rows?}
+    C -->|no| E
+    C -->|yes| D{Every ask covered<br/>or out of scope with a reason?}
+    D -->|yes| F[Close the parent as completed]
+    D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
+```
+
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
 
 When a planning run breaks an issue into **two or more** sub-issues **and the

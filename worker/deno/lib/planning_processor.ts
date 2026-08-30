@@ -62,6 +62,12 @@ import {
 } from "./failure_detection_gate.ts";
 import { repairFailureDetectionSections } from "./failure_detection_repair.ts";
 import {
+  COVERAGE_TABLE_REQUIREMENT,
+  escalateUncoveredAsks,
+  type PlanCoverageVerdict,
+  runPlanCoverageGate,
+} from "./plan_coverage_gate.ts";
+import {
   FAILURE_DETECTION_REPAIR_LABEL,
   recordPartialFailureDetectionRepair,
 } from "./failure_detection_repair_label.ts";
@@ -95,6 +101,15 @@ export interface PlanningResult {
    * later pass finishes the job. Absent on a fully-compliant run.
    */
   pendingFailureDetectionRepair?: number[];
+  /**
+   * Asks from the published `## Plan Coverage` table that name no covering
+   * sub-issue and no out-of-scope reason (Issue #520).
+   *
+   * Present only when the coverage gate failed: the plan is published, the
+   * parent is left open and labelled `needs-human`, and the run still
+   * completes. Absent on a run whose every ask is accounted for.
+   */
+  uncoveredAsks?: string[];
 }
 
 /** Options for the planning processor. */
@@ -665,7 +680,7 @@ ${delimiters.bodyEnd}
 ${commentsSection}${delimiters.untrustedEnd}
 ${buildBoundaryIntegrityInstruction(delimiters.boundaryId)}
 
-Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed.${milestoneNote}`;
+Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed. ${COVERAGE_TABLE_REQUIREMENT}${milestoneNote}`;
 }
 
 /**
@@ -822,7 +837,7 @@ export function buildCritiqueFallbackPublishPrompt(opts: {
     }"\` in every \`gh issue create\` command.`
     : "";
 
-  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
+  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${COVERAGE_TABLE_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1806,6 +1821,56 @@ async function closePlanningIssue(
     }
   }
 
+  // Issue #520: deterministic plan-coverage gate. The publish turn posts a
+  // `## Plan Coverage` table on the parent — one row per ask, the sub-issue(s)
+  // covering it, and a note — and this gate rejects a table that is missing,
+  // empty, or carries an ask with neither a covering sub-issue nor an explicit
+  // out-of-scope reason. Without it the critique turn's "missing work"
+  // judgement stayed private and a dropped ask looked exactly like a complete
+  // plan. Gated on the run's *published* set for the same reason as the
+  // Failure-Detection gate above: a run with zero sub-issues has no plan to
+  // cover.
+  let coverageVerdict: PlanCoverageVerdict | undefined;
+  if (textSubIssueNumbers.length > 0) {
+    coverageVerdict = await runPlanCoverageGate({
+      repo,
+      parentIssueNumber: issueNumber,
+      ghCommandFn: deps.github.runGhCommand,
+      logger,
+    });
+    if (coverageVerdict.passed) {
+      logger.info(
+        "Plan-coverage gate: every ask is covered or explicitly out of scope (Issue #520)",
+        { repo, issueNumber, asks: coverageVerdict.rowCount },
+      );
+    } else {
+      logger.warn(
+        "Plan-coverage gate: the published plan does not account for every ask — escalating to a human (Issue #520)",
+        {
+          repo,
+          issueNumber,
+          tableFound: coverageVerdict.tableFound,
+          asks: coverageVerdict.rowCount,
+          uncovered: coverageVerdict.offenders.map((o) => o.ask).join(" | "),
+        },
+      );
+      // The shared needs-human chokepoint — not a second escalation path. An
+      // uncovered ask needs a human decision (create the sub-issue, or accept
+      // the ask as out of scope), which no self-repair can make.
+      await escalateUncoveredAsks({
+        ghClient,
+        repo,
+        parentIssueNumber: issueNumber,
+        needsHumanLabel: config.needsHumanLabel,
+        verdict: coverageVerdict,
+        githubUser,
+        logger,
+      });
+    }
+  }
+  const coverageFailed = coverageVerdict !== undefined &&
+    !coverageVerdict.passed;
+
   // Per-run model stats + degraded-model verdict (Issue #2649). The configured
   // best planning model (Issue #2654, per-repo override aware) is the model the
   // run is expected to be served by. Built once, here — after the gate, so the
@@ -1951,6 +2016,34 @@ async function closePlanningIssue(
     );
   }
 
+  // Issue #520: the coverage gate escalated to a human, so the parent must be
+  // open for that human to act on. Reopen it when the planner closed it inline.
+  // Best-effort — a reopen failure never aborts closure.
+  if (coverageFailed && alreadyClosed) {
+    try {
+      await deps.github.runGhCommand([
+        "issue",
+        "reopen",
+        String(issueNumber),
+        "--repo",
+        repo,
+      ]);
+      logger.info(
+        "Reopened the planning parent so the uncovered ask(s) stay actionable (Issue #520)",
+        { repo, issueNumber },
+      );
+    } catch (err) {
+      logger.warn(
+        "Failed to reopen the planning parent after the coverage gate failed (non-fatal)",
+        {
+          repo,
+          issueNumber,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
+
   if (!alreadyClosed) {
     const escalationReason = Deno.env.get("PLANNING_ESCALATION_REASON");
     let summaryComment = buildPlanningSummaryComment(
@@ -2007,8 +2100,10 @@ async function closePlanningIssue(
   }
 
   // Issue #59: a partial repair leaves the parent open — closing it would bury
-  // the outstanding repairs where the resume pass cannot pick them up.
-  if (!alreadyClosed && pendingRepair.length === 0) {
+  // the outstanding repairs where the resume pass cannot pick them up. Issue
+  // #520: a failed coverage gate does the same, for the same reason — the
+  // `needs-human` decision it raised must stay visible on an open issue.
+  if (!alreadyClosed && pendingRepair.length === 0 && !coverageFailed) {
     const closeComment = carrier.created
       ? "Planning complete — created a carrier sub-issue for the remaining work (Issue #2995)."
       : subIssueUrls.length > 0
@@ -2049,6 +2144,9 @@ async function closePlanningIssue(
   const repairNote = pendingRepair.length > 0
     ? ` — ${pendingRepair.length} awaiting Failure-Detection repair`
     : "";
+  const coverageNote = coverageFailed
+    ? " — plan coverage escalated to a human"
+    : "";
 
   return {
     ok: true,
@@ -2057,11 +2155,16 @@ async function closePlanningIssue(
       subIssueCount: subIssueUrls.length,
       subIssueUrls,
       summary: subIssueUrls.length > 0
-        ? `Created ${subIssueUrls.length} sub-issue(s)${repairNote}`
+        ? `Created ${subIssueUrls.length} sub-issue(s)${repairNote}${coverageNote}`
         : "Planning complete — no sub-issues required",
       degradation: verdict,
       ...(pendingRepair.length > 0
         ? { pendingFailureDetectionRepair: pendingRepair.map((o) => o.number) }
+        : {}),
+      ...(coverageFailed
+        ? {
+          uncoveredAsks: coverageVerdict?.offenders.map((o) => o.ask) ?? [],
+        }
         : {}),
     },
   };

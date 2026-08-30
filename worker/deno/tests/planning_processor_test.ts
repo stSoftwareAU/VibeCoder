@@ -34,11 +34,48 @@ import {
 } from "../lib/planning_processor.ts";
 import { planningProcessorCommand } from "../commands/planning_processor.ts";
 import { validateFailureDetectionCriteria } from "../lib/failure_detection_gate.ts";
+import { COVERAGE_TABLE_REQUIREMENT } from "../lib/plan_coverage_gate.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { WorkerConfig } from "../types.ts";
+
+// ---------------------------------------------------------------------------
+// Plan-coverage gate fixtures (Issue #520)
+// ---------------------------------------------------------------------------
+
+/**
+ * The plan-coverage gate at `closePlanningIssue()` reads the planning parent
+ * with `gh issue view --json body,comments` and rejects a published plan whose
+ * `## Plan Coverage` table is missing or leaves an ask uncovered. The
+ * end-to-end tests below publish sub-issues, so those that assert the *close*
+ * path serve a compliant table from that read — exactly what the publish turn
+ * posts in production. Tests asserting other paths are unaffected.
+ */
+function coverageReadResponse(): string {
+  return JSON.stringify({
+    body: "Parent",
+    comments: [{
+      body: [
+        "## Plan published",
+        "",
+        "## Plan Coverage",
+        "",
+        "| Ask | Covered by | Notes |",
+        "| --- | --- | --- |",
+        "| Break the issue down | #131, #132 | Both published |",
+      ].join("\n"),
+    }],
+  });
+}
+
+/** Whether these `gh` args are the coverage gate's parent read. */
+function isCoverageRead(args: string[]): boolean {
+  const jsonIdx = args.indexOf("--json");
+  return args[0] === "issue" && args[1] === "view" && jsonIdx >= 0 &&
+    (args[jsonIdx + 1] ?? "").includes("comments");
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -588,6 +625,9 @@ Deno.test("processIssuePlanning - closes successfully when search lags but REST 
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) {
           closedIssue = true;
           return Promise.resolve("");
@@ -692,6 +732,9 @@ Deno.test("processIssuePlanning - recovers native sub-issues when output only ec
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) {
           closedIssue = true;
           return Promise.resolve("");
@@ -926,6 +969,9 @@ Deno.test("processIssuePlanning - succeeds with sub-issues in output", async () 
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) closedIssue = true;
         return Promise.resolve("");
       },
@@ -1160,6 +1206,9 @@ Deno.test("processIssuePlanning - reserved-label strip failure is non-fatal (Iss
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) closedIssue = true;
         return Promise.resolve("");
       },
@@ -2315,6 +2364,9 @@ Planning complete. **2 sub-issue(s)** created:
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) closedIssue = true;
         if (args.includes("search")) return Promise.resolve("[]");
         return Promise.resolve("");
@@ -2376,6 +2428,9 @@ Deno.test("processIssuePlanning - recovers via GitHub API pre-check when comment
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) closedIssue = true;
         if (args.includes("search")) {
           return Promise.resolve(JSON.stringify([
@@ -3543,6 +3598,9 @@ Deno.test("processIssuePlanning - drafts, self-critiques, revises, then publishe
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) {
           closedIssue = true;
           // Record whether any sub-issue creation happened before the
@@ -3782,7 +3840,10 @@ Deno.test("processIssuePlanning - appends stats section to summary comment with 
           },
         }),
     },
-    github: { runGhCommand: () => Promise.resolve("") },
+    github: {
+      runGhCommand: (args: string[]) =>
+        Promise.resolve(isCoverageRead(args) ? coverageReadResponse() : ""),
+    },
   });
 
   const result = await processIssuePlanning(ctx, {
@@ -3827,7 +3888,10 @@ Deno.test("processIssuePlanning - reports degraded verdict when served model dif
           },
         }),
     },
-    github: { runGhCommand: () => Promise.resolve("") },
+    github: {
+      runGhCommand: (args: string[]) =>
+        Promise.resolve(isCoverageRead(args) ? coverageReadResponse() : ""),
+    },
   });
 
   const result = await processIssuePlanning(ctx, {
@@ -3888,6 +3952,9 @@ Deno.test("processIssuePlanning - degraded run labels parent + every sub-issue (
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         ghCalls.push(args);
         return Promise.resolve("");
       },
@@ -3933,6 +4000,9 @@ Deno.test("processIssuePlanning - healthy run applies no degraded-model label (#
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         ghCalls.push(args);
         return Promise.resolve("");
       },
@@ -4195,6 +4265,9 @@ Deno.test("processIssuePlanning - accepts draft sub-issues and skips the critiqu
     },
     github: {
       runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
         if (args.includes("close")) closedIssue = true;
         return Promise.resolve("");
       },
@@ -4424,4 +4497,195 @@ Deno.test("FAILURE_DETECTION_REQUIREMENT - the shapes it promises are the shapes
   assertEquals(offenders.map((o) => o.number), [4, 5]);
   assertStringIncludes(offenders[0]!.reason, "bracketed template placeholder");
   assertStringIncludes(offenders[1]!.reason, "missing");
+});
+
+// ============================================================================
+// Coverage-table requirement in the fallback publish prompts (Issue #520)
+// ============================================================================
+
+Deno.test("fallback publish prompts carry the shared coverage-table requirement (Issue #520)", () => {
+  const singleInvocation = buildSingleInvocationPlanningPrompt({
+    repo: "org/repo",
+    issueNumber: 520,
+    issueTitle: "Break down the planner",
+    issueBody: "Needs sub-issues.",
+  });
+  const critiqueFallback = buildCritiqueFallbackPublishPrompt({
+    repo: "org/repo",
+    issueNumber: 520,
+  });
+
+  // Both in-code fallbacks publish sub-issues, and the coverage gate runs on
+  // whatever they publish — so both must state the rule, from the one shared
+  // constant that sits beside the gate implementing it.
+  assertStringIncludes(singleInvocation, COVERAGE_TABLE_REQUIREMENT);
+  assertStringIncludes(critiqueFallback, COVERAGE_TABLE_REQUIREMENT);
+});
+
+// ============================================================================
+// Plan-coverage gate wired at closePlanningIssue() (Issue #520)
+// ============================================================================
+
+/** Shared `gh issue view --json body,comments` payload carrying `table`. */
+function coverageReadWith(table: string[]): string {
+  return JSON.stringify({
+    body: "Parent",
+    comments: [{ body: ["## Plan published", "", ...table].join("\n") }],
+  });
+}
+
+Deno.test("processIssuePlanning - an uncovered ask leaves the parent open and escalates (Issue #520)", async () => {
+  const ctx = makeContext();
+  const claudeOutput = `Created the following sub-issues:
+- https://github.com/org/repo/issues/101 — Auth module`;
+
+  let closedIssue = false;
+  const labels: string[] = [];
+  const comments: string[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: { output: claudeOutput, exitCode: 0, timedOut: false },
+        }),
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadWith([
+            "## Plan Coverage",
+            "",
+            "| Ask | Covered by | Notes |",
+            "| --- | --- | --- |",
+            "| Add the auth module | #101 | |",
+            "| Add token validation | | |",
+          ]));
+        }
+        if (args.includes("close")) closedIssue = true;
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: (_r: string, _n: number, label: string) => {
+      labels.push(label);
+      return Promise.resolve();
+    },
+    removeLabel: () => Promise.resolve(),
+    postComment: (_r: string, _n: number, body: string) => {
+      comments.push(body);
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    // The plan is published, so the run still succeeds …
+    assertEquals(result.value.processed, true);
+    // … but the uncovered ask is reported, the parent is left open, and a
+    // human is asked to decide.
+    assertEquals(result.value.uncoveredAsks, ["Add token validation"]);
+  }
+  assertEquals(closedIssue, false);
+  assertEquals(labels.includes("needs-human"), true);
+  assertEquals(
+    comments.some((c) => c.includes("Add token validation")),
+    true,
+  );
+});
+
+Deno.test("processIssuePlanning - a fully covered plan closes the parent (Issue #520)", async () => {
+  const ctx = makeContext();
+  const claudeOutput = `Created the following sub-issues:
+- https://github.com/org/repo/issues/101 — Auth module`;
+
+  let closedIssue = false;
+  const labels: string[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: { output: claudeOutput, exitCode: 0, timedOut: false },
+        }),
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadWith([
+            "## Plan Coverage",
+            "",
+            "| Ask | Covered by | Notes |",
+            "| --- | --- | --- |",
+            "| Add the auth module | #101 | |",
+            "| Rewrite the session store | Out of scope | Future work only |",
+          ]));
+        }
+        if (args.includes("close")) closedIssue = true;
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: (_r: string, _n: number, label: string) => {
+      labels.push(label);
+      return Promise.resolve();
+    },
+    removeLabel: () => Promise.resolve(),
+    postComment: () => Promise.resolve(undefined),
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.uncoveredAsks, undefined);
+  assertEquals(closedIssue, true);
+  assertEquals(labels.includes("needs-human"), false);
 });
