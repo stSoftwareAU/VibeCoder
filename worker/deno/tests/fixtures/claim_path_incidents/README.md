@@ -33,10 +33,10 @@ with this shape (the schema is `RecordedIncident` in
 ```
 
 `gate` is one of `none`, `milestone-occupied`, `pr-blocked`,
-`merged-pr-permanent`, `dependency-blocked` — the gates the census models, and
-so the ones the two instruments can be compared over. Keep issue numbers as they
-were in the field: the point of the corpus is that these are real states, not
-invented ones.
+`merged-pr-permanent`, `dependency-blocked`, `cooldown` — the gates the census
+models, and so the ones the two instruments can be compared over. Keep issue
+numbers as they were in the field: the point of the corpus is that these are
+real states, not invented ones.
 
 **Never record anything sensitive.** The files hold issue numbers, tiers and
 gates — no titles, no bodies, no logins beyond the fixed fleet placeholders.

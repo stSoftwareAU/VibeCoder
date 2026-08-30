@@ -63,6 +63,7 @@ function repoInput(
     issues: partial.issues ?? [],
     openPRs: partial.openPRs,
     mergedPRs: partial.mergedPRs,
+    runLocalHolds: partial.runLocalHolds,
   };
 }
 
@@ -1257,4 +1258,152 @@ Deno.test("formatter - per-repo line carries the low_priority_suppressed count (
   )!;
   assert(line.includes("low_priority_suppressed=1"));
   assert(line.includes("low_priority=0"));
+});
+
+// ---------------------------------------------------------------------------
+// Run-local holds (Issue #655)
+// ---------------------------------------------------------------------------
+// `find_oldest_issue.ts` drops every candidate `isIssueInCooldown` names —
+// the persisted retry cooldown and the per-run processed-issue registry —
+// *after* the collectors have passed it. The census did not model that gate,
+// so an issue this run had already finished with kept counting as claimable
+// on every later cycle: the registry lives as long as the process does.
+
+Deno.test("census - an issue this run is holding back is not claimable (Issue #655)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"]), issue(2, ["work-on"])],
+        runLocalHolds: new Set([1, 2]),
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.runLocalHold, 2);
+  assertEquals(entry.claimableIssues, []);
+  assert(
+    !entry.inversionSignal,
+    "the scan refused this work for a reason the census can now see",
+  );
+  assertEquals(census.escalationRepos, []);
+});
+
+Deno.test("census - a run-local hold only removes the issues it names (Issue #655)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"]), issue(2, ["work-on"])],
+        runLocalHolds: new Set([1]),
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.runLocalHold, 1);
+  assertEquals(entry.claimableIssues, [2]);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - a more fundamental gate keeps its own attribution (Issue #655)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"], [], "")],
+        openPRs: [openPR(9, "main", "fix/thing")],
+        runLocalHolds: new Set([1]),
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.prBlocked, 1);
+  assertEquals(entry.runLocalHold, 0);
+});
+
+Deno.test("census - the idle-task count honours run-local holds (Issue #655)", () => {
+  // The scan applies the same cooldown filter to idle-task candidates, so a
+  // held wrapper is not idle work the filer can claim either.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["idle-task"]), issue(2, ["idle-task"])],
+        runLocalHolds: new Set([1]),
+      }),
+    ],
+  });
+  assertEquals(census.perRepo[0]!.unblocked.idleTask, 1);
+});
+
+Deno.test("census - omitted runLocalHolds behaves as no holds (Issue #655)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [repoInput({ repo: "org/a", issues: [issue(1, ["work-on"])] })],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.runLocalHold, 0);
+});
+
+Deno.test("census - a held work-on issue still serialises the lower tiers (Issue #655)", () => {
+  // The scan increments its suppression count inside the collector, before
+  // the cooldown filter runs, so the repo stays serialised behind the held
+  // work-on issue. The census must agree or it manufactures the inversion
+  // one tier down.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"]), issue(2, ["low-priority"])],
+        runLocalHolds: new Set([1]),
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.runLocalHold, 1);
+  assertEquals(entry.unblocked.lowPriority, 0);
+  assertEquals(entry.lowPrioritySuppressed, 1);
+  assert(!entry.inversionSignal);
+});
+
+Deno.test("formatter - per-repo line carries the run_local_hold count (Issue #655)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"])],
+        runLocalHolds: new Set([1]),
+      }),
+    ],
+  });
+  const line = formatIdleDecisionCensus(census).find((l) =>
+    l.includes("repo=org/a")
+  )!;
+  assert(line.includes("run_local_hold=1"));
+  assert(line.includes("work_on=0"));
+});
+
+Deno.test("#655 - the cooldown gate is modelled, not silently over-counted", () => {
+  assertEquals(
+    CENSUS_SCAN_GATE_COVERAGE["cooldown"],
+    "modelled",
+    "the run-local cooldown filter refused VibeCoder#622/#623 on cycle " +
+      "after cycle while the census called them claimable",
+  );
 });

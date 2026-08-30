@@ -1,0 +1,16 @@
+{
+  "incident": "stSoftwareAU/VibeCoder 2026-08-30",
+  "issue": "VibeCoder#655",
+  "observed": "[idle-census] host=vibe-coder-43585:68 decision_point=filing repo=stSoftwareAU/VibeCoder monitored=true scanned=true skip_reason=scanned availability=available nice=-20 top_priority=0 work_on=2 low_priority=0 idle_task=0 pr_blocked=2 stream_occupied=0 merged_pr_blocked=0 dependency_blocked=4 low_priority_suppressed=0 inversion_signal=true",
+  "note": "The two issues the census called claimable (#622, #623) carried no GitHub-visible blocker: `work-on` applied by a trusted human, unassigned, no blocking label, no PR in their stream. Both had been claimed and handed back earlier the same day, so this run held them in the processed-issue registry and the scan filtered them out as `cooldown` after every collector had passed them. The escalation body's 'what the claim scan did with them' section was empty, because that filter recorded no reason at all. The four `dependency_blocked` siblings (#624, #625, #626, #628) and the two `pr_blocked` issues are abridged to one representative each — they were already agreed on by both instruments and are not material to the disagreement.",
+  "state": {
+    "repo": "stSoftwareAU/VibeCoder",
+    "issues": [
+      { "number": 622, "tier": "work-on", "gate": "cooldown" },
+      { "number": 623, "tier": "work-on", "gate": "cooldown" },
+      { "number": 624, "tier": "work-on", "gate": "dependency-blocked" },
+      { "number": 634, "tier": "work-on", "gate": "pr-blocked" }
+    ]
+  },
+  "expect": { "claimable": [], "scanClaims": false }
+}

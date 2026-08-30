@@ -222,6 +222,8 @@ excluded from the suppression signal.
 
 The merged-PR carve-out is Issue #499. `stSoftwareAU/NEAT-AI-Rebase#48` carried `work-on` and was named by merged PR #49, so the scan refused it on every cycle while it parked all 28 of the repo's `low-priority` issues indefinitely — neither the suppressing issue nor anything it suppressed could ever be claimed. The idle-decision census, which does model the merged-PR gate, kept reporting those 28 as claimable and escalated the disagreement as "the claim scan keeps refusing this work". The census now mirrors this gate too and reports a suppressed backlog as `low_priority_suppressed=<n>` (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census)).
 
+Issue #655 is the same shape one step later in the pipeline. After every collector has passed a candidate, `find_oldest_issue.ts` drops the ones `isIssueInCooldown` names — the persisted retry cooldown plus this run's processed-issue registry, whose entries live as long as the process. `stSoftwareAU/VibeCoder#622` and `#623` were both handed back earlier the same day, so the scan refused them silently on every later cycle while the census counted them claimable. The hold set is now resolved once and shared by both readers (`run_local_hold=<n>` in the census line), and the cooldown filters record their refusal in `blockedDetails` so the escalation can name the gate instead of listing the issues and nothing else.
+
 ### Why was X picked over Y? — diagnostic surfaces
 
 Two diagnostics answer the "why was this issue selected and not that one?" question without reading TypeScript:

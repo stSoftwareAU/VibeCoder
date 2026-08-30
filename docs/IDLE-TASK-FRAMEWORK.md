@@ -615,8 +615,9 @@ every monitored repo the census records:
 "Unblocked" means the issue carries the priority label, carries **no** blocking
 label (`failed`, `needs-revision`, `refine-issue`, `planning`, `question`,
 `needs-human`), has **no assignees**, is not blocked by an open PR in its work
-stream, is not named by a **merged** fleet PR, and sits in a work stream this
-worker has **not** already occupied — i.e. work the Priority 2 scan could hand a
+stream, is not named by a **merged** fleet PR, sits in a work stream this worker
+has **not** already occupied, and is not one this run is already holding back
+— i.e. work the Priority 2 scan could hand a
 worker right now. Crucially, neither
 `degraded-model` nor `lang:*` is a blocking label, so an issue carrying them
 still counts: the census exists precisely to refute the "a `degraded-model`
@@ -643,7 +644,9 @@ flowchart LR
     M -- yes --> MB["merged_pr_blocked+1"]
     M -- no --> D{Names an open<br/>dependency?}
     D -- yes --> DB["dependency_blocked+1"]
-    D -- no --> T{"low-priority, and the repo<br/>holds a suppressing work-on issue?"}
+    D -- no --> R{This run already<br/>holding it back?}
+    R -- yes --> RH["run_local_hold+1"]
+    R -- no --> T{"low-priority, and the repo<br/>holds a suppressing work-on issue?"}
     T -- yes --> TS["low_priority_suppressed+1"]
     T -- no --> U["unblocked+1<br/>→ inversion signal"]
 ```
@@ -680,6 +683,29 @@ costs no `gh` call: a same-repo `#N` absent from that set is closed and does not
 block, and a cross-repo `owner/repo#N` cannot be resolved locally, so it blocks,
 matching `isDependencyBlocked`'s fail-safe.
 
+The **run-local hold** gate (Issue #655) closes the fourth instance, one step
+later in the pipeline. Every gate above lives in a `collect_*_candidates.ts`;
+`find_oldest_issue.ts` then drops each surviving candidate that
+`isIssueInCooldown` names — the persisted retry cooldown
+(`.cooldown_state.json`) plus this run's processed-issue registry. Registry
+entries live as long as the process, so an issue a run bounced off once was
+refused silently on every later cycle of that run. On 2026-08-30
+`stSoftwareAU/VibeCoder` logged `work_on=2 inversion_signal=true` cycle after
+cycle for #622 and #623 — both handed back earlier that day, neither carrying a
+single GitHub-visible blocker — and filed VibeCoder#655 against a scan that was
+right. `run_core_production_deps.ts` now resolves the hold set **once** and
+hands the same set to both readers, and excluded issues are reported as
+`run_local_hold=<n>`. The per-cycle adaptive-floor deferral (Issue #245) is the
+one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
+streak open the way the registry did.
+
+That incident also exposed the other half of the fault, in the scan's own
+reporting: the cooldown filters logged their skip and recorded nothing in
+`blockedDetails`, the field Issue #460 added so the escalation can name the gate
+per issue. VibeCoder#655 was therefore filed with an empty "what the claim scan
+did with them" section — the one fact its reader needed. Both filters now record
+the refusal alongside the log line.
+
 The **tier-3 suppression** gate (Issue #499) closes the same hole one level up.
 Every gate above is per-issue; this one is per-repo. `selectHighestPriority`
 drops every `low-priority` candidate from a repo that holds a _suppressing_ open
@@ -701,7 +727,7 @@ blocked only by an open dependency (Issue #2610) or permanently by a merged PR
 (Issue #499) does not suppress, while every self-clearing blocker (open PR,
 occupied stream, closed-unmerged cooldown) still does.
 
-Four times is a pattern, not four accidents, so the gate list is now checked
+Repeated misses are a pattern, not accidents, so the gate list is now checked
 by the compiler. `SKIP_REASONS` in `issue_finder_logger.ts` is a runtime tuple
 (the `SkipReason` type is derived from it), and
 `CENSUS_SCAN_GATE_COVERAGE` in `idle_decision_census.ts` is a **total** map over
