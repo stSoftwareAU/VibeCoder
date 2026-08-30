@@ -32,6 +32,7 @@ import {
   PLAYWRIGHT_INSTALLER_VERSION,
   PLAYWRIGHT_MCP_VERSION,
 } from "../setup/screenshot.ts";
+import { SEMGREP_IMAGE_TAG } from "../lib/pinned_actions.ts";
 
 const DIGEST_A =
   "sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -1198,6 +1199,9 @@ Deno.test("container/ - the image supplies every monitored-repo toolchain comman
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("cargo"));
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("shellcheck"));
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("markdownlint-cli2"));
+  // Issue #650: the local SAST gate stage needs the binary in the image, or
+  // it SKIPs on every fleet run and findings are met only in CI.
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("semgrep"));
 });
 
 Deno.test("container/ - every committed toolchain names the repositories it exists for", async () => {
@@ -1268,6 +1272,108 @@ Deno.test("container/Containerfile - installs the pinned npm from a checksum-ver
   // on Node's bundled npm while the manifest claimed otherwise.
   assertStringIncludes(steps, "npm/-/npm-${NPM_VERSION}.tgz");
   assertStringIncludes(steps, "${NPM_SHA256_NOARCH}");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #650 — semgrep is in the image, so the SAST gate stage scans rather
+// than SKIPs on a fleet run
+// ---------------------------------------------------------------------------
+
+Deno.test("findMissingRuntimeTools - reports semgrep when no toolchain installs it (Issue #650)", () => {
+  const manifest = parseContainerManifest(toolchainManifestText());
+
+  // The manifest that pins only Rust supplies no semgrep, which is the state
+  // that made the gate stage SKIP on every fleet run.
+  assertEquals(findMissingRuntimeTools(manifest, ["semgrep"]), ["semgrep"]);
+});
+
+Deno.test("container/ - semgrep is pinned at the version CI runs (Issue #650)", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+
+  const owners = manifest.toolchains.filter((t) =>
+    t.commands.includes("semgrep")
+  );
+  assertEquals(
+    owners.map((t) => t.id),
+    ["semgrep"],
+    "exactly one toolchain may install the semgrep command",
+  );
+
+  const semgrep = owners[0]!;
+  assertEquals(semgrep.versionCommand, "semgrep");
+  // A local scan only predicts the CI result when both run the same semgrep:
+  // the gate compares `semgrep --version` against this same constant and
+  // names the drift in its output.
+  assertEquals(semgrep.version, SEMGREP_IMAGE_TAG);
+  // The wheels are architecture-specific (each bundles its own semgrep-core).
+  assertEquals(semgrep.sha256.amd64?.length, 64);
+  assertEquals(semgrep.sha256.arm64?.length, 64);
+  // pip is a second artefact: Debian ships no ensurepip, so the installer
+  // itself is downloaded, and it is pinned like everything else.
+  const pip = manifest.tools.find((t) => t.name === "pip");
+  assert(pip, "container/tools.json must pin the pip that installs the wheel");
+  assertEquals(pip.versionArg, "PIP_VERSION");
+  assertEquals(Object.keys(pip.sha256), ["noarch"]);
+  assertEquals(pip.sha256.noarch?.length, 64);
+
+  assertEquals(findMissingRuntimeTools(manifest, ["semgrep"]), []);
+});
+
+Deno.test("container/ - the base image supplies the Python semgrep needs (Issue #650)", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+
+  // The wheel is installed into a virtualenv built on the base image's own
+  // interpreter, and semgrep 1.x requires Python >= 3.10 — a base bump that
+  // dropped python3 would otherwise surface as a puzzling build failure.
+  const base = manifest.images.find((i) => i.arg === "BASE_IMAGE");
+  assert(base, "the manifest must pin a base image");
+  assert(
+    base.provides.includes("python3"),
+    `base image provides ${base.provides.join(", ")} — python3 is missing`,
+  );
+  const floor = base.minVersions.python3;
+  assert(floor, "the base image must record a python3 version floor");
+  const [major, minor] = floor.split(".").map(Number);
+  assert(
+    major === 3 && minor !== undefined && minor >= 10,
+    `python3 floor ${floor} is below semgrep's requires-python of 3.10`,
+  );
+});
+
+Deno.test("container/Containerfile - installs the pinned semgrep wheel and proves the version (Issue #650)", async () => {
+  const containerfile = await Deno.readTextFile(
+    new URL("container/Containerfile", REPO_ROOT),
+  );
+  const steps = containerfile
+    .split("\n")
+    .filter((line) =>
+      !line.trim().startsWith("#") && !/^ARG\b/.test(line.trim())
+    )
+    .join("\n");
+
+  // The ARG restatement is checked by findContainerfileViolations; this is
+  // the other half — a declared pin the build never applies would leave the
+  // image without semgrep while the manifest claimed otherwise.
+  assertStringIncludes(steps, "pip-${PIP_VERSION}-py3-none-any.whl");
+  assertStringIncludes(steps, "${PIP_SHA256_NOARCH}");
+  assertStringIncludes(steps, "semgrep==${SEMGREP_VERSION}");
+  // The resolved wheel is checked against the per-architecture pin before it
+  // is installed, so the index's word for the bytes is never taken.
+  assert(
+    /sg_sha=\"\$\{SEMGREP_SHA256_(AMD64|ARM64)\}\"/.test(steps),
+    "the build must select the per-architecture semgrep checksum",
+  );
+  assertStringIncludes(steps, '"${sg_sha}  ${whl}" | sha256sum -c -');
+  // On PATH for the gate's `semgrep --version` probe, at the pinned version.
+  assertStringIncludes(steps, "/usr/local/bin/semgrep");
+  assertStringIncludes(
+    steps,
+    'semgrep --version | grep -qxF "${SEMGREP_VERSION}"',
+  );
 });
 
 // ---------------------------------------------------------------------------

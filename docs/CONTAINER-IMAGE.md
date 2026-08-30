@@ -86,6 +86,48 @@ rustfmt and clippy are separate component packages, each with its own pinned
 checksum. `QUALITY_SKIP_RUST_UPDATE=1` stops private-repo-9's gate running
 `rustup update stable` — the image owns its toolchain.
 
+## semgrep
+
+The gate's SAST stage (`worker/deno/lib/semgrep_check.ts`) runs the same
+`p/default` ruleset the blocking `semgrep.yml` PR check runs, over the branch's
+changed files. Until Issue #650 the image shipped no `semgrep` and no container
+runtime to run the CI image with, so on a fleet run that stage reported
+`SKIPPED` — loudly, and `--strict` promoted it to `FAILED`, but agents still met
+SAST findings only after a red PR.
+
+`SEMGREP_VERSION` is not a free choice: it must equal `SEMGREP_IMAGE_TAG` in
+`worker/deno/lib/pinned_actions.ts`, the `semgrep/semgrep` image `semgrep.yml`
+runs, because that is what makes a local pass predict a CI pass — the gate
+compares the two itself and names any drift in its output, and
+`container_manifest_test.ts` fails the quality gate when they diverge.
+
+Semgrep's CLI is a Python application with no standalone binary release, so the
+install is not the usual "download one checksum-verified binary":
+
+- The wheel goes into its own virtualenv at `/opt/semgrep`, with
+  `/usr/local/bin/semgrep` a symlink onto it. The base image's system
+  interpreter is PEP 668 *externally managed*, and a virtualenv keeps
+  semgrep's ~30 dependencies out of it entirely.
+- `pip` is a pinned artefact in its own right (`tools` in
+  `container/tools.json`): the base ships no `ensurepip`, so the installer is
+  downloaded as a checksum-verified wheel and run straight from that file as a
+  zipapp. Nothing installs pip *into* the image.
+- pip resolves the semgrep wheel for the build architecture and the committed
+  `amd64` / `arm64` digest is verified **before** it is installed — the wheels
+  differ per architecture because each bundles its own `semgrep-core`. Only
+  semgrep's dependency wheels come from the index unverified, the same residual
+  risk `playwright-core install --with-deps` carries for its apt set.
+- The step ends by asserting `semgrep --version` reports `SEMGREP_VERSION`, so
+  a drifted or half-installed toolchain fails the build rather than the first
+  gate run. `SEMGREP_ENABLE_VERSION_CHECK=0` keeps an unattended container from
+  making an upgrade-check round trip on every invocation.
+
+**Image-size cost: about 350 MB**, ~260 MB of which is the `semgrep-core`
+binary the wheel bundles. That is the largest single toolchain in the image and
+it was a deliberate trade: the alternative is every fleet agent discovering
+`p/default` findings in CI instead of before the push. The stage scans changed
+files only, so the run-time cost stays small even though the install is large.
+
 ## Playwright + headless Chromium
 
 The worker captures PR evidence through the Playwright MCP server, and a

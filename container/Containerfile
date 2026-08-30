@@ -223,6 +223,46 @@ RUN set -eu; \
     cargo-clippy --version; \
     rustfmt --version
 
+# semgrep backs the gate's SAST stage (worker/deno/lib/semgrep_check.ts):
+# without it in the image that stage SKIPped on every fleet run and agents met
+# findings only in CI (Issue #650). SEMGREP_VERSION must equal
+# SEMGREP_IMAGE_TAG in worker/deno/lib/pinned_actions.ts — the image
+# semgrep.yml runs — or a local pass stops predicting a CI pass.
+#
+# The CLI is a Python application with no standalone binary, so the pinned
+# wheel goes into its own virtualenv: the system interpreter is PEP 668
+# externally managed, and Debian ships no ensurepip, so pip itself is a
+# checksum-verified artefact. pip resolves the wheel for the build
+# architecture; the committed digest is checked before anything installs it,
+# so only semgrep's own dependency wheels come from the index unverified.
+# ~350 MB, nearly all of it the bundled semgrep-core — docs/CONTAINER-IMAGE.md.
+ARG PIP_VERSION="26.2.1"
+ARG PIP_SHA256_NOARCH="71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
+ARG SEMGREP_VERSION="1.173.0"
+ARG SEMGREP_SHA256_AMD64="cb21aa06246bdd79d3e9e7f9118ec7baecb1be39cf89c46e07af13b4128d7b79"
+ARG SEMGREP_SHA256_ARM64="e1a508dd8bccaff05482bb2968d4ae84a432f932e502d3caccdb3d525da51f22"
+
+# No upgrade nag and no version round trip from an unattended container; the
+# gate reads `semgrep --version` and compares it against the CI pin itself.
+ENV SEMGREP_ENABLE_VERSION_CHECK="0"
+
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) sg_sha="${SEMGREP_SHA256_AMD64}" ;; \
+      aarch64) sg_sha="${SEMGREP_SHA256_ARM64}" ;; \
+      *) echo "Unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    pip="/tmp/pip-${PIP_VERSION}-py3-none-any.whl"; py=/opt/semgrep/bin/python; \
+    curl -fsSL -o "${pip}" "https://files.pythonhosted.org/packages/py3/p/pip/pip-${PIP_VERSION}-py3-none-any.whl"; \
+    echo "${PIP_SHA256_NOARCH}  ${pip}" | sha256sum -c -; \
+    python3 -m venv --without-pip /opt/semgrep; \
+    "${py}" "${pip}/pip" download --no-deps --only-binary=:all: --no-cache-dir -q -d /tmp/sg "semgrep==${SEMGREP_VERSION}"; \
+    whl="$(echo /tmp/sg/*.whl)"; echo "${sg_sha}  ${whl}" | sha256sum -c -; \
+    "${py}" "${pip}/pip" install --only-binary=:all: --no-cache-dir -q "${whl}"; \
+    ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep; \
+    rm -rf "${pip}" /tmp/sg; chmod -R a+rX /opt/semgrep; \
+    semgrep --version | grep -qxF "${SEMGREP_VERSION}"
+
 # ---------------------------------------------------------------------------
 # Playwright + headless Chromium baked at build time (Issue #4069) — see
 # docs/CONTAINER-IMAGE.md. PLAYWRIGHT_VERSION must match @playwright/mcp's
