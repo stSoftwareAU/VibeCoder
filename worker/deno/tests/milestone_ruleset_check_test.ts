@@ -337,7 +337,7 @@ Deno.test("assessMilestoneRuleset - checks that do report raise nothing", () => 
   assertEquals(findings.map((f) => f.code), ["configured"]);
 });
 
-Deno.test("createMilestoneRuleset - a 404 is explained as a permission problem (Issue #592)", async () => {
+Deno.test("createMilestoneRuleset - a 404 is explained as a permission problem (Issue #595)", async () => {
   // GitHub answers a ruleset write from a non-admin with 404, not 403. Every
   // repository in a fleet setup run failed with the bare "gh: Not Found
   // (HTTP 404)", which named neither the cause nor the fix.
@@ -372,6 +372,6 @@ Deno.test("setup_cli - the ruleset write uses the operator's credentials, not th
   assertStringIncludes(call, "createSetupGhJson()");
   assert(
     !/createSetupGhJson\(ghConfigDir\)/.test(call),
-    "the create must not run as the service account (Issue #592)",
+    "the create must not run as the service account (Issue #595)",
   );
 });

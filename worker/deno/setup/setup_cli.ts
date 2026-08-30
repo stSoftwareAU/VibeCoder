@@ -946,7 +946,7 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
         );
         const missing = findings.find((f) => f.code === "no-milestone-ruleset");
         if (missing && (await askCreateMilestoneRuleset(r.repo))) {
-          // Deliberately WITHOUT `ghConfigDir` (Issue #592). That option points
+          // Deliberately WITHOUT `ghConfigDir` (Issue #595). That option points
           // gh at the worker's service-account configuration, which holds
           // `write` — and GitHub answers a ruleset write from a non-admin with
           // 404, not 403, so every create failed as "gh: Not Found (HTTP 404)"

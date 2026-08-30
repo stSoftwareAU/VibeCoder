@@ -590,7 +590,7 @@ export async function createMilestoneRuleset(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // GitHub answers a ruleset write from a non-admin with 404, not 403, so
-    // the bare "Not Found" names neither the cause nor the fix (Issue #592).
+    // the bare "Not Found" names neither the cause nor the fix (Issue #595).
     // Every repository in a fleet run failed this way, identically, with
     // nothing to act on.
     if (/not found/i.test(message)) {
