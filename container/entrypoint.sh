@@ -70,6 +70,31 @@ vibe_first_writable_dir() {
 VIBE_WORK_ROOT="${HOME:-/home/vibe}/auto-issue-work"
 TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 
+# --- The work tree the agent account also writes (Issue #571) ----------------
+# The repository's own quality command runs as `agent`, and it writes into the
+# clone: build output, test artefacts, tool caches. So the work root is shared
+# with the `vibework` group and marked setgid, which makes every directory
+# created below it inherit that group rather than the creator's own.
+#
+# Only the top level is walked. The volume carries tens of gigabytes and a
+# recursive chgrp at every launch would cost minutes; setgid propagates to
+# what is created from here on, and `setupRepo` re-clones anything older. A
+# failure is a warning, not a stop: the quality gate falls back to running as
+# the worker (degraded, and it says so) rather than the container refusing to
+# start.
+if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
+  if chgrp vibework "${VIBE_WORK_ROOT}" 2>/dev/null &&
+    chmod g+rwxs "${VIBE_WORK_ROOT}" 2>/dev/null; then
+    for entry in "${VIBE_WORK_ROOT}"/*/; do
+      [[ -d "${entry}" ]] || continue
+      chgrp vibework "${entry}" 2>/dev/null || true
+      chmod g+rwxs "${entry}" 2>/dev/null || true
+    done
+  else
+    echo "Warning: could not share ${VIBE_WORK_ROOT} with the vibework group — the repository's own commands cannot run as the 'agent' account and will run as the worker instead (Issue #571)" >&2
+  fi
+fi
+
 SCRATCH_ROOT="$(
   vibe_first_writable_dir "per-launch scratch root" \
     "${VIBE_SCRATCH_DIR:-}" \

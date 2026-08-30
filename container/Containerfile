@@ -275,11 +275,47 @@ RUN set -eu; \
 ENV QUALITY_SKIP_RUST_UPDATE="1"
 
 # Least privilege: the worker never runs as root inside the container.
+#
+# TWO unprivileged accounts, not one (Issue #571). `vibe` is the worker and
+# holds the credentials; `agent` runs the code the worker did not write — the
+# repository's own quality command, its tests, and every dependency install
+# hook those reach. Same-uid execution made the credential permissions
+# decorative: `0700` protects nothing from a process running as its owner, so
+# a postinstall script in any public repository the fleet builds could read
+# the fleet's GitHub token simply by opening the file.
+#
+# `vibework` is the shared group. The worker owns the work tree and the agent
+# writes into it (build output, caches, test artefacts), so the clone is
+# group-owned and setgid — applied by the entrypoint at run time, since the
+# work tree is a volume rather than an image layer.
 RUN set -eu; \
     groupadd --gid 1000 vibe; \
     useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash vibe; \
+    groupadd --gid 1002 vibework; \
+    useradd --uid 1001 --gid 1002 --create-home --shell /bin/bash agent; \
+    usermod --append --groups vibework vibe; \
     mkdir -p /workspace "${DENO_DIR}"; \
     chown -R 1000:1000 /workspace /home/vibe
+
+# The only mechanism that can change uid here: the container holds NO
+# capabilities (`CapEff: 0000000000000000`), so an unprivileged process cannot
+# become another user by itself. `setpriv` ships but is not setuid — it can
+# only drop what it already has — and `su` demands the target's password from
+# a non-root caller.
+#
+# The rule lets `vibe` run commands as `agent`, and grants `agent` nothing. It
+# is a DE-escalation: `agent` holds strictly fewer privileges than `vibe` and
+# owns no credentials, so the direction of the grant is what makes it safe.
+# The command is deliberately not pinned to a path — the thing being run is
+# the repository's own `quality.sh`, repository-controlled by definition,
+# which is precisely why it must not run as the worker.
+RUN set -eu; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sudo; \
+    rm -rf /var/lib/apt/lists/*; \
+    printf 'vibe ALL=(agent) NOPASSWD: ALL\n' > /etc/sudoers.d/vibe-agent; \
+    chmod 0440 /etc/sudoers.d/vibe-agent; \
+    visudo --check --file=/etc/sudoers.d/vibe-agent
 
 # Pre-warmed Deno cache (Issue #4392): the pinned @playwright/mcp (its own
 # playwright-core included) and the worker's JSR deps, resolved against the
