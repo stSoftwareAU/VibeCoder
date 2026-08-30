@@ -82,6 +82,11 @@ TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 # failure is a warning, not a stop: the quality gate falls back to running as
 # the worker (degraded, and it says so) rather than the container refusing to
 # start.
+# Silent on failure by design. The consumer — the quality gate — probes
+# whether it can actually drop to the `agent` account and reports loudly when
+# it cannot, which is the honest signal: it tests the thing that matters
+# rather than a proxy for it. Warning here as well would fire in every
+# harness that owns no `vibework` group and say nothing the probe does not.
 if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
   if chgrp vibework "${VIBE_WORK_ROOT}" 2>/dev/null &&
     chmod g+rwxs "${VIBE_WORK_ROOT}" 2>/dev/null; then
@@ -90,8 +95,6 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
       chgrp vibework "${entry}" 2>/dev/null || true
       chmod g+rwxs "${entry}" 2>/dev/null || true
     done
-  else
-    echo "Warning: could not share ${VIBE_WORK_ROOT} with the vibework group — the repository's own commands cannot run as the 'agent' account and will run as the worker instead (Issue #571)" >&2
   fi
 fi
 
