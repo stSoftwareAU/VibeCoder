@@ -13,7 +13,9 @@ import {
   type CiProcessorDeps,
   formatCiAnnotations,
   processCiFailure,
+  resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
+import { recordCiCheckRetry } from "../lib/pr_ci_checks.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -1412,5 +1414,49 @@ Deno.test("processCiFailure - a PR whose branch no longer exists on origin (merg
     assertEquals(claudeRuns, 0, "the agent never runs on the wrong branch");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The retry-state location (Issue #580). A bare relative default resolved
+// against the process CWD — the worker checkout, read-only since #514 — so
+// every CI-fix pass died on its first counter write and the fleet stopped
+// repairing red checks entirely.
+// ---------------------------------------------------------------------------
+
+Deno.test("resolveCiCheckStateDir - lands on the work volume, not the read-only CWD", () => {
+  assertEquals(
+    resolveCiCheckStateDir("/home/vibe/auto-issue-work"),
+    "/home/vibe/auto-issue-work/.ci_check_state",
+  );
+  // WORK_DIR serves when the caller passes nothing.
+  assertEquals(
+    resolveCiCheckStateDir(
+      undefined,
+      (n) => n === "WORK_DIR" ? "/volume" : undefined,
+    ),
+    "/volume/.ci_check_state",
+  );
+  // Nothing configured: the legacy relative name, which is the only case a
+  // read-only CWD can still break — and the writers now fail open.
+  assertEquals(
+    resolveCiCheckStateDir(undefined, () => undefined),
+    ".ci_check_state",
+  );
+});
+
+Deno.test("recordCiCheckRetry - a read-only state directory does not abort the repair", async () => {
+  // The live failure: EROFS on the counter write took the whole CI-fix lane
+  // down with it. The count must still come back so the caller proceeds.
+  const root = await Deno.makeTempDir();
+  const stateDir = `${root}/state`;
+  try {
+    await Deno.mkdir(stateDir);
+    await Deno.chmod(stateDir, 0o500);
+    const count = await recordCiCheckRetry(stateDir, "org/repo", "12345");
+    assertEquals(count, 1);
+  } finally {
+    await Deno.chmod(stateDir, 0o700);
+    await Deno.remove(root, { recursive: true });
   }
 });

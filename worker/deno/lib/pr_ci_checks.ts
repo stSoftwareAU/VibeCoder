@@ -57,7 +57,6 @@ export async function recordCiCheckRetry(
   repo: string,
   checkId: string,
 ): Promise<number> {
-  await Deno.mkdir(stateDir, { recursive: true });
   const safeRepo = sanitiseRepoName(repo);
   const stateFile = `${stateDir}/${safeRepo}_${checkId}.retries`;
 
@@ -70,7 +69,22 @@ export async function recordCiCheckRetry(
   }
 
   const newCount = currentCount + 1;
-  await Deno.writeTextFile(stateFile, String(newCount));
+  // Issue #580: losing the counter is worth a warning; it is NOT worth
+  // abandoning a repair the fleet is otherwise able to make. This write threw
+  // EROFS on every pass once the checkout went read-only, and the whole
+  // CI-fix lane died with it — so the fleet stopped repairing red checks
+  // entirely and escalated those PRs to humans instead. Fail open, loudly:
+  // the caller's own retry bound degrades, the repair still happens.
+  try {
+    await Deno.mkdir(stateDir, { recursive: true });
+    await Deno.writeTextFile(stateFile, String(newCount));
+  } catch (err) {
+    console.error(
+      `[ci-check] could not record the retry count in ${stateDir}: ` +
+        `${err instanceof Error ? err.message : String(err)} — the retry ` +
+        `bound is not enforced for this check (Issue #580)`,
+    );
+  }
   return newCount;
 }
 

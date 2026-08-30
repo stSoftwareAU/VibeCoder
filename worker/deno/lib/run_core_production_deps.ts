@@ -110,7 +110,7 @@ import {
   writeScanCursor,
 } from "./scan_cursor.ts";
 import { processSpellingFailure } from "./pr_spelling_processor.ts";
-import { processCiFailure } from "./pr_ci_processor.ts";
+import { processCiFailure, resolveCiCheckStateDir } from "./pr_ci_processor.ts";
 import { resolveMaxAutoFixAttempts } from "./auto_fix_attempt_tracker.ts";
 import {
   findPrsNeedingCiNudge,
@@ -1534,6 +1534,10 @@ export async function createProductionRunCoreDeps(
             // Issue #3754: cross-host PR lock so two hosts cannot fix the
             // same PR's CI failure concurrently.
             workerId: getWorkerUniqueId(config.workerName),
+            // Issue #580: the retry counters live on the work volume, not on
+            // a relative path under the read-only checkout. The volume root
+            // rather than the repo clone, so the bound survives a re-clone.
+            stateDir: resolveCiCheckStateDir(workDir),
           },
         );
 
