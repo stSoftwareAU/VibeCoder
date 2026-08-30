@@ -168,6 +168,46 @@ Deno.test("redactSecrets - masks an AWS access key id", () => {
   assertEquals(out.includes(key), false);
 });
 
+Deno.test("redactSecrets - masks the AWS secret beside its access key id", () => {
+  // The shape AWS itself hands out, and the one that gets committed: the id
+  // and the secret on one line with no key names anywhere. The id alone is
+  // not a credential — the secret is the half that gets a repository
+  // suspended, and until now nothing matched it without a `KEY=` prefix.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const csv = [
+    "User name,Access key ID,Secret access key",
+    `svc,${id},${secret}`,
+  ].join("\n");
+
+  const out = redactSecrets(csv);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+  // The surrounding row survives, so the log still reads as a log.
+  assertStringIncludes(out, "User name,Access key ID,Secret access key");
+});
+
+Deno.test("redactSecrets - a temporary (ASIA) key's secret is masked too", () => {
+  const secret = "abcdEFGH1234ijklMNOP5678qrstUVWX90yzABCD";
+  const out = redactSecrets(`ASIAY34FZKBOKMUTVV7A ${secret}`);
+  assertEquals(out.includes(secret), false);
+});
+
+Deno.test("redactSecrets - a git SHA beside an AWS key is left alone", () => {
+  // 40 hex characters is exactly the AWS secret's length, and a commit SHA
+  // sits beside redacted material constantly. Masking those would make every
+  // diagnostic unreadable, so the rule excludes pure lowercase hex.
+  const sha = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+  const out = redactSecrets(`AKIAIOSFODNN7EXAMPLE at commit ${sha}`);
+  assertStringIncludes(out, sha);
+  assertEquals(out.includes("AKIAIOSFODNN7EXAMPLE"), false);
+});
+
+Deno.test("redactSecrets - a 40-character blob with no AWS key nearby is ordinary text", () => {
+  const blob = "d1JhbmRvbUJhc2U2NGRhdGFoZXJlMTIzNDU2Nzg5MA";
+  assertStringIncludes(redactSecrets(`payload: ${blob}`), blob);
+});
+
 Deno.test("redactSecrets - masks credentials embedded in a clone URL", () => {
   // The most likely real leak: gh/git error echoing the tokenised remote.
   const token = "ghp_" + "c".repeat(36);

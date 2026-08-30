@@ -50,6 +50,10 @@ import {
   sanitiseDelimitedComments,
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
+import {
+  evaluateRequirementsRubric,
+  formatRubricFindings,
+} from "./requirements_rubric.ts";
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { invalidateComments } from "./comment_cache.ts";
 import { getLabelLastRemoveInfo } from "./issue_query.ts";
@@ -686,6 +690,19 @@ export async function buildGrillMePrompt(
     ),
     CODING_GUIDELINES: opts.codingGuidelines,
     VERBOSITY_INSTRUCTIONS: opts.verbosityInstructions,
+    // Deterministic requirements-quality pre-pass over the understanding
+    // already in the body (Issue #519), in the shape of the
+    // `duplicated_knowledge` duplicate-block pre-pass: the worker computes the
+    // named classes so the round starts from a repeatable list rather than
+    // model judgement alone. The renderer sanitises and truncates every
+    // excerpt it draws from the untrusted body, so this block is safe outside
+    // the fenced region.
+    RUBRIC_FINDINGS: formatRubricFindings(
+      evaluateRequirementsRubric({
+        title: opts.issueTitle,
+        body: opts.issueBody,
+      }),
+    ),
   };
 
   // Function-form replacements so a literal `$` in untrusted content is not

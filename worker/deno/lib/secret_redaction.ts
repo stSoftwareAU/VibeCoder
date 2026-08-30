@@ -295,6 +295,34 @@ const RULES: readonly RedactionRule[] = [
     pattern: /\bAIzaSy[A-Za-z0-9_-]{33}/g,
     replace: () => REDACTION_PLACEHOLDER,
   },
+  // AWS secret access key, anchored to the access-key id that precedes it.
+  //
+  // The id has a fixed shape and is matched on its own below; the SECRET has
+  // none — it is 40 characters of base64 alphabet, the same shape as any
+  // hash or blob — so matching it bare would redact ordinary text. What is
+  // reliable is the pair: AWS hands the two out together, and every leak
+  // shape carries them together too. The credentials CSV AWS itself issues
+  // is the canonical one:
+  //
+  //     User name,Access key ID,Secret access key
+  //     svc,AKIAIOSFODNN7EXAMPLE,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+  //
+  // The `AWS_SECRET_ACCESS_KEY=…` and `"aws_secret_access_key": "…"` forms
+  // are already covered by `secret-assignment` below; this rule is for the
+  // secret standing on its own beside its id.
+  //
+  // MUST precede `aws-access-key-id`: that rule replaces the anchor with the
+  // placeholder, and an anchor that is gone matches nothing.
+  //
+  // The window is bounded (the Issue #3942 linearity rule) and the value is
+  // excluded from being pure lowercase hex — a git commit SHA is exactly 40
+  // hex characters and appears beside redacted material constantly.
+  {
+    name: "aws-secret-access-key",
+    pattern:
+      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)\b(?![0-9a-f]{40}\b)([A-Za-z0-9/+=]{40})\b/g,
+    replace: (_m, lead: string) => `${lead}${REDACTION_PLACEHOLDER}`,
+  },
   // AWS access key id.
   {
     name: "aws-access-key-id",
