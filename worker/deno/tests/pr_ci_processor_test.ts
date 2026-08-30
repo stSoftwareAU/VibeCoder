@@ -7,7 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -1426,23 +1426,24 @@ Deno.test("processCiFailure - a PR whose branch no longer exists on origin (merg
 
 Deno.test("resolveCiCheckStateDir - lands on the work volume, not the read-only CWD", () => {
   assertEquals(
-    resolveCiCheckStateDir("/home/vibe/auto-issue-work"),
+    resolveCiCheckStateDir({ workDir: "/home/vibe/auto-issue-work" }),
     "/home/vibe/auto-issue-work/.ci_check_state",
   );
   // WORK_DIR serves when the caller passes nothing.
   assertEquals(
-    resolveCiCheckStateDir(
-      undefined,
-      (n) => n === "WORK_DIR" ? "/volume" : undefined,
-    ),
+    resolveCiCheckStateDir({
+      env: (n) => n === "WORK_DIR" ? "/volume" : undefined,
+    }),
     "/volume/.ci_check_state",
   );
-  // Nothing configured: the legacy relative name, which is the only case a
-  // read-only CWD can still break — and the writers now fail open.
-  assertEquals(
-    resolveCiCheckStateDir(undefined, () => undefined),
-    ".ci_check_state",
+  // Nothing configured at all still resolves ABSOLUTE (Issue #552): the bare
+  // relative name is the trap that started this, so it is never returned.
+  const fallback = resolveCiCheckStateDir({ env: () => undefined });
+  assert(
+    fallback.startsWith("/"),
+    `expected an absolute fallback, got ${fallback}`,
   );
+  assertStringIncludes(fallback, ".ci_check_state");
 });
 
 Deno.test("recordCiCheckRetry - a read-only state directory does not abort the repair", async () => {

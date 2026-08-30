@@ -110,7 +110,7 @@ import {
   writeScanCursor,
 } from "./scan_cursor.ts";
 import { processSpellingFailure } from "./pr_spelling_processor.ts";
-import { processCiFailure, resolveCiCheckStateDir } from "./pr_ci_processor.ts";
+import { processCiFailure } from "./pr_ci_processor.ts";
 import { resolveMaxAutoFixAttempts } from "./auto_fix_attempt_tracker.ts";
 import {
   findPrsNeedingCiNudge,
@@ -222,6 +222,7 @@ import {
   resolveCrashStateDir,
   sendCrashNotification as crashNotifyFn,
 } from "./crash_notification.ts";
+import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import {
   clearHeartbeat as libClearHeartbeat,
   detectAndRecoverStuckIssues as recoverStuckFn,
@@ -1454,6 +1455,10 @@ export async function createProductionRunCoreDeps(
         cache: issueCache,
         shuffleRepos: shuffleArray,
         maxRetries: 3,
+        // Issue #552: one absolute, writable store shared with the processor
+        // below. The old relative default resolved against the read-only
+        // `--base-dir` mount, so every CI fix aborted before it started.
+        stateDir: resolveCiCheckStateDir({ workDir }),
         prAuthors: fleetPrAuthorInput.fleetPrAuthors,
         allowedAuthors: fleetPrAuthorInput.allowedAuthors,
       });
@@ -1530,14 +1535,15 @@ export async function createProductionRunCoreDeps(
             maxRateLimitRetries: config.maxRateLimitRetries,
             // Issue #3582: cap auto-fix attempts per stable failure signature.
             maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
+            // The same absolute store the scan above reads, so the retry
+            // counter survives a read-only working directory, and the volume
+            // root rather than the repo clone so the bound survives a
+            // re-clone (Issues #552, #580).
+            stateDir: resolveCiCheckStateDir({ workDir }),
             repoConfigs: config.repoConfig,
             // Issue #3754: cross-host PR lock so two hosts cannot fix the
             // same PR's CI failure concurrently.
             workerId: getWorkerUniqueId(config.workerName),
-            // Issue #580: the retry counters live on the work volume, not on
-            // a relative path under the read-only checkout. The volume root
-            // rather than the repo clone, so the bound survives a re-clone.
-            stateDir: resolveCiCheckStateDir(workDir),
           },
         );
 
