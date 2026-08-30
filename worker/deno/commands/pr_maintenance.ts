@@ -24,6 +24,7 @@ import {
   findFailedPrChecks,
   findPrCommentsToFix,
 } from "../lib/pr_maintenance.ts";
+import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
 import {
   executePrBranchUpdates,
   isWorkerPr,
@@ -220,7 +221,7 @@ export const prMaintenanceCommand: Command = {
       const maxRetries = Number(args["max-retries"] ?? 3);
       const stateDir = String(
         args["state-dir"] ?? Deno.env.get("CI_CHECK_STATE_DIR") ??
-          ".ci_check_state",
+          resolveCiCheckStateDir(),
       );
 
       if (!githubUser) {

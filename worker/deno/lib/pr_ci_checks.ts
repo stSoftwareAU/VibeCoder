@@ -65,24 +65,30 @@ export async function recordCiCheckRetry(
     const content = await Deno.readTextFile(stateFile);
     currentCount = parseInt(content.trim(), 10) || 0;
   } catch {
-    // File doesn't exist yet
+    // File doesn't exist yet — this is the first attempt.
   }
 
   const newCount = currentCount + 1;
-  // Issue #580: losing the counter is worth a warning; it is NOT worth
-  // abandoning a repair the fleet is otherwise able to make. This write threw
-  // EROFS on every pass once the checkout went read-only, and the whole
-  // CI-fix lane died with it — so the fleet stopped repairing red checks
-  // entirely and escalated those PRs to humans instead. Fail open, loudly:
-  // the caller's own retry bound degrades, the repair still happens.
+  // Issues #552 and #580 found this from opposite ends and the resolution
+  // keeps both halves. The write threw EROFS on every pass once the checkout
+  // went read-only, and because it threw, the whole CI-fix lane died with it:
+  // the fleet stopped repairing red checks entirely and escalated those PRs
+  // to humans instead. So it fails OPEN — losing the counter degrades the
+  // retry bound, it does not abandon a repair the fleet can still make — and
+  // it fails LOUD, naming the directory and the repo/check it was counting,
+  // because the bare "Read-only file system … '.ci_check_state/…'" said
+  // nothing about which directory the worker meant or why the lane went
+  // quiet.
   try {
     await Deno.mkdir(stateDir, { recursive: true });
     await Deno.writeTextFile(stateFile, String(newCount));
-  } catch (err) {
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
     console.error(
-      `[ci-check] could not record the retry count in ${stateDir}: ` +
-        `${err instanceof Error ? err.message : String(err)} — the retry ` +
-        `bound is not enforced for this check (Issue #580)`,
+      `[ci-check] could not record the CI check retry for ${repo} check ` +
+        `${checkId} in '${stateDir}': ${msg}. The CI-fix lane needs a ` +
+        `writable state directory inside the work directory; the retry bound ` +
+        `is not enforced for this check (Issues #552, #580).`,
     );
   }
   return newCount;
