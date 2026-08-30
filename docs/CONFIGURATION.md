@@ -67,6 +67,40 @@ for, such as `fleet_pr_authors` and `worker_name`. The only keys removed are:
   reads. Each removal is printed as a warning, and a running worker raises the
   same non-blocking warning at startup config validation.
 
+### `quality_credentials` — what a repository's own checks may see
+
+Since Issue #572 the environment for a repository's quality command is
+**built**, not inherited: an allowlist of what a build needs (PATH, HOME,
+TMPDIR, toolchain caches, proxy) and nothing else. A repository whose checks
+genuinely need a credential therefore declares it, and only that repository
+receives it.
+
+```json
+"repo_config": {
+  "stSoftwareAU/ST": {
+    "quality_credentials": {
+      "mint": "aws sts assume-role --role-arn arn:aws:iam::…:role/ci --output env",
+      "passthrough": ["AWS_REGION"]
+    }
+  }
+}
+```
+
+- **`mint`** — a command run once per use whose stdout is `KEY=value` lines.
+  Provider-agnostic: `aws sts assume-role`, `gcloud auth print-access-token`,
+  `vault read`, or a script of your own. **Preferred** (Issue #574): a
+  credential that expires within the hour is worthless by the time a leak
+  reaches a log archive, which turns an open door into an incident with a
+  clock on it.
+- **`passthrough`** — names taken from the worker's own environment. Static
+  and long-lived by construction, so the run reports it under `[SECURITY]`
+  and names the variables. It exists for what cannot yet be minted.
+
+A failed `mint` fails the phase loudly rather than running the checks without
+the credential they declared — a check that runs unauthenticated fails later
+and further from the cause. Values are never logged; only names are.
+
+
 ## Author source
 
 `author_source` selects **where** the trusted-author and authorised-commenter

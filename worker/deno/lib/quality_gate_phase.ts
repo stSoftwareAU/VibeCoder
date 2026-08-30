@@ -160,7 +160,14 @@ export interface QualityGateParams {
 // =============================================================================
 
 /** Create default dependencies using real system calls. */
-export function createDefaultDeps(): QualityGateDeps {
+export function createDefaultDeps(
+  /**
+   * Credentials this repository declared for its own checks (Issues #573,
+   * #574). Empty for every repository that declared none, which is the point:
+   * a credential is in scope for the repository that named it and no other.
+   */
+  repoCredentialEnv: Record<string, string> = {},
+): QualityGateDeps {
   return {
     getRepoConfig: (
       repoConfigs: Record<string, RepoConfig> | undefined,
@@ -205,7 +212,10 @@ export function createDefaultDeps(): QualityGateDeps {
         const spawnable = await untrustedSpawn(cmd);
         const proc = new Deno.Command(spawnable[0]!, {
           args: spawnable.slice(1),
-          env: buildUntrustedCommandEnv(),
+          // The declared credentials are placed AFTER the allowlist, so a
+          // repository's own declaration is the only way a credential reaches
+          // its checks (Issues #572, #573).
+          env: buildUntrustedCommandEnv({ overrides: repoCredentialEnv }),
           clearEnv: true,
           stdout: "piped",
           stderr: "piped",
