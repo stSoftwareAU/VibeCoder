@@ -40,6 +40,10 @@ import {
   buildClosureGateComment,
   validateAcceptanceClosure,
 } from "../acceptance_criteria_gate.ts";
+import {
+  buildReproductionGateComment,
+  validateReproductionStatus,
+} from "../reproduction_status_gate.ts";
 import { decideCompletionPr, type LinkedPr } from "../pr_run_provenance.ts";
 import {
   ensureIssueClosedIfPrMerged,
@@ -981,6 +985,43 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
+  // Bug-fix reproduction-status gate (Issue #521).
+  //
+  // `bug` is a descriptive label on the one shared pipeline, so a summary
+  // claiming "added a regression test" used to read identically whether the
+  // test was watched to fail before the fix or merely written afterwards. A
+  // bug-labelled issue must now record the symptom, the reproduction status as
+  // verified / partial / not-run, and the covering regression test — with
+  // `verified` reserved for a test actually observed failing before and passing
+  // after. A not-run reproduction is a legitimate, reportable outcome; the
+  // silent over-claim is what is blocked. Non-`bug` issues are unaffected.
+  // ---------------------------------------------------------------------
+  const issueLabels = ctx.issueLabels.join(",");
+
+  const reproduction = validateReproductionStatus({
+    issueLabels,
+    prSummaryContent: prBody,
+  });
+  if (reproduction.applicable && !reproduction.valid) {
+    logger.warn("Reproduction-status gate blocked PR creation", {
+      status: reproduction.block.status,
+      problems: reproduction.problems,
+    });
+    const client = deps.github.createClient(logger);
+    await client.postComment(
+      repo,
+      issueNumber,
+      buildReproductionGateComment(reproduction),
+    );
+    return {
+      status: "failure",
+      reason: `Reproduction status not recorded in the PR summary: ${
+        reproduction.problems[0] ?? "`## Reproduction` block missing"
+      }`,
+    };
+  }
+
+  // ---------------------------------------------------------------------
   // Security-fix patch-verification gate (Issue #3540, hardened by #3652,
   // wired into this live phase by #3939).
   //
@@ -993,7 +1034,6 @@ async function completionBody(
   // #3234). Per-repo only (Issue #3239); opt out with the
   // `skip_security_fix_check` repo config.
   // ---------------------------------------------------------------------
-  const issueLabels = ctx.issueLabels.join(",");
   const skipSecurityFixCheck =
     getRepoConfig(config.repoConfig, repo, "skipSecurityFixCheck") === "true";
 
