@@ -96,6 +96,27 @@ export function buildCiNoChangesResponse(
           `I have added the \`needs-human\` label.${trailer}`,
       };
     }
+    case "history-rewrite-required": {
+      // Issue #630. Reaching here means the content fix produced no change,
+      // so the rebuild never ran — and a secret finding that survives with
+      // nothing left to correct is in the BASE branch, not this PR. Say that,
+      // because "CI is failing" would send a reviewer to the wrong place.
+      const escalationReason =
+        `The **${checkName}** check scans every commit in the branch rather than the working ` +
+        `tree, and I produced no content change to rebuild the branch around. A finding that ` +
+        `survives with nothing left to correct is already in the base branch, so rewriting this ` +
+        `PR cannot clear it.${trailer}`;
+      return {
+        category,
+        addNeedsHuman: true,
+        reason: escalationReason,
+        nextStep:
+          `Rotate the exposed credential first — it must be assumed compromised regardless of ` +
+          `what happens to the history. Then purge it from the base branch's history and force-push ` +
+          `that, which is a repository-wide operation this worker will not perform unattended.`,
+        body: escalationReason,
+      };
+    }
     case "timing":
       return {
         category,

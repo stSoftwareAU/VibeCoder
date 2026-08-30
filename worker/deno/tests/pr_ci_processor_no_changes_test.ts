@@ -178,6 +178,20 @@ async function runNoChangesScenario(
 // Tests — one per classifier category
 // ---------------------------------------------------------------------------
 
+/**
+ * Issue #579: a claim that the push landed is now made against the REMOTE,
+ * not against local state. Tests that assert a successful push therefore say
+ * so explicitly — clean local state, and a moved HEAD, are no longer
+ * sufficient evidence on their own.
+ */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
+
 Deno.test("processCiFailure no-changes - code-fix-required adds needs-human and quotes signals", async () => {
   const annotations: CheckAnnotation[] = [
     {
@@ -296,8 +310,14 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
     const captured: CapturedGh = { comments: [], labelsAdded: [] };
 
     // Claude commits-and-pushes during its own run, so the final-mile
-    // commitAndPushPending finds nothing to do. branchHeadChanged is the
-    // authoritative signal that work landed.
+    // commitAndPushPending finds nothing to do.
+    //
+    // Issue #1863 originally called branchHeadChanged "the authoritative
+    // signal that work landed". Issue #579 disproved that: a LOCAL commit
+    // moves HEAD too, and PR #549 claimed a push that never happened on
+    // exactly this evidence. A moved HEAD now only re-opens the question;
+    // the remote answers it, which is what REMOTE_CONFIRMS_PUSH stands in
+    // for here.
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (() =>
         Promise.resolve({
@@ -337,6 +357,7 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -448,4 +469,77 @@ Deno.test("processCiFailure no-changes - regression for PR #1678 semgrep ReDoS",
     "must not assert transience for a real semgrep finding",
   );
   assertStringIncludes(body, "needs-human");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #579 — a moved HEAD is not proof the work reached the remote
+// ---------------------------------------------------------------------------
+
+Deno.test("processCiFailure - HEAD moved but the remote disagrees: no success claim (Issue #579)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const captured: CapturedGh = { comments: [], labelsAdded: [] };
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Pushed fix", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: makeMockGithub(captured),
+      git: {
+        // Every local signal says the work landed: nothing left to commit,
+        // nothing unpushed, and HEAD moved during the run.
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 0,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+        captureBranchHead: (() =>
+          Promise.resolve({
+            ok: true,
+            value: "sha-before",
+          })) as unknown as GitDeps["captureBranchHead"],
+        branchHeadChanged: (() =>
+          Promise.resolve({ ok: true, value: true })) as unknown as GitDeps[
+            "branchHeadChanged"
+          ],
+      },
+    });
+
+    const result = await processCiFailure(makeInput(), {
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      // The remote cannot be reached — a broken git credential, which is
+      // exactly what happened in Issue #564 and produced PR #549's false
+      // claim. Silence from the remote is never evidence of success.
+      verifyPushFn: () =>
+        Promise.resolve({
+          landed: false,
+          reason: "could not reach the remote: fatal: could not read Username",
+        }),
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.changesPushed, false);
+    const claimed = captured.comments.some((c) => c.includes("I've pushed"));
+    assertEquals(
+      claimed,
+      false,
+      `must not claim a push landed; comments: ${
+        JSON.stringify(captured.comments)
+      }`,
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });

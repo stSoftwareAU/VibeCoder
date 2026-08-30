@@ -109,7 +109,7 @@ sequenceDiagram
 The worker tracks retries per check run ID using state files in the CI check state directory:
 
 - **State files:** `${CI_CHECK_STATE_DIR}/${safe_repo}_${check_id}.retries`
-- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, and **always absolute** (Issue #552). The old relative default resolved against the worker's working directory, which is the read-only `--base-dir` mount in container mode — so `recordCiCheckRetry` threw `Read-only file system (os error 30)` and every automatic CI fix aborted before the agent ran, leaving failures (semgrep among them) waiting for a human to ask for a fix.
+- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan and the fix** (Issue #552). The old relative default resolved against the worker's working directory — the read-only checkout in container mode. The scan therefore read retry counters from a store nothing wrote to, so the cap was never enforced, and its green-build sweep cleared auto-fix budgets in a directory the fix never touched, so a spent budget stayed spent and the lane escalated the check to a human instead of repairing it. That is why semgrep failures waited for somebody to ask for a fix by hand.
 - **Maximum retries:** 3 (configurable via `CI_CHECK_MAX_RETRIES`)
 - **On max retries exceeded:** The worker posts a PR comment explaining that the CI failure could not be automatically fixed and skips the check on future runs.
 

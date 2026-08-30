@@ -70,6 +70,34 @@ vibe_first_writable_dir() {
 VIBE_WORK_ROOT="${HOME:-/home/vibe}/auto-issue-work"
 TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 
+# --- The work tree the agent account also writes (Issue #571) ----------------
+# The repository's own quality command runs as `agent`, and it writes into the
+# clone: build output, test artefacts, tool caches. So the work root is shared
+# with the `vibework` group and marked setgid, which makes every directory
+# created below it inherit that group rather than the creator's own.
+#
+# Only the top level is walked. The volume carries tens of gigabytes and a
+# recursive chgrp at every launch would cost minutes; setgid propagates to
+# what is created from here on, and `setupRepo` re-clones anything older. A
+# failure is a warning, not a stop: the quality gate falls back to running as
+# the worker (degraded, and it says so) rather than the container refusing to
+# start.
+# Silent on failure by design. The consumer — the quality gate — probes
+# whether it can actually drop to the `agent` account and reports loudly when
+# it cannot, which is the honest signal: it tests the thing that matters
+# rather than a proxy for it. Warning here as well would fire in every
+# harness that owns no `vibework` group and say nothing the probe does not.
+if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
+  if chgrp vibework "${VIBE_WORK_ROOT}" 2>/dev/null &&
+    chmod g+rwxs "${VIBE_WORK_ROOT}" 2>/dev/null; then
+    for entry in "${VIBE_WORK_ROOT}"/*/; do
+      [[ -d "${entry}" ]] || continue
+      chgrp vibework "${entry}" 2>/dev/null || true
+      chmod g+rwxs "${entry}" 2>/dev/null || true
+    done
+  fi
+fi
+
 SCRATCH_ROOT="$(
   vibe_first_writable_dir "per-launch scratch root" \
     "${VIBE_SCRATCH_DIR:-}" \
@@ -231,13 +259,24 @@ if [[ -f "${GH_CRED_DIR}/hosts.yml" ]]; then
 fi
 if command -v git >/dev/null 2>&1 && [[ -f "${GH_CRED_DIR}/hosts.yml" ]]; then
   {
-    git config --global url."https://github.com/".insteadOf "git@github.com:" &&
+    # --replace-all, not a plain set. Both of these keys are multi-valued by
+    # the line below them, and the global config now survives the run in
+    # ${STATE_ROOT}/gitconfig — so from the SECOND launch onward a plain set
+    # fails with "cannot overwrite multiple values with a single value", the
+    # && chain short-circuits, and the credential helper below is never
+    # configured at all. That is a broken git transport for the whole cycle,
+    # which is the class of failure Issue #564 was (Issue #635).
+    git config --global --replace-all url."https://github.com/".insteadOf "git@github.com:" &&
       git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/" &&
       # The helper written directly rather than via `gh auth setup-git`,
       # which would need its own writable config. `gh auth git-credential`
       # reads GH_CONFIG_DIR at fetch time (the worker points it at the
       # staged runtime copy above).
-      git config --global credential."https://github.com".helper "" &&
+      #
+      # The empty first value is deliberate: it clears any inherited helper
+      # so only the one added below can answer. --replace-all for the same
+      # reason as above — this key is multi-valued too.
+      git config --global --replace-all credential."https://github.com".helper "" &&
       git config --global --add credential."https://github.com".helper "!gh auth git-credential"
   } || echo "Warning: could not configure the HTTPS git transport" >&2
   # A container-wide git identity from the mounted credential (Issue #4235):

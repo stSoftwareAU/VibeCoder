@@ -64,8 +64,10 @@ import { relabelBestPracticesForAllRepos } from "./best_practices_relabel.ts";
 import { syncGitignoreForAllRepos } from "./gitignore_sync.ts";
 import { verifyMonitoredCollaborators } from "./collaborator_precheck.ts";
 import {
+  assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
   createMilestoneRuleset,
+  fetchRulesetDetails,
   MILESTONE_RULESET_NAME,
 } from "../lib/milestone_ruleset_check.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
@@ -975,6 +977,23 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
               `${r.repo}: milestone ruleset not created — ${created.reason}`,
             );
           }
+        }
+        // Issue #553: the same question for the DEFAULT branch. Auto-merge
+        // being "set at random" was deterministic all along — GitHub refuses
+        // to arm it on a PR nothing blocks, so a branch requiring neither
+        // checks nor reviews can never carry it. `ensureDefaultBranchRuleset`
+        // defers to a human-managed ruleset and will not add checks to one
+        // that exists, so without this nothing says so.
+        // A repo whose default branch could not be resolved is already
+        // reported above; there is nothing to assess against.
+        const autoMergeFinding = r.branch
+          ? assessDefaultBranchAutoMerge(
+            await fetchRulesetDetails(r.repo, createSetupGhJson(ghConfigDir)),
+            r.branch,
+          )
+          : null;
+        if (autoMergeFinding) {
+          printWarning(`${r.repo}: ${autoMergeFinding.message}`);
         }
         for (const finding of findings) {
           const line = `${r.repo}: ${finding.message}`;

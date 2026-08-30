@@ -188,6 +188,24 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     "KNOWN_OPEN_FINDING_IDS",
     "DUPLICATE_BLOCKS",
   ],
+  // Issue #536 (parent #523): dead-code, deprecated-API and format-drift file
+  // findings like the other scans but were unregistered, so
+  // `validatePromptTemplate` refused the surface outright and nothing guarded
+  // their two dedup placeholders. Every shipped version (v1 onwards) of all
+  // three carries both, so registering them is backwards compatible — the
+  // `doc_coverage` precedent from #3807.
+  dead_code: [
+    "SUPPRESSED_IDS",
+    "KNOWN_OPEN_FINDING_IDS",
+  ],
+  deprecated_api: [
+    "SUPPRESSED_IDS",
+    "KNOWN_OPEN_FINDING_IDS",
+  ],
+  format_drift: [
+    "SUPPRESSED_IDS",
+    "KNOWN_OPEN_FINDING_IDS",
+  ],
   coding_guidelines: [],
 };
 
@@ -200,6 +218,15 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
  *
  * Issue #3813: `CODING_GUIDELINES` moved here from REQUIRED_PLACEHOLDERS —
  * versions up to and including issue v30 carry it, later ones do not.
+ *
+ * Issue #536 (parent #523): `OPEN_ISSUE_TITLES` — the all-open-issues dedup
+ * block — is registered here for every scan type that files findings.
+ * `{{KNOWN_OPEN_FINDING_IDS}}` stays the deterministic first line of dedup;
+ * the title list is what lets the scanner skip a semantic duplicate already
+ * open under another label. It is *optional* like `ATTRIBUTION_FOOTER`
+ * (#2439) and `CODING_GUIDELINES` (#3813): REQUIRED_PLACEHOLDERS is enforced
+ * against every shipped version of a type, so requiring it would retroactively
+ * invalidate the ~14 prompt histories the immutability tests pin.
  */
 export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   issue: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
@@ -232,32 +259,43 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   // LLM-usage verdict that gates the OWASP GenAI / LLM Top 10 taxonomy.
   // Optional so the immutability tests pinned to v1–v17 (which do not
   // carry the placeholder) continue to pass.
-  security_scan: ["ATTRIBUTION_FOOTER", "LLM_GATE"],
+  security_scan: ["ATTRIBUTION_FOOTER", "LLM_GATE", "OPEN_ISSUE_TITLES"],
   // Issue #2916 (v4): `COVERAGE_GAPS` is the pre-computed
   // untested-public-function list injected by the test-audit template at
   // scan time. Optional so the immutability tests pinned to v1–v3 (which
   // do not carry the placeholder) continue to pass.
-  test_audit: ["ATTRIBUTION_FOOTER", "COVERAGE_GAPS"],
-  best_practices: ["ATTRIBUTION_FOOTER"],
-  github_actions_audit: ["ATTRIBUTION_FOOTER"],
+  test_audit: ["ATTRIBUTION_FOOTER", "COVERAGE_GAPS", "OPEN_ISSUE_TITLES"],
+  best_practices: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
+  github_actions_audit: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
+  // Issue #536: the supply-chain scans file findings like the rest of the
+  // family, so they take the all-open-issues dedup block. Their prompts carry
+  // no attribution footer, so that placeholder is not registered for them.
+  supply_chain_readiness: ["OPEN_ISSUE_TITLES"],
+  supply_chain_detection: ["OPEN_ISSUE_TITLES"],
   // Issue #2905: orphan-deps carries the attribution footer like the other
   // idle-task scan templates; optional for consistency with the family.
-  orphan_deps: ["ATTRIBUTION_FOOTER"],
+  orphan_deps: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
   // Issue #3549: private-repo-reference-audit carries the attribution footer
   // like the other idle-task scan templates; optional for consistency.
-  private_repo_reference_audit: ["ATTRIBUTION_FOOTER"],
+  private_repo_reference_audit: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
   // Issue #3808: documentation-audit was half-registered — it appeared in
   // REQUIRED_PLACEHOLDERS only, so the `{{ATTRIBUTION_FOOTER}}` every
   // version of its prompt carries, and which
   // `documentation_audit_template.ts` substitutes at file time, was an
   // unregistered placeholder and `getOptionalPlaceholders` errored on it.
-  documentation_audit: ["ATTRIBUTION_FOOTER"],
+  documentation_audit: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
   // Issue #3609: duplicated-knowledge carries the attribution footer like
   // the other idle-task scan templates; optional for consistency.
-  duplicated_knowledge: ["ATTRIBUTION_FOOTER"],
+  duplicated_knowledge: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
   // Issue #3807: doc-coverage carries the attribution footer like the
   // other idle-task scan templates; optional for consistency.
-  doc_coverage: ["ATTRIBUTION_FOOTER"],
+  doc_coverage: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
+  // Issue #536: dead-code, deprecated-API and format-drift carry the
+  // attribution footer like the rest of the family, and take the
+  // all-open-issues dedup block on the same optional terms.
+  dead_code: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
+  deprecated_api: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
+  format_drift: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
   coding_guidelines: [],
 };
 

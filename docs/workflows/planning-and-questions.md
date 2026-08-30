@@ -473,6 +473,137 @@ flowchart TD
     H -->|yes, budget deferred| K["Keep label · no attempt spent"]
 ```
 
+#### 🗂️ Plan-coverage table and gate (Issue #520)
+
+The critique turn has always been asked to hunt for "**missing work** — asks in
+the issue with no sub-issue covering them", but the critique is deliberately
+never published, so that judgement left **no artefact**: nobody could see which
+ask maps to which sub-issue, and nothing failed when an ask was dropped. A
+silently uncovered requirement looked exactly like a complete plan. Coverage now
+takes the same shape as `## Failure Detection` did — a published artefact plus a
+deterministic gate at the single `closePlanningIssue()` chokepoint.
+
+**The artefact.** The publish turn (`prompts/planning_critique/` v6 onward)
+posts a `## Plan Coverage` table inside its summary comment on the parent — one
+row per ask in the issue's accepted scope (its `## Current Understanding` where
+it has one, otherwise the asks in the body):
+
+```markdown
+## Plan Coverage
+
+| Ask | Covered by | Notes |
+| --- | --- | --- |
+| Cache query results in-process | #101 | |
+| Rewrite the query planner | #102 | Depends on #101 |
+| Add a cache-eviction policy | Out of scope | The issue mentions it only as future work |
+```
+
+An ask deliberately left out of the plan is a **row too**, marked `Out of scope`
+with the reason — never omitted, because an omitted ask is indistinguishable
+from a forgotten one. Each sub-issue's `## Context` carries a matching
+`Covers ask:` line (draft template `prompts/planning/` v22 onward), so a
+reviewer can follow sub-issue → ask → parent.
+
+**The gate.** `worker/deno/lib/plan_coverage_gate.ts` re-reads the parent at
+`closePlanningIssue()` — the same chokepoint as the Failure-Detection gate,
+never a second one — and locates the table by its **column signature** (an
+ask column and a covering-sub-issue column), so a reworded heading cannot hide
+it. A row **passes** when `Covered by` names at least one sub-issue (`#N` or a
+GitHub issue URL), or when the ask is marked `Out of scope` **and** a reason is
+given. A row **fails** when the cell is empty, reads `None` / `TBD`, or is left
+as a bracketed placeholder — mirroring how the Failure-Detection gate rejects a
+bracketed placeholder — and a bare `Out of scope` with no reason fails too. A
+**missing** table, a table with **no rows**, and a parent that cannot be read
+all fail: absence of the artefact is not evidence of coverage.
+
+**The outcome — no second escalation path.** An uncovered ask needs a decision
+no self-repair can make (create the missing sub-issue, or accept the ask as out
+of scope), so the gate routes through the existing `escalateToHuman()`
+chokepoint: `needs-human` plus one explanation comment naming every offending
+ask and why. The parent is left **open** (reopened when the planner closed it
+inline) and the run still completes with `uncoveredAsks` on its result — the
+plan is published and usable, exactly as with a partial Failure-Detection
+repair. The gate deliberately does **not** borrow
+`needs-failure-detection-repair`: that label's resume pass re-gates Failure
+Detection only, so it would find nothing to repair and clear the label, burying
+the coverage defect. Both in-code fallback publish prompts interpolate the same
+`COVERAGE_TABLE_REQUIREMENT` constant that lives beside the gate, so a degraded
+run does not publish a plan the gate is bound to reject.
+
+```mermaid
+flowchart TD
+    A[Publish turn posts the summary comment<br/>with the ## Plan Coverage table] --> B["closePlanningIssue() reads the parent"]
+    B --> C{Table found with rows?}
+    C -->|no| E
+    C -->|yes| D{Every ask covered<br/>or out of scope with a reason?}
+    D -->|yes| F[Close the parent as completed]
+    D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
+```
+
+#### 🥇 MVP slice marker and gate (Issue #522)
+
+The planner has always ordered sub-issues by **dependency** — what can be built
+first. That is technical ordering, and it never says whether landing only the
+first sub-issue leaves the repo better off. A milestone can stop part-way (a run
+times out, a human pauses it, the backlog shifts), and the half-finished plan
+then delivers whatever the dependency graph happened to unblock — possibly
+nothing usable. Adopted from spec-kit's spec template, where every user story
+must be independently testable: name the one slice that is.
+
+**The artefact.** The publish turn (`prompts/planning_critique/` v7 onward)
+marks **exactly one** entry in the sub-issue list of its existing summary
+comment — no new comment, no new section:
+
+```markdown
+Sub-issues created, MVP slice first (dependencies still lead their dependants):
+
+1. #101 — Add the query result cache (`enhancement`) — **MVP slice**: repeated dashboard queries are served from memory, even if nothing after this ever lands
+2. #102 — Rewrite the query planner (`enhancement`, depends on #101)
+```
+
+The marker carries a sentence saying **what value lands if nothing after it is
+ever built**, and the MVP sub-issue's own `## Summary` repeats it (draft
+template `prompts/planning/` v23 onward). Where nothing in the plan is
+independently valuable — a pure refactor, a mechanical migration that pays off
+only once every step lands — the plan says so explicitly with the line
+`No independently valuable slice — <reason>` and marks nothing. Silently
+omitting the marker is not the same statement, and is not accepted.
+
+**Value ordering never overrides a dependency.** The list is ordered MVP-first
+*inside* the dependency graph: a sub-issue is never listed before one it
+`Depends on #N`, so everything ahead of the slice is a genuine prerequisite of
+it.
+
+**The gate.** `worker/deno/lib/mvp_slice_gate.ts` re-reads the parent at
+`closePlanningIssue()` — the same chokepoint as the coverage and
+Failure-Detection gates, never a second one — and locates the plan by its
+**shape** (the longest run of numbered items naming sub-issues), so a reworded
+heading cannot hide it. A plan **fails** when it carries no marker and no
+no-slice line, more than one marker, a marker with no value sentence (or a
+`TBD` / bracketed placeholder), a no-slice line with no reason, both statements
+at once, a sub-issue listed before one it depends on, or an unrelated sub-issue
+listed ahead of the slice. A **missing** list and a parent that cannot be read
+fail too: absence of the artefact is not evidence of a viable slice.
+
+**The outcome — no second escalation path.** Which sub-issue is the MVP slice is
+a value judgement no self-repair can make, so the gate routes through the same
+`escalateToHuman()` chokepoint as coverage: `needs-human` plus one explanation
+comment naming every offence. The parent is left **open** (reopened when the
+planner closed it inline) and the run still completes with `mvpSliceOffences` on
+its result — the plan is published and usable. Both in-code fallback publish
+prompts interpolate the same `MVP_SLICE_REQUIREMENT` constant that lives beside
+the gate, so a degraded run does not publish a plan the gate is bound to reject.
+
+```mermaid
+flowchart TD
+    A[Publish turn posts the summary comment<br/>with the sub-issue list] --> B["closePlanningIssue() reads the parent"]
+    B --> C{Exactly one MVP-slice marker<br/>or an explicit no-slice reason?}
+    C -->|no| E
+    C -->|yes| D{Ordered MVP-first,<br/>no sub-issue ahead of its prerequisite?}
+    D -->|yes| F[Close the parent as completed]
+    D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each offence<br/>parent left open · run succeeds"]
+```
+
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
 
 When a planning run breaks an issue into **two or more** sub-issues **and the
@@ -874,7 +1005,9 @@ repositories or read large codebases.
   [worker/deno/lib/planning_run_stats.ts](../../worker/deno/lib/planning_run_stats.ts)
   (stats + degraded verdict),
   [worker/deno/lib/planning_degraded_label.ts](../../worker/deno/lib/planning_degraded_label.ts)
-  (label application), [prompts/planning/](../../prompts/planning/),
+  (label application),
+  [worker/deno/lib/mvp_slice_gate.ts](../../worker/deno/lib/mvp_slice_gate.ts)
+  (MVP slice + value ordering), [prompts/planning/](../../prompts/planning/),
   [prompts/question/](../../prompts/question/).
 - **Model and caching:** [MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md) —
   planning-run stats and degraded-model detection.

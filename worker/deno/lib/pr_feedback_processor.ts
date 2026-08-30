@@ -33,6 +33,11 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { classifyCiFailure } from "./ci_failure_classifier.ts";
+import {
+  formatVerifiedPushSuffix,
+  type PushVerification,
+  verifyPushLanded,
+} from "./push_claim_verification.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import {
   buildFeedbackNoChangesResponse,
@@ -92,6 +97,15 @@ export interface PrFeedbackProcessorDeps {
   deps: WorkerDeps;
   /** Working directory for repo operations. */
   workDir: string;
+  /**
+   * Override the remote push verification (Issue #579). Injected by tests so
+   * the "a failed push produces no success claim" regression can be exercised
+   * without a repository; production leaves it undefined.
+   */
+  verifyPushFn?: (
+    branchName: string,
+    options?: { cwd?: string },
+  ) => Promise<PushVerification>;
   /** Quality instructions for the prompt. */
   qualityInstructions?: string;
   /** Custom repo-specific instructions. */
@@ -510,7 +524,11 @@ async function _processFeedbackWithHeartbeat(
 
   let pushSucceeded = false;
   let hasChanges = false;
-  let finalUnpushedCount = 0;
+  // Issue #579: `undefined` means NOT MEASURED, which is not the same as
+  // measured-and-zero. Initialising this to 0 is what let a failed push
+  // helper produce `finalUnpushedCount === 0` and, with a local commit
+  // moving HEAD, a confident "fixed and pushed" for a push that never ran.
+  let finalUnpushedCount: number | undefined;
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed } = finaliseResult.value;
     finalUnpushedCount = finaliseResult.value.finalUnpushedCount;
@@ -591,7 +609,51 @@ async function _processFeedbackWithHeartbeat(
 
   // Re-derive pushSucceeded from branch reality so it covers both the
   // final-mile commit-and-push path and Claude's own push.
-  pushSucceeded = finalUnpushedCount === 0 && hasChanges;
+  //
+  // Issue #579: local state cannot answer "did it land?". A local commit
+  // moves HEAD whether or not the push ran, and an unpushed count that was
+  // never taken is not a count of zero. The claim is therefore made against
+  // the REMOTE, and an unreachable remote — the incident's exact condition —
+  // is never a success.
+  const localLooksPushed = finalUnpushedCount === 0 && hasChanges;
+  let pushVerification: PushVerification | undefined;
+  if (localLooksPushed) {
+    const verifyFn = processorDeps.verifyPushFn ?? verifyPushLanded;
+    pushVerification = await verifyFn(input.branchName, {
+      ...(processorDeps.workDir !== undefined
+        ? { cwd: processorDeps.workDir }
+        : {}),
+    });
+    pushSucceeded = pushVerification.landed;
+    if (!pushSucceeded) {
+      logger.error(
+        "Local state looked pushed but the remote does not agree — not claiming success",
+        {
+          repo,
+          prNumber,
+          branch: input.branchName,
+          reason: pushVerification.reason,
+        },
+      );
+    } else {
+      logger.info("Push verified against the remote", {
+        repo,
+        prNumber,
+        branch: input.branchName,
+        remoteSha: pushVerification.remoteSha,
+      });
+    }
+  } else {
+    pushSucceeded = false;
+    if (hasChanges) {
+      logger.warn("Changes exist but the push was not confirmed locally", {
+        repo,
+        prNumber,
+        branch: input.branchName,
+        finalUnpushedCount: finalUnpushedCount ?? "not measured",
+      });
+    }
+  }
 
   // Read .pr_response_message if Claude created one (Issue #1458).
   // Used as the PR comment body when push succeeds, replacing the hardcoded
@@ -694,9 +756,15 @@ async function _processFeedbackWithHeartbeat(
 
   // Reply to comment — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded) {
-    await replyWithResult(repo, prNumber, deps, customMessage);
+    await replyWithResult(
+      repo,
+      prNumber,
+      deps,
+      customMessage,
+      pushVerification,
+    );
   } else if (hasChanges && !pushSucceeded) {
-    await replyPushFailed(repo, prNumber, deps);
+    await replyPushFailed(repo, prNumber, deps, pushVerification);
   } else {
     await replyNoChanges(
       repo,
@@ -739,9 +807,14 @@ async function replyWithResult(
   prNumber: number,
   deps: WorkerDeps,
   customMessage?: string,
+  verification?: PushVerification,
 ): Promise<void> {
-  const body = customMessage ??
-    "I've pushed a fix for this feedback. Please review the changes.";
+  // Issue #579: the claim carries the SHA it was verified against, so a
+  // stale claim is falsifiable at a glance instead of requiring a human to
+  // compare the comment against `git log`.
+  const body = (customMessage ??
+    "I've pushed a fix for this feedback. Please review the changes.") +
+    (verification ? formatVerifiedPushSuffix(verification) : "");
   try {
     await deps.github.runGhCommand([
       "pr",
@@ -761,7 +834,12 @@ async function replyPushFailed(
   repo: string,
   prNumber: number,
   deps: WorkerDeps,
+  verification?: PushVerification,
 ): Promise<void> {
+  // Issue #211/#579: say WHY the branch is not on origin. "Please check the
+  // branch status" gives a reader nothing, and the reason is exactly what
+  // distinguishes a rejected push from a broken credential.
+  const detail = verification ? `\n\nDetail: ${verification.reason}` : "";
   try {
     await deps.github.runGhCommand([
       "pr",
@@ -770,7 +848,9 @@ async function replyPushFailed(
       "--repo",
       repo,
       "--body",
-      "I fixed the issues from this feedback locally but failed to push the changes. Please check the branch status.",
+      "I fixed the issues from this feedback locally but failed to push them — " +
+      "the changes are NOT on the remote. I checked against origin rather than " +
+      `assuming the push landed, so the work is still on the worker's local branch.${detail}`,
     ]);
   } catch {
     // Comment failure is non-critical

@@ -54,6 +54,7 @@ Deno.test("security scan bounds both the hard cap and the silence watchdog", asy
     repo: "owner/repo",
     workDir: "/tmp/repo",
     knownOpenFindingIds: [],
+    openIssueTitles: [],
     suppressedIds: [],
   }, capturingDeps(captured));
 
@@ -70,6 +71,7 @@ Deno.test("security scan honours explicit timeout overrides", async () => {
     repo: "owner/repo",
     workDir: "/tmp/repo",
     knownOpenFindingIds: [],
+    openIssueTitles: [],
     suppressedIds: [],
     timeoutSeconds: 1200,
     noOutputTimeout: 90,

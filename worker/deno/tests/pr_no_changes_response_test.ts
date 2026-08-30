@@ -106,3 +106,23 @@ Deno.test("buildFeedbackNoChangesResponse - code-fix classification triggers nee
   assertEquals(res.addNeedsHuman, true);
   assertStringIncludes(res.body, "needs-human");
 });
+
+Deno.test("buildCiNoChangesResponse - a surviving secret finding points at the base branch", () => {
+  // Reaching this arm means the content fix produced nothing to rebuild
+  // around, so the finding is already in the base branch. "CI is failing"
+  // would send a reviewer to the wrong place entirely (Issue #630).
+  const response = buildCiNoChangesResponse("gitleaks", {
+    category: "history-rewrite-required",
+    reason: "secret scan 'gitleaks' judges the commit range",
+    signals: ["check:gitleaks"],
+  });
+
+  assertEquals(response.addNeedsHuman, true);
+  assertStringIncludes(response.reason ?? "", "already in the base branch");
+  // Rotation comes first: the credential is compromised whatever happens to
+  // the history, and a purge that takes a day is not a substitute.
+  assertStringIncludes(
+    response.nextStep ?? "",
+    "Rotate the exposed credential",
+  );
+});

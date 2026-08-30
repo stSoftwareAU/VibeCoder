@@ -368,7 +368,7 @@ export function createBashScriptRefsTemplate(
       for (const finding of scan.value.findings) {
         await fileFindingOnce({
           repo: opts.repo,
-          label: BASH_MISSING_SCRIPT_LABEL,
+          logLabel: BASH_MISSING_SCRIPT_LABEL,
           findingId: finding.findingId,
           ghCommandFn,
           fileFn: () =>

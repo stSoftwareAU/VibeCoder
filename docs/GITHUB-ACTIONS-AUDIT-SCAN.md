@@ -255,12 +255,15 @@ with the `idle-task` label and the worker will run it identically.
   matches the title to
   [`githubActionsAuditTemplate.buildIssueTitle(repo)`](../worker/deno/lib/idle_task_templates/github_actions_audit_template.ts).
 - **Body:** the latest `prompts/github_actions_audit/` template with the
-  four placeholders substituted at file time — `{{SUPPRESSED_IDS}}` and
-  `{{KNOWN_OPEN_FINDING_IDS}}` (both render as `(none)` on the wrapper
-  itself; the real known-open list is rebuilt from live issues and the
-  pre-filers at claim time), plus the `{{ACTIONS_CATALOGUE_TABLE}}` and
-  `{{EOL_RUNTIMES_TABLE}}` reference tables rendered from the foundation
-  catalogue.
+  five placeholders substituted at file time — `{{SUPPRESSED_IDS}}`,
+  `{{KNOWN_OPEN_FINDING_IDS}}` and `{{OPEN_ISSUE_TITLES}}` (all render as
+  `(none)` on the wrapper itself; both dedup lists are rebuilt from live
+  issues and the pre-filers at claim time, **repo-wide and label-blind** —
+  see
+  [Cross-label dedup](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)
+  for the bounds, the loud `TRUNCATED` log, and the silent-skip rule), plus
+  the `{{ACTIONS_CATALOGUE_TABLE}}` and `{{EOL_RUNTIMES_TABLE}}` reference
+  tables rendered from the foundation catalogue.
 - **Body fingerprint:** the prompt's H1 begins `# GitHub Actions
   Audit …`, matched by `GITHUB_ACTIONS_AUDIT_BODY_FINGERPRINT` so
   dispatch recognises the wrapper even if the title was edited (body-fingerprint dispatch).
@@ -285,7 +288,7 @@ operational/workflow label is ever added.
 
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
-| `github-actions-audit` | (constant) | Always present; used by the dedup, snapshot, and known-open queries. The template seeds the label on first use (it is not seeded elsewhere). |
+| `github-actions-audit` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup and known-open look-ups are repo-wide (Issue #539) and do not filter on it. The template seeds the label on first use (it is not seeded elsewhere). |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 
 Unlike the best-practices scan there is **no `lang:<bucket>` label** —

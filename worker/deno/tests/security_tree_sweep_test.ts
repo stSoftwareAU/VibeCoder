@@ -18,12 +18,14 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  attachClusterSnippets,
   buildCodeqlAlertsArgs,
   buildSemgrepCommand,
   classifyClusters,
   type CommandOutcome,
   computeSweepId,
   dedupeFindings,
+  normaliseSnippet,
   parseCodeqlAlerts,
   parseSarif,
   parseSemgrepJson,
@@ -990,4 +992,124 @@ Deno.test("command: unknown --sources value is rejected", async () => {
 Deno.test("command: default export is registered under the documented name", () => {
   assertEquals(securityTreeSweepCommand.name, "security-tree-sweep");
   assertStringIncludes(securityTreeSweepCommand.description, "4193");
+});
+
+// ---------------------------------------------------------------------------
+// Fingerprinted baseline entries (Issue #619). Twice in one night a
+// line-pinned entry failed the gate for a PR that touched neither the finding
+// nor its file — the code was unchanged and only the numbers moved (#609,
+// #618), both times blocking PR #606.
+// ---------------------------------------------------------------------------
+
+Deno.test("normaliseSnippet - reformatting is not drift, changed code is", () => {
+  const line =
+    "  const pattern = new RegExp(  `https://github\\.com/${repo}`  );";
+  assertEquals(
+    normaliseSnippet(line),
+    normaliseSnippet(line.replace(/\s+/g, "    ")),
+    "indentation and spacing must not change the fingerprint",
+  );
+  assertEquals(normaliseSnippet("  a  b  "), "a b");
+  // Genuinely different code IS a different fingerprint.
+  assert(normaliseSnippet("const a = 1;") !== normaliseSnippet("const a = 2;"));
+});
+
+Deno.test("attachClusterSnippets - reads the finding's own line, and tolerates an unreadable file", async () => {
+  const clusters = await dedupeFindings(parseSemgrepJson(SEMGREP_JSON));
+  const withSnippets = attachClusterSnippets(
+    clusters,
+    (path, line) => path.endsWith("files.ts") ? `  line ${line} here  ` : null,
+  );
+
+  const read = withSnippets.find((c) => c.path.endsWith("files.ts"));
+  assert(read, "the readable file must be fingerprinted");
+  assertEquals(read.snippet, `line ${read.lineStart} here`);
+
+  // Unreadable files simply carry no snippet — a sweep must not fail because
+  // a path moved.
+  assert(withSnippets.some((c) => c.snippet === undefined));
+});
+
+Deno.test("classifyClusters - a fingerprinted entry survives a line shift larger than the window", async () => {
+  // The exact failure: planning_processor.ts moved +15, and LINE_WINDOW is 10.
+  const clusters = attachClusterSnippets(
+    await dedupeFindings(parseSemgrepJson(SEMGREP_JSON)),
+    () => "const urlPattern = /https:/g;",
+  );
+  const drifted = clusters.find((c) => c.path.endsWith("files.ts"));
+  assert(drifted?.lineStart);
+
+  const { baseline } = parseSweepBaseline(JSON.stringify({
+    falsePositives: [{
+      path: drifted.path,
+      rule: "path-traversal",
+      // Deliberately far from the truth — this is what an unrelated edit does.
+      line: drifted.lineStart + 500,
+      snippet: "const urlPattern = /https:/g;",
+      reason: "Fingerprinted, so the stale line anchor does not matter.",
+    }],
+    accepted: [],
+  }));
+
+  const classified = classifyClusters(clusters, baseline);
+  const row = classified.rows.find((r) => r.path === drifted.path);
+  assertEquals(row?.status, "false-positive");
+  assertEquals(
+    classified.staleEntries.length,
+    0,
+    "a fingerprint that still matches is not stale",
+  );
+});
+
+Deno.test("classifyClusters - a fingerprint that no longer matches goes stale, as it should", async () => {
+  // The case where the baseline SHOULD complain: the code itself changed.
+  const clusters = attachClusterSnippets(
+    await dedupeFindings(parseSemgrepJson(SEMGREP_JSON)),
+    () => "const somethingElseEntirely = true;",
+  );
+  const target = clusters.find((c) => c.path.endsWith("files.ts"));
+  assert(target);
+
+  const { baseline } = parseSweepBaseline(JSON.stringify({
+    falsePositives: [{
+      path: target.path,
+      rule: "path-traversal",
+      line: target.lineStart ?? 1,
+      snippet: "const urlPattern = /https:/g;",
+      reason: "The code this covered is gone.",
+    }],
+    accepted: [],
+  }));
+
+  const classified = classifyClusters(clusters, baseline);
+  assertEquals(
+    classified.rows.find((r) => r.path === target.path)?.status,
+    "new",
+  );
+  assertEquals(classified.staleEntries.length, 1);
+});
+
+Deno.test("classifyClusters - an entry with no snippet keeps the line-window behaviour", async () => {
+  // Backward compatible: 14 baseline entries carry no line at all, and the
+  // rest keep working until a fingerprint is added.
+  const clusters = await dedupeFindings(parseSemgrepJson(SEMGREP_JSON));
+  const target = clusters.find((c) => c.path.endsWith("files.ts"));
+  assert(target?.lineStart);
+
+  const { baseline } = parseSweepBaseline(JSON.stringify({
+    falsePositives: [{
+      path: target.path,
+      rule: "path-traversal",
+      line: target.lineStart + 2,
+      reason: "Within the window, no fingerprint.",
+    }],
+    accepted: [],
+  }));
+
+  assertEquals(
+    classifyClusters(clusters, baseline).rows.find((r) =>
+      r.path === target.path
+    )?.status,
+    "false-positive",
+  );
 });

@@ -156,6 +156,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
   skip_security_fix_check: "skipSecurityFixCheck",
+  // Credentials this repository's checks need (Issues #573, #574).
+  quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",
   quality_check_timeout: "qualityCheckTimeout",
   // Per-repo nice value — lower = sooner (Issue #2772). Key is identical
