@@ -129,3 +129,20 @@ Added to `worker/deno/tests/software_updates_test.ts` (all with an injected
 Documentation: `docs/CONFIGURATION.md` — the Update Mode section gains a bullet
 describing what a frozen launch does, and a Mermaid diagram of the
 dynamic-versus-frozen decision.
+
+### Quality gate
+
+`./quality.sh` is green on every check (prompt immutability, benchmark audit,
+hardcoded branch names, needs-human chokepoint, gh spawn chokepoint, host
+work-dir guard, git ref chokepoint, workflow hygiene, source targets, mermaid,
+markdownlint, docs prompt versions, deno lint, deno type check, deno fmt)
+except `deno tests`, which reports **33 pre-existing failures in files this
+change does not touch**: uncaught errors in `tests/run_core_test.ts` and
+`tests/run_core_rate_limit_resume_test.ts`
+(`gh command failed: GraphQL: API rate limit already exceeded for user ID …`)
+and `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable
+gh config dir is restaged writable`, which asserts a `/tmp` path while the
+container resolves `/home/vibe/auto-issue-work/.container-state/gh-config`.
+16,072 tests pass. Verified environmental, not caused here: reverting both
+production files to their pre-change state and re-running those three files
+reproduces the identical 33 failures.
