@@ -13,6 +13,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   SCRATCH_TMPFS_MOUNTS,
+  scratchTmpfsMounts,
   SECRETS_MOUNT_PATH,
   tmpfsArgument,
 } from "../lib/container_launch.ts";
@@ -26,6 +27,12 @@ Deno.test("SCRATCH_TMPFS_MOUNTS - the secrets mount is private, noexec and separ
   // Only the worker's own account reads a credential, and a credential is
   // data — the opposite of the agents' /tmp on both counts.
   assert(secrets.includes("mode=0700"), secrets);
+  // OWNED by that account too. A mode=0700 tmpfs mounted root-owned is
+  // unusable by an unprivileged process — the live containment probe caught
+  // exactly that in CI, where Docker honours the mode and the container user
+  // could not write the mount at all.
+  assert(secrets.includes("uid=${uid}"), secrets);
+  assert(secrets.includes("gid=${gid}"), secrets);
   assert(secrets.includes("noexec"), secrets);
   assert(secrets.includes("nosuid"), secrets);
   assert(secrets.includes("nodev"), secrets);
@@ -105,4 +112,25 @@ Deno.test("entrypoint - probes the secrets mount rather than trusting it", async
     secretsIndex < stateIndex,
     "the secrets mount must be preferred over the shared state root",
   );
+});
+
+Deno.test("scratchTmpfsMounts - substitutes the container user into the secrets mount", () => {
+  const mounts = scratchTmpfsMounts({ uid: 1000, gid: 1000 });
+  const secrets = mounts.find((mount) =>
+    mount.startsWith(`${SECRETS_MOUNT_PATH}:`)
+  );
+  assert(secrets, "the secrets mount must survive substitution");
+  assertEquals(
+    secrets,
+    "/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700,uid=1000,gid=1000",
+  );
+  // The agents' scratch has no placeholders and is untouched.
+  assert(mounts.includes("/tmp:rw,nosuid,nodev,exec,mode=1777"));
+  for (const mount of mounts) {
+    assertEquals(
+      mount.includes("${"),
+      false,
+      `every placeholder must be substituted: ${mount}`,
+    );
+  }
 });

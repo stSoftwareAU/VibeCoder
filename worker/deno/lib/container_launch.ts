@@ -432,8 +432,34 @@ export const SCRATCH_TMPFS_MOUNTS: readonly string[] = [
   // opposite of it in both respects. Issue #564 is what this prevents — the
   // gh credential was staged in that world-writable `/tmp` and deleted
   // mid-run by something in the agents' churn.
-  `${SECRETS_MOUNT_PATH}:rw,nosuid,nodev,noexec,mode=0700`,
+  // `${uid}`/`${gid}` are substituted per launch by `secretsTmpfsMount` — a
+  // `mode=0700` tmpfs mounted root-owned is unusable by an unprivileged
+  // process, which the live containment probe caught in CI:
+  //
+  //     mount: /run/vibe-secrets — expected writable, was not-writable
+  //
+  // Docker honours `uid=`/`gid=`, so the mount arrives owned by the worker
+  // and 0700 means what it says. Apple container ignores the options
+  // entirely and mounts 1777 root-owned; there the entrypoint's own 0700
+  // subdirectory is the protection instead.
+  `${SECRETS_MOUNT_PATH}:rw,nosuid,nodev,noexec,mode=0700,uid=\${uid},gid=\${gid}`,
 ];
+
+/**
+ * The scratch mounts for one launch, with the container user substituted in.
+ *
+ * @param user - The image's unprivileged account, from the manifest.
+ */
+export function scratchTmpfsMounts(
+  user: { uid: number; gid: number },
+): string[] {
+  return SCRATCH_TMPFS_MOUNTS.map((mount) =>
+    mount.replace("${uid}", String(user.uid)).replace(
+      "${gid}",
+      String(user.gid),
+    )
+  );
+}
 
 /**
  * The `--tmpfs` value this dialect will actually honour (Issue #570).
@@ -643,6 +669,12 @@ function assertMountSourcePermitted(
 function assertRunArgumentsContained(
   args: string[],
   expectReadOnlyRoot = false,
+  /**
+   * The container user, when the caller emitted user-owned tmpfs mounts. The
+   * scratch check compares against the SUBSTITUTED mounts, since that is what
+   * the arguments carry (Issue #570).
+   */
+  user?: { uid: number; gid: number },
 ): void {
   for (const arg of args) {
     const lower = arg.toLowerCase();
@@ -671,9 +703,10 @@ function assertRunArgumentsContained(
   // write is a container that cannot run, so the pairing is checked here as
   // well as gated at the point it is emitted.
   if (readOnly) {
-    const missing = SCRATCH_TMPFS_MOUNTS.filter((mount) =>
-      !args.includes(mount)
-    );
+    const expected = user
+      ? scratchTmpfsMounts(user)
+      : [...SCRATCH_TMPFS_MOUNTS];
+    const missing = expected.filter((mount) => !args.includes(mount));
     if (missing.length > 0) {
       throw new Error(
         `Refusing to launch: --read-only was requested without the scratch ` +
@@ -931,7 +964,7 @@ export function buildContainerLaunchPlan(
   // without these mounts; a runtime that took a tmpfs but no `--read-only`
   // still gets a disposable root, exactly as before.
   if (dialect.supportsTmpfs) {
-    for (const mount of SCRATCH_TMPFS_MOUNTS) {
+    for (const mount of scratchTmpfsMounts(manifest.user)) {
       runArgs.push("--tmpfs", tmpfsArgument(dialect, mount));
     }
   }
@@ -983,7 +1016,7 @@ export function buildContainerLaunchPlan(
   // Last, so the launcher can append the worker's own arguments after it.
   runArgs.push(image);
 
-  assertRunArgumentsContained(runArgs, readOnlyRoot);
+  assertRunArgumentsContained(runArgs, readOnlyRoot, manifest.user);
 
   // The volume init (Issues #4186, #229): a fresh named volume is
   // root-owned and the worker runs as the manifest's unprivileged account,
