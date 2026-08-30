@@ -17,6 +17,7 @@ import {
   createMilestoneRuleset,
   type RulesetDetail,
   serviceAccountCanBypass,
+  unreportableChecks,
 } from "../lib/milestone_ruleset_check.ts";
 
 const ACCOUNT = { login: "VibeCoderST", permission: "write" };
@@ -269,4 +270,69 @@ Deno.test("createMilestoneRuleset - refuses to guess a check set", async () => {
   );
   assert(result.ok && !result.created);
   assertStringIncludes(result.reason, "no check set to mirror");
+});
+
+// ---------------------------------------------------------------------------
+// Required checks that can never report (Issue #586). GRQ #4560 sat
+// MERGEABLE and BLOCKED for ever: its ruleset required `gitleaks` and
+// `semgrep` while eight workflows filtered their PR base with
+// `branches: ["*"]`, a single-segment glob that never matches
+// `milestone/4340-…`. Only `actionlint`, on `["**"]`, ever ran.
+// ---------------------------------------------------------------------------
+
+Deno.test("unreportableChecks - names the required contexts a milestone PR never reports", () => {
+  assertEquals(
+    unreportableChecks(["gitleaks", "semgrep"], ["actionlint"]),
+    ["gitleaks", "semgrep"],
+  );
+  assertEquals(
+    unreportableChecks(["gitleaks"], ["actionlint", "gitleaks"]),
+    [],
+  );
+  // Nothing sampled proves nothing — the check is skipped, not guessed.
+  assertEquals(unreportableChecks(["gitleaks"], []), []);
+});
+
+Deno.test("assessMilestoneRuleset - a check that cannot report is an ERROR", () => {
+  // This one IS an operator-visible defect rather than a policy choice: the
+  // PR shows no failing check, so nothing points at the cause.
+  const findings = assessMilestoneRuleset(
+    [ruleset({
+      rules: [{
+        type: "required_status_checks",
+        parameters: {
+          required_status_checks: [
+            { context: "gitleaks" },
+            { context: "semgrep" },
+          ],
+        },
+      }],
+      bypass_actors: [
+        { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
+      ],
+    })],
+    ACCOUNT,
+    ["actionlint"],
+  );
+
+  const unreportable = findings.find((f) => f.code === "unreportable-checks");
+  assert(unreportable, "an unreportable required check must be reported");
+  assertEquals(unreportable.severity, "error");
+  assertStringIncludes(unreportable.message, "gitleaks, semgrep");
+  assertStringIncludes(unreportable.message, "MERGEABLE and BLOCKED");
+  // Names the usual cause, so the reader knows where to look.
+  assertStringIncludes(unreportable.message, 'branches: ["*"]');
+});
+
+Deno.test("assessMilestoneRuleset - checks that do report raise nothing", () => {
+  const findings = assessMilestoneRuleset(
+    [ruleset({
+      bypass_actors: [
+        { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
+      ],
+    })],
+    ACCOUNT,
+    ["semgrep", "actionlint"],
+  );
+  assertEquals(findings.map((f) => f.code), ["configured"]);
 });
