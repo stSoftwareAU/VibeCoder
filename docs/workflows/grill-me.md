@@ -72,8 +72,9 @@ flowchart TD
   Label["User adds grill-me label<br/>labels: grill-me"]
   R1["Round 1: TL;DR + Understanding + checkbox choices<br/>+ ⏳ Awaiting your reply footer<br/>labels: grill-me, needs-human"]
   Body["Body updated:<br/>## Current Understanding (between markers)"]
+  Rubric["Requirements-quality rubric:<br/>unquantified adjectives, placeholders,<br/>unobservable scope, terminology drift"]
   Reply["User ticks checkboxes on phone (or replies free-form),<br/>then removes needs-human<br/>labels: grill-me"]
-  Done{"Claude: more<br/>meaningful questions?"}
+  Done{"Claude: more<br/>meaningful questions?<br/>(a flagged item counts)"}
   RN["Round N: refined Understanding + new choices<br/>labels: grill-me, needs-human"]
   Final["## Grill-Me — Ready for Next Phase<br/>adaptive recommendation (planning and/or work-on)"]
   Rm["Worker removes grill-me, keeps/adds needs-human<br/>labels: needs-human"]
@@ -82,7 +83,8 @@ flowchart TD
   Work["Implementation workflow"]
   Label --> R1
   R1 --> Body
-  Body --> Reply
+  Body --> Rubric
+  Rubric --> Reply
   Reply --> Done
   Done -->|Yes| RN
   RN --> Body
@@ -94,6 +96,7 @@ flowchart TD
   style Label fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style R1 fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Body fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Rubric fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Reply fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Done fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
   style RN fill:#e0a050,stroke:#8b4500,color:#1a1a1a
@@ -218,6 +221,43 @@ the **issue title** in sync with the converged understanding each round
 `work-on` or `top-priority` reader who only sees title + body still
 gets the latest state. See the latest `prompts/grill-me/` template for the exact
 title-refinement rules — the prompt is the single source of truth.
+
+### 🧪 Requirements-quality rubric
+
+Before a round decides it is done, the worker runs a **bounded
+requirements-quality self-check** over the `## Current Understanding` it
+has just written. Borrowed from GitHub spec-kit — which frames a
+checklist as **"unit tests for English"** — the rubric validates the
+*requirements text* and never the implementation. It never opens a
+source file.
+
+Two halves run each round. A deterministic pre-pass
+(`worker/deno/lib/requirements_rubric.ts`) scans the understanding
+already in the issue body and hands the round a named list of flagged
+items; the prompt then applies the same named classes to the
+understanding it writes this round:
+
+| Class | What it flags |
+| --- | --- |
+| `unquantified-adjective` | A qualifier with no measurable criterion beside it — "fast", "robust", "appropriate", "as needed". A number, unit, or named threshold in the same sentence clears it. |
+| `unresolved-placeholder` | `TODO`, `TBD`, `FIXME`, `???`, or a `<placeholder>` gap left in the block. |
+| `unobservable-scope-item` | An accepted-scope bullet naming an action ("improve the export path") with no observable result — no return value, exit code, log line, artefact, or failure. |
+| `terminology-drift` | A concept named one way in the title and another in the understanding, or a title term the understanding never mentions. |
+| `missing-understanding` | No `## Current Understanding` content at all — absence is never treated as a pass. |
+
+**Anything flagged becomes a question in the current round.** The worker
+does not post the `## Grill-Me — Ready for Next Phase` comment while a
+flagged item is outstanding, so a vague requirement costs one more
+five-line question instead of a rewrite after the PR is open. Where the
+worker can close a flag itself — renaming a drifted term to match the
+title — it rewrites the understanding instead of asking.
+
+The check is deliberately cheap: a fixed class list capped at eight
+reported findings, not an open-ended audit, so it runs on every round
+without lengthening it. Only the safety cap
+(`maxGrillMeRounds`) can end grilling with a flag still open, and
+each one is then recorded as a named assumption in the body rather than
+dropped.
 
 ### Worked example (mobile app)
 
@@ -461,5 +501,5 @@ separated permissions:
 
 - **Sibling workflow:** [planning-and-questions.md](planning-and-questions.md) — what happens after the developer applies `planning` or `work-on`.
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop and dispatch order.
-- **Implementation details:** [worker/deno/lib/grill_me_processor.ts](../../worker/deno/lib/grill_me_processor.ts), [worker/deno/commands/grill_me_processor.ts](../../worker/deno/commands/grill_me_processor.ts), [prompts/grill-me/](../../prompts/grill-me/).
+- **Implementation details:** [worker/deno/lib/grill_me_processor.ts](../../worker/deno/lib/grill_me_processor.ts), [worker/deno/lib/requirements_rubric.ts](../../worker/deno/lib/requirements_rubric.ts), [worker/deno/commands/grill_me_processor.ts](../../worker/deno/commands/grill_me_processor.ts), [prompts/grill-me/](../../prompts/grill-me/).
 - **Config defaults:** [worker/deno/lib/config_defaults.ts](../../worker/deno/lib/config_defaults.ts) (`grillMeLabel`, `maxGrillMeRounds`, `grillMeTimeout`, `grillMeKillAfter`).
