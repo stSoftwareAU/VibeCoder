@@ -61,9 +61,12 @@ flowchart TD
 
 - **Regression test** —
   `worker/deno/tests/worker_token_privilege_scanner_test.ts::scanWorkerTokenPrivileges - a failed permission lookup is reported and yields no finding, never a safe verdict (Issue #599)`
-  reproduces the flaw this issue names. It fails against the unfixed code (the
-  branch point has no `worker_token_privilege_scanner.ts`, so the import does
-  not resolve and the whole file errors) and passes after the fix.
+  reproduces the flaw this issue names. It was observed failing against the
+  unfixed code and passing after the fix: the test file was copied into a
+  worktree of the branch point and run there, where it fails with
+  `error: Module not found ".../lib/worker_token_privilege_scanner.ts"` (7 type
+  errors) — no privilege check existed, so an over-privileged token produced no
+  finding and no logged error at all. Against this branch it passes.
   `…::scanWorkerTokenPrivileges - an admin token is one needs-human escalation naming the grant (Issue #599)`
   covers the detection itself on the same terms.
 - **Original trigger closed, no trivial bypass** — the unchecked condition was
@@ -129,4 +132,11 @@ flowchart TD
   `worker/deno/tests/github_actions_audit_template_test.ts` — the escalation is
   filed with `needs-human`, `security` and `severity:high` after its labels are
   ensured; a failing lookup is logged loud and files nothing.
-- `./quality.sh` run in full.
+- `./quality.sh` run in full. Every check passes except the pre-existing
+  environmental failures in this container: `tests/gh_spawn_test.ts` (3),
+  `tests/service_account_env_test.ts` (1, asserts a `/tmp` gh-config path
+  against the container's `.container-state/gh-config`) and the uncaught
+  GraphQL "API rate limit already exceeded" errors in `tests/run_core_test.ts`
+  and `tests/run_core_rate_limit_resume_test.ts`. Confirmed pre-existing by
+  running the same four files in a worktree of the branch point: identical
+  `36 failed`.
