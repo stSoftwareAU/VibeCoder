@@ -108,6 +108,20 @@ function makeDeps(
   });
 }
 
+/**
+ * Issue #579: a claim that the push landed is now made against the REMOTE,
+ * not against local state. Tests that assert a successful push therefore say
+ * so explicitly — clean local state, and a moved HEAD, are no longer
+ * sufficient evidence on their own.
+ */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
+
 Deno.test("processCiFailure records claim → diagnosis → pushed → released", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "ci-milestones-" });
   try {
@@ -117,6 +131,7 @@ Deno.test("processCiFailure records claim → diagnosis → pushed → released"
       deps: makeDeps(milestones),
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -148,6 +163,7 @@ Deno.test("a throwing recordMilestone never fails the CI fix", async () => {
       deps: makeDeps([], { milestoneThrows: true }),
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
