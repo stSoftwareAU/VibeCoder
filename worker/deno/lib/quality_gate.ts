@@ -40,6 +40,7 @@ import { runMermaidCheck } from "./mermaid_check.ts";
 import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runDocsPromptVersionCheck } from "./docs_prompt_version_check.ts";
+import { runSemgrepCheck } from "./semgrep_check.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
 
 /** Result of a single check execution. */
@@ -960,6 +961,21 @@ async function runDocsPromptVersionQualityCheck(
 }
 
 /**
+ * Run the semgrep SAST check over the branch's changed files (Issue #559).
+ *
+ * `semgrep ci --config p/default` blocks the PR, but nothing ran it locally,
+ * so an agent's first sight of a SAST finding was a red PR. This runs the
+ * same ruleset over the changed-file set only. SKIPPED — loudly, with the
+ * reason — when semgrep is unavailable; strict mode promotes that to FAILED.
+ */
+async function runSemgrepQualityCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const result = await runSemgrepCheck(config.scriptDir);
+  return { name: "semgrep", status: result.status, output: result.output };
+}
+
+/**
  * Run Deno tests.
  */
 async function runDenoTests(
@@ -1348,6 +1364,12 @@ export async function runQualityGate(
   // a non-latest `prompts/<type>/vN[.md]` without "from vN onward" wording
   // or a `<!-- pinned: --> ` marker.
   mainChecks.push(() => runDocsPromptVersionQualityCheck(config));
+
+  // Semgrep (Issue #559) — the same `p/default` ruleset the blocking
+  // `semgrep.yml` PR check runs, over the branch's changed files only, so a
+  // SAST finding is met before the push rather than after it. Skipped loudly
+  // when semgrep is unavailable.
+  mainChecks.push(() => runSemgrepQualityCheck(config));
 
   // Shellcheck is intentionally NOT run by the worker (Issue #3129). Bash
   // linting is owned by each target repo's own CI (the `shellcheck`
