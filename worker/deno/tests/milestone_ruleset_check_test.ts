@@ -14,6 +14,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assessMilestoneRuleset,
   coversMilestoneBranches,
+  createMilestoneRuleset,
   type RulesetDetail,
   serviceAccountCanBypass,
 } from "../lib/milestone_ruleset_check.ts";
@@ -76,7 +77,7 @@ Deno.test("assessMilestoneRuleset - no covering ruleset means auto-merge cannot 
   assertStringIncludes(findings[0]!.message, "auto-merge");
 });
 
-Deno.test("assessMilestoneRuleset - a gated branch the worker cannot push is an ERROR", () => {
+Deno.test("assessMilestoneRuleset - a gated branch the service account cannot push is reported against the WORKER", () => {
   // The operator's live configuration: `main` extended to cover
   // `milestone/**`, with a RepositoryRole(admin) bypass — and a service
   // account holding only `write`. The milestone sync's direct push dies.
@@ -101,8 +102,11 @@ Deno.test("assessMilestoneRuleset - a gated branch the worker cannot push is an 
 
   const blocked = findings.find((f) => f.code === "direct-push-blocked");
   assert(blocked, "the blocked push must be reported");
-  assertEquals(blocked.severity, "error");
+  // Refusing the service account is the intended policy — an admin may
+  // bypass, the fleet may not — so this is not an error against the ruleset.
+  assertEquals(blocked.severity, "warning");
   assertStringIncludes(blocked.message, "REJECTED");
+  assertStringIncludes(blocked.message, "RULESET is right");
 });
 
 Deno.test("assessMilestoneRuleset - a RepositoryRole bypass the account satisfies is clean", () => {
@@ -190,4 +194,79 @@ Deno.test("serviceAccountCanBypass - a pull_request-mode bypass does not cover a
     ACCOUNT,
   );
   assertEquals(result.bypasses, false);
+});
+
+// ---------------------------------------------------------------------------
+// Creating the ruleset when it is missing. Setup runs with the operator's own
+// credentials, so it can write what the service account cannot.
+// ---------------------------------------------------------------------------
+
+Deno.test("createMilestoneRuleset - mirrors the default-branch check set", async () => {
+  const posted: { args: string[]; body?: string }[] = [];
+  const result = await createMilestoneRuleset(
+    "org/repo",
+    (args, stdin) => {
+      posted.push({ args, ...(stdin !== undefined ? { body: stdin } : {}) });
+      return Promise.resolve("42");
+    },
+    {
+      rulesets: [ruleset({
+        conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
+        rules: [{
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [
+              { context: "semgrep" },
+              { context: "gitleaks" },
+            ],
+          },
+        }],
+        bypass_actors: [
+          { actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always" },
+        ],
+      })],
+    },
+  );
+
+  assert(result.ok && result.created);
+  assertEquals(result.contexts, ["semgrep", "gitleaks"]);
+
+  const body = JSON.parse(posted[0]!.body!);
+  assertEquals(body.conditions.ref_name.include, ["refs/heads/milestone/**"]);
+  // No `pull_request` rule: review belongs on the default branch, not in
+  // front of every child PR the fleet raises.
+  assertEquals(
+    (body.rules as { type: string }[]).some((r) => r.type === "pull_request"),
+    false,
+  );
+  // The default branch's bypass actors carry over, so whoever could push
+  // there can still push a milestone branch.
+  assertEquals(body.bypass_actors.length, 1);
+});
+
+Deno.test("createMilestoneRuleset - does nothing when milestone branches are already covered", async () => {
+  const result = await createMilestoneRuleset(
+    "org/repo",
+    () => Promise.reject(new Error("must not call gh")),
+    { rulesets: [ruleset()] },
+  );
+  assert(result.ok && !result.created);
+  assertStringIncludes(result.reason, "already covered");
+});
+
+Deno.test("createMilestoneRuleset - refuses to guess a check set", async () => {
+  // Requiring a context nothing reports would block every milestone PR for
+  // ever, which is worse than the gap it would close.
+  const result = await createMilestoneRuleset(
+    "org/repo",
+    () => Promise.reject(new Error("must not call gh")),
+    {
+      rulesets: [ruleset({
+        conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
+        rules: [{ type: "deletion" }],
+      })],
+    },
+  );
+  assert(result.ok && !result.created);
+  assertStringIncludes(result.reason, "no check set to mirror");
 });
