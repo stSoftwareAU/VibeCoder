@@ -79,6 +79,16 @@
  *     `gitleaks_drift_scanner.ts`. It runs straight after the
  *     milestone-branch-filter pre-filer so the branch gap is never filed
  *     twice.
+ *   - **Observed gitleaks coverage (Issue #601, part of #566).** Presence
+ *     is not execution: a committed workflow never runs when Actions are
+ *     disabled, the workflow is disabled in the UI, its branch filter
+ *     misses the PRs' base, or its YAML does not parse. The repo's recent
+ *     closed PRs are sampled and their check runs read via
+ *     `gitleaks_pr_coverage_scanner.ts`; when no gitleaks check reported
+ *     on any of them a single `severity:medium`
+ *     `BP-GITLEAKS-NOT-OBSERVED` issue is filed, naming the sampled PRs. A
+ *     partial or failed sample is logged and stated in the evidence,
+ *     never reported as clean.
  *   - **Native unpinned-CI-install pre-filer (Issue #3668, split out of
  *     #3642).** Each `run:`-level package install with no exact version
  *     pin (`npm install -g <pkg>`, `npx --yes <pkg>`, `gem install
@@ -167,6 +177,10 @@ import {
   type GitleaksDriftFinding,
   scanGitleaksDrift,
 } from "../gitleaks_drift_scanner.ts";
+import {
+  type GitleaksPrCoverageFinding,
+  scanGitleaksPrCoverage,
+} from "../gitleaks_pr_coverage_scanner.ts";
 import {
   type CiInstallPinFinding,
   scanCiInstallPins,
@@ -306,6 +320,21 @@ export interface GitHubActionsAuditTemplateDeps {
    * they exercise the pre-filer without a real `.github/` tree.
    */
   readWorkflowFilesFn?: (workDir: string) => Promise<WorkflowFile[]>;
+  /**
+   * Observed gitleaks coverage on recent PRs (Issue #601). Defaults to
+   * `scanGitleaksPrCoverage`; tests inject a stub. Read-only — it lists
+   * closed PRs and reads their check runs, and files nothing when the repo
+   * has no gitleaks workflow.
+   */
+  scanGitleaksPrCoverageFn?: (
+    repo: string,
+    files: readonly WorkflowFile[],
+    ghCommandFn: GhCommandFn,
+    options: {
+      knownOpenFindingIds: Iterable<string>;
+      onSamplingNote: (note: string) => void;
+    },
+  ) => Promise<GitleaksPrCoverageFinding[]>;
   /**
    * GHSA cross-check of pinned actions (Issue #4405). Defaults to
    * `scanActionAdvisories` over `ghCommandFn`; tests inject a stub.
@@ -728,6 +757,14 @@ export function createGitHubActionsAuditTemplate(
     ((repo, gh) => defaultScanRunnerDeprecations(repo, gh));
   const readWorkflowFilesFn = deps.readWorkflowFilesFn ??
     ((workDir) => defaultReadWorkflowFiles(workDir));
+  const scanGitleaksPrCoverageFn = deps.scanGitleaksPrCoverageFn ??
+    ((repo, files, gh, options) =>
+      scanGitleaksPrCoverage(repo, {
+        files,
+        ghCommandFn: gh,
+        knownOpenFindingIds: options.knownOpenFindingIds,
+        onSamplingNote: options.onSamplingNote,
+      }));
   const scanActionAdvisoriesFn = deps.scanActionAdvisoriesFn ??
     ((files, gh, known, onLookupFailure) =>
       scanActionAdvisories(files, {
@@ -1171,6 +1208,54 @@ export function createGitHubActionsAuditTemplate(
           { knownOpenFindingIds: seenIds },
         );
         for (const finding of gitleaksFindings) {
+          if (seenIds.has(finding.findingId)) continue;
+          const filed = await fileWorkflowFinding({
+            repo: opts.repo,
+            findingId: finding.findingId,
+            severity: finding.severity,
+            title: finding.title,
+            file: finding.file,
+            lines: finding.lines,
+            whyItMatters: finding.whyItMatters,
+            suggestedFix: finding.suggestedFix,
+            evidence: finding.evidence,
+            template: NAME,
+            runId,
+            ghCommandFn,
+          });
+          if (filed !== null) {
+            preFiled.push(filed.findingId);
+            seenIds.add(filed.findingId);
+          }
+        }
+
+        // 5h3. Observed gitleaks coverage on recent PRs (Issue #601, part
+        //      of #566). 5h2 asks whether the committed copy has drifted;
+        //      this asks whether it ever *ran*. A workflow file can be
+        //      present and never execute — Actions disabled, the workflow
+        //      disabled in the UI, a branch filter that misses the PRs'
+        //      base, an `if:` that never fires, a YAML error that stops it
+        //      being registered — and every one of those reads as "present"
+        //      to the file-content audit. Sample the repo's recent closed
+        //      PRs and file one `severity:medium` finding when no gitleaks
+        //      check reported on any of them. Runs after 5h2 so a drifted
+        //      copy is reported by its own class first. A degraded sample is
+        //      logged, never reported as clean.
+        const coverageFindings: GitleaksPrCoverageFinding[] =
+          await scanGitleaksPrCoverageFn(
+            opts.repo,
+            files,
+            ghCommandFn,
+            {
+              knownOpenFindingIds: seenIds,
+              onSamplingNote: (note) =>
+                logger.warn(
+                  `github-actions-audit: ${note}`,
+                  { repo: opts.repo, template: NAME, runId },
+                ),
+            },
+          );
+        for (const finding of coverageFindings) {
           if (seenIds.has(finding.findingId)) continue;
           const filed = await fileWorkflowFinding({
             repo: opts.repo,
