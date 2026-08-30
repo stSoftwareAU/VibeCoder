@@ -3286,6 +3286,12 @@ export async function createProductionRunCoreDeps(
         "./idle_detect_diagnostics.ts"
       );
       try {
+        // Issue #655: the same holds the claim scan and the census read, so
+        // the audit stops counting work this run is itself withholding — the
+        // over-count that kept `mis_classification` firing, and the audit's
+        // own `claimableTotal` suppressing the idle-task filer, for the life
+        // of the process.
+        const runLocalHold = await loadRunLocalHolds();
         const result = await auditClaimableState({
           repos,
           workerUser: githubUser,
@@ -3302,6 +3308,10 @@ export async function createProductionRunCoreDeps(
           // permanently by the scan, so counting it as claimable kept the
           // `mis_classification` ALERT firing against a scan that was right.
           mergedPRsFn: fetchMergedPRsForCensus,
+          // Issue #655: this run's persisted retry cooldown and its
+          // processed-issue registry, resolved above from the one hold set
+          // `findNextIssue` filters its candidates against.
+          runLocalHoldFn: runLocalHold,
           // Issue #479: while a host-level gate is active the scan never ran,
           // so `mis_classification` is guaranteed to fire and says nothing.
           // Read from the same signals the census and the fleet-board note

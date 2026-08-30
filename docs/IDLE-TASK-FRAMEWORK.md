@@ -694,10 +694,20 @@ refused silently on every later cycle of that run. On 2026-08-30
 cycle for #622 and #623 — both handed back earlier that day, neither carrying a
 single GitHub-visible blocker — and filed VibeCoder#655 against a scan that was
 right. `run_core_production_deps.ts` now resolves the hold set **once** and
-hands the same set to both readers, and excluded issues are reported as
+hands the same set to all three readers, and excluded issues are reported as
 `run_local_hold=<n>`. The per-cycle adaptive-floor deferral (Issue #245) is the
 one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
 streak open the way the registry did.
+
+The third reader is the **idle-detect audit** (`idle_detect_diagnostics.ts`),
+which counted those same two issues for the life of the run — so
+`[idle-detect] ... ALERT mis_classification ...` fired on every tick beside the
+census's inversion alert, and the audit's `claimableTotal` suppressed the
+idle-task filer with it. It now applies the hold as its last gate, reporting
+`reason=run_local_hold` on the per-repo line, exactly as it took the open-PR
+gate in Issue #4223 and the merged-PR gate in GRQ#4419. A hold source that
+throws falls back to no hold, so a failure restores the old over-count rather
+than reporting a repo as having nothing to do.
 
 That incident also exposed the other half of the fault, in the scan's own
 reporting: the cooldown filters logged their skip and recorded nothing in
