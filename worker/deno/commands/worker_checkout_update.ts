@@ -208,13 +208,14 @@ export const workerCheckoutUpdateCommand: Command = {
 };
 
 /**
- * Update a checkout to `origin/<default-branch>`.
+ * Bring a checkout to where this host's update mode says it belongs —
+ * `origin/<default-branch>` under `dynamic`, `pinned_ref` under `frozen`.
  *
  * Separated from the {@link Command} wrapper so the tests can drive it
  * directly against a temporary repository.
  *
  * @param args - `base-dir` (required), optional `default-branch`, `log-dir`
- * @returns Success with the branch updated to, or a fail-loud message
+ * @returns Success with the branch or pinned ref, or a fail-loud message
  */
 export async function updateWorkerCheckout(
   args: Record<string, unknown>,
