@@ -7,7 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -71,6 +71,20 @@ function makeInput(overrides?: Partial<CiFixInput>): CiFixInput {
 // ============================================================================
 // formatCiAnnotations
 // ============================================================================
+
+/**
+ * Issue #579: a claim that the push landed is now made against the REMOTE,
+ * not against local state. Tests that assert a successful push therefore say
+ * so explicitly — clean local state, and a moved HEAD, are no longer
+ * sufficient evidence on their own.
+ */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
 
 Deno.test("formatCiAnnotations - formats CI failure details", () => {
   const annotations: CheckAnnotation[] = [
@@ -139,6 +153,7 @@ Deno.test("processCiFailure - succeeds with mock Claude output", async () => {
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -451,6 +466,7 @@ Deno.test("processCiFailure - pushes commits even when Claude output is empty (I
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -614,6 +630,7 @@ Deno.test("processCiFailure - pushes commits after Claude makes changes (Issue #
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const input = makeInput();
@@ -779,6 +796,7 @@ Deno.test("processCiFailure - uses .pr_response_message as comment body when pre
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -844,6 +862,7 @@ Deno.test("processCiFailure - falls back to default message when .pr_response_me
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -922,6 +941,7 @@ Deno.test("processCiFailure - recovers from push rejection and reports success (
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -1426,24 +1446,33 @@ Deno.test("processCiFailure - a PR whose branch no longer exists on origin (merg
 
 Deno.test("resolveCiCheckStateDir - lands on the work volume, not the read-only CWD", () => {
   assertEquals(
-    resolveCiCheckStateDir({ workDir: "/home/vibe/auto-issue-work" }),
+    resolveCiCheckStateDir("/home/vibe/auto-issue-work"),
     "/home/vibe/auto-issue-work/.ci_check_state",
   );
   // WORK_DIR serves when the caller passes nothing.
   assertEquals(
-    resolveCiCheckStateDir({
-      env: (n) => n === "WORK_DIR" ? "/volume" : undefined,
-    }),
+    resolveCiCheckStateDir(
+      undefined,
+      (n) => n === "WORK_DIR" ? "/volume" : undefined,
+    ),
     "/volume/.ci_check_state",
   );
-  // Nothing configured at all still resolves ABSOLUTE (Issue #552): the bare
-  // relative name is the trap that started this, so it is never returned.
-  const fallback = resolveCiCheckStateDir({ env: () => undefined });
-  assert(
-    fallback.startsWith("/"),
-    `expected an absolute fallback, got ${fallback}`,
+  // Issue #552 changed this last case deliberately. It used to return the
+  // legacy relative name, which the scanner and the processor could then
+  // resolve to different directories — so the retry cap was read from a store
+  // nothing wrote to. The resolver is now always absolute: HOME first, then a
+  // writable last resort.
+  assertEquals(
+    resolveCiCheckStateDir(
+      undefined,
+      (n) => n === "HOME" ? "/home/vibe" : undefined,
+    ),
+    "/home/vibe/auto-issue-work/.ci_check_state",
   );
-  assertStringIncludes(fallback, ".ci_check_state");
+  assertEquals(
+    resolveCiCheckStateDir(undefined, () => undefined),
+    "/tmp/auto-issue-work/.ci_check_state",
+  );
 });
 
 Deno.test("recordCiCheckRetry - a read-only state directory does not abort the repair", async () => {

@@ -21,6 +21,11 @@
 
 import type { RepoConfig } from "../types.ts";
 import {
+  asUntrustedUser,
+  buildUntrustedCommandEnv,
+  canRunAsUntrustedUser,
+} from "./untrusted_command_env.ts";
+import {
   detectMissingQualityTools,
   formatMissingToolsMessage,
   formatQualityFailureMessage,
@@ -30,6 +35,41 @@ import {
   isSafeDockerImageRef,
 } from "./docker_image_ref.ts";
 import { fenceQualityOutput } from "./untrusted_quality_output.ts";
+import { resolveRepoCredentials } from "./repo_credentials.ts";
+
+/**
+ * Whether this container can drop to the untrusted account, resolved once.
+ *
+ * A probe per quality run would spend two spawns on an answer that cannot
+ * change within a container's life. Undefined until first asked.
+ */
+let untrustedUserAvailable: boolean | undefined;
+
+/** Reset the cached probe. Tests only. */
+export function _resetUntrustedUserProbe(): void {
+  untrustedUserAvailable = undefined;
+}
+
+/**
+ * The command to spawn, dropped to the untrusted account where possible.
+ *
+ * Falls back to running as the worker on an image that predates the `agent`
+ * account, so a host mid-upgrade keeps working — degraded, not broken.
+ */
+async function untrustedSpawn(cmd: readonly string[]): Promise<string[]> {
+  if (untrustedUserAvailable === undefined) {
+    untrustedUserAvailable = await canRunAsUntrustedUser();
+    if (!untrustedUserAvailable) {
+      console.error(
+        "[SECURITY] cannot run the repository's own commands as a separate " +
+          "account — `sudo -n -u agent` is unavailable on this image, so " +
+          "they run as the worker and can read its credential files " +
+          "(Issue #571)",
+      );
+    }
+  }
+  return asUntrustedUser(cmd, { enabled: untrustedUserAvailable });
+}
 
 // =============================================================================
 // Types
@@ -121,7 +161,14 @@ export interface QualityGateParams {
 // =============================================================================
 
 /** Create default dependencies using real system calls. */
-export function createDefaultDeps(): QualityGateDeps {
+export function createDefaultDeps(
+  /**
+   * Credentials this repository declared for its own checks (Issues #573,
+   * #574). Empty for every repository that declared none, which is the point:
+   * a credential is in scope for the repository that named it and no other.
+   */
+  repoCredentialEnv: Record<string, string> = {},
+): QualityGateDeps {
   return {
     getRepoConfig: (
       repoConfigs: Record<string, RepoConfig> | undefined,
@@ -154,8 +201,23 @@ export function createDefaultDeps(): QualityGateDeps {
       options?: { stdin?: "null" | "inherit"; cwd?: string },
     ): Promise<{ exitCode: number; output: string }> => {
       try {
-        const proc = new Deno.Command(cmd[0]!, {
-          args: cmd.slice(1),
+        // Issues #571 and #572: this runs the REPOSITORY's own command — its
+        // quality script, its tests, and every dependency install hook those
+        // reach. Two things follow, and neither works without the other.
+        //
+        // The environment is BUILT, not inherited: an allowlist of what a
+        // build needs, so no credential is in scope for a postinstall script
+        // to echo. And the command runs as a DIFFERENT account where the
+        // image provides one, because an environment allowlist cannot stop a
+        // process reading a credential file its own uid owns.
+        const spawnable = await untrustedSpawn(cmd);
+        const proc = new Deno.Command(spawnable[0]!, {
+          args: spawnable.slice(1),
+          // The declared credentials are placed AFTER the allowlist, so a
+          // repository's own declaration is the only way a credential reaches
+          // its checks (Issues #572, #573).
+          env: buildUntrustedCommandEnv({ overrides: repoCredentialEnv }),
+          clearEnv: true,
           stdout: "piped",
           stderr: "piped",
           stdin: options?.stdin === "inherit" ? "inherit" : "null",
@@ -437,9 +499,33 @@ Please fix all issues and ensure ./quality.sh passes. Do not comment out or remo
  */
 export async function runQualityGateCheck(
   params: QualityGateParams,
-  deps: QualityGateDeps = createDefaultDeps(),
+  /**
+   * Injected by tests. Left undefined in production so the credentials this
+   * repository declared are resolved first and built into the child
+   * environment (Issues #573, #574) — a default parameter cannot await.
+   */
+  deps?: QualityGateDeps,
 ): Promise<QualityGateRunResult> {
   const qualityScript = params.qualityScript ?? "./quality.sh";
+
+  // Step 0: resolve whatever credentials THIS repository declared, before
+  // anything is run. A repository that declared none gets none — that is the
+  // point of Issue #572, and this is the narrow, named way back in.
+  if (!deps) {
+    const credentials = await resolveRepoCredentials(
+      params.repo,
+      params.repoConfigs?.[params.repo]?.qualityCredentials,
+    );
+    if (!credentials.ok) {
+      // A mint that failed fails the phase. Running the checks anyway would
+      // fail them later, further from the cause, and look like a code fault.
+      return {
+        action: "failed",
+        qualityOutput: credentials.error.message,
+      };
+    }
+    deps = createDefaultDeps(credentials.value.env);
+  }
   const defaultTimeout = params.defaultTimeoutSeconds ?? 600;
 
   // Step 1: Check if quality.sh exists

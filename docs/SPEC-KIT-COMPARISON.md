@@ -22,7 +22,7 @@ The Vibe Coder is an **unattended, GitHub-native** worker. Nobody is at a
 keyboard. GitHub *is* the memory and the control plane — issue bodies, labels,
 comments, sub-issues and milestones — and the phase advances when a label
 changes or a gate passes. Planning prompts are explicitly forbidden from writing
-files (`prompts/planning/v21.md:16`, `prompts/quorum/v1.md:14`); the only
+files (`prompts/planning/`, `prompts/quorum/`); the only
 per-issue Markdown that reaches a repo is the retrospective
 `docs/archive/pr-summaries/pr-summary-<issue>.md`.
 
@@ -60,10 +60,10 @@ this assessment was worth doing.
 | `/speckit.tasks` → `tasks.md` | Sub-issues with acceptance criteria, `## Failure Detection`, `Depends on #N`, grouped into a milestone | Present, stored in GitHub |
 | `/speckit.taskstoissues` | Native — the planner publishes real sub-issues with dependency edges and a milestone | Already better |
 | `/speckit.analyze` — cross-artefact consistency | Adversarial self-critique that is deliberately never published | **Gap** — the judgement exists, the artefact does not |
-| `/speckit.implement` | `prompts/issue/v36.md` plus the phase pipeline and `./quality.sh` | Present |
-| `/speckit.converge` — assess code against intent, append remaining work | The assessment half is native: `prompts/issue/v36.md` requires a `## Acceptance Criteria` closure block in the PR summary, gated by `acceptance_criteria_gate.ts` (#518). The iterate-until-clean loop is not adopted | Adopted, assessment only |
+| `/speckit.implement` | `prompts/issue/v37.md` plus the phase pipeline and `./quality.sh` | Present |
+| `/speckit.converge` — assess code against intent, append remaining work | The assessment half is native: `prompts/issue/v37.md` requires a `## Acceptance Criteria` closure block in the PR summary, gated by `acceptance_criteria_gate.ts` (#518). The iterate-until-clean loop is not adopted | Adopted, assessment only |
 | `/speckit.checklist` — "unit tests for English" | Acceptance-criteria checkboxes in issues; the grill-me requirements-quality rubric (four named classes, deterministic pre-pass) | Present, scoped to grill-me |
-| `bug` extension — `assess → fix → test` | One pipeline for every tier; `bug` is a descriptive label only | **Gap**, narrowly |
+| `bug` extension — `assess → fix → test` | One pipeline for every tier; a `bug`-labelled PR summary must carry a `## Reproduction` block (`verified` / `partial` / `not-run`), gated by `reproduction_status_gate.ts` (#521) | Adopted, vocabulary only |
 | `assess` extension — go / needs-clarification / kill | Scattered partial gates; kill authority reserved for humans | Partial, by design |
 
 ## Ideas worth adopting
@@ -73,7 +73,7 @@ Five, each filed as its own issue. Each is a native adaptation, not a port.
 ### 1. Close the acceptance-criteria loop (from `/speckit.converge`) — #518
 
 The planner writes a `## Acceptance Criteria` checklist into every sub-issue
-(`prompts/planning/v21.md:95-97`) and, before #518, **nothing ever read it
+(`prompts/planning/`) and, before #518, **nothing ever read it
 again**: searching `worker/deno/lib` and `prompts/issue/v35.md` <!-- pinned: the state that prompted #518 -->
 for "Acceptance Criteria" returned no matches. The implementing run never saw the
 criteria as a target and the PR summary never said which were met.
@@ -85,7 +85,7 @@ worth stealing twice over — the Vibe Coder has a prose "Change Scope" rule wit
 no output surface, so scope creep is invisible until review.
 
 Adopted as: a closure block in the PR summary rather than a new loop —
-`prompts/issue/v36.md` requires it and `acceptance_criteria_gate.ts` gates it
+`prompts/issue/v37.md` requires it and `acceptance_criteria_gate.ts` gates it
 before the PR is raised (see
 [issue-processing.md](workflows/issue-processing.md#-acceptance-criteria-closure-before-the-pr)).
 Converge's iterate-until-clean shape is not adopted — an unattended worker with a
@@ -114,7 +114,7 @@ manual](workflows/grill-me.md#-requirements-quality-rubric).
 
 ### 3. Publish the coverage table and gate it (from `/speckit.analyze`) — #520
 
-`prompts/planning_critique/v5.md:15` already asks the critique turn to find
+`prompts/planning_critique/` already asks the critique turn to find
 "asks in the issue with no sub-issue covering them" — but the critique is never
 published (`:164`), so the coverage judgement leaves no artefact and nothing
 fails when an ask is dropped. spec-kit publishes a requirement → task table with
@@ -126,6 +126,15 @@ single `closePlanningIssue()` chokepoint. Coverage should take the same shape,
 including spec-kit's per-task `source-ref` so a sub-issue traces back to the ask
 it satisfies.
 
+**Adopted** (#520): the publish turn posts a `## Plan Coverage` table on the
+parent (ask → covering sub-issue → note, with deliberately dropped asks kept as
+`Out of scope` rows), each sub-issue's `## Context` carries a matching
+`Covers ask:` line, and `worker/deno/lib/plan_coverage_gate.ts` rejects an
+uncovered, unexplained ask at the same `closePlanningIssue()` chokepoint —
+escalating through the existing `escalateToHuman()` path rather than adding a
+second one. See [the coverage section of the planning
+manual](workflows/planning-and-questions.md#-plan-coverage-table-and-gate-issue-520).
+
 ### 4. Honest reproduction status for bug fixes (from the `bug` extension) — #521
 
 spec-kit's bug guardrail is one sentence worth adopting whole: "a reproduction
@@ -133,12 +142,23 @@ that was not actually performed is reported as `partial` or `not-run`, not
 `verified`."
 
 All work tiers share one pipeline here (`docs/workflows/label-flows.md:226-234`),
-and `bug` is descriptive only. `prompts/issue/v36.md` asks for a regression test,
-but a PR claiming one reads identically whether the test was watched to fail
-before the fix or written afterwards — precisely the over-claim the fail-loud
-standard exists to prevent. Adopted as a conditional PR-summary block, not as a
-separate lane: the three-command structure buys nothing when one agent runs the
-whole thing.
+and `bug` is descriptive only. `prompts/issue/v36.md` <!-- pinned: the state that prompted #521 -->
+asks for a regression test, but a PR claiming one reads identically whether the
+test was watched to fail before the fix or written afterwards — precisely the
+over-claim the fail-loud standard exists to prevent. Adopted as a conditional
+PR-summary block, not as a separate lane: the three-command structure buys
+nothing when one agent runs the whole thing.
+
+**Adopted** (#521): a `bug`-labelled issue must produce a `## Reproduction` block
+in the PR summary recording the symptom, the status as `verified` / `partial` /
+`not-run`, and the covering regression test —
+`prompts/issue/v37.md` requires it and
+[`reproduction_status_gate.ts`](../worker/deno/lib/reproduction_status_gate.ts)
+blocks PR creation at the same chokepoint as the acceptance-criteria gate when
+the block is missing or a `verified` claim is unsupported. See [the reproduction
+section of the issue-processing
+manual](workflows/issue-processing.md#-reproduction-status-on-a-bug-fix). No new
+label, no new tier, no separate lane.
 
 ### 5. Name the MVP slice (from the spec template) — #522
 
@@ -147,10 +167,21 @@ spec-kit's spec template forces every user story to be independently testable �
 tasks template puts a checkpoint after each story.
 
 The Vibe Coder orders sub-issues by *dependency*
-(`prompts/planning/v21.md:83`), which is technical ordering, not value ordering.
+(`prompts/planning/`), which is technical ordering, not value ordering.
 A milestone that stops part-way therefore delivers whatever the dependency graph
 unblocked first, which may be nothing usable. Naming one MVP slice — or stating
 plainly that no slice is independently valuable — costs the planner a sentence.
+
+**Adopted** (#522): the publish turn marks exactly one entry in the summary
+comment's sub-issue list `**MVP slice**` with what value it delivers alone — or
+carries an explicit `No independently valuable slice — <reason>` line — and
+orders the list MVP-first without ever placing a sub-issue ahead of one it
+`Depends on`. [`mvp_slice_gate.ts`](../worker/deno/lib/mvp_slice_gate.ts)
+enforces both at the same `closePlanningIssue()` chokepoint as the coverage
+gate, escalating through the shared `escalateToHuman()` path. See [the MVP-slice
+section of the planning
+manual](workflows/planning-and-questions.md#-mvp-slice-marker-and-gate-issue-522).
+No new comment type, no new label.
 
 ## Considered and rejected
 

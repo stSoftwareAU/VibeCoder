@@ -88,7 +88,28 @@ function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
 // Tests
 // ---------------------------------------------------------------------------
 
+/**
+ * Issue #579: a claim that the push landed is now made against the REMOTE,
+ * not against local state. Tests that assert a successful push therefore say
+ * so explicitly — clean local state, and a moved HEAD, are no longer
+ * sufficient evidence on their own.
+ */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
+
 Deno.test("processPrFeedback - claude self-pushed: HEAD moved => success reply", async () => {
+  // The name still says "HEAD moved => success", but the implication is no
+  // longer straight through. Issue #579: a LOCAL commit moves HEAD too, and
+  // PR #549 claimed a push that never happened on exactly this evidence. A
+  // moved HEAD now only re-opens the question; the remote answers it, which
+  // is what REMOTE_CONFIRMS_PUSH stands in for below. The companion case —
+  // HEAD moved and the remote disagreeing — is covered in
+  // pr_feedback_processor_test.ts.
   const captured: CapturedGh = { comments: [], labelsAdded: [] };
 
   const mockClaude: Partial<ClaudeDeps> = {
@@ -136,6 +157,7 @@ Deno.test("processPrFeedback - claude self-pushed: HEAD moved => success reply",
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-self-push",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);

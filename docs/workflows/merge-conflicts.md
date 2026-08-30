@@ -229,6 +229,24 @@ blockages are now filed as issues the fleet can claim
 `escalated` marker instead. `needs-human` is reserved for what genuinely needs
 a person: a policy call, a credential, confirming intent.
 
+## 🔁 The lane rotates, so this pass is not always last
+
+The four agent-backed passes share one lane slot. They used to run in a fixed
+order with conflict resolution last, so it got whatever the others left — on a
+busy host, nothing:
+
+```text
+04:16:44Z [m1] Priority 1.55: CI Fix
+04:26:44Z [m1] [watchdog] CI Fix exceeded hard timeout 600s — abandoning
+04:26:44Z [m1] stop reason=deadline — Resolve PR Merge Conflicts … defer
+```
+
+The order now rotates by one each cycle (`worker/deno/lib/lane_rotation.ts`),
+so every pass leads once per turn. The offset is persisted on the work volume
+because runs get as few as one lane cycle each, and a run-local counter would
+leave a single-cycle host always leading with the same pass. Nothing about the
+resource bound changes: still one agent-backed pass at a time.
+
 ## 🔒 Cross-host locking
 
 The pass takes the same `BRANCH_UPDATE_LOCK` PR lock the branch updater and the

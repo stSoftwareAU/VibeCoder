@@ -668,3 +668,54 @@ Deno.test("runQualityGateCheck - full native failure and retry flow", async () =
   assertEquals(callOrder.includes("cleanupPorts"), true);
   assertEquals(callOrder.includes("cleanupSubprocesses"), true);
 });
+
+// =============================================================================
+// runQualityGateCheck — credentials the repository declared (Issues #573, #574)
+//
+// These exercise the PRODUCTION path deliberately: no deps are injected, so
+// the credentials are resolved for real before anything is run. That is the
+// wiring the mechanism is worthless without — `resolveRepoCredentials` existing
+// but never being called would ship a dead feature that reads as a live one.
+// =============================================================================
+
+Deno.test("runQualityGateCheck - a failed mint fails the phase and names the repo", async () => {
+  const result = await runQualityGateCheck(createParams({
+    repoConfigs: {
+      "org/test-repo": {
+        qualityCredentials: {
+          mint: "echo 'role has expired' >&2; exit 7",
+        },
+      },
+    },
+  }));
+
+  // Not "skipped", though quality.sh does not exist here: resolution happens
+  // first, so the run stops at the cause rather than at a later symptom.
+  assertEquals(result.action, "failed");
+  assertStringIncludes(result.qualityOutput, "org/test-repo");
+  assertStringIncludes(result.qualityOutput, "exit 7");
+});
+
+Deno.test("runQualityGateCheck - a mint that prints nothing usable also fails", async () => {
+  const result = await runQualityGateCheck(createParams({
+    repoConfigs: {
+      "org/test-repo": {
+        qualityCredentials: { mint: "echo 'nothing to see here'" },
+      },
+    },
+  }));
+
+  // Exit zero is not evidence it worked.
+  assertEquals(result.action, "failed");
+  assertStringIncludes(result.qualityOutput, "no KEY=value lines");
+});
+
+Deno.test("runQualityGateCheck - a repository that declared nothing runs nothing extra", async () => {
+  // The overwhelmingly common case: no declaration, no mint, straight through
+  // to the ordinary path (skipped here, because quality.sh is absent).
+  const result = await runQualityGateCheck(createParams({
+    qualityScript: "/nonexistent/quality.sh",
+  }));
+
+  assertEquals(result.action, "skipped");
+});

@@ -1365,9 +1365,17 @@ async function attemptMerge(
     }
 
     if (result.result === "not_allowed" && directMergeFn) {
+      // Issue #553: say WHY. GitHub's refusal was dropped here, so a PR that
+      // merged directly looked like one where auto-merge had "randomly" not
+      // been set. It is deterministic — GitHub refuses to arm auto-merge on a
+      // PR nothing blocks — and the reason it gives is the whole diagnosis.
       logger.info(
         "Auto-merge not available — attempting direct merge fallback",
-        { repo, prNumber },
+        {
+          repo,
+          prNumber,
+          reason: result.message ?? "GitHub gave no reason",
+        },
       );
       return await directMergeFn(repo, prNumber);
     }

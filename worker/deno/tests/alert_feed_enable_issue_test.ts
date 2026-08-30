@@ -43,9 +43,13 @@ function createGhFake(repo: string) {
 
   const gh = (args: string[]): Promise<string> => {
     if (args[0] === "issue" && args[1] === "list") {
+      // A `--label`-less list is repo-wide (Issue #539) and returns every open
+      // issue, exactly as real gh does.
       const labelIdx = args.indexOf("--label");
-      const label = labelIdx >= 0 ? (args[labelIdx + 1] ?? "") : "";
-      const matching = issues.filter((i) => i.labels.includes(label));
+      const label = labelIdx >= 0 ? (args[labelIdx + 1] ?? "") : null;
+      const matching = label === null
+        ? issues
+        : issues.filter((i) => i.labels.includes(label));
       return Promise.resolve(
         JSON.stringify(
           matching.map((i) => ({ number: i.number, body: i.body })),

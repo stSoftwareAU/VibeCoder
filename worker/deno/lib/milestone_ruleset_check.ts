@@ -94,6 +94,7 @@ export interface MilestoneRulesetFinding {
     | "review-required"
     | "ruleset-disabled"
     | "unreportable-checks"
+    | "no-automerge-gate"
     | "configured";
   message: string;
 }
@@ -606,4 +607,96 @@ export async function createMilestoneRuleset(
     }
     return { ok: false, error: error as Error };
   }
+}
+
+// ---------------------------------------------------------------------------
+// The default branch (Issue #553)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a ruleset covers the repository's default branch.
+ *
+ * `~DEFAULT_BRANCH` is GitHub's own alias and survives a rename; an explicit
+ * `refs/heads/<name>` is matched against the branch the caller resolved.
+ */
+export function coversDefaultBranch(
+  ruleset: RulesetDetail,
+  defaultBranch: string,
+): boolean {
+  const include = ruleset.conditions?.ref_name?.include ?? [];
+  return include.some((pattern) =>
+    pattern === "~DEFAULT_BRANCH" || pattern === "~ALL" ||
+    pattern === `refs/heads/${defaultBranch}`
+  );
+}
+
+/**
+ * Whether GitHub can arm auto-merge on a PR into this branch.
+ *
+ * Auto-merge exists to wait for something. GitHub therefore refuses to arm it
+ * on a PR nothing blocks, so the base branch must require **status checks** or
+ * **approving reviews** — a ruleset that only forbids deletion and
+ * force-pushes gates the branch without ever blocking a merge.
+ *
+ * This is the whole of Issue #553's "auto-merge not set, apparently at
+ * random": it is not random, it is deterministic on this property.
+ * `NEAT-AI-Rebase`, the repository in that issue's example, carries a
+ * `Develop` ruleset requiring zero checks and zero approvals.
+ */
+export function canArmAutoMerge(
+  rulesets: readonly RulesetDetail[],
+  defaultBranch: string,
+): boolean {
+  return rulesets
+    .filter((ruleset) =>
+      (ruleset.enforcement ?? "active") === "active" &&
+      coversDefaultBranch(ruleset, defaultBranch)
+    )
+    .some((ruleset) =>
+      (ruleset.rules ?? []).some((rule) => {
+        if (rule.type === "required_status_checks") {
+          return (rule.parameters?.required_status_checks ?? []).length > 0;
+        }
+        if (rule.type === "pull_request") {
+          return (rule.parameters?.required_approving_review_count ?? 0) > 0;
+        }
+        return false;
+      })
+    );
+}
+
+/**
+ * Report whether the fleet's PRs into the default branch can be auto-merged.
+ *
+ * Read-only, and deliberately says nothing when auto-merge IS available: the
+ * healthy case is the common one and setup already prints a line per repo.
+ *
+ * @returns A finding when auto-merge cannot be armed, else null.
+ */
+export function assessDefaultBranchAutoMerge(
+  rulesets: readonly RulesetDetail[],
+  defaultBranch: string,
+): MilestoneRulesetFinding | null {
+  if (canArmAutoMerge(rulesets, defaultBranch)) return null;
+
+  const covering = rulesets.filter((ruleset) =>
+    coversDefaultBranch(ruleset, defaultBranch)
+  );
+  const detail = covering.length === 0
+    ? `no ruleset covers '${defaultBranch}'`
+    : `the ruleset(s) covering '${defaultBranch}' (${
+      covering.map((r) => `'${r.name ?? r.id}'`).join(", ")
+    }) require no status checks and no approving reviews`;
+
+  return {
+    severity: "warning",
+    code: "no-automerge-gate",
+    message:
+      `auto-merge cannot be armed on a PR into '${defaultBranch}': ${detail}. ` +
+      `GitHub refuses to arm auto-merge on a PR nothing blocks, so the ` +
+      `worker's PRs there merge outright when they are already clean and ` +
+      `carry no auto-merge when they are not — which reads as auto-merge ` +
+      `being set at random (Issue #553). Require at least one status check ` +
+      `or one approving review on that branch to make landing deterministic.`,
+  };
 }

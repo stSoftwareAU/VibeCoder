@@ -8,7 +8,10 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { buildCiFixPrompt } from "../lib/prompt_builder.ts";
+import {
+  buildCiFixPrompt,
+  formatCiFailureClassification,
+} from "../lib/prompt_builder.ts";
 import type { CiAnnotation } from "../lib/ci_failure_classifier.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -76,4 +79,30 @@ Deno.test("ci_fix v4 - renderer falls back to unknown when no annotations", asyn
   if (result.ok) {
     assertStringIncludes(result.value.prompt, "unknown");
   }
+});
+
+Deno.test("formatCiFailureClassification - a history-rewrite failure tells the run not to rewrite (Issue #630)", () => {
+  const block = formatCiFailureClassification({
+    category: "history-rewrite-required",
+    reason: "secret scan 'gitleaks' judges the commit range",
+    signals: ["check:gitleaks"],
+  });
+
+  // Fix the content, commit normally — the worker does the rebuild, under
+  // guards a coding run cannot check for itself.
+  assertStringIncludes(block, "commit it normally");
+  assertStringIncludes(block, "Do NOT run");
+  assertStringIncludes(block, "--amend");
+  // And never echo the value it just removed.
+  assertStringIncludes(block, "Never");
+  assertStringIncludes(block, "variable or file name");
+});
+
+Deno.test("formatCiFailureClassification - other categories carry no rebuild instruction", () => {
+  const block = formatCiFailureClassification({
+    category: "code-fix-required",
+    reason: "semgrep finding",
+    signals: ["check:semgrep"],
+  });
+  assertEquals(block.includes("Do NOT run"), false);
 });
