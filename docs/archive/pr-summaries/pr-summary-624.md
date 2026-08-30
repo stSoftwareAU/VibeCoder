@@ -50,6 +50,15 @@ deno test --allow-all tests/worker_checkout_update_test.ts tests/checkout_update
 ok | 42 passed | 0 failed (3s)
 ```
 
+`./quality.sh` reports every check PASSED except `deno tests`, which fails on
+36 pre-existing environment failures in `tests/gh_spawn_test.ts`,
+`tests/service_account_env_test.ts`, `tests/run_core_test.ts` and
+`tests/run_core_rate_limit_resume_test.ts` (discarded-stream handling, an
+"unwritable" directory this container can still write to, and a dangling
+rate-limit promise). Running those four files on the base commit in a separate
+worktree reproduces the same `FAILED | 36 failed` set, so none of them come
+from this change; the whole rest of the 16,083-test suite passes.
+
 ```mermaid
 flowchart TD
     S{"VIBE_SKIP_CHECKOUT_UPDATE"} -->|set| K["skip everything, say so"]
