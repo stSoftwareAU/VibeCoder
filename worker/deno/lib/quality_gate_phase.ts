@@ -21,6 +21,11 @@
 
 import type { RepoConfig } from "../types.ts";
 import {
+  asUntrustedUser,
+  buildUntrustedCommandEnv,
+  canRunAsUntrustedUser,
+} from "./untrusted_command_env.ts";
+import {
   detectMissingQualityTools,
   formatMissingToolsMessage,
   formatQualityFailureMessage,
@@ -30,6 +35,40 @@ import {
   isSafeDockerImageRef,
 } from "./docker_image_ref.ts";
 import { fenceQualityOutput } from "./untrusted_quality_output.ts";
+
+/**
+ * Whether this container can drop to the untrusted account, resolved once.
+ *
+ * A probe per quality run would spend two spawns on an answer that cannot
+ * change within a container's life. Undefined until first asked.
+ */
+let untrustedUserAvailable: boolean | undefined;
+
+/** Reset the cached probe. Tests only. */
+export function _resetUntrustedUserProbe(): void {
+  untrustedUserAvailable = undefined;
+}
+
+/**
+ * The command to spawn, dropped to the untrusted account where possible.
+ *
+ * Falls back to running as the worker on an image that predates the `agent`
+ * account, so a host mid-upgrade keeps working — degraded, not broken.
+ */
+async function untrustedSpawn(cmd: readonly string[]): Promise<string[]> {
+  if (untrustedUserAvailable === undefined) {
+    untrustedUserAvailable = await canRunAsUntrustedUser();
+    if (!untrustedUserAvailable) {
+      console.error(
+        "[SECURITY] cannot run the repository's own commands as a separate " +
+          "account — `sudo -n -u agent` is unavailable on this image, so " +
+          "they run as the worker and can read its credential files " +
+          "(Issue #571)",
+      );
+    }
+  }
+  return asUntrustedUser(cmd, { enabled: untrustedUserAvailable });
+}
 
 // =============================================================================
 // Types
@@ -154,8 +193,20 @@ export function createDefaultDeps(): QualityGateDeps {
       options?: { stdin?: "null" | "inherit"; cwd?: string },
     ): Promise<{ exitCode: number; output: string }> => {
       try {
-        const proc = new Deno.Command(cmd[0]!, {
-          args: cmd.slice(1),
+        // Issues #571 and #572: this runs the REPOSITORY's own command — its
+        // quality script, its tests, and every dependency install hook those
+        // reach. Two things follow, and neither works without the other.
+        //
+        // The environment is BUILT, not inherited: an allowlist of what a
+        // build needs, so no credential is in scope for a postinstall script
+        // to echo. And the command runs as a DIFFERENT account where the
+        // image provides one, because an environment allowlist cannot stop a
+        // process reading a credential file its own uid owns.
+        const spawnable = await untrustedSpawn(cmd);
+        const proc = new Deno.Command(spawnable[0]!, {
+          args: spawnable.slice(1),
+          env: buildUntrustedCommandEnv(),
+          clearEnv: true,
           stdout: "piped",
           stderr: "piped",
           stdin: options?.stdin === "inherit" ? "inherit" : "null",
