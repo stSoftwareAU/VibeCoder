@@ -12,7 +12,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  assessDefaultBranchAutoMerge,
   assessMilestoneRuleset,
+  canArmAutoMerge,
+  coversDefaultBranch,
   coversMilestoneBranches,
   createMilestoneRuleset,
   type RulesetDetail,
@@ -373,5 +376,112 @@ Deno.test("setup_cli - the ruleset write uses the operator's credentials, not th
   assert(
     !/createSetupGhJson\(ghConfigDir\)/.test(call),
     "the create must not run as the service account (Issue #595)",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The default branch (Issue #553). "Auto-merge not set, apparently at random"
+// was deterministic all along: GitHub refuses to arm auto-merge on a PR that
+// nothing blocks, so a base requiring neither checks nor reviews can never
+// carry it. `NEAT-AI-Rebase` — the repository in that issue's example — has a
+// `Develop` ruleset requiring zero of each.
+// ---------------------------------------------------------------------------
+
+function defaultBranchRuleset(
+  rules: RulesetDetail["rules"],
+  overrides: Partial<RulesetDetail> = {},
+): RulesetDetail {
+  return {
+    id: 9,
+    name: "Develop",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
+    rules,
+    ...overrides,
+  };
+}
+
+Deno.test("canArmAutoMerge - a required status check makes auto-merge armable", () => {
+  assertEquals(
+    canArmAutoMerge([defaultBranchRuleset([{
+      type: "required_status_checks",
+      parameters: { required_status_checks: [{ context: "quality" }] },
+    }])], "Develop"),
+    true,
+  );
+});
+
+Deno.test("canArmAutoMerge - a required approving review does too", () => {
+  // Either kind of block is enough; auto-merge waits for whatever blocks.
+  assertEquals(
+    canArmAutoMerge([defaultBranchRuleset([{
+      type: "pull_request",
+      parameters: { required_approving_review_count: 1 },
+    }])], "Develop"),
+    true,
+  );
+});
+
+Deno.test("canArmAutoMerge - deletion and force-push rules gate without blocking a merge", () => {
+  // The NEAT-AI-Rebase shape: a ruleset exists, so the branch looks
+  // protected, and yet nothing ever blocks a merge.
+  assertEquals(
+    canArmAutoMerge([defaultBranchRuleset([
+      { type: "deletion" },
+      { type: "non_fast_forward" },
+      {
+        type: "pull_request",
+        parameters: { required_approving_review_count: 0 },
+      },
+    ])], "Develop"),
+    false,
+  );
+  // No ruleset at all is the same answer.
+  assertEquals(canArmAutoMerge([], "Develop"), false);
+});
+
+Deno.test("canArmAutoMerge - a disabled ruleset gates nothing", () => {
+  assertEquals(
+    canArmAutoMerge([defaultBranchRuleset([{
+      type: "required_status_checks",
+      parameters: { required_status_checks: [{ context: "quality" }] },
+    }], { enforcement: "disabled" })], "Develop"),
+    false,
+  );
+});
+
+Deno.test("coversDefaultBranch - matches the alias and the explicit ref alike", () => {
+  const explicit = defaultBranchRuleset([], {
+    conditions: { ref_name: { include: ["refs/heads/Develop"] } },
+  });
+  assertEquals(coversDefaultBranch(explicit, "Develop"), true);
+  assertEquals(coversDefaultBranch(explicit, "main"), false);
+  assertEquals(coversDefaultBranch(defaultBranchRuleset([]), "anything"), true);
+});
+
+Deno.test("assessDefaultBranchAutoMerge - names the repository's own rulesets in the warning", () => {
+  const finding = assessDefaultBranchAutoMerge(
+    [defaultBranchRuleset([{ type: "deletion" }])],
+    "Develop",
+  );
+  assert(finding);
+  assertEquals(finding.code, "no-automerge-gate");
+  assertStringIncludes(finding.message, "'Develop'");
+  assertStringIncludes(finding.message, "at random");
+  // Says what to change, not merely that something is wrong.
+  assertStringIncludes(finding.message, "one status check");
+});
+
+Deno.test("assessDefaultBranchAutoMerge - silent when auto-merge is available", () => {
+  // The healthy case is the common one; setup already prints a line per repo.
+  assertEquals(
+    assessDefaultBranchAutoMerge(
+      [defaultBranchRuleset([{
+        type: "required_status_checks",
+        parameters: { required_status_checks: [{ context: "quality" }] },
+      }])],
+      "Develop",
+    ),
+    null,
   );
 });
