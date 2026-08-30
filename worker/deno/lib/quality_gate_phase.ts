@@ -35,6 +35,7 @@ import {
   isSafeDockerImageRef,
 } from "./docker_image_ref.ts";
 import { fenceQualityOutput } from "./untrusted_quality_output.ts";
+import { resolveRepoCredentials } from "./repo_credentials.ts";
 
 /**
  * Whether this container can drop to the untrusted account, resolved once.
@@ -160,7 +161,14 @@ export interface QualityGateParams {
 // =============================================================================
 
 /** Create default dependencies using real system calls. */
-export function createDefaultDeps(): QualityGateDeps {
+export function createDefaultDeps(
+  /**
+   * Credentials this repository declared for its own checks (Issues #573,
+   * #574). Empty for every repository that declared none, which is the point:
+   * a credential is in scope for the repository that named it and no other.
+   */
+  repoCredentialEnv: Record<string, string> = {},
+): QualityGateDeps {
   return {
     getRepoConfig: (
       repoConfigs: Record<string, RepoConfig> | undefined,
@@ -205,7 +213,10 @@ export function createDefaultDeps(): QualityGateDeps {
         const spawnable = await untrustedSpawn(cmd);
         const proc = new Deno.Command(spawnable[0]!, {
           args: spawnable.slice(1),
-          env: buildUntrustedCommandEnv(),
+          // The declared credentials are placed AFTER the allowlist, so a
+          // repository's own declaration is the only way a credential reaches
+          // its checks (Issues #572, #573).
+          env: buildUntrustedCommandEnv({ overrides: repoCredentialEnv }),
           clearEnv: true,
           stdout: "piped",
           stderr: "piped",
@@ -488,9 +499,33 @@ Please fix all issues and ensure ./quality.sh passes. Do not comment out or remo
  */
 export async function runQualityGateCheck(
   params: QualityGateParams,
-  deps: QualityGateDeps = createDefaultDeps(),
+  /**
+   * Injected by tests. Left undefined in production so the credentials this
+   * repository declared are resolved first and built into the child
+   * environment (Issues #573, #574) — a default parameter cannot await.
+   */
+  deps?: QualityGateDeps,
 ): Promise<QualityGateRunResult> {
   const qualityScript = params.qualityScript ?? "./quality.sh";
+
+  // Step 0: resolve whatever credentials THIS repository declared, before
+  // anything is run. A repository that declared none gets none — that is the
+  // point of Issue #572, and this is the narrow, named way back in.
+  if (!deps) {
+    const credentials = await resolveRepoCredentials(
+      params.repo,
+      params.repoConfigs?.[params.repo]?.qualityCredentials,
+    );
+    if (!credentials.ok) {
+      // A mint that failed fails the phase. Running the checks anyway would
+      // fail them later, further from the cause, and look like a code fault.
+      return {
+        action: "failed",
+        qualityOutput: credentials.error.message,
+      };
+    }
+    deps = createDefaultDeps(credentials.value.env);
+  }
   const defaultTimeout = params.defaultTimeoutSeconds ?? 600;
 
   // Step 1: Check if quality.sh exists
