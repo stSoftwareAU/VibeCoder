@@ -55,16 +55,23 @@ async function fakeRepo(dir: string): Promise<void> {
   await Deno.writeTextFile(`${dir}/repo/worker/deno/deno.lock`, "{}\n");
 }
 
-async function runEntrypoint(
-  opts: {
-    dir: string;
-    path: string;
-    env?: Record<string, string>;
-    args?: string[];
-    /** Run with HOME genuinely unset (the legacy-path case only). */
-    homeless?: boolean;
-  },
-): Promise<{ code: number; stderr: string }> {
+interface EntrypointOpts {
+  dir: string;
+  path: string;
+  env?: Record<string, string>;
+  args?: string[];
+  /** Run with HOME genuinely unset (the legacy-path case only). */
+  homeless?: boolean;
+}
+
+/**
+ * The isolated environment every entrypoint case runs under.
+ *
+ * Built here, and nowhere else, so no case can spawn the entrypoint with the
+ * host's own environment: {@link spawnEntrypoint} is the only way to start it
+ * and it always clears the inherited set.
+ */
+function entrypointEnv(opts: EntrypointOpts): Record<string, string> {
   // HOME is isolated at the temporary directory exactly like VIBE_BASE_DIR
   // (Issue #4284). The entrypoint's gh-credential staging is gated on
   // ${HOME:-/home/vibe}/.vibe-coder/credentials/gh/hosts.yml, so a case that
@@ -83,17 +90,36 @@ async function runEntrypoint(
     ...(opts.env ?? {}),
   };
   if (opts.homeless) delete env.HOME;
+  return env;
+}
 
+/**
+ * Spawn the real entrypoint under {@link entrypointEnv}.
+ *
+ * `clearEnv` is the load-bearing flag: VIBE_SCRATCH_DIR is the FIRST candidate
+ * the entrypoint considers for its scratch root, ahead of TMPDIR, and it
+ * `rm -rf`s whatever it resolves. The suite runs on a worker host inside a live
+ * run that exports VIBE_SCRATCH_DIR=/tmp/vibe-scratch, so the one case that
+ * inherited the host's set deleted the running worker's own staged source —
+ * the gh guard's CLI among it — and restaged this file's `// stub` repo over
+ * it. Observed live while working Issue #612.
+ */
+function spawnEntrypoint(opts: EntrypointOpts): Deno.ChildProcess {
   // Absolute interpreter path: the child PATH is deliberately restricted to
   // the stub bin directory, so `bash` must not be resolved through it.
-  const command = new Deno.Command("/bin/bash", {
+  return new Deno.Command("/bin/bash", {
     args: [ENTRYPOINT, ...(opts.args ?? [])],
-    env,
+    env: entrypointEnv(opts),
     clearEnv: true,
     stdout: "piped",
     stderr: "piped",
-  });
-  const { code, stderr } = await command.output();
+  }).spawn();
+}
+
+async function runEntrypoint(
+  opts: EntrypointOpts,
+): Promise<{ code: number; stderr: string }> {
+  const { code, stderr } = await spawnEntrypoint(opts).output();
   return { code, stderr: new TextDecoder().decode(stderr) };
 }
 
@@ -555,19 +581,11 @@ Deno.test("entrypoint - forwards SIGTERM to the driver child (Issue #4239)", asy
     await Deno.chmod(`${dir}/bin/deno`, 0o755);
     await fakeRepo(dir);
 
-    const child = new Deno.Command("bash", {
-      args: [
-        new URL("../../../container/entrypoint.sh", import.meta.url).pathname,
-      ],
-      env: {
-        PATH: `${dir}/bin:/usr/bin:/bin`,
-        VIBE_BASE_DIR: `${dir}/repo`,
-        HOME: `${dir}/home`,
-      },
-      stdout: "null",
-      stderr: "null",
-      stdin: "null",
-    }).spawn();
+    const child = spawnEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo` },
+    });
 
     // Wait for the driver to start, then stop the entrypoint like the
     // runtime would.
@@ -589,6 +607,50 @@ Deno.test("entrypoint - forwards SIGTERM to the driver child (Issue #4239)", asy
     assertEquals(output.code, 143);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - never reaches the host's own scratch root, whatever the environment says", async () => {
+  // The suite runs ON a worker host, inside a live run that exports
+  // VIBE_SCRATCH_DIR=/tmp/vibe-scratch. That variable is the FIRST candidate
+  // the entrypoint considers for its scratch root, ahead of TMPDIR, and it
+  // `rm -rf`s whatever it resolves before restaging a driver copy. A case that
+  // let it through deleted the running worker's own staged source — the gh
+  // guard's CLI among it, so every subsequent `gh` call in that run failed
+  // closed — and left this file's `// stub` repo in its place.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  const hostScratch = await Deno.makeTempDir({ prefix: "vibe-host-scratch-" });
+  const guard = `${hostScratch}/worker-src/worker/deno/lib/gh_guard_cli.ts`;
+  const guardSource = "// the live run's guard\n";
+  const previous = Deno.env.get("VIBE_SCRATCH_DIR");
+  try {
+    await Deno.mkdir(`${hostScratch}/worker-src/worker/deno/lib`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(guard, guardSource);
+    Deno.env.set("VIBE_SCRATCH_DIR", hostScratch);
+
+    await stubDeno(dir);
+    await fakeRepo(dir);
+    // A real PATH, like the live container's: the entrypoint clears its
+    // scratch root with `rm -rf`, and a stub-only PATH cannot resolve `rm`,
+    // so a case without the real coreutils never exercises the deletion.
+    await spawnEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo` },
+    }).output();
+
+    assertEquals(
+      await Deno.readTextFile(guard),
+      guardSource,
+      "the entrypoint must never resolve its scratch root from the host's environment",
+    );
+  } finally {
+    if (previous === undefined) Deno.env.delete("VIBE_SCRATCH_DIR");
+    else Deno.env.set("VIBE_SCRATCH_DIR", previous);
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(hostScratch, { recursive: true });
   }
 });
 
