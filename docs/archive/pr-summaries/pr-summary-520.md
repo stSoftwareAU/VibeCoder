@@ -26,6 +26,12 @@ chokepoint.
   `needs-failure-detection-repair`: that label's resume pass re-gates Failure
   Detection only, so it would find nothing to repair, clear the label, and bury
   the coverage defect.
+- Publishing `prompts/planning/v22.md` and `prompts/planning_critique/v6.md`
+  made four `prompts/planning/v21.md:NN` / `prompts/planning_critique/v5.md:15`
+  citations in `docs/SPEC-KIT-COMPARISON.md` stale, which the docs
+  prompt-version freshness gate (`worker/deno/lib/docs_prompt_version_check.ts`)
+  fails on. Those citations are now version-free directory references; the one
+  that must cite the historical state keeps its `<!-- pinned: -->` marker.
 
 Closes #520.
 
@@ -85,6 +91,10 @@ identically on a stashed (clean) tree — they exercise a real `gh` spawn and a
 - **met** — `docs/workflows/planning-and-questions.md` documents the table and
   the gate — evidence: the new "🗂️ Plan-coverage table and gate (Issue #520)"
   section (artefact, gate rules, outcome, and a Mermaid flow).
+- **unrequested** — four stale prompt-version citations rewritten in
+  `docs/SPEC-KIT-COMPARISON.md` (plus its "Adopted (#520)" paragraph) — reason:
+  publishing v22/v6 makes the old `v21.md:NN` / `v5.md:15` pins fail the docs
+  prompt-version freshness gate, so the change cannot ship without them.
 
 ## Test Plan
 
