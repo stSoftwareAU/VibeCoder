@@ -1942,6 +1942,135 @@ Deno.test(
 );
 
 Deno.test(
+  "runTask - gitleaks PR-coverage pre-filer files the finding and joins seenIds (Issue #601)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [972],
+      knownOpen: [],
+      issueCreateNumbers: [972],
+    });
+    // Canonical shape, so no drift class fires — this isolates the
+    // observed-coverage finding.
+    const current = PINNED_ACTIONS["gitleaks/gitleaks-action"]!.sha;
+    const canonical = gitleaksFixture(current, [
+      "Develop",
+      "main",
+      "milestone/*",
+    ]);
+    let scanReceived: { knownOpen: string[] } | undefined;
+    let coverageArgs: { repo: string; fileCount: number } | undefined;
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([canonical]),
+      scanGitleaksPrCoverageFn: (repo, files, _ghFn, options) => {
+        coverageArgs = { repo, fileCount: files.length };
+        assert(
+          !Array.from(options.knownOpenFindingIds).includes(
+            "BP-GITLEAKS-NOT-OBSERVED",
+          ),
+        );
+        return Promise.resolve([{
+          findingId: "BP-GITLEAKS-NOT-OBSERVED",
+          severity: "medium" as const,
+          title:
+            "🟠 Gitleaks workflow is present but never reported on a recent pull request",
+          file: ".github/workflows/gitleaks.yml",
+          lines: 3,
+          whyItMatters: "why",
+          suggestedFix: "fix",
+          evidence: "Sampled #12, #11; no gitleaks check reported.",
+        }]);
+      },
+      runScanFn: (opts) => {
+        scanReceived = { knownOpen: [...opts.knownOpenFindingIds] };
+        return Promise.resolve({ ok: true, value: true });
+      },
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(coverageArgs, { repo: "org/repo", fileCount: 1 });
+    assertEquals(
+      creates.length,
+      1,
+      JSON.stringify(creates.map((c) => c.title)),
+    );
+    const created = creates[0]!;
+    assertStringIncludes(
+      created.body,
+      "<!-- finding-id: BP-GITLEAKS-NOT-OBSERVED -->",
+    );
+    assertStringIncludes(created.body, "#12");
+    assert(created.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
+    assert(created.labels.includes("severity:medium"));
+    assert(scanReceived!.knownOpen.includes("BP-GITLEAKS-NOT-OBSERVED"));
+  },
+);
+
+Deno.test(
+  "runTask - a degraded gitleaks coverage sample is logged, never silent (Issue #601)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+      knownOpen: [],
+      issueCreateNumbers: [], // must NOT be called
+    });
+    const { logger, records } = makeLogger();
+    const current = PINNED_ACTIONS["gitleaks/gitleaks-action"]!.sha;
+    const canonical = gitleaksFixture(current, [
+      "Develop",
+      "main",
+      "milestone/*",
+    ]);
+    const t = createGitHubActionsAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      getDefaultBranchFn: branchMain,
+      readWorkflowFilesFn: () => Promise.resolve([canonical]),
+      scanGitleaksPrCoverageFn: (_repo, _files, _ghFn, options) => {
+        options.onSamplingNote(
+          "gitleaks PR coverage: could not list closed pull requests for " +
+            "org/repo: HTTP 403: Forbidden — coverage is unknown, not clean",
+        );
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    assert(
+      records.some((r) =>
+        r.startsWith("warn:") && r.includes("HTTP 403: Forbidden")
+      ),
+      JSON.stringify(records),
+    );
+  },
+);
+
+Deno.test(
   "runTask - artefact-upload pre-filer leaves a scoped path untouched",
   async () => {
     const { gh, creates } = makeGhStub({

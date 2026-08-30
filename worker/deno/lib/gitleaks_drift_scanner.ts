@@ -106,8 +106,12 @@ const MEDIUM_EMOJI = "🟠";
 /** The glob that closes the milestone branch gap. */
 const MILESTONE_GLOB = "milestone/*";
 
-/** The upstream action coordinate this scanner tracks. */
-const GITLEAKS_ACTION = "gitleaks/gitleaks-action";
+/**
+ * The upstream action coordinate this scanner tracks. Exported so the
+ * observed-coverage scanner (Issue #601) decides "runs gitleaks" by the same
+ * rule this one does.
+ */
+export const GITLEAKS_ACTION = "gitleaks/gitleaks-action";
 
 /** A full 40-character lower-case hex commit SHA. */
 const SHA_PIN = /^[0-9a-f]{40}$/;
@@ -140,8 +144,12 @@ const CURRENT_ACTION_SHA = (() => {
  * but not the download coordinates the canonical fallback also mentions
  * (`.../gitleaks/gitleaks/releases/...`, `gitleaks_${VERSION}_linux_x64`),
  * because those are followed by `/` or `_` rather than whitespace.
+ *
+ * Exported so the observed-coverage scanner (Issue #601) recognises a CLI
+ * scan by the same rule.
  */
-const CLI_INVOCATION = /(?:^|[\s;&|(`])(?:\.{0,2}\/[\w./-]*)?gitleaks(?=\s|$)/m;
+export const CLI_INVOCATION =
+  /(?:^|[\s;&|(`])(?:\.{0,2}\/[\w./-]*)?gitleaks(?=\s|$)/m;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -175,7 +183,7 @@ function collectSteps(parsed: unknown): StepText[] {
 }
 
 /** Does this `uses:` value reference `gitleaks/gitleaks-action`? */
-function usesGitleaksAction(value: string): boolean {
+export function usesGitleaksAction(value: string): boolean {
   const coordinate = value.trim().split("@")[0] ?? "";
   return coordinate === GITLEAKS_ACTION;
 }
