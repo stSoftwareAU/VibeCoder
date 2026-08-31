@@ -1049,15 +1049,20 @@ measured coverage. There is no bucket — a single run inspects every test
 ecosystem present (Deno/TypeScript, JavaScript, Rust, Java, Go, Python,
 shell/BATS, Cypress, Playwright).
 
-**Seven audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
-against six **test-maintainability smells**: (1) implementation-coupled
+**Eleven audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
+against ten **test-maintainability smells**: (1) implementation-coupled
 assertions (call-order, internal-call mocks, private-symbol assertions — mock /
 interaction assertions are flagged only when not part of the public contract),
 (2) source-text greps used as assertions, (3) performance/timing assertions
 inside unit tests, (4) benchmarks living in the unit-test runner, (5)
 unexplained or unjustified expected values (a literal value is not a smell
 merely because it is hard-coded), and (6) snapshot/golden tests with no
-reviewable baseline. **Rewrite or delete** are both valid resolutions — a
+reviewable baseline. From v7 they are joined by (8) state and value objects
+replaced by mocks, (9) near-duplicate test bodies, and (10) tests of framework
+or language guarantees; from v12 by (11) tautological assertions — an expected
+value recomputed inside the test by the same computation the code under test
+performs, so the test passes by construction and can never disagree with the
+implementation. **Rewrite or delete** are both valid resolutions — a
 counter-productive test should never have been written, so deleting one is an
 acceptable PR outcome.
 
@@ -1100,7 +1105,7 @@ into the `{{SUPPRESSED_IDS}}` placeholder so the LLM drops the finding in Phase
 3 triage on the next run.
 
 See [`docs/TEST-AUDIT-SCAN.md`](docs/TEST-AUDIT-SCAN.md) for the operator manual
-(idle-trigger sequence diagram, the ten audit checks, the coverage-gap
+(idle-trigger sequence diagram, the eleven audit checks, the coverage-gap
 pre-pass, label scheme, id recipe, suppression syntax, no-PR rule).
 
 ### GitHub Actions audit scans (template #4)

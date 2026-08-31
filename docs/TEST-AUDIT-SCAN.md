@@ -27,7 +27,7 @@ and reviews test source and cross-references public symbols, but does
 **not** execute the tests, so it never claims dynamically measured
 execution coverage. The orchestrating prompt at
 [`prompts/test_audit/`](../prompts/test_audit/) instructs Claude to read
-the test tree, apply the **ten audit checks**, and file each surviving
+the test tree, apply the **eleven audit checks**, and file each surviving
 finding as its own GitHub issue. ("Test Audit" remains the short display
 name.)
 
@@ -35,10 +35,11 @@ The audit reviews two complementary concerns in **one** run, using the
 same deduplication, severity, stable-ID and finding-limit rules (never a
 parallel report):
 
-- **Test maintainability** (checks 1–6 and 8–10) — tests that get in the
-  way of refactoring (the nine **test-maintainability smells**). Checks
+- **Test maintainability** (checks 1–6 and 8–11) — tests that get in the
+  way of refactoring (the ten **test-maintainability smells**). Checks
   8–10, added from v7 onward, cover mocked state objects,
-  near-duplicate test bodies, and tests of framework guarantees.
+  near-duplicate test bodies, and tests of framework guarantees; check
+  11, added in v12, covers tautological assertions.
 - **Potential behavioural coverage gaps** (check 7,) —
   public API functions where no test directly references the symbol and
   no reviewed test provides clear indirect behavioural coverage. A static
@@ -92,15 +93,15 @@ stanza: the repo's own documented testing conventions are read before any
 check is applied, and a **documented** convention beats a check. An unsafe
 convention is filed as a finding against the convention itself.
 
-## The ten audit checks
+## The eleven audit checks
 
 Phase 2 of the prompt walks every inventoried test file against checks
-1–6 and 8–10 (the **test-maintainability smells**), then cross-checks
+1–6 and 8–11 (the **test-maintainability smells**), then cross-checks
 every public function (enumerated in Phase 1b) against the test suite for
 check 7 (a **potential behavioural coverage gap**). A missing test is not
-itself a test anti-pattern, so the combined checklist is the *ten audit
-checks*, not "ten anti-patterns". A finding is only valid when Claude can
-cite a specific file/line-range in the current source tree.
+itself a test anti-pattern, so the combined checklist is the *eleven
+audit checks*, not "eleven anti-patterns". A finding is only valid when
+Claude can cite a specific file/line-range in the current source tree.
 
 | # | Audit check | What it flags |
 | - | ----------- | ------------- |
@@ -108,12 +109,13 @@ cite a specific file/line-range in the current source tree.
 | 2 | **Source-text greps as assertions** | Tests that grep the source file for a pattern (`grep -qE '^foo\(\)' src/foo.sh`) instead of running the code. Any rename breaks the test without a real regression. |
 | 3 | **Performance / timing assertions in unit tests** | Wall-clock thresholds inside unit tests (`expect(elapsed).toBeLessThan(100)`). Flaky across machines; performance belongs in a dedicated benchmark. |
 | 4 | **Benchmarks in the unit-test runner** | A test that iterates `10_000` times or measures throughput and asserts only that the loop finished. Slows the suite, adds no correctness signal. |
-| 5 | **Unexplained or unjustified expected values** | A literal value is *not* a smell merely because it is hard-coded (`addGST(100) === 110` is fine). Flag values copied from the current implementation's output, unexplained/non-obvious, not independently derived from a requirement, or updated whenever the implementation changes. |
+| 5 | **Unexplained or unjustified expected values** | A literal value is *not* a smell merely because it is hard-coded (`addGST(100) === 110` is fine). Flag values copied from the current implementation's output, unexplained/non-obvious, not independently derived from a requirement, or updated whenever the implementation changes. Every bullet is about a *literal*; an expected value recomputed at test run time is check 11. |
 | 6 | **Snapshot / golden tests with no reviewable baseline** | Unreviewable snapshot or golden-master baselines — an opaque blob no human will diff, so `--update-snapshots` silently ships bugs. |
-| 7 | **Potentially untested public API** | Public API functions where no test directly references the symbol and no reviewed test provides clear indirect behavioural coverage — a statically detected candidate, not a measured-coverage claim. The other nine checks flag tests that obstruct a refactor; this one flags public behaviour that may have no safety net. Test helpers, trivial accessors, and functions covered indirectly through a tested caller are excluded. The fix is to *add* a behaviour-based (WHAT) test (never auto-written — the scan is issue-only). |
+| 7 | **Potentially untested public API** | Public API functions where no test directly references the symbol and no reviewed test provides clear indirect behavioural coverage — a statically detected candidate, not a measured-coverage claim. The other ten checks flag tests that obstruct a refactor; this one flags public behaviour that may have no safety net. Test helpers, trivial accessors, and functions covered indirectly through a tested caller are excluded. The fix is to *add* a behaviour-based (WHAT) test (never auto-written — the scan is issue-only). |
 | 8 | **State and value objects replaced by mocks** (from v7 onward) | A data model, DTO, entity, or state object mocked instead of constructed for real. Mocking state hides field-name typos, missing required fields, and constructor validation — the bugs most worth catching. Mocks belong at boundaries (network, DB, filesystem, clock, SDK, LLM); a plain data object is not a boundary. Severity **high**. Fix: build the real object, adding a builder/factory helper if construction is painful — that pain is design feedback, not a reason to mock. |
 | 9 | **Near-duplicate test bodies** (from v7 onward) | Two or more tests with identical setup, structure, and assertions differing only in one input literal and its expected output — the canonical shape of generated test bloat. Fix: one data-driven test (`t.step` over a table, `@pytest.mark.parametrize`, `test.each`, PHPUnit `#[DataProvider]`, a Go table-driven subtest). Severity **low–medium** (maintenance drag, not a hidden bug). The scan stays silent when the tests genuinely differ in setup, assertions, or mock configuration. |
 | 10 | **Tests for framework or language guarantees** (from v7 onward) | A test that would still pass if every line of the project's own code were deleted and only framework/stdlib defaults remained: the validation library validates, the ORM commits, the router 404s, a constructor assigns its arguments, a constant equals its literal, a function rejects input the type system already forbids. Severity **low**. Fix: delete it, or replace it with a test of the project logic sitting on top. |
+| 11 | **Tautological assertions** (from v12 onward) | An assertion whose expected value is derived *inside the test by the same computation the code under test performs* — a mirrored `reduce`/`map`/loop, a hand-built snapshot assembled the implementation's way, or a constant asserted equal to itself. It passes by construction, survives every refactor, and can never disagree with the implementation, so it is invisible to check 1 (no mocks, no private access) and to check 5 (no literal to interrogate). Severity **high** when it is the behaviour's only test, otherwise **medium**. Fix: an independently-sourced expected value (a known-good literal, a worked example from the spec, a fixture row). The scan stays silent when the expected value comes from a fixture row, from a deliberately *different* algorithm used as an oracle (a slow reference implementation checking a fast one, a round trip through an inverse function), or from a restatement of the requirement — the check turns on "computed the way the code computes it", not on "computed". |
 
 ### Exemption — production regression tests are sacred (from v7 onward)
 
@@ -198,7 +200,7 @@ flowchart TD
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
     Claim --> Ensure[Ensure `test-audit` label exists]:::phase
     Ensure --> Before[Snapshot 1 — list open<br/>`test-audit` issues BEFORE<br/>+ build known-open id list]:::phase
-    Before --> Run[Invoke Claude<br/>read-only static review<br/>ten audit checks]:::phase
+    Before --> Run[Invoke Claude<br/>read-only static review<br/>eleven audit checks]:::phase
     Run --> Cap[Triage — drop unbacked,<br/>dedup, suppress, cap at 6<br/>high > medium > low]:::phase
     Cap --> FileFindings[Phase 4 — gh issue create<br/>labels: test-audit, severity:&lt;level&gt;]:::phase
     FileFindings --> After[Snapshot 2 — list open<br/>`test-audit` issues AFTER]:::phase
@@ -288,8 +290,10 @@ The literal `"test-audit"` discriminator is **required** so test-audit
 ids never collide with best-practices findings for the same file — both
 families share the `BP-` id space, but the discriminator keeps them
 disjoint. The `audit-check slug` is a stable identifier for which of the
-ten checks fired (e.g. `implementation-coupled-assertion`,
-`potentially-untested-public-api`); the id derives from the audit check
+eleven checks fired (e.g. `implementation-coupled-assertion`,
+`potentially-untested-public-api`, `tautological-expected-value` — check
+11 takes its own slug rather than sharing check 5's
+`unjustified-expected-value`); the id derives from the audit check
 plus the affected symbol / file, **not** from the display title, so
 future finding-title wording changes never churn the id. Whitespace and
 identifier renames are normalised to equivalence so the same root cause
@@ -383,7 +387,7 @@ reviewed individually.
 - [`docs/SECURITY-SCAN.md`](SECURITY-SCAN.md) — The first idle-task
   template (security audit).
 - [`prompts/test_audit/`](../prompts/test_audit/) — Orchestrating prompt
-  (Phases 1–4). The cap, label set, ten audit checks, and
+  (Phases 1–4). The cap, label set, eleven audit checks, and
   per-finding body shape live in the prompt, not in Deno code.
 - [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#test-audit-scans-template-3) —
   Worker-side design principles for the test-audit scan.
