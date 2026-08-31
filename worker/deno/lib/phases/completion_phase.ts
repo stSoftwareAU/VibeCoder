@@ -41,6 +41,10 @@ import {
   validateAcceptanceClosure,
 } from "../acceptance_criteria_gate.ts";
 import {
+  buildIndependentReviewComment,
+  validateIndependentReview,
+} from "../independent_review_gate.ts";
+import {
   buildReproductionGateComment,
   validateReproductionStatus,
 } from "../reproduction_status_gate.ts";
@@ -981,6 +985,43 @@ async function completionBody(
       reason: `Acceptance criteria not closed out in the PR summary: ${
         closure.problems[0] ?? "closure block missing"
       }`,
+    };
+  }
+
+  // ---------------------------------------------------------------------
+  // Independent two-axis review gate (Issue #663).
+  //
+  // The closure block above says which criteria were met; this says who
+  // judged them. A verdict written by the agent that wrote the code, in the
+  // context that produced it, is not a review — so the criteria block must
+  // carry the independent Spec reviewer's provenance and its per-entry
+  // verdict, with any departure from that verdict recorded out loud. The
+  // Standards axis is reported under its own heading: a change can pass one
+  // axis and fail the other, and merging them lets one mask the other.
+  // Issues with no criteria are unaffected.
+  // ---------------------------------------------------------------------
+  const review = validateIndependentReview({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+  });
+  if (review.applicable && !review.valid) {
+    logger.warn("Independent two-axis review gate blocked PR creation", {
+      specEntries: review.specEntries.length,
+      standardsEntries: review.standardsEntries.length,
+      problems: review.problems,
+    });
+    const client = deps.github.createClient(logger);
+    await client.postComment(
+      repo,
+      issueNumber,
+      buildIndependentReviewComment(review),
+    );
+    return {
+      status: "failure",
+      reason:
+        `Independent Spec/Standards review not reported in the PR summary: ${
+          review.problems[0] ?? "review blocks missing"
+        }`,
     };
   }
 

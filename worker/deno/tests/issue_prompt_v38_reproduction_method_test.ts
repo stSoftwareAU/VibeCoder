@@ -9,6 +9,10 @@
  * regression test, and only then claim `verified`.
  *
  * v37 stays immutable and is the negative control.
+ *
+ * Issue #663 superseded v38 with v39, so the resolution test below now asserts
+ * v38 is still loadable and no longer the resolved version — the version bump
+ * is the only change to this file; every v38 content assertion is untouched.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -30,11 +34,12 @@ function lower(text: string): string {
   return text.toLowerCase();
 }
 
-Deno.test("issue v38 - is the version the worker resolves", async () => {
+Deno.test("issue v38 - stays loadable now that a later version resolves", async () => {
   const latest = await getLatestVersion("issue", PROMPTS_DIR);
   assertEquals(latest.ok, true);
   if (!latest.ok) return;
-  assertEquals(latest.value, "v38");
+  // Superseded by v39 (Issue #663) — v38 must still load by explicit version.
+  assert(latest.value !== "v38", "v38 is no longer the resolved version");
 
   const [byName, byVersion] = await Promise.all([
     loadPrompt("issue", undefined, PROMPTS_DIR),
@@ -43,7 +48,7 @@ Deno.test("issue v38 - is the version the worker resolves", async () => {
   assertEquals(byName.ok, true);
   assertEquals(byVersion.ok, true);
   if (byName.ok && byVersion.ok) {
-    assertEquals(byName.value, byVersion.value);
+    assert(byName.value !== byVersion.value);
   }
 });
 
