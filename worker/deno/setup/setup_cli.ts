@@ -74,8 +74,11 @@ import {
   assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
   createMilestoneRuleset,
-  fetchRulesetDetails,
   MILESTONE_RULESET_NAME,
+  planMilestoneRuleset,
+  readRulesetDetails,
+  type RulesetDetail,
+  rulesetReadFailedFinding,
 } from "../lib/milestone_ruleset_check.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
 import {
@@ -936,6 +939,96 @@ async function runVerifyCollaborator(configPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Report one repository's milestone-branch and auto-merge configuration, and
+ * offer to create the `milestone/**` ruleset when — and only when — an answer
+ * could change something (Issues #586, #553, #678).
+ *
+ * The rulesets are read by the caller, once, and passed in: the offer, the
+ * milestone findings and the default-branch auto-merge check all read the same
+ * state, so they can never disagree with each other.
+ *
+ * @param result - The repo and its resolved default branch
+ * @param login - The service account the worker runs as
+ * @param rulesets - Every ruleset on the repository, already read
+ * @param options - `gh` configuration directory and an error counter
+ */
+async function reportMilestoneRuleset(
+  result: { repo: string; branch?: string },
+  login: string,
+  rulesets: RulesetDetail[],
+  options: { ghConfigDir?: string; onError: () => void },
+): Promise<void> {
+  const { repo, branch } = result;
+  const findings = await checkMilestoneRuleset(
+    repo,
+    login,
+    createSetupGhJson(options.ghConfigDir),
+    { rulesets },
+  );
+
+  // A question whose only possible outcome is a refusal must not be asked.
+  // With no default-branch gate to mirror there is nothing to create, so
+  // answering yes changed nothing and the same question came back on every
+  // run — setup says why instead (Issue #678).
+  const plan = planMilestoneRuleset(rulesets);
+  if (plan.kind === "not-creatable") {
+    printInfo(
+      `${repo}: not offering to create the \`milestone/**\` ruleset — ` +
+        `${plan.reason}`,
+    );
+  } else if (
+    plan.kind === "creatable" && await askCreateMilestoneRuleset(repo)
+  ) {
+    // Deliberately WITHOUT `ghConfigDir` (Issue #595). That option points
+    // gh at the worker's service-account configuration, which holds
+    // `write` — and GitHub answers a ruleset write from a non-admin with
+    // 404, not 403, so every create failed as "gh: Not Found (HTTP 404)"
+    // with nothing naming the cause. Creating a ruleset needs `admin`,
+    // and the operator running setup is the one who has it, so this
+    // single call uses their ambient credentials.
+    const created = await createMilestoneRuleset(repo, createSetupGhJson());
+    if (!created.ok) {
+      printWarning(
+        `${repo}: could not create the milestone ruleset: ` +
+          `${created.error.message}`,
+      );
+    } else if (created.created) {
+      printSuccess(
+        `${repo}: created the "${MILESTONE_RULESET_NAME}" ruleset ` +
+          `requiring ${created.contexts.length} check(s) on ` +
+          `\`milestone/**\` — milestone PRs are auto-mergeable`,
+      );
+      return;
+    } else {
+      printInfo(`${repo}: milestone ruleset not created — ${created.reason}`);
+    }
+  }
+
+  // Issue #553: the same question for the DEFAULT branch. Auto-merge being
+  // "set at random" was deterministic all along — GitHub refuses to arm it on
+  // a PR nothing blocks, so a branch requiring neither checks nor reviews can
+  // never carry it. `ensureDefaultBranchRuleset` defers to a human-managed
+  // ruleset and will not add checks to one that exists, so without this
+  // nothing says so. A repo whose default branch could not be resolved is
+  // already reported by the caller; there is nothing to assess against.
+  const autoMergeFinding = branch
+    ? assessDefaultBranchAutoMerge(rulesets, branch)
+    : null;
+  if (autoMergeFinding) printWarning(`${repo}: ${autoMergeFinding.message}`);
+
+  for (const finding of findings) {
+    const line = `${repo}: ${finding.message}`;
+    if (finding.severity === "error") {
+      printError(line);
+      options.onError();
+    } else if (finding.severity === "warning") {
+      printWarning(line);
+    }
+    // `info` is the healthy case — reported only in the caller's summary.
+  }
+}
+
 async function runBranchProtectionSync(configPath: string): Promise<boolean> {
   printInfo(
     "Applying default-branch rulesets to monitored repositories...",
@@ -1000,69 +1093,23 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
       // sync failing on the hour.
       const milestoneLogin = (config.service_accounts ?? [])[0];
       if (milestoneLogin) {
-        const findings = await checkMilestoneRuleset(
+        // Read the rulesets ONCE, and treat a read that failed as a failure:
+        // turning it into an empty list said "no ruleset covers
+        // `milestone/**`", so setup offered to create a ruleset that was
+        // already there and asked again on every run (Issue #678).
+        const read = await readRulesetDetails(
           r.repo,
-          milestoneLogin,
           createSetupGhJson(ghConfigDir),
         );
-        const missing = findings.find((f) => f.code === "no-milestone-ruleset");
-        if (missing && (await askCreateMilestoneRuleset(r.repo))) {
-          // Deliberately WITHOUT `ghConfigDir` (Issue #595). That option points
-          // gh at the worker's service-account configuration, which holds
-          // `write` — and GitHub answers a ruleset write from a non-admin with
-          // 404, not 403, so every create failed as "gh: Not Found (HTTP 404)"
-          // with nothing naming the cause. Creating a ruleset needs `admin`,
-          // and the operator running setup is the one who has it, so this
-          // single call uses their ambient credentials. The reads either
-          // identity can do.
-          const created = await createMilestoneRuleset(
-            r.repo,
-            createSetupGhJson(),
+        if (!read.ok) {
+          printWarning(
+            `${r.repo}: ${rulesetReadFailedFinding(read.error).message}`,
           );
-          if (!created.ok) {
-            printWarning(
-              `${r.repo}: could not create the milestone ruleset: ` +
-                `${created.error.message}`,
-            );
-          } else if (created.created) {
-            printSuccess(
-              `${r.repo}: created the "${MILESTONE_RULESET_NAME}" ruleset ` +
-                `requiring ${created.contexts.length} check(s) on ` +
-                `\`milestone/**\` — milestone PRs are auto-mergeable`,
-            );
-            continue;
-          } else {
-            printInfo(
-              `${r.repo}: milestone ruleset not created — ${created.reason}`,
-            );
-          }
-        }
-        // Issue #553: the same question for the DEFAULT branch. Auto-merge
-        // being "set at random" was deterministic all along — GitHub refuses
-        // to arm it on a PR nothing blocks, so a branch requiring neither
-        // checks nor reviews can never carry it. `ensureDefaultBranchRuleset`
-        // defers to a human-managed ruleset and will not add checks to one
-        // that exists, so without this nothing says so.
-        // A repo whose default branch could not be resolved is already
-        // reported above; there is nothing to assess against.
-        const autoMergeFinding = r.branch
-          ? assessDefaultBranchAutoMerge(
-            await fetchRulesetDetails(r.repo, createSetupGhJson(ghConfigDir)),
-            r.branch,
-          )
-          : null;
-        if (autoMergeFinding) {
-          printWarning(`${r.repo}: ${autoMergeFinding.message}`);
-        }
-        for (const finding of findings) {
-          const line = `${r.repo}: ${finding.message}`;
-          if (finding.severity === "error") {
-            printError(line);
-            milestoneRulesetErrors++;
-          } else if (finding.severity === "warning") {
-            printWarning(line);
-          }
-          // `info` is the healthy case — reported only in the summary below.
+        } else {
+          await reportMilestoneRuleset(r, milestoneLogin, read.rulesets, {
+            ghConfigDir,
+            onError: () => milestoneRulesetErrors++,
+          });
         }
       }
       // Classic protection is never written or deleted by the worker; a
