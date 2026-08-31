@@ -118,8 +118,16 @@ Deno.test("next-release-tag - pre-releases and moving names are not part of the 
 Deno.test("next-release-tag - a commit that already carries a release tag is not tagged again", async () => {
   const run = await plan(["1.0.0", "1.0.1"], ["1.0.1"]);
   assertEquals(run.code, 0);
-  assertEquals(outputs(run), { should_tag: "false", tag: "" });
+  // Issue #688 changed the `tag` output on this path from empty to the tag
+  // the commit already carries: the manifest publish downstream keys off it,
+  // so a re-run after a failed publish still names a release to publish for.
+  assertEquals(outputs(run), { should_tag: "false", tag: "1.0.1" });
   assertStringIncludes(run.stderr, "already tagged");
+});
+
+Deno.test("next-release-tag - the newest release tag on the commit is the one reported", async () => {
+  const run = await plan(["1.0.9", "1.0.10"], ["v1.0.9", "1.0.10"]);
+  assertEquals(outputs(run), { should_tag: "false", tag: "1.0.10" });
 });
 
 Deno.test("next-release-tag - a commit carrying only a non-release tag is still tagged", async () => {

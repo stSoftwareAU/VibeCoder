@@ -38,9 +38,14 @@ jobs:
   tag:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The whole capability of this workflow: create one tag ref.
+    # The whole capability of this workflow: create one tag ref, and publish
+    # the release that carries its tool-version manifest (Issue #688).
     permissions:
       contents: write
+    env:
+      # Issue #606: opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno).
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout code
@@ -79,3 +84,60 @@ jobs:
             -f "sha=${GITHUB_SHA}" \
             --silent
           echo "Tagged ${GITHUB_SHA} as ${TAG}"
+
+      # Issue #688 — everything below records what the release ships with. The
+      # tag above stays this workflow's first side effect: a failed manifest is
+      # a red run and a release without an asset, never a rolled-back tag.
+      # `plan.outputs.tag` names the commit's release whether this run minted
+      # it or a previous run did, so a re-run after a failed publish recovers.
+      - name: Install Deno (mints the release tool-version manifest)
+        if: steps.plan.outputs.tag != ''
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          # The repo's single source of truth for the toolchain, never a
+          # floating range resolved at run time (Issue #4403).
+          deno-version-file: .deno-version
+
+      - name: Publish the release tool-version manifest
+        if: steps.plan.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Read through the environment, never interpolated into the script
+          # body — a `${{ }}` expansion inside `run:` is the template-injection
+          # shape.
+          TAG: ${{ steps.plan.outputs.tag }}
+          ASSET: tool-versions.json
+        run: |
+          set -euo pipefail
+
+          # Idempotent: a release already carrying the asset is left alone, so
+          # re-running the workflow publishes nothing twice.
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+               --json assets --jq '.assets[].name' 2>/dev/null |
+               grep -qx "${ASSET}"; then
+            echo "${TAG} already carries ${ASSET} — nothing to publish"
+            exit 0
+          fi
+
+          # All-or-nothing: a tool the release-age gate cannot resolve exits
+          # non-zero here, naming that tool, and nothing is published. A
+          # manifest missing a version would let a host silently drift on
+          # whichever tool it left out (Issue #622).
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-net --allow-run --allow-env --allow-read \
+            worker/deno/mod.ts release-manifest --release "${TAG}" \
+            > "${RUNNER_TEMP}/${ASSET}" < /dev/null
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+               >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${RUNNER_TEMP}/${ASSET}" \
+              --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            # --verify-tag: publish against the tag that exists, never mint a
+            # new one from a name that does not.
+            gh release create "${TAG}" "${RUNNER_TEMP}/${ASSET}" \
+              --repo "${GITHUB_REPOSITORY}" --title "${TAG}" --verify-tag \
+              --notes "Tool versions this release ships with are attached as ${ASSET}."
+          fi
+          echo "Published ${ASSET} on the ${TAG} release"
