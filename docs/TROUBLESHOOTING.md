@@ -289,6 +289,54 @@ The launch continues on the checkout the host already has. The usual causes are
 an unreachable GitHub or a `gh` that is not authenticated on the host — the
 same material the launcher's other `gh` calls use.
 
+### The notice never appears
+
+Silence is the normal case, and it has four causes worth checking in this
+order:
+
+1. **The host is dynamic.** `update_mode` is `dynamic`, or absent and therefore
+   loaded as `dynamic`. Such a host installs the newest release at every launch,
+   so there is nothing to tell it. `grep update_mode .config.json` answers this
+   one.
+2. **The pin is a commit SHA.** A SHA cannot be ordered against a release tag,
+   so the check stays silent rather than guessing. Pin to a release tag to be
+   notified — see
+   [Configuration — Choosing a pin](CONFIGURATION.md#choosing-a-pin).
+3. **The host is already on the newest release**, or the repository has no
+   `MAJOR.MINOR.PATCH` releases yet. Pre-releases and moving names such as
+   `latest` are not part of the series.
+4. **The check failed.** That is never silent: look for the
+   `[run.sh] warning: could not check for a newer release` line above on stderr,
+   and the matching `release-notice: failed …` line in `run_core.log`. Both
+   land on every launch that could not complete the check.
+
+Every warning line from this path goes to **both** places — stderr for whatever
+launched the host (a cron log, a LaunchAgent log) and `~/logs/run_core.log` for
+the record — so a host launched from cron still leaves the evidence behind.
+
+### `./run.sh upgrade` says the release records no tool versions
+
+```text
+Release 1.0.5 carries no tool-versions.json asset — it was minted before
+releases recorded the tool versions they ship with. Moving pinned_ref to 1.0.5
+without the versions it ships with would leave this host partially pinned, so
+nothing was written and /path/to/.config.json is unchanged. Pin an earlier
+release that carries tool-versions.json, or cut a new one.
+```
+
+The newest release predates the tool-version manifest (Issue #688), so there is
+nothing to pin the three tools to. The refusal is deliberate and complete:
+`.config.json` is byte-identical afterwards, never a fresh `pinned_ref` beside
+stale tool versions. Either pin an earlier release that does carry
+`tool-versions.json`, cut a new release so the manifest is published, or move
+the host by hand — see
+[Configuration — Moving a pin by hand](CONFIGURATION.md#moving-a-pin-by-hand).
+The manifest itself, and how a red publish step is re-run, are
+[Release tagging — the tool-version manifest](RELEASE-TAGGING.md#the-tool-version-manifest).
+
+The same all-or-nothing refusal covers an unreachable GitHub and a pin the
+validator rejects: the command writes all four values or none of them.
+
 ## 🔐 The worker exits on a credential preflight error
 
 The worker reads credential *files* and never an interactive login or a host

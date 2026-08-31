@@ -262,6 +262,14 @@ does not, or it carries no manifest, the host is written with
 resolved: a ref without the versions it ships with is the partial pin frozen
 mode exists to prevent, so nothing is half-pinned behind an operator's back.
 
+**After setup, the pin moves by command, not by re-running setup.** A freshly
+pinned host stays on the release setup chose: later releases never move it, and
+each launch prints one line naming the newer release and the command that
+installs it (`Run ./run.sh upgrade to install it.`). Running `./run.sh upgrade`
+rewrites `pinned_ref` and all three `pinned_tool_versions` to that release, and
+the next launch installs exactly them. Setup is not part of that loop — see
+[Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
+
 **The setup default is not the load-time default.** Setup offers `frozen` to a
 host being configured; a `.config.json` with **no** `update_mode` key still
 loads as `dynamic`, unchanged — see

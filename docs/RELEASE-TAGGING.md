@@ -96,6 +96,22 @@ The shape, the generator and the parser share one definition in
 `worker/deno/lib/release_manifest.ts`, so every reader validates the asset the
 same way rather than re-parsing it by hand.
 
+**Who consumes it.** The manifest exists for the hosts that pin themselves to a
+release, and two paths read it:
+
+- `./setup.sh` defaults each tool-version prompt on a new frozen host to what
+  the latest release records, so accepting the defaults reproduces a released,
+  tested combination —
+  [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
+- `./run.sh upgrade` rewrites a frozen host's `pinned_ref` and all three
+  `pinned_tool_versions` to the newest release and the versions its manifest
+  records —
+  [Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
+
+Both are all-or-nothing against this asset: a release carrying no manifest
+leaves the pins alone rather than moving the ref without the versions it ships
+with.
+
 ### The rules
 
 - **All-or-nothing.** A tool whose version cannot be resolved — or that the

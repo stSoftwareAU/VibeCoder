@@ -212,7 +212,15 @@ VIBE_REPOS="myorg/repo1,myorg/repo2" \
 
 # Start the worker
 ./run.sh
+
+# Move this host onto the newest release (setup pins a new host to a release;
+# each launch says when a newer one exists). Rewrites the pins in .config.json
+# and nothing else — the next launch installs exactly them.
+./run.sh upgrade
 ```
+
+See [Configuration — The upgrade loop](docs/CONFIGURATION.md#the-upgrade-loop)
+for the notice, what the command changes, and the hand-edited pin.
 
 ### Windows (PowerShell)
 
