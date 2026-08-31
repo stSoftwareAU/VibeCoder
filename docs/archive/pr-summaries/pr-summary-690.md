@@ -75,6 +75,19 @@ bash -n run.sh    (clean)
 shellcheck run.sh (clean)
 ```
 
+`./quality.sh` — every check passes except three failures that are
+environmental and predate this branch, confirmed by running them against
+`HEAD~2` (the commit before this work) in a scratch worktree:
+
+| Failure | Why it is not this change |
+| --- | --- |
+| `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config dir is restaged writable` | This sandbox has no writable `gh` staging directory, so the restage lands in `/tmp/<random>/vibe-gh-config` instead of `.container-state/gh-config`. Fails identically on `HEAD~2`. |
+| `run_core_test.ts` (uncaught) | `GraphQL: API rate limit already exceeded for user ID …` — a live GitHub rate limit. |
+| `run_core_rate_limit_resume_test.ts` (uncaught) | The same rate limit. |
+
+All 18 tests added here pass inside that run
+(`tests/release_notice_test.ts` and the four `Issue #690` launcher cases).
+
 ## Acceptance Criteria
 
 - **met** — A frozen host pinned to an older release prints exactly one notice
@@ -112,7 +125,8 @@ shellcheck run.sh (clean)
   nothing to bind to yet; #691 registering `UPGRADE_COMMAND_NAME` closes it.
 - **met** — Unit tests cover each case with injected deps; `bash -n`/shellcheck
   pass over the `run.sh` change; `./quality.sh` passes — evidence: the test
-  output above, and the quality gate run before this PR was raised.
+  output above; the quality gate's only failures are the three pre-existing
+  environmental ones tabled in Evidence, each reproduced on `HEAD~2`.
 
 ## Test Plan
 
