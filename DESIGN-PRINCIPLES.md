@@ -964,7 +964,8 @@ supported languages, with the two language-agnostic buckets — `general` (repo
 hygiene) and `design` (the named design smells from _Refactoring_ ch. 3, each
 reported as a judgement call) — competing at a weight equal to the dominant
 language. Because neither names a language, a repo whose languages have no
-bucket of their own still receives design feedback. The wrapper body inlines the latest `prompts/best_practices/` template
+bucket of their own still receives design feedback. The wrapper body inlines
+the latest `prompts/best_practices/` template
 (from v3 onward) and the matching `prompts/best_practices/buckets/<bucket>.md`
 so the prompt is self-contained (human-style wrappers — no hidden
 marker).

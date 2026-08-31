@@ -1,8 +1,10 @@
 /**
  * SLOC-weighted bucket picker for the best-practices idle task (Issue #2144).
  *
- * Picks one of the supported language buckets — or the `general` bucket —
- * for a best-practices idle-task run, weighted by per-language byte counts
+ * Picks one of the supported language buckets — or one of the two
+ * language-agnostic buckets, `general` (repo hygiene) and `design`
+ * (design smells, Issue #662) — for a best-practices idle-task run,
+ * weighted by per-language byte counts
  * (a KISS SLOC proxy: bytes correlate strongly with SLOC within a single
  * language ecosystem).
  *
@@ -113,10 +115,7 @@ export function pickBucket(
  * supported or not. Returns 0 for a repo with no detected code.
  */
 function dominantRawWeight(langs: RepoLanguages): number {
-  const counts = Object.values(langs.raw ?? {}).filter(
-    (bytes): bytes is number => typeof bytes === "number" && bytes > 0,
-  );
-  return counts.length > 0 ? Math.max(...counts) : 0;
+  return Math.max(0, ...Object.values(langs.raw));
 }
 
 /**

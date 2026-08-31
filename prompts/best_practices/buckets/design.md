@@ -26,24 +26,24 @@ These matter more than the list of smells:
   `CLAUDE.md` or `docs/` always wins. Where a documented standard
   endorses the very shape a smell would flag — a deliberate façade, a
   primitive-typed public API, a switch the team keeps flat on purpose —
-  the smell is **suppressed**: drop the candidate and do not file it.
-  Name the overriding document in your notes. This baseline applies
-  precisely because a repo may document no design standards of its own.
+  the smell is **suppressed**: drop the candidate and move on. Name the
+  overriding document in your notes. This baseline applies precisely
+  because a repo may document no design standards of its own.
 - **Every smell is a judgement call, never a violation.** A smell is a
   labelled heuristic — a hint that something _may_ be worth a second
   look, not a rule breach. Title and phrase every finding that way
   ("Possible Feature Envy in …"), state the trade-off in the body, and
-  say plainly that the maintainer may reasonably disagree. Never assert
-  that the code is wrong.
+  say plainly that the maintainer may reasonably disagree: the verdict
+  stays theirs.
 
 Two further limits keep the bucket honest:
 
-- **Skip what tooling already enforces.** If a linter, formatter, type
-  checker or compiler in this repo's CI already catches the shape, it is
-  not a finding here.
+- **Skip what tooling already enforces.** Where a linter, formatter,
+  type checker or compiler in this repo's CI already catches the shape,
+  leave it to that tool.
 - **Read before you name a smell.** Every finding cites a concrete
-  `file:line` range, and naming a smell without having read the
-  surrounding code is exactly the over-reporting this bucket must avoid.
+  `file:line` range, read in context — reading first is what keeps this
+  bucket from over-reporting.
 
 ## Checks
 
@@ -121,8 +121,8 @@ object-oriented in origin. Apply them only where the repository
 **actually uses** the construct: a class or trait hierarchy for refused
 bequest, an object or module whose declared purpose is delegation for
 middle man. On a procedural or declarative repo — Bash, Terraform,
-CloudFormation, plain C — these two are **silent**; do not stretch them
-to cover a wrapper script or a module of thin functions. Checks 1–10 are
+CloudFormation, plain C — these two stay **silent**: a wrapper script or
+a module of thin functions sits outside their reach. Checks 1–10 are
 structural and apply to every language.
 
 ## Reporting rules
@@ -135,7 +135,7 @@ checks.
 - **Cap this bucket at three findings per run.** Tighter than the
   orchestrator's cap of six. Keep the three strongest — the ones with
   the clearest evidence and the most concrete fix — and silently drop
-  the rest. Do not file a fourth to fill the quota.
+  the rest. Three is a ceiling, not a quota to fill.
 - **Severity floor `low`, ceiling `medium`.** A design smell is a
   maintainability judgement, not a defect: never file `severity:high`
   from this bucket. Use `medium` only when the smell already costs the
@@ -150,7 +150,7 @@ checks.
   and the site it applies to. "Improve the design of the parser" is not
   a finding.
 
-### Overlap with the sibling scans — do not file it twice
+### Overlap with the sibling scans — one owner per shape
 
 `duplicated_knowledge` and `dead_code` are separate idle-task scans with
 their own prompts and their own issues. A finding that arrives twice

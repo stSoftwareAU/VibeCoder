@@ -6,10 +6,8 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import {
-  type BucketPick,
-  pickBucket,
-} from "../lib/best_practices_bucket_picker.ts";
+import { pickBucket } from "../lib/best_practices_bucket_picker.ts";
+import { bucketSlug } from "../lib/idle_task_templates/best_practices_template.ts";
 import type { RepoLanguages } from "../lib/language_detector.ts";
 
 // ---------------------------------------------------------------------------
@@ -26,14 +24,6 @@ function mulberry32(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-}
-
-/**
- * Slug for a pick — mirrors `bucketSlug()` in the template so a `design`
- * pick is never miscounted as `general` (Issue #662).
- */
-function slugOf(pick: BucketPick): string {
-  return pick.kind === "language" ? pick.language : pick.kind;
 }
 
 /** Build a minimal RepoLanguages for tests. */
@@ -67,7 +57,7 @@ Deno.test("pickBucket - unknown language only returns general or design", () => 
   const rng = mulberry32(11);
   const seen = new Set<string>();
   for (let i = 0; i < 200; i++) {
-    seen.add(slugOf(pickBucket(langs, rng)));
+    seen.add(bucketSlug(pickBucket(langs, rng)));
   }
   assertEquals([...seen].sort(), ["design", "general"]);
 });
@@ -77,7 +67,7 @@ Deno.test("pickBucket - single Rust repo picks rust, general or design only", ()
   const rng = mulberry32(42);
   const seen = new Set<string>();
   for (let i = 0; i < 200; i++) {
-    seen.add(slugOf(pickBucket(langs, rng)));
+    seen.add(bucketSlug(pickBucket(langs, rng)));
   }
   // Only rust, general and design should ever appear.
   for (const s of seen) {
@@ -98,6 +88,17 @@ Deno.test("pickBucket - a repo with no code at all never picks design", () => {
   const rng = mulberry32(5);
   for (let i = 0; i < 50; i++) {
     assertEquals(pickBucket(makeLangs({}), rng), { kind: "general" });
+  }
+});
+
+Deno.test("pickBucket - all-zero byte counts count as no code at all", () => {
+  // The Languages API reported languages but no bytes, so the dominant
+  // weight is zero and there is nothing to design-review.
+  const rng = mulberry32(7);
+  for (let i = 0; i < 50; i++) {
+    assertEquals(pickBucket(makeLangs({ Shell: 0, Python: 0 }), rng), {
+      kind: "general",
+    });
   }
 });
 
@@ -229,7 +230,7 @@ Deno.test("pickBucket - general and design weights equal the max language byte c
   >;
   const N = 20_000;
   for (let i = 0; i < N; i++) {
-    const key = slugOf(pickBucket(langs, rng));
+    const key = bucketSlug(pickBucket(langs, rng));
     counts[key] = (counts[key] ?? 0) + 1;
   }
   const expectedRust = N * 30 / 100;
@@ -302,7 +303,7 @@ Deno.test(
     const counts: Record<string, number> = {};
     const N = 10_000;
     for (let i = 0; i < N; i++) {
-      const key = slugOf(pickBucket(langs, rng));
+      const key = bucketSlug(pickBucket(langs, rng));
       counts[key] = (counts[key] ?? 0) + 1;
     }
 
@@ -349,7 +350,7 @@ Deno.test(
     const rng = mulberry32(33);
     const seen = new Set<string>();
     for (let i = 0; i < 500; i++) {
-      seen.add(slugOf(pickBucket(langs, rng)));
+      seen.add(bucketSlug(pickBucket(langs, rng)));
     }
     assert(seen.has("react"), "expected react bucket");
     assert(seen.has("rust"), "expected rust bucket");
@@ -368,7 +369,7 @@ Deno.test("pickBucket - design is a candidate on a marker-only repo", () => {
   const rng = mulberry32(21);
   const seen = new Set<string>();
   for (let i = 0; i < 200; i++) {
-    seen.add(slugOf(pickBucket(langs, rng)));
+    seen.add(bucketSlug(pickBucket(langs, rng)));
   }
   assert(seen.has("design"), `expected design, saw ${[...seen].join(",")}`);
   assert(seen.has("aws-cloudformation"), "expected the language bucket too");
@@ -382,7 +383,7 @@ Deno.test("pickBucket - design does not displace the language buckets", () => {
   const counts: Record<string, number> = {};
   const N = 6000;
   for (let i = 0; i < N; i++) {
-    const key = slugOf(pickBucket(langs, rng));
+    const key = bucketSlug(pickBucket(langs, rng));
     counts[key] = (counts[key] ?? 0) + 1;
   }
   for (const key of ["java", "general", "design"]) {

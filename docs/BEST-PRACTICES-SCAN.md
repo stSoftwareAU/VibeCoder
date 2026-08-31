@@ -380,7 +380,8 @@ the code (naming, coupling, cohesion, delegation), never a language's
 idioms and never repo hygiene, so it applies to a repo in a language
 with no bucket of its own.
 
-Three rules keep it from becoming noise, and all three live in
+Three limits keep it from becoming noise — the guide's two binding rules
+and its own finding cap — all set in
 [buckets/design.md](../prompts/best_practices/buckets/design.md):
 
 - **The repo overrides the baseline.** A convention the repository

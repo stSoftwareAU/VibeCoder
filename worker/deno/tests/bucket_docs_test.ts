@@ -12,7 +12,7 @@
  *   - undocumented-bucket detection and link-target extraction,
  *   - fixture runs for PASSED / FAILED / SKIPPED,
  *   - the live repository tree passes (the regression this guard prevents:
- *     adding a ninth bucket without documenting it).
+ *     adding a new bucket without documenting it).
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */

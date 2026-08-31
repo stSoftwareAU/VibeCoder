@@ -258,7 +258,7 @@ examples, and clearly unreachable branches". Searching here for "unwrap" or
 section.
 
 Every bucket file must be listed above, and every link must resolve:
-`worker/deno/tests/bucket_docs_test.ts` fails CI when a ninth bucket is added
+`worker/deno/tests/bucket_docs_test.ts` fails CI when a new bucket is added
 without documenting it here.
 
 ## Deno / TypeScript Conventions
