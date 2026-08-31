@@ -162,13 +162,16 @@ eligible releases, so a host needs no per-machine version upkeep at all.
 A host that must reproduce a known state instead runs **frozen**: it is held at
 `pinned_ref` — a [release tag](RELEASE-TAGGING.md) or a commit SHA — with exact
 `pinned_tool_versions` for `claude`, `gh` and `deno`, and new releases never
-move it. Moving such a host is one edit to `.config.json` plus a relaunch; no
-re-run of setup is needed.
+move it. Moving such a host onto the newest release is one call —
+`./run.sh upgrade` rewrites the ref and all three tool versions in
+`.config.json` and nothing else — and any other pin is one edit plus a
+relaunch; no re-run of setup is needed either way.
 
 - The prompts setup asks, in order, and what a non-interactive run does:
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
 - The field names, accepted values, worked examples for both modes, how to
-  choose a pin, how to hand-edit one, and how it differs from
+  choose a pin, what `./run.sh upgrade` writes, how to hand-edit one, and how
+  it differs from
   `VIBE_SKIP_CHECKOUT_UPDATE`:
   [Configuration — Update Mode](CONFIGURATION.md#-update-mode).
 

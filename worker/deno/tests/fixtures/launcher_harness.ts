@@ -218,6 +218,7 @@ esac
  * checkout update before the launch plan, say.
  */
 const RECORDED_DENO_COMMANDS = [
+  "upgrade",
   "run-mode",
   "worker-checkout-update",
   "release-notice",
@@ -316,6 +317,11 @@ for arg in "\$@"; do
         printf 'cannot update the worker checkout\\n' >&2
       fi
       exit "\${status}"
+      ;;
+    upgrade)
+      # Never really rewrite this checkout's .config.json (Issue #691).
+      printf '%s\\0' "\$@" > "\${record_dir}/upgrade.args"
+      exit "\${STUB_UPGRADE_EXIT:-0}"
       ;;
     release-notice)
       # Never really reach GitHub for the new-release check (Issue #690):

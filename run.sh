@@ -141,6 +141,26 @@ bounded() {
   fi
 }
 
+# ./run.sh upgrade - move this host onto the latest release (Issue #691).
+#
+# One .config.json rewrite: pinned_ref and all three pinned_tool_versions, and
+# nothing else. It installs nothing, moves no checkout and starts no container
+# - the next launch installs exactly what the pins name. Every decision lives
+# in the Deno "upgrade" command, so this shell keeps no upgrade logic of its
+# own, the same split worker-checkout-update uses below.
+#
+# Handled here, before the EXIT trap is installed: an upgrade is not a launch,
+# so it must not be counted as a launch outcome by the self-heal backoff.
+if [[ "${1:-}" == "upgrade" ]]; then
+  upgrade_status=0
+  bounded 300 "${DENO_CMD}" run \
+    --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+    --allow-env --allow-read --allow-write --allow-run \
+    "${BASE_DIR}/worker/deno/mod.ts" upgrade \
+    --base-dir "${BASE_DIR}" </dev/null || upgrade_status=$?
+  exit "${upgrade_status}"
+fi
+
 # Self-heal accounting (Issue #4072). Under cron / launchd / systemd / Task
 # Scheduler there is no supervising process between runs, so the launcher
 # records its own outcome: consecutive failures grow the backoff and, past the

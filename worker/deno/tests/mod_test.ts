@@ -191,7 +191,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #512 added `worker-checkout-update` (count 141 → 142).
   // Issue #688 added `release-manifest` (count 142 → 143).
   // Issue #690 added `release-notice` (count 143 → 144).
-  assertEquals(commands.length, 144);
+  // Issue #691 added `upgrade` (count 144 → 145).
+  assertEquals(commands.length, 145);
+  assertEquals(commands.includes("upgrade"), true);
   assertEquals(commands.includes("release-manifest"), true);
   assertEquals(commands.includes("release-notice"), true);
   assertEquals(commands.includes("worker-checkout-update"), true);

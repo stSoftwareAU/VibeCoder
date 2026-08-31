@@ -19,6 +19,7 @@ import {
   writeConfigFile,
 } from "./config_setup.ts";
 import { UPDATE_MODES } from "../lib/config_defaults.ts";
+import { atomicWrite } from "../lib/file_utils.ts";
 import type { PinnedToolVersions, Result, UpdateMode } from "../types.ts";
 
 export {
@@ -551,20 +552,20 @@ export async function writeUpdateModeConfig(
   // a re-run that accepts every default cannot churn it.
   if (!changed && read.value.text !== null) return { ok: true, value: false };
 
-  try {
-    await Deno.writeTextFile(
-      configPath,
-      JSON.stringify(next, null, 2) + "\n",
-      { mode: 0o600 },
-    );
-    await Deno.chmod(configPath, 0o600);
-  } catch (error) {
+  // One atomic write (Issue #691): every field lands together or none does,
+  // so an interrupted upgrade can never leave a fresh pinned_ref beside stale
+  // tool versions — the partial pin `pinned_tool_versions` exists to prevent.
+  // A path with no directory component is written in the working directory.
+  const target = configPath.includes("/") ? configPath : `./${configPath}`;
+  const written = await atomicWrite({
+    targetFile: target,
+    content: JSON.stringify(next, null, 2) + "\n",
+    mode: 0o600,
+  });
+  if (!written.ok) {
     return {
       ok: false,
-      error: new Error(
-        `Cannot write ${configPath}: ` +
-          (error instanceof Error ? error.message : String(error)),
-      ),
+      error: new Error(`Cannot write ${configPath}: ${written.error.message}`),
     };
   }
 
