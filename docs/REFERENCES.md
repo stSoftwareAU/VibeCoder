@@ -76,6 +76,7 @@ to know whether it has moved on.
 | ------ | ------------ | ----------------- |
 | [The Rust Book, Reference, Nomicon and std docs](https://doc.rust-lang.org/book/) | Ownership, error handling and unsafe-code idioms as the canon the Rust bucket scores against | `prompts/best_practices/buckets/rust.md` |
 | [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) | Naming, trait implementations and documentation expectations for a public Rust API | `prompts/best_practices/buckets/rust.md` |
+| [Rust condition variables vs busy-waiting (video walkthrough)](https://www.youtube.com/watch?v=kHpEolpE3pU) | The busy-wait check: a consumer spinning on a shared flag burns a core for the length of the wait, where a `Condvar`, a channel or `thread::park` costs nothing | `prompts/best_practices/buckets/rust.md` |
 | [Google Java Style Guide](https://google.github.io/styleguide/javaguide.html) | The Java formatting and naming baseline, so the bucket cites a published style rather than a house opinion | `prompts/best_practices/buckets/java.md` |
 | [Java Language Specification](https://docs.oracle.com/javase/specs/) | The final word when a Java check hinges on what the language actually guarantees | `prompts/best_practices/buckets/java.md` |
 | [TypeScript Handbook and tsconfig reference](https://www.typescriptlang.org/docs/handbook/intro.html) | Strictness settings and type-system idioms worth flagging when a repo has opted out of them | `prompts/best_practices/buckets/typescript.md` |
