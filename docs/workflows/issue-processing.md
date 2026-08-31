@@ -682,6 +682,66 @@ flowchart TD
     style B fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+## 🔍 Independent review on two axes
+
+The closure block above says **which** criteria were met; Issue #663 added **who
+judged them**. Until then the verdict was self-assessed by the agent that wrote
+the code, in the same context that produced it — which is why the prompt had to
+counter-steer in wording ("do not inflate a status", "when in doubt use
+`partial`"). Adopted from `skills/engineering/code-review/SKILL.md` in
+[mattpocock/skills](https://github.com/mattpocock/skills), which solves the same
+problem structurally: review the diff on two axes, in independent sub-agent
+contexts so they cannot pollute each other, and report them under separate
+headings.
+
+**What the run must produce.** When the issue states criteria, `prompts/issue/`
+dispatches two reviewer sub-agents in parallel before the PR summary is written,
+each given the finished diff and nothing from the author's context:
+
+- **Spec reviewer** — inputs `git diff <base>...HEAD` and the issue body. Three
+  questions: which requirements are missing or partial, what behaviour is in the
+  diff that was not asked for, and which requirements look implemented but are
+  implemented wrongly. Its verdicts populate the `## Acceptance Criteria` block,
+  one `reviewer:` verdict per entry.
+- **Standards reviewer** — inputs the same diff and `CODING-STANDARDS.md`. Its
+  findings go under a separate `## Standards Review` heading as `violation`
+  entries (with `file:line` and whether the violation was fixed) and the `clean`
+  areas it checked.
+
+**The reviewer challenges; it does not silently win.** A reviewer that saw only
+the diff is sometimes wrong about a criterion satisfied by code it could not
+see, so the run may depart from its verdict — but only out loud, keeping the
+`reviewer:` field as written and adding a one-line `reason:`. An unrecorded
+departure is the self-assessment the axis exists to remove.
+
+**The gate.** [`independent_review_gate.ts`](../../worker/deno/lib/independent_review_gate.ts)
+runs beside the closure gate at the same PR-creation chokepoint and blocks when
+the criteria block carries no `vibe-spec-review` provenance marker, when an entry
+names no `reviewer:` verdict, when a departure from that verdict carries no
+reason, when the `## Standards Review` section is absent, unsourced or empty,
+when a `violation` names no evidence or outcome, or when either axis carries the
+other's findings — never merged, never reranked, because a change can pass one
+axis and fail the other and reporting them together lets one mask the other.
+Issues with **no** acceptance criteria are unaffected: no reviewers, no blocks,
+no gate.
+
+```mermaid
+flowchart TD
+    D["Diff: git diff base...HEAD"] --> SP["Spec reviewer sub-agent<br/>diff + issue body"]
+    D --> ST["Standards reviewer sub-agent<br/>diff + CODING-STANDARDS.md"]
+    SP --> AC["## Acceptance Criteria<br/>met / partial / missing + reviewer:"]
+    ST --> SR["## Standards Review<br/>violation / clean"]
+    AC --> G{"Independent-review gate<br/>provenance, verdicts,<br/>axes kept apart?"}
+    SR --> G
+    G -->|yes| PR["PR created"]
+    G -->|no| B["Blocked: comment names<br/>each rule broken; run fails"]
+    style SP fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style ST fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style G fill:#7aa8d4,stroke:#1d3f5a,color:#1a1a1a
+    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style B fill:#c45858,stroke:#6b2020,color:#fff
+```
+
 ## 🐛 Reproduction status on a bug fix
 
 All three work-tier labels run the **same pipeline** and `bug` is a purely
