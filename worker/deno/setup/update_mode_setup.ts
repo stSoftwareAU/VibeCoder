@@ -1,5 +1,6 @@
 /**
- * The update-mode conversation setup runs (Issue #626, part of #583).
+ * The update-mode conversation setup runs (Issue #626, part of #583;
+ * default flipped to `frozen` by Issue #692, part of #674).
  *
  * `setup.sh` owns terminal I/O and nothing else: it delegates the whole
  * conversation here, exactly as `run.sh` delegates the checkout update to
@@ -8,26 +9,48 @@
  * Windows counterpart a follow-up rather than a rewrite.
  *
  * The conversation:
- *   1. `dynamic` or `frozen`, defaulting to whatever the host already says.
- *   2. Under `frozen`, the pinned ref — validated by resolving it in this very
- *      checkout after a fetch, so an unresolvable pin is rejected here rather
- *      than at the next launch.
- *   3. Under `frozen`, one exact version per tool, each defaulting to what
- *      dynamic mode would install today (Issue #623).
+ *   1. `dynamic` or `frozen`, defaulting to `frozen` on a fresh host and, on a
+ *      re-run, to whatever the host already says.
+ *   2. Under `frozen`, the pinned ref — defaulting to the latest release tag
+ *      (Issue #689), validated by resolving it in this very checkout after a
+ *      fetch, so an unresolvable pin is rejected here rather than at the next
+ *      launch.
+ *   3. Under `frozen`, one exact version per tool, each defaulting to the
+ *      version that release recorded in its manifest (Issue #688) so
+ *      accepting every default reproduces a released, tested combination.
+ *      With no resolvable release manifest the defaults fall back to what
+ *      dynamic mode would install today (Issue #623), and the fallback is
+ *      stated in one line rather than leaving a prompt blank.
  *
- * A non-interactive run never prompts: existing values are left untouched and
- * a fresh config is defaulted to `dynamic`, which is what every host did
- * before these keys existed.
+ * A non-interactive run never prompts: existing values are left untouched, and
+ * a fresh config is pinned to the latest release when one resolves with a
+ * manifest — otherwise it stays `dynamic` with one warning line saying why.
+ *
+ * The load-time default is untouched: an absent `update_mode` still resolves
+ * to `dynamic` (`DEFAULT_UPDATE_MODE`), because an existing host carries no
+ * pins and frozen is all-or-nothing (Issue #622).
  */
 
 import { fetchOrigin, resolveRefCommit } from "../lib/checkout_update.ts";
 import {
   DEFAULT_UPDATE_MODE,
   PINNED_TOOLS,
+  SETUP_DEFAULT_UPDATE_MODE,
   UPDATE_MODES,
 } from "../lib/config_defaults.ts";
-import { pinValueErrors } from "../lib/config_validator.ts";
+import {
+  pinValueErrors,
+  validateUpdateModeSettings,
+} from "../lib/config_validator.ts";
 import { defaultLogger } from "../lib/logger.ts";
+import {
+  createDefaultReleaseCheckDeps,
+  latestRelease as resolveLatestRelease,
+  type ReleaseManifestLookup,
+  type ReleaseRef,
+  releaseToolVersions as resolveReleaseToolVersions,
+} from "../lib/release_check.ts";
+import type { ReleaseToolVersions } from "../lib/release_manifest.ts";
 import {
   type DynamicVersionCandidate,
   type PinnedTool,
@@ -69,6 +92,30 @@ export interface UpdateModeSetupDeps {
   resolveCommit(repoDir: string, ref: string): Promise<string | null>;
   /** What dynamic mode would install right now, per tool (Issue #623). */
   dynamicVersions(): Promise<DynamicVersionCandidate[]>;
+  /** The newest release of the repository this checkout came from (#689). */
+  latestRelease(repoDir: string): Promise<Result<ReleaseRef | null>>;
+  /** The tool versions a release recorded in its manifest (Issue #688). */
+  releaseToolVersions(
+    repoDir: string,
+    tag: string,
+  ): Promise<Result<ReleaseManifestLookup>>;
+}
+
+/**
+ * The pin defaults taken from the latest release (Issues #688, #689).
+ *
+ * Every field is optional because each half can fail on its own: a release
+ * that cannot be resolved leaves no tag, and a release minted before the
+ * manifest leaves a tag with no versions. The note says which happened, so no
+ * prompt is ever left with a blank default and no explanation.
+ */
+interface ReleaseDefaults {
+  /** The latest release tag, when one resolved. */
+  tag?: string;
+  /** The versions that release records, when it carries a manifest. */
+  tools?: ReleaseToolVersions;
+  /** One line explaining a missing default; absent when both resolved. */
+  note?: string;
 }
 
 /** What one setup run did to the update-mode fields. */
@@ -99,7 +146,76 @@ export function createDefaultUpdateModeDeps(): UpdateModeSetupDeps {
     fetchOrigin: (repoDir) => fetchOrigin(repoDir, defaultLogDir()),
     resolveCommit: resolveRefCommit,
     dynamicVersions: () => resolveDynamicVersions(defaultLogger),
+    latestRelease: (repoDir) =>
+      resolveLatestRelease(createDefaultReleaseCheckDeps(repoDir)),
+    releaseToolVersions: (repoDir, tag) =>
+      resolveReleaseToolVersions(tag, createDefaultReleaseCheckDeps(repoDir)),
   };
+}
+
+/** The message of a thrown value, whatever shape it arrived in. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The pin defaults the latest release offers (Issues #688, #689).
+ *
+ * Nothing here throws or fails the run: setup must still be able to pin a host
+ * by hand when GitHub is unreachable, so every fault becomes a note the caller
+ * says out loud beside the prompt whose default it cost.
+ */
+async function releaseDefaults(
+  repoDir: string,
+  deps: UpdateModeSetupDeps,
+): Promise<ReleaseDefaults> {
+  const fallback = "Falling back to the versions dynamic mode would install " +
+    "today.";
+
+  let release: Result<ReleaseRef | null>;
+  try {
+    release = await deps.latestRelease(repoDir);
+  } catch (error) {
+    return {
+      note: `Could not resolve the latest release: ${describe(error)}. ` +
+        fallback,
+    };
+  }
+  if (!release.ok) {
+    return {
+      note: `Could not resolve the latest release: ${release.error.message} ` +
+        fallback,
+    };
+  }
+  if (release.value === null) {
+    return {
+      note: `No MAJOR.MINOR.PATCH release exists to pin to yet. ${fallback}`,
+    };
+  }
+  const tag = release.value.tag;
+
+  let lookup: Result<ReleaseManifestLookup>;
+  try {
+    lookup = await deps.releaseToolVersions(repoDir, tag);
+  } catch (error) {
+    return {
+      tag,
+      note: `Could not read the tool versions release ${tag} ships with: ` +
+        `${describe(error)}. ${fallback}`,
+    };
+  }
+  if (!lookup.ok) {
+    return {
+      tag,
+      note: `Could not read the tool versions release ${tag} ships with: ` +
+        `${lookup.error.message} ${fallback}`,
+    };
+  }
+  if (lookup.value.kind === "no-manifest") {
+    return { tag, note: `${lookup.value.reason} ${fallback}` };
+  }
+
+  return { tag, tools: lookup.value.tools };
 }
 
 /** The fail-loud error for input that ended mid-conversation. */
@@ -226,22 +342,34 @@ function candidateVersion(
 }
 
 /**
- * Ask for one exact version per tool, each defaulting to what dynamic mode
- * would install today (Issue #623), so blank answers pin today's fleet.
+ * Ask for one exact version per tool (Issue #692).
+ *
+ * Each prompt defaults to the first of: what the host already pins, what the
+ * latest release recorded (Issue #688), and what dynamic mode would install
+ * today (Issue #623). Accepting every default therefore reproduces a released,
+ * tested combination rather than assembling a set no release ever shipped.
+ * Dynamic resolution is only attempted when a tool still has no default, so a
+ * release manifest spares setup the network round-trips entirely.
  */
 async function askToolVersions(
   current: PinnedToolVersions,
+  releaseTools: ReleaseToolVersions | undefined,
   deps: UpdateModeSetupDeps,
 ): Promise<Result<PinnedToolVersions>> {
+  const covered = (tool: PinnedTool) =>
+    current[tool] !== undefined || releaseTools?.[tool] !== undefined;
+
   let candidates: DynamicVersionCandidate[] = [];
-  try {
-    candidates = await deps.dynamicVersions();
-  } catch (error) {
-    deps.say(
-      `  Could not work out what dynamic mode would install: ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-    );
-    deps.say("  Enter each version by hand.");
+  if (!PINNED_TOOLS.every(covered)) {
+    try {
+      candidates = await deps.dynamicVersions();
+    } catch (error) {
+      deps.say(
+        `  Could not work out what dynamic mode would install: ` +
+          `${describe(error)}`,
+      );
+      deps.say("  Enter each version by hand.");
+    }
   }
 
   deps.say("");
@@ -252,7 +380,7 @@ async function askToolVersions(
   const versions: PinnedToolVersions = {};
   for (const tool of PINNED_TOOLS) {
     const candidate = candidateVersion(candidates, tool);
-    const fallback = current[tool] ??
+    const fallback = current[tool] ?? releaseTools?.[tool] ??
       (candidate?.eligible ? candidate.version ?? undefined : undefined);
     if (!fallback && candidate && !candidate.eligible) {
       deps.say(`  ${candidate.reason}`);
@@ -303,7 +431,12 @@ export async function promptUpdateMode(
   existing: UpdateModeSettings,
   deps: UpdateModeSetupDeps,
 ): Promise<Result<UpdateModeSettings>> {
-  const mode = await askMode(existing.update_mode ?? DEFAULT_UPDATE_MODE, deps);
+  // A fresh host defaults to `frozen` (Issue #692); a re-run defaults to
+  // whatever the host already says, so pressing Enter throughout is a no-op.
+  const mode = await askMode(
+    existing.update_mode ?? SETUP_DEFAULT_UPDATE_MODE,
+    deps,
+  );
   if (!mode.ok) return mode;
 
   // Dynamic ends the conversation: the pin fields are ignored in dynamic mode
@@ -313,11 +446,23 @@ export async function promptUpdateMode(
     return { ok: true, value: { update_mode: "dynamic" } };
   }
 
-  const ref = await askPinnedRef(repoDir, existing.pinned_ref, deps);
+  // The pin defaults come from the latest release, so accepting every default
+  // reproduces a released, tested combination (Issues #688, #689). What the
+  // host already says still wins — a re-run must not re-ask its way into a
+  // different answer.
+  const release = await releaseDefaults(repoDir, deps);
+  if (release.note) deps.say(`  ${release.note}`);
+
+  const ref = await askPinnedRef(
+    repoDir,
+    existing.pinned_ref ?? release.tag,
+    deps,
+  );
   if (!ref.ok) return ref;
 
   const versions = await askToolVersions(
     existing.pinned_tool_versions ?? {},
+    release.tools,
     deps,
   );
   if (!versions.ok) return versions;
@@ -329,6 +474,59 @@ export async function promptUpdateMode(
       pinned_ref: ref.value,
       pinned_tool_versions: versions.value,
     },
+  };
+}
+
+/**
+ * What a fresh config is written with when nobody is there to ask (#692).
+ *
+ * Pinned to the latest release when it resolves *with* a manifest, because a
+ * ref without the versions it ships with is exactly the partial pin frozen
+ * mode exists to prevent (Issue #622). Anything else leaves the host
+ * `dynamic`, with one line naming what could not be resolved — an unpinned
+ * host is a working host, a silently half-pinned one is not.
+ */
+async function nonInteractiveSettings(
+  repoDir: string,
+  deps: UpdateModeSetupDeps,
+): Promise<UpdateModeSettings> {
+  const stayDynamic = (reason: string): UpdateModeSettings => {
+    deps.say(
+      `Leaving this host on update_mode "${DEFAULT_UPDATE_MODE}": ${reason}`,
+    );
+    return { update_mode: DEFAULT_UPDATE_MODE };
+  };
+
+  const release = await releaseDefaults(repoDir, deps);
+  if (!release.tag || !release.tools) {
+    return stayDynamic(
+      release.note ?? "no release could be resolved to pin to.",
+    );
+  }
+
+  const tools: PinnedToolVersions = { ...release.tools };
+  // The very validator config load runs, applied before the write: an invalid
+  // pin must never reach the file.
+  const errors = validateUpdateModeSettings({
+    updateMode: "frozen",
+    pinnedRef: release.tag,
+    pinnedToolVersions: tools,
+  });
+  if (errors.length > 0) {
+    return stayDynamic(
+      `the pins release ${release.tag} records do not validate — ` +
+        errors.join(" "),
+    );
+  }
+
+  deps.say(
+    `Pinned this host to release ${release.tag} — claude ${tools.claude}, ` +
+      `gh ${tools.gh}, deno ${tools.deno}.`,
+  );
+  return {
+    update_mode: "frozen",
+    pinned_ref: release.tag,
+    pinned_tool_versions: tools,
   };
 }
 
@@ -359,9 +557,10 @@ export async function runUpdateModeSetup(
   const existing = await readUpdateModeSettings(options.configPath);
   if (!existing.ok) return existing;
 
-  // No operator to answer: keep what the host already says, and default a
-  // fresh config to `dynamic` — exactly what it behaved as before the key
-  // existed.
+  // No operator to answer: keep what the host already says, and pin a fresh
+  // config to the latest release when one resolves with a manifest (Issue
+  // #692). A host that cannot be pinned stays `dynamic` — what it behaved as
+  // before the key existed — with one line saying why, never a partial pin.
   if (!deps.interactive()) {
     if (existing.value.update_mode !== undefined) {
       return {
@@ -369,7 +568,7 @@ export async function runUpdateModeSetup(
         value: { settings: existing.value, changed: false, prompted: false },
       };
     }
-    const settings: UpdateModeSettings = { update_mode: DEFAULT_UPDATE_MODE };
+    const settings = await nonInteractiveSettings(options.repoDir, deps);
     const written = await writeUpdateModeConfig(options.configPath, settings);
     if (!written.ok) return written;
     return {

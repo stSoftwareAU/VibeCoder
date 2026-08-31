@@ -218,8 +218,10 @@ esac
  * checkout update before the launch plan, say.
  */
 const RECORDED_DENO_COMMANDS = [
+  "upgrade",
   "run-mode",
   "worker-checkout-update",
+  "release-notice",
   "container-launch-plan",
   "container-reap",
   "container-image-prune",
@@ -241,6 +243,11 @@ const RECORDED_DENO_COMMANDS = [
  * repository, so really running it would discard the working tree the tests
  * are running from. `STUB_CHECKOUT_UPDATE_EXIT` makes it fail, which is how
  * the "a failed update still launches" behaviour is exercised.
+ *
+ * `release-notice` is always intercepted too (Issue #690): it would otherwise
+ * reach GitHub for the newest release. `STUB_RELEASE_NOTICE_STDOUT` is the
+ * notice the check found, and `STUB_RELEASE_NOTICE_EXIT` makes the check
+ * fail — an unreachable GitHub, a `gh` failure or a timeout.
  *
  * With `full`, two more invocations are intercepted rather than performed:
  * `run-entrypoint`, which would start the whole worker on this host, and
@@ -310,6 +317,20 @@ for arg in "\$@"; do
         printf 'cannot update the worker checkout\\n' >&2
       fi
       exit "\${status}"
+      ;;
+    upgrade)
+      # Never really rewrite this checkout's .config.json (Issue #691).
+      printf '%s\\0' "\$@" > "\${record_dir}/upgrade.args"
+      exit "\${STUB_UPGRADE_EXIT:-0}"
+      ;;
+    release-notice)
+      # Never really reach GitHub for the new-release check (Issue #690):
+      # the test decides what the check found, and how it failed.
+      printf '%s\\0' "\$@" > "\${record_dir}/release-notice.args"
+      if [[ -n "\${STUB_RELEASE_NOTICE_STDOUT:-}" ]]; then
+        printf '%s\\n' "\${STUB_RELEASE_NOTICE_STDOUT}"
+      fi
+      exit "\${STUB_RELEASE_NOTICE_EXIT:-0}"
       ;;${extraIntercepts}
   esac
 done

@@ -376,10 +376,15 @@ async function runUpdateMode(
   const { settings, changed, prompted } = result.value;
   const mode = settings.update_mode ?? "dynamic";
   if (!prompted) {
+    // A non-interactive fresh config is pinned to the latest release when one
+    // resolves (Issue #692), so the line has to name the ref it landed on.
+    const at = mode === "frozen" && settings.pinned_ref
+      ? ` at ${settings.pinned_ref}`
+      : "";
     printInfo(
       changed
-        ? `Update mode defaulted to ${mode} (no terminal to ask at).`
-        : `Update mode left at ${mode} (no terminal to ask at).`,
+        ? `Update mode defaulted to ${mode}${at} (no terminal to ask at).`
+        : `Update mode left at ${mode}${at} (no terminal to ask at).`,
     );
     return true;
   }

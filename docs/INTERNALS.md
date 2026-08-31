@@ -199,6 +199,11 @@ Deno. Both launchers follow the same steps:
    skipping silently (Issue #624). A checkout already on the pin is not
    written to; a pin that does not resolve is the same loud warning as any
    other failure, and the launch continues on the pinned checkout it has.
+   Beside it, `deno run … mod.ts release-notice` tells a frozen host pinned
+   behind the newest release so, in one line naming both versions and the
+   upgrade command, on stderr and in `run_core.log` (Issue #690). It notifies
+   only — no pin is changed and no checkout moved — and a failed or timed-out
+   check is a warning, never a refused launch.
 3. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
    resolves and validates the container runtime, computes the content-derived
    image reference, and constructs the fixed least-privilege mount set. No
@@ -225,6 +230,16 @@ Deno. Both launchers follow the same steps:
    [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) — the
    only place a still-progressing agent is killed, and the worker stops itself
    before it so work in progress is committed and pushed.
+
+`run.sh upgrade` is the one invocation that runs none of those steps
+(Issue #691): it delegates straight to `deno run … mod.ts upgrade --base-dir
+<checkout>`, which rewrites `pinned_ref` and all three `pinned_tool_versions`
+in `.config.json` to what the newest release records, and exits with that
+command's status. It is handled before the `EXIT` trap is installed, so an
+upgrade is never counted as a launch outcome by the self-heal backoff, and the
+shell holds no upgrade logic of its own — the same delegation shape as
+`worker-checkout-update`. See
+[Configuration — Moving to the latest release](CONFIGURATION.md#moving-to-the-latest-release-runsh-upgrade).
 
 Inside the container, `container/entrypoint.sh` `exec`s
 `deno run … worker/deno/mod.ts run-entrypoint`. There is no bash on the runtime

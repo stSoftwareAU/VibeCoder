@@ -629,8 +629,13 @@ const UPDATE_TOOLS: readonly PinnedTool[] = ["claude", "gh", "deno"];
  * The value is interpolated into a download URL and a command line, so only a
  * plain semver (with an optional pre-release suffix) is accepted — anything
  * else is refused loudly rather than fetched.
+ *
+ * Exported because the release tool-version manifest (Issue #688) records
+ * versions a frozen host installs through exactly this path, so it must accept
+ * exactly what the pinned installer accepts rather than a second copy of the
+ * rule that could drift.
  */
-const PINNED_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+export const PINNED_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
 
 /** The commands that install one pinned version, plus best-effort cleanup. */
 interface PinnedInstallPlan {

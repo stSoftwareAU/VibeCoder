@@ -292,7 +292,7 @@ explicitly overridden.
 | `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
 | `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
 | `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
-| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. |
+| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` offers `frozen` as its default answer to a host being configured, and `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
 | `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
@@ -513,13 +513,23 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 
 ### 🧊 Update Mode
 
-`update_mode` names how a host tracks Vibe Coder releases. `dynamic` — the
-default, and what every host did before the key existed — follows the latest.
-`frozen` holds the host at a pinned checkout with pinned tool versions.
+`update_mode` names how a host tracks Vibe Coder releases. `frozen` — the
+default answer `./setup.sh` offers a host being configured (Issue #692) —
+holds the host at a pinned checkout with pinned tool versions. `dynamic`
+follows the latest, and is both the deliberate opt-in answer at setup and what
+an **absent** `update_mode` resolves to at config load.
+
+**Two different defaults, deliberately.** The setup conversation defaults to
+`frozen`, because a new host should reproduce a released, tested combination.
+The *load-time* default for a missing key stays `dynamic`, because an existing
+host carries no pins and frozen is all-or-nothing — resolving an absent key to
+`frozen` would fail that host's config validation at its very next launch. So:
+a `.config.json` with no `update_mode` loads as `dynamic` with no warning and
+no new pin requirement, whatever setup would offer a fresh host.
 
 | Field | Accepted values | Default | Read in |
 | --- | --- | --- | --- |
-| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` — and the behaviour of any host with the key absent | both modes |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent; `"frozen"` is the answer setup offers a host being configured | both modes |
 | `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
 | `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
 
@@ -587,15 +597,22 @@ because an absent `update_mode` resolves to `dynamic`:
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
-- **Setup asks for all of it.** `./setup.sh` runs `setup update-mode`, which
-  asks for the mode and — when the answer is `frozen` — for the pinned ref and
-  one exact version per tool. The ref is validated by resolving it in the
+- **Setup asks for all of it, and defaults to `frozen`.** `./setup.sh` runs
+  `setup update-mode`, which asks for the mode — defaulting to `frozen` on a
+  fresh host and, on a re-run, to whatever the host already says — and then,
+  under `frozen`, for the pinned ref and one exact version per tool. The ref
+  defaults to the latest release tag and is validated by resolving it in the
   worker checkout after a fetch, so a ref that does not resolve is rejected by
   name and nothing invalid reaches the file. Each version prompt defaults to
-  what `dynamic` mode would install today, and blank accepts the default
+  the version that release records in its `tool-versions.json` manifest, so
+  accepting every default reproduces a released, tested combination; with no
+  resolvable manifest the defaults fall back to what `dynamic` mode would
+  install today and setup says so in one line. Blank accepts the default
   everywhere, so a re-run that presses Enter throughout leaves `.config.json`
-  unchanged. A run with no terminal never asks: existing values are left alone
-  and a fresh config is defaulted to `dynamic`. `setup.ps1` does not ask yet —
+  unchanged — on a `dynamic` host as well as a frozen one. A run with no
+  terminal never asks: existing values are left alone, and a fresh config is
+  pinned to the latest release when it resolves with a manifest, or left
+  `dynamic` with one warning line when it does not. `setup.ps1` does not ask yet —
   a Windows host sets these keys by hand, and the Windows counterpart is a
   follow-up. The prompts in the order they are asked are
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
@@ -607,6 +624,11 @@ because an absent `update_mode` resolves to `dynamic`:
   (Issue #624) — see [Host-Side Checkout Update](#-host-side-checkout-update).
   Because the container image reference is derived from the checkout's
   content, a frozen checkout holds the image steady too.
+- **Frozen says when it is behind.** A pin holds the host still; it does not
+  hide that the world moved on. When a release newer than `pinned_ref` exists,
+  each launch prints one notice line naming both versions and the command that
+  installs the new one (Issue #690) — see
+  [New-Release Notice](#-new-release-notice).
 
 ```mermaid
 flowchart LR
@@ -667,10 +689,106 @@ way the ref must exist on `origin`: the launch-time checkout fetches before it
 resolves, and a ref that resolves nowhere is a loud failure rather than a
 silent fall back to the tip.
 
+#### The upgrade loop
+
+A frozen host moves in deliberate steps, and the loop is three of them: the
+launch says a newer release exists, one command moves the pins, and the next
+launch installs exactly what those pins name. Nothing in the loop moves a host
+on its own — the notice only tells, the command only writes, and the install
+happens at the launch you choose to make.
+
+```mermaid
+flowchart TD
+    L["Launch — ./run.sh"] --> C["release check:<br/>newest release vs pinned_ref"]
+    C -->|"dynamic host, SHA pin,<br/>already newest, or check failed"| S["silent — the launch continues"]
+    C -->|"frozen and behind"| N["one notice line on stderr<br/>and in run_core.log"]
+    N --> U["./run.sh upgrade — rewrites pinned_ref<br/>and all three pinned_tool_versions"]
+    U --> W["nothing installed,<br/>no checkout moved"]
+    W --> X["Next launch: checkout onto the new pinned_ref,<br/>claude, gh and deno at the pinned versions"]
+    X --> L
+```
+
+1. **The launch tells you.** A frozen host pinned behind the newest release
+   prints one line per launch, to stderr and `run_core.log`:
+
+   ```text
+   A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
+   ```
+
+   The command it names comes from the constant the upgrade command registers
+   under, so the notice cannot name a command that does not exist. The full
+   rules — who is notified, when the check is silent, and what a failed check
+   costs — are [New-Release Notice](#-new-release-notice).
+2. **One command moves the pins.** `./run.sh upgrade` rewrites `pinned_ref` and
+   all three `pinned_tool_versions` to the newest release and the versions its
+   [`tool-versions.json` manifest](RELEASE-TAGGING.md#the-tool-version-manifest)
+   records. **It changes nothing else**: every other key in `.config.json` is
+   preserved exactly as it was, and it installs nothing, moves no checkout and
+   starts no container. See
+   [Moving to the latest release](#moving-to-the-latest-release-runsh-upgrade).
+3. **The next launch installs them.** The checkout update puts the worker
+   checkout onto the new `pinned_ref` and the launch installs `claude`, `gh`
+   and `deno` at exactly the pinned versions, one log line per tool. Nothing
+   waits on the weekly interval — it is `dynamic`-mode machinery.
+
+**Hand-editing a pin is still supported, and is the answer for a specific
+ref.** The upgrade command only ever chooses the newest release; a host that
+must sit on an older release, a commit SHA, or one tool version on its own is
+moved by editing `.config.json` and relaunching, with no re-run of setup — see
+[Moving a pin by hand](#moving-a-pin-by-hand). A hand-edited host stays in the
+same loop: it is still told when a newer release exists, and `./run.sh upgrade`
+still moves it to the newest one when that is what you want.
+
+#### Moving to the latest release: `./run.sh upgrade`
+
+`./run.sh upgrade` moves a frozen host onto the newest release in one call. It
+rewrites `pinned_ref` and all three `pinned_tool_versions` — to the tag and to
+the exact versions that release recorded in its
+[`tool-versions.json` manifest](RELEASE-TAGGING.md) — and nothing else. It
+installs nothing, moves no checkout and starts no container: the next launch
+installs exactly what the new pins name.
+
+```mermaid
+flowchart TD
+    U["./run.sh upgrade"] --> M{"update_mode"}
+    M -->|dynamic| N["nothing to pin —<br/>exits 0, config untouched"]
+    M -->|frozen| L["newest release"]
+    L --> C{"newer than pinned_ref?"}
+    C -->|no| A["'already up to date' —<br/>nothing written"]
+    C -->|yes| T{"release records<br/>tool versions?"}
+    T -->|no| X["fail loud, naming the release —<br/>nothing written"]
+    T -->|yes| V["validate, then one atomic write:<br/>ref + all 3 versions"]
+    style X fill:#c92a2a,stroke:#7f1d1d,color:#fff
+```
+
+The output names the old and new ref and each old → new tool version, and every
+other key in `.config.json` is preserved exactly as it was:
+
+```text
+Upgrading Vibe Coder: 1.0.4 → 1.0.5.
+  pinned_ref                   1.0.4 → 1.0.5
+  pinned_tool_versions.claude  2.0.76 → 2.0.80
+  pinned_tool_versions.gh      2.62.0 → 2.63.0
+  pinned_tool_versions.deno    2.5.4 → 2.5.6
+Written to /path/to/.config.json — the next launch installs exactly these versions.
+```
+
+Re-running it immediately prints `Vibe Coder is already up to date (1.0.5).`
+and writes nothing. On a dynamic host it explains there is nothing to pin —
+that host already tracks the latest at every launch — and exits 0 without
+touching the config. The pins are **all-or-nothing**: a release minted before
+releases recorded their tool versions, an unreachable GitHub or a value that
+fails the config validator is a loud refusal with `.config.json` left exactly
+as it was, never a fresh `pinned_ref` beside stale tool versions.
+
+Windows hosts move their pins by hand for now; `run.ps1 upgrade` is a
+follow-up, exactly as `setup.ps1`'s update-mode prompts are.
+
 #### Moving a pin by hand
 
-Editing `.config.json` is the supported way to move a frozen host, and
-**re-running setup is not required**:
+Editing `.config.json` is the supported way to move a frozen host to a pin
+`./run.sh upgrade` would not choose — an older release, a commit SHA, or one
+tool version on its own — and **re-running setup is not required**:
 
 1. Edit `pinned_ref` to the tag or SHA you want, and/or any entry under
    `pinned_tool_versions`.
@@ -762,6 +880,56 @@ flowchart TD
     H -->|yes| L["log the skip only —<br/>no git write"]
     H -->|no| F["fetch --tags → checkout --detach ref →<br/>reset --hard ref → clean"]
     F -->|ref unresolvable| X["exit non-zero naming the ref —<br/>launcher warns, launches on the pin"]
+```
+
+### 🔔 New-Release Notice
+
+Beside the checkout update, each launch asks whether this host is pinned behind
+the newest release (Issue #690). When it is, one line goes to stderr and to
+`run_core.log`:
+
+```text
+A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
+```
+
+```bash
+deno run --allow-env --allow-read --allow-run \
+  worker/deno/mod.ts release-notice --base-dir "$(pwd)"
+```
+
+- **Notifying only.** The check changes no pin, installs nothing and never
+  moves the checkout. Moving the host is `./run.sh upgrade` (Issue #691) or the
+  hand edit in [Moving a pin by hand](#moving-a-pin-by-hand).
+- **Frozen hosts only.** A `dynamic` host already installs the newest release
+  at every launch, so there is nothing to tell it.
+- **Silent when there is nothing to say.** A host already on the newest
+  release, a repository with no releases, and a `pinned_ref` that is a commit
+  SHA — which cannot be ordered against a release tag — all print nothing. So
+  do pre-releases and moving names such as `latest`: the release series is the
+  bare `MAJOR.MINOR.PATCH` tags, ordered numerically.
+- **It never blocks the launch.** A `gh` failure, an unreachable GitHub or a
+  timeout is a `[run.sh] warning: could not check for a newer release …` on
+  stderr and a `release-notice: failed …` line in `run_core.log`, and the
+  launch continues on the checkout the host already has. Every call is bounded,
+  so an unreachable GitHub costs seconds.
+- **One name for the upgrade.** The command the notice names comes from the
+  same constant the upgrade command registers under
+  ([`worker/deno/lib/upgrade_command.ts`](../worker/deno/lib/upgrade_command.ts)),
+  so the wording cannot drift from the command that exists.
+- **Windows is a follow-up.** `run.ps1` does not print the notice yet; the
+  logic living in the Deno command is what keeps that a port rather than a
+  rewrite.
+
+```mermaid
+flowchart TD
+    M{"update_mode"} -->|dynamic| S["silent — the host<br/>already installs the latest"]
+    M -->|frozen| L["latest release via gh"]
+    L -->|"check failed / timed out"| W["warn on stderr + run_core.log,<br/>launch continues"]
+    L -->|no releases| S
+    L --> C{"pinned_ref vs latest"}
+    C -->|"commit SHA — not orderable"| S
+    C -->|"already newest"| S
+    C -->|"behind"| N["one notice line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
 ```
 
 ### 🧠 Phase Model Overrides

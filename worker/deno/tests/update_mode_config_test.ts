@@ -16,6 +16,7 @@ import {
   buildDefaultWorkerConfig,
   DEFAULT_UPDATE_MODE,
   PINNED_TOOLS,
+  SETUP_DEFAULT_UPDATE_MODE,
   UPDATE_MODES,
 } from "../lib/config_defaults.ts";
 import {
@@ -77,6 +78,23 @@ Deno.test("update mode - the default is dynamic in the default WorkerConfig", ()
   assertEquals(DEFAULT_UPDATE_MODE, "dynamic");
   assertEquals(buildDefaultWorkerConfig().updateMode, "dynamic");
   assertEquals([...UPDATE_MODES], ["dynamic", "frozen"]);
+});
+
+Deno.test("update mode - the setup default is frozen while an absent key still loads as dynamic", async () => {
+  // Issue #692 flipped the setup conversation's default answer only. An
+  // existing host carries no pins, so resolving an absent key to `frozen`
+  // would fail its config validation at the next launch.
+  assertEquals(SETUP_DEFAULT_UPDATE_MODE, "frozen");
+  assertEquals(DEFAULT_UPDATE_MODE, "dynamic");
+
+  const config = { allowed_authors: ["testuser"], repos: ["org/repo"] };
+  await withTempConfig(config, async (configPath) => {
+    const loaded = await loadConfig(configPath);
+    assertEquals(loaded.updateMode, DEFAULT_UPDATE_MODE);
+    // No validation failure, and no new pin requirement.
+    assertEquals(validateConfigFull(loaded).valid, true);
+    assertEquals(validateUpdateModeSettings({ updateMode: undefined }), []);
+  });
 });
 
 Deno.test("update mode - the update-mode keys are recognised, so no unknown-key warning is raised", () => {

@@ -192,6 +192,9 @@ import { exportBrandingCommand } from "./commands/export_branding.ts";
 import { exportScrubGateCommand } from "./commands/export_scrub_gate.ts";
 import { exportRedactCommand } from "./commands/export_redact.ts";
 import { exportLinksCommand } from "./commands/export_links.ts";
+import { releaseManifestCommand } from "./commands/release_manifest.ts";
+import { releaseNoticeCommand } from "./commands/release_notice.ts";
+import { upgradeCommand } from "./commands/upgrade.ts";
 
 // Re-export types and utilities for external use
 export * from "./types.ts";
@@ -383,6 +386,9 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(exportScrubGateCommand);
   registry.register(exportRedactCommand);
   registry.register(exportLinksCommand);
+  registry.register(releaseManifestCommand);
+  registry.register(releaseNoticeCommand);
+  registry.register(upgradeCommand);
 
   return registry;
 }
@@ -620,6 +626,10 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "export-redact",
       "export-links",
       "export-scrub-gate",
+      // The release workflow mints the manifest in CI with no config (#688).
+      "release-manifest",
+      // ./run.sh upgrade rewrites the pins in .config.json itself (#691).
+      "upgrade",
     ];
     if (!configOptionalCommands.includes(command)) {
       validateConfig(config);
@@ -723,6 +733,10 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "export-redact",
       "export-links",
       "export-scrub-gate",
+      // The release workflow mints the manifest in CI with no config (#688).
+      "release-manifest",
+      // ./run.sh upgrade rewrites the pins in .config.json itself (#691).
+      "upgrade",
     ];
     if (configOptionalCommands.includes(command)) {
       config = buildDefaultWorkerConfig();

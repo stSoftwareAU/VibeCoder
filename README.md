@@ -212,7 +212,15 @@ VIBE_REPOS="myorg/repo1,myorg/repo2" \
 
 # Start the worker
 ./run.sh
+
+# Move this host onto the newest release (setup pins a new host to a release;
+# each launch says when a newer one exists). Rewrites the pins in .config.json
+# and nothing else — the next launch installs exactly them.
+./run.sh upgrade
 ```
+
+See [Configuration — The upgrade loop](docs/CONFIGURATION.md#the-upgrade-loop)
+for the notice, what the command changes, and the hand-edited pin.
 
 ### Windows (PowerShell)
 
@@ -441,7 +449,7 @@ flowchart LR
 | **[OWASP Top 10 2025 Coverage Matrix](docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md)** | Which idle-task template covers which OWASP Top 10 2025 category — the point-in-time matrix from plus templates registered since |
 | **[Cross-repo Fix](docs/CROSS-REPO-FIX.md)**                                   | Raising a PR in an internal `stSoftwareAU` dependency's own repo: the "can access" classification, PR plumbing, the agent→worker declaration bridge, and release-gating boundaries |
 | **[Merge Enforcement](docs/MERGE.md)**                                         | Operator manual for the dual-layer pre-merge gate: required checks, defer-and-retry, read-only default branch                                          |
-| **[Release Tagging](docs/RELEASE-TAGGING.md)**                                 | How every merge to `main` is tagged with the next patch semver: the patch-only rule, hand-minted minor/major tags, idempotency and concurrency          |
+| **[Release Tagging](docs/RELEASE-TAGGING.md)**                                 | How every merge to `main` is tagged with the next patch semver: the patch-only rule, hand-minted minor/major tags, idempotency, concurrency, and the `tool-versions.json` manifest each release ships |
 | **[Human-authored PR Policy](docs/HUMAN-PR-POLICY.md)**                        | What the worker will and will not do to a PR it did not author: the two author lists, inviting it onto your PR, revoking, and the blocked-issue nudge  |
 | **[Add-repo Onboarding](docs/ADD-REPO.md)**                                    | Onboarding a new repository to the monitored set via an `add-repo:` issue: validation, label/branch-protection sync                                    |
 | **Switching Identity**                           | Migrating an existing deployment to a new worker GitHub identity                                                                                       |

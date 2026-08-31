@@ -33,6 +33,7 @@ import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
+import { formatReleaseNotice } from "../lib/release_notice.ts";
 import {
   BASH_LAUNCHER,
   buildCount,
@@ -721,6 +722,102 @@ Deno.test("run.sh - a failed checkout update warns and launches on the existing 
     assertStringIncludes(await runCoreLog(harness), "worker-checkout-update");
   } finally {
     await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// New-release notice (Issue #690)
+// ---------------------------------------------------------------------------
+
+Deno.test("run.sh - prints the new-release notice once, on stderr and in the run-core log (Issue #690)", async () => {
+  const notice = formatReleaseNotice("1.0.4", "1.0.5");
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_STDOUT: notice,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The check is asked about this checkout, beside the checkout update.
+    const args = await recorded(harness, "release-notice");
+    assert(args, `the release check never ran: ${outcome.stderr}`);
+    assertEquals(args[args.indexOf("--base-dir") + 1], REPO_ROOT);
+
+    // Once, on stderr, so an operator watching a launch sees it...
+    assertStringIncludes(outcome.stderr, notice);
+    assertEquals(outcome.stderr.split(notice).length - 1, 1);
+    // ...and in the run-core log, so a non-interactive host's notice is not
+    // lost. Same wording in both places.
+    assertStringIncludes(await runCoreLog(harness), notice);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - says nothing when the release check has nothing to say (Issue #690)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assert(
+      await recorded(harness, "release-notice"),
+      "the release check must still run",
+    );
+    // A dynamic host, a host on the newest release, a commit-SHA pin: the
+    // command prints nothing, and so does the launcher.
+    assertEquals(outcome.stderr.includes("A new release of Vibe Coder"), false);
+    assertEquals(
+      (await runCoreLog(harness)).includes("A new release of Vibe Coder"),
+      false,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a failed release check warns and the launch proceeds (Issue #690)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_EXIT: "1",
+    STUB_RELEASE_NOTICE_STDOUT: "gh release list failed: no network",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    // Never blocks the launch: the exit status is the container's.
+    assertEquals(
+      outcome.code,
+      0,
+      `a failed release check must not abort the launch: ${outcome.stderr}`,
+    );
+    assert(
+      await recorded(harness, "run"),
+      "the container must still be launched",
+    );
+
+    // Warned in the same shape as the checkout-update failure path, and never
+    // mistaken for a notice.
+    assertStringIncludes(outcome.stderr, "could not check for a newer release");
+    assertEquals(outcome.stderr.includes("A new release of Vibe Coder"), false);
+    assertStringIncludes(await runCoreLog(harness), "release-notice: failed");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - carries no release logic of its own (Issue #690)", async () => {
+  const source = await Deno.readTextFile(RUN_SH);
+
+  // The shell captures what the Deno command printed and prints it; it must
+  // not compare versions, list releases or name a release tag itself.
+  assertStringIncludes(source, "release-notice");
+  for (const logic of ["gh release", "semver", "1.0."]) {
+    assertEquals(
+      source.includes(logic),
+      false,
+      `run.sh must leave release logic to the Deno command, found: ${logic}`,
+    );
   }
 });
 

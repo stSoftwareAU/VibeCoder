@@ -155,20 +155,39 @@ they are — they are exactly the paths mounted into the container.
 ## 🧊 Keeping a host up to date: dynamic or frozen
 
 How a deployed host takes new versions is a configuration decision, not a
-manual routine. By default it is **dynamic**: every launch updates the worker
+manual routine. A host can run **dynamic**: every launch updates the worker
 checkout to the tip of the default branch and the tools follow the latest
-eligible releases, so a host needs no per-machine version upkeep at all.
+eligible releases, so a host needs no per-machine version upkeep at all. That
+is what an existing `.config.json` with no `update_mode` key loads as, and it
+is the deliberate opt-in answer at setup (Issue #692).
 
-A host that must reproduce a known state instead runs **frozen**: it is held at
+Setting up a **new** host offers **frozen** as the default answer, pinned to
+the latest release and the tool versions that release recorded. A host that
+must reproduce a known state runs frozen: it is held at
 `pinned_ref` — a [release tag](RELEASE-TAGGING.md) or a commit SHA — with exact
 `pinned_tool_versions` for `claude`, `gh` and `deno`, and new releases never
-move it. Moving such a host is one edit to `.config.json` plus a relaunch; no
-re-run of setup is needed.
+move it.
+
+So there are **three** answers to "how does this host take new versions", not
+two:
+
+| Answer | What it does | Upkeep |
+| --- | --- | --- |
+| **Dynamic** | Every launch tracks the tip of the default branch and installs the latest eligible `claude`, `gh` and `deno` | None — nobody edits a version on that host, ever |
+| **Frozen + `./run.sh upgrade`** | Held at the pinned release until someone runs one command, which moves `pinned_ref` and all three `pinned_tool_versions` onto the newest release | Deliberate steps: each launch says when a newer release exists, and the upgrade takes it |
+| **Frozen + a hand-edited pin** | Held at whatever ref you write in `.config.json` — an older release, a commit SHA, or one tool version on its own | The same edit-and-relaunch, for the pin the upgrade command would not choose |
+
+No re-run of setup is needed for any of them, and the upgrade command installs
+nothing itself: it writes the pins, and the next launch installs exactly what
+they name.
 
 - The prompts setup asks, in order, and what a non-interactive run does:
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
+- The loop end to end — the notice, the command, the next launch:
+  [Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
 - The field names, accepted values, worked examples for both modes, how to
-  choose a pin, how to hand-edit one, and how it differs from
+  choose a pin, what `./run.sh upgrade` writes, how to hand-edit one, and how
+  it differs from
   `VIBE_SKIP_CHECKOUT_UPDATE`:
   [Configuration — Update Mode](CONFIGURATION.md#-update-mode).
 

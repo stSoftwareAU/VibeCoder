@@ -876,7 +876,9 @@ the container writes to `/workspace` — and then builds the launch plan below. 
 checkout; `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for a development
 checkout or a CI tree. Under `update_mode: "frozen"` the checkout is held at
 `pinned_ref` rather than reset to the tip, and the skip is logged with its
-mode and ref (Issue #624). There is no other branch: the worker runs in the
+mode and ref (Issue #624), and a frozen host pinned behind the newest release
+is told so in one line before the plan is built (Issue #690) — a notice only,
+which never blocks the launch. There is no other branch: the worker runs in the
 container or not at all.
 
 ```mermaid
@@ -885,8 +887,10 @@ flowchart TD
     R --> M{"run-mode<br/>(VIBE_RUN_MODE → run_mode → container)"}
     M -->|"native / seatbelt (removed, Issue #4)"| NV["❌ exit non-zero<br/>(removal explained)"]
     M -->|container| U["worker-checkout-update<br/>(host-side reset to origin/HEAD)"]
-    U -->|"failed — warn only"| P
-    U --> P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
+    U -->|"failed — warn only"| N
+    U --> N["release-notice<br/>(frozen host behind the newest release?)"]
+    N -->|"failed — warn only"| P
+    N --> P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
     P -->|no runtime| X["❌ exit non-zero<br/>(no host fallback)"]
     P --> E{"image reference<br/>present?"}
     E -->|no| B["🐳 build"]
