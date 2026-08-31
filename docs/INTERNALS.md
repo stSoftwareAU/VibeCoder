@@ -199,6 +199,11 @@ Deno. Both launchers follow the same steps:
    skipping silently (Issue #624). A checkout already on the pin is not
    written to; a pin that does not resolve is the same loud warning as any
    other failure, and the launch continues on the pinned checkout it has.
+   Beside it, `deno run … mod.ts release-notice` tells a frozen host pinned
+   behind the newest release so, in one line naming both versions and the
+   upgrade command, on stderr and in `run_core.log` (Issue #690). It notifies
+   only — no pin is changed and no checkout moved — and a failed or timed-out
+   check is a warning, never a refused launch.
 3. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
    resolves and validates the container runtime, computes the content-derived
    image reference, and constructs the fixed least-privilege mount set. No

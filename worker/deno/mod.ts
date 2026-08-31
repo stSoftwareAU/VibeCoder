@@ -193,6 +193,7 @@ import { exportScrubGateCommand } from "./commands/export_scrub_gate.ts";
 import { exportRedactCommand } from "./commands/export_redact.ts";
 import { exportLinksCommand } from "./commands/export_links.ts";
 import { releaseManifestCommand } from "./commands/release_manifest.ts";
+import { releaseNoticeCommand } from "./commands/release_notice.ts";
 
 // Re-export types and utilities for external use
 export * from "./types.ts";
@@ -385,6 +386,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(exportRedactCommand);
   registry.register(exportLinksCommand);
   registry.register(releaseManifestCommand);
+  registry.register(releaseNoticeCommand);
 
   return registry;
 }

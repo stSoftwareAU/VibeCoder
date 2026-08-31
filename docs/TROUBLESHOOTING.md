@@ -264,6 +264,31 @@ working says so on every launch:
 `Checkout update skipped: update_mode=frozen, pinned to <ref>` in
 `run_core.log`.
 
+## 🔔 "A new release of Vibe Coder is available"
+
+A frozen host pinned behind the newest release says so once per launch, on
+stderr and in `run_core.log` (Issue #690):
+
+```text
+A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
+```
+
+Nothing is wrong and nothing has changed: the pin is still what the host runs,
+and the notice is only telling you a newer release exists. Move the host when
+you choose to — see
+[Configuration — New-Release Notice](CONFIGURATION.md#-new-release-notice).
+
+The check itself can fail, and never blocks a launch:
+
+```text
+[run.sh] warning: could not check for a newer release (status 1) - gh release
+list failed with exit code 1: …
+```
+
+The launch continues on the checkout the host already has. The usual causes are
+an unreachable GitHub or a `gh` that is not authenticated on the host — the
+same material the launcher's other `gh` calls use.
+
 ## 🔐 The worker exits on a credential preflight error
 
 The worker reads credential *files* and never an interactive login or a host
