@@ -68,7 +68,7 @@ jobs:
           deno-version-file: .deno-version
 
       - name: Initialise CodeQL (JavaScript/TypeScript, SARIF kept local)
-        # github/codeql-action/init@v4.37.8
+        # github/codeql-action/init@v4.37.9
         uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938
         with:
           languages: javascript-typescript
@@ -77,7 +77,7 @@ jobs:
           queries: security-and-quality
 
       - name: Analyse with CodeQL
-        # github/codeql-action/analyze@v4.37.8
+        # github/codeql-action/analyze@v4.37.9
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938
         with:
           category: security-tree-sweep

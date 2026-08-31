@@ -19,8 +19,8 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | actions/upload-pages-artifact | v5.0.0 | fc324d3547104276b827a68afc52ff2a11cc49c9 | .github/workflows/pages.yml | pinned to commit SHA |
 | aquasecurity/trivy-action | v0.36.0 | ed142fd0673e97e23eac54620cfb913e5ce36c25 | .github/workflows/dependency-audit.yml | pinned to commit SHA |
 | denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/pages.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
-| github/codeql-action/analyze | v4.37.8 | db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
-| github/codeql-action/init | v4.37.8 | db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
+| github/codeql-action/analyze | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
+| github/codeql-action/init | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
 | ruby/setup-ruby | v1.321.0 | 95ef2b042f9d7a56d8268cba8559e2842e2ad01b | .github/workflows/dependency-audit.yml, .github/workflows/pages.yml | pinned to commit SHA |
 
