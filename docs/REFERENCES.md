@@ -60,9 +60,9 @@ pointing at deleted files is worse than none.
 
 | Source | What we took | Where it shows up |
 | ------ | ------------ | ----------------- |
-| [Anthropic's Claude prompting best practices](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices) | The 22-row rubric every prompt surface is audited against, so two audits a year apart are comparable | `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` |
+| [Anthropic's Claude prompting best practices](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices) | The 22-row rubric every prompt surface is audited against, so two audits a year apart are comparable. Three house rows sit beside it, numbered H1–H3 so the guide mapping stays intact | `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` |
 | [GitHub spec-kit](https://github.com/github/spec-kit) | Five ideas adopted natively — and five judged and deliberately rejected, which is the more useful half of that assessment | `docs/SPEC-KIT-COMPARISON.md` |
-| [mattpocock/skills](https://github.com/mattpocock/skills) | The grilling session — interviewing the requester round by round, with a recommended answer beside every question, until no branch of the design tree is left unanswered. Our grill-me workflow came from here | `prompts/grill-me/`, `docs/workflows/grill-me.md` |
+| [mattpocock/skills](https://github.com/mattpocock/skills) | The grilling session — interviewing the requester round by round, with a recommended answer beside every question, until no branch of the design tree is left unanswered. Our grill-me workflow came from here. Also the three house rows of the prompt rubric — prompt the positive, the no-op test, and leading words | `prompts/grill-me/`, `docs/workflows/grill-me.md`, `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` |
 | [Caveman](https://github.com/JuliusBrussee/caveman) | Verbosity as a dial rather than a constant: a spelling fix gets "done", a planning task gets the architecture | `docs/MODEL-AND-CACHING.md` |
 | [AI Agent Accountability — Chris Farris](https://www.chrisfarris.com/post/agent-accountability/) | Trust as agency × autonomy × accountability, and the Rule of Two that argues against one component holding every capability | `docs/AGENT-ACCOUNTABILITY.md` |
 
