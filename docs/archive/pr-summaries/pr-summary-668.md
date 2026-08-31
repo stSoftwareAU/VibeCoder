@@ -91,4 +91,12 @@ launcher when there is no child to forward to.
 - Re-ran `tests/run_sh_launcher_test.ts`, `tests/launcher_parity_test.ts` and
   `tests/launcher_failure_evidence_test.ts`: 67 passed, 0 failed.
 - `shellcheck run.sh` and `bash -n run.sh` clean.
-- Full `./quality.sh` run before the PR.
+- Full `./quality.sh`: every check PASSED except `deno tests`, which fails on
+  this container for reasons this change does not touch — `run_core_test.ts` and
+  `run_core_rate_limit_resume_test.ts` abort on their simulated
+  `API rate limit already exceeded` fixture, and
+  `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
+  dir is restaged writable` asserts on a permission this sandbox cannot revoke.
+  The same suite was run at the pre-change commit for comparison: 58 failures
+  before, 58 after (with the 4 new cases passing), and the failing set drifts
+  between runs under parallel load. No launcher case is among them.
