@@ -92,4 +92,12 @@ flowchart TD
   and `tests/prompt_hash_test.ts` (108 passed) — the new version file does not
   disturb prompt loading, validation, hashing or the docs version-freshness
   guard.
-- `./quality.sh` run in full.
+- `./quality.sh` run in full: every check passed except `deno tests`, which
+  fails on three environment-bound cases unrelated to this change —
+  `tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` abort
+  with `GraphQL: API rate limit already exceeded` from the container's `gh`
+  credentials, and
+  `service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
+  dir is restaged writable` asserts a host-specific config path. All three were
+  reproduced on the base commit `daf1c1b` in a clean worktree with this change
+  absent, so they are pre-existing. The remaining 16,178 cases pass.
