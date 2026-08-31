@@ -19,6 +19,7 @@ import { SKIP_CHECKOUT_UPDATE_ENV } from "../commands/worker_checkout_update.ts"
 import {
   DEFAULT_UPDATE_MODE,
   PINNED_TOOLS,
+  SETUP_DEFAULT_UPDATE_MODE,
   UPDATE_MODES,
 } from "../lib/config_defaults.ts";
 import { pinValueErrors } from "../lib/config_validator.ts";
@@ -90,15 +91,35 @@ Deno.test("SETUP.md - the update-mode prompts are documented in the order setup 
   }
 });
 
-Deno.test("SETUP.md - the update-mode section states both accepted modes and the default", async () => {
+Deno.test("SETUP.md - the update-mode section states both accepted modes and the default setup offers", async () => {
   const body = section(await read("docs/SETUP.md"), SETUP_SECTION);
 
   for (const mode of UPDATE_MODES) {
     assert(body.includes(`\`${mode}\``), `mode "${mode}" is not documented`);
   }
+  // Issue #692: the conversation's default answer, which is deliberately not
+  // the load-time default for an absent key.
   assert(
-    body.includes(`defaults to \`${DEFAULT_UPDATE_MODE}\``),
-    "the default mode is not stated",
+    body.includes(`defaults to \`${SETUP_DEFAULT_UPDATE_MODE}\``),
+    "the default mode setup offers is not stated",
+  );
+  assert(
+    body.includes(`loads as \`${DEFAULT_UPDATE_MODE}\``),
+    "SETUP.md does not say what an absent update_mode still loads as",
+  );
+});
+
+Deno.test("SETUP.md - the non-interactive fresh-host behaviour names both outcomes", async () => {
+  const body = section(await read("docs/SETUP.md"), SETUP_SECTION);
+
+  assert(
+    /pinned to the latest release/i.test(body),
+    "an unattended fresh host being pinned to the latest release is not documented",
+  );
+  assert(
+    /one warning line/i.test(body) &&
+      body.includes(`\`update_mode: "${DEFAULT_UPDATE_MODE}"\``),
+    "the unattended fallback to the load-time default is not documented",
   );
 });
 
@@ -161,6 +182,37 @@ Deno.test("CONFIGURATION.md - the worked examples cover both modes and validate"
       );
     }
   }
+});
+
+Deno.test("CONFIGURATION.md - the setup default and the load-time default are stated and distinguished", async () => {
+  const body = section(await read("docs/CONFIGURATION.md"), CONFIG_SECTION);
+
+  // Issue #692: two different defaults, and the docs have to say why. A
+  // single paragraph must carry both, so neither can be read alone.
+  const distinction = body.split(/\n\s*\n/).find((paragraph) =>
+    paragraph.includes(`\`${SETUP_DEFAULT_UPDATE_MODE}\``) &&
+    paragraph.includes(`\`${DEFAULT_UPDATE_MODE}\``) &&
+    /setup/i.test(paragraph) && /load/i.test(paragraph)
+  );
+  assert(
+    distinction,
+    "no paragraph states the setup default and the load-time default together",
+  );
+  assert(
+    /absent|missing|no `update_mode`/i.test(distinction),
+    "the distinction does not say what an absent update_mode resolves to",
+  );
+
+  // And the reference table has to agree with both.
+  const row = body.split("\n").find((line) =>
+    line.startsWith("| `update_mode`")
+  );
+  assert(row, "no update_mode row in the field table");
+  assert(
+    row.includes(`\`"${DEFAULT_UPDATE_MODE}"\``) &&
+      row.includes(`\`"${SETUP_DEFAULT_UPDATE_MODE}"\``),
+    "the update_mode row does not name both defaults",
+  );
 });
 
 Deno.test("CONFIGURATION.md - hand-editing a pin is documented as needing no setup re-run", async () => {

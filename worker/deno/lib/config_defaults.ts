@@ -516,6 +516,23 @@ export const UPDATE_MODES: readonly UpdateMode[] = ["dynamic", "frozen"];
 export const DEFAULT_UPDATE_MODE: UpdateMode = "dynamic";
 
 /**
+ * Default answer the setup conversation offers for a host being configured
+ * (Issue #692, part of #674).
+ *
+ * Deliberately **not** {@link DEFAULT_UPDATE_MODE}: a new host is pinned to
+ * the latest release and the tool versions that release recorded, so accepting
+ * every default reproduces a released, tested combination. `dynamic` stays a
+ * valid typed answer — the deliberate, opt-in exception.
+ *
+ * An *absent* `update_mode` still resolves to {@link DEFAULT_UPDATE_MODE} at
+ * config load: existing hosts carry no pins, and freezing them by default
+ * would fail validation at their next launch (frozen is all-or-nothing,
+ * Issue #622). This constant is the setup conversation's default answer, not
+ * the meaning of a missing key.
+ */
+export const SETUP_DEFAULT_UPDATE_MODE: UpdateMode = "frozen";
+
+/**
  * Tools whose exact version a frozen host pins (Issue #622, part of #583).
  *
  * All three are required under `update_mode: "frozen"` — a host that pinned

@@ -1,9 +1,11 @@
 /**
- * The update-mode setup conversation (Issue #626, part of #583).
+ * The update-mode setup conversation (Issue #626, part of #583; the default
+ * flipped to `frozen` by Issue #692, part of #674).
  *
- * Every test drives the real command with injected input, injected git and an
- * injected "what would dynamic install" resolver, then asserts on what landed
- * in a temporary `.config.json` — no terminal, no network, no real checkout.
+ * Every test drives the real command with injected input, injected git, an
+ * injected release lookup and an injected "what would dynamic install"
+ * resolver, then asserts on what landed in a temporary `.config.json` — no
+ * terminal, no network, no real checkout.
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
@@ -18,6 +20,7 @@ import {
   type UpdateModeSetupDeps,
 } from "../setup/update_mode_setup.ts";
 import type { DynamicVersionCandidate } from "../lib/software_updates.ts";
+import { RELEASE_MANIFEST_ASSET } from "../lib/release_manifest.ts";
 
 /** Versions the injected resolver reports as today's dynamic choice. */
 const DYNAMIC_VERSIONS: DynamicVersionCandidate[] = [
@@ -26,11 +29,37 @@ const DYNAMIC_VERSIONS: DynamicVersionCandidate[] = [
   { tool: "deno", version: "2.5.4", eligible: true, reason: "aged out" },
 ];
 
+/** The newest release the injected lookup reports. */
+const LATEST_RELEASE = "1.5.0";
+
+/** The versions that release recorded in its manifest (Issue #688). */
+const RELEASE_TOOLS = { claude: "2.0.70", gh: "2.61.0", deno: "2.5.2" };
+
 /** A checkout in which only these refs resolve. */
 const KNOWN_REFS: Record<string, string> = {
   "v1.4.0": "9f3c1a2b4d5e6f708192a3b4c5d6e7f809a1b2c3",
+  [LATEST_RELEASE]: "1a2b3c4d5e6f708192a3b4c5d6e7f809a1b2c3d4",
   "9f3c1a2b4d5e6f708192a3b4c5d6e7f809a1b2c3":
     "9f3c1a2b4d5e6f708192a3b4c5d6e7f809a1b2c3",
+};
+
+/** A release lookup that reports no `tool-versions.json` asset. */
+const NO_MANIFEST: Partial<UpdateModeSetupDeps> = {
+  releaseToolVersions: (_repoDir, tag) =>
+    Promise.resolve({
+      ok: true,
+      value: {
+        kind: "no-manifest",
+        tag,
+        reason: `Release ${tag} carries no ${RELEASE_MANIFEST_ASSET} asset.`,
+      },
+    }),
+};
+
+/** A release lookup that cannot reach GitHub at all. */
+const NO_RELEASE: Partial<UpdateModeSetupDeps> = {
+  latestRelease: () =>
+    Promise.resolve({ ok: false, error: new Error("gh release list failed") }),
 };
 
 interface Harness {
@@ -76,6 +105,16 @@ function harness(
       return Promise.resolve(KNOWN_REFS[ref] ?? null);
     },
     dynamicVersions: () => Promise.resolve(DYNAMIC_VERSIONS),
+    latestRelease: () =>
+      Promise.resolve({
+        ok: true,
+        value: { tag: LATEST_RELEASE, version: [1, 5, 0] },
+      }),
+    releaseToolVersions: (_repoDir, tag) =>
+      Promise.resolve({
+        ok: true,
+        value: { kind: "manifest", tag, tools: { ...RELEASE_TOOLS } },
+      }),
     ...overrides,
   };
 
@@ -108,13 +147,40 @@ async function readConfig(path: string): Promise<Record<string, unknown>> {
 }
 
 // ---------------------------------------------------------------------------
-// Dynamic — the default
+// Frozen — the default for a fresh host (Issue #692)
 // ---------------------------------------------------------------------------
 
-Deno.test("runUpdateModeSetup - accepting the defaults writes dynamic and no pins", async () => {
+Deno.test("runUpdateModeSetup - accepting every default pins a fresh host to the latest release", async () => {
   const { dir, path } = await tempConfig({ repos: ["org/repo"] });
   try {
-    const h = harness([""]);
+    const h = harness(["", "", "", "", ""]);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok, "the conversation should succeed");
+    assertEquals(result.value.settings.update_mode, "frozen");
+    assertEquals(result.value.changed, true);
+
+    const config = await readConfig(path);
+    assertEquals(config.update_mode, "frozen");
+    assertEquals(config.pinned_ref, LATEST_RELEASE);
+    assertEquals(config.pinned_tool_versions, RELEASE_TOOLS);
+    // Unrelated keys survive the merge.
+    assertEquals(config.repos, ["org/repo"]);
+    // The mode prompt offered `frozen`, not `dynamic`.
+    assertStringIncludes(h.asked[0] ?? "", "[frozen]");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - typing dynamic still writes dynamic and no pins", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const h = harness(["dynamic"]);
     const result = await runUpdateModeSetup({
       repoDir: dir,
       configPath: path,
@@ -131,7 +197,6 @@ Deno.test("runUpdateModeSetup - accepting the defaults writes dynamic and no pin
     assertEquals(config.pinned_tool_versions, undefined);
     // Dynamic ends the conversation: only the mode was asked.
     assertEquals(h.asked.length, 1);
-    // Unrelated keys survive the merge.
     assertEquals(config.repos, ["org/repo"]);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -179,11 +244,9 @@ Deno.test("runUpdateModeSetup - frozen with a valid tag writes the ref and all t
     const config = await readConfig(path);
     assertEquals(config.update_mode, "frozen");
     assertEquals(config.pinned_ref, "v1.4.0");
-    assertEquals(config.pinned_tool_versions, {
-      claude: "2.0.76",
-      gh: "2.62.0",
-      deno: "2.5.4",
-    });
+    // A typed ref does not change where the version defaults come from: the
+    // latest release's manifest still supplies them (Issue #688).
+    assertEquals(config.pinned_tool_versions, RELEASE_TOOLS);
     assertEquals(h.fetches, 1, "origin is fetched before the ref is resolved");
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -281,7 +344,10 @@ Deno.test("runUpdateModeSetup - a ref with shell metacharacters is refused befor
 Deno.test("runUpdateModeSetup - an unresolvable tool version default is reported and typed by hand", async () => {
   const { dir, path } = await tempConfig({});
   try {
+    // No release manifest, so the defaults fall back to dynamic (Issue #692)
+    // — and this run's dynamic resolver cannot answer for the Claude CLI.
     const h = harness(["frozen", "v1.4.0", "2.0.5", "", ""], {
+      ...NO_MANIFEST,
       dynamicVersions: () =>
         Promise.resolve([
           {
@@ -307,6 +373,74 @@ Deno.test("runUpdateModeSetup - an unresolvable tool version default is reported
     const config = await readConfig(path);
     assertEquals(config.pinned_tool_versions, {
       claude: "2.0.5",
+      gh: "2.62.0",
+      deno: "2.5.4",
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Release defaults and their fallbacks (Issue #692)
+// ---------------------------------------------------------------------------
+
+Deno.test("runUpdateModeSetup - a release with no manifest falls back to the dynamic versions and says so", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["", "", "", "", ""], NO_MANIFEST);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const fallback = h.said.find((line) =>
+      line.includes(RELEASE_MANIFEST_ASSET)
+    );
+    assert(fallback, "the missing manifest must be stated in the output");
+    assertStringIncludes(fallback, "Falling back");
+
+    // The ref default still comes from the release; the versions from dynamic.
+    const config = await readConfig(path);
+    assertEquals(config.pinned_ref, LATEST_RELEASE);
+    assertEquals(config.pinned_tool_versions, {
+      claude: "2.0.76",
+      gh: "2.62.0",
+      deno: "2.5.4",
+    });
+    // Every version prompt carried a default, so a bare Enter answered it.
+    for (const question of h.asked.filter((q) => q.includes("version"))) {
+      assertStringIncludes(question, "[");
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - an unresolvable release falls back to the dynamic versions and says why", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["", "v1.4.0", "", "", ""], NO_RELEASE);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const stated = h.said.find((line) =>
+      line.includes("Could not resolve the latest release")
+    );
+    assert(stated, "an unresolvable release must be stated in the output");
+    assertStringIncludes(stated, "gh release list failed");
+
+    const config = await readConfig(path);
+    assertEquals(config.update_mode, "frozen");
+    assertEquals(config.pinned_ref, "v1.4.0");
+    assertEquals(config.pinned_tool_versions, {
+      claude: "2.0.76",
       gh: "2.62.0",
       deno: "2.5.4",
     });
@@ -365,12 +499,40 @@ Deno.test("runUpdateModeSetup - re-running on a frozen host and pressing Enter c
     assert(result.ok);
     assertEquals(result.value.changed, false);
     assertEquals(await Deno.readTextFile(path), before);
-    // Every default came from the file, not from today's dynamic versions.
+    // Every default came from the file — not from today's dynamic versions,
+    // and not from the latest release either (Issue #692).
+    assertEquals(result.value.settings.pinned_ref, "v1.4.0");
     assertEquals(result.value.settings.pinned_tool_versions, {
       claude: "2.0.1",
       gh: "2.60.0",
       deno: "2.5.0",
     });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - re-running on a dynamic host and pressing Enter changes nothing", async () => {
+  const { dir, path } = await tempConfig({
+    repos: ["org/repo"],
+    update_mode: "dynamic",
+  });
+  const before = await Deno.readTextFile(path);
+  try {
+    const h = harness([""]);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    // The flipped default must not re-ask a dynamic host into a pin.
+    assertEquals(result.value.settings.update_mode, "dynamic");
+    assertEquals(result.value.changed, false);
+    assertEquals(await Deno.readTextFile(path), before);
+    assertEquals(h.asked.length, 1);
+    assertStringIncludes(h.asked[0] ?? "", "[dynamic]");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -406,7 +568,7 @@ Deno.test("runUpdateModeSetup - a non-interactive run neither prompts nor change
   }
 });
 
-Deno.test("runUpdateModeSetup - a non-interactive fresh config defaults to dynamic", async () => {
+Deno.test("runUpdateModeSetup - a non-interactive fresh config pins to the latest release without prompting", async () => {
   const { dir, path } = await tempConfig({ repos: ["org/repo"] });
   try {
     const h = harness([], {
@@ -422,16 +584,79 @@ Deno.test("runUpdateModeSetup - a non-interactive fresh config defaults to dynam
     });
 
     assert(result.ok);
+    assertEquals(result.value.prompted, false);
     assertEquals(result.value.changed, true);
     const config = await readConfig(path);
-    assertEquals(config.update_mode, "dynamic");
+    assertEquals(config.update_mode, "frozen");
+    assertEquals(config.pinned_ref, LATEST_RELEASE);
+    assertEquals(config.pinned_tool_versions, RELEASE_TOOLS);
     assertEquals(config.repos, ["org/repo"]);
+    assertEquals(h.asked.length, 0);
+    assert(
+      h.said.some((line) => line.includes(`release ${LATEST_RELEASE}`)),
+      "the pin an unattended run chose must be stated",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("runUpdateModeSetup - a missing config file is created with the dynamic default", async () => {
+Deno.test("runUpdateModeSetup - a non-interactive fresh config with no release stays dynamic with one warning", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const h = harness([], {
+      ...NO_RELEASE,
+      interactive: () => false,
+      ask: () => {
+        throw new Error("a non-interactive run must not prompt");
+      },
+    });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const config = await readConfig(path);
+    assertEquals(config.update_mode, "dynamic");
+    assertEquals(config.pinned_ref, undefined);
+    assertEquals(config.pinned_tool_versions, undefined);
+
+    const warnings = h.said.filter((line) => line.includes("dynamic"));
+    assertEquals(warnings.length, 1, "exactly one warning line, not a wall");
+    assertStringIncludes(warnings[0] ?? "", "gh release list failed");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a non-interactive fresh config with no manifest stays dynamic rather than half-pinned", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const h = harness([], { ...NO_MANIFEST, interactive: () => false });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const config = await readConfig(path);
+    // A ref without the versions it ships with is the partial pin frozen mode
+    // exists to prevent, so nothing is pinned at all.
+    assertEquals(config.update_mode, "dynamic");
+    assertEquals(config.pinned_ref, undefined);
+    assert(
+      h.said.some((line) => line.includes(RELEASE_MANIFEST_ASSET)),
+      "the reason the host was not pinned must be stated",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a missing config file is created pinned to the latest release", async () => {
   const { dir, path } = await tempConfig(null);
   try {
     const h = harness([], { interactive: () => false });
@@ -442,7 +667,10 @@ Deno.test("runUpdateModeSetup - a missing config file is created with the dynami
     });
 
     assert(result.ok);
-    assertEquals((await readConfig(path)).update_mode, "dynamic");
+    const config = await readConfig(path);
+    assertEquals(config.update_mode, "frozen");
+    assertEquals(config.pinned_ref, LATEST_RELEASE);
+    assertEquals(config.pinned_tool_versions, RELEASE_TOOLS);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
