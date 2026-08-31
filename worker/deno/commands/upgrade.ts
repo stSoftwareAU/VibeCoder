@@ -58,18 +58,21 @@ import {
   readUpdateModeSettings,
   writeUpdateModeConfig,
 } from "../setup/config_writer.ts";
+import {
+  UPGRADE_COMMAND_NAME,
+  UPGRADE_INVOCATION,
+} from "../lib/upgrade_command.ts";
 
 /**
- * The command's registered name.
+ * The command's registered name, and the launcher spelling of it.
  *
- * Exported so anything that *names* the upgrade to an operator — the
- * new-release notice on the launch path (Issue #690) — can assert against the
- * real command rather than repeating a string that can drift.
+ * Both live in `lib/upgrade_command.ts` (Issue #690) and are re-exported here
+ * so this command registers under exactly the name the launch-time new-release
+ * notice tells the operator to run. A second declaration would be free to
+ * drift, and a notice naming a command that does not exist is worse than no
+ * notice at all.
  */
-export const UPGRADE_COMMAND_NAME = "upgrade";
-
-/** How an operator invokes it: the launcher spelling of the same command. */
-export const UPGRADE_COMMAND = `./run.sh ${UPGRADE_COMMAND_NAME}`;
+export { UPGRADE_COMMAND_NAME, UPGRADE_INVOCATION };
 
 /** What the command reports back about the host it was pointed at. */
 export interface UpgradeOutcome {

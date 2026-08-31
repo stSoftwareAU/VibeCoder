@@ -137,13 +137,20 @@ matching bucket guide under
 ### Rust bug-class checks
 
 [`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) carries
-the nine original idiom/hygiene checks plus fourteen **bug-class
+the nine original idiom/hygiene checks plus fifteen **bug-class
 clusters** distilled from the shapes that recur across the ~1,078
 RustSec advisories: unsafe boundary, memory safety, panic DoS,
 recursion DoS, error-handling flow, logic correctness, concurrency
-(locking and data races), async runtime, FFI boundary, type layout,
-path/TOCTOU, resource and destructor handling, pointer exposure, and
-static hygiene.
+(locking, data races and busy-wait polling), async runtime, FFI
+boundary, type layout, path/TOCTOU, resource and destructor handling,
+pointer exposure, and static hygiene.
+
+The busy-wait cluster is the CPU-exhaustion sibling of the locking
+one: a consumer that spins on `ready.load(...)` instead of waiting on
+a `Condvar`, a channel `recv()`, or `thread::park` burns a whole core
+for the length of the wait. Deliberate spinning — `hint::spin_loop()`
+in a lock-free retry, or a backoff that sleeps between attempts — is
+explicitly not a finding.
 
 Each cluster is **capability-gated** — `has_unsafe`, `has_ffi`,
 `has_concurrency`, `has_async`, `has_packed_repr`, `has_fs_io` — so a

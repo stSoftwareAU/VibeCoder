@@ -23,9 +23,10 @@ set -euo pipefail
 #   1. Locate Deno on the host (the only host tool this script needs).
 #   2. Update the worker checkout - origin's default branch, or the pinned
 #      ref when update_mode is frozen (Issues #512, #624).
-#   3. Build the launch plan (runtime detection, image reference, mounts).
-#   4. Build the image when the content-derived reference is absent.
-#   5. Launch the container, propagate SIGTERM/SIGINT, and exit with the
+#   3. Notify a pinned host when a newer release exists (Issue #690).
+#   4. Build the launch plan (runtime detection, image reference, mounts).
+#   5. Build the image when the content-derived reference is absent.
+#   6. Launch the container, propagate SIGTERM/SIGINT, and exit with the
 #      container's exit status so loop.sh / launchd / cron / systemd see real
 #      failures.
 #
@@ -49,6 +50,9 @@ set -euo pipefail
 #              read-only (Issue #509). A failed update is a warning, never a
 #              refused launch, and VIBE_SKIP_CHECKOUT_UPDATE turns it off for
 #              a development checkout or a CI tree.
+# Issue #690:  A frozen host behind the newest release is told so at launch -
+#              one line naming both versions and the upgrade command. The
+#              check never blocks the launch: a failure is a warning.
 
 BASE_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${BASE_DIR}"
@@ -327,6 +331,34 @@ bounded 300 "${DENO_CMD}" run \
 if ((checkout_update_status != 0)); then
   echo "[run.sh] warning: could not update the worker checkout (status ${checkout_update_status}) - launching on the existing checkout" >&2
   log_run_core "worker-checkout-update: failed (status ${checkout_update_status}) - launching on the existing checkout"
+fi
+
+# Tell a pinned host when a newer release exists (Issue #690, part of #674).
+# One line naming both versions and the command that installs the new one,
+# once per launch, on stderr and in the run-core log so a non-interactive
+# host's notice is not lost.
+#
+# All the logic lives in the Deno command, exactly as the checkout update's
+# does: this shell captures stdout and prints it, nothing more. Stdout is the
+# notice or empty - a dynamic host, a host already on the newest release, a
+# commit-SHA pin and a repository with no releases all print nothing.
+#
+# Notifying only: nothing here changes a pin or moves the checkout, and a
+# failed or timed-out check is a warning, never a refused launch. The bound is
+# short because an unreachable GitHub must cost seconds, not a hung launch.
+release_notice=""
+release_notice_status=0
+release_notice="$(bounded 120 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-run \
+  "${BASE_DIR}/worker/deno/mod.ts" release-notice \
+  --base-dir "${BASE_DIR}" </dev/null)" || release_notice_status=$?
+if ((release_notice_status != 0)); then
+  echo "[run.sh] warning: could not check for a newer release (status ${release_notice_status}) - ${release_notice:-no explanation given}" >&2
+  log_run_core "release-notice: failed (status ${release_notice_status}) - ${release_notice:-no explanation given}"
+elif [[ -n "${release_notice}" ]]; then
+  echo "${release_notice}" >&2
+  log_run_core "${release_notice}"
 fi
 # The plan resolves and validates the container runtime, computes the
 # content-derived image reference, and constructs the fixed least-privilege

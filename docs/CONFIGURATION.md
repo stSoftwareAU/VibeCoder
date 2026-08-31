@@ -607,6 +607,11 @@ because an absent `update_mode` resolves to `dynamic`:
   (Issue #624) — see [Host-Side Checkout Update](#-host-side-checkout-update).
   Because the container image reference is derived from the checkout's
   content, a frozen checkout holds the image steady too.
+- **Frozen says when it is behind.** A pin holds the host still; it does not
+  hide that the world moved on. When a release newer than `pinned_ref` exists,
+  each launch prints one notice line naming both versions and the command that
+  installs the new one (Issue #690) — see
+  [New-Release Notice](#-new-release-notice).
 
 ```mermaid
 flowchart LR
@@ -808,6 +813,56 @@ flowchart TD
     H -->|yes| L["log the skip only —<br/>no git write"]
     H -->|no| F["fetch --tags → checkout --detach ref →<br/>reset --hard ref → clean"]
     F -->|ref unresolvable| X["exit non-zero naming the ref —<br/>launcher warns, launches on the pin"]
+```
+
+### 🔔 New-Release Notice
+
+Beside the checkout update, each launch asks whether this host is pinned behind
+the newest release (Issue #690). When it is, one line goes to stderr and to
+`run_core.log`:
+
+```text
+A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
+```
+
+```bash
+deno run --allow-env --allow-read --allow-run \
+  worker/deno/mod.ts release-notice --base-dir "$(pwd)"
+```
+
+- **Notifying only.** The check changes no pin, installs nothing and never
+  moves the checkout. Moving the host is `./run.sh upgrade` (Issue #691) or the
+  hand edit in [Moving a pin by hand](#moving-a-pin-by-hand).
+- **Frozen hosts only.** A `dynamic` host already installs the newest release
+  at every launch, so there is nothing to tell it.
+- **Silent when there is nothing to say.** A host already on the newest
+  release, a repository with no releases, and a `pinned_ref` that is a commit
+  SHA — which cannot be ordered against a release tag — all print nothing. So
+  do pre-releases and moving names such as `latest`: the release series is the
+  bare `MAJOR.MINOR.PATCH` tags, ordered numerically.
+- **It never blocks the launch.** A `gh` failure, an unreachable GitHub or a
+  timeout is a `[run.sh] warning: could not check for a newer release …` on
+  stderr and a `release-notice: failed …` line in `run_core.log`, and the
+  launch continues on the checkout the host already has. Every call is bounded,
+  so an unreachable GitHub costs seconds.
+- **One name for the upgrade.** The command the notice names comes from the
+  same constant the upgrade command registers under
+  ([`worker/deno/lib/upgrade_command.ts`](../worker/deno/lib/upgrade_command.ts)),
+  so the wording cannot drift from the command that exists.
+- **Windows is a follow-up.** `run.ps1` does not print the notice yet; the
+  logic living in the Deno command is what keeps that a port rather than a
+  rewrite.
+
+```mermaid
+flowchart TD
+    M{"update_mode"} -->|dynamic| S["silent — the host<br/>already installs the latest"]
+    M -->|frozen| L["latest release via gh"]
+    L -->|"check failed / timed out"| W["warn on stderr + run_core.log,<br/>launch continues"]
+    L -->|no releases| S
+    L --> C{"pinned_ref vs latest"}
+    C -->|"commit SHA — not orderable"| S
+    C -->|"already newest"| S
+    C -->|"behind"| N["one notice line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
 ```
 
 ### 🧠 Phase Model Overrides

@@ -147,5 +147,5 @@ Modified:
 - `worker/deno/tests/fixtures/launcher_harness.ts` — the Deno stub records and
   intercepts `upgrade`, so a test can never rewrite this checkout's real
   `.config.json`.
-- `worker/deno/tests/mod_test.ts` — registered-command count 143 → 144 for the
+- `worker/deno/tests/mod_test.ts` — registered-command count 144 → 145 for the
   new `upgrade` command.
