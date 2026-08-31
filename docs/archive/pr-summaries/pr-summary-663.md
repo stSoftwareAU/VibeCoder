@@ -88,6 +88,16 @@ deno test -A tests/completion_phase_acceptance_closure_test.ts tests/acceptance_
 ok | 19 passed | 0 failed
 ```
 
+`./quality.sh` reports every stage PASSED except `deno tests`, which fails on
+three pre-existing, environment-bound files unrelated to this change:
+`tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` abort
+with `gh command failed: GraphQL: API rate limit already exceeded`, and
+`service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
+dir is restaged writable` asserts on filesystem permissions. Verified
+pre-existing by running the same two files in a worktree at the base commit
+`b9f6d5f`, where both fail identically (`48 passed | 26 failed`). Full suite
+with this change: `16335 passed | 33 failed`, all 33 inside those three files.
+
 ## Test Plan
 
 Added:
