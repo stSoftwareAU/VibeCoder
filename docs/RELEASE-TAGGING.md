@@ -115,6 +115,42 @@ same way rather than re-parsing it by hand.
   failed manifest is a red run and a release without an asset — never a
   rolled-back or delayed tag.
 
+## Reading the series back — the release check library
+
+`worker/deno/lib/release_check.ts` is the reader side of everything above
+(Issue #689): the one place a caller asks what the newest release is, whether
+this host's `pinned_ref` is behind it, and what tool versions that release
+recorded.
+
+```mermaid
+flowchart LR
+    O["origin remote"] --> L["latestRelease()<br/>gh release list"]
+    L --> C["compareToPin(pinned_ref, latest)"]
+    L --> T["releaseToolVersions(tag)<br/>tool-versions.json"]
+    C --> R1["comparable + newer<br/>— or a reason"]
+    T --> R2["three versions<br/>— or 'no manifest'"]
+```
+
+- **Same definition of a release** as the tagging script: a bare
+  `MAJOR.MINOR.PATCH` triple, optionally `v`-prefixed, ordered by numeric
+  segment so `1.0.10` beats `1.0.9`. Pre-releases, build metadata, moving
+  names such as `latest`, and draft releases are not part of the series. A
+  repository with no releases yet is an empty outcome, not a failure.
+- **A commit SHA is not orderable against a tag.** `compareToPin` reports
+  `comparable: false` with a reason and no `newer` at all for the other
+  `pinned_ref` shape [Configuration](CONFIGURATION.md) accepts. Callers decide
+  what to do with that; guessing is not on offer.
+- **"No manifest" is not a failure.** A release minted before the asset existed
+  returns a distinguishable `no-manifest` outcome naming the tag, so a caller
+  can tell it apart from an unreachable GitHub. A manifest that is present but
+  partial or malformed is an error naming the offending field.
+- **Nothing throws, nothing hangs.** Every function returns the repo's `Result`
+  type and every subprocess call is bounded by the shared timeout helper — this
+  runs on the launch path, where a failed check degrades to a warning. All side
+  effects arrive through an injected deps interface, so the tests need no `gh`
+  and no network. There is no caching: one check per call, callers choose the
+  cadence.
+
 ## When a run goes red
 
 The step output names the newest tag it found and the tag it tried to mint. The
@@ -138,5 +174,8 @@ publishes the manifest against that tag once the tool resolves.
   plumbing between real `git tag` output and the script.
 - `worker/deno/tests/release_manifest_test.ts` — the manifest shape: the
   all-or-nothing build and the parser, over malformed and partial manifests.
+- `worker/deno/tests/release_check_test.ts` — the release check library: the
+  newest-release selection, the pin comparison (including the incomparable
+  commit-SHA pin) and the manifest lookup, over injected `gh` responses.
 - `worker/deno/tests/release_manifest_command_test.ts` — the
   `release-manifest` command, over a stubbed release-age gate.
