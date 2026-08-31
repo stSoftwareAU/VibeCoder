@@ -35,6 +35,7 @@ import { isRepoAllowed } from "./config_validator.ts";
 import {
   type BlockedCandidateInfo,
   createDiagnostics,
+  type SkipReason,
 } from "./issue_finder_logger.ts";
 import {
   createIssueFetcher,
@@ -334,63 +335,43 @@ export async function findOldestIssue(
     allIdleTaskCandidates.push(...idleTaskResult);
   }
 
-  // Apply local cooldown filtering
-  const localFilteredLabel = options.isIssueInCooldown
-    ? allLabelCandidates.filter((c) => {
-      const inCooldown = options.isIssueInCooldown!(c.repo, c.number);
-      if (inCooldown) {
-        diag.logIssueSkipped(c.repo, c.number, "cooldown");
-      }
-      return !inCooldown;
-    })
-    : allLabelCandidates;
+  // Issue #655: a refusal here is recorded, not merely logged. `blockedDetails`
+  // is what the idle-inversion escalation reads to name the gate that refused
+  // each issue the census called claimable (Issue #460); these filters wrote
+  // nothing, so VibeCoder#655 was filed with an empty "what the claim scan did
+  // with them" section — the one fact its reader needed.
+  const noteCooldown = (c: IssueCandidate, reason: SkipReason): void => {
+    diag.logIssueSkipped(c.repo, c.number, reason);
+    allBlockedDetails.push({
+      repo: c.repo,
+      issueNumber: c.number,
+      milestone: c.milestone,
+      reason,
+    });
+  };
 
-  const localFilteredWorkOn = options.isIssueInCooldown
-    ? allWorkOnCandidates.filter((c) => {
+  // Apply local cooldown filtering. Every tier gets the same treatment:
+  // configured-label, work-on, self-scheduled diagnostics (Issue #505),
+  // low-priority (Issue #1725) and idle-task (Issue #2006) alike — an issue
+  // the worker just released must not be re-claimed straight away.
+  const applyLocalCooldown = (
+    candidates: IssueCandidate[],
+  ): IssueCandidate[] => {
+    if (!options.isIssueInCooldown) return candidates;
+    return candidates.filter((c) => {
       const inCooldown = options.isIssueInCooldown!(c.repo, c.number);
-      if (inCooldown) {
-        diag.logIssueSkipped(c.repo, c.number, "cooldown");
-      }
+      if (inCooldown) noteCooldown(c, "cooldown");
       return !inCooldown;
-    })
-    : allWorkOnCandidates;
+    });
+  };
 
-  // Issue #505: self-scheduled diagnostics receive the same local and
-  // cross-worker cooldown treatment as every other tier — a diagnostic the
-  // worker just released must not be re-claimed straight away.
-  const localFilteredSelfDiagnostic = options.isIssueInCooldown
-    ? allSelfDiagnosticCandidates.filter((c) => {
-      const inCooldown = options.isIssueInCooldown!(c.repo, c.number);
-      if (inCooldown) {
-        diag.logIssueSkipped(c.repo, c.number, "cooldown");
-      }
-      return !inCooldown;
-    })
-    : allSelfDiagnosticCandidates;
-
-  // Issue #1725: low-priority candidates receive the same local cooldown
-  // and cross-worker cooldown treatment as the other two tiers.
-  const localFilteredLowPriority = options.isIssueInCooldown
-    ? allLowPriorityCandidates.filter((c) => {
-      const inCooldown = options.isIssueInCooldown!(c.repo, c.number);
-      if (inCooldown) {
-        diag.logIssueSkipped(c.repo, c.number, "cooldown");
-      }
-      return !inCooldown;
-    })
-    : allLowPriorityCandidates;
-
-  // Issue #2006: idle-task candidates receive the same local cooldown
-  // and cross-worker cooldown treatment as the other tiers.
-  const localFilteredIdleTask = options.isIssueInCooldown
-    ? allIdleTaskCandidates.filter((c) => {
-      const inCooldown = options.isIssueInCooldown!(c.repo, c.number);
-      if (inCooldown) {
-        diag.logIssueSkipped(c.repo, c.number, "cooldown");
-      }
-      return !inCooldown;
-    })
-    : allIdleTaskCandidates;
+  const localFilteredLabel = applyLocalCooldown(allLabelCandidates);
+  const localFilteredWorkOn = applyLocalCooldown(allWorkOnCandidates);
+  const localFilteredSelfDiagnostic = applyLocalCooldown(
+    allSelfDiagnosticCandidates,
+  );
+  const localFilteredLowPriority = applyLocalCooldown(allLowPriorityCandidates);
+  const localFilteredIdleTask = applyLocalCooldown(allIdleTaskCandidates);
 
   // Issue #1087: Apply cross-worker cooldown filtering (supplementary to local)
   let filteredLabel = localFilteredLabel;
@@ -410,7 +391,7 @@ export async function findOldestIssue(
           c.number,
         );
         if (inCooldown) {
-          diag.logIssueSkipped(c.repo, c.number, "cross-worker-cooldown");
+          noteCooldown(c, "cross-worker-cooldown");
         } else {
           result.push(c);
         }

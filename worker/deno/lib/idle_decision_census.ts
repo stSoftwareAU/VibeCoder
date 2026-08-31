@@ -97,7 +97,21 @@
  * excluded solely by tier-3 suppression are surfaced per repo as
  * `low_priority_suppressed=<n>`.
  *
- * That repo also exposed the other half of the same fault, fixed in
+ * **Run-local holds** are the same hole one step later in the pipeline
+ * (Issue #655). Every gate above lives in a `collect_*_candidates.ts`;
+ * `find_oldest_issue.ts` then drops each surviving candidate that
+ * `isIssueInCooldown` names — the persisted retry cooldown and this run's
+ * processed-issue registry. The registry's entries live as long as the
+ * process does, so an issue a run bounced off once was refused silently on
+ * every later cycle of that run. On 2026-08-30 `stSoftwareAU/VibeCoder`
+ * logged `work_on=2 inversion_signal=true` cycle after cycle for #622 and
+ * #623 — both handed back earlier that day, neither carrying a single
+ * GitHub-visible blocker — and filed VibeCoder#655. The escalation body's
+ * "what the claim scan did with them" section was empty, because that filter
+ * logged its skip and recorded no reason at all. Issues excluded solely by a
+ * run-local hold are surfaced per repo as `run_local_hold=<n>`.
+ *
+ * NEAT-AI-Rebase also exposed the other half of the same fault, fixed in
  * `collect_work_on_candidates.ts`: the suppressing issue was NEAT-AI-Rebase#48,
  * refused permanently as `merged-pr-permanent`, so the 28 were stranded behind
  * work no cycle could ever claim. The census's carve-outs mirror the scan's —
@@ -179,10 +193,10 @@ import { suppressesLowerTiers } from "./skip_reason_clearing.ts";
  * - `upstream` — the issue is already excluded before the gate is reached
  *   (label / assignee / repo-level filtering the census applies first), so
  *   modelling it separately would change nothing.
- * - `run-local` — the gate depends on this worker's run state (cooldowns,
- *   in-flight holds) rather than anything readable from GitHub. The census
- *   deliberately omits it and thereby *over*-counts, which is why an
- *   escalation must never rest on a single cycle.
+ * - `run-local` — the gate depends on this worker's run state rather than
+ *   anything readable from GitHub, and the census is not given that state.
+ *   It thereby *over*-counts, which is why an escalation must never rest on
+ *   a single cycle.
  * - `escalated-elsewhere` — the scan already raises this to a human on the
  *   issue itself, so the census has nothing to add.
  * - `unclassified` — nobody has decided. Always a bug; the guard test fails.
@@ -225,10 +239,16 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "pr-blocked": "modelled",
     "merged-pr-permanent": "modelled",
     "dependency-blocked": "modelled",
-    // Run-local: cooldowns and holds live in this worker's state, not in
-    // anything the census reads. Omitting them over-counts.
+    // Issue #655: the caller hands the census the same run-local hold set
+    // `find_oldest_issue.ts` filters candidates against — the persisted retry
+    // cooldown and this run's processed-issue registry — as
+    // {@link RepoCensusInput.runLocalHolds}. The per-cycle adaptive-floor
+    // deferral is the one source still unmodelled; it is rebuilt every cycle,
+    // so it cannot hold a streak open the way the registry did.
+    "cooldown": "modelled",
+    // Run-local: these live in this worker's state, and nothing hands it to
+    // the census. Omitting them over-counts.
     "closed-pr-cooldown": "run-local",
-    "cooldown": "run-local",
     "cross-worker-cooldown": "run-local",
     "content-modified-after-approval": "run-local",
     "content-check-error": "run-local",
@@ -354,6 +374,19 @@ export interface RepoCensusInput {
    * preserving the pre-GRQ#4419 behaviour.
    */
   mergedPRs?: ClosedPR[];
+  /**
+   * Issue numbers this run is holding back regardless of what GitHub says
+   * (Issue #655) — the `isIssueInCooldown` predicate `find_oldest_issue.ts`
+   * filters every tier's candidates against, after the collectors have
+   * passed them.
+   *
+   * Two sources sustain a streak: the persisted retry cooldown
+   * (`.cooldown_state.json`) and the per-run processed-issue registry, whose
+   * entries live as long as the process does. Omitted → no run-local
+   * blocking is applied, preserving the pre-#655 behaviour exactly as
+   * `openPRs` does.
+   */
+  runLocalHolds?: ReadonlySet<number>;
 }
 
 /** Per-priority unblocked counts for a repo. */
@@ -409,6 +442,14 @@ export interface RepoCensusEntry {
    * `[idle-census]` line.
    */
   dependencyBlocked: number;
+  /**
+   * Count of priority (`top-priority` / `work-on` / `low-priority`) issues
+   * that GitHub says are claimable but this run is holding back — the
+   * `cooldown` skip `find_oldest_issue.ts` applies to every tier's
+   * candidates (Issue #655). Kept separate from `unblocked` so the hold
+   * stays observable in the `[idle-census]` line.
+   */
+  runLocalHold: number;
   /**
    * Count of `low-priority` issues that passed every per-issue gate but are
    * not claimable this cycle because the repo holds a *suppressing* open
@@ -661,12 +702,14 @@ function countUnblocked(
   mergedPRs: ClosedPR[],
   workerUser: string,
   repo: string,
+  runLocalHolds: ReadonlySet<number>,
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
   streamOccupied: number;
   mergedPrBlocked: number;
   dependencyBlocked: number;
+  runLocalHold: number;
   lowPrioritySuppressed: number;
   claimableIssues: number[];
 } {
@@ -693,11 +736,16 @@ function countUnblocked(
   let streamOccupied = 0;
   let mergedPrBlocked = 0;
   let dependencyBlocked = 0;
+  let runLocalHold = 0;
   let lowPrioritySuppressed = 0;
   for (const issue of issues) {
     // Idle-task claiming is gated by repo busyness, not by
-    // getBlockingPRForIssue, so its count ignores PR blocking.
-    if (isUnblockedFor(issue, IDLE_TASK_LABEL)) {
+    // getBlockingPRForIssue, so its count ignores PR blocking. Issue #655:
+    // the run-local hold is the exception — `find_oldest_issue.ts` filters
+    // idle-task candidates against it exactly as it does every other tier.
+    if (
+      isUnblockedFor(issue, IDLE_TASK_LABEL) && !runLocalHolds.has(issue.number)
+    ) {
       counts.idleTask += 1;
     }
     const carriesPriorityLabel =
@@ -731,6 +779,13 @@ function countUnblocked(
       dependencyBlocked += 1;
       continue;
     }
+    // Issue #655: last of the per-issue gates, mirroring the scan — the
+    // cooldown filter runs on the candidates the collectors already passed,
+    // so an issue refused for a more fundamental reason keeps that reason.
+    if (runLocalHolds.has(issue.number)) {
+      runLocalHold += 1;
+      continue;
+    }
     const isTopPriority = isUnblockedFor(
       issue,
       LABEL_DEFAULTS.topPriorityLabel,
@@ -758,6 +813,7 @@ function countUnblocked(
     streamOccupied,
     mergedPrBlocked,
     dependencyBlocked,
+    runLocalHold,
     lowPrioritySuppressed,
     claimableIssues,
   };
@@ -814,6 +870,7 @@ export function buildIdleDecisionCensus(opts: {
       streamOccupied,
       mergedPrBlocked,
       dependencyBlocked,
+      runLocalHold,
       lowPrioritySuppressed,
       claimableIssues,
     } = countUnblocked(
@@ -822,6 +879,7 @@ export function buildIdleDecisionCensus(opts: {
       input.mergedPRs ?? [],
       opts.workerUser,
       input.repo,
+      input.runLocalHolds ?? new Set<number>(),
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,
@@ -844,6 +902,7 @@ export function buildIdleDecisionCensus(opts: {
       streamOccupied,
       mergedPrBlocked,
       dependencyBlocked,
+      runLocalHold,
       lowPrioritySuppressed,
       claimableIssues,
       inversionSignal,
@@ -929,6 +988,7 @@ export function formatIdleDecisionCensus(
         `stream_occupied=${r.streamOccupied} ` +
         `merged_pr_blocked=${r.mergedPrBlocked} ` +
         `dependency_blocked=${r.dependencyBlocked} ` +
+        `run_local_hold=${r.runLocalHold} ` +
         `low_priority_suppressed=${r.lowPrioritySuppressed} ` +
         `inversion_signal=${r.inversionSignal}`,
     );

@@ -1990,3 +1990,110 @@ Deno.test(
     assertStringIncludes(result.output, "owner/high|1|");
   },
 );
+
+// ---------------------------------------------------------------------------
+// Cooldown refusals ride the result (Issue #655)
+// ---------------------------------------------------------------------------
+// `blockedDetails` is what the idle-inversion escalation reads to name the
+// gate that refused each issue the census called claimable (Issue #460). The
+// cooldown filters logged a skip line and recorded nothing, so VibeCoder#655
+// was filed with no "What the claim scan did with them" section at all — the
+// one fact its reader needed.
+
+Deno.test("issue_finder - a cooldown refusal is recorded in blockedDetails (Issue #655)", async () => {
+  const config = makeConfig();
+  const mockGh = createMockGh({
+    issues: [
+      {
+        number: 10,
+        title: "Local cooldown",
+        url: "https://github.com/owner/repo/issues/10",
+        assignees: [],
+        labels: [{ name: "help-wanted" }],
+        createdAt: "2024-01-01T00:00:00Z",
+        author: { login: "alice" },
+        milestone: null,
+      },
+      {
+        number: 11,
+        title: "Cross-worker cooldown",
+        url: "https://github.com/owner/repo/issues/11",
+        assignees: [],
+        labels: [{ name: "help-wanted" }],
+        createdAt: "2024-01-02T00:00:00Z",
+        author: { login: "alice" },
+        milestone: null,
+      },
+    ],
+    prs: [],
+    timeline: [
+      {
+        event: "labeled",
+        label: { name: "help-wanted" },
+        actor: { login: "alice" },
+      },
+    ],
+  });
+
+  const result = await findOldestIssue(config, {
+    githubUser: "bot",
+    ghCommandFn: mockGh,
+    cache: createTestCache(),
+    isIssueInCooldown: (_repo, num) => num === 10,
+    hasCrossWorkerCooldown: async (_repo, num) => num === 11,
+  });
+
+  assertEquals(result.found, false);
+  const reasons = new Map(
+    (result.blockedDetails ?? []).map((b) => [b.issueNumber, b.reason]),
+  );
+  assertEquals(
+    reasons.get(10),
+    "cooldown",
+    "a local cooldown refusal must name itself in blockedDetails",
+  );
+  assertEquals(
+    reasons.get(11),
+    "cross-worker-cooldown",
+    "a cross-worker cooldown refusal must name itself in blockedDetails",
+  );
+});
+
+Deno.test("issue_finder - a selected issue leaves no cooldown entry behind (Issue #655)", async () => {
+  const config = makeConfig();
+  const mockGh = createMockGh({
+    issues: [
+      {
+        number: 10,
+        title: "Available",
+        url: "https://github.com/owner/repo/issues/10",
+        assignees: [],
+        labels: [{ name: "help-wanted" }],
+        createdAt: "2024-01-01T00:00:00Z",
+        author: { login: "alice" },
+        milestone: null,
+      },
+    ],
+    prs: [],
+    timeline: [
+      {
+        event: "labeled",
+        label: { name: "help-wanted" },
+        actor: { login: "alice" },
+      },
+    ],
+  });
+
+  const result = await findOldestIssue(config, {
+    githubUser: "bot",
+    ghCommandFn: mockGh,
+    cache: createTestCache(),
+    isIssueInCooldown: () => false,
+  });
+
+  assertEquals(result.found, true);
+  assertEquals(
+    (result.blockedDetails ?? []).filter((b) => b.reason === "cooldown"),
+    [],
+  );
+});
