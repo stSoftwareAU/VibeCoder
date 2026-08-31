@@ -19,6 +19,7 @@ There are two supported routes, and they produce the same end state:
 ## 📋 Table of Contents
 
 - [What the automated setup does](#what-the-automated-setup-does)
+- [Update mode: dynamic or frozen](#update-mode-dynamic-or-frozen)
 - [Platform differences in the automated setup](#platform-differences-in-the-automated-setup)
 - [Manual setup: prerequisites](#manual-setup-prerequisites)
 - [Manual setup: credentials](#manual-setup-credentials)
@@ -90,7 +91,9 @@ background service is offered, where files land — is covered in
    everywhere, so pressing Enter through a frozen host's prompts leaves
    `.config.json` byte-for-byte unchanged. Without a terminal nothing is
    asked: existing values are left alone and a fresh config is defaulted to
-   `dynamic`. What the fields mean is the
+   `dynamic`. The prompts in the order they are asked are
+   [Update mode: dynamic or frozen](#update-mode-dynamic-or-frozen) below;
+   what the fields mean is the
    [Configuration Reference](CONFIGURATION.md#-update-mode)'s job.
 
 7. **Repository sync phases** — seven subcommands, each acting on the
@@ -181,6 +184,80 @@ flowchart TD
     style SY fill:none,stroke:#e09f3e,stroke-dasharray:5 5
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+## Update mode: dynamic or frozen
+
+Phase 6 (`setup update-mode`) is the one phase that decides how this host
+tracks Vibe Coder releases, so it gets its own walkthrough. What the fields
+mean once written is the
+[Configuration Reference](CONFIGURATION.md#-update-mode)'s job; this section is
+only what setup asks and in what order.
+
+The conversation is three questions deep, and a `dynamic` answer ends it after
+the first:
+
+1. **The mode.** After a two-line explanation of the choice, setup asks
+   `Update mode (dynamic/frozen)`. The accepted answers are `dynamic` and
+   `frozen`; the answer defaults to `dynamic` on a fresh host and, on a re-run,
+   to whatever the host already says. Blank accepts that default, and anything
+   else is refused by name (`… is not an update mode. Accepted values:
+   dynamic, frozen.`) and asked again.
+2. **The pinned ref** (`frozen` only) — `pinned_ref` in `.config.json`. Setup
+   fetches origin first, so a tag pushed since the last launch resolves, then
+   asks `Pinned ref`, offering the existing pin as the default. The answer is
+   validated twice: against the character rules the field enforces, and by
+   resolving it in this very checkout. A ref that does not resolve is rejected
+   by name — `"v9.9.9" does not resolve to a commit in … — it was not saved` —
+   and asked again, so nothing unusable reaches the file. A resolved ref is
+   echoed with the commit it points at. A fetch that fails is reported and the
+   conversation continues against the refs the checkout already has.
+3. **One exact version per tool** (`frozen` only) — the three
+   `pinned_tool_versions` entries, asked in this order:
+   `pinned_tool_versions.claude` (`Claude CLI version`), then
+   `pinned_tool_versions.gh` (`GitHub CLI (gh) version`), then
+   `pinned_tool_versions.deno` (`Deno version`). Each prompt defaults to the
+   version `dynamic` mode would install today, so pressing Enter through all
+   three pins the fleet exactly where it stands. On a re-run the existing pin
+   is the default instead. Where a default cannot be worked out — no network,
+   or the release-age quarantine has nothing eligible yet — the reason is
+   printed and the version is typed by hand.
+
+```text
+  Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;
+  'frozen' holds this host at a pinned ref with exact tool versions.
+  Update mode (dynamic/frozen) [dynamic] frozen
+
+  Pinned ref: the commit SHA or tag this host is held at.
+  Pinned ref 1.0.7
+  1.0.7 resolves to 3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3.
+
+  Tool versions: the exact version this host installs while frozen.
+  Claude CLI version [2.0.76]
+  GitHub CLI (gh) version [2.62.0]
+  Deno version [2.5.4]
+```
+
+A question that never gets a usable answer after five attempts, or input that
+ends mid-conversation, **fails loudly and writes nothing** — `.config.json` is
+left exactly as it was rather than half-answered.
+
+**A non-interactive run never asks.** With no terminal attached — cron, a
+LaunchAgent, CI — setup skips the conversation entirely: a host that already
+has `update_mode` keeps them untouched, and a fresh `.config.json` is written
+with `update_mode: "dynamic"`, which is what every host did before these keys
+existed. Nothing is ever pinned behind an operator's back.
+
+**Blank answers are byte-for-byte safe.** Re-running setup on a frozen host and
+pressing Enter through all three prompts re-writes the same values, so setup
+stays re-runnable and a pin is never lost to a re-run.
+
+**Windows does not ask yet.** `setup.ps1` is unchanged — the update-mode
+conversation is bash-only for now, and the Windows counterpart is a follow-up.
+A Windows host sets `update_mode`, `pinned_ref` and `pinned_tool_versions` by
+hand in `.config.json`; everything downstream is the shared Deno code, so
+`run.ps1` honours a frozen pin through `worker-checkout-update` exactly as
+`run.sh` does. Hand-editing is a first-class path on every platform — see
+[Moving a pin by hand](CONFIGURATION.md#-update-mode).
 
 ## Platform differences in the automated setup
 

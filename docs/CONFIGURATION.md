@@ -517,6 +517,29 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 default, and what every host did before the key existed — follows the latest.
 `frozen` holds the host at a pinned checkout with pinned tool versions.
 
+| Field | Accepted values | Default | Read in |
+| --- | --- | --- | --- |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` — and the behaviour of any host with the key absent | both modes |
+| `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
+| `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
+
+**Worked frozen example** — pinned to a release tag, with the three tool
+versions that release was running:
+
+```json
+{
+  "update_mode": "frozen",
+  "pinned_ref": "1.0.7",
+  "pinned_tool_versions": {
+    "claude": "2.0.76",
+    "gh": "2.62.0",
+    "deno": "2.5.4"
+  }
+}
+```
+
+A commit SHA is equally valid where no tag covers the state you want:
+
 ```json
 {
   "update_mode": "frozen",
@@ -526,6 +549,15 @@ default, and what every host did before the key existed — follows the latest.
     "gh": "2.62.0",
     "deno": "2.5.4"
   }
+}
+```
+
+**Worked dynamic example** — the whole of it, and even this is optional
+because an absent `update_mode` resolves to `dynamic`:
+
+```json
+{
+  "update_mode": "dynamic"
 }
 ```
 
@@ -564,8 +596,9 @@ default, and what every host did before the key existed — follows the latest.
   everywhere, so a re-run that presses Enter throughout leaves `.config.json`
   unchanged. A run with no terminal never asks: existing values are left alone
   and a fresh config is defaulted to `dynamic`. `setup.ps1` does not ask yet —
-  a Windows host sets these keys by hand. See
-  [Setup — what the automated setup does](SETUP.md#what-the-automated-setup-does).
+  a Windows host sets these keys by hand, and the Windows counterpart is a
+  follow-up. The prompts in the order they are asked are
+  [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
 - **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
   see the resolved mode without re-parsing `.config.json`.
 - **Frozen holds the checkout at the pin.** Before each launch the host-side
@@ -603,6 +636,71 @@ flowchart TD
     V -->|no| E["fail loud — tool,<br/>requested and installed named"]
     style E fill:#c92a2a,stroke:#7f1d1d,color:#fff
 ```
+
+#### What each mode means for maintenance
+
+- **A dynamic host has no per-machine version upkeep.** It tracks the tip of
+  the default branch (`main`) at every launch and installs the latest eligible
+  `claude`, `gh` and `deno` on the weekly cadence, subject to the version
+  floors and the release-age quarantine. Nobody edits a version on that host,
+  ever — it is the right choice for a fleet that should move together.
+- **A frozen host stays exactly where it is pinned.** New commits on `main` and
+  new tool releases never move it: the checkout is held at `pinned_ref` and the
+  three tools are installed at `pinned_tool_versions` on every launch. The
+  upkeep it does have is deliberate — someone chooses the next pin, edits it,
+  and relaunches — which is the whole point on a host that must reproduce a
+  known-good state (a release candidate under evaluation, a customer
+  deployment, a machine bisecting a regression).
+
+#### Choosing a pin
+
+Pin to a **release tag**. Every merge to `main` is tagged with the next patch
+semver automatically (`1.0.0`, `1.0.1`, …) — see
+[Release tagging](RELEASE-TAGGING.md) — and those tags exist precisely so a
+frozen host has something meaningful to name. `"pinned_ref": "1.0.7"` says what
+the host is running in a way that a raw SHA does not, and `git log 1.0.6..1.0.7`
+says what moving to the next tag would bring in.
+
+A commit SHA is still accepted, and is the right answer when the state you want
+is not a tagged one — a specific merge you are bisecting, for example. Either
+way the ref must exist on `origin`: the launch-time checkout fetches before it
+resolves, and a ref that resolves nowhere is a loud failure rather than a
+silent fall back to the tip.
+
+#### Moving a pin by hand
+
+Editing `.config.json` is the supported way to move a frozen host, and
+**re-running setup is not required**:
+
+1. Edit `pinned_ref` to the tag or SHA you want, and/or any entry under
+   `pinned_tool_versions`.
+2. Relaunch (`./run.sh`, or wait for the next scheduled launch).
+3. The launcher's checkout update fetches and checks the worker checkout out
+   onto the new `pinned_ref`, and the run installs exactly the versions in
+   `pinned_tool_versions`, logging one line per tool
+   (`Claude CLI pinned to 2.0.76 (update_mode=frozen)`).
+
+Nothing is deferred to a weekly interval — the interval, the floors and the
+quarantine are `dynamic`-mode machinery — so the edit takes effect at the very
+next launch. An unresolvable ref, a malformed value or a `frozen` host missing
+any of the four required values fails loudly naming the field, so a typo never
+silently drags the host back to the tip. Setup's prompts write the same fields;
+the only thing setup adds is validating the ref while you are still sitting
+there.
+
+#### `VIBE_SKIP_CHECKOUT_UPDATE` is not frozen mode
+
+`VIBE_SKIP_CHECKOUT_UPDATE=1` is an **environment-variable escape hatch for one
+checkout**: it turns the host-side checkout update off entirely, for a
+development tree someone is working in or a CI tree that is a pull-request
+merge commit and must not be reset mid-run. It says so loudly and is never
+silent. Frozen mode is a **recorded configuration decision** that still updates
+the checkout — onto `pinned_ref` — and additionally pins the three tool
+versions, which the skip does nothing about. The skip wins over both modes when
+both are in play, so a frozen host with the variable set stays on whatever the
+checkout already holds. Use the variable for development trees and CI; use
+`update_mode: "frozen"` for a host that must reproduce a known state. See
+[Host-Side Checkout Update](#-host-side-checkout-update).
 
 ### 🔄 Host-Side Checkout Update
 
