@@ -70,6 +70,27 @@ The numbering guard was watched failing before the implementation existed
 Markdown (duplicate, gap, list not starting at 1) before the assertions were
 brought green.
 
+## Quality gate
+
+`./quality.sh` reports every stage PASSED except `deno tests`, which fails on
+**33 pre-existing, environment-caused failures unrelated to this change**:
+
+- `tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` —
+  module-level uncaught error, `gh command failed (exit 1): GraphQL: API rate
+  limit already exceeded for user ID 23146043`. The worker account's GitHub API
+  budget is spent on this host.
+- `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
+  config dir is restaged writable` — expects the restaged directory under
+  `TMPDIR`, gets this host's `/home/vibe/auto-issue-work/.container-state/…`.
+
+Verified pre-existing: the same three files were run in a clean worktree at the
+base commit `daf1c1b` (before any change here) and produced the identical
+`FAILED | 50 passed | 33 failed` result. None of them read a bucket guide, the
+references document, or the new numbering module, and the four suites that do
+(`bucket_check_numbering`, `bucket_docs`, `references_doc`,
+`best_practices_bucket_guides_consumer`) are green. Fixing the host's `gh`
+budget and the container-state path is separate work and out of scope here.
+
 ## Test Plan
 
 Added `worker/deno/tests/bucket_check_numbering_test.ts` (10 tests):
