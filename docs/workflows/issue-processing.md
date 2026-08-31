@@ -646,7 +646,7 @@ inside the existing implementation run rather than as a new loop (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
 
 **What the run must produce.** When the issue body carries a
-`## Acceptance Criteria` section, `prompts/issue/v37.md` requires the run to walk
+`## Acceptance Criteria` section, `prompts/issue/` requires the run to walk
 each criterion before writing the PR summary and record the assessment as a
 `## Acceptance Criteria` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md`:
@@ -670,7 +670,7 @@ acceptance criteria are unaffected: the gate does not apply and nothing changes.
 
 ```mermaid
 flowchart TD
-    P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/v37.md"]
+    P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/"]
     I --> S["PR summary carries<br/>## Acceptance Criteria block"]
     S --> G{"Closure gate<br/>every criterion assessed,<br/>evidence + reasons present?"}
     G -->|yes| PR["PR created"]
@@ -696,7 +696,7 @@ not the three-command structure: no new label, no new priority tier, no separate
 lane — just a conditional block in the existing PR-summary contract.
 
 **What the run must produce.** When the issue carries the `bug` label,
-`prompts/issue/v37.md` requires a `## Reproduction` block in
+`prompts/issue/` requires a `## Reproduction` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md` recording three things — the
 symptom, the status, and the regression test that covers it:
 
@@ -715,6 +715,18 @@ symptom, the status, and the regression test that covers it:
 - **`not-run`** — the reproduction was not performed, with a one-line `reason:`.
   This is a legitimate, reportable outcome, not a failure to hide.
 
+**How a run climbs to `verified`.** The three statuses defined what to report but
+not how to get there, so a hard bug degraded to `not-run` with no ladder to
+climb (Issue #661). The prompt now names the method, and it is the same loop the
+[CI-fix workflow](ci-fix.md#-the-reproduction-loop-before-the-fix) gained: build a
+**red-capable command** first — deterministic, seconds, unattended (`< /dev/null`),
+narrow — run it against the unfixed code and watch it go red; **minimise** the red
+scenario one element at a time until removing anything left turns it green, and
+that minimised scenario is the regression test; apply the fix and watch the same
+command go green. The attempt is bounded, and a loop that never went red is
+reported as `partial` or `not-run` naming what was tried — the ladder has an
+honest bottom rung, which is why it does not become a licence to over-claim.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
@@ -726,7 +738,7 @@ required shape. Issues **without** the `bug` label are unaffected.
 
 ```mermaid
 flowchart TD
-    B["Issue labelled bug"] --> I["Implementation run<br/>prompts/issue/v37.md"]
+    B["Issue labelled bug"] --> I["Implementation run<br/>prompts/issue/"]
     I --> S["PR summary carries<br/>## Reproduction block"]
     S --> G{"Reproduction gate<br/>symptom + status + test?<br/>verified only if observed?"}
     G -->|yes| PR["PR created"]
