@@ -723,7 +723,7 @@ flowchart TD
    all three `pinned_tool_versions` to the newest release and the versions its
    [`tool-versions.json` manifest](RELEASE-TAGGING.md#the-tool-version-manifest)
    records. **It changes nothing else**: every other key in `.config.json` is
-   preserved byte for byte, and it installs nothing, moves no checkout and
+   preserved exactly as it was, and it installs nothing, moves no checkout and
    starts no container. See
    [Moving to the latest release](#moving-to-the-latest-release-runsh-upgrade).
 3. **The next launch installs them.** The checkout update puts the worker
