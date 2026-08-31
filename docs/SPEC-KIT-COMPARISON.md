@@ -60,8 +60,8 @@ this assessment was worth doing.
 | `/speckit.tasks` → `tasks.md` | Sub-issues with acceptance criteria, `## Failure Detection`, `Depends on #N`, grouped into a milestone | Present, stored in GitHub |
 | `/speckit.taskstoissues` | Native — the planner publishes real sub-issues with dependency edges and a milestone | Already better |
 | `/speckit.analyze` — cross-artefact consistency | Adversarial self-critique that is deliberately never published | **Gap** — the judgement exists, the artefact does not |
-| `/speckit.implement` | `prompts/issue/v37.md` plus the phase pipeline and `./quality.sh` | Present |
-| `/speckit.converge` — assess code against intent, append remaining work | The assessment half is native: `prompts/issue/v37.md` requires a `## Acceptance Criteria` closure block in the PR summary, gated by `acceptance_criteria_gate.ts` (#518). The iterate-until-clean loop is not adopted | Adopted, assessment only |
+| `/speckit.implement` | `prompts/issue/` plus the phase pipeline and `./quality.sh` | Present |
+| `/speckit.converge` — assess code against intent, append remaining work | The assessment half is native: `prompts/issue/` requires a `## Acceptance Criteria` closure block in the PR summary, gated by `acceptance_criteria_gate.ts` (#518). The iterate-until-clean loop is not adopted | Adopted, assessment only |
 | `/speckit.checklist` — "unit tests for English" | Acceptance-criteria checkboxes in issues; the grill-me requirements-quality rubric (four named classes, deterministic pre-pass) | Present, scoped to grill-me |
 | `bug` extension — `assess → fix → test` | One pipeline for every tier; a `bug`-labelled PR summary must carry a `## Reproduction` block (`verified` / `partial` / `not-run`), gated by `reproduction_status_gate.ts` (#521) | Adopted, vocabulary only |
 | `assess` extension — go / needs-clarification / kill | Scattered partial gates; kill authority reserved for humans | Partial, by design |
@@ -85,7 +85,7 @@ worth stealing twice over — the Vibe Coder has a prose "Change Scope" rule wit
 no output surface, so scope creep is invisible until review.
 
 Adopted as: a closure block in the PR summary rather than a new loop —
-`prompts/issue/v37.md` requires it and `acceptance_criteria_gate.ts` gates it
+`prompts/issue/` requires it and `acceptance_criteria_gate.ts` gates it
 before the PR is raised (see
 [issue-processing.md](workflows/issue-processing.md#-acceptance-criteria-closure-before-the-pr)).
 Converge's iterate-until-clean shape is not adopted — an unattended worker with a
@@ -152,7 +152,7 @@ nothing when one agent runs the whole thing.
 **Adopted** (#521): a `bug`-labelled issue must produce a `## Reproduction` block
 in the PR summary recording the symptom, the status as `verified` / `partial` /
 `not-run`, and the covering regression test —
-`prompts/issue/v37.md` requires it and
+`prompts/issue/` requires it and
 [`reproduction_status_gate.ts`](../worker/deno/lib/reproduction_status_gate.ts)
 blocks PR creation at the same chokepoint as the acceptance-criteria gate when
 the block is missing or a `verified` claim is unsupported. See [the reproduction
