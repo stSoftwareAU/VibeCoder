@@ -31,11 +31,23 @@
  * checkout is a pull-request merge commit that must not be reset to the
  * default branch mid-run. The skip says so loudly and is never silent.
  *
+ * Under `update_mode: "frozen"` (Issue #624, part of #583) that sequence would
+ * drag the host to the tip of the default branch and defeat the pin, so the
+ * checkout is held at `pinned_ref` instead. This command runs before the
+ * launch plan is built — and so before the configuration load — so it reads
+ * `update_mode` and `pinned_ref` straight out of `.config.json` under
+ * `--base-dir`, which is where that file lives. A `.config.json` that cannot
+ * be read or does not mean what it says is a fail-loud non-zero exit rather
+ * than a silent fall back to `dynamic`, which would reset a pinned host.
+ * `VIBE_SKIP_CHECKOUT_UPDATE` still wins over both modes.
+ *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import type { Command, CommandResult } from "../types.ts";
+import type { Command, CommandResult, Result, UpdateMode } from "../types.ts";
 import { updateCheckout } from "../lib/checkout_update.ts";
+import { DEFAULT_UPDATE_MODE, UPDATE_MODES } from "../lib/config_defaults.ts";
+import { pinValueErrors } from "../lib/config_validator.ts";
 
 /** Environment variable that turns the update off (see the module doc). */
 export const SKIP_CHECKOUT_UPDATE_ENV = "VIBE_SKIP_CHECKOUT_UPDATE";
@@ -44,10 +56,118 @@ export const SKIP_CHECKOUT_UPDATE_ENV = "VIBE_SKIP_CHECKOUT_UPDATE";
 export interface WorkerCheckoutUpdateResult {
   /** The checkout the command was pointed at. */
   repoDir: string;
-  /** The branch it was updated to, or "" when the update was skipped. */
+  /** The branch it was updated to, or "" when frozen or skipped. */
   branch: string;
   /** False when `VIBE_SKIP_CHECKOUT_UPDATE` turned the update off. */
   updated: boolean;
+  /** The mode the checkout was brought to (Issue #624). */
+  mode: UpdateMode;
+  /** The pinned ref the checkout is held at; "" outside `frozen` mode. */
+  ref: string;
+}
+
+/** The update-mode settings this command reads for itself (Issue #624). */
+export interface CheckoutUpdateModeSettings {
+  /** `dynamic` unless `.config.json` says otherwise. */
+  mode: UpdateMode;
+  /** The pinned ref under `frozen`; "" under `dynamic`. */
+  ref: string;
+}
+
+/**
+ * Read `update_mode` and `pinned_ref` from `.config.json` under the checkout
+ * (Issue #624).
+ *
+ * A missing file resolves to `dynamic` — a checkout that has not been set up
+ * yet behaves exactly as it always did. Everything else that stops the file
+ * meaning what it says — unreadable, malformed, an unrecognised mode, a
+ * `frozen` host with no usable `pinned_ref` — is a fail-loud error, because
+ * quietly resolving to `dynamic` would reset a host that asked to be pinned.
+ *
+ * @param repoDir - The checkout root, which is where `.config.json` lives
+ * @returns The resolved mode and ref, or a fail-loud error naming the field
+ */
+export async function readCheckoutUpdateMode(
+  repoDir: string,
+): Promise<Result<CheckoutUpdateModeSettings>> {
+  const configPath = `${repoDir}/.config.json`;
+  const dynamic: CheckoutUpdateModeSettings = {
+    mode: DEFAULT_UPDATE_MODE,
+    ref: "",
+  };
+
+  let content: string;
+  try {
+    content = await Deno.readTextFile(configPath);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { ok: true, value: dynamic };
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `cannot read ${configPath} to resolve update_mode: ` +
+          (error instanceof Error ? error.message : String(error)),
+      ),
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return {
+      ok: false,
+      error: new Error(
+        `${configPath} contains invalid JSON, so update_mode cannot be ` +
+          `resolved — refusing to update ${repoDir} on a guess`,
+      ),
+    };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: new Error(
+        `${configPath} is not a JSON object, so update_mode cannot be ` +
+          `resolved — refusing to update ${repoDir} on a guess`,
+      ),
+    };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const rawMode = record["update_mode"];
+  if (rawMode === undefined) return { ok: true, value: dynamic };
+  if (
+    typeof rawMode !== "string" ||
+    !(UPDATE_MODES as readonly string[]).includes(rawMode)
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        `Invalid update_mode ${JSON.stringify(rawMode)} in ${configPath}. ` +
+          `Accepted values: ${UPDATE_MODES.join(", ")}.`,
+      ),
+    };
+  }
+  if (rawMode !== "frozen") return { ok: true, value: dynamic };
+
+  const rawRef = record["pinned_ref"];
+  if (typeof rawRef !== "string" || rawRef.trim() === "") {
+    return {
+      ok: false,
+      error: new Error(
+        `update_mode "frozen" requires pinned_ref in ${configPath} — the ` +
+          `commit SHA or tag ${repoDir} is held at`,
+      ),
+    };
+  }
+  const ref = rawRef.trim();
+  const refErrors = pinValueErrors("pinned_ref", ref);
+  if (refErrors.length > 0) {
+    return { ok: false, error: new Error(refErrors.join(" ")) };
+  }
+
+  return { ok: true, value: { mode: "frozen", ref } };
 }
 
 /** A trimmed non-empty string argument, or undefined. */
@@ -78,7 +198,7 @@ function defaultLogDir(): string {
 export const workerCheckoutUpdateCommand: Command = {
   name: "worker-checkout-update",
   description:
-    "Update the worker checkout to origin's default branch, host-side (Issue #512)",
+    "Update the worker checkout host-side — origin's default branch, or the pinned ref when frozen (Issues #512, #624)",
 
   execute(
     args: Record<string, unknown>,
@@ -88,13 +208,14 @@ export const workerCheckoutUpdateCommand: Command = {
 };
 
 /**
- * Update a checkout to `origin/<default-branch>`.
+ * Bring a checkout to where this host's update mode says it belongs —
+ * `origin/<default-branch>` under `dynamic`, `pinned_ref` under `frozen`.
  *
  * Separated from the {@link Command} wrapper so the tests can drive it
  * directly against a temporary repository.
  *
  * @param args - `base-dir` (required), optional `default-branch`, `log-dir`
- * @returns Success with the branch updated to, or a fail-loud message
+ * @returns Success with the branch or pinned ref, or a fail-loud message
  */
 export async function updateWorkerCheckout(
   args: Record<string, unknown>,
@@ -112,7 +233,13 @@ export async function updateWorkerCheckout(
       success: true,
       message: `${SKIP_CHECKOUT_UPDATE_ENV} is set: leaving ${repoDir} ` +
         `exactly as it is — the worker will run whatever this checkout holds`,
-      data: { repoDir, branch: "", updated: false },
+      data: {
+        repoDir,
+        branch: "",
+        updated: false,
+        mode: DEFAULT_UPDATE_MODE,
+        ref: "",
+      },
     };
   }
 
@@ -129,23 +256,40 @@ export async function updateWorkerCheckout(
     };
   }
 
+  const settings = await readCheckoutUpdateMode(repoDir);
+  if (!settings.ok) {
+    return { success: false, message: settings.error.message };
+  }
+
   const outcome = await updateCheckout({
     repoDir,
     logDir: optionalString(args["log-dir"]) ?? defaultLogDir(),
     defaultBranch: optionalString(args["default-branch"]),
+    updateMode: settings.value.mode,
+    pinnedRef: settings.value.ref,
   });
+
+  const data: WorkerCheckoutUpdateResult = {
+    repoDir,
+    branch: outcome.branch,
+    updated: outcome.ok,
+    mode: outcome.mode,
+    ref: outcome.ref,
+  };
 
   if (!outcome.ok) {
     return {
       success: false,
       message: outcome.error ?? `cannot update ${repoDir}`,
-      data: { repoDir, branch: outcome.branch, updated: false },
+      data,
     };
   }
 
   return {
     success: true,
-    message: `updated ${repoDir} to origin/${outcome.branch}`,
-    data: { repoDir, branch: outcome.branch, updated: true },
+    message: outcome.mode === "frozen"
+      ? `update_mode=frozen: ${repoDir} is held at pinned_ref ${outcome.ref}`
+      : `updated ${repoDir} to origin/${outcome.branch}`,
+    data,
   };
 }

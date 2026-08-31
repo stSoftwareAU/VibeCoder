@@ -164,6 +164,11 @@ function buildShellOutput(
   // --- Paths ---
   lines.push(exportScalar("WORK_DIR", config.workDir));
 
+  // --- Update mode (Issue #622, part of #583) ---
+  // Exported so run.sh can tell a frozen host from a dynamic one without
+  // re-parsing .config.json.
+  lines.push(exportScalar("VIBE_UPDATE_MODE", config.updateMode));
+
   // --- Claude model ---
   lines.push(exportScalar("CLAUDE_MODEL", config.claudeModel));
   lines.push(

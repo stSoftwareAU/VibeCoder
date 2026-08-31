@@ -31,6 +31,7 @@ import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
+import { validateUpdateModeSettings } from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
   formatUnknownKeyWarnings,
@@ -40,6 +41,7 @@ import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_SHUFFLE_REPOS,
   DEFAULT_TRUSTED_REVIEW_BOTS,
+  DEFAULT_UPDATE_MODE,
   DEFAULT_VERBOSITY,
   DEFAULT_WORKER_NAME,
   defaultQuorumJudge,
@@ -284,7 +286,23 @@ async function loadConfigFile(configPath: string): Promise<ConfigFile> {
     throw new Error(`Config file ${configPath} is invalid: ${tools.error}`);
   }
 
-  return validated.value as ConfigFile;
+  // Issue #622 (part of #583): the pinned ref and tool versions are meant to
+  // be hand-edited without re-running setup, so a bad edit fails here —
+  // naming the offending field — rather than checking out the wrong thing or
+  // installing a version nobody asked for.
+  const file = validated.value as ConfigFile;
+  const updateModeErrors = validateUpdateModeSettings({
+    updateMode: file.update_mode,
+    pinnedRef: file.pinned_ref,
+    pinnedToolVersions: file.pinned_tool_versions,
+  });
+  if (updateModeErrors.length > 0) {
+    throw new Error(
+      `Config file ${configPath} is invalid: ${updateModeErrors.join(" ")}`,
+    );
+  }
+
+  return file;
 }
 
 /**
@@ -413,6 +431,14 @@ export async function loadConfig(
   // `native` is an explicit opt-in, and an unrecognised value fails loudly
   // here rather than quietly launching in the mode nobody asked for.
   const runMode = resolveRunMode({ configured: file.run_mode });
+
+  // How this host tracks releases (Issue #622, part of #583). Absent means
+  // `dynamic`, so a host with no update-mode keys behaves exactly as before.
+  // The pins are carried through in either mode — nothing acts on them under
+  // `dynamic`, but keeping them lets a host flip back without re-editing.
+  const updateMode = file.update_mode ?? DEFAULT_UPDATE_MODE;
+  const pinnedRef = file.pinned_ref;
+  const pinnedToolVersions = file.pinned_tool_versions;
 
   // Coding-agent provider selection (Issue #4067). Resolved here so an
   // unsupported id fails loudly at startup, naming the supported providers,
@@ -773,6 +799,9 @@ export async function loadConfig(
     lowPriorityLabel,
     workDir,
     runMode,
+    updateMode,
+    pinnedRef,
+    pinnedToolVersions,
     agentProvider,
     enabledAgentProviders: enabledAgentProviderIds,
     claudeModel,

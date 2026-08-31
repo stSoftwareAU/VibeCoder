@@ -12,6 +12,7 @@ runs itself and is steered entirely through GitHub. See
 - [Requirements](#requirements)
 - [Run mode: container only](#-run-mode-container-only)
 - [Upgrading an existing host — the hard cutover](#upgrading-an-existing-host--the-hard-cutover)
+- [Keeping a host up to date: dynamic or frozen](#-keeping-a-host-up-to-date-dynamic-or-frozen)
 - [Installation](#installation)
 - [Initial Setup](#initial-setup)
   - [Interactive install offer](#interactive-install-offer)
@@ -150,6 +151,26 @@ Nothing else about an existing deployment changes: the same cron, launchd,
 systemd or Task Scheduler entry keeps invoking the same launcher, and
 `$WORK_DIR`, `~/logs`, `.config.json` and the credential directory stay where
 they are — they are exactly the paths mounted into the container.
+
+## 🧊 Keeping a host up to date: dynamic or frozen
+
+How a deployed host takes new versions is a configuration decision, not a
+manual routine. By default it is **dynamic**: every launch updates the worker
+checkout to the tip of the default branch and the tools follow the latest
+eligible releases, so a host needs no per-machine version upkeep at all.
+
+A host that must reproduce a known state instead runs **frozen**: it is held at
+`pinned_ref` — a [release tag](RELEASE-TAGGING.md) or a commit SHA — with exact
+`pinned_tool_versions` for `claude`, `gh` and `deno`, and new releases never
+move it. Moving such a host is one edit to `.config.json` plus a relaunch; no
+re-run of setup is needed.
+
+- The prompts setup asks, in order, and what a non-interactive run does:
+  [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
+- The field names, accepted values, worked examples for both modes, how to
+  choose a pin, how to hand-edit one, and how it differs from
+  `VIBE_SKIP_CHECKOUT_UPDATE`:
+  [Configuration — Update Mode](CONFIGURATION.md#-update-mode).
 
 ## 📥 Installation
 

@@ -192,6 +192,13 @@ Deno. Both launchers follow the same steps:
    naming the host and the collision (Issue #4204, migrated here with the
    reset by Issue #513). `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for
    a development checkout or a CI tree, which must not be reset mid-run.
+   A host whose `.config.json` says `update_mode: "frozen"` is held at
+   `pinned_ref` instead of reset to the tip — the command reads that file
+   itself, because it runs before the configuration load — and logs
+   `Checkout update skipped: update_mode=frozen, pinned to <ref>` rather than
+   skipping silently (Issue #624). A checkout already on the pin is not
+   written to; a pin that does not resolve is the same loud warning as any
+   other failure, and the launch continues on the pinned checkout it has.
 3. **Builds the launch plan** — `deno run … mod.ts container-launch-plan`
    resolves and validates the container runtime, computes the content-derived
    image reference, and constructs the fixed least-privilege mount set. No
@@ -394,6 +401,50 @@ interval elapsed OR installed version < floor**:
 
 The version reader and clock are injected (the existing `nowFn`/injected-runner
 style), so the floor logic is unit-tested with no real spawn or sleep.
+
+#### 📌 Exact-version installs (Issue #623)
+
+`updateClaudeCli`, `updateGhCli` and `updateDeno` also accept a
+`targetVersion` on their shared `ToolUpdateOptions`. With no `targetVersion`
+every path behaves exactly as above — the release-age gate resolves "latest" and
+the tool's own upgrade command runs. With one, the exact version is installed
+from the artefact upstream published for it, following the same pattern
+`container/Containerfile` uses for its pinned tools:
+
+| Tool       | Pinned install                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------ |
+| Claude CLI | `curl` the `@anthropic-ai/claude-code` tarball for that version, then `npm install -g --ignore-scripts <tarball>` (`claude update` takes no version argument) |
+| `gh`       | `curl` the `cli/cli` release archive `gh_<version>_<os>_<arch>`, extract it, and `install` the binary over the `gh` already on PATH (`brew upgrade gh` takes no version argument) |
+| Deno       | `deno upgrade <version>` — the installer already accepts one                                       |
+
+Behaviour of the pinned path:
+
+- A tool already reporting exactly that version is **left alone**, with a log
+  line saying so, so a launch does not reinstall on every run.
+- The release-age gate is **bypassed** when pinned: it is the control for
+  unpinned "latest" installs, and a pinned version is an explicit choice.
+- A failed install, an unreadable version afterwards, or a version that does not
+  match **throws**, naming the requested and the actual version — reusing the
+  same `VERSION_COMMANDS` reader as the floor check rather than a second one.
+
+`resolveDynamicVersions()` reports what dynamic mode would install right now for
+each of the three tools, resolved through the same release-age gate, so a setup
+prompt can offer that as the per-tool default; a version that cannot be resolved
+(or has not aged past the quarantine window) is reported ineligible with the
+gate's own reason rather than as a usable default.
+
+```mermaid
+flowchart TD
+    A["update&lt;Tool&gt;()"] --> B{targetVersion?}
+    B -->|no| C["release-age gate → latest"] --> D["tool's own upgrade command"]
+    B -->|yes| E{already at that version?}
+    E -->|yes| F["log 'already at the pinned version' — no install"]
+    E -->|no| G["fetch + install that exact artefact"]
+    G --> H{version matches after install?}
+    H -->|yes| I["record success"]
+    H -->|no| J["throw — requested vs actual named"]
+    style J fill:#c92a2a,stroke:#7f1d1d,color:#fff
+```
 
 ### 📊 Priority order
 

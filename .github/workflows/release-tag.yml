@@ -1,0 +1,81 @@
+name: Release Tag
+
+# Third-party actions are pinned to 40-character commit SHAs (Issue
+# #2123) so a hijacked tag cannot inject code into the workflow. The
+# version tag each SHA corresponds to is captured in a leading
+# comment for human readability.
+
+# Issue #627 — push to `main` only. A frozen host pins to a released
+# version, so every merge that reaches `main` has to leave a tag behind;
+# the merge commit only exists post-merge, so `push` is the one trigger
+# that can see it. This is a publish workflow, not a required check, so
+# it deliberately keeps firing on push where the gates
+# (`validate-scripts.yml`) are pull-request only — see docs/MERGE.md.
+#
+# Nothing downstream waits on this run: the merge has already landed, and
+# a failed tag shows as a red run here and a missing tag on the commit,
+# never as a blocked merge.
+on:
+  push:
+    branches: [main]
+
+# Issue #2382 — Rule of Two: minimise workflow token capability. The
+# workflow default stays read-only; the single `contents: write` grant the
+# tag creation needs is scoped to the job below, and nothing else is
+# granted.
+permissions:
+  contents: read
+
+# Issue #627 — serialise, never cancel. Two merges landing together would
+# otherwise both read the same newest tag and race to mint the same
+# number; the second run has to see the first run's tag. `main` is the
+# only ref this fires on, so one group covers it.
+concurrency:
+  group: release-tag-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The whole capability of this workflow: create one tag ref.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The full tag set is the input to the version selection — a
+          # shallow clone would hide the newest release tag and the run
+          # would mint a version that already exists.
+          fetch-depth: 0
+          # Issue #4395: no git credentials are persisted in the checkout.
+          # The tag is created through the API with the job token instead.
+          persist-credentials: false
+
+      - name: Work out the next release tag
+        id: plan
+        run: |
+          set -euo pipefail
+          git tag --list > all-tags.txt
+          git tag --points-at "${GITHUB_SHA}" > head-tags.txt
+          .github/scripts/next-release-tag.sh all-tags.txt head-tags.txt |
+            tee -a "${GITHUB_OUTPUT}"
+
+      - name: Create the tag
+        if: steps.plan.outputs.should_tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Read through the environment, never interpolated into the
+          # script body — a `${{ }}` expansion inside `run:` is the
+          # template-injection shape.
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${TAG}" \
+            -f "sha=${GITHUB_SHA}" \
+            --silent
+          echo "Tagged ${GITHUB_SHA} as ${TAG}"

@@ -96,6 +96,12 @@ export interface ConfigFileJson {
   repo_config?: Record<string, unknown>;
   /** Where the worker runs — `container` or `native` (Issue #4146). */
   run_mode?: string;
+  /** How the host tracks releases — `dynamic` or `frozen` (Issue #622). */
+  update_mode?: string;
+  /** Commit SHA or tag a frozen host is held at (Issue #622). */
+  pinned_ref?: string;
+  /** Exact tool versions a frozen host installs (Issue #622). */
+  pinned_tool_versions?: Record<string, unknown>;
   /** Active coding-agent provider id (Issue #4067). */
   agent_provider?: string;
   /** Providers enabled for a run (Issue #4108). */
@@ -500,6 +506,11 @@ export function validateConfigFileJson(
     "needs_revision_label",
     "needs_human_label",
     "run_mode",
+    // Update mode and the checkout pin (Issue #622). The accepted values and
+    // the frozen-mode rules are enforced by `validateUpdateModeSettings`;
+    // here only the JSON type is checked.
+    "update_mode",
+    "pinned_ref",
     "agent_provider",
     "claude_model",
     "best_planning_model",
@@ -648,6 +659,31 @@ export function validateConfigFileJson(
   for (const field of booleanFields) {
     const result = validateOptionalBoolean(data[field], field);
     if (!result.ok) return result as ValidationResult<never>;
+  }
+
+  // pinned_tool_versions is an object of tool → exact version string
+  // (Issue #622). Only the shape is checked here; whether the versions are
+  // present and usable is `validateUpdateModeSettings`'s call.
+  if (data.pinned_tool_versions !== undefined) {
+    if (!isObject(data.pinned_tool_versions)) {
+      return fail(
+        "pinned_tool_versions",
+        `Expected object, got ${
+          data.pinned_tool_versions === null
+            ? "null"
+            : typeof data.pinned_tool_versions
+        }`,
+      );
+    }
+    for (
+      const [tool, version] of Object.entries(data.pinned_tool_versions)
+    ) {
+      const result = validateOptionalString(
+        version,
+        `pinned_tool_versions.${tool}`,
+      );
+      if (!result.ok) return result as ValidationResult<never>;
+    }
   }
 
   // repo_config is optional and loosely typed (validated elsewhere)

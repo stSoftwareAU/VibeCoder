@@ -1098,6 +1098,15 @@ main() {
     run_setup_cli config
     write_interactive_config
 
+    # Ask for the update mode and, when frozen, the pinned ref and the exact
+    # tool versions (Issue #626). The whole conversation — the prompts, the
+    # ref validation and the merge into .config.json — lives in the Deno
+    # command, in the same shape as run.sh delegating to
+    # worker-checkout-update; this script keeps no mode logic of its own. It
+    # runs after write_interactive_config so a single setup run leaves one
+    # coherent config file, and it never prompts without a terminal.
+    run_setup_cli update-mode
+
     # Standardise labels across all monitored repos (Issue #864)
     run_setup_cli label-sync || print_warning "Some labels could not be synced (non-fatal)"
 

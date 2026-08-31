@@ -25,6 +25,31 @@ export type VerbosityLevel = "minimal" | "concise" | "standard" | "verbose";
 export type AuthorSource = "github" | "config";
 
 /**
+ * How a host tracks Vibe Coder releases (Issue #622, part of #583).
+ *
+ * `"dynamic"` (the default, and what every existing host does) updates the
+ * worker checkout and its tools to the latest. `"frozen"` holds the host at
+ * `pinned_ref` with the exact tool versions in `pinned_tool_versions`.
+ */
+export type UpdateMode = "dynamic" | "frozen";
+
+/**
+ * Exact tool versions a frozen host installs (Issue #622, part of #583).
+ *
+ * Every entry is required under `update_mode: "frozen"` — a partially pinned
+ * host would silently drift on whichever tool was left out. Ignored entirely
+ * in `dynamic` mode, so a host can flip back without deleting its pins.
+ */
+export interface PinnedToolVersions {
+  /** Exact Claude Code CLI version, e.g. `2.0.76`. */
+  claude?: string;
+  /** Exact GitHub CLI version, e.g. `2.62.0`. */
+  gh?: string;
+  /** Exact Deno version, e.g. `2.5.4`. */
+  deno?: string;
+}
+
+/**
  * Worker configuration loaded from .config.json.
  */
 export interface WorkerConfig {
@@ -124,6 +149,24 @@ export interface WorkerConfig {
    * `VIBE_RUN_MODE` overrides it for one run. See `lib/run_mode.ts`.
    */
   runMode: RunMode;
+  /**
+   * How this host tracks Vibe Coder releases (Issue #622, part of #583,
+   * `.config.json` `update_mode`). `dynamic` — the default, and what every
+   * host did before the key existed — follows the latest; `frozen` holds the
+   * host at {@link pinnedRef} with {@link pinnedToolVersions}.
+   */
+  updateMode: UpdateMode;
+  /**
+   * Commit SHA or tag the worker checkout is held at in `frozen` mode
+   * (Issue #622, `.config.json` `pinned_ref`). Undefined in `dynamic` mode,
+   * where a leftover pin is carried through but never acted on.
+   */
+  pinnedRef?: string;
+  /**
+   * Exact tool versions a `frozen` host installs (Issue #622, `.config.json`
+   * `pinned_tool_versions`). Undefined in `dynamic` mode.
+   */
+  pinnedToolVersions?: PinnedToolVersions;
   /**
    * Active coding-agent provider id (Issue #4067, `.config.json`
    * `agent_provider`). The provider seam (`lib/agent_provider.ts`) resolves
@@ -956,6 +999,23 @@ export interface ConfigFile {
    * `VIBE_RUN_MODE` overrides it for one run.
    */
   run_mode?: string;
+  /**
+   * How this host tracks Vibe Coder releases (Issue #622, part of #583).
+   * Absent means `"dynamic"` — the behaviour of every host before the key
+   * existed.
+   */
+  update_mode?: UpdateMode;
+  /**
+   * Commit SHA or tag the worker checkout is held at (Issue #622). Required
+   * under `update_mode: "frozen"`; ignored in `dynamic` mode.
+   */
+  pinned_ref?: string;
+  /**
+   * Exact tool versions a frozen host installs (Issue #622). All three
+   * entries are required under `update_mode: "frozen"`; ignored in `dynamic`
+   * mode.
+   */
+  pinned_tool_versions?: PinnedToolVersions;
   /** Claude model ID to use (Issue #260) */
   /**
    * Coding-agent provider id (Issue #4067) — the provider seam resolves the

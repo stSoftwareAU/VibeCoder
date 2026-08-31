@@ -8,6 +8,11 @@
  * home under the log directory, and that an escalation problem never masks the
  * underlying update failure.
  *
+ * Issue #624 adds the frozen path: the checkout is held at `pinned_ref` rather
+ * than reset to `origin/<branch>`, the skip is logged with its mode and ref, a
+ * checkout already on the pin does no git write, and a ref that does not
+ * resolve fails loudly into the same streak.
+ *
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
 
@@ -22,6 +27,12 @@ import {
 } from "../lib/checkout_update.ts";
 import type { Result } from "../types.ts";
 
+/** The tag a frozen host is pinned to, and the commit it resolves to. */
+const PINNED_REF = "v1.2.3";
+const PINNED_SHA = "1111111111111111111111111111111111111111";
+/** A commit that is *not* the pin — the checkout has drifted off it. */
+const OTHER_SHA = "2222222222222222222222222222222222222222";
+
 /** Build a recording dependency set with everything succeeding by default. */
 function recordingDeps(
   order: string[],
@@ -34,6 +45,22 @@ function recordingDeps(
     },
     resetToDefaultBranch: (_repoDir, _branch, _logDir) => {
       order.push("resetToDefaultBranch");
+      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    },
+    fetchOrigin: (_repoDir, _logDir) => {
+      order.push("fetchOrigin");
+      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    },
+    resolveCommit: (_repoDir, ref) => {
+      order.push(`resolveCommit:${ref}`);
+      return Promise.resolve(ref === PINNED_REF ? PINNED_SHA : null);
+    },
+    readHeadCommit: (_repoDir) => {
+      order.push("readHeadCommit");
+      return Promise.resolve(OTHER_SHA);
+    },
+    checkoutPinnedRef: (_repoDir, _ref, _logDir) => {
+      order.push("checkoutPinnedRef");
       return Promise.resolve({ ok: true, value: undefined } as Result<void>);
     },
     describeCheckoutState: (_repoDir) => {
@@ -317,4 +344,208 @@ Deno.test("parseOriginRepo - reads owner/repo from SSH and HTTPS origins", () =>
     "stSoftwareAU/VibeCoder",
   );
   assertEquals(parseOriginRepo("https://example.com/not/github"), null);
+});
+
+// ============================================================================
+// Frozen mode — hold the checkout at the pinned ref (Issue #624, part of #583)
+// ============================================================================
+
+/** Options for a frozen host pinned to {@link PINNED_REF}. */
+const FROZEN_OPTIONS = {
+  ...OPTIONS,
+  updateMode: "frozen" as const,
+  pinnedRef: PINNED_REF,
+};
+
+Deno.test("updateCheckout - frozen holds the checkout at the pinned ref and never resets to origin (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(FROZEN_OPTIONS, recordingDeps(order));
+
+  assertEquals(outcome.ok, true);
+  assertEquals(outcome.mode, "frozen");
+  assertEquals(outcome.ref, PINNED_REF);
+  assertEquals(outcome.branch, "");
+  // Fetch first — a tag pushed since the last launch must resolve — then the
+  // pin. The default branch is neither resolved nor reset to.
+  assertEquals(order.includes("fetchOrigin"), true);
+  assertEquals(order.includes("checkoutPinnedRef"), true);
+  assertEquals(order.includes("resetToDefaultBranch"), false);
+  assertEquals(order.includes("resolveDefaultBranch"), false);
+  assert(
+    order.indexOf("fetchOrigin") < order.indexOf("checkoutPinnedRef"),
+    "the fetch must precede the checkout of the pin",
+  );
+});
+
+Deno.test("updateCheckout - frozen logs the skipped update with its mode and ref (Issue #624)", async () => {
+  const order: string[] = [];
+  await updateCheckout(FROZEN_OPTIONS, recordingDeps(order));
+
+  assertEquals(
+    order.includes(
+      `log:Checkout update skipped: update_mode=frozen, pinned to ${PINNED_REF}`,
+    ),
+    true,
+    "the skip must be stated in run_core.log, never silent",
+  );
+});
+
+Deno.test("updateCheckout - frozen accepts a commit SHA as the pin (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(
+    { ...OPTIONS, updateMode: "frozen", pinnedRef: PINNED_SHA },
+    recordingDeps(order, {
+      resolveCommit: (_repoDir, ref) => {
+        order.push(`resolveCommit:${ref}`);
+        return Promise.resolve(ref === PINNED_SHA ? PINNED_SHA : null);
+      },
+    }),
+  );
+
+  assertEquals(outcome.ok, true);
+  assertEquals(outcome.ref, PINNED_SHA);
+  assertEquals(order.includes("checkoutPinnedRef"), true);
+  assert(
+    order.includes(
+      `log:Checkout update skipped: update_mode=frozen, pinned to ${PINNED_SHA}`,
+    ),
+  );
+});
+
+Deno.test("updateCheckout - frozen does no git write when HEAD is already the pin (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(
+    FROZEN_OPTIONS,
+    recordingDeps(order, {
+      readHeadCommit: (_repoDir) => {
+        order.push("readHeadCommit");
+        return Promise.resolve(PINNED_SHA);
+      },
+    }),
+  );
+
+  assertEquals(outcome.ok, true);
+  assertEquals(order.includes("checkoutPinnedRef"), false, "no checkout");
+  assertEquals(order.includes("fetchOrigin"), false, "not even a fetch");
+  // Still stated: a no-op launch says which ref the host is holding at.
+  assertEquals(
+    order.includes(
+      `log:Checkout update skipped: update_mode=frozen, pinned to ${PINNED_REF}`,
+    ),
+    true,
+  );
+});
+
+Deno.test("updateCheckout - frozen fails loud on a pinned ref that does not resolve (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(
+    { ...OPTIONS, updateMode: "frozen", pinnedRef: "v9.9.9-typo" },
+    recordingDeps(order, {
+      resolveCommit: (_repoDir, ref) => {
+        order.push(`resolveCommit:${ref}`);
+        return Promise.resolve(null);
+      },
+    }),
+  );
+
+  assertEquals(outcome.ok, false);
+  const error = outcome.error ?? "";
+  assertStringIncludes(error, "v9.9.9-typo");
+  assertStringIncludes(error, "pinned_ref");
+  assertStringIncludes(error, ".config.json");
+  assertEquals(order.includes("checkoutPinnedRef"), false);
+  assertEquals(outcome.streak, 1, "a bad pin counts towards the crash-loop");
+});
+
+Deno.test("updateCheckout - frozen escalates a pin that keeps failing to resolve (Issue #624)", async () => {
+  const order: string[] = [];
+  const deps = recordingDeps(order, {
+    resolveCommit: (_repoDir, _ref) => Promise.resolve(null),
+    readFailureStreak: (_logDir) =>
+      Promise.resolve(CHECKOUT_UPDATE_ESCALATION_THRESHOLD - 1),
+  });
+
+  const outcome = await updateCheckout(FROZEN_OPTIONS, deps);
+
+  assertEquals(outcome.ok, false);
+  assertEquals(outcome.streak, CHECKOUT_UPDATE_ESCALATION_THRESHOLD);
+  assertEquals(outcome.escalated, true);
+  assertEquals(order.includes("escalate"), true);
+});
+
+Deno.test("updateCheckout - frozen with no pinned ref fails loud naming the field (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(
+    { ...OPTIONS, updateMode: "frozen" },
+    recordingDeps(order),
+  );
+
+  assertEquals(outcome.ok, false);
+  assertStringIncludes(outcome.error ?? "", "pinned_ref");
+  assertEquals(order.includes("checkoutPinnedRef"), false);
+  assert(
+    order.some((entry) =>
+      entry.startsWith("log:Checkout update skipped: update_mode=frozen")
+    ),
+    "even a mis-configured frozen host says what it did",
+  );
+});
+
+Deno.test("updateCheckout - frozen still pins when the fetch fails but the ref resolves locally (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(
+    FROZEN_OPTIONS,
+    recordingDeps(order, {
+      fetchOrigin: (_repoDir, _logDir) => {
+        order.push("fetchOrigin");
+        return Promise.resolve({
+          ok: false,
+          error: new Error("git fetch origin failed (exit code 128)"),
+        } as Result<void>);
+      },
+    }),
+  );
+
+  assertEquals(outcome.ok, true, "an offline host still runs its pinned code");
+  assertEquals(order.includes("checkoutPinnedRef"), true);
+  assert(
+    order.some((entry) =>
+      entry.startsWith("log:Fetch failed while holding") &&
+      entry.includes(PINNED_REF)
+    ),
+    "the fetch failure is said out loud, not swallowed",
+  );
+});
+
+Deno.test("updateCheckout - frozen fails loud when the fetch fails and the ref is unknown locally (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(
+    FROZEN_OPTIONS,
+    recordingDeps(order, {
+      resolveCommit: (_repoDir, _ref) => Promise.resolve(null),
+      fetchOrigin: (_repoDir, _logDir) =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("git fetch origin failed (exit code 128)"),
+        } as Result<void>),
+    }),
+  );
+
+  assertEquals(outcome.ok, false);
+  assertStringIncludes(outcome.error ?? "", PINNED_REF);
+  assertEquals(order.includes("checkoutPinnedRef"), false);
+});
+
+Deno.test("updateCheckout - an absent update mode is dynamic and unchanged (Issue #624)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(OPTIONS, recordingDeps(order));
+
+  assertEquals(outcome.ok, true);
+  assertEquals(outcome.mode, "dynamic");
+  assertEquals(outcome.ref, "");
+  assertEquals(outcome.branch, "trunk");
+  assertEquals(order.includes("resetToDefaultBranch"), true);
+  assertEquals(order.includes("checkoutPinnedRef"), false);
+  assertEquals(order.includes("fetchOrigin"), false);
+  assert(order.includes(`log:Updating ${OPTIONS.repoDir} to origin/trunk`));
 });
