@@ -226,6 +226,16 @@ Deno. Both launchers follow the same steps:
    only place a still-progressing agent is killed, and the worker stops itself
    before it so work in progress is committed and pushed.
 
+`run.sh upgrade` is the one invocation that runs none of those steps
+(Issue #691): it delegates straight to `deno run … mod.ts upgrade --base-dir
+<checkout>`, which rewrites `pinned_ref` and all three `pinned_tool_versions`
+in `.config.json` to what the newest release records, and exits with that
+command's status. It is handled before the `EXIT` trap is installed, so an
+upgrade is never counted as a launch outcome by the self-heal backoff, and the
+shell holds no upgrade logic of its own — the same delegation shape as
+`worker-checkout-update`. See
+[Configuration — Moving to the latest release](CONFIGURATION.md#moving-to-the-latest-release-runsh-upgrade).
+
 Inside the container, `container/entrypoint.sh` `exec`s
 `deno run … worker/deno/mod.ts run-entrypoint`. There is no bash on the runtime
 path, and because Deno loads its modules at process start the running driver is

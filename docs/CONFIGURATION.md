@@ -667,10 +667,56 @@ way the ref must exist on `origin`: the launch-time checkout fetches before it
 resolves, and a ref that resolves nowhere is a loud failure rather than a
 silent fall back to the tip.
 
+#### Moving to the latest release: `./run.sh upgrade`
+
+`./run.sh upgrade` moves a frozen host onto the newest release in one call. It
+rewrites `pinned_ref` and all three `pinned_tool_versions` — to the tag and to
+the exact versions that release recorded in its
+[`tool-versions.json` manifest](RELEASE-TAGGING.md) — and nothing else. It
+installs nothing, moves no checkout and starts no container: the next launch
+installs exactly what the new pins name.
+
+```mermaid
+flowchart TD
+    U["./run.sh upgrade"] --> M{"update_mode"}
+    M -->|dynamic| N["nothing to pin —<br/>exits 0, config untouched"]
+    M -->|frozen| L["newest release"]
+    L --> C{"newer than pinned_ref?"}
+    C -->|no| A["'already up to date' —<br/>nothing written"]
+    C -->|yes| T{"release records<br/>tool versions?"}
+    T -->|no| X["fail loud, naming the release —<br/>nothing written"]
+    T -->|yes| V["validate, then one atomic write:<br/>ref + all 3 versions"]
+    style X fill:#c92a2a,stroke:#7f1d1d,color:#fff
+```
+
+The output names the old and new ref and each old → new tool version, and every
+other key in `.config.json` is preserved exactly as it was:
+
+```text
+Upgrading Vibe Coder: 1.0.4 → 1.0.5.
+  pinned_ref                   1.0.4 → 1.0.5
+  pinned_tool_versions.claude  2.0.76 → 2.0.80
+  pinned_tool_versions.gh      2.62.0 → 2.63.0
+  pinned_tool_versions.deno    2.5.4 → 2.5.6
+Written to /path/to/.config.json — the next launch installs exactly these versions.
+```
+
+Re-running it immediately prints `Vibe Coder is already up to date (1.0.5).`
+and writes nothing. On a dynamic host it explains there is nothing to pin —
+that host already tracks the latest at every launch — and exits 0 without
+touching the config. The pins are **all-or-nothing**: a release minted before
+releases recorded their tool versions, an unreachable GitHub or a value that
+fails the config validator is a loud refusal with `.config.json` left exactly
+as it was, never a fresh `pinned_ref` beside stale tool versions.
+
+Windows hosts move their pins by hand for now; `run.ps1 upgrade` is a
+follow-up, exactly as `setup.ps1`'s update-mode prompts are.
+
 #### Moving a pin by hand
 
-Editing `.config.json` is the supported way to move a frozen host, and
-**re-running setup is not required**:
+Editing `.config.json` is the supported way to move a frozen host to a pin
+`./run.sh upgrade` would not choose — an older release, a commit SHA, or one
+tool version on its own — and **re-running setup is not required**:
 
 1. Edit `pinned_ref` to the tag or SHA you want, and/or any entry under
    `pinned_tool_versions`.

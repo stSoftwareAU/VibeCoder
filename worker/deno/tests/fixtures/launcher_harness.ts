@@ -220,6 +220,7 @@ esac
 const RECORDED_DENO_COMMANDS = [
   "run-mode",
   "worker-checkout-update",
+  "upgrade",
   "container-launch-plan",
   "container-reap",
   "container-image-prune",
@@ -310,6 +311,11 @@ for arg in "\$@"; do
         printf 'cannot update the worker checkout\\n' >&2
       fi
       exit "\${status}"
+      ;;
+    upgrade)
+      # Never really rewrite this checkout's .config.json (Issue #691).
+      printf '%s\\0' "\$@" > "\${record_dir}/upgrade.args"
+      exit "\${STUB_UPGRADE_EXIT:-0}"
       ;;${extraIntercepts}
   esac
 done
