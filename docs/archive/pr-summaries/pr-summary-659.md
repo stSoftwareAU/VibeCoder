@@ -51,6 +51,16 @@ All five new tests were observed failing against the unmodified checklist
 (`AssertionError: missing section heading containing "House additions"`) before
 the document was edited.
 
+`./quality.sh` reports every stage PASSED except `deno tests`, which fails on
+three environment-bound cases unrelated to this change:
+`tests/run_core_rate_limit_resume_test.ts` and `tests/run_core_test.ts` abort
+with `GraphQL: API rate limit already exceeded`, and
+`service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
+dir is restaged writable` expects a `/tmp` staging path but sees the
+container's `.container-state/gh-config`. Both reproduce unchanged at the base
+commit (`HEAD~2`) in a clean worktree, so they are pre-existing and not caused
+by this PR.
+
 ```mermaid
 flowchart LR
     S["📄 Prompt surface"] --> G["📐 Rows 1–22<br/>guide headings"]
