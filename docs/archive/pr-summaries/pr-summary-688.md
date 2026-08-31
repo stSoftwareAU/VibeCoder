@@ -148,4 +148,22 @@ flowchart TD
   above.
 - Updated `worker/deno/tests/mod_test.ts` — registry count 142 → 143 with
   `release-manifest` registered.
-- `./quality.sh` run in full.
+- Refreshed `docs/audits/dependency-inventory.md` (`supply-chain-gate
+  --write-inventory`) for the `denoland/setup-deno` reference the publish step
+  adds; `supply_chain_gate_test.ts` is green again.
+
+### Quality gate
+
+`./quality.sh` run in full: every check PASSED except `deno tests`, which
+reports three failures that pre-date this branch and are environmental to this
+container, not caused by the change:
+
+- `tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` —
+  `GraphQL: API rate limit already exceeded` from a live `gh` call.
+- `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
+  config dir is restaged writable` — the container's `.container-state/gh-config`
+  staging path.
+
+Verified by running those files in a worktree at the commit before this branch
+(`HEAD~4`): they fail identically there. The 19 tests added here, and every
+other suite touching the changed files, pass.
