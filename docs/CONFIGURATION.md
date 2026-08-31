@@ -513,13 +513,23 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 
 ### 🧊 Update Mode
 
-`update_mode` names how a host tracks Vibe Coder releases. `dynamic` — the
-default, and what every host did before the key existed — follows the latest.
-`frozen` holds the host at a pinned checkout with pinned tool versions.
+`update_mode` names how a host tracks Vibe Coder releases. `frozen` — the
+default answer `./setup.sh` offers a host being configured (Issue #692) —
+holds the host at a pinned checkout with pinned tool versions. `dynamic`
+follows the latest, and is both the deliberate opt-in answer at setup and what
+an **absent** `update_mode` resolves to at config load.
+
+**Two different defaults, deliberately.** The setup conversation defaults to
+`frozen`, because a new host should reproduce a released, tested combination.
+The *load-time* default for a missing key stays `dynamic`, because an existing
+host carries no pins and frozen is all-or-nothing — resolving an absent key to
+`frozen` would fail that host's config validation at its very next launch. So:
+a `.config.json` with no `update_mode` loads as `dynamic` with no warning and
+no new pin requirement, whatever setup would offer a fresh host.
 
 | Field | Accepted values | Default | Read in |
 | --- | --- | --- | --- |
-| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` — and the behaviour of any host with the key absent | both modes |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent; `"frozen"` is the answer setup offers a host being configured | both modes |
 | `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
 | `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
 
@@ -587,15 +597,22 @@ because an absent `update_mode` resolves to `dynamic`:
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
-- **Setup asks for all of it.** `./setup.sh` runs `setup update-mode`, which
-  asks for the mode and — when the answer is `frozen` — for the pinned ref and
-  one exact version per tool. The ref is validated by resolving it in the
+- **Setup asks for all of it, and defaults to `frozen`.** `./setup.sh` runs
+  `setup update-mode`, which asks for the mode — defaulting to `frozen` on a
+  fresh host and, on a re-run, to whatever the host already says — and then,
+  under `frozen`, for the pinned ref and one exact version per tool. The ref
+  defaults to the latest release tag and is validated by resolving it in the
   worker checkout after a fetch, so a ref that does not resolve is rejected by
   name and nothing invalid reaches the file. Each version prompt defaults to
-  what `dynamic` mode would install today, and blank accepts the default
+  the version that release records in its `tool-versions.json` manifest, so
+  accepting every default reproduces a released, tested combination; with no
+  resolvable manifest the defaults fall back to what `dynamic` mode would
+  install today and setup says so in one line. Blank accepts the default
   everywhere, so a re-run that presses Enter throughout leaves `.config.json`
-  unchanged. A run with no terminal never asks: existing values are left alone
-  and a fresh config is defaulted to `dynamic`. `setup.ps1` does not ask yet —
+  unchanged — on a `dynamic` host as well as a frozen one. A run with no
+  terminal never asks: existing values are left alone, and a fresh config is
+  pinned to the latest release when it resolves with a manifest, or left
+  `dynamic` with one warning line when it does not. `setup.ps1` does not ask yet —
   a Windows host sets these keys by hand, and the Windows counterpart is a
   follow-up. The prompts in the order they are asked are
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).

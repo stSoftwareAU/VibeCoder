@@ -155,11 +155,15 @@ they are — they are exactly the paths mounted into the container.
 ## 🧊 Keeping a host up to date: dynamic or frozen
 
 How a deployed host takes new versions is a configuration decision, not a
-manual routine. By default it is **dynamic**: every launch updates the worker
+manual routine. A host can run **dynamic**: every launch updates the worker
 checkout to the tip of the default branch and the tools follow the latest
-eligible releases, so a host needs no per-machine version upkeep at all.
+eligible releases, so a host needs no per-machine version upkeep at all. That
+is what an existing `.config.json` with no `update_mode` key loads as, and it
+is the deliberate opt-in answer at setup (Issue #692).
 
-A host that must reproduce a known state instead runs **frozen**: it is held at
+Setting up a **new** host offers **frozen** as the default answer, pinned to
+the latest release and the tool versions that release recorded. A host that
+must reproduce a known state runs frozen: it is held at
 `pinned_ref` — a [release tag](RELEASE-TAGGING.md) or a commit SHA — with exact
 `pinned_tool_versions` for `claude`, `gh` and `deno`, and new releases never
 move it. Moving such a host onto the newest release is one call —

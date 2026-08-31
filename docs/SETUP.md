@@ -82,16 +82,20 @@ background service is offered, where files land — is covered in
 
 6. **Update mode** — `setup update-mode` (Issue #626), bash only for now:
    `setup.ps1` is unchanged and gains it as a follow-up. It asks whether this
-   host is `dynamic` or `frozen`, defaulting to `dynamic` and, on a re-run, to
-   whatever the host already says. A `frozen` answer asks for the pinned ref —
-   validated by fetching origin and resolving it in this very checkout, so a
-   ref that does not resolve is rejected by name and asked again rather than
-   saved — and then for one exact version per tool, each defaulting to the
-   version `dynamic` mode would install today. Blank accepts the default
+   host is `dynamic` or `frozen`, defaulting to `frozen` on a fresh host
+   (Issue #692) and, on a re-run, to whatever the host already says. A
+   `frozen` answer asks for the pinned ref — defaulting to the latest release
+   tag, and validated by fetching origin and resolving it in this very
+   checkout, so a ref that does not resolve is rejected by name and asked
+   again rather than saved — and then for one exact version per tool, each
+   defaulting to the version that release recorded, so accepting every default
+   reproduces a released, tested combination. Blank accepts the default
    everywhere, so pressing Enter through a frozen host's prompts leaves
    `.config.json` byte-for-byte unchanged. Without a terminal nothing is
-   asked: existing values are left alone and a fresh config is defaulted to
-   `dynamic`. The prompts in the order they are asked are
+   asked: existing values are left alone, and a fresh config is pinned to the
+   latest release when one resolves with its manifest — otherwise it stays
+   `dynamic` with one warning line saying why. The prompts in the order they
+   are asked are
    [Update mode: dynamic or frozen](#update-mode-dynamic-or-frozen) below;
    what the fields mean is the
    [Configuration Reference](CONFIGURATION.md#-update-mode)'s job.
@@ -198,37 +202,44 @@ the first:
 
 1. **The mode.** After a two-line explanation of the choice, setup asks
    `Update mode (dynamic/frozen)`. The accepted answers are `dynamic` and
-   `frozen`; the answer defaults to `dynamic` on a fresh host and, on a re-run,
-   to whatever the host already says. Blank accepts that default, and anything
-   else is refused by name (`… is not an update mode. Accepted values:
-   dynamic, frozen.`) and asked again.
+   `frozen`; the answer **defaults to `frozen`** on a fresh host (Issue #692)
+   and, on a re-run, to whatever the host already says. Blank accepts that
+   default, and anything else is refused by name (`… is not an update mode.
+   Accepted values: dynamic, frozen.`) and asked again. `dynamic` stays a
+   valid typed answer — the deliberate, opt-in exception for a host that
+   should follow the tip.
 2. **The pinned ref** (`frozen` only) — `pinned_ref` in `.config.json`. Setup
    fetches origin first, so a tag pushed since the last launch resolves, then
-   asks `Pinned ref`, offering the existing pin as the default. The answer is
-   validated twice: against the character rules the field enforces, and by
-   resolving it in this very checkout. A ref that does not resolve is rejected
-   by name — `"v9.9.9" does not resolve to a commit in … — it was not saved` —
-   and asked again, so nothing unusable reaches the file. A resolved ref is
-   echoed with the commit it points at. A fetch that fails is reported and the
+   asks `Pinned ref`, offering the **latest release tag** as the default on a
+   fresh host and the existing pin on a re-run. The answer is validated twice:
+   against the character rules the field enforces, and by resolving it in this
+   very checkout. A ref that does not resolve is rejected by name —
+   `"v9.9.9" does not resolve to a commit in … — it was not saved` — and asked
+   again, so nothing unusable reaches the file. A resolved ref is echoed with
+   the commit it points at. A fetch that fails is reported and the
    conversation continues against the refs the checkout already has.
 3. **One exact version per tool** (`frozen` only) — the three
    `pinned_tool_versions` entries, asked in this order:
    `pinned_tool_versions.claude` (`Claude CLI version`), then
    `pinned_tool_versions.gh` (`GitHub CLI (gh) version`), then
    `pinned_tool_versions.deno` (`Deno version`). Each prompt defaults to the
-   version `dynamic` mode would install today, so pressing Enter through all
-   three pins the fleet exactly where it stands. On a re-run the existing pin
-   is the default instead. Where a default cannot be worked out — no network,
-   or the release-age quarantine has nothing eligible yet — the reason is
-   printed and the version is typed by hand.
+   version **that release recorded** in its `tool-versions.json` manifest, so
+   pressing Enter through all three reproduces a released, tested combination
+   rather than assembling a set no release ever shipped. On a re-run the
+   existing pin is the default instead. Where the latest release cannot be
+   resolved, or carries no manifest, the defaults fall back to the versions
+   `dynamic` mode would install today and setup says so in one line — no
+   version prompt is ever left without a default. Where even that cannot be
+   worked out — no network, or the release-age quarantine has nothing eligible
+   yet — the reason is printed and the version is typed by hand.
 
 ```text
   Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;
   'frozen' holds this host at a pinned ref with exact tool versions.
-  Update mode (dynamic/frozen) [dynamic] frozen
+  Update mode (dynamic/frozen) [frozen]
 
   Pinned ref: the commit SHA or tag this host is held at.
-  Pinned ref 1.0.7
+  Pinned ref [1.0.7]
   1.0.7 resolves to 3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3.
 
   Tool versions: the exact version this host installs while frozen.
@@ -243,13 +254,23 @@ left exactly as it was rather than half-answered.
 
 **A non-interactive run never asks.** With no terminal attached — cron, a
 LaunchAgent, CI — setup skips the conversation entirely: a host that already
-has `update_mode` keeps them untouched, and a fresh `.config.json` is written
-with `update_mode: "dynamic"`, which is what every host did before these keys
-existed. Nothing is ever pinned behind an operator's back.
+has `update_mode` keeps every value untouched, and a fresh `.config.json` is
+pinned to the latest release — `update_mode: "frozen"`, the release tag, and
+the three versions its manifest records — when that release resolves. When it
+does not, or it carries no manifest, the host is written with
+`update_mode: "dynamic"` and one warning line naming what could not be
+resolved: a ref without the versions it ships with is the partial pin frozen
+mode exists to prevent, so nothing is half-pinned behind an operator's back.
 
-**Blank answers are byte-for-byte safe.** Re-running setup on a frozen host and
-pressing Enter through all three prompts re-writes the same values, so setup
-stays re-runnable and a pin is never lost to a re-run.
+**The setup default is not the load-time default.** Setup offers `frozen` to a
+host being configured; a `.config.json` with **no** `update_mode` key still
+loads as `dynamic`, unchanged — see
+[Configuration — Update Mode](CONFIGURATION.md#-update-mode).
+
+**Blank answers are byte-for-byte safe.** Re-running setup and pressing Enter
+through every prompt re-writes the same values on a frozen host and leaves a
+dynamic host dynamic, so setup stays re-runnable and neither a pin nor a
+deliberate `dynamic` answer is lost to a re-run.
 
 **Windows does not ask yet.** `setup.ps1` is unchanged — the update-mode
 conversation is bash-only for now, and the Windows counterpart is a follow-up.
