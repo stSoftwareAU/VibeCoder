@@ -72,12 +72,18 @@ Written to /path/to/.config.json — the next launch installs exactly these vers
 ```
 
 `bash -n run.sh` and `shellcheck run.sh` both pass. `./quality.sh` passes every
-check except `deno tests`, which reports the same pre-existing, environmental
-failures this container produces on an unmodified tree — `claude_runner_*`
-subprocess timing, `service_account_env` permission restaging, `run_core_*`
-GitHub API rate limits and `setup_credential_provisioning`. Verified by
-stashing this change and re-running those files: they fail identically without
-it. Every test touching this change passes.
+check except `deno tests`, whose only failure is
+`service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config
+dir is restaged writable` — a pre-existing, environmental failure of this
+container: stashing this change and re-running that file reproduces it
+unchanged. Every test touching this change passes.
+
+The real command was also run end to end at the exact permission set `run.sh`
+uses (`--allow-env --allow-read --allow-write --allow-run`): a dynamic host
+printed the nothing-to-pin line, exited 0 and left its `.config.json`
+byte-identical; a frozen host pointed at this repository reached `gh`, found no
+`MAJOR.MINOR.PATCH` release to move to, exited non-zero and left the config
+byte-identical.
 
 ## Acceptance Criteria
 
