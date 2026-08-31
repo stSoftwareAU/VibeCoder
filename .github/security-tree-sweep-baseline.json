@@ -32,8 +32,8 @@
     {
       "path": "worker/deno/lib/pr_issue_linking.ts",
       "rule": "unsafe-regex",
-      "line": 425,
-      "snippet": "\"list\",",
+      "line": 415,
+      "snippet": "const markerPattern = new RegExp(`vibe-worker-issue-${issueStr}([^0-9]|$)`);",
       "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
     },
     {
@@ -46,8 +46,8 @@
     {
       "path": "worker/deno/lib/repo_config.ts",
       "rule": "unsafe-regex",
-      "line": 351,
-      "snippet": "checkNamePattern !== undefined &&",
+      "line": 361,
+      "snippet": "new RegExp(checkNamePattern);",
       "reason": "Validate-only compile of the operator-side `checkNamePattern` from .config.json inside a try/catch; the pattern is operator-trusted and is length- and nested-quantifier-guarded again in ci_log_provider.ts before any match runs (Issue #4193 triage of semgrep detect-non-literal-regexp)."
     },
     {
@@ -81,8 +81,8 @@
     {
       "path": "worker/deno/lib/security_tree_sweep.ts",
       "rule": "incomplete-sanitization",
-      "line": 1139,
-      "snippet": "\"-v\",",
+      "line": 1244,
+      "snippet": "return text.replace(/\\r?\\n/g, \" \").replace(/\\|/g, \"\\\\|\").trim();",
       "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
     },
     {
@@ -95,15 +95,15 @@
     {
       "path": "worker/deno/lib/heartbeat_storage.ts",
       "rule": "incomplete-sanitization",
-      "line": 314,
-      "snippet": "* epoch day 0 (rendering it again yields the same HH:MM).",
+      "line": 318,
+      "snippet": "`^\\\\s*${ATTEMPTS_HEADING.replace(/\\*/g, \"\\\\*\")}\\\\s*(\\\\d+)\\\\s*$`,",
       "reason": "The value escaped is the module's own constant heading (`ATTEMPTS_HEADING`), not input; the regex is fixed-shape (Issue #4409 CodeQL triage)."
     },
     {
       "path": "worker/deno/lib/heartbeat_storage.ts",
       "rule": "bad-tag-filter",
-      "line": 454,
-      "snippet": "*/",
+      "line": 458,
+      "snippet": ".replace(/-->/g, \"- ->\")",
       "reason": "Global replace of `<!--`/`-->` with tokens (`<!- -`, `- ->`) that cannot re-form the pattern with their neighbours; the result is a comment-safe excerpt, and the check that matters is `assert(!out.includes(\"-->\"))` in the tests (Issue #4409 CodeQL triage)."
     },
     {
@@ -123,7 +123,14 @@
       "rule": "unsafe-regex",
       "line": 108,
       "snippet": "{ label: \"Anthropic API host\", re: /api\\.anthropic\\.com/ },",
-      "reason": "Detection heuristics for LLM API hosts in scanned code (both host patterns in this window): an unanchored host pattern over-matches (`api.anthropic.com.evil`), and over-matching is the safe direction for a detector that only flags for review (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
+      "reason": "Detection heuristics for LLM API hosts in scanned code (the `api.` host patterns): an unanchored host pattern over-matches (`api.anthropic.com.evil`), and over-matching is the safe direction for a detector that only flags for review (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
+    },
+    {
+      "path": "worker/deno/lib/llm_usage_detection.ts",
+      "rule": "unsafe-regex",
+      "line": 112,
+      "snippet": "re: /generativelanguage\\.googleapis\\.com/,",
+      "reason": "Detection heuristic for the Google Generative Language API host, split into its own cluster when the pattern list grew past the sweep's 10-line window: an unanchored host pattern over-matches (`generativelanguage.googleapis.com.evil`), and over-matching is the safe direction for a detector that only flags for review (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
     },
     {
       "path": "worker/deno/lib/planning_processor.ts",
@@ -135,8 +142,8 @@
     {
       "path": "worker/deno/lib/tabletop_harness.ts",
       "rule": "weak-crypto",
-      "line": 76,
-      "snippet": "let body = \"\";",
+      "line": 78,
+      "snippet": "body += CANARY_ALPHABET[byte % CANARY_ALPHABET.length];",
       "reason": "The canary is a detection marker planted for one harness run, not key material: a slight modulo bias in its characters does not weaken what it proves (whether the literal reaches an outbound artefact) (Issue #4409 CodeQL js/biased-cryptographic-random)."
     },
     {
@@ -152,8 +159,8 @@
     {
       "path": "worker/deno/lib/repo_settings_harden.ts",
       "rule": "unsafe-regex",
-      "line": 121,
-      "snippet": "export function allowListCovers(",
+      "line": 128,
+      "snippet": "const re = new RegExp(",
       "reason": "The pattern is a GitHub allow-list glob whose only wildcard is `*`; every other character is escaped before compilation and the glob comes from the repository's own settings (Issue #4409 semgrep detect-non-literal-regexp)."
     },
     {
@@ -247,14 +254,7 @@
       "rule": "trivial-conditional",
       "line": 1413,
       "snippet": "if (timedOut || runFinished) return;",
-      "reason": "`timedOut`/`runFinished` are closure flags set from timer and completion callbacks, so the re-check before arming the next watchdog is not redundant at runtime even where the analyser proves it constant along one path. A code-quality observation, not a security finding (js/trivial-conditional)."
-    },
-    {
-      "path": "worker/deno/lib/claude_runner.ts",
-      "rule": "trivial-conditional",
-      "line": 1445,
-      "snippet": "if (timedOut || runFinished) return;",
-      "reason": "Same guard as line 1413, on the wind-down path: the flags are mutated by async callbacks between the two checks, which is the reason both exist. A code-quality observation, not a security finding (js/trivial-conditional)."
+      "reason": "`timedOut`/`runFinished` are closure flags set from timer and completion callbacks, so the re-check before arming the next watchdog is not redundant at runtime even where the analyser proves it constant along one path. The same guard appears on the arming and wind-down paths and this one entry covers every occurrence — a second entry with the identical snippet could never match, because the fingerprint lookup stops at the first. A code-quality observation, not a security finding (js/trivial-conditional)."
     }
   ]
 }
