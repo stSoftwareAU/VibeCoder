@@ -44,10 +44,12 @@ const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 
 /**
  * Every bucket the template can target: the seven language buckets plus the
- * bucketless `general` run. Each must have a guide on disk.
+ * two language-agnostic runs (`general`, `design`). Each must have a guide
+ * on disk.
  */
 const BUCKETS = [
   "general",
+  "design",
   "rust",
   "typescript",
   "react",

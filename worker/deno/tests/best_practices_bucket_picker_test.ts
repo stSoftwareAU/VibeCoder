@@ -6,7 +6,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { pickBucket } from "../lib/best_practices_bucket_picker.ts";
+import {
+  type BucketPick,
+  pickBucket,
+} from "../lib/best_practices_bucket_picker.ts";
 import type { RepoLanguages } from "../lib/language_detector.ts";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +26,14 @@ function mulberry32(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/**
+ * Slug for a pick — mirrors `bucketSlug()` in the template so a `design`
+ * pick is never miscounted as `general` (Issue #662).
+ */
+function slugOf(pick: BucketPick): string {
+  return pick.kind === "language" ? pick.language : pick.kind;
 }
 
 /** Build a minimal RepoLanguages for tests. */
@@ -47,29 +58,47 @@ Deno.test("pickBucket - empty repo returns general", () => {
   assertEquals(result, { kind: "general" });
 });
 
-Deno.test("pickBucket - unknown language only returns general", () => {
-  const result = pickBucket(makeLangs({ Brainfuck: 1000, Cobol: 500 }));
-  assertEquals(result, { kind: "general" });
+// Behaviour change (Issue #662): a repo written entirely in languages with
+// no bucket used to return `general` every time, so it never received design
+// feedback. `design` is language-agnostic, so it now competes with `general`
+// on such a repo.
+Deno.test("pickBucket - unknown language only returns general or design", () => {
+  const langs = makeLangs({ Brainfuck: 1000, Cobol: 500 });
+  const rng = mulberry32(11);
+  const seen = new Set<string>();
+  for (let i = 0; i < 200; i++) {
+    seen.add(slugOf(pickBucket(langs, rng)));
+  }
+  assertEquals([...seen].sort(), ["design", "general"]);
 });
 
-Deno.test("pickBucket - single Rust repo picks rust or general only", () => {
+Deno.test("pickBucket - single Rust repo picks rust, general or design only", () => {
   const langs = makeLangs({ Rust: 50_000 });
   const rng = mulberry32(42);
   const seen = new Set<string>();
   for (let i = 0; i < 200; i++) {
-    const r = pickBucket(langs, rng);
-    seen.add(r.kind === "language" ? r.language : "general");
+    seen.add(slugOf(pickBucket(langs, rng)));
   }
-  // Only rust and general should ever appear.
+  // Only rust, general and design should ever appear.
   for (const s of seen) {
     assert(
-      s === "rust" || s === "general",
+      s === "rust" || s === "general" || s === "design",
       `unexpected bucket ${s} (seen=${[...seen].join(",")})`,
     );
   }
-  // Both should appear with this seed.
+  // All three should appear with this seed.
   assert(seen.has("rust"), "expected rust at least once");
   assert(seen.has("general"), "expected general at least once");
+  assert(seen.has("design"), "expected design at least once");
+});
+
+Deno.test("pickBucket - a repo with no code at all never picks design", () => {
+  // Nothing to review, so the language-agnostic design bucket is not a
+  // candidate — the repo-hygiene `general` bucket still is.
+  const rng = mulberry32(5);
+  for (let i = 0; i < 50; i++) {
+    assertEquals(pickBucket(makeLangs({}), rng), { kind: "general" });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -187,22 +216,26 @@ Deno.test("pickBucket - Terraform: falls back to HCL raw count when no marker by
 // general bucket weight rule.
 // ---------------------------------------------------------------------------
 
-Deno.test("pickBucket - general weight equals the max language byte count", () => {
+Deno.test("pickBucket - general and design weights equal the max language byte count", () => {
   // Two languages: Rust 30000, Java 10000. Max = 30000.
-  // Total = 30000 + 10000 + 30000 (general) = 70000.
-  // Expected proportions: rust 30/70, java 10/70, general 30/70.
+  // Total = 30000 + 10000 + 30000 (general) + 30000 (design) = 100000.
+  // Expected proportions: rust 30/100, java 10/100, general 30/100,
+  // design 30/100.
   const langs = makeLangs({ Rust: 30_000, Java: 10_000 });
   const rng = mulberry32(1234);
-  const counts = { rust: 0, java: 0, general: 0 } as Record<string, number>;
+  const counts = { rust: 0, java: 0, general: 0, design: 0 } as Record<
+    string,
+    number
+  >;
   const N = 20_000;
   for (let i = 0; i < N; i++) {
-    const r = pickBucket(langs, rng);
-    const key = r.kind === "language" ? r.language : "general";
+    const key = slugOf(pickBucket(langs, rng));
     counts[key] = (counts[key] ?? 0) + 1;
   }
-  const expectedRust = N * 30 / 70;
-  const expectedJava = N * 10 / 70;
-  const expectedGeneral = N * 30 / 70;
+  const expectedRust = N * 30 / 100;
+  const expectedJava = N * 10 / 100;
+  const expectedGeneral = N * 30 / 100;
+  const expectedDesign = N * 30 / 100;
   // Allow ±5% tolerance per bucket.
   const tol = 0.05;
   assert(
@@ -217,10 +250,18 @@ Deno.test("pickBucket - general weight equals the max language byte count", () =
     Math.abs(counts.general! - expectedGeneral) / expectedGeneral < tol,
     `general count ${counts.general} out of tolerance vs ${expectedGeneral}`,
   );
-  // general competes equally with the dominant language (rust here).
+  assert(
+    Math.abs(counts.design! - expectedDesign) / expectedDesign < tol,
+    `design count ${counts.design} out of tolerance vs ${expectedDesign}`,
+  );
+  // general and design each compete equally with the dominant language.
   assert(
     Math.abs(counts.rust! - counts.general!) / counts.rust! < 0.1,
     `general should compete equally with dominant language: rust=${counts.rust} general=${counts.general}`,
+  );
+  assert(
+    Math.abs(counts.rust! - counts.design!) / counts.rust! < 0.1,
+    `design should compete equally with dominant language: rust=${counts.rust} design=${counts.design}`,
   );
 });
 
@@ -244,8 +285,8 @@ Deno.test(
     );
     // Expected weights:
     //   rust 40000, typescript 20000, java 10000, html 5000,
-    //   terraform 1000, general 40000 (= max).
-    // Total = 116000.
+    //   terraform 1000, general 40000 (= max), design 40000 (= max).
+    // Total = 156000.
     const expected: Record<string, number> = {
       rust: 40000,
       typescript: 20000,
@@ -253,6 +294,7 @@ Deno.test(
       html: 5000,
       terraform: 1000,
       general: 40000,
+      design: 40000,
     };
     const total = Object.values(expected).reduce((a, b) => a + b, 0);
 
@@ -260,8 +302,7 @@ Deno.test(
     const counts: Record<string, number> = {};
     const N = 10_000;
     for (let i = 0; i < N; i++) {
-      const r = pickBucket(langs, rng);
-      const key = r.kind === "language" ? r.language : "general";
+      const key = slugOf(pickBucket(langs, rng));
       counts[key] = (counts[key] ?? 0) + 1;
     }
 
@@ -272,7 +313,7 @@ Deno.test(
       const o = counts[k] ?? 0;
       chi += ((o - e) * (o - e)) / e;
     }
-    // 5 degrees of freedom (6 buckets - 1). 99% critical value ≈ 15.09.
+    // 6 degrees of freedom (7 buckets - 1). 99% critical value ≈ 16.81.
     // Use 20 as a generous threshold; with mulberry32 seed=987654 the
     // observed value is well below.
     assert(chi < 20, `chi-square=${chi} exceeds threshold for distribution`);
@@ -308,8 +349,7 @@ Deno.test(
     const rng = mulberry32(33);
     const seen = new Set<string>();
     for (let i = 0; i < 500; i++) {
-      const r = pickBucket(langs, rng);
-      seen.add(r.kind === "language" ? r.language : "general");
+      seen.add(slugOf(pickBucket(langs, rng)));
     }
     assert(seen.has("react"), "expected react bucket");
     assert(seen.has("rust"), "expected rust bucket");
@@ -317,3 +357,39 @@ Deno.test(
     assert(!seen.has("typescript"), "typescript should be replaced by react");
   },
 );
+
+// ---------------------------------------------------------------------------
+// design bucket — language-agnostic, so it is a candidate on every repo that
+// has code, whatever the language (Issue #662).
+// ---------------------------------------------------------------------------
+
+Deno.test("pickBucket - design is a candidate on a marker-only repo", () => {
+  const langs = makeLangs({}, { cloudFormationBytes: 4000 });
+  const rng = mulberry32(21);
+  const seen = new Set<string>();
+  for (let i = 0; i < 200; i++) {
+    seen.add(slugOf(pickBucket(langs, rng)));
+  }
+  assert(seen.has("design"), `expected design, saw ${[...seen].join(",")}`);
+  assert(seen.has("aws-cloudformation"), "expected the language bucket too");
+});
+
+Deno.test("pickBucket - design does not displace the language buckets", () => {
+  // A design pick must not starve the language bucket: on a single-language
+  // repo the language still wins a third of the draws (weights are equal).
+  const langs = makeLangs({ Java: 12_000 });
+  const rng = mulberry32(99);
+  const counts: Record<string, number> = {};
+  const N = 6000;
+  for (let i = 0; i < N; i++) {
+    const key = slugOf(pickBucket(langs, rng));
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  for (const key of ["java", "general", "design"]) {
+    const share = (counts[key] ?? 0) / N;
+    assert(
+      Math.abs(share - 1 / 3) < 0.05,
+      `${key} share ${share} should be about a third`,
+    );
+  }
+});

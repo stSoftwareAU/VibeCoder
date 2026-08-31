@@ -957,11 +957,14 @@ than two that can drift apart.
 
 **Bucket-scoped, LLM-only review.** A single run targets one bucket — one of
 `rust`, `typescript`, `react`, `java`, `html`, `aws-cloudformation`,
-`terraform`, or `general`. GitHub Actions is no longer a bucket — workflow
-review moved to the weekly `github-actions-audit` template. The bucket
+`terraform`, `general`, or `design`. GitHub Actions is no longer a bucket —
+workflow review moved to the weekly `github-actions-audit` template. The bucket
 is picked at file time by a SLOC-weighted random draw across the detected
-supported languages, with `general` competing at a weight equal to the dominant
-language. The wrapper body inlines the latest `prompts/best_practices/` template
+supported languages, with the two language-agnostic buckets — `general` (repo
+hygiene) and `design` (the named design smells from _Refactoring_ ch. 3, each
+reported as a judgement call) — competing at a weight equal to the dominant
+language. Because neither names a language, a repo whose languages have no
+bucket of their own still receives design feedback. The wrapper body inlines the latest `prompts/best_practices/` template
 (from v3 onward) and the matching `prompts/best_practices/buckets/<bucket>.md`
 so the prompt is self-contained (human-style wrappers — no hidden
 marker).
