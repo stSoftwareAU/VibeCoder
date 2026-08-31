@@ -24,9 +24,12 @@ keeps anchoring on the code and understanding it already built. Align
 up front; disagree up front; then let it run.
 
 You add the `grill-me` label, the worker reads the issue and posts a short
-**Round 1** comment with a TL;DR, an `### Understanding` summary, and a
-small set of choices rendered as Markdown task list checkboxes
-(`- [ ] choice`, plus `- [ ] other — please describe in a reply`). Each
+**Round 1** comment with a TL;DR, an `### Understanding` summary, and
+every question it can answer now — its
+[frontier](#-the-design-tree-and-its-frontier) — rendered as Markdown
+task list checkboxes (`- [ ] choice`, plus
+`- [ ] other — please describe in a reply`), each with the worker's
+[recommended answer already ticked](#-every-question-arrives-with-a-recommended-answer). Each
 round comment ends with a `**⏳ Awaiting your reply.**` footer so you
 know the worker is paused on your response. Each round also rewrites a
 `## Current Understanding` section between stable markers in the issue
@@ -70,10 +73,10 @@ comment footer that already paired with each round.
 ```mermaid
 flowchart TD
   Label["User adds grill-me label<br/>labels: grill-me"]
-  R1["Round 1: TL;DR + Understanding + checkbox choices<br/>+ ⏳ Awaiting your reply footer<br/>labels: grill-me, needs-human"]
+  R1["Round 1: TL;DR + Understanding + whole frontier<br/>(one recommendation pre-ticked per question)<br/>+ ⏳ Awaiting your reply footer<br/>labels: grill-me, needs-human"]
   Body["Body updated:<br/>## Current Understanding (between markers)"]
   Rubric["Requirements-quality rubric:<br/>unquantified adjectives, placeholders,<br/>unobservable scope, terminology drift"]
-  Reply["User ticks checkboxes on phone (or replies free-form),<br/>then removes needs-human<br/>labels: grill-me"]
+  Reply["User accepts recommendations by leaving them ticked,<br/>changes the ones they disagree with (or replies free-form),<br/>then removes needs-human<br/>labels: grill-me"]
   Done{"Claude: more<br/>meaningful questions?<br/>(a flagged item counts)"}
   RN["Round N: refined Understanding + new choices<br/>labels: grill-me, needs-human"]
   Final["## Grill-Me — Ready for Next Phase<br/>adaptive recommendation (planning and/or work-on)"]
@@ -173,16 +176,18 @@ always know where to look on a small screen:
 2. **`### Understanding`** — two to four short sentences restating what
    the worker believes you want. **Read this carefully** — if it is
    wrong, your reply is the moment to correct it.
-3. **`### Questions`** — the smallest set of clarifying choices needed
-   to unblock the next phase. Each question is numbered and presents
-   its options as **GitHub Markdown task list checkboxes** —
-   `- [ ] choice text`, one per line — plus a final
-   `- [ ] other — please describe in a reply` row for anything outside
-   the menu. The GitHub mobile app renders these as tappable
-   checkboxes.
+3. **`### Questions`** — every question the worker can answer *now*
+   (its **frontier** — see below), not the smallest set it could get
+   away with. Each question is numbered and presents its options as
+   **GitHub Markdown task list checkboxes** — `- [ ] choice text`, one
+   per line — plus a final `- [ ] other — please describe in a reply`
+   row for anything outside the menu. **Exactly one option per question
+   arrives already ticked**: that is the worker's recommended answer.
+   The GitHub mobile app renders these as tappable checkboxes.
 4. **Reply line** — a one-line instruction telling you how to answer
-   (typically: "Tick the boxes that apply (the GitHub mobile app lets
-   you tap each one), then add any free-form notes in a reply.").
+   (typically: "I have pre-ticked my recommendation on each question —
+   leave it to accept, or untick it and choose another. Add any
+   free-form notes in a reply.").
 5. **Awaiting-reply footer** — every round comment ends with
    `**⏳ Awaiting your reply.** The Vibe Coder is waiting for your
    response on this issue to continue grilling.` so you know the
@@ -191,6 +196,79 @@ always know where to look on a small screen:
 Comments are kept under ~1500 characters where possible and use plain
 markdown only (no tables, no images, no nested code blocks) so they
 render well in the GitHub mobile app.
+
+### 🌳 The design tree and its frontier
+
+From v14 onwards the
+worker composes each round from the **frontier** of the design tree —
+borrowed, like the workflow itself, from
+[mattpocock/skills](https://github.com/mattpocock/skills) (see
+[REFERENCES.md](../REFERENCES.md)).
+
+Decisions branch: each one opens the decisions that hang off it. The
+frontier is every decision whose prerequisites are already settled —
+the questions answerable now without guessing at an answer nobody has
+given yet. The worker asks the **whole frontier** in one round; a
+question that depends on another still-open question waits for a later
+round.
+
+```mermaid
+flowchart TD
+  F1["Which format?"]
+  F2["What does it include?"]
+  F3["How is it delivered?"]
+  L1["S3 filename pattern<br/>(needs: delivery = S3)"]
+  L2["Compression<br/>(needs: format)"]
+  Fact["Which module owns the writer?<br/>— a FACT, never asked"]
+  F3 --> L1
+  F1 --> L2
+  style F1 fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style F2 fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style F3 fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style L1 fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style L2 fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+  style Fact fill:#adb5bd,stroke:#6c757d,color:#1a1a1a
+```
+
+Green is this round's frontier — all three go in the **same** comment,
+so you answer them in one sitting rather than one round trip each.
+Purple waits for the round in which its prerequisite lands. Grey is
+never asked at all: see
+[Facts are the worker's job](#-facts-are-the-workers-job-decisions-are-yours).
+
+**When the frontier is wide, the frontier wins over the ~1500-character
+bound.** The worker compresses instead of dropping questions — one-line
+stems, at most four options each. Only past **eight** questions does it
+split the frontier, ask the eight that most change the plan, and say in
+the TL;DR how many remain.
+
+### ✅ Every question arrives with a recommended answer
+
+The worker never hands you a blank menu. It pre-ticks the option it
+would implement if you never replied, so you can accept a whole round
+by doing nothing and only spend attention where you disagree.
+
+- **Leave a tick as posted** → you accept the recommendation. It is
+  recorded in the body's `Assumptions` list as
+  `— accepted by default in Round N`, so nothing slips through
+  unexamined: an assumption you never actively chose is still visible
+  to whoever picks the issue up, and you can overturn it in any later
+  round.
+- **Untick it and tick another** (or tick `other`, or just reply in
+  words) → you disagree, and your answer wins. Free-form text always
+  beats a ticked box where the two conflict.
+
+A round question with **no** tick at all is the only shape that still
+means "unanswered".
+
+### 🔎 Facts are the worker's job, decisions are yours
+
+The worker never asks you something a read of the repository, `gh`, or
+the filesystem would answer — which file holds the export path, whether
+a config key already exists, what the current default is. It looks
+those up itself and states them in `### Understanding` as settled.
+Questions are reserved for **decisions**: what you want, which
+trade-off you prefer, what "done" means.
 
 ### Per-round body refinement
 
@@ -279,39 +357,49 @@ include, or how the export is triggered.
 ### Questions
 
 1. Which format do you want?
-   - [ ] JSON
+   - [x] JSON — lossless, and the API already emits it
    - [ ] CSV (one file per entity)
    - [ ] Markdown bundle (one .md per issue)
    - [ ] other — please describe in a reply
 
 2. What should the export include?
-   - [ ] Issues only
+   - [x] Issues + comments + milestones + labels
    - [ ] Issues + comments
-   - [ ] Issues + comments + milestones + labels
+   - [ ] Issues only
    - [ ] other — please describe in a reply
 
 3. How should the export be triggered?
-   - [ ] A new GitHub label (e.g. `export-me`)
+   - [x] A new GitHub label (e.g. `export-me`)
    - [ ] A CLI command in the worker
    - [ ] A scheduled job
    - [ ] other — please describe in a reply
 
-Tick the boxes that apply (the GitHub mobile app lets you tap each
-one), then add any free-form notes in a reply.
+I have pre-ticked my recommendation on each question — leave it to
+accept, or untick it and choose another. Add any free-form notes in a
+reply.
 
 **⏳ Awaiting your reply.** The Vibe Coder is waiting for your
 response on this issue to continue grilling.
 ```
 
-You tap the checkboxes for `1. JSON`, `2. Issues + comments + milestones
-+ labels`, and `3. A new GitHub label …`, then reply: `please include
-closed issues too.` Then you tap the issue header → **Labels** and
-remove `needs-human` so the worker knows it is its turn again.
+All three questions arrive in the **same** round because none of them
+depends on another — that is the frontier. The S3 filename pattern is
+not asked yet (it only exists if delivery turns out to be S3), and
+"which module owns the export writer" is never asked at all: the worker
+reads that from the repository itself.
+
+You agree with questions 1 and 3, so you leave them exactly as posted —
+both are recorded in the body as `accepted by default in Round 1`. You
+untick `Issues + comments + milestones + labels` on question 2, tick
+`Issues + comments`, and reply: `please include closed issues too.`
+Then you tap the issue header → **Labels** and remove `needs-human` so
+the worker knows it is its turn again.
 
 On the next scan the worker posts **Round 2** with a refined
-`### Understanding` (now mentioning JSON, all entities, label-driven,
-including closed issues) and any remaining questions — perhaps about the
-file location, naming, or whether to include attachments. The body's
+`### Understanding` (now mentioning JSON, issues + comments,
+label-driven, including closed issues) and the questions that just
+became answerable — the file location, naming, or whether to include
+attachments. The body's
 `## Current Understanding` section is also rewritten to reflect the new
 agreed scope. You reply again. This continues until Claude judges there
 are no more meaningful questions.
@@ -394,8 +482,12 @@ queue, or on the couch. A typical interaction:
    `### Understanding` section.
 4. **Skim `### Understanding`.** If something is wrong, that is the
    thing to correct in your reply.
-5. **Tap the checkboxes** on the round comment to record your
-   answers — the GitHub mobile app turns `- [ ]` into a tappable
+5. **Change only the ticks you disagree with.** Each question arrives
+   with the worker's recommendation already ticked, so a round you are
+   happy with needs no taps at all — the recommendations are then
+   recorded as `accepted by default in Round N` assumptions in the
+   issue body. Where you disagree, untick the recommendation and tap
+   your choice — the GitHub mobile app turns `- [ ]` into a tappable
    control, and tapping flips it to `- [x]`. You can also tap
    "Add comment" and add any free-form notes (for example
    "please use SQLite, only when CI passes"). Free-form text wins
