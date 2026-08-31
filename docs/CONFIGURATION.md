@@ -292,6 +292,9 @@ explicitly overridden.
 | `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
 | `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
 | `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
+| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. |
+| `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
+| `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in — Java and Maven are the first expected use. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or `JAVA_HOME` at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked Java + Maven example](CONTAINER.md#deployer-supplied-build-time-tools). |
@@ -508,6 +511,197 @@ than parsing `.config.json`, so the precedence cannot drift between hosts:
 deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 ```
 
+### 🧊 Update Mode
+
+`update_mode` names how a host tracks Vibe Coder releases. `dynamic` — the
+default, and what every host did before the key existed — follows the latest.
+`frozen` holds the host at a pinned checkout with pinned tool versions.
+
+| Field | Accepted values | Default | Read in |
+| --- | --- | --- | --- |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` — and the behaviour of any host with the key absent | both modes |
+| `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
+| `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
+
+**Worked frozen example** — pinned to a release tag, with the three tool
+versions that release was running:
+
+```json
+{
+  "update_mode": "frozen",
+  "pinned_ref": "1.0.7",
+  "pinned_tool_versions": {
+    "claude": "2.0.76",
+    "gh": "2.62.0",
+    "deno": "2.5.4"
+  }
+}
+```
+
+A commit SHA is equally valid where no tag covers the state you want:
+
+```json
+{
+  "update_mode": "frozen",
+  "pinned_ref": "3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3",
+  "pinned_tool_versions": {
+    "claude": "2.0.76",
+    "gh": "2.62.0",
+    "deno": "2.5.4"
+  }
+}
+```
+
+**Worked dynamic example** — the whole of it, and even this is optional
+because an absent `update_mode` resolves to `dynamic`:
+
+```json
+{
+  "update_mode": "dynamic"
+}
+```
+
+- **Absent means dynamic.** A `.config.json` with none of the three keys loads
+  with `update_mode` resolved to `dynamic` and no warning, so an existing host
+  is unchanged.
+- **Frozen is all-or-nothing.** `frozen` without `pinned_ref`, or with a
+  missing or blank entry for `claude`, `gh` or `deno`, fails loudly at config
+  load naming the field that is missing. A half-pinned host would drift on
+  whatever was left out, which is the failure the pin exists to prevent.
+- **Hand-editable, and checked.** Both the ref and the versions are meant to be
+  edited in `.config.json` without re-running setup. They are handed to `git`
+  and to tool installers, so each must start with a letter or digit and contain
+  only letters, digits and `. _ + - / @`; whitespace and shell metacharacters
+  are refused rather than passed through.
+- **A frozen launch installs the pins.** Each launch installs `claude`, `gh` and
+  `deno` at exactly the configured versions and logs one line per tool
+  (`Claude CLI pinned to 2.0.76 (update_mode=frozen)`), so editing
+  `pinned_tool_versions` and relaunching is all it takes to move a frozen host.
+  A tool already at its pin is left alone; an install that does not land the
+  requested version fails loudly naming the tool, the requested version and the
+  installed one, so a launch never continues quietly on a version nobody chose.
+  The weekly interval, the version floors and the release-age quarantine are
+  `dynamic`-mode machinery and do not apply — the quarantine keeps an
+  unattended "latest" pull off a just-published release, whereas a pin is a
+  human's recorded choice, logged at install so it stays auditable.
+- **Dynamic ignores the pins, it does not reject them.** Flipping back to
+  `dynamic` needs one edit — the stale pins stay in the file and nothing reads
+  them.
+- **Setup asks for all of it.** `./setup.sh` runs `setup update-mode`, which
+  asks for the mode and — when the answer is `frozen` — for the pinned ref and
+  one exact version per tool. The ref is validated by resolving it in the
+  worker checkout after a fetch, so a ref that does not resolve is rejected by
+  name and nothing invalid reaches the file. Each version prompt defaults to
+  what `dynamic` mode would install today, and blank accepts the default
+  everywhere, so a re-run that presses Enter throughout leaves `.config.json`
+  unchanged. A run with no terminal never asks: existing values are left alone
+  and a fresh config is defaulted to `dynamic`. `setup.ps1` does not ask yet —
+  a Windows host sets these keys by hand, and the Windows counterpart is a
+  follow-up. The prompts in the order they are asked are
+  [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
+- **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
+  see the resolved mode without re-parsing `.config.json`.
+- **Frozen holds the checkout at the pin.** Before each launch the host-side
+  checkout update leaves the worker checkout on `pinned_ref` instead of
+  resetting it to the tip of the default branch, and says so in `run_core.log`
+  (Issue #624) — see [Host-Side Checkout Update](#-host-side-checkout-update).
+  Because the container image reference is derived from the checkout's
+  content, a frozen checkout holds the image steady too.
+
+```mermaid
+flowchart LR
+    C[".config.json"] --> R{"update_mode"}
+    R -->|absent| D["dynamic (default)"]
+    R -->|dynamic| D
+    R -->|frozen| P{"pinned_ref +<br/>all 3 tool versions?"}
+    P -->|yes| F["frozen"]
+    P -->|no / malformed| X["fail loud —<br/>field named"]
+    R -->|anything else| X
+```
+
+What the resolved mode does to the tool updates at launch:
+
+```mermaid
+flowchart TD
+    L["Launch → checkSoftwareUpdates"] --> M{"update_mode"}
+    M -->|dynamic| I{"interval elapsed<br/>or below floor?"}
+    I -->|no| S["skip"]
+    I -->|yes| Q["release-age quarantine<br/>→ latest eligible"]
+    M -->|frozen| T["for claude, gh, deno"]
+    T --> A{"already at its pin?"}
+    A -->|yes| N["log 'already at the pinned version'<br/>— no install"]
+    A -->|no| P2["install that exact version<br/>then verify"]
+    P2 --> V{"version matches?"}
+    V -->|yes| K["record success"]
+    V -->|no| E["fail loud — tool,<br/>requested and installed named"]
+    style E fill:#c92a2a,stroke:#7f1d1d,color:#fff
+```
+
+#### What each mode means for maintenance
+
+- **A dynamic host has no per-machine version upkeep.** It tracks the tip of
+  the default branch (`main`) at every launch and installs the latest eligible
+  `claude`, `gh` and `deno` on the weekly cadence, subject to the version
+  floors and the release-age quarantine. Nobody edits a version on that host,
+  ever — it is the right choice for a fleet that should move together.
+- **A frozen host stays exactly where it is pinned.** New commits on `main` and
+  new tool releases never move it: the checkout is held at `pinned_ref` and the
+  three tools are installed at `pinned_tool_versions` on every launch. The
+  upkeep it does have is deliberate — someone chooses the next pin, edits it,
+  and relaunches — which is the whole point on a host that must reproduce a
+  known-good state (a release candidate under evaluation, a customer
+  deployment, a machine bisecting a regression).
+
+#### Choosing a pin
+
+Pin to a **release tag**. Every merge to `main` is tagged with the next patch
+semver automatically (`1.0.0`, `1.0.1`, …) — see
+[Release tagging](RELEASE-TAGGING.md) — and those tags exist precisely so a
+frozen host has something meaningful to name. `"pinned_ref": "1.0.7"` says what
+the host is running in a way that a raw SHA does not, and `git log 1.0.6..1.0.7`
+says what moving to the next tag would bring in.
+
+A commit SHA is still accepted, and is the right answer when the state you want
+is not a tagged one — a specific merge you are bisecting, for example. Either
+way the ref must exist on `origin`: the launch-time checkout fetches before it
+resolves, and a ref that resolves nowhere is a loud failure rather than a
+silent fall back to the tip.
+
+#### Moving a pin by hand
+
+Editing `.config.json` is the supported way to move a frozen host, and
+**re-running setup is not required**:
+
+1. Edit `pinned_ref` to the tag or SHA you want, and/or any entry under
+   `pinned_tool_versions`.
+2. Relaunch (`./run.sh`, or wait for the next scheduled launch).
+3. The launcher's checkout update fetches and checks the worker checkout out
+   onto the new `pinned_ref`, and the run installs exactly the versions in
+   `pinned_tool_versions`, logging one line per tool
+   (`Claude CLI pinned to 2.0.76 (update_mode=frozen)`).
+
+Nothing is deferred to a weekly interval — the interval, the floors and the
+quarantine are `dynamic`-mode machinery — so the edit takes effect at the very
+next launch. An unresolvable ref, a malformed value or a `frozen` host missing
+any of the four required values fails loudly naming the field, so a typo never
+silently drags the host back to the tip. Setup's prompts write the same fields;
+the only thing setup adds is validating the ref while you are still sitting
+there.
+
+#### `VIBE_SKIP_CHECKOUT_UPDATE` is not frozen mode
+
+`VIBE_SKIP_CHECKOUT_UPDATE=1` is an **environment-variable escape hatch for one
+checkout**: it turns the host-side checkout update off entirely, for a
+development tree someone is working in or a CI tree that is a pull-request
+merge commit and must not be reset mid-run. It says so loudly and is never
+silent. Frozen mode is a **recorded configuration decision** that still updates
+the checkout — onto `pinned_ref` — and additionally pins the three tool
+versions, which the skip does nothing about. The skip wins over both modes when
+both are in play, so a frozen host with the variable set stays on whatever the
+checkout already holds. Use the variable for development trees and CI; use
+`update_mode: "frozen"` for a host that must reproduce a known state. See
+[Host-Side Checkout Update](#-host-side-checkout-update).
+
 ### 🔄 Host-Side Checkout Update
 
 Before each launch, the launcher updates the worker checkout itself — `git
@@ -516,6 +710,10 @@ fetch origin`, then a hard reset to `origin/<default-branch>` and a
 Issue #513 retired the in-container reset, so nothing inside the container
 writes to `/workspace` and that mount can become read-only (Issue #509). The
 branch is read from the checkout's own `origin/HEAD`.
+
+The command runs before the launch plan is built, and so before the
+configuration load, so it reads `update_mode` and `pinned_ref` out of
+`.config.json` under `--base-dir` itself.
 
 ```bash
 deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \
@@ -538,6 +736,33 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   The streak lives in `~/logs/checkout-update-failure-streak` and a successful
   update resets it to zero. `--allow-sys=hostname` is what lets that title name
   the host; without it every host would share one report.
+- **A frozen host is held at its pin instead** (Issue #624). Under
+  `update_mode: "frozen"` the reset to `origin/<default-branch>` would defeat
+  the pin, so the command fetches (a tag pushed since the last launch has to
+  resolve), then checks the checkout out onto `pinned_ref` — commit SHA or tag,
+  detached HEAD included — and appends
+  `Checkout update skipped: update_mode=frozen, pinned to <ref>` to
+  `run_core.log`. The skip is never silent.
+- **A checkout already on the pin is not written to at all.** `HEAD` resolving
+  to `pinned_ref` means no fetch, no checkout, no clean — just the log line —
+  so a launch never churns the tree.
+- **A pin that does not resolve is loud.** An unknown `pinned_ref`, an
+  unreadable or malformed `.config.json`, an unrecognised `update_mode` or a
+  `frozen` host with no `pinned_ref` exits non-zero naming the offending value;
+  the launcher warns and launches on the existing checkout, which is still the
+  pinned one. Three such runs escalate through the same streak above.
+- **`VIBE_SKIP_CHECKOUT_UPDATE` wins over both modes**, with its usual message.
+
+```mermaid
+flowchart TD
+    S{"VIBE_SKIP_CHECKOUT_UPDATE"} -->|set| K["skip everything, say so"]
+    S -->|unset| M{"update_mode in<br/>.config.json"}
+    M -->|dynamic / absent| D["fetch → checkout branch →<br/>reset --hard origin/branch → clean"]
+    M -->|frozen| H{"HEAD == pinned_ref?"}
+    H -->|yes| L["log the skip only —<br/>no git write"]
+    H -->|no| F["fetch --tags → checkout --detach ref →<br/>reset --hard ref → clean"]
+    F -->|ref unresolvable| X["exit non-zero naming the ref —<br/>launcher warns, launches on the pin"]
+```
 
 ### 🧠 Phase Model Overrides
 

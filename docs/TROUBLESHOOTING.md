@@ -247,6 +247,23 @@ alone — a development tree, a CI merge commit — should set
 `VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
 raises nothing.
 
+On a host running `update_mode: "frozen"` the same warning appears with a
+different message (Issue #624):
+
+```text
+pinned_ref v9.9.9 does not resolve in /path/to/checkout — correct pinned_ref
+in .config.json (it takes a commit SHA or a tag that exists on origin), or set
+update_mode to "dynamic"
+```
+
+The pin is what the host is meant to run, so the launch continues on the
+checkout it already has. Correct `pinned_ref` in `.config.json` — a tag has to
+exist on `origin`, not only locally — or flip `update_mode` back to `dynamic`.
+Three such runs escalate through the same streak above. A frozen host that is
+working says so on every launch:
+`Checkout update skipped: update_mode=frozen, pinned to <ref>` in
+`run_core.log`.
+
 ## 🔐 The worker exits on a credential preflight error
 
 The worker reads credential *files* and never an interactive login or a host

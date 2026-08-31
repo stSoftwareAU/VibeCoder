@@ -21,7 +21,8 @@ set -euo pipefail
 #
 # Steps:
 #   1. Locate Deno on the host (the only host tool this script needs).
-#   2. Update the worker checkout to origin's default branch (Issue #512).
+#   2. Update the worker checkout - origin's default branch, or the pinned
+#      ref when update_mode is frozen (Issues #512, #624).
 #   3. Build the launch plan (runtime detection, image reference, mounts).
 #   4. Build the image when the content-derived reference is absent.
 #   5. Launch the container, propagate SIGTERM/SIGINT, and exit with the
@@ -268,6 +269,11 @@ fi
 #
 # --allow-sys=hostname: that escalation titles its issue with the host id, so
 # each host gets its own report instead of every host sharing one.
+#
+# The command reads update_mode and pinned_ref from .config.json itself, since
+# it runs before the configuration load: a frozen host is held at its pinned
+# ref rather than reset to the tip, and says so in the run-core log
+# (Issue #624).
 checkout_update_status=0
 bounded 300 "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \

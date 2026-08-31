@@ -874,7 +874,9 @@ and resets the checkout to `origin/<default-branch>`, the only update of that
 checkout since Issue #513 retired the in-container reset, so nothing inside
 the container writes to `/workspace` — and then builds the launch plan below. A failed update warns and the launch continues on the existing
 checkout; `VIBE_SKIP_CHECKOUT_UPDATE` turns the step off for a development
-checkout or a CI tree. There is no other branch: the worker runs in the
+checkout or a CI tree. Under `update_mode: "frozen"` the checkout is held at
+`pinned_ref` rather than reset to the tip, and the skip is logged with its
+mode and ref (Issue #624). There is no other branch: the worker runs in the
 container or not at all.
 
 ```mermaid

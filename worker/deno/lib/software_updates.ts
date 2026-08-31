@@ -17,17 +17,37 @@
  * the exact ref its verdict dated (Issue #3952) — a release tag for a binary
  * extension, the default branch's HEAD sha for a script one. See
  * `tool_release_age.ts`.
+ *
+ * A caller may instead ask for one **exact version** through
+ * `targetVersion` (Issue #623). That path installs the published artefact for
+ * that version — the npm tarball for the Claude CLI, the `cli/cli` release
+ * archive for `gh`, `deno upgrade <version>` for Deno — leaves a tool already
+ * at that version alone, and throws when the version afterwards does not match.
+ * The age gate stays exactly as it was for the unpinned "latest" path, which is
+ * still what a caller gets when `targetVersion` is absent.
+ *
+ * `checkSoftwareUpdates` picks between the two from `update_mode` (Issue #625):
+ * `dynamic` — the default — behaves exactly as it always has, while `frozen`
+ * installs the exact `pinned_tool_versions` for all three tools on every
+ * launch, ahead of the interval and floor gates.
  */
 
-import type { Logger, Result } from "../types.ts";
+import type {
+  Logger,
+  PinnedToolVersions,
+  Result,
+  UpdateMode,
+} from "../types.ts";
 import {
   CLAUDE_CLI_NPM_PACKAGE,
   createReleaseAgeGate,
   DENO_RELEASE_REPO,
   GH_CLI_RELEASE_REPO,
+  NPM_REGISTRY_BASE,
   parseGhExtensionList,
   type ReleaseAgeGate,
   type ReleaseAgeVerdict,
+  type ReleaseChannel,
 } from "./tool_release_age.ts";
 
 /** Default update check interval: 7 days in seconds. */
@@ -98,6 +118,18 @@ export interface SoftwareUpdateOptions {
   ageGate?: ReleaseAgeGate;
   /** Injectable environment lookup (tests inject a fixed map). */
   env?: (name: string) => string | undefined;
+  /**
+   * How this host tracks releases (Issue #625, `.config.json` `update_mode`).
+   * Absent or `"dynamic"` leaves every path exactly as it was; `"frozen"`
+   * installs {@link pinnedToolVersions} instead of checking for updates.
+   */
+  updateMode?: UpdateMode;
+  /**
+   * Exact versions a `frozen` host installs (Issue #625, `.config.json`
+   * `pinned_tool_versions`). Ignored in `dynamic` mode, so a host that flipped
+   * back keeps its stale pins without acting on them.
+   */
+  pinnedToolVersions?: PinnedToolVersions;
 }
 
 /**
@@ -474,9 +506,19 @@ export async function runUpdateWithRetry(
 }
 
 /** Shared per-tool update options. */
-interface ToolUpdateOptions {
+export interface ToolUpdateOptions {
   /** Skip the update entirely. */
   skip?: boolean;
+  /**
+   * Install this exact version instead of "whatever is latest" (Issue #623).
+   *
+   * When absent, every updater behaves exactly as it did before: the
+   * release-age gate resolves the candidate and the tool's own upgrade command
+   * runs. When present, the gate is bypassed — a pinned version is an explicit
+   * choice, and the gate exists to control unpinned "latest" installs — the
+   * exact version is installed, and a mismatch afterwards throws.
+   */
+  targetVersion?: string;
   /** Timeout per attempt in seconds (default: 120). */
   timeout?: number;
   /** Retry configuration (default: 3 attempts, [30, 90, 300] backoff). */
@@ -559,13 +601,371 @@ function persistSuccess(
   }
 }
 
+// ---------- Exact-version (pinned) installs (Issue #623) ----------
+
+/** Tools that can be installed at an exact version (Issue #623). */
+export type PinnedTool = "claude" | "gh" | "deno";
+
+/** Human-readable label per tool, used in log lines and error messages. */
+const TOOL_LABELS: Readonly<Record<PinnedTool, string>> = {
+  claude: "Claude CLI",
+  gh: "GH CLI",
+  deno: "Deno",
+};
+
+/** Release channel each tool's "latest" version is published through. */
+const TOOL_CHANNELS: Readonly<Record<PinnedTool, ReleaseChannel>> = {
+  claude: { kind: "npm", pkg: CLAUDE_CLI_NPM_PACKAGE },
+  gh: { kind: "github", repo: GH_CLI_RELEASE_REPO },
+  deno: { kind: "github", repo: DENO_RELEASE_REPO },
+};
+
+/** Canonical order every tool sweep follows: claude → gh → deno. */
+const UPDATE_TOOLS: readonly PinnedTool[] = ["claude", "gh", "deno"];
+
+/**
+ * Version shape accepted as a pinned install target (Issue #623).
+ *
+ * The value is interpolated into a download URL and a command line, so only a
+ * plain semver (with an optional pre-release suffix) is accepted — anything
+ * else is refused loudly rather than fetched.
+ */
+const PINNED_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+
+/** The commands that install one pinned version, plus best-effort cleanup. */
+interface PinnedInstallPlan {
+  /** Commands run in order; the first failure aborts the install. */
+  commands: string[][];
+  /** Commands run afterwards regardless of outcome; failures are ignored. */
+  cleanup: string[][];
+}
+
+/** Directory downloads are staged in. Falls back to `/tmp`. */
+function stagingDir(): string {
+  let dir: string | undefined;
+  try {
+    dir = Deno.env.get("TMPDIR") ?? Deno.env.get("TMP");
+  } catch {
+    dir = undefined;
+  }
+  return (dir ?? "/tmp").replace(/\/+$/, "") || "/tmp";
+}
+
+/**
+ * The `gh` release archive for one version on one platform (Issue #623).
+ *
+ * Mirrors the naming `container/Containerfile` already relies on —
+ * `gh_<version>_<os>_<arch>` — including `gh`'s own quirks: macOS archives are
+ * zipped and spelled `macOS`, Linux archives are gzipped tarballs. Returns null
+ * for a platform `cli/cli` publishes no such archive for, so the caller can
+ * fail loud instead of fetching a URL that does not exist.
+ */
+export function ghReleaseArchive(
+  version: string,
+  os: string = Deno.build.os,
+  arch: string = Deno.build.arch,
+): { dir: string; archive: string; url: string; zipped: boolean } | null {
+  const goarch = arch === "x86_64"
+    ? "amd64"
+    : arch === "aarch64"
+    ? "arm64"
+    : null;
+  const osName = os === "linux" ? "linux" : os === "darwin" ? "macOS" : null;
+  if (!goarch || !osName) return null;
+  const zipped = osName === "macOS";
+  const dir = `gh_${version}_${osName}_${goarch}`;
+  const archive = `${dir}.${zipped ? "zip" : "tar.gz"}`;
+  return {
+    dir,
+    archive,
+    zipped,
+    url:
+      `https://github.com/${GH_CLI_RELEASE_REPO}/releases/download/v${version}/${archive}`,
+  };
+}
+
+/**
+ * Resolve the path the installed `gh` binary occupies (Issue #623).
+ *
+ * A pinned `gh` install replaces the binary already on PATH, so the exact
+ * version the caller asked for is the one that runs. Returns null when `gh`
+ * cannot be located — the caller then fails loud rather than guessing a prefix.
+ */
+async function resolveGhBinaryPath(
+  runFn: NonNullable<UpdateRetryOptions["runFn"]>,
+): Promise<string | null> {
+  const probe = await runFn(["which", "gh"], 5);
+  if (!probe.ok || probe.value.exitCode !== 0) return null;
+  return probe.value.output
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("/")) ?? null;
+}
+
+/**
+ * Build the command sequence that installs one exact version (Issue #623).
+ *
+ * Each tool follows the pattern the container image already uses for its
+ * pinned tools: fetch the published artefact for that exact version, then
+ * install from the local file — never a floating "latest".
+ */
+async function planPinnedInstall(
+  tool: PinnedTool,
+  version: string,
+  runFn: NonNullable<UpdateRetryOptions["runFn"]>,
+): Promise<Result<PinnedInstallPlan>> {
+  const fail = (message: string): Result<PinnedInstallPlan> => ({
+    ok: false,
+    error: new Error(message),
+  });
+
+  if (tool === "deno") {
+    // `deno upgrade` already takes a version argument.
+    return {
+      ok: true,
+      value: { commands: [["deno", "upgrade", version]], cleanup: [] },
+    };
+  }
+
+  const tmp = stagingDir();
+
+  if (tool === "claude") {
+    const tarball = `${tmp}/claude-code-${version}.tgz`;
+    const url =
+      `${NPM_REGISTRY_BASE}/${CLAUDE_CLI_NPM_PACKAGE}/-/claude-code-${version}.tgz`;
+    return {
+      ok: true,
+      value: {
+        commands: [
+          ["curl", "-fsSL", "-o", tarball, url],
+          ["npm", "install", "-g", "--ignore-scripts", tarball],
+        ],
+        cleanup: [["rm", "-f", tarball]],
+      },
+    };
+  }
+
+  const asset = ghReleaseArchive(version);
+  if (!asset) {
+    return fail(
+      `no gh ${version} release archive is published for ${Deno.build.os}/${Deno.build.arch}`,
+    );
+  }
+  const destination = await resolveGhBinaryPath(runFn);
+  if (!destination) {
+    return fail(
+      "the installed gh binary could not be located, so the pinned binary has nowhere to go",
+    );
+  }
+  const archive = `${tmp}/${asset.archive}`;
+  const extracted = `${tmp}/${asset.dir}`;
+  return {
+    ok: true,
+    value: {
+      commands: [
+        ["curl", "-fsSL", "-o", archive, asset.url],
+        asset.zipped
+          ? ["unzip", "-o", "-q", archive, "-d", tmp]
+          : ["tar", "-xzf", archive, "-C", tmp],
+        ["install", "-m", "0755", `${extracted}/bin/gh`, destination],
+      ],
+      cleanup: [["rm", "-rf", archive, extracted]],
+    },
+  };
+}
+
+/**
+ * Whether version output reports exactly `version` (Issue #623).
+ *
+ * Returns null when either side has no parseable semver, so the caller can
+ * distinguish "different version" from "could not tell".
+ */
+export function versionMatchesExactly(
+  installedOutput: string,
+  version: string,
+): boolean | null {
+  const installed = parseSemver(installedOutput);
+  const wanted = parseSemver(version);
+  if (!installed || !wanted) return null;
+  return compareSemver(installed, wanted) === 0;
+}
+
+/**
+ * Re-read a tool's version after a pinned install and fail loud on a mismatch
+ * (Issue #623).
+ *
+ * Uses the same reader as the floor check (`VERSION_COMMANDS` via
+ * {@link makeVersionReader}) rather than a second version reader. Unlike the
+ * floor check — which warns and waits for the next interval — a pinned install
+ * that did not land the requested version throws, naming the requested and the
+ * actual version: silently leaving the host on an unpinned tool is exactly the
+ * silent failure this path exists to prevent.
+ */
+async function verifyPinnedVersion(
+  logger: Logger,
+  tool: PinnedTool,
+  version: string,
+  readVersion: (tool: string) => Promise<string | null>,
+): Promise<void> {
+  const label = TOOL_LABELS[tool];
+  const output = await readVersion(tool);
+  if (output === null) {
+    throw new Error(
+      `${label} pinned install of ${version} cannot be verified: the installed version could not be read`,
+    );
+  }
+  const matches = versionMatchesExactly(output, version);
+  if (matches === null) {
+    throw new Error(
+      `${label} pinned install of ${version} cannot be verified: no version could be parsed from "${output.trim()}"`,
+    );
+  }
+  if (!matches) {
+    const installed = parseSemver(output)!;
+    throw new Error(
+      `${label} version mismatch after a pinned install: requested ${version}, installed ${
+        installed.join(".")
+      }`,
+    );
+  }
+  logger.info(`${label} is now at the pinned version ${version}`);
+}
+
+/**
+ * Install one tool at an exact version (Issue #623).
+ *
+ * A tool already reporting that version is left alone — a launch must not
+ * reinstall on every run. Otherwise the artefact for exactly that version is
+ * fetched and installed, and the result is verified: a failed install, an
+ * unverifiable version, or a version that does not match throws with both the
+ * requested and the actual version named.
+ */
+export async function installPinnedVersion(
+  logger: Logger,
+  tool: PinnedTool,
+  version: string,
+  options: ToolUpdateOptions = {},
+): Promise<void> {
+  const label = TOOL_LABELS[tool];
+  if (!PINNED_VERSION_PATTERN.test(version)) {
+    throw new Error(
+      `${label} pinned install refused: "${version}" is not a valid version`,
+    );
+  }
+
+  const retryOpts = buildRetryOptions(options);
+  const runFn = retryOpts.runFn ?? runWithTimeout;
+  const readVersion = makeVersionReader(runFn);
+
+  const before = await readVersion(tool);
+  if (before !== null && versionMatchesExactly(before, version) === true) {
+    logger.info(
+      `${label} is already at the pinned version ${version} — nothing to install`,
+    );
+    return;
+  }
+
+  const plan = await planPinnedInstall(tool, version, runFn);
+  if (!plan.ok) {
+    throw new Error(
+      `${label} pinned install of ${version} failed — ${plan.error.message}`,
+    );
+  }
+
+  logger.info(`Installing ${label} ${version} (pinned)...`);
+
+  let failure: string | null = null;
+  for (const cmd of plan.value.commands) {
+    const result = await runUpdateWithRetry(
+      logger,
+      `${label} ${version}`,
+      cmd,
+      retryOpts,
+    );
+    if (!result.success) {
+      failure = `\`${cmd[0]}\` failed (exit ${result.finalExitCode})${
+        result.finalOutput ? `: ${result.finalOutput}` : ""
+      }`;
+      break;
+    }
+  }
+  // Cleanup is best-effort: a leftover download must not mask the outcome.
+  for (const cmd of plan.value.cleanup) await runFn(cmd, 30);
+
+  if (failure) {
+    throw new Error(
+      `${label} pinned install of ${version} failed — ${failure}`,
+    );
+  }
+
+  await verifyPinnedVersion(logger, tool, version, readVersion);
+  persistSuccess(logger, tool, options);
+}
+
+/** What dynamic mode would install for one tool right now (Issue #623). */
+export interface DynamicVersionCandidate {
+  /** Tool the candidate applies to. */
+  tool: PinnedTool;
+  /** Version dynamic mode would install, or null when unresolved. */
+  version: string | null;
+  /** True when a version was resolved and it clears the quarantine window. */
+  eligible: boolean;
+  /** Human-readable explanation, suitable for a prompt or a log line. */
+  reason: string;
+}
+
+/**
+ * Report the version dynamic mode would install right now for one tool
+ * (Issue #623).
+ *
+ * Resolved through the existing release-age gate, so the answer is the version
+ * an unpinned update would actually adopt — not merely upstream's newest. A
+ * version too new to clear the quarantine window, or one that cannot be
+ * resolved at all, is reported as ineligible with the gate's own reason rather
+ * than being reported as a usable default.
+ */
+export async function resolveDynamicVersion(
+  logger: Logger,
+  tool: PinnedTool,
+  options: ToolUpdateOptions = {},
+): Promise<DynamicVersionCandidate> {
+  const verdict = await resolveAgeGate(logger, options).check(
+    TOOL_CHANNELS[tool],
+  );
+  return {
+    tool,
+    version: verdict.eligible ? verdict.version : null,
+    eligible: verdict.eligible && verdict.version !== null,
+    reason: verdict.eligible && !verdict.version
+      ? `${
+        TOOL_LABELS[tool]
+      }: the release-age check passed but resolved no version to install.`
+      : verdict.reason,
+  };
+}
+
+/**
+ * Report what dynamic mode would install right now for every tool, in the
+ * canonical claude → gh → deno order (Issue #623).
+ */
+export function resolveDynamicVersions(
+  logger: Logger,
+  options: ToolUpdateOptions = {},
+): Promise<DynamicVersionCandidate[]> {
+  return Promise.all(
+    UPDATE_TOOLS.map((tool) => resolveDynamicVersion(logger, tool, options)),
+  );
+}
+
 /**
  * Update Claude CLI to latest version with retry on transient failures (Issue #1496).
  *
  * Gated on the release age of `@anthropic-ai/claude-code` on npm (Issue #3655).
- * `claude update` exposes no version argument, so the upgrade cannot be pinned;
- * the age gate is therefore the control that keeps a just-published — possibly
- * hijacked — release out of the fleet.
+ * `claude update` exposes no version argument, so this unpinned upgrade cannot
+ * name a version; the age gate is therefore the control that keeps a
+ * just-published — possibly hijacked — release out of the fleet. A caller that
+ * supplies `targetVersion` takes the pinned path instead (Issue #623), which
+ * installs that exact release from its npm tarball.
  */
 export async function updateClaudeCli(
   logger: Logger,
@@ -573,6 +973,18 @@ export async function updateClaudeCli(
 ): Promise<void> {
   if (options.skip) {
     logger.info("Claude CLI update skipped (skipClaude=true)");
+    return;
+  }
+
+  // Pinned install (Issue #623): `claude update` takes no version argument, so
+  // the exact release is installed from its npm tarball instead.
+  if (options.targetVersion) {
+    await installPinnedVersion(
+      logger,
+      "claude",
+      options.targetVersion,
+      options,
+    );
     return;
   }
 
@@ -682,7 +1094,9 @@ async function upgradeGhExtensions(
  * `brew upgrade gh` takes no version argument, so the gate approximates the
  * formula's age with the age of the upstream `gh` release the formula tracks —
  * a formula-only compromise that does not touch `cli/cli` is out of its reach
- * and remains covered by Homebrew's own signing.
+ * and remains covered by Homebrew's own signing. A caller that supplies
+ * `targetVersion` takes the pinned path instead (Issue #623), installing that
+ * exact `cli/cli` release archive over the `gh` binary already on PATH.
  */
 export async function updateGhCli(
   logger: Logger,
@@ -690,6 +1104,14 @@ export async function updateGhCli(
 ): Promise<void> {
   if (options.skip) {
     logger.info("GH CLI update skipped (skipGh=true)");
+    return;
+  }
+
+  // Pinned install (Issue #623): `brew upgrade gh` takes no version argument,
+  // so the exact release archive for this platform is installed instead. Only
+  // the binary is pinned — extensions keep their own age-gated upgrade path.
+  if (options.targetVersion) {
+    await installPinnedVersion(logger, "gh", options.targetVersion, options);
     return;
   }
 
@@ -737,7 +1159,8 @@ export async function updateGhCli(
  * The upgrade is **pinned** to the release the quarantine gate actually
  * approved (Issue #3655): `deno upgrade <version>` rather than a bare
  * `deno upgrade`, so a release published between the age check and the upgrade
- * cannot slip in unchecked.
+ * cannot slip in unchecked. A caller that supplies `targetVersion` pins to that
+ * version instead of the gate's verdict (Issue #623).
  */
 export async function updateDeno(
   logger: Logger,
@@ -745,6 +1168,15 @@ export async function updateDeno(
 ): Promise<void> {
   if (options.skip) {
     logger.info("Deno update skipped (skipDeno=true)");
+    return;
+  }
+
+  // Pinned install (Issue #623): `deno upgrade` already accepts a version, so
+  // the requested one is used in place of the age-gate verdict. The absent-
+  // binary probe below is deliberately not consulted — a pinned install that
+  // cannot run must fail loud, not return quietly.
+  if (options.targetVersion) {
+    await installPinnedVersion(logger, "deno", options.targetVersion, options);
     return;
   }
 
@@ -781,6 +1213,64 @@ export async function updateDeno(
     logger.info("Deno update completed successfully");
     if (result.finalOutput) logger.info(`Update output: ${result.finalOutput}`);
     persistSuccess(logger, "deno", options);
+  }
+}
+
+/** The updater for each tool, shared by the dynamic and frozen paths. */
+const TOOL_UPDATERS: Readonly<
+  Record<PinnedTool, (l: Logger, o: ToolUpdateOptions) => Promise<void>>
+> = {
+  claude: updateClaudeCli,
+  gh: updateGhCli,
+  deno: updateDeno,
+};
+
+/**
+ * Install the exact versions a frozen host is held at (Issue #625).
+ *
+ * Every tool takes the pinned path added in #623, so a tool already at its
+ * version is a no-op and a pinned install that does not land the requested
+ * version throws with both versions named — a launch never quietly continues
+ * on a different version than the one recorded in `.config.json`.
+ *
+ * **The release-age quarantine is deliberately not applied here.** That gate
+ * exists to keep a just-published — possibly hijacked — release out of an
+ * unattended "latest" pull; a frozen version is instead a human's deliberate
+ * choice recorded in config, so there is no unattended selection to guard. The
+ * pinned version is logged at install so the choice stays auditable.
+ *
+ * @throws When a tool has no pinned version, or its pinned install fails.
+ */
+async function installFrozenToolVersions(
+  logger: Logger,
+  pinned: PinnedToolVersions,
+  toolOpts: ToolUpdateOptions,
+  skips: Record<string, boolean>,
+): Promise<void> {
+  for (const tool of UPDATE_TOOLS) {
+    const label = TOOL_LABELS[tool];
+    const version = pinned[tool]?.trim();
+    if (!version) {
+      // Config load already refuses a half-pinned frozen host, so reaching
+      // here means the options were assembled by hand. Continuing would leave
+      // this tool floating on whatever the host happens to have.
+      throw new Error(
+        `update_mode is frozen but ${label} has no pinned version — set ` +
+          `pinned_tool_versions.${tool} rather than leaving the tool to drift`,
+      );
+    }
+    if (skips[tool]) {
+      logger.warn(
+        `${label} is pinned to ${version} (update_mode=frozen) but its ` +
+          `update is suppressed (${
+            SKIP_ENV_NAME[tool] ?? "skip flag"
+          }) — the ` +
+          `host may drift off its pin`,
+      );
+      continue;
+    }
+    logger.info(`${label} pinned to ${version} (update_mode=frozen)`);
+    await TOOL_UPDATERS[tool](logger, { ...toolOpts, targetVersion: version });
   }
 }
 
@@ -958,7 +1448,12 @@ async function verifyFloorAfterUpdate(
 }
 
 /**
- * Orchestrate the software update check (Issues #906, #1496, #2622).
+ * Orchestrate the software update check (Issues #906, #1496, #2622, #625).
+ *
+ * Under `update_mode: "frozen"` (Issue #625) the three tools are installed at
+ * their configured `pinned_tool_versions` and nothing below applies: no
+ * interval, no floor, no release-age quarantine. Everything that follows
+ * describes the `dynamic` default, which is unchanged.
  *
  * Runs an update for a tool when *either* the interval has elapsed *or* the
  * installed version is below a configured floor (`minVersions`). The interval
@@ -1008,6 +1503,37 @@ export async function checkSoftwareUpdates(
   const minVersions = options.minVersions ?? {};
   const readVersion = options.readVersion ??
     makeVersionReader(options.retry?.runFn ?? runWithTimeout);
+
+  const toolOpts: ToolUpdateOptions = {
+    timeout,
+    retry: options.retry,
+    timestampDir,
+    now: nowFn,
+    quarantineHours: options.quarantineHours,
+    ageGate: options.ageGate,
+  };
+  const skips: Record<string, boolean> = {
+    claude: options.skipClaude ?? false,
+    gh: options.skipGh ?? false,
+    deno: options.skipDeno ?? false,
+  };
+
+  // Frozen hosts install their pins on every launch (Issue #625). The interval
+  // and floor gates below are dynamic-mode machinery: a pin is the operator's
+  // recorded decision, and editing `pinned_tool_versions` by hand is the
+  // supported way to move a frozen host, so the edit has to take effect on the
+  // next launch rather than at the end of the weekly cadence. Each install is a
+  // no-op once the tool reports its pinned version, so running every launch
+  // costs one `--version` read per tool.
+  if (options.updateMode === "frozen") {
+    await installFrozenToolVersions(
+      logger,
+      options.pinnedToolVersions ?? {},
+      toolOpts,
+      skips,
+    );
+    return;
+  }
 
   const intervalElapsed = shouldCheckForUpdates(
     timestampDir,
@@ -1066,31 +1592,8 @@ export async function checkSoftwareUpdates(
       })...`,
   );
 
-  const toolOpts: ToolUpdateOptions = {
-    timeout,
-    retry: options.retry,
-    timestampDir,
-    now: nowFn,
-    quarantineHours: options.quarantineHours,
-    ageGate: options.ageGate,
-  };
-
-  const updaters: Record<
-    string,
-    (l: Logger, o: ToolUpdateOptions) => Promise<void>
-  > = {
-    claude: updateClaudeCli,
-    gh: updateGhCli,
-    deno: updateDeno,
-  };
-  const skips: Record<string, boolean> = {
-    claude: options.skipClaude ?? false,
-    gh: options.skipGh ?? false,
-    deno: options.skipDeno ?? false,
-  };
-
   // Preserve the historical claude → gh → deno ordering.
-  for (const tool of ["claude", "gh", "deno"]) {
+  for (const tool of UPDATE_TOOLS) {
     if (!(intervalElapsed || floorTriggered.has(tool))) continue;
     const skip = skips[tool] ?? false;
     const floor = belowFloor.get(tool);
@@ -1101,7 +1604,7 @@ export async function checkSoftwareUpdates(
         })`,
       );
     }
-    await updaters[tool]!(logger, { ...toolOpts, skip });
+    await TOOL_UPDATERS[tool](logger, { ...toolOpts, skip });
     if (floorTriggered.has(tool)) {
       // Record the attempt regardless of outcome so an unreachable floor does
       // not retry-loop every iteration.
@@ -1133,6 +1636,13 @@ export interface SoftwareUpdateConfig {
   updateRetryMaxAttempts?: number;
   /** Exponential backoff delays between retries. */
   updateRetryBackoffSeconds?: readonly number[];
+  /**
+   * How this host tracks releases (Issue #625, `.config.json` `update_mode`).
+   * Absent reads as `dynamic`.
+   */
+  updateMode?: UpdateMode;
+  /** Exact versions a frozen host installs (Issue #625). */
+  pinnedToolVersions?: PinnedToolVersions;
 }
 
 /** Read an optional positive integer from the environment. */
@@ -1171,6 +1681,11 @@ export function softwareUpdateOptionsFromEnv(
     skipGh: getEnv("SKIP_GH_UPDATE") === "true",
     skipDeno: getEnv("SKIP_DENO_UPDATE") === "true",
     quarantineHours: envInt(getEnv, "VIBE_BUMP_QUARANTINE_HOURS"),
+    // Issue #625: the mode and its pins reach every entry point through this
+    // one builder, so a frozen host installs its pins on whichever path
+    // launched it.
+    updateMode: config.updateMode,
+    pinnedToolVersions: config.pinnedToolVersions,
     retry: {
       maxAttempts: config.updateRetryMaxAttempts,
       backoffSeconds: config.updateRetryBackoffSeconds,

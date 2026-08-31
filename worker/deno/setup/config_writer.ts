@@ -6,6 +6,7 @@
  *   - Pre-commit hook installation
  *   - Git info/exclude pattern management
  *   - Retired hook cleanup
+ *   - The update-mode fields a frozen host pins (Issue #626)
  *
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
@@ -17,6 +18,8 @@ import {
   pruneOrphanRepoConfig,
   writeConfigFile,
 } from "./config_setup.ts";
+import { UPDATE_MODES } from "../lib/config_defaults.ts";
+import type { PinnedToolVersions, Result, UpdateMode } from "../types.ts";
 
 export {
   applyServiceAccountDefault,
@@ -353,4 +356,217 @@ ${VIBE_HOOK_MARKER}
     ok: true,
     message: "Added config file patterns to .git/info/exclude",
   };
+}
+
+// ── Update-mode fields (Issue #626, part of #583) ───────────────────────
+
+/**
+ * The update-mode slice of `.config.json` (Issue #626).
+ *
+ * Every field is optional because a config written before Issue #622 carries
+ * none of them: an absent `update_mode` reads as `dynamic`, which is what
+ * every host did before the key existed.
+ */
+export interface UpdateModeSettings {
+  /** `dynamic` (the default) or `frozen`. */
+  update_mode?: UpdateMode;
+  /** Commit SHA or tag a frozen host is held at. */
+  pinned_ref?: string;
+  /** Exact tool versions a frozen host installs. */
+  pinned_tool_versions?: PinnedToolVersions;
+}
+
+/** The parsed config file plus the exact text it was parsed from. */
+interface ConfigRecord {
+  record: Record<string, unknown>;
+  /** `null` when the file does not exist yet. */
+  text: string | null;
+}
+
+/**
+ * Read `.config.json` as a plain record, failing loud on anything that stops
+ * the file meaning what it says.
+ *
+ * A missing file is not a failure — a first setup run has not written one yet.
+ * Unreadable or malformed content is, because the alternative is overwriting
+ * an operator's file on a guess.
+ */
+async function readConfigRecord(
+  configPath: string,
+): Promise<Result<ConfigRecord>> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(configPath);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { ok: true, value: { record: {}, text: null } };
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot read ${configPath}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      ),
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      error: new Error(
+        `${configPath} contains invalid JSON — fix it by hand before ` +
+          `setup can record the update mode.`,
+      ),
+    };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: new Error(
+        `${configPath} is not a JSON object — fix it by hand before setup ` +
+          `can record the update mode.`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: { record: parsed as Record<string, unknown>, text },
+  };
+}
+
+/** A trimmed non-empty string, or undefined for anything else. */
+function readString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Read the update-mode fields already in `.config.json` (Issue #626).
+ *
+ * These are what a re-run offers as its defaults, so pressing Enter through
+ * every prompt is a no-op. An `update_mode` the worker does not recognise is a
+ * fail-loud error rather than a silent reset to `dynamic`: a host that asked
+ * to be pinned must never be un-pinned by a typo nobody saw.
+ */
+export async function readUpdateModeSettings(
+  configPath: string,
+): Promise<Result<UpdateModeSettings>> {
+  const read = await readConfigRecord(configPath);
+  if (!read.ok) return read;
+
+  const record = read.value.record;
+  const settings: UpdateModeSettings = {};
+
+  const rawMode = record["update_mode"];
+  if (rawMode !== undefined) {
+    const mode = readString(rawMode);
+    if (!mode || !(UPDATE_MODES as readonly string[]).includes(mode)) {
+      return {
+        ok: false,
+        error: new Error(
+          `Invalid update_mode ${JSON.stringify(rawMode)} in ${configPath}. ` +
+            `Accepted values: ${UPDATE_MODES.join(", ")}.`,
+        ),
+      };
+    }
+    settings.update_mode = mode as UpdateMode;
+  }
+
+  const ref = readString(record["pinned_ref"]);
+  if (ref) settings.pinned_ref = ref;
+
+  const rawVersions = record["pinned_tool_versions"];
+  if (
+    typeof rawVersions === "object" && rawVersions !== null &&
+    !Array.isArray(rawVersions)
+  ) {
+    const versions: PinnedToolVersions = {};
+    const source = rawVersions as Record<string, unknown>;
+    const claude = readString(source["claude"]);
+    const gh = readString(source["gh"]);
+    const deno = readString(source["deno"]);
+    if (claude) versions.claude = claude;
+    if (gh) versions.gh = gh;
+    if (deno) versions.deno = deno;
+    if (Object.keys(versions).length > 0) {
+      settings.pinned_tool_versions = versions;
+    }
+  }
+
+  return { ok: true, value: settings };
+}
+
+/** True when the two values serialise identically. */
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+/**
+ * Merge the update-mode fields into `.config.json`, leaving every other key
+ * exactly as it was (Issue #626).
+ *
+ * A `dynamic` answer writes the mode alone: the pin fields are ignored in
+ * dynamic mode, not rejected, so a host can flip back and forth without
+ * retyping its pins (Issue #622). A `frozen` answer writes the ref and all
+ * three tool versions alongside it, so one setup run leaves one coherent file.
+ *
+ * @returns True when the file was rewritten, false when it already said this
+ */
+export async function writeUpdateModeConfig(
+  configPath: string,
+  settings: UpdateModeSettings,
+): Promise<Result<boolean>> {
+  const read = await readConfigRecord(configPath);
+  if (!read.ok) return read;
+
+  const next: Record<string, unknown> = { ...read.value.record };
+  let changed = false;
+
+  if (settings.update_mode !== undefined) {
+    if (!sameValue(next["update_mode"], settings.update_mode)) changed = true;
+    next["update_mode"] = settings.update_mode;
+  }
+
+  if (settings.update_mode === "frozen") {
+    if (settings.pinned_ref !== undefined) {
+      if (!sameValue(next["pinned_ref"], settings.pinned_ref)) changed = true;
+      next["pinned_ref"] = settings.pinned_ref;
+    }
+    if (settings.pinned_tool_versions !== undefined) {
+      if (
+        !sameValue(next["pinned_tool_versions"], settings.pinned_tool_versions)
+      ) {
+        changed = true;
+      }
+      next["pinned_tool_versions"] = settings.pinned_tool_versions;
+    }
+  }
+
+  // Nothing to say that the file does not already say: leave it untouched so
+  // a re-run that accepts every default cannot churn it.
+  if (!changed && read.value.text !== null) return { ok: true, value: false };
+
+  try {
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify(next, null, 2) + "\n",
+      { mode: 0o600 },
+    );
+    await Deno.chmod(configPath, 0o600);
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot write ${configPath}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      ),
+    };
+  }
+
+  return { ok: true, value: true };
 }
