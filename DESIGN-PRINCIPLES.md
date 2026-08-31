@@ -1830,7 +1830,7 @@ and claim handler.
 - [`worker/deno/lib/idle_task_claim_handler.ts`](worker/deno/lib/idle_task_claim_handler.ts)
   — Routes claimed `idle-task` issues to the template's `runTask()`.
 - [`worker/deno/lib/idle_task_templates/`](worker/deno/lib/idle_task_templates/)
-  — Per-template implementations. Seventeen production templates:
+  — Per-template implementations. Eighteen production templates:
   `security_scan_template.ts` (#1, security audit), `best_practices_template.ts`
   (#2, bucket-scoped best-practices review — see
   [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md)),
@@ -1875,8 +1875,14 @@ and claim handler.
   `duplicate_block_scanner.ts` pre-pass and biased towards silence because
   duplicated text is not duplicated knowledge and the wrong abstraction is worse
   than duplication, — see
-  [`docs/DUPLICATED-KNOWLEDGE-SCAN.md`](docs/DUPLICATED-KNOWLEDGE-SCAN.md)).
-  The idle-task filer picks uniformly at random (1/17 each) between the
+  [`docs/DUPLICATED-KNOWLEDGE-SCAN.md`](docs/DUPLICATED-KNOWLEDGE-SCAN.md));
+  and `retro_template.ts` (#18, LLM-only scan that retrospects the most recent
+  finished piece of work in a repository — a merged pull request, the issue it
+  closed, its commits, and its review and check feedback — and files at most one
+  suggestion-only issue proposing improvements to the **environment** the agent
+  worked in, never to the code that run wrote — see
+  [`docs/RETRO-SCAN.md`](docs/RETRO-SCAN.md)).
+  The idle-task filer picks uniformly at random (1/18 each) between the
   eighteen on every idle pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the

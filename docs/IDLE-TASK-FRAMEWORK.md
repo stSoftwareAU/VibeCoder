@@ -1594,7 +1594,7 @@ flowchart TD
 ### Weighting the template draw
 
 The template draw is **weighted** and **config-driven**. By default every
-registered template carries an equal weight, so the draw is uniform (1/17 each
+registered template carries an equal weight, so the draw is uniform (1/18 each
 with eighteen templates) — no behaviour change unless configured. An operator
 can bias the draw toward higher-priority templates (e.g. `security-scan` and
 `supply-chain-readiness`) via the `idle_task_template_weights` map in
