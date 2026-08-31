@@ -19,8 +19,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   runUpgrade,
-  upgradeCommand,
   UPGRADE_COMMAND_NAME,
+  upgradeCommand,
 } from "../commands/upgrade.ts";
 import { readCheckoutUpdateMode } from "../commands/worker_checkout_update.ts";
 import { validateUpdateModeSettings } from "../lib/config_validator.ts";

@@ -190,7 +190,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #504 added `merged-pr-issue-sweep` (count 140 → 141).
   // Issue #512 added `worker-checkout-update` (count 141 → 142).
   // Issue #688 added `release-manifest` (count 142 → 143).
-  assertEquals(commands.length, 143);
+  // Issue #691 added `upgrade` (count 143 → 144).
+  assertEquals(commands.length, 144);
+  assertEquals(commands.includes("upgrade"), true);
   assertEquals(commands.includes("release-manifest"), true);
   assertEquals(commands.includes("worker-checkout-update"), true);
   assertEquals(commands.includes("merged-pr-issue-sweep"), true);
