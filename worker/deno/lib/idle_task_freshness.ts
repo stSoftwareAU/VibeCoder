@@ -54,6 +54,7 @@ import "./idle_task_templates/alert_feed_template.ts";
 import "./idle_task_templates/workflow_annotation_scan_template.ts";
 import "./idle_task_templates/private_repo_reference_template.ts";
 import "./idle_task_templates/duplicated_knowledge_template.ts";
+import "./idle_task_templates/retro_template.ts";
 
 // ---------------------------------------------------------------------------
 // Constants

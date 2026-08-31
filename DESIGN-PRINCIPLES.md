@@ -1877,7 +1877,7 @@ and claim handler.
   than duplication, — see
   [`docs/DUPLICATED-KNOWLEDGE-SCAN.md`](docs/DUPLICATED-KNOWLEDGE-SCAN.md)).
   The idle-task filer picks uniformly at random (1/17 each) between the
-  seventeen on every idle pass.
+  eighteen on every idle pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
@@ -1893,7 +1893,7 @@ claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
 full canonical GitHub label set to the target repo, configures the
-default-branch protection "wall", seeds all seventeen idle-task wrappers
+default-branch protection "wall", seeds all eighteen idle-task wrappers
 in the target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
@@ -1922,7 +1922,7 @@ in the target repo, then comments and closes the add-repo issue.
   (through `escalateToHuman`), and the repo is **not** added.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
-  is delegated to the seventeen idle tasks. Visibility gating (which idle checks fire
+  is delegated to the eighteen idle tasks. Visibility gating (which idle checks fire
   on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only

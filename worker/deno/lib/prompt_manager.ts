@@ -188,6 +188,14 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     "KNOWN_OPEN_FINDING_IDS",
     "DUPLICATE_BLOCKS",
   ],
+  retro: [
+    // Issue #664 (template #18): suggestion-only retrospective on a
+    // finished run — environment improvements, not code changes. Same two
+    // dedup lists as the other scan templates; language-agnostic, no
+    // bucket, and no deterministic pre-pass (the artefacts are the input).
+    "SUPPRESSED_IDS",
+    "KNOWN_OPEN_FINDING_IDS",
+  ],
   // Issue #536 (parent #523): dead-code, deprecated-API and format-drift file
   // findings like the other scans but were unregistered, so
   // `validatePromptTemplate` refused the surface outright and nothing guarded
@@ -290,6 +298,9 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   // Issue #3807: doc-coverage carries the attribution footer like the
   // other idle-task scan templates; optional for consistency.
   doc_coverage: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
+  // Issue #664: retro carries the attribution footer like the other
+  // idle-task scan templates; optional for consistency.
+  retro: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
   // Issue #536: dead-code, deprecated-API and format-drift carry the
   // attribution footer like the rest of the family, and take the
   // all-open-issues dedup block on the same optional terms.
