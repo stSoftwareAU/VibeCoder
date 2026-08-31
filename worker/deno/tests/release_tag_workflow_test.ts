@@ -111,6 +111,71 @@ Deno.test("release-tag.yml - the tag is created only when the plan says so", asy
   );
 });
 
+/** The step that publishes the tool-version manifest (Issue #688). */
+function publishStep(steps: Step[]): Step {
+  const publish = steps.find((s) => s.run?.includes("release-manifest"));
+  assert(publish, "the job must publish the release tool-version manifest");
+  return publish;
+}
+
+Deno.test("release-tag.yml - the manifest is published for the commit's release tag", async () => {
+  const steps = tagJob(await loadWorkflow()).steps ?? [];
+  const publish = publishStep(steps);
+  // Keyed off the tag itself, not off should_tag: a re-run after a failed
+  // publish must still be able to publish for the tag already on the commit.
+  assertEquals(publish.if, "steps.plan.outputs.tag != ''");
+  assertEquals(publish.env?.["TAG"], "${{ steps.plan.outputs.tag }}");
+  assertEquals(publish.env?.["ASSET"], "tool-versions.json");
+  assert(
+    !publish.run?.includes("${{"),
+    "no ${{ }} expansion may appear inside a run: body",
+  );
+});
+
+Deno.test("release-tag.yml - the tag is created before anything is published", async () => {
+  const steps = tagJob(await loadWorkflow()).steps ?? [];
+  const create = steps.findIndex((s) => s.run?.includes("git/refs"));
+  const publish = steps.indexOf(publishStep(steps));
+  // The tag stays the workflow's first side effect: publishing the manifest
+  // must never gate, delay or roll back the tag a merge has already earned.
+  assert(create < publish, "the tag must be created before the manifest");
+});
+
+Deno.test("release-tag.yml - a release already carrying the asset is left alone", async () => {
+  const publish = publishStep(tagJob(await loadWorkflow()).steps ?? []);
+  const run = publish.run ?? "";
+  assert(
+    run.includes("gh release view") && run.includes("assets"),
+    "the publish must check for the asset before minting a new one",
+  );
+  assert(
+    run.includes("gh release upload") && run.includes("gh release create"),
+    "an existing release takes an upload; a missing one takes a create",
+  );
+  // --verify-tag: never mint a release for a tag that does not exist.
+  assert(run.includes("--verify-tag"), "the release must verify the tag");
+});
+
+Deno.test("release-tag.yml - the manifest generator runs on the pinned toolchain", async () => {
+  const steps = tagJob(await loadWorkflow()).steps ?? [];
+  const setup = steps.find((s) => s.uses?.startsWith("denoland/setup-deno@"));
+  assert(setup, "the job must install Deno to mint the manifest");
+  const ref = setup.uses?.split("@")[1] ?? "";
+  assert(/^[0-9a-f]{40}$/.test(ref), `setup-deno is not SHA-pinned: ${ref}`);
+  assertEquals(setup.with?.["deno-version-file"], ".deno-version");
+  assertEquals(setup.if, "steps.plan.outputs.tag != ''");
+
+  const run = publishStep(steps).run ?? "";
+  assert(
+    run.includes("worker/deno/mod.ts release-manifest --release"),
+    "the manifest must come from the tested command, not inline shell",
+  );
+  assert(
+    run.includes("--lock=worker/deno/deno.lock") && run.includes("--frozen"),
+    "the generator must run against the frozen dependency lock",
+  );
+});
+
 /** Run a git command in `cwd`, returning its trimmed stdout. */
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
@@ -168,7 +233,7 @@ Deno.test("release-tag - the plan step reads real git tag output", async () => {
 
     // Re-running after the tag exists is a no-op, not a second tag.
     await git(["tag", "1.0.10", head], dir);
-    assertEquals(await runPlan(), "should_tag=false\ntag=\n");
+    assertEquals(await runPlan(), "should_tag=false\ntag=1.0.10\n");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

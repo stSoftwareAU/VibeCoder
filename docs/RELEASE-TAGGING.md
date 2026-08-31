@@ -27,12 +27,14 @@ git tag --points-at "$GITHUB_SHA" > head-tags.txt
 flowchart TD
     M["Merge to main"] --> P["Plan: read every tag<br/>+ the tags on the commit"]
     P --> A{"Commit already<br/>carries a release tag?"}
-    A -- yes --> S["Skip — a re-run mints nothing"]
+    A -- yes --> S["Skip the mint — reuse<br/>the tag already on the commit"]
     A -- no --> N{"Any release tag<br/>in the repository?"}
     N -- no --> F["Mint 1.0.0"]
     N -- yes --> I["Increment the patch of<br/>the newest tag: 1.0.0 → 1.0.1"]
     F --> T["Create the tag at the merge commit"]
     I --> T
+    T --> V["Publish tool-versions.json<br/>on the release for that tag"]
+    S --> V
 ```
 
 ## The rules
@@ -54,6 +56,65 @@ flowchart TD
   A failed tag shows as a red run on the workflow and a missing tag on the
   commit — nothing downstream waits on it.
 
+## The tool-version manifest
+
+Every release also records the exact tools it was cut against (Issue #688), so
+a host pinning to a release can pin to the same tools instead of drifting onto
+whatever is newest. The manifest is published as an asset named
+**`tool-versions.json`** on the GitHub Release for the tag, addressable from
+any host:
+
+```bash
+gh release view 1.0.8 --repo stSoftwareAU/VibeCoder \
+  --json assets --jq '.assets[].name'
+gh release download 1.0.8 --pattern tool-versions.json
+```
+
+The schema is one object, every field required:
+
+```json
+{
+  "release": "1.0.8",
+  "tools": { "claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4" }
+}
+```
+
+- `release` — the release tag the manifest describes, a bare
+  `MAJOR.MINOR.PATCH` triple (optionally `v`-prefixed), matching the tag it is
+  attached to.
+- `tools.claude`, `tools.gh`, `tools.deno` — the exact version of each tool,
+  in the shape a frozen host's `pinned_tool_versions` takes (see
+  [Configuration](CONFIGURATION.md)).
+
+**Where the versions come from.** `worker/deno/mod.ts release-manifest
+--release <tag>` prints the manifest on stdout, resolving each version through
+`resolveDynamicVersions()` — the same release-age gate an unpinned update goes
+through. What a release records is therefore exactly what dynamic mode would
+have installed when the release was minted, not merely upstream's newest.
+
+The shape, the generator and the parser share one definition in
+`worker/deno/lib/release_manifest.ts`, so every reader validates the asset the
+same way rather than re-parsing it by hand.
+
+### The rules
+
+- **All-or-nothing.** A tool whose version cannot be resolved — or that the
+  release-age gate reports ineligible — fails the step naming that tool, and
+  nothing is published. A manifest naming two tools out of three would let a
+  host silently drift on the third, the failure mode `pinned_tool_versions`
+  being all-or-nothing already guards against (Issue #622).
+- **Strict on the way back in.** The parser rejects malformed JSON, a missing
+  or non-semver version, an unknown tool key and a partial manifest. A reader
+  never acts on half a manifest.
+- **Idempotent.** A tag whose release already carries the asset is left alone,
+  so a re-run publishes nothing twice.
+- **Recoverable.** The publish is keyed to the release tag on the commit, not
+  to the tag this run minted, so re-running the workflow after a failed publish
+  attaches the manifest to the tag that already exists.
+- **Never blocks the tag.** The tag stays the workflow's first side effect. A
+  failed manifest is a red run and a release without an asset — never a
+  rolled-back or delayed tag.
+
 ## When a run goes red
 
 The step output names the newest tag it found and the tag it tried to mint. The
@@ -62,10 +123,20 @@ workflow — the second attempt sees it and either skips or mints the next
 number), and a token without `contents: write` (check the job-level
 `permissions:` block).
 
+A red **manifest** step names the tool it could not record — usually a release
+inside the 24-hour quarantine window, or an upstream lookup that failed. The
+tag is already minted by then, so re-running the workflow on the same commit
+publishes the manifest against that tag once the tool resolves.
+
 ## Tests
 
 - `worker/deno/tests/next_release_tag_test.ts` — the version selection and
   increment logic, over tag lists.
 - `worker/deno/tests/release_tag_workflow_test.ts` — the workflow structure
-  (trigger, permissions, concurrency, SHA-pinned credential-free checkout) and
-  the plumbing between real `git tag` output and the script.
+  (trigger, permissions, concurrency, SHA-pinned credential-free checkout, the
+  tag-before-publish order and the idempotent manifest publish) and the
+  plumbing between real `git tag` output and the script.
+- `worker/deno/tests/release_manifest_test.ts` — the manifest shape: the
+  all-or-nothing build and the parser, over malformed and partial manifests.
+- `worker/deno/tests/release_manifest_command_test.ts` — the
+  `release-manifest` command, over a stubbed release-age gate.

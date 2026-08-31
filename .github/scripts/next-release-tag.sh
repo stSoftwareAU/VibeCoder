@@ -9,7 +9,12 @@
 # Prints two `key=value` lines on stdout, which the caller appends to
 # $GITHUB_OUTPUT:
 #   should_tag=true|false
-#   tag=<the tag to create; empty when should_tag is false>
+#   tag=<the release tag for this commit; empty only when there is none>
+#
+# `tag` names the commit's release either way: the tag to create when
+# should_tag=true, and the tag it already carries when should_tag=false
+# (Issue #688). The publish step downstream keys off `tag`, so a re-run
+# after a failed manifest publish still has a release to publish for.
 #
 # Only the patch number is automated. The newest release tag decides the
 # major and minor, so a human minting 1.1.0 by hand moves the series and
@@ -38,9 +43,14 @@ done
 release_re='^v?[0-9]+\.[0-9]+\.[0-9]+$'
 
 # Idempotent: a commit that already carries a release tag is left alone.
+# The tag is still reported, so the manifest publish downstream can address
+# the release it belongs to (Issue #688). Several release tags on one commit
+# is not a shape this mints, but if it happens the newest one wins.
 if existing="$(grep -E "$release_re" "$head_tags_file")"; then
     echo "next-release-tag: commit already tagged: $(echo "$existing" | tr '\n' ' ')" >&2
-    printf 'should_tag=false\ntag=\n'
+    current="$(echo "$existing" | sed 's/^v//' |
+        sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
+    printf 'should_tag=false\ntag=%s\n' "$current"
     exit 0
 fi
 

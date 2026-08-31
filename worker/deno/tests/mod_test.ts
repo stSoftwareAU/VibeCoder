@@ -189,7 +189,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #272 added `check-mermaid-built-output` (count 139 → 140).
   // Issue #504 added `merged-pr-issue-sweep` (count 140 → 141).
   // Issue #512 added `worker-checkout-update` (count 141 → 142).
-  assertEquals(commands.length, 142);
+  // Issue #688 added `release-manifest` (count 142 → 143).
+  assertEquals(commands.length, 143);
+  assertEquals(commands.includes("release-manifest"), true);
   assertEquals(commands.includes("worker-checkout-update"), true);
   assertEquals(commands.includes("merged-pr-issue-sweep"), true);
   assertEquals(commands.includes("check-mermaid-built-output"), true);
