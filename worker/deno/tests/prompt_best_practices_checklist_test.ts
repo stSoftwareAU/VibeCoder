@@ -124,6 +124,30 @@ function checklistRows(markdown: string): ChecklistRow[] {
     }));
 }
 
+/** House-addition techniques, in the order the rubric lists them. */
+const HOUSE_TECHNIQUES = ["Positive framing", "No-ops", "Leading words"];
+
+interface HouseRow {
+  id: string;
+  technique: string;
+  pass: string;
+  gap: string;
+  notApplicable: string;
+}
+
+/** House-addition rows: `H<n> | Technique | Pass | Gap | n/a`. */
+function houseRows(markdown: string): HouseRow[] {
+  return tableRows(section(markdown, "House additions"))
+    .filter((cells) => cells.length === 5 && cells[0] !== "#")
+    .map((cells) => ({
+      id: plain(cells[0] ?? ""),
+      technique: plain(cells[1] ?? ""),
+      pass: cells[2] ?? "",
+      gap: cells[3] ?? "",
+      notApplicable: cells[4] ?? "",
+    }));
+}
+
 Deno.test("checklist scores every in-scope guide technique", async () => {
   const markdown = await readChecklist();
   const techniques = checklistRows(markdown).map((row) => row.technique);
@@ -157,6 +181,92 @@ Deno.test("checklist rows are numbered contiguously from 1", async () => {
   assertEquals(
     numbers,
     numbers.map((_, index) => index + 1),
+  );
+});
+
+Deno.test("house additions score the three house techniques", async () => {
+  const markdown = await readChecklist();
+  const techniques = houseRows(markdown).map((row) => row.technique);
+
+  assertEquals(techniques, HOUSE_TECHNIQUES);
+});
+
+Deno.test("house rows are numbered outside the guide's 1-22 range", async () => {
+  const markdown = await readChecklist();
+  const rows = houseRows(markdown);
+
+  assert(rows.length > 0, "no house rows found");
+  for (const row of rows) {
+    assert(
+      /^H\d+$/.test(row.id),
+      `house row "${row.id}" is not numbered outside the 1-22 range`,
+    );
+  }
+  assertEquals(
+    rows.map((row) => row.id),
+    rows.map((_, index) => `H${index + 1}`),
+  );
+});
+
+Deno.test("each house row defines pass, gap and n/a", async () => {
+  const markdown = await readChecklist();
+
+  for (const row of houseRows(markdown)) {
+    for (
+      const [label, text] of [
+        ["pass", row.pass],
+        ["gap", row.gap],
+        ["n/a", row.notApplicable],
+      ] as const
+    ) {
+      assert(
+        text.length >= 20,
+        `house row ${row.id} (${row.technique}) has no ${label} definition`,
+      );
+    }
+  }
+});
+
+Deno.test("house additions leave the guide rows untouched", async () => {
+  const markdown = await readChecklist();
+  const guideRows = checklistRows(markdown);
+
+  assertEquals(guideRows.length, IN_SCOPE_TECHNIQUES.length);
+  for (const row of guideRows) {
+    assert(
+      !HOUSE_TECHNIQUES.includes(row.technique),
+      `house technique "${row.technique}" interleaved into the guide rows`,
+    );
+  }
+});
+
+Deno.test("house additions settle the model-relative and guardrail rules", async () => {
+  const body = section(await readChecklist(), "House additions");
+
+  assert(
+    /candidate/i.test(body),
+    "no candidate rule for the model-relative no-op test",
+  );
+  assert(/guardrail/i.test(body), "no hard-guardrail carve-out");
+  assert(
+    body.includes("docs/audits/"),
+    "no statement on how existing audits are treated",
+  );
+});
+
+Deno.test("verdict table template carries the house rows", async () => {
+  const markdown = await readChecklist();
+  const body = section(markdown, "Verdict table template");
+  const fenced = /```markdown\n([\s\S]*?)```/.exec(body)?.[1];
+  assert(fenced, "verdict table template is not in a fenced block");
+
+  const ids = tableRows(fenced)
+    .filter((cells) => /^H\d+$/.test(plain(cells[0] ?? "")))
+    .map((cells) => `${plain(cells[0] ?? "")} ${plain(cells[1] ?? "")}`);
+
+  assertEquals(
+    ids,
+    houseRows(markdown).map((row) => `${row.id} ${row.technique}`),
   );
 });
 

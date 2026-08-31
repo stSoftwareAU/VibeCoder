@@ -14,7 +14,7 @@ auditing against it never edits a prompt — gaps are filed as issues (see
 
 ```mermaid
 flowchart LR
-    S["📄 Prompt surface<br/>vN.md or prompt_builder.ts"] --> R["📐 This rubric<br/>22 checklist rows"]
+    S["📄 Prompt surface<br/>vN.md or prompt_builder.ts"] --> R["📐 This rubric<br/>22 guide rows + 3 house rows"]
     R --> V["🗒️ Verdict table<br/>✅ / ❌ / ➖ + file:line"]
     V --> A["📚 docs/audits/<br/>prompt-audit-&lt;scope&gt;-NNNN.md"]
     V --> G["🐛 One gap issue<br/>per surface"]
@@ -26,7 +26,8 @@ flowchart LR
 
 1. Score **one surface at a time**, and only the latest version of it —
    committed `vN.md` files are immutable, so historical versions are archive.
-2. Give every one of the 22 rows a verdict: ✅ pass, ❌ gap, or ➖ n/a. Silence
+2. Give every one of the 22 guide rows and the 3
+   [house rows](#house-additions) a verdict: ✅ pass, ❌ gap, or ➖ n/a. Silence
    is not a verdict; a row you did not check is a gap in the audit, not a pass.
 3. Back every verdict with `file:line` evidence — including ➖, where the
    evidence is what makes the row inapplicable (a size measurement, a
@@ -42,7 +43,7 @@ them, so state the kind before scoring.
 
 | Surface kind | What it is | Evidence looks like | Rows it owns |
 | --- | --- | --- | --- |
-| **Static template** — `prompts/<name>/vN.md` | The prompt text itself: either a whole workflow prompt (`issue`, `security_scan`) or a fragment substituted into one (`coding_guidelines`) | `prompts/dead_code/v4.md:210` <!-- pinned: worked citation example --> | Everything the words say: rows 1–5, 8, 10–22 |
+| **Static template** — `prompts/<name>/vN.md` | The prompt text itself: either a whole workflow prompt (`issue`, `security_scan`) or a fragment substituted into one (`coding_guidelines`) | `prompts/dead_code/v4.md:210` <!-- pinned: worked citation example --> | Everything the words say: rows 1–5, 8, 10–22, and the house rows H1–H3 |
 | **Code-assembled string** — `worker/deno/lib/prompt_builder.ts` | The builder functions that load a template, substitute placeholders, split system versus user turn, and fence untrusted content | `worker/deno/lib/prompt_builder.ts:148` | Everything the assembly decides: rows 4, 6, 7, 9, and the wrapper around any injected value |
 
 Two consequences worth stating once, so audits do not re-litigate them:
@@ -60,7 +61,8 @@ Two consequences worth stating once, so audits do not re-litigate them:
 
 Row numbering and headings follow the guide, so the mapping stays auditable.
 `n/a` describes the only conditions under which a row may be skipped; anything
-else is a pass or a gap.
+else is a pass or a gap. The three levers the guide does not carry are scored
+separately, as [House additions](#house-additions).
 
 ### General principles
 
@@ -109,6 +111,39 @@ else is a pass or a gap.
 | 21 | Avoid focusing on passing tests and hardcoding | Requires a general solution over one fitted to the tests, and forbids weakening, skipping, or deleting tests to go green | Covers test quality but never generalisation, so hardcoding to test inputs stays permitted by omission | The surface never writes code or tests and never touches a test suite |
 | 22 | Minimizing hallucinations in agentic coding | Requires reading the file before asserting anything about it, and requires `file:line` evidence for every claim | Asks for verdicts or findings with no read-before-assert rule and no evidence requirement, so plausible-sounding claims pass | The surface makes no claim about code and produces no findings |
 
+## House additions
+
+Three levers the guide does not carry, added because our own prompts keep
+failing them (Issue #659). The idea belongs to
+[mattpocock/skills](https://github.com/mattpocock/skills)
+(`skills/productivity/writing-for-agents/SKILL.md`), not to this repo.
+
+They sit in their own section and carry an `H` prefix so the 1–22 mapping to
+guide headings stays auditable: interleaving them would renumber every verdict
+table already recorded under [`docs/audits/`](audits/). House rows are scored
+with the same ✅ / ❌ / ➖ verdicts and need the same `file:line` evidence.
+
+| # | Technique | ✅ Pass | ❌ Gap | ➖ n/a |
+| --- | --- | --- | --- | --- |
+| H1 | Positive framing | Instructions name the behaviour wanted, so the unwanted one is never spoken; a prohibition appears only as a hard guardrail that cannot be phrased positively, paired with its positive target | Steers by prohibition where a positive statement does the same work, which drags the forbidden behaviour into context and makes it more available, not less | The surface issues no behavioural instruction — it substitutes values or states facts only, with the absence cited |
+| H2 | No-ops | Every instruction changes behaviour against the model's default, and a line that fails the test is deleted whole rather than trimmed to fewer words | Restates a default the model already obeys, paying context load for nothing — recorded as a candidate until a run settles it, because the test is model-relative | The surface carries no instructions of its own, for example a pure structure or evidence fragment, with the absence cited |
+| H3 | Leading words | A compact pretrained term — *tight*, *red*, *relentless* — anchors the behaviour and is used consistently across the prompt, the docs and the code | Repeats a triad or restates the same instruction in three shapes where one pretrained term would anchor it, or coins a term with no pretraining behind it | The surface states each behaviour once and has no repeated triad or restatement to collapse, with the measured length cited |
+
+### Scoring the house rows
+
+- **Existing audits stay as scored.** Every audit already under
+  [`docs/audits/`](audits/) is complete against rows 1–22 and is not reopened
+  to add house rows. An audit records which rubric it used, so a surface
+  re-audited later picks the house rows up then.
+- **An H2 verdict is a candidate until a run settles it.** Whether a line
+  changes behaviour is model-relative and cannot be decided by reading, so an
+  unattended audit records `❌ (candidate)` and names the line. A bare `❌` on
+  H2 needs a cited run in which the line was removed and the behaviour held.
+- **A hard-won guardrail is not sediment.** Rules earned by an incident — the
+  spin-wait ban, the `tail -f | head` ban — are the opposite of no-ops: they
+  pass H2 by definition, and H1 keeps them as prohibitions, asking only that
+  each be paired with the positive target. A pruning pass never deletes one.
+
 ## Verdict table template
 
 One column per surface, one row per checklist item. Copy into the audit
@@ -142,6 +177,9 @@ Legend: ✅ pass · ❌ gap · ➖ n/a
 | 20 | Overeagerness |  |  |  |
 | 21 | Avoid focusing on passing tests and hardcoding |  |  |  |
 | 22 | Minimizing hallucinations in agentic coding |  |  |  |
+| H1 | Positive framing |  |  |  |
+| H2 | No-ops |  |  |  |
+| H3 | Leading words |  |  |  |
 |  | **Gaps** |  |  |  |
 ```
 
