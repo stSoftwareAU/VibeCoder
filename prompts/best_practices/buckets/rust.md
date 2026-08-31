@@ -219,14 +219,30 @@ per cluster.
     shared-memory or memory-mapped regions. Where `has_unsafe` also
     holds, add `unsafe impl Sync`/`Send` over interior mutability and
     unsynchronised access to `static mut`.
-18. **Async-runtime hazards.** Gate: `has_async`. Flag blocking calls
+18. **Concurrency — busy-wait polling.** Gate: `has_concurrency`. Flag
+    a loop that polls shared state without ever blocking or yielding:
+    `while !ready.load(Ordering::Acquire) {}`, a bare
+    `loop { if *done.lock().unwrap() { break } }`, and `try_recv()` /
+    `try_lock()` / `is_finished()` retried in a loop with no wait
+    between attempts. A spinning waiter pins a core at 100 % for the
+    whole wait and starves the very thread it is waiting on, so the
+    cost scales with the producer's latency rather than the work done.
+    Cite the loop and name the blocking primitive that replaces it: a
+    `Condvar` paired with the `Mutex` guarding the state, a channel
+    `recv()`, `thread::park` / `Thread::unpark`, `JoinHandle::join`, or
+    the async runtime's equivalent where `has_async` also holds.
+    Deliberate spinning is not a finding — `hint::spin_loop()` inside a
+    lock-free retry, and a bounded backoff that sleeps or yields
+    between attempts, both stay. A `Condvar` waited without a predicate
+    loop belongs to check 16 — do not file both.
+19. **Async-runtime hazards.** Gate: `has_async`. Flag blocking calls
     on an async executor (`std::fs`, `std::net`, `thread::sleep`,
     `std::sync::Mutex` held across `.await`, blocking `recv()`)
     without `spawn_blocking` / `block_in_place`, `.await` sequences
     that leave state inconsistent if the future is cancelled (a
     dropped `select!` branch or aborted task), and `tokio::select!`
     branch bias where one branch can starve another.
-19. **FFI boundary.** Gate: `has_ffi`, applied only to the boundary
+20. **FFI boundary.** Gate: `has_ffi`, applied only to the boundary
     items described above. Flag `CString::as_ptr` on a temporary that
     dangles before use, Rust signatures that disagree with the foreign
     declaration (types, ABI, nullability, variadics), `#[repr(C)]`
@@ -237,32 +253,32 @@ per cluster.
     `catch_unwind` (unwinding across the boundary is undefined
     behaviour), and `dyn Trait` fat pointers passed as a single
     pointer-width value.
-20. **Type-layout safety.** Gate: `has_packed_repr`. Taking a
+21. **Type-layout safety.** Gate: `has_packed_repr`. Taking a
     reference to a field of a `#[repr(packed)]` struct — including the
     implicit borrows behind method calls, `format!` arguments, and
     `derive`d implementations — creates an unaligned reference, which
     is undefined behaviour. Suggest a copy into a local, or
     `addr_of!` / `read_unaligned`.
-21. **Path and filesystem safety.** Gate: `has_fs_io`. Flag
+22. **Path and filesystem safety.** Gate: `has_fs_io`. Flag
     `Path::join` / `PathBuf::push` with an attacker-controlled
     component (an absolute component silently replaces the base; `..`
     escapes it) without canonicalisation and a prefix check, and
     time-of-check-to-time-of-use races where `exists()` / `metadata()`
     / `symlink_metadata()` is followed by an open or write on the same
     path.
-22. **Resource and destructor handling.** Always applies. Flag raw
+23. **Resource and destructor handling.** Always applies. Flag raw
     file descriptors and handles that can be closed twice or leaked
     (`from_raw_fd` without ownership transfer, `into_raw_fd` with no
     later close), and destructors that perform security-relevant
     cleanup (zeroing secrets, closing connections, rolling back
     transactions) skipped via `mem::forget`, `ManuallyDrop`, or
     `process::exit`.
-23. **Pointer and address exposure.** Always applies. Flag raw
+24. **Pointer and address exposure.** Always applies. Flag raw
     addresses reaching logs, error strings, API responses, or
     serialised output (`{:p}` formats, `ptr as usize`,
     `expose_provenance`) — a leaked address defeats ASLR for a
     subsequent memory-corruption attempt.
-24. **Static hygiene beyond checks 4 and 6.** Always applies. Flag a
+25. **Static hygiene beyond checks 4 and 6.** Always applies. Flag a
     declared `rust-version` (MSRV) that the code contradicts by using
     newer language or standard-library features, deprecated APIs still
     in use (`mem::uninitialized`, `mem::zeroed` for types with
@@ -296,7 +312,7 @@ finding per key.
 
 ### Checks
 
-25. **Dev profile is tuned for compile speed.** Flag a workspace
+26. **Dev profile is tuned for compile speed.** Flag a workspace
     root manifest with no `[profile.dev]` `debug = "line-tables-only"`.
     The default `debug = true` emits full debug info, which is the
     largest single cost in a dev rebuild; line tables still name the
@@ -309,7 +325,7 @@ finding per key.
     debug info (a debugger workflow in `CONTRIBUTING.md` or the agent
     instructions), Phase 0's convention rule wins — drop the
     candidate.
-26. **Release profile is fully optimised.** Flag a workspace root
+27. **Release profile is fully optimised.** Flag a workspace root
     `[profile.release]` missing any of `opt-level = 3`,
     `lto = "fat"`, or `codegen-units = 1`, citing the manifest line
     range. `lto = true` is fat LTO under another spelling and passes;
@@ -319,7 +335,7 @@ finding per key.
     extend this check to `panic = "abort"`, `strip`, or
     `debug = false`: they change behaviour or debuggability and are
     not part of this policy.
-27. **`-C target-cpu=native` on same-host binaries.** Gate: the crate
+28. **`-C target-cpu=native` on same-host binaries.** Gate: the crate
     builds a binary (`[[bin]]` or `src/main.rs`) that runs on the
     machine that compiled it. Stable Cargo has no per-profile
     rustflags, so the flag belongs in a target-scoped
@@ -366,7 +382,7 @@ restating them.
 
 ### Checks
 
-28. **Runtime symbol definitions.** Gate: `has_ffi`. Rust 1.98 made
+29. **Runtime symbol definitions.** Gate: `has_ffi`. Rust 1.98 made
     `invalid_runtime_symbol_definitions` **deny-by-default** and added
     `suspicious_runtime_symbol_definitions` and `c_void_returns` as
     warnings. Flag a `#[no_mangle]` / `#[unsafe(no_mangle)]` or
@@ -380,7 +396,7 @@ restating them.
     something callable. Both are boundary-scoped like every FFI check
     here — a safe internal helper is not in scope merely because the
     crate links a C library.
-29. **`#[repr(transparent)]` after the 1.98 tightening.** Gate:
+30. **`#[repr(transparent)]` after the 1.98 tightening.** Gate:
     `has_transparent_repr`. `repr(transparent)` requires at most one
     field with a non-trivial size or alignment; 1.98 narrowed what
     counts as trivial. A field whose type is `#[repr(C)]`, has
@@ -394,7 +410,7 @@ restating them.
     a private-field case can need the defining crate, so where the
     type comes from a dependency, say so in the suggested fix and let
     the human confirm.
-30. **Standard-library supersessions (1.96–1.98).** Always applies.
+31. **Standard-library supersessions (1.96–1.98).** Always applies.
     Flag a hand-rolled implementation of something these releases
     stabilised, citing the site and naming the replacement:
     offset arithmetic to locate a subslice within its parent, where
