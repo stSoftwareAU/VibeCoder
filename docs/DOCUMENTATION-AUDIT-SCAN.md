@@ -5,7 +5,8 @@ The documentation-audit scan is the thirteenth registered
 no claimable work it may pick this template, clone one monitored repository, and
 run a static, evidence-backed audit of that repo's **prose documentation** —
 READMEs, `docs/**`, AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, and
-other flavours), and the accumulated PR-summary archive. It files a small,
+other flavours), and the accumulated PR-summary archive — plus, from check 13,
+the **comments in the source that contradict the code**. It files a small,
 logically-grouped set of `documentation-audit` issues (most important first)
 that ride the normal `work-on` flow. A clean audit files nothing.
 
@@ -37,6 +38,10 @@ source of truth — the main README**:
   counter-productive now.
 - Inconsistencies, contradictions, factual errors and stale content are hunted
   down; all references and links must resolve.
+- **The source code is the truth.** A comment claiming something the code beside
+  it does not do is removed, unless it describes deliberate behaviour the code
+  never implements — that is filed as a possible bug in the code instead (check
+  13).
 
 The scan **files issues only** — it never edits a file or raises a PR. The
 actual documentation changes ride the normal `work-on` flow on the filed issues,
@@ -54,18 +59,23 @@ a finding against the convention itself.
 | Concern                                        | Owned by                                 |
 | ---------------------------------------------- | ---------------------------------------- |
 | Prose / Markdown documentation rot             | **this scan** (`documentation-audit`)    |
+| Comments that contradict the code they sit beside | **this scan** (check 13) |
 | Code doc-comment coverage (missing or paraphrase-only docstrings) | [`doc-coverage`](IDLE-TASK-FRAMEWORK.md) |
 | Spelling mistakes on PRs                       | `spelling-fix`                           |
 
-A candidate that belongs to a sibling scan is left to that scan.
+A candidate that belongs to a sibling scan is left to that scan. The
+`doc-coverage` boundary is drawn by **what is wrong with the comment**: an absent
+or paraphrase-only doc comment is `doc-coverage`'s, a comment that says something
+untrue is check 13 here.
 
-## The twelve-check catalogue
+## The thirteen-check catalogue
 
 The prompt (`prompts/documentation_audit/`) walks the documentation inventory
-against twelve checks in Phase 2. Checks 1–9 are **drift-shaped** — they find
+against thirteen checks in Phase 2. Checks 1–9 are **drift-shaped** — they find
 docs that disagree with other docs. Checks 10–12 (from v4 onward) are
 **verification-shaped**: documentation is a set of claims about the codebase,
-and each of those checks tests a claim against the source.
+and each of those checks tests a claim against the source. Check 13 (from v9
+onward) turns the same verification on the comments inside the source itself.
 
 1. **Unabsorbed PR-summary learnings** — a durable learning (success or recorded
    failure) not yet reflected in the main docs. Fix: fold it in, then delete the
@@ -118,15 +128,36 @@ and each of those checks tests a claim against the source.
     assertion with no source in the repo (a benchmark, a CI matrix, a constant
     in code, a changelog entry). The finding states what would have to exist to
     back it. `severity:medium`.
+13. **Comment contradicts the code** (from v9 onward) — the source code is the
+    truth, so a comment claiming behaviour the adjacent code does not have is a
+    finding. Two shapes, and the verdict differs:
+    - The comment is simply **wrong** — a renamed parameter, a replaced
+      algorithm, a default the constant contradicts. The fix is to **remove the
+      comment** (or correct it where the correct wording is obvious and one line
+      long), citing its file and line and the code that refutes it.
+      `severity:medium`.
+    - The comment describes **deliberate behaviour the code never implements** —
+      a guard, a limit, an error path or a lock it says is there. The comment is
+      the only record of that intent, so it stays and the finding is filed as a
+      **possible bug in the code**, naming the missing behaviour and the function
+      that lacks it. `severity:high`.
+
+    Verified statically, by reading the whole body the comment describes — never
+    by running it. Findings collapse to **one per source file**; a possible-bug
+    finding is filed separately from its file's removal cluster. The scan stays
+    silent on `TODO`/`FIXME` notes, commented-out code, licence headers, and
+    comments explaining *why* rather than what.
 
 ### Cap pressure — verification out-produces drift
 
-Three systematic verification checks over a large `docs/` tree can find far more
-than the six-finding cap allows, so the audit would file nothing but check-10
-findings against one document. Two rules keep the mix balanced:
+Four systematic verification checks — three over a large `docs/` tree, one over
+the source-comment shortlist — can find far more than the six-finding cap allows,
+so the audit would file nothing but check-10 findings against one document. Two
+rules keep the mix balanced:
 
 - **Collapse per document.** All of one document's dead references are a single
-  finding; all of its broken fences are another. Never one finding per symbol.
+  finding; all of its broken fences are another; all of one source file's
+  contradicting comments are another again. Never one finding per symbol.
 - **Grouping happens before the cap.** Phase 3 collapses verification candidates
   per document _first_, then sorts and applies the six-finding cap, so the drift
   checks are not starved by a single doc's symbol cluster.
@@ -214,9 +245,11 @@ triage.
   exist (check 10) or a runnable sample that cannot run (check 11); the README
   (source of truth) is materially inaccurate; a durable **negative** learning is
   at risk of being lost; multiple agent instruction files that already
-  contradict each other.
+  contradict each other; a comment documenting a guard, limit or error path the
+  code does not implement (check 13, possible-bug shape).
 - **`severity:medium`** — stale, duplicated, or redundant content; an
-  unverifiable claim (check 12); prose paraphrasing upstream documentation
+  unverifiable claim (check 12); a comment the adjacent code refutes and that
+  should simply be removed (check 13); prose paraphrasing upstream documentation
   instead of linking to it; an agent file that should be trimmed or deleted; two
   or more coexisting agent instruction files that should be consolidated; a
   batch of undefined terms.
