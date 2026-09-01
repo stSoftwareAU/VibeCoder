@@ -444,6 +444,7 @@ WATCHDOG_SECONDS=""
 ensure_dirs=()
 volume_names=()
 init_args=()
+volume_remove_args=()
 exists_args=()
 build_args=()
 builder_stop_args=()
@@ -461,6 +462,7 @@ while IFS= read -r -d '' token; do
     ensure) ensure_dirs+=("${value}") ;;
     volume) volume_names+=("${value}") ;;
     init) init_args+=("${value}") ;;
+    volume-remove) volume_remove_args+=("${value}") ;;
     exists) exists_args+=("${value}") ;;
     build) build_args+=("${value}") ;;
     builder-stop) builder_stop_args+=("${value}") ;;
@@ -475,7 +477,8 @@ done <"${PLAN_FILE}"
 
 if [[ -z "${RUNTIME}" || -z "${IMAGE}" ]] || [[ ${#run_args[@]} -eq 0 ]] ||
   [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
-  [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]]; then
+  [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]] ||
+  [[ ${#volume_remove_args[@]} -eq 0 ]]; then
   echo "Error: incomplete container launch plan - refusing to launch" >&2
   exit 1
 fi
@@ -715,9 +718,12 @@ fi
 record_phase volume_init
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
-# live on runtime-managed volumes, not host directories. `volume inspect` /
-# `volume create` are spelled identically on every supported runtime; the
-# plan supplies the names. The ownership init runs on every launch — it is
+# live on runtime-managed volumes, not host directories. `volume inspect` and
+# `volume create` are spelled identically on every supported runtime, so they
+# are written out here; *removal* is not — Docker and Podman say `volume rm`,
+# Apple `container` says `volume delete` — so the plan carries that verb and
+# `recreate_volume` below uses it (Issue #731). The ownership init runs on
+# every launch — it is
 # an idempotent root chown of the mount roots, so a first launch that dies
 # between create and chown heals on the next one.
 for volume in ${volume_names[@]+"${volume_names[@]}"}; do
@@ -726,6 +732,59 @@ for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
   fi
 done
+# One line of a captured stderr file, for a message an operator reads.
+#
+# Empty output becomes an explicit "no explanation given" rather than a
+# message that trails off — a failure with no words is still a failure.
+runtime_error_detail() {
+  local text
+  text="$(tr '\n' ' ' <"$1" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')"
+  printf '%s' "${text:-no explanation given}"
+}
+
+# Recreate one named volume, loudly (Issues #229, #478, #731).
+#
+# The removal verb comes from the plan — Docker and Podman spell it
+# `volume rm`, Apple `container` spells it `volume delete` — because this
+# script used to hardcode one of them and swallow the result. On Podman that
+# meant `volume delete` was not a command at all: the error went to
+# /dev/null, the volume survived, and the very next line failed with
+# `volume with name vibe-work already exists`, which describes neither the
+# fault nor its cause.
+#
+# A failed removal is judged by the volume, not by the exit code: one that is
+# gone was nothing to remove and the create proceeds; one that is still there
+# is reported in the runtime's own words, and the create that would certainly
+# fail is not attempted.
+#
+# Arguments: the volume name. Returns non-zero when it could not be recreated.
+recreate_volume() {
+  local volume="$1" err detail
+  err="$(mktemp)"
+
+  if ! "${RUNTIME}" "${volume_remove_args[@]}" "${volume}" \
+    </dev/null >/dev/null 2>"${err}"; then
+    if "${RUNTIME}" volume inspect "${volume}" >/dev/null 2>&1; then
+      detail="$(runtime_error_detail "${err}")"
+      rm -f "${err}"
+      echo "[run.sh] could not remove volume ${volume}: ${detail}" >&2
+      log_run_core "volume: removing ${volume} failed: ${detail}"
+      return 1
+    fi
+  fi
+
+  if ! "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null 2>"${err}"; then
+    detail="$(runtime_error_detail "${err}")"
+    rm -f "${err}"
+    echo "[run.sh] could not create volume ${volume}: ${detail}" >&2
+    log_run_core "volume: creating ${volume} failed: ${detail}"
+    return 1
+  fi
+
+  rm -f "${err}"
+  return 0
+}
+
 # The named volume mounted at an init target, on stdout; non-zero when no
 # volume maps to that target.
 volume_for_target() {
@@ -784,9 +843,11 @@ run_volume_init() {
       fi
       echo "[run.sh] recreating volume ${volume}: its filesystem could not be repaired (Issue #229)" >&2
       log_run_core "volume-init: recreating ${volume} (${target}) - filesystem unrepairable (Issue #229)"
-      "${RUNTIME}" volume delete "${volume}" </dev/null >/dev/null 2>&1 || true
-      "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
-      recreated=1
+      # A recreate that fails leaves the init's own exit 3 to be reported:
+      # better the unrepairable filesystem than a misleading "already exists".
+      if recreate_volume "${volume}"; then
+        recreated=1
+      fi
     done <<<"${out}"
     if ((recreated)); then
       status=0
@@ -812,7 +873,8 @@ fi
 # advertises discard — so it has never returned a byte on this fleet and the
 # thin-provisioned image only grows. GRQ-23 held ~14 GB of dead space, sat
 # below its floor for three days claiming nothing, and the only remedy on
-# offer (`container volume delete vibe-work`) was addressed to a human who
+# offer (a hand-run `volume rm vibe-work`, or `volume delete` on Apple
+# `container`) was addressed to a human who
 # was not there. An unattended host has no human, so the launcher takes it.
 #
 # When the init reports the trim refused AND the host is below the floor the
@@ -909,8 +971,10 @@ heal_untrimmable_volumes() {
   for volume in "${trim_refused_volumes[@]}"; do
     echo "[run.sh] recreating volume ${volume}: the runtime refuses to trim it and the host is below its claiming floor (Issue #478)" >&2
     log_run_core "work-volume: recreating ${volume} - trim refused and $((avail_kb / 1024)) MB free is below the $((floor_kb / 1024)) MB claiming floor (Issue #478)"
-    "${RUNTIME}" volume delete "${volume}" </dev/null >/dev/null 2>&1 || true
-    "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
+    if ! recreate_volume "${volume}"; then
+      report_unrecovered "${volume} could not be recreated - see the runtime error above; the host is still below its claiming floor"
+      return 0
+    fi
   done
   mkdir -p "$(dirname "${HEAL_STATE_FILE}")" 2>/dev/null || true
   printf '%s\n' "${now}" >"${HEAL_STATE_FILE}" 2>/dev/null || true

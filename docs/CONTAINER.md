@@ -738,7 +738,7 @@ fstrim: /home/vibe/auto-issue-work: FITRIM ioctl failed: Operation not permitted
 
 So GRQ-23 carried a 26 GB volume image for 12.1 GB of live data, sat below
 its floor for three days claiming nothing out of 43 claimable issues, and the
-only remedy on offer — `container volume delete vibe-work` — was addressed to
+only remedy on offer — a hand-run `volume delete vibe-work` — was addressed to
 a human who was not there. An unattended host has no human, so the launcher
 takes it:
 
@@ -753,7 +753,12 @@ takes it:
    `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
    the volume, then runs the init again to re-own it. This happens **before
    any container starts**, so no work is in flight: the clones re-clone and
-   the approval snapshots re-baseline.
+   the approval snapshots re-baseline. The removal verb comes from the launch
+   plan, because the runtimes disagree about it — Docker and Podman say
+   `volume rm`, Apple `container` says `volume delete` — and a removal that
+   leaves the volume in place is reported in the runtime's own words rather
+   than followed by a `volume create` that is certain to fail with
+   "already exists" (Issue #731).
 3. **The attempt is bounded and never silent.** At most one recreate per
    `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24), recorded in
    `~/.vibe-coder/work-volume-heal`; volumes holding less than

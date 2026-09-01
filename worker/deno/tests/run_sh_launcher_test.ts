@@ -28,6 +28,8 @@ import {
   containerTargetPaths,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
+import { CONTAINER_RUNTIMES } from "../lib/container_runtime.ts";
+import { executableLines } from "../lib/launcher_source.ts";
 import { CONTAINER_START_EXIT_CODES } from "../lib/container_restart_backoff.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
@@ -1695,6 +1697,133 @@ Deno.test("run.sh - the outcome recorder may read the hostname, so the alert can
         args.join(" ")
       }`,
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- The runtime's own volume-removal verb (Issue #731) --------------------
+//
+// `run.sh` hardcoded `volume delete`, which Podman does not have, and threw
+// the error away with `2>&1 || true`: the volume survived, and the very next
+// `volume create` failed with `volume with name vibe-work already exists` —
+// a message describing neither the fault nor its cause. The verb now comes
+// from the plan, and a removal that leaves the volume in place is reported.
+
+Deno.test("run.sh - recreates a volume with the verb its runtime spells, never a hardcoded one (Issue #731)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // Which verb depends on the runtime this host probes — `volume rm` on
+    // Docker and Podman, `volume delete` on Apple `container` — so what is
+    // asserted is that the launcher used *a runtime's own* verb, with the
+    // volume's name after it, and that the removal actually happened.
+    const verbs = Object.values(CONTAINER_RUNTIMES).map((candidate) =>
+      candidate.dialect.volumeRemoveArgs.join(" ")
+    );
+    const removals = (await invocationOrder(harness)).filter((invocation) =>
+      invocation.startsWith("volume-") &&
+      !["volume-inspect", "volume-create", "volume-ls"].includes(invocation)
+    );
+    assert(removals.length > 0, `no volume removal was recorded: ${verbs}`);
+    for (const removal of removals) {
+      assert(
+        verbs.includes(removal.replace("volume-", "volume ")),
+        `${removal} is no supported runtime's removal verb (${
+          verbs.join(", ")
+        })`,
+      );
+    }
+
+    assertEquals(await removedVolumes(harness), [
+      WORK_VOLUME_NAME,
+      APPROVAL_STATE_VOLUME_NAME,
+    ]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - names no volume verb of its own (Issue #731)", async () => {
+  // The regression is a hardcoded verb, and a hardcoded verb is visible in
+  // the source: every removal must go through the plan's `volume_remove_args`.
+  const source = executableLines(
+    await Deno.readTextFile(RUN_SH),
+    "bash",
+  ).join("\n");
+  assertEquals(
+    source.includes("volume delete"),
+    false,
+    "run.sh must not spell a removal verb itself",
+  );
+  assertEquals(
+    source.includes("volume rm"),
+    false,
+    "run.sh must not spell a removal verb itself",
+  );
+  assertStringIncludes(source, '"${volume_remove_args[@]}"');
+});
+
+Deno.test("run.sh - a removal that leaves the volume in place is reported, not followed by a doomed create (Issue #731)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+    // The reported failure chain: the removal fails and the volume is still
+    // there, so a `volume create` would fail with "already exists".
+    STUB_VOLUME_DELETE_EXIT: "1",
+    STUB_VOLUME_INSPECT_EXIT: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+
+    // The runtime's own words reach the operator, rather than /dev/null.
+    assertStringIncludes(outcome.stderr, "could not remove volume");
+    assertStringIncludes(outcome.stderr, WORK_VOLUME_NAME);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, `removing ${WORK_VOLUME_NAME} failed`);
+    // And the recovery says it did not recover, rather than claiming a fix.
+    assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
+
+    // The worker still launches: a host that cannot claim must still run and
+    // report (Issue #477).
+    assert(await recorded(harness, "run"), "the worker must still start");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - removing a volume that is not there is not a failure (Issue #731)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+    // The removal reports a failure, but the volume is gone — there was
+    // nothing to remove, which is not a fault.
+    STUB_VOLUME_DELETE_EXIT: "1",
+    STUB_VOLUME_INSPECT_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(
+      outcome.stderr.includes("could not remove volume"),
+      false,
+      `an absent volume must not be reported as a removal failure:\n${outcome.stderr}`,
+    );
+    assert(
+      await recorded(harness, "volume-create"),
+      "the recreate must go on to create the volume",
+    );
+    // A fresh volume is root-owned, so the init ran again.
+    assertEquals(await initCount(harness), 2);
   } finally {
     await harness.cleanup();
   }
