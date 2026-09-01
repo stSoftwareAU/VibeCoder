@@ -28,6 +28,7 @@ import {
   containerTargetPaths,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
+import { CONTAINER_START_EXIT_CODES } from "../lib/container_restart_backoff.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
@@ -1439,6 +1440,82 @@ Deno.test("run.sh - a build that succeeded is not quoted as failure evidence (Is
       args.includes("--launch-log"),
       false,
       `a successful build must not be reported as a failure's log: ${
+        args.join(" ")
+      }`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The container start the runtime client refused (Issue #711)
+// ---------------------------------------------------------------------------
+//
+// Issue #711 is the third report of the same shape: `Failure phase:
+// container_start`, `Last launcher exit status: 125`, and not one word about
+// why the runtime refused. The client's own explanation went to the console
+// and nowhere else, so the escalation could not carry it. The launcher now
+// keeps a copy of that stderr and hands it over as `--launch-log`, exactly as
+// a failed build hands over its build log (Issue #709).
+
+Deno.test("run.sh - a refused container start quotes the runtime client's own stderr (Issue #711)", async () => {
+  const refusal =
+    'Error: no such image "vibe-coder:deadbeef"; refusing to start';
+  for (const status of CONTAINER_START_EXIT_CODES) {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_EXIT: `${status}`,
+      STUB_RUN_STDERR: refusal,
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, status, outcome.stderr);
+
+      // The container's output IS this run's console, so capturing it must
+      // not take it away from the console.
+      assertStringIncludes(outcome.stderr, refusal);
+
+      const args = await recorded(harness, "container-restart-backoff");
+      assert(args, "a refused start must still record its outcome");
+      assert(
+        args.includes("--launch-log"),
+        `a container_start escalation with no evidence: ${args.join(" ")}`,
+      );
+
+      // The launcher removes the capture on its way out; handing it over
+      // while it is still readable is the behaviour, not naming the path.
+      const log = await recordedLaunchLog(harness);
+      assert(
+        log !== null,
+        "the run capture was deleted before the outcome was recorded",
+      );
+      assertStringIncludes(log, refusal);
+    } finally {
+      await harness.cleanup();
+    }
+  }
+});
+
+Deno.test("run.sh - a container that started is never quoted as failure evidence (Issue #711)", async () => {
+  // Exit status 1 is the worker reporting its own failure from inside a
+  // container that started perfectly well, so its console output says nothing
+  // about a launch that did not fail.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_EXIT: "1",
+    STUB_RUN_STDERR: "worker: the run failed for its own reasons",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+
+    const args = await recorded(harness, "container-restart-backoff");
+    assert(args, "run.sh must record its own launcher outcome");
+    assertEquals(
+      args.includes("--launch-log"),
+      false,
+      `a container that started must not be quoted as a refused start: ${
         args.join(" ")
       }`,
     );

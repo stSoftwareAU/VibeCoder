@@ -105,6 +105,9 @@ WEDGE_MARKER=""
 # Where the image build's output is captured, so a failed build can be
 # classified by container-build-heal (Issue #4441). Set only when a build runs.
 BUILD_LOG=""
+# Where the container run client's stderr is captured, so a start the runtime
+# refused can be quoted (Issue #711). Set only once the launch starts.
+RUN_LOG=""
 # The log the outcome recorder quotes as evidence in its escalation (Issue
 # #709). Set only on a path that is about to fail with a diagnosable cause -
 # a successful build's output is not what a later failure was caused by, and
@@ -195,10 +198,11 @@ record_outcome() {
   # report can be traced to a machine. Issues #709, #710 and #711 arrived
   # exactly that way. loop.sh has carried the flag since Issue #633.
   #
-  # --launch-log: the failing build's own output, when a build is what failed
-  # (Issue #709). An image_build escalation without it says the environment
-  # cannot be rebuilt and nothing at all about why, which is the difference
-  # between a report an operator can act on and one they cannot.
+  # --launch-log: the failing step's own output - the build's, when a build is
+  # what failed (Issue #709), or the run client's refusal, when the container
+  # never started (Issue #711). An escalation without it names the phase and
+  # the status and nothing at all about why, which is the difference between a
+  # report an operator can act on and one they cannot.
   if ! bounded 120 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-write --allow-run --allow-net \
@@ -225,6 +229,12 @@ on_exit() {
   # reporting a failed build it could say nothing about.
   if [[ -n "${BUILD_LOG}" ]]; then
     rm -f "${BUILD_LOG}"
+  fi
+  # Same ordering, same reason (Issue #711): the refused start's evidence is
+  # this capture, so it outlives the record and nothing else. The FIFO beside
+  # it goes here too, so a launcher killed mid-run leaves nothing in /tmp.
+  if [[ -n "${RUN_LOG}" ]]; then
+    rm -f "${RUN_LOG}" "${RUN_LOG}.err"
   fi
 }
 trap on_exit EXIT
@@ -994,8 +1004,43 @@ WEDGE_MARKER="$(mktemp "${TMPDIR:-/tmp}/vibe-wedge.XXXXXX")"
 
 record_phase container_run
 
+# Statuses the runtime client reports when it refused to start the container at
+# all - no such image, an argument it would not accept, an entrypoint it could
+# not execute. Kept in step with CONTAINER_START_EXIT_CODES in
+# worker/deno/lib/container_restart_backoff.ts by the launcher tests: those are
+# exactly the statuses that become a container_start escalation, so they are
+# the ones whose evidence is the client's own refusal (Issue #711).
+CONTAINER_START_EXIT_STATUSES=(125 126 127)
+
+# How long the capture is given to drain once the client has exited, before it
+# is quoted as far as it got. Seconds, because end-of-file arrives with the
+# client's last write; the bound is only there so a helper still holding the
+# pipe cannot stall this launcher.
+RUN_DRAIN_SECONDS=10
+
+# Capture the client's stderr while it still reaches the console (Issue #711).
+# Issue #711 was the third self-heal report to say `container_start`, `exit
+# status 125` and nothing about why: the client's own explanation went to the
+# console and was kept nowhere. tee keeps the console live - the container's
+# output IS this run's console, so it must not be held back until exit - and
+# leaves a copy the outcome recorder can quote.
+#
+# Through a FIFO rather than a pipeline, because $! must stay the client's own
+# PID: a pipeline would put tee there instead, and the watchdog below would
+# then wait on, and reap, the wrong process.
+#
+# Created before the container starts, and fatal if it cannot be - exactly as
+# the wedge marker above is. A capture set up after the launch would miss the
+# refusal it exists to record, and a launcher that cannot write to its own
+# temporary directory has a host problem worth failing on.
+RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe-run.XXXXXX")"
+RUN_ERR_FIFO="${RUN_LOG}.err"
+mkfifo "${RUN_ERR_FIFO}"
+tee -a "${RUN_LOG}" >&2 <"${RUN_ERR_FIFO}" &
+RUN_TEE_PID=$!
+
 LAUNCH_IN_FLIGHT=1
-"${RUNTIME}" "${run_args[@]}" "$@" </dev/null &
+"${RUNTIME}" "${run_args[@]}" "$@" </dev/null 2>"${RUN_ERR_FIFO}" &
 CHILD_PID=$!
 LAUNCH_IN_FLIGHT=""
 deliver_pending_signal
@@ -1009,11 +1054,37 @@ wait_for_child || status=$?
 # The client is gone, so the watchdog has nothing left to guard.
 kill "${WATCHDOG_PID}" 2>/dev/null || true
 
+# The capture is only evidence once the copier has drained the client's stderr,
+# which it has when it exits on end-of-file. Waited on rather than assumed:
+# quoting a half-written log would report a refusal missing the line that
+# explains it.
+#
+# Bounded, because this wait must never become the wedge the watchdog exists to
+# end: a runtime helper that inherited the client's stderr can hold the pipe
+# open after the client itself is gone. The guard's streams are detached so an
+# orphaned sleep cannot hold this launcher's stdout open behind it.
+{ sleep "${RUN_DRAIN_SECONDS}" && kill "${RUN_TEE_PID}"; } >/dev/null 2>&1 &
+RUN_DRAIN_GUARD_PID=$!
+wait "${RUN_TEE_PID}" 2>/dev/null || true
+kill "${RUN_DRAIN_GUARD_PID}" 2>/dev/null || true
+
 if [[ -s "${WEDGE_MARKER}" ]]; then
   echo "Error: container ${CONTAINER_NAME} wedged past the" \
     "${WATCHDOG_SECONDS}s watchdog deadline and was reaped - exiting" \
     "${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle runs (Issue #4173)" >&2
   status="${CONTAINER_WEDGED_EXIT_STATUS}"
 fi
+
+# A status only the runtime client produces means the container never started,
+# so its stderr is what the escalation is about (Issue #711). Any other status
+# came from a container that ran: its output is the worker's own console, not
+# an account of a launch that failed, and quoting it would point the reader at
+# the wrong thing.
+for start_status in "${CONTAINER_START_EXIT_STATUSES[@]}"; do
+  if ((status == start_status)); then
+    EVIDENCE_LOG="${RUN_LOG}"
+    break
+  fi
+done
 
 exit "${status}"
