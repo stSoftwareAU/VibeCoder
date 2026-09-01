@@ -10,10 +10,12 @@
  *   deno run --allow-net --allow-run --allow-env --allow-read \
  *     mod.ts release-manifest --release 1.0.8
  *
- * The versions come from `resolveDynamicVersions()` (Issue #623), the same
- * release-age gate an unpinned update goes through, so what a release records
- * is exactly what dynamic mode would have installed when the release was
- * minted.
+ * The versions come from `resolveQuarantineClearedVersions()` (Issue #726) —
+ * the newest release of each tool that the release-age gate has already let
+ * through, so a release records versions a host may install today. Upstream
+ * ships several times a day, so gating the manifest on upstream's *newest*
+ * release instead left it inside the 24h quarantine window on nearly every
+ * merge and published nothing at all.
  *
  * Stdout carries exactly the manifest and nothing else. A tool whose version
  * cannot be resolved — or that the gate reports ineligible — throws, which
@@ -34,20 +36,22 @@ import {
 } from "../lib/release_manifest.ts";
 import {
   type DynamicVersionCandidate,
-  resolveDynamicVersions,
+  resolveQuarantineClearedVersions,
 } from "../lib/software_updates.ts";
 
 /** Injectable side effects, so the command is testable without the network. */
 export interface ReleaseManifestDeps {
-  /** What dynamic mode would install right now, per tool (Issue #623). */
-  dynamicVersions(): Promise<DynamicVersionCandidate[]>;
+  /** Newest quarantine-cleared version per tool (Issue #726). */
+  toolVersions(): Promise<DynamicVersionCandidate[]>;
 }
 
 /** The real resolution: the release-age gate against npm and GitHub. */
 export function createDefaultReleaseManifestDeps(): ReleaseManifestDeps {
   // `defaultLogger` writes to stderr, so gate commentary never reaches the
   // manifest on stdout.
-  return { dynamicVersions: () => resolveDynamicVersions(defaultLogger) };
+  return {
+    toolVersions: () => resolveQuarantineClearedVersions(defaultLogger),
+  };
 }
 
 /** Read the required `--release` argument, failing loud on anything else. */
@@ -76,7 +80,7 @@ export function createReleaseManifestCommand(
       args: Record<string, unknown>,
     ): Promise<CommandResult<ReleaseManifest>> {
       const release = readRelease(args);
-      const candidates = await deps.dynamicVersions();
+      const candidates = await deps.toolVersions();
       const manifest = buildReleaseManifest(release, candidates);
       if (!manifest.ok) {
         // Thrown, not returned: a failed result still prints its message on

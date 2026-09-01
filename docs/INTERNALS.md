@@ -448,6 +448,14 @@ prompt can offer that as the per-tool default; a version that cannot be resolved
 (or has not aged past the quarantine window) is reported ineligible with the
 gate's own reason rather than as a usable default.
 
+`resolveQuarantineClearedVersions()` answers the neighbouring question the
+release tool-version manifest asks (Issue #726): not "may upstream's newest
+release be adopted?" but "which is the newest release the embargo has already
+let through?". Upstream ships several times a day, so the newest release is
+usually still inside the window; the manifest reads the release history behind
+it and records the newest release outside the window. The window itself is
+unchanged — a tool with no release past it is still reported ineligible.
+
 ```mermaid
 flowchart TD
     A["update&lt;Tool&gt;()"] --> B{targetVersion?}

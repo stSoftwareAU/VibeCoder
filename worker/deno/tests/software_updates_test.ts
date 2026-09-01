@@ -37,6 +37,8 @@ import {
   recordUpdateCheck,
   resolveDynamicVersion,
   resolveDynamicVersions,
+  resolveQuarantineClearedVersion,
+  resolveQuarantineClearedVersions,
   runUpdateWithRetry,
   runWithTimeout,
   shouldAttemptFloorUpdate,
@@ -63,39 +65,73 @@ import type { LogContext, Logger, Result } from "../types.ts";
  * skipped rather than upgraded.
  */
 function openGate(version = "9.9.9", ref: string | null = version) {
+  const verdict = (channel: ReleaseChannel) =>
+    Promise.resolve({
+      source: describeChannel(channel),
+      version,
+      ref,
+      eligible: true,
+      indeterminate: false,
+      ageHours: 100,
+      publishedAt: "2026-07-01T00:00:00Z",
+      reason: `${describeChannel(channel)}@${version} is 100.0h old.`,
+    });
   return {
     quarantineHours: 24,
-    check: (channel: ReleaseChannel) =>
-      Promise.resolve({
-        source: describeChannel(channel),
-        version,
-        ref,
-        eligible: true,
-        indeterminate: false,
-        ageHours: 100,
-        publishedAt: "2026-07-01T00:00:00Z",
-        reason: `${describeChannel(channel)}@${version} is 100.0h old.`,
-      }),
+    check: verdict,
+    checkNewestAged: verdict,
   } satisfies ReleaseAgeGate;
 }
 
 /** Gate that blocks every channel, either as too new or as unverifiable. */
 function closedGate(indeterminate = false): ReleaseAgeGate {
+  const verdict = (channel: ReleaseChannel) =>
+    Promise.resolve({
+      source: describeChannel(channel),
+      version: indeterminate ? null : "9.9.9",
+      eligible: false,
+      indeterminate,
+      ageHours: indeterminate ? null : 2,
+      publishedAt: indeterminate ? null : "2026-08-02T00:00:00Z",
+      reason: indeterminate
+        ? `Could not resolve the newest release of ${
+          describeChannel(channel)
+        }; the upgrade is skipped.`
+        : `${describeChannel(channel)} is only 2.0h old (< 24h quarantine).`,
+    });
+  return {
+    quarantineHours: 24,
+    check: verdict,
+    checkNewestAged: verdict,
+  };
+}
+
+/**
+ * Gate whose newest release is always quarantined, but whose history holds an
+ * aged predecessor — the shape that broke the release-tag workflow (#726).
+ */
+function quarantinedLatestGate(aged = "8.8.8"): ReleaseAgeGate {
   return {
     quarantineHours: 24,
     check: (channel: ReleaseChannel) =>
       Promise.resolve({
         source: describeChannel(channel),
-        version: indeterminate ? null : "9.9.9",
+        version: "9.9.9",
         eligible: false,
-        indeterminate,
-        ageHours: indeterminate ? null : 2,
-        publishedAt: indeterminate ? null : "2026-08-02T00:00:00Z",
-        reason: indeterminate
-          ? `Could not resolve the newest release of ${
-            describeChannel(channel)
-          }; the upgrade is skipped.`
-          : `${describeChannel(channel)} is only 2.0h old (< 24h quarantine).`,
+        indeterminate: false,
+        ageHours: 2,
+        publishedAt: "2026-08-02T00:00:00Z",
+        reason: `${describeChannel(channel)}@9.9.9 is only 2.0h old.`,
+      }),
+    checkNewestAged: (channel: ReleaseChannel) =>
+      Promise.resolve({
+        source: describeChannel(channel),
+        version: aged,
+        eligible: true,
+        indeterminate: false,
+        ageHours: 100,
+        publishedAt: "2026-07-01T00:00:00Z",
+        reason: `${describeChannel(channel)}@${aged} is 100.0h old.`,
       }),
   };
 }
@@ -1349,22 +1385,24 @@ Deno.test("updateGhCli - only the aged extension of a mixed pair is upgraded", a
     const { logger } = testLogger();
     const calls: RunCall[] = [];
     /** Approves `gh-dash`, quarantines `gh-poi`. */
+    const mixedVerdict = (channel: ReleaseChannel) => {
+      const source = describeChannel(channel);
+      const eligible = source.includes("gh-dash");
+      return Promise.resolve({
+        source,
+        version: "1.0.0",
+        ref: "v1.0.0",
+        eligible,
+        indeterminate: false,
+        ageHours: eligible ? 100 : 1,
+        publishedAt: "2026-07-01T00:00:00Z",
+        reason: `${source} age verdict`,
+      });
+    };
     const mixedGate: ReleaseAgeGate = {
       quarantineHours: 24,
-      check: (channel: ReleaseChannel) => {
-        const source = describeChannel(channel);
-        const eligible = source.includes("gh-dash");
-        return Promise.resolve({
-          source,
-          version: "1.0.0",
-          ref: "v1.0.0",
-          eligible,
-          indeterminate: false,
-          ageHours: eligible ? 100 : 1,
-          publishedAt: "2026-07-01T00:00:00Z",
-          reason: `${source} age verdict`,
-        });
-      },
+      check: mixedVerdict,
+      checkNewestAged: mixedVerdict,
     };
     await updateGhCli(logger, {
       timestampDir: tmpDir,
@@ -2061,6 +2099,26 @@ Deno.test("resolveDynamicVersion - an unresolvable version is reported as a fail
   assertEquals(candidate.version, null);
   assertEquals(candidate.eligible, false);
   assertStringIncludes(candidate.reason, "Could not resolve");
+});
+
+Deno.test("resolveQuarantineClearedVersions - names the newest aged release per tool", async () => {
+  const { logger } = testLogger();
+  const candidates = await resolveQuarantineClearedVersions(logger, {
+    ageGate: quarantinedLatestGate("8.8.8"),
+  });
+  assertEquals(candidates.map((c) => c.tool), ["claude", "gh", "deno"]);
+  assertEquals(candidates.every((c) => c.version === "8.8.8"), true);
+  assertEquals(candidates.every((c) => c.eligible), true);
+});
+
+Deno.test("resolveQuarantineClearedVersion - nothing past the window stays a failure", async () => {
+  const { logger } = testLogger();
+  const candidate = await resolveQuarantineClearedVersion(logger, "claude", {
+    ageGate: closedGate(),
+  });
+  assertEquals(candidate.version, null);
+  assertEquals(candidate.eligible, false);
+  assertStringIncludes(candidate.reason, "quarantine");
 });
 
 Deno.test("versionMatchesExactly - exact match, mismatch, and unparseable", () => {

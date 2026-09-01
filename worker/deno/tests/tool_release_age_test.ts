@@ -22,7 +22,10 @@ import {
   parseGhExtensionList,
   parseGhExtensionRelease,
   parseGhReleaseLine,
+  parseGhReleaseListing,
   parseNpmLatest,
+  parseNpmVersionHistory,
+  selectNewestAged,
 } from "../lib/tool_release_age.ts";
 import type { Result } from "../types.ts";
 
@@ -612,4 +615,195 @@ Deno.test("describeChannel - a gh extension names its own channel", () => {
     describeChannel({ kind: "gh-extension", repo: "acme/gh-thing" }),
     "gh-extension:acme/gh-thing",
   );
+});
+
+// ---------- Newest quarantine-cleared release (Issue #726) ----------
+
+/** A packument whose `latest` is minutes old and whose predecessor is aged. */
+const FRESH_LATEST_PACKUMENT = {
+  "dist-tags": { latest: "2.1.252" },
+  versions: {
+    "2.1.250": {},
+    "2.1.251": {},
+    "2.1.252": {},
+    "2.2.0-rc.1": {},
+    "2.1.249": {},
+  },
+  time: {
+    created: "2024-01-01T00:00:00Z",
+    modified: "2026-08-02T11:30:00Z",
+    "2.1.249": "2026-07-28T09:00:00Z",
+    "2.1.250": "2026-07-30T09:00:00Z",
+    "2.1.251": "2026-07-31T09:00:00Z",
+    "2.1.252": "2026-08-02T11:00:00Z",
+    // Published after `latest`, so `latest` never pointed at it.
+    "2.2.0-rc.1": "2026-08-02T11:30:00Z",
+    // In `time` but no longer in `versions`: unpublished, uninstallable.
+    "2.1.248": "2026-07-20T09:00:00Z",
+  },
+};
+
+Deno.test("parseNpmVersionHistory - lists installable stable versions newest first", () => {
+  const history = parseNpmVersionHistory(FRESH_LATEST_PACKUMENT);
+  assertEquals(history.map((c) => c.version), [
+    "2.1.252",
+    "2.1.251",
+    "2.1.250",
+    "2.1.249",
+  ]);
+  assertEquals(history[0]?.publishedAt, "2026-08-02T11:00:00Z");
+});
+
+Deno.test("parseNpmVersionHistory - unreadable metadata yields no history", () => {
+  assertEquals(parseNpmVersionHistory(undefined), []);
+  assertEquals(parseNpmVersionHistory({ time: {} }), []);
+  assertEquals(
+    parseNpmVersionHistory({ "dist-tags": { latest: "1.0.0" } }),
+    [],
+  );
+});
+
+Deno.test("parseGhReleaseListing - reads tag and date lines newest first", () => {
+  const history = parseGhReleaseListing(
+    [
+      "v2.9.0 2026-08-02T11:00:00Z",
+      "v2.8.9 2026-07-25T12:00:00Z",
+      "not-a-release-line",
+      "v2.8.8 2026-07-20T12:00:00Z",
+    ].join("\n"),
+  );
+  assertEquals(history.map((c) => c.version), ["2.9.0", "2.8.9", "2.8.8"]);
+  assertEquals(history[0]?.ref, "v2.9.0");
+});
+
+Deno.test("selectNewestAged - falls back to the newest release past the window", () => {
+  const verdict = selectNewestAged(
+    "npm:@anthropic-ai/claude-code",
+    parseNpmVersionHistory(FRESH_LATEST_PACKUMENT),
+    24,
+    NOW,
+  );
+  assertEquals(verdict.eligible, true);
+  assertEquals(verdict.version, "2.1.251");
+  assertStringIncludes(verdict.reason, "2.1.252");
+});
+
+Deno.test("selectNewestAged - the newest release is used when it has aged", () => {
+  const verdict = selectNewestAged(
+    "github:denoland/deno",
+    parseGhReleaseListing(
+      "v2.9.0 2026-07-25T12:00:00Z\nv2.8.9 2026-07-01T12:00:00Z",
+    ),
+    24,
+    NOW,
+  );
+  assertEquals(verdict.eligible, true);
+  assertEquals(verdict.version, "2.9.0");
+});
+
+Deno.test("selectNewestAged - a wholly quarantined history stays ineligible", () => {
+  const verdict = selectNewestAged(
+    "github:cli/cli",
+    parseGhReleaseListing("v2.97.0 2026-08-02T11:00:00Z"),
+    24,
+    NOW,
+  );
+  assertEquals(verdict.eligible, false);
+  assertEquals(verdict.indeterminate, false);
+  assertStringIncludes(verdict.reason, "deferring the upgrade");
+});
+
+Deno.test("selectNewestAged - an empty history is indeterminate, never eligible", () => {
+  const verdict = selectNewestAged("npm:acme", [], 24, NOW);
+  assertEquals(verdict.eligible, false);
+  assertEquals(verdict.indeterminate, true);
+});
+
+Deno.test("checkNewestAged - a fresh npm latest resolves its aged predecessor", async () => {
+  const gate = createReleaseAgeGate({
+    runFn: fakeRunner({}),
+    now: () => NOW,
+    fetchNpmMetadata: () => Promise.resolve(FRESH_LATEST_PACKUMENT),
+  });
+  const verdict = await gate.checkNewestAged({
+    kind: "npm",
+    pkg: CLAUDE_CLI_NPM_PACKAGE,
+  });
+  assertEquals(verdict.eligible, true);
+  assertEquals(verdict.version, "2.1.251");
+});
+
+Deno.test("checkNewestAged - a fresh GitHub release resolves its aged predecessor", async () => {
+  const calls: string[][] = [];
+  const gate = createReleaseAgeGate({
+    runFn: fakeRunner({
+      "repos/denoland/deno/releases": {
+        exitCode: 0,
+        output: "v2.9.1 2026-08-02T11:00:00Z\nv2.9.0 2026-07-25T12:00:00Z",
+      },
+    }, calls),
+    now: () => NOW,
+  });
+  const verdict = await gate.checkNewestAged({
+    kind: "github",
+    repo: DENO_RELEASE_REPO,
+  });
+  assertEquals(verdict.eligible, true);
+  assertEquals(verdict.version, "2.9.0");
+  assertEquals(calls[0]?.slice(0, 3), [
+    "gh",
+    "api",
+    "repos/denoland/deno/releases",
+  ]);
+});
+
+Deno.test("checkNewestAged - a failed listing fails closed", async () => {
+  const gate = createReleaseAgeGate({
+    runFn: () =>
+      Promise.resolve({
+        ok: true,
+        value: { exitCode: 1, output: "HTTP 404" },
+      } as Result<{ exitCode: number; output: string }>),
+    now: () => NOW,
+  });
+  const verdict = await gate.checkNewestAged({
+    kind: "github",
+    repo: DENO_RELEASE_REPO,
+  });
+  assertEquals(verdict.eligible, false);
+  assertEquals(verdict.indeterminate, true);
+});
+
+Deno.test("checkNewestAged - a malformed repo never reaches the API", async () => {
+  const calls: string[][] = [];
+  const gate = createReleaseAgeGate({
+    runFn: fakeRunner({}, calls),
+    now: () => NOW,
+  });
+  const verdict = await gate.checkNewestAged({
+    kind: "github",
+    repo: "../../users/victim",
+  });
+  assertEquals(verdict.eligible, false);
+  assertEquals(verdict.indeterminate, true);
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("checkNewestAged - a gh extension has no older ref to fall back to", async () => {
+  const gate = createReleaseAgeGate({
+    runFn: fakeRunner({
+      "repos/acme/gh-thing/releases/latest": {
+        exitCode: 0,
+        output:
+          "release v1.2.3 2026-08-02T11:00:00Z\nasset gh-thing_linux-amd64",
+      },
+    }),
+    now: () => NOW,
+  });
+  const verdict = await gate.checkNewestAged({
+    kind: "gh-extension",
+    repo: "acme/gh-thing",
+  });
+  assertEquals(verdict.eligible, false);
+  assertEquals(verdict.version, "1.2.3");
 });
