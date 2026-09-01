@@ -147,13 +147,18 @@ not paper over them.
 
 | Fault | What it looks like |
 | --- | --- |
-| Short-name image resolution | The image build fails to resolve the base images because podman has no unqualified-search registry configured |
 | Rejected mount options | Container start rejects `tmpfs` options the Docker path accepts |
 | Disk floor | The worker declines to claim work because free space is below the larger of 20 GB and 10% of the filesystem — at the default 100 GiB root, the floor is the 20 GB constant |
 | Volume verbs | Recovery paths that assume Docker's spelling of a volume command |
 
 If a fault reproduces, it belongs on the issue that owns it, with the exact
 command and output from this session.
+
+Short-name image resolution is no longer on that list: both base images in
+`container/Containerfile` name `docker.io` explicitly, so podman's enforcing
+short-name mode never has a registry to guess (Issue #728). A build that still
+fails to resolve a base image here is a regression, not a host fault — capture
+it as one.
 
 ## Auto-stop and tear-down
 

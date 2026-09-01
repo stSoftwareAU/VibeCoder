@@ -500,9 +500,13 @@ Deno.test("container/Containerfile - every base image is registry-qualified and 
   // Docker resolves a short name against Docker Hub; Podman's default
   // short-name-mode = "enforcing" refuses to guess, so a fresh host cannot
   // build the image at all. Both rules are asserted over the resolved `FROM`
-  // references, so a literal `FROM ruby:...` fails here too.
-  const refs = listBaseImages(containerfile);
-  assert(refs.length >= 2, "the definition must declare its base images");
+  // references, so a literal `FROM ruby:...` fails here too. Which registry
+  // is named is the manifest's business — `findContainerfileViolations`
+  // holds the ARG to `container/tools.json`'s exact `name:tag@digest`.
+  assert(
+    listBaseImages(containerfile).length >= 2,
+    "the definition must declare its base images",
+  );
   assertEquals(
     findUnqualifiedBaseImages("container/Containerfile", containerfile),
     [],
@@ -511,9 +515,6 @@ Deno.test("container/Containerfile - every base image is registry-qualified and 
     findTagOnlyBaseImages("container/Containerfile", containerfile),
     [],
   );
-  for (const ref of refs) {
-    assertStringIncludes(ref.resolved, "docker.io/");
-  }
 });
 
 Deno.test("container/ - the image supplies every tool the quality gate runs", async () => {
