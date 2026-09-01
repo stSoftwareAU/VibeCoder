@@ -74,10 +74,11 @@ $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyCont
     Falls back — loudly, never silently — to the base sleep when the recorder
     cannot run or does not answer with a plain integer (Issue #3234).
 
-    --allow-sys=hostname: the alert names the machine it is about (Issues #633,
-    #710). Without it Deno.hostname() is refused and the report says
-    "unknown-host", which is close to useless in a fleet whose hosts all report
-    into one repository. Mirrors loop.sh.
+    --allow-sys=hostname: the escalation is titled for the host. Without the
+    permission Deno.hostname() throws and the report is filed as
+    "unknown-host" - which is also its dedup key, so every host in the fleet
+    collapses onto one issue per phase (Issues #633, #709, #710). loop.sh has
+    carried the flag since Issue #633.
 #>
 function Get-NextSleepSeconds {
     param([Parameter(Mandatory = $true)][int] $Status)
