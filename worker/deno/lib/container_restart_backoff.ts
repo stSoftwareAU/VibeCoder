@@ -93,20 +93,28 @@ export const LAUNCH_PHASE_MARKER_FILENAME = "last-launch-phase";
 /**
  * What a launcher writes to the marker file as it progresses.
  *
- * Container is the only run mode (Issue #4): the three phases are the
- * container launch's own. A marker from a removed mode (`native_run`,
- * `seatbelt_*`, from a checkout older than the removal) is simply
- * unrecognised and attributed to the worker run.
+ * Container is the only run mode (Issue #4): the phases are the container
+ * launch's own. A marker from a removed mode (`native_run`, `seatbelt_*`,
+ * from a checkout older than the removal) is simply unrecognised and
+ * attributed to the worker run.
+ *
+ * `volume_init` covers the work-volume preparation between the image and the
+ * worker container (Issue #710): `volume create` and a short-lived `run` of
+ * the ownership init are runtime invocations of their own, and their failures
+ * used to carry the `runtime_detection` marker the launcher wrote on its
+ * first line.
  */
 export type LaunchPhaseMarker =
   | "runtime_detection"
   | "image_build"
+  | "volume_init"
   | "container_run";
 
 /** The phase a launcher failure is attributed to. */
 export type ContainerFailurePhase =
   | "runtime_detection"
   | "image_build"
+  | "volume_init"
   | "container_start"
   | "worker_run";
 
@@ -365,6 +373,8 @@ export function resolveFailurePhase(
       return "runtime_detection";
     case "image_build":
       return "image_build";
+    case "volume_init":
+      return "volume_init";
     case "container_run":
       return CONTAINER_START_EXIT_CODES.includes(exitStatus)
         ? "container_start"
@@ -385,6 +395,8 @@ export function describeFailurePhase(phase: ContainerFailurePhase): string {
       return "container runtime detection";
     case "image_build":
       return "container image build";
+    case "volume_init":
+      return "work volume preparation";
     case "container_start":
       return "container start";
     case "worker_run":

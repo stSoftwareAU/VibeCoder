@@ -106,7 +106,7 @@ read/write — so the usual files are read on the host exactly as before:
 ```bash
 tail -n 200 ~/logs/worker.log      # worker activity (symlink to the latest run)
 tail -n 50 ~/logs/cron.log         # launcher output under cron
-cat ~/.vibe-coder/last-launch-phase # runtime_detection | image_build | container_run
+cat ~/.vibe-coder/last-launch-phase # runtime_detection | image_build | volume_init | container_run
 ```
 
 `.config.json` is likewise the host's own file. The workspace is not: the

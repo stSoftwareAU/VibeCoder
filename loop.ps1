@@ -73,6 +73,11 @@ $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyCont
     self-heal event and escalates a repeatedly failing host through GitHub.
     Falls back — loudly, never silently — to the base sleep when the recorder
     cannot run or does not answer with a plain integer (Issue #3234).
+
+    --allow-sys=hostname: the alert names the machine it is about (Issues #633,
+    #710). Without it Deno.hostname() is refused and the report says
+    "unknown-host", which is close to useless in a fleet whose hosts all report
+    into one repository. Mirrors loop.sh.
 #>
 function Get-NextSleepSeconds {
     param([Parameter(Mandatory = $true)][int] $Status)
@@ -89,6 +94,7 @@ function Get-NextSleepSeconds {
         $answer = & $DenoCmd.Source run `
             "--frozen" "--lock=$ScriptDir/worker/deno/deno.lock" `
             "--allow-env" "--allow-read" "--allow-write" "--allow-run" "--allow-net" `
+            "--allow-sys=hostname" `
             $WorkerMod "container-restart-backoff" `
             "--exit-status" "$Status" `
             "--base-sleep-seconds" "$LoopSleepSeconds" 2>$null |
