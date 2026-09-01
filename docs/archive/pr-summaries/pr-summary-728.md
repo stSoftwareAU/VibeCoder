@@ -139,6 +139,10 @@ agrees with the qualified names.
   short-name resolution among the podman faults that must reproduce — reason:
   raised by the Spec reviewer as a stale surface; that doc exists to confirm
   #722's fixes, and the row now describes a fault this change removes
+- **unrequested** — a sentence rewrap in `docs/CONTAINMENT.md:213-216` — reason:
+  the pre-existing wrap left `#564 closed.` at a line start, which markdownlint
+  reads as an ATX heading (MD018/no-missing-space-atx) and fails the quality
+  gate this change has to pass; the wording is unchanged
 
 ## Standards Review
 
