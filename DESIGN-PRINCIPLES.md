@@ -1458,7 +1458,7 @@ sections, then deletes the now-obsolete summaries**. A summary is only ever
 deleted **after** its learnings demonstrably land elsewhere, so no learning is
 lost; the deletion happens in the *fix* issue's PR, never during the scan.
 
-**Twelve checks (Phase 2 of `prompts/documentation_audit/`).** (1) unabsorbed
+**Thirteen checks (Phase 2 of `prompts/documentation_audit/`).** (1) unabsorbed
 PR-summary learnings, (2) stale/obsolete content, (3) contradictions and
 inconsistencies, (4) duplicate/redundant content — including, from v4 onward,
 prose that paraphrases an external tool's docs instead of linking to them, (5)
@@ -1493,12 +1493,26 @@ assertion with no benchmark, CI matrix, constant, or changelog entry behind it
 verification findings collapse to **one per document** before the six-finding
 cap is applied.
 
+**The source code is the truth (check 13, from v9 onward).** The same
+verification turns inward, on the comments beside the code. A comment claiming
+behaviour the adjacent code does not have is **removed** — the code is the
+truth, and a comment nobody can trust is worse than none (`severity:medium`,
+collapsed to one finding per source file). The exception is a comment describing
+deliberate behaviour the code never implements — a guard, limit, error path or
+lock it says is applied. That comment is the only surviving record of the intent,
+so it stays and the finding is filed as a **possible bug in the code**
+(`severity:high`). The boundary against `doc-coverage` is drawn by what is wrong
+with the comment: an absent or paraphrase-only doc comment is `doc-coverage`'s, a
+comment that says something untrue is this scan's. `TODO`/`FIXME` notes,
+commented-out code, licence headers, and comments explaining *why* rather than
+what are all silent.
+
 **Meaningful grouping.** Findings must be a coherent, approvable unit of work —
 **never** one issue per typo, **never** one unreviewable mega-issue.
 
-**Complement, never duplicate.** Prose docs are this scan; code doc-comment
-coverage is `doc-coverage`; spelling is `spelling-fix`. A candidate belonging to
-a sibling is left to it.
+**Complement, never duplicate.** Prose docs and contradicting code comments are
+this scan; code doc-comment *coverage* is `doc-coverage`; spelling is
+`spelling-fix`. A candidate belonging to a sibling is left to it.
 
 **No PR, ever.** `skipMilestone: true`, `cooldownHours: 168` (weekly). A run
 files **issues only** (at most six, most important first, `severity:high` >
@@ -1513,8 +1527,8 @@ grammar (a `<!-- … -->` Markdown comment) suppresses a finding on future runs.
 wired into the claim handler, idle-task filer, wrapper-seeder, and backfill title
 map. Tests: `worker/deno/tests/documentation_audit_template_test.ts`. See
 [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md) for the
-operator manual (twelve-check catalogue, idle-trigger diagram, severity table, id
-recipe, suppression syntax, no-PR rule, weekly cadence).
+operator manual (thirteen-check catalogue, idle-trigger diagram, severity table,
+id recipe, suppression syntax, no-PR rule, weekly cadence).
 
 ### Workflow-annotation scans (template #15)
 
