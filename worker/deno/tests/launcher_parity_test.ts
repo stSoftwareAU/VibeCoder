@@ -30,6 +30,7 @@ import {
   LAUNCH_PLAN_KEYS,
   launcherContractFaults,
 } from "../lib/launcher_contract.ts";
+import { executableLines } from "../lib/launcher_source.ts";
 import {
   BASH_LAUNCHER,
   denoInvocationOrder,
@@ -334,6 +335,39 @@ Deno.test("run.sh and run.ps1 - both update the worker checkout host-side (Issue
       `${contract.name} must update the checkout before the launch, so the ` +
         `container never has to`,
     );
+  }
+});
+
+Deno.test("run.sh and run.ps1 - neither hardcodes a volume-removal verb (Issue #731)", () => {
+  // `volume delete` was written into run.sh for every runtime. Podman has no
+  // such sub-command, and Apple container has no `volume rm`, so no single
+  // spelling is right for every host: the verb belongs in the plan with the
+  // rest of the dialect. Comments are stripped first — the launchers explain
+  // the difference in prose, and prose is not an invocation.
+  for (
+    const [name, source, dialect] of [
+      ["run.sh", RUN_SH_SOURCE, "bash"],
+      ["run.ps1", RUN_PS1_SOURCE, "powershell"],
+    ] as const
+  ) {
+    const code = executableLines(source, dialect).join("\n");
+    for (const verb of ["volume delete", "volume rm", "volume remove"]) {
+      assertEquals(
+        code.includes(verb),
+        false,
+        `${name} must take the removal verb from the plan, not spell ` +
+          `'${verb}' itself`,
+      );
+    }
+    // PowerShell spells its argument list as elements, so check that form too.
+    for (const verb of ['"volume", "delete"', '"volume", "rm"']) {
+      assertEquals(
+        code.includes(verb),
+        false,
+        `${name} must take the removal verb from the plan, not spell ` +
+          `'${verb}' itself`,
+      );
+    }
   }
 });
 

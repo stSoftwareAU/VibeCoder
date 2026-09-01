@@ -975,7 +975,14 @@ heal_untrimmable_volumes() {
       report_unrecovered "${RUNTIME} could not remove ${volume}: ${volume_remove_detail} - the volume is still there, so it was not recreated"
       continue
     fi
-    "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
+    # A runtime broken enough to refuse the create must not take the launch
+    # down with it: this is the self-heal, and #477 says a host that cannot
+    # claim still runs and reports. Reported, never passed over.
+    if ! bounded 120 "${RUNTIME}" volume create "${volume}" \
+      </dev/null >/dev/null 2>&1; then
+      report_unrecovered "${RUNTIME} removed ${volume} but could not create it again - the volume preparation on the next launch is what must"
+      continue
+    fi
     recreated=1
   done
   # Nothing was destroyed, so nothing was healed: the interval must not be
