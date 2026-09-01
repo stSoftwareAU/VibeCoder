@@ -74,6 +74,7 @@ import {
   assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
   createMilestoneRuleset,
+  type GhJson,
   MILESTONE_RULESET_NAME,
   planMilestoneRuleset,
   readRulesetDetails,
@@ -940,30 +941,76 @@ async function runVerifyCollaborator(configPath: string): Promise<boolean> {
 }
 
 /**
+ * Which credentials a `gh` call runs under.
+ *
+ * The two are NOT interchangeable (Issue #595). `service-account` points gh at
+ * the worker's own configuration, which holds `write`; `operator` uses the
+ * ambient credentials of the human running setup, which is the only identity
+ * that can hold the `admin` a ruleset write needs.
+ */
+export type SetupIdentity = "service-account" | "operator";
+
+/** The severities {@link reportMilestoneRuleset} prints at. */
+export type ReportSeverity = "info" | "success" | "warning" | "error";
+
+/** The side-effecting edges of {@link reportMilestoneRuleset}, injectable. */
+export interface MilestoneReportSeams {
+  /** A `gh` runner for the given identity. */
+  ghFor: (identity: SetupIdentity) => GhJson;
+  /** Ask the operator whether to create the missing ruleset. */
+  ask: (repo: string) => Promise<boolean>;
+  /** Emit one line. */
+  print: (severity: ReportSeverity, message: string) => void;
+}
+
+/** The production seams: real `gh`, a real prompt, real printing. */
+function liveMilestoneSeams(ghConfigDir?: string): MilestoneReportSeams {
+  return {
+    ghFor: (identity) =>
+      identity === "operator"
+        ? createSetupGhJson()
+        : createSetupGhJson(ghConfigDir),
+    ask: askCreateMilestoneRuleset,
+    print: (severity, message) => {
+      if (severity === "error") printError(message);
+      else if (severity === "warning") printWarning(message);
+      else if (severity === "success") printSuccess(message);
+      else printInfo(message);
+    },
+  };
+}
+
+/**
  * Report one repository's milestone-branch and auto-merge configuration, and
  * offer to create the `milestone/**` ruleset when — and only when — an answer
  * could change something (Issues #586, #553, #678).
  *
- * The rulesets are read by the caller, once, and passed in: the offer, the
- * milestone findings and the default-branch auto-merge check all read the same
- * state, so they can never disagree with each other.
+ * The rulesets are read by the caller, once, and passed in, so the offer, the
+ * milestone findings and the default-branch auto-merge check all assess the
+ * same state and cannot disagree about what is on the repository.
+ *
+ * The one call that does NOT reuse them is the create: it re-reads under the
+ * `operator` identity because that is the only one holding `admin`, and it
+ * must decide what to write from what THAT identity can see (Issue #595). The
+ * re-read is deliberate, not a missed optimisation.
  *
  * @param result - The repo and its resolved default branch
  * @param login - The service account the worker runs as
  * @param rulesets - Every ruleset on the repository, already read
- * @param options - `gh` configuration directory and an error counter
+ * @param seams - The `gh`, prompt and print edges
+ * @returns The number of `error`-severity findings printed
  */
-async function reportMilestoneRuleset(
+export async function reportMilestoneRuleset(
   result: { repo: string; branch?: string },
   login: string,
-  rulesets: RulesetDetail[],
-  options: { ghConfigDir?: string; onError: () => void },
-): Promise<void> {
+  rulesets: readonly RulesetDetail[],
+  seams: MilestoneReportSeams,
+): Promise<number> {
   const { repo, branch } = result;
   const findings = await checkMilestoneRuleset(
     repo,
     login,
-    createSetupGhJson(options.ghConfigDir),
+    seams.ghFor("service-account"),
     { rulesets },
   );
 
@@ -972,36 +1019,43 @@ async function reportMilestoneRuleset(
   // answering yes changed nothing and the same question came back on every
   // run — setup says why instead (Issue #678).
   const plan = planMilestoneRuleset(rulesets);
+  let suppressMissingWarning = false;
+
   if (plan.kind === "not-creatable") {
-    printInfo(
-      `${repo}: not offering to create the \`milestone/**\` ruleset — ` +
-        `${plan.reason}`,
+    // Said once, as a single line. The standing `no-milestone-ruleset` warning
+    // ends "add a ruleset with required status checks", which read as a
+    // contradiction next to "there are no checks to mirror" — so the reason is
+    // folded into that warning rather than printed beside it.
+    suppressMissingWarning = true;
+    seams.print(
+      "warning",
+      `${repo}: no ruleset covers \`milestone/**\`, so GitHub cannot arm ` +
+        `auto-merge on a milestone PR (Issue #586). Setup is not offering to ` +
+        `create one — ${plan.reason}. Require status checks on the default ` +
+        `branch first, then re-run setup to mirror them onto ` +
+        `\`milestone/**\`.`,
     );
-  } else if (
-    plan.kind === "creatable" && await askCreateMilestoneRuleset(repo)
-  ) {
-    // Deliberately WITHOUT `ghConfigDir` (Issue #595). That option points
-    // gh at the worker's service-account configuration, which holds
-    // `write` — and GitHub answers a ruleset write from a non-admin with
-    // 404, not 403, so every create failed as "gh: Not Found (HTTP 404)"
-    // with nothing naming the cause. Creating a ruleset needs `admin`,
-    // and the operator running setup is the one who has it, so this
-    // single call uses their ambient credentials.
-    const created = await createMilestoneRuleset(repo, createSetupGhJson());
+  } else if (plan.kind === "creatable" && await seams.ask(repo)) {
+    const created = await createMilestoneRuleset(repo, seams.ghFor("operator"));
     if (!created.ok) {
-      printWarning(
+      seams.print(
+        "warning",
         `${repo}: could not create the milestone ruleset: ` +
           `${created.error.message}`,
       );
     } else if (created.created) {
-      printSuccess(
+      seams.print(
+        "success",
         `${repo}: created the "${MILESTONE_RULESET_NAME}" ruleset ` +
           `requiring ${created.contexts.length} check(s) on ` +
           `\`milestone/**\` — milestone PRs are auto-mergeable`,
       );
-      return;
+      return 0;
     } else {
-      printInfo(`${repo}: milestone ruleset not created — ${created.reason}`);
+      seams.print(
+        "info",
+        `${repo}: milestone ruleset not created — ${created.reason}`,
+      );
     }
   }
 
@@ -1015,18 +1069,25 @@ async function reportMilestoneRuleset(
   const autoMergeFinding = branch
     ? assessDefaultBranchAutoMerge(rulesets, branch)
     : null;
-  if (autoMergeFinding) printWarning(`${repo}: ${autoMergeFinding.message}`);
+  if (autoMergeFinding) {
+    seams.print("warning", `${repo}: ${autoMergeFinding.message}`);
+  }
 
+  let errors = 0;
   for (const finding of findings) {
+    if (suppressMissingWarning && finding.code === "no-milestone-ruleset") {
+      continue;
+    }
     const line = `${repo}: ${finding.message}`;
     if (finding.severity === "error") {
-      printError(line);
-      options.onError();
+      seams.print("error", line);
+      errors++;
     } else if (finding.severity === "warning") {
-      printWarning(line);
+      seams.print("warning", line);
     }
     // `info` is the healthy case — reported only in the caller's summary.
   }
+  return errors;
 }
 
 async function runBranchProtectionSync(configPath: string): Promise<boolean> {
@@ -1106,10 +1167,12 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
             `${r.repo}: ${rulesetReadFailedFinding(read.error).message}`,
           );
         } else {
-          await reportMilestoneRuleset(r, milestoneLogin, read.rulesets, {
-            ghConfigDir,
-            onError: () => milestoneRulesetErrors++,
-          });
+          milestoneRulesetErrors += await reportMilestoneRuleset(
+            r,
+            milestoneLogin,
+            read.rulesets,
+            liveMilestoneSeams(ghConfigDir),
+          );
         }
       }
       // Classic protection is never written or deleted by the worker; a

@@ -361,6 +361,33 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A ruleset summary as the LIST endpoint returns it. */
+interface RulesetSummary {
+  id?: number;
+  /** `Repository` for the repo's own rulesets, `Organization` for inherited. */
+  source_type?: string;
+  /** The org login, or `owner/repo`, the ruleset is defined on. */
+  source?: string;
+}
+
+/**
+ * The API path that serves one ruleset's detail.
+ *
+ * The list endpoint includes rulesets INHERITED from the organisation, and
+ * those are not addressable under the repository: GitHub serves an org-level
+ * ruleset from `/orgs/{org}/rulesets/{id}` and answers the repository path for
+ * the same id with 404. Reading every id from the repository path therefore
+ * failed the whole read on any repo whose organisation defines a ruleset —
+ * which, now that a failed read is loud (Issue #678), would warn on every run
+ * about a repository whose `milestone/**` ruleset is present and readable.
+ */
+function rulesetDetailPath(repo: string, summary: RulesetSummary): string {
+  if (summary.source_type === "Organization" && summary.source) {
+    return `orgs/${summary.source}/rulesets/${summary.id}`;
+  }
+  return `repos/${repo}/rulesets/${summary.id}`;
+}
+
 /**
  * Read every ruleset on the repository in DETAIL shape.
  *
@@ -373,9 +400,9 @@ function messageOf(error: unknown): string {
  * repositories and GitHub answers a read it will not serve with 404, so
  * swallowing the error made "cannot see it" look exactly like "it is not
  * there" — which is how setup kept offering to create a ruleset that already
- * existed. The same reasoning covers a single unreadable ruleset: the one that
- * could not be read may be the milestone ruleset, so the whole read fails
- * rather than quietly omitting it.
+ * existed. The same reasoning covers a single unreadable ruleset, an empty
+ * response body and a summary carrying no id: each could be the milestone
+ * ruleset, so the whole read fails rather than quietly omitting one.
  *
  * @returns The rulesets, or the error that stopped them being read.
  */
@@ -383,10 +410,22 @@ export async function readRulesetDetails(
   repo: string,
   ghFn: GhJson,
 ): Promise<RulesetRead> {
-  let summaries: Array<{ id?: number }>;
+  let summaries: RulesetSummary[];
   try {
     const raw = await ghFn(["api", `repos/${repo}/rulesets`]);
-    const parsed = raw ? JSON.parse(raw) : [];
+    // An empty body is not an empty list: `gh` prints nothing when it could
+    // not serve the read, and reading that as "no rulesets" is the same
+    // silent failure this function exists to remove (Issue #678).
+    if (!raw.trim()) {
+      return {
+        ok: false,
+        error: new Error(
+          "could not read the repository's rulesets: the list endpoint " +
+            "answered with an empty body",
+        ),
+      };
+    }
+    const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
       return {
         ok: false,
@@ -408,10 +447,19 @@ export async function readRulesetDetails(
 
   const rulesets: RulesetDetail[] = [];
   for (const summary of summaries) {
-    if (typeof summary.id !== "number") continue;
+    if (typeof summary.id !== "number") {
+      return {
+        ok: false,
+        error: new Error(
+          "could not read the repository's rulesets: the list endpoint " +
+            "returned a ruleset with no id, which cannot be fetched",
+        ),
+      };
+    }
+    const path = rulesetDetailPath(repo, summary);
     try {
-      const raw = await ghFn(["api", `repos/${repo}/rulesets/${summary.id}`]);
-      if (!raw) {
+      const raw = await ghFn(["api", path]);
+      if (!raw.trim()) {
         return {
           ok: false,
           error: new Error(
