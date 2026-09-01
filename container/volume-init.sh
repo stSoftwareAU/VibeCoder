@@ -98,19 +98,39 @@ for target in "$@"; do
     # the 90%-disk nuke - hands the host exactly zero bytes. fstrim discards
     # the filesystem's unused blocks, which punches them out of the image.
     # It runs on every launch, with the root privileges FITRIM needs and no
-    # operator incantation. Loud but never fatal - a virtual disk that cannot
-    # discard must not block a launch. Where the runtime refuses the ioctl
-    # (Apple container does, always), the refusal is named on stdout so the
-    # launcher can recreate the volume instead of assuming a trim happened.
+    # operator incantation. Never fatal - a virtual disk that cannot discard
+    # must not block a launch. Where the runtime refuses the ioctl (Apple
+    # container does, always), the refusal is named on stdout so the launcher
+    # can recreate the volume instead of assuming a trim happened, and is
+    # stated rather than warned about: docs/CONTAINER.md has called it "a
+    # fact, not a warning" since Issue #478, and warning about a permanent
+    # property of the runtime on every launch only buried the two messages
+    # that do need a human - the recreate and [WORK_VOLUME_UNRECOVERED]
+    # (Issue #723).
     if command -v fstrim >/dev/null 2>&1; then
       trim_out=""
       if trim_out="$(fstrim -v "${target}" 2>&1)"; then
         echo "volume-init: trimmed ${target} - ${trim_out} (Issue #384)" >&2
+      elif [[ "${trim_out}" == *"Operation not permitted"* ||
+              "${trim_out}" == *"not supported"* ]]; then
+        # Expected, permanent, and not the operator's to fix: Apple's container
+        # runtime refuses FITRIM on every launch, and always has. Saying WARNING
+        # each time trains the reader to skip volume-init lines - which is
+        # precisely where [WORK_VOLUME_UNRECOVERED], the one line that does need
+        # a human, comes out (Issue #723). Nothing is lost by stating it
+        # plainly: the refusal is still a fact on stdout below, and run.sh's
+        # note_trim_refusals writes it to run_core.log either way.
+        echo "volume-init: ${target} - this runtime does not support discard, so the volume image keeps every block it holds; the launcher recreates the volume when the host is below its claiming floor (Issues #384, #478)" >&2
+        echo "VOLUME_TRIM_REFUSED ${target}"
       else
+        # Not the refusal we expect from a runtime that cannot discard, so this
+        # one is worth shouting about: it means the trim broke some other way.
         echo "volume-init: WARNING could not trim ${target} - the volume image keeps every block it was allocated, so guest reclaim cannot return host disk (Issues #384, #478): ${trim_out}" >&2
         echo "VOLUME_TRIM_REFUSED ${target}"
       fi
     else
+      # An image of ours shipping without fstrim is a build defect rather than a
+      # property of the host's runtime, and it is ours to fix - so it stays loud.
       echo "volume-init: WARNING fstrim is not available - blocks the guest frees stay allocated to the ${target} volume image (Issues #384, #478)" >&2
       echo "VOLUME_TRIM_REFUSED ${target}"
     fi

@@ -29,6 +29,9 @@ async function fixture(options: {
   // what the real host gives these tests — /usr/sbin is not on the fixture
   // PATH, so no test can ever trim the machine running the suite.
   fstrimExit?: number | null;
+  // Issue #723: which refusal fstrim reports decides whether volume-init treats
+  // it as a property of the runtime or as an unexpected failure.
+  fstrimStderr?: string;
 }): Promise<Fixture> {
   const dir = await Deno.makeTempDir({ prefix: "volume_init_" });
   const bin = `${dir}/bin`;
@@ -60,7 +63,10 @@ async function fixture(options: {
       "fstrim",
       options.fstrimExit === 0
         ? `echo "/work: 23.5 GiB (25232932864 bytes) trimmed"; exit 0`
-        : `echo "fstrim: /work: the discard operation is not supported" >&2\n` +
+        : `echo "${
+          options.fstrimStderr ??
+            "fstrim: /work: the discard operation is not supported"
+        }" >&2\n` +
           `exit ${options.fstrimExit}`,
     );
   }
@@ -233,7 +239,7 @@ Deno.test("volume-init - a bind-mounted target is not trimmed (no volume image t
   }
 });
 
-Deno.test("volume-init - a runtime that cannot discard is loud, and the launch still proceeds", async () => {
+Deno.test("volume-init - a runtime that cannot discard is stated, not warned about", async () => {
   const f = await fixture({
     device: "/dev/vdc",
     e2fsckExit: 0,
@@ -247,12 +253,60 @@ Deno.test("volume-init - a runtime that cannot discard is loud, and the launch s
       0,
       "a volume that cannot be trimmed must not block a launch",
     );
-    assertStringIncludes(r.stderr, "could not trim /work");
-    assertStringIncludes(r.stderr, "discard operation is not supported");
-    // Issue #478 widened this warning's issue reference; the behaviour it
-    // asserts — loud, non-fatal — is unchanged.
+    assertStringIncludes(r.stderr, "does not support discard");
     assertStringIncludes(r.stderr, "Issues #384, #478");
     assertStringIncludes(r.calls, "chown 1000:1000 /work");
+    // Issue #723: permanent on this runtime and not the operator's to fix, so
+    // it must not carry WARNING. Warning every launch is what buried
+    // [WORK_VOLUME_UNRECOVERED], the line that does need a human.
+    assertEquals(
+      r.stderr.includes("WARNING"),
+      false,
+      `a permanent runtime property must not warn: ${r.stderr}`,
+    );
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - the Apple container FITRIM refusal is the quiet path", async () => {
+  // The exact refusal docs/CONTAINER.md records, which is what every launch on
+  // that runtime produces (Issue #723).
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+    fstrimExit: 1,
+    fstrimStderr: "fstrim: /work: FITRIM ioctl failed: Operation not permitted",
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, r.stderr);
+    assertEquals(r.stderr.includes("WARNING"), false, r.stderr);
+    // The machine contract run.sh acts on is untouched by the wording change.
+    assertStringIncludes(r.stdout, "VOLUME_TRIM_REFUSED /work");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});
+
+Deno.test("volume-init - a trim that fails some other way is still a warning", async () => {
+  // Not the refusal a runtime without discard gives, so it is unexpected and
+  // stays loud: quieting the expected case must not quieten a real fault
+  // (Issue #723).
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+    fstrimExit: 1,
+    fstrimStderr: "fstrim: /work: unexpected I/O error reading the device",
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, "an unexpected trim failure still must not block");
+    assertStringIncludes(r.stderr, "WARNING could not trim /work");
+    assertStringIncludes(r.stderr, "unexpected I/O error");
+    assertStringIncludes(r.stdout, "VOLUME_TRIM_REFUSED /work");
   } finally {
     await Deno.remove(f.dir, { recursive: true });
   }
