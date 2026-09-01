@@ -92,9 +92,7 @@ export function findOutcomeRecordInvocations(
     const block = invocationBlock(lines, index);
     if (!block.some((line) => line.includes(INVOCATION_MARKER))) continue;
 
-    const namesHost = block.some((line) =>
-      line.includes(HOSTNAME_PERMISSION)
-    );
+    const namesHost = block.some((line) => line.includes(HOSTNAME_PERMISSION));
     found.push({
       file,
       line: index + 1,

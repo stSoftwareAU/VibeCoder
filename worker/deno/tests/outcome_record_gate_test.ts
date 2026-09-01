@@ -65,7 +65,11 @@ Deno.test("findOutcomeRecordInvocations - a PowerShell argument array is read th
     "    )",
     "}",
   ].join("\n");
-  const before = findOutcomeRecordInvocations("run.ps1", hostless, "powershell");
+  const before = findOutcomeRecordInvocations(
+    "run.ps1",
+    hostless,
+    "powershell",
+  );
   assertEquals(before.length, 1);
   assertEquals(before[0]!.namesHost, false);
 
