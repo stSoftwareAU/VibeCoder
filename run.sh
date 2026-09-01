@@ -105,6 +105,11 @@ WEDGE_MARKER=""
 # Where the image build's output is captured, so a failed build can be
 # classified by container-build-heal (Issue #4441). Set only when a build runs.
 BUILD_LOG=""
+# Where the container run client's stderr is captured, so a start the runtime
+# refused can be quoted (Issue #711), and the FIFO it streams through. Both are
+# set together, immediately before the container is started.
+RUN_LOG=""
+RUN_ERR_FIFO=""
 # The log the outcome recorder quotes as evidence in its escalation (Issue
 # #709). Set only on a path that is about to fail with a diagnosable cause -
 # a successful build's output is not what a later failure was caused by, and
@@ -195,10 +200,11 @@ record_outcome() {
   # report can be traced to a machine. Issues #709, #710 and #711 arrived
   # exactly that way. loop.sh has carried the flag since Issue #633.
   #
-  # --launch-log: the failing build's own output, when a build is what failed
-  # (Issue #709). An image_build escalation without it says the environment
-  # cannot be rebuilt and nothing at all about why, which is the difference
-  # between a report an operator can act on and one they cannot.
+  # --launch-log: the failing step's own output - the build's, when a build is
+  # what failed (Issue #709), or the run client's refusal, when the container
+  # never started (Issue #711). An escalation without it names the phase and
+  # the status and nothing at all about why, which is the difference between a
+  # report an operator can act on and one they cannot.
   if ! bounded 120 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-write --allow-run --allow-net \
@@ -213,6 +219,15 @@ record_outcome() {
 # shellcheck disable=SC2317,SC2329
 on_exit() {
   local status=$?
+  # Never from a background subshell. Bash runs this trap in an asynchronous
+  # subshell too - when the watchdog returns, and when the drain guard below is
+  # killed - and a second run records a second launcher outcome and deletes the
+  # evidence the launcher itself is about to quote. Each background job clears
+  # the trap for its own subshell (`trap - EXIT`); this is the guard that says
+  # so where the damage would be done (Issue #711).
+  if [[ "${BASH_SUBSHELL}" != "0" ]]; then
+    return 0
+  fi
   if [[ -n "${PLAN_FILE}" ]]; then
     rm -f "${PLAN_FILE}" "${PLAN_FILE}.Containerfile"
   fi
@@ -225,6 +240,13 @@ on_exit() {
   # reporting a failed build it could say nothing about.
   if [[ -n "${BUILD_LOG}" ]]; then
     rm -f "${BUILD_LOG}"
+  fi
+  # Same ordering, same reason (Issue #711): the refused start's evidence is
+  # this capture, so it outlives the record and nothing else. The FIFO beside
+  # it goes here too. A SIGKILLed launcher runs no trap and leaves both behind,
+  # exactly as it already does for the plan file and the wedge marker.
+  if [[ -n "${RUN_LOG}" ]]; then
+    rm -f "${RUN_LOG}" "${RUN_ERR_FIFO}"
   fi
 }
 trap on_exit EXIT
@@ -948,6 +970,11 @@ CONTAINER_WEDGED_EXIT_STATUS=87
 # the reason.
 # shellcheck disable=SC2317,SC2329
 watchdog_reap_on_deadline() {
+  # Runs only as a background job, so it drops the launcher's EXIT trap for its
+  # own subshell: bash would otherwise run that trap when this returns, and the
+  # launcher would record a second outcome and remove its own evidence
+  # (Issue #711).
+  trap - EXIT
   local client_pid="$1"
   local poll=15
   if ((WATCHDOG_SECONDS < poll)); then
@@ -994,8 +1021,55 @@ WEDGE_MARKER="$(mktemp "${TMPDIR:-/tmp}/vibe-wedge.XXXXXX")"
 
 record_phase container_run
 
+# Statuses the runtime client reports when it refused to start the container at
+# all - no such image, an argument it would not accept, an entrypoint it could
+# not execute. They are exactly the statuses the recorder turns into a
+# container_start escalation, so they are the ones whose evidence is the
+# client's own refusal (Issue #711). Pinned against CONTAINER_START_EXIT_CODES
+# in worker/deno/lib/container_restart_backoff.ts by the launcher tests, in
+# both directions: that list is the contract, this is its copy.
+CONTAINER_START_EXIT_STATUSES=(125 126 127)
+
+# How long the capture is given to drain once the client has exited, before it
+# is quoted as far as it got. Seconds, because end-of-file arrives with the
+# client's last write; the bound is only there so a helper still holding the
+# pipe cannot stall this launcher.
+RUN_DRAIN_SECONDS=10
+
+# Capture the client's stderr while it still reaches the console (Issue #711).
+# Issue #711 was the third self-heal report to say `container_start`, `exit
+# status 125` and nothing about why: the client's own explanation went to the
+# console and was kept nowhere. tee keeps the console live - the container's
+# output IS this run's console, so it must not be held back until exit - and
+# leaves a copy the outcome recorder can quote.
+#
+# Through a FIFO rather than a pipeline, because $! must stay the client's own
+# PID: a pipeline would put tee there instead, and the watchdog below would
+# then wait on, and reap, the wrong process.
+#
+# Set up before the container starts, because a capture armed after the launch
+# would miss the refusal it exists to record. A host with no tee or mkfifo
+# launches without it and says so: evidence is what a failure would be reported
+# with, and the worker run itself is what the host is for - so the missing tool
+# costs the report its cause, never the run.
+if command -v tee >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1; then
+  RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe-run.XXXXXX")"
+  RUN_ERR_FIFO="${RUN_LOG}.err"
+  mkfifo "${RUN_ERR_FIFO}"
+  tee -a "${RUN_LOG}" >&2 <"${RUN_ERR_FIFO}" &
+  RUN_TEE_PID=$!
+else
+  echo "[run.sh] warning: no tee/mkfifo on this host - a refused container" \
+    "start will be reported without the runtime's own explanation" \
+    "(Issue #711)" >&2
+fi
+
 LAUNCH_IN_FLIGHT=1
-"${RUNTIME}" "${run_args[@]}" "$@" </dev/null &
+if [[ -n "${RUN_LOG}" ]]; then
+  "${RUNTIME}" "${run_args[@]}" "$@" </dev/null 2>"${RUN_ERR_FIFO}" &
+else
+  "${RUNTIME}" "${run_args[@]}" "$@" </dev/null &
+fi
 CHILD_PID=$!
 LAUNCH_IN_FLIGHT=""
 deliver_pending_signal
@@ -1009,11 +1083,61 @@ wait_for_child || status=$?
 # The client is gone, so the watchdog has nothing left to guard.
 kill "${WATCHDOG_PID}" 2>/dev/null || true
 
+# The capture is only evidence once the copier has drained the client's stderr,
+# which it has when it exits on end-of-file. Waited on rather than assumed:
+# quoting a half-written log would report a refusal missing the line that
+# explains it.
+#
+# Bounded, because this wait must never become the wedge the watchdog exists to
+# end: a runtime helper that inherited the client's stderr can hold the pipe
+# open after the client itself is gone. The guard's streams are detached so an
+# orphaned sleep cannot hold this launcher's stdout open behind it - killing
+# the guard leaves that sleep running, which is why they are detached rather
+# than merely closed.
+#
+# A guard that ran to completion is a guard that fired, so the truncation it
+# caused is reported rather than quoted as if the capture were whole.
+if [[ -n "${RUN_LOG}" ]]; then
+  # The guard drops every trap it inherited: EXIT so it cannot record a second
+  # launcher outcome, TERM/INT so the kill below actually ends it rather than
+  # being caught by this launcher's signal forwarder and leaving the drain
+  # waiting out the whole deadline on every launch.
+  { trap - EXIT TERM INT
+    sleep "${RUN_DRAIN_SECONDS}" && kill "${RUN_TEE_PID}"; } >/dev/null 2>&1 &
+  RUN_DRAIN_GUARD_PID=$!
+  wait "${RUN_TEE_PID}" 2>/dev/null || true
+  # SIGKILL, because SIGTERM can land in the window between the guard being
+  # forked and it clearing the traps it inherited - and in that window this
+  # launcher's own TERM forwarder catches it, the guard keeps sleeping, and
+  # every launch pays the full deadline here. The guard holds no state, so
+  # there is nothing for it to clean up on the way out.
+  kill -KILL "${RUN_DRAIN_GUARD_PID}" 2>/dev/null || true
+  drain_guard_status=0
+  wait "${RUN_DRAIN_GUARD_PID}" 2>/dev/null || drain_guard_status=$?
+  if ((drain_guard_status == 0)); then
+    echo "[run.sh] warning: the container's stderr was still being written" \
+      "${RUN_DRAIN_SECONDS}s after the client exited - the captured evidence" \
+      "is incomplete (Issue #711)" >&2
+  fi
+fi
+
 if [[ -s "${WEDGE_MARKER}" ]]; then
   echo "Error: container ${CONTAINER_NAME} wedged past the" \
     "${WATCHDOG_SECONDS}s watchdog deadline and was reaped - exiting" \
     "${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle runs (Issue #4173)" >&2
   status="${CONTAINER_WEDGED_EXIT_STATUS}"
 fi
+
+# A status only the runtime client produces means the container never started,
+# so its stderr is what the escalation is about (Issue #711). Any other status
+# came from a container that ran: its output is the worker's own console, not
+# an account of a launch that failed, and quoting it would point the reader at
+# the wrong thing.
+for start_status in "${CONTAINER_START_EXIT_STATUSES[@]}"; do
+  if ((status == start_status)); then
+    EVIDENCE_LOG="${RUN_LOG}"
+    break
+  fi
+done
 
 exit "${status}"
