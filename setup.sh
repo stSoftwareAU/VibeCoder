@@ -159,7 +159,47 @@ set -euo pipefail
 ################################################################################
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/.config.json}"
+
+# Resolve one path against a base, the way worker/deno/lib/host_path_style.ts
+# does: an absolute value stands, a relative one hangs off the base.
+absolute_config_path() {
+    local value="$1" base="$2"
+    case "$value" in
+        /*) printf '%s' "$value" ;;
+        *) printf '%s/%s' "$base" "${value#./}" ;;
+    esac
+}
+
+# The one .config.json this host uses (Issue #750).
+#
+# CONFIG_FILE is canonical; CONFIG_PATH is the launcher's older spelling, kept
+# as an alias so hosts configured against it keep working. A relative value in
+# either resolves against the checkout, never the working directory, so setup
+# and ./run.sh name the same file. Both set to different files is a deployment
+# fault: setup would read one while the launcher stages the other, so it is
+# reported rather than silently answered differently on each side. The rule is
+# worker/deno/lib/host_config_path.ts, and host_config_path_test.ts drives this
+# function through the same matrix to prove the two agree.
+resolve_config_file() {
+    local base="$1"
+    local canonical="" alias_path=""
+    if [[ -n "${CONFIG_FILE:-}" ]]; then
+        canonical="$(absolute_config_path "$CONFIG_FILE" "$base")"
+    fi
+    if [[ -n "${CONFIG_PATH:-}" ]]; then
+        alias_path="$(absolute_config_path "$CONFIG_PATH" "$base")"
+    fi
+    if [[ -n "$canonical" && -n "$alias_path" && "$canonical" != "$alias_path" ]]; then
+        echo "ERROR: CONFIG_FILE and CONFIG_PATH are both set and name different files:" >&2
+        echo "  CONFIG_FILE=${canonical}" >&2
+        echo "  CONFIG_PATH=${alias_path}" >&2
+        echo "Setup would read one and the launcher stage the other — set one, or set both to the same file." >&2
+        return 1
+    fi
+    printf '%s\n' "${canonical:-${alias_path:-${base}/.config.json}}"
+}
+
+CONFIG_FILE="$(resolve_config_file "$SCRIPT_DIR")"
 
 ################################################################################
 # Shared utility functions (used by all modules)

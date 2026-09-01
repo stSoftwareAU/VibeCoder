@@ -30,6 +30,7 @@
  * See commands/version.ts for a simple example.
  */
 
+import { resolveHostConfigPath } from "./lib/host_config_path.ts";
 import { loadConfig, validateConfig } from "./lib/config.ts";
 import { applyServiceAccountEnv } from "./lib/service_account_env.ts";
 import { createLogger } from "./lib/logger.ts";
@@ -495,7 +496,13 @@ export async function main(args: string[] = Deno.args): Promise<void> {
   }
 
   // Load configuration
-  const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
+  // CONFIG_PATH is what the launcher sets inside the container; CONFIG_FILE is
+  // what an operator sets on the host. One resolver answers both, and reports
+  // a host that sets them to different files (Issue #750).
+  const configPath = resolveHostConfigPath({
+    baseDir: Deno.cwd(),
+    env: (name) => Deno.env.get(name),
+  });
   let config: WorkerConfig;
 
   try {

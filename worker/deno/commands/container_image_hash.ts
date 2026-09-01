@@ -31,9 +31,7 @@ import {
   CONTAINER_TOOLS_HASH_INPUT,
   resolveContainerImageReference,
 } from "../lib/container_image_hash.ts";
-import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
-import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
-import { parseContainerManifest } from "../lib/container_manifest.ts";
+import { readDeploymentImageSelection } from "../lib/container_image_selection.ts";
 
 /** What the command reports alongside the printed reference. */
 export interface ContainerImageHashResult {
@@ -55,45 +53,6 @@ export interface ContainerImageHashResult {
    * the deployment takes the image's default provider set.
    */
   agentProviders: string;
-}
-
-/**
- * The provider set this deployment's build bakes in (Issue #729).
- *
- * Read here for the same reason the tool selection is: the reference this
- * command prints drives "does this host need a rebuild?", so it must be the
- * tag the launcher's build actually produces — a Codex host must not be told
- * it already has the (Claude) image it never built.
- *
- * @param baseDir - Repository root holding `container/tools.json`.
- * @param configFile - The deployment's `.config.json`.
- * @returns The build-argument value, or undefined for the image default.
- * @throws When the configuration or the manifest cannot be read or names an
- *   unusable provider — never a fallback tag (Issue #3234).
- */
-async function readAgentProvidersBuildValue(
-  baseDir: string,
-  configFile: string,
-): Promise<string | undefined> {
-  try {
-    await Deno.stat(configFile);
-  } catch (error) {
-    // A checkout with no configuration selects nothing and gets the reference
-    // it had before this issue, exactly as it does for container_tools.
-    if (error instanceof Deno.errors.NotFound) return undefined;
-    throw error;
-  }
-
-  const manifest = parseContainerManifest(
-    await Deno.readTextFile(
-      `${baseDir.replace(/[/\\]+$/, "")}/container/tools.json`,
-    ),
-  );
-  const { buildValue } = await readConfiguredAgentProviderSet(
-    configFile,
-    manifest.installedProviders,
-  );
-  return buildValue;
 }
 
 /** Whether a path is absolute on either host style. */
@@ -138,20 +97,15 @@ export const containerImageHashCommand: Command = {
     );
 
     try {
-      // The selected tools are part of the image's identity: a host that
-      // rebuilds off this reference alone must rebuild when they change.
-      const { tools } = await readContainerToolsSelection(configFile);
-      // The enabled providers are baked in the same way (Issue #729): a host
-      // that switches provider must be told to rebuild, not handed the tag of
-      // the image it already has.
-      const agentProviders = await readAgentProvidersBuildValue(
-        baseDir,
-        configFile,
-      );
-      const options = {
-        containerTools: tools,
-        ...(agentProviders ? { agentProviders } : {}),
-      };
+      // The selected tools and the enabled providers are both part of the
+      // image's identity: a host that rebuilds off this reference alone must
+      // rebuild when either changes. Read through the one reader setup's check
+      // and the tabletop runner also use, so the three cannot disagree (#743).
+      const { options, tools, agentProviders } =
+        await readDeploymentImageSelection({
+          repoRoot: baseDir,
+          configFile,
+        });
       const hash = await computeContainerImageHash(baseDir, options);
       const image = await resolveContainerImageReference(baseDir, options);
 

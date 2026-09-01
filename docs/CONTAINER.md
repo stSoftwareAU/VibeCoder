@@ -285,6 +285,17 @@ that is already the image's default (`container/tools.json`
 `installedProviders`) passes no argument and leaves the tag exactly where it
 was.
 
+**Every caller reads both selections through one reader.** Because the tag is
+derived from the deployment's own configuration, anything that *names* the
+image must read that configuration too — otherwise it names a tag the launcher
+never builds. Setup's worker-image check and the security tabletop runner did
+not, and reported a built image as missing on any host that selected tools or a
+provider set (Issues #743, #749). Both now call
+[`readDeploymentImageSelection`](../worker/deno/lib/container_image_selection.ts),
+as does `container-image-hash` itself, and
+`container_image_selection_test.ts` pins their answer to the launcher's — so a
+fourth input added to the hash cannot be added to the launcher alone.
+
 ```mermaid
 flowchart LR
     I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
