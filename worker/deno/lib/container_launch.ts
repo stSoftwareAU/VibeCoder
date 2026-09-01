@@ -94,7 +94,9 @@ import {
   GH_CREDENTIAL_SUBDIR,
 } from "./credential_preflight.ts";
 import {
+  AGENT_PROVIDERS_BUILD_ARG,
   type AgentProviderDescriptor,
+  agentProvidersBuildValue,
   enabledAgentProviders,
 } from "./agent_provider.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
@@ -1101,6 +1103,21 @@ export function buildContainerLaunchPlan(
     buildArgs.push(
       "--build-arg",
       `VIBE_CONTAINER_TOOLS=${inputs.containerToolsSpecJson}`,
+    );
+  }
+  // Issue #729: the deployment's enabled providers decide which agent CLIs the
+  // image installs, so the *same* set that decides the credential mounts above
+  // is carried into the build. Nothing appended when it is already what the
+  // image installs by default, so the default fleet build — and its tag — are
+  // byte-for-byte unchanged.
+  const providersBuildValue = agentProvidersBuildValue(
+    providers.map((provider) => provider.id),
+    manifest.installedProviders,
+  );
+  if (providersBuildValue) {
+    buildArgs.push(
+      "--build-arg",
+      `${AGENT_PROVIDERS_BUILD_ARG}=${providersBuildValue}`,
     );
   }
   buildArgs.push(joinPath(base, "container", style));

@@ -261,8 +261,9 @@ it would invalidate the image on every commit:
 | `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
 | `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
+| `agent_providers` (`.config.json`) | The coding-agent CLIs this deployment bakes in |
 
-The last one is not a committed file. `container_tools` is the deployment's own
+The last two are not committed files. `container_tools` is the deployment's own
 selection (see
 [Deployer-supplied build-time tools](CONTAINER-IMAGE.md#deployer-supplied-build-time-tools)),
 and the
@@ -276,10 +277,19 @@ exactly the tag it got before the selection existed, so no existing host
 rebuilds. A malformed spec exits non-zero naming the offending field rather
 than falling back to a tools-free tag.
 
+`agent_providers` works the same way (Issue #729): the launch plan carries the
+deployment's enabled set into the build as `--build-arg AGENT_PROVIDERS=<ids>`
+and mixes that value into the tag, so a host switching from Claude to Codex
+rebuilds instead of reusing an image with the wrong agent CLIs installed. A set
+that is already the image's default (`container/tools.json`
+`installedProviders`) passes no argument and leaves the tag exactly where it
+was.
+
 ```mermaid
 flowchart LR
     I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
     C["container_tools<br/>(.config.json)"] --> H
+    G["agent_providers<br/>(.config.json)"] --> H
     W["docs/, worker/ sources,<br/>cloned repos"] -.ignored.-> H
     H --> R["vibe-coder:&lt;short hash&gt;"]
     R --> D{"image present<br/>locally?"}
@@ -1163,9 +1173,9 @@ construction and the containment boundary do not change.
 | id       | binary   | fragment | credential variables               | notes |
 | -------- | -------- | -------- | ---------------------------------- | ----- |
 | `claude` | `claude` | `container/providers/claude.sh` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build |
-| `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; add it to `AGENT_PROVIDERS` to install it |
-| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, add it to `AGENT_PROVIDERS` to install it |
-| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY` | Carried on the Claude CLI under its own command and its own pin; add it to `AGENT_PROVIDERS` to install it |
+| `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; enable it in `agent_providers` and the launcher builds it in |
+| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, enable it in `agent_providers` and the launcher builds it in |
+| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY` | Carried on the Claude CLI under its own command and its own pin; enable it in `agent_providers` and the launcher builds it in |
 
 Each vendor's credential is provisioned into its own
 `<credential dir>/<id>/provider.env` by `setup.sh` — the variables per vendor
@@ -1228,9 +1238,11 @@ provider its own variables and writes only the files it has
 credentials for. DeepSeek's is the case worth stating outright: the binary is
 Anthropic's, but `deepseek/provider.env` holds a **DeepSeek** key
 (`DEEPSEEK_API_KEY`, provisioned from `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`), and
-Anthropic's own credentials are denied to the DeepSeek child. The default image
-still installs Claude alone, so a run using another provider also needs it in
-the image's `AGENT_PROVIDERS` set.
+Anthropic's own credentials are denied to the DeepSeek child. A default image
+build still installs Claude alone, but the launcher builds whatever
+`agent_providers` enables — it passes the set as `--build-arg AGENT_PROVIDERS`
+and mixes it into the image tag (Issue #729), so selecting another provider is
+one decision, not two.
 
 Each fragment reads its pins from `container/tools.json` with `jq`, verifies
 the download against the pinned SHA-256 (per architecture, or one `noarch`
@@ -1313,9 +1325,10 @@ neither the Containerfile nor `container/install-providers.sh` names a provider.
    `VIBE_LAUNCHAGENT_*` provisioning variable `setup.sh` reads), the child
    environment allowlist/denylist — naming the *other* vendors' credential
    variables so none crosses — and the invocation the CLI takes.
-4. **Build it in** — pass the new id in `AGENT_PROVIDERS`, and enable it for a
-   run with `agent_providers`. Add it to `installedProviders` in the manifest
-   only if a *default* image build should carry it.
+4. **Enable it** — add the id to `agent_providers` in `.config.json`; the
+   launcher passes the set to the build as `AGENT_PROVIDERS` on the next
+   launch. Add it to `installedProviders` in the manifest only if a *default*
+   image build should carry it.
 
 The image tag follows the set, so the new provider produces a new
 `vibe-coder:<hash>` rather than reusing a tag whose contents differ. A trio in
