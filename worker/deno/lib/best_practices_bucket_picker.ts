@@ -1,8 +1,10 @@
 /**
  * SLOC-weighted bucket picker for the best-practices idle task (Issue #2144).
  *
- * Picks one of the supported language buckets — or the `general` bucket —
- * for a best-practices idle-task run, weighted by per-language byte counts
+ * Picks one of the supported language buckets — or one of the two
+ * language-agnostic buckets, `general` (repo hygiene) and `design`
+ * (design smells, Issue #662) — for a best-practices idle-task run,
+ * weighted by per-language byte counts
  * (a KISS SLOC proxy: bytes correlate strongly with SLOC within a single
  * language ecosystem).
  *
@@ -14,9 +16,13 @@
  *
  *   - Each *detected and supported* language is weighted by its byte count
  *     from `RepoLanguages.raw` (the GitHub Languages API).
- *   - `general` is added as a single bucket whose weight equals the largest
- *     detected language's weight, so it competes on par with the dominant
- *     language.
+ *   - `general` and `design` (Issue #662) are each added as a single bucket
+ *     whose weight equals the largest detected language's weight, so both
+ *     compete on par with the dominant language. Neither names a language,
+ *     so a repo written entirely in unsupported languages still draws one of
+ *     them — its dominant raw byte count supplies the weight. A repo with no
+ *     detected code at all has nothing to design-review, so it falls back to
+ *     `general` alone.
  *   - React vs plain-TypeScript decision: the bucket is `react` only when
  *     `package.json` declares a React dependency AND at least one `.jsx`/`.tsx`
  *     file is present; otherwise the TypeScript byte-count flows to the
@@ -47,10 +53,17 @@ export type SupportedLanguage =
   | "aws-cloudformation"
   | "terraform";
 
-/** The outcome of a bucket pick. */
+/**
+ * The outcome of a bucket pick.
+ *
+ * `general` (repo-level hygiene) and `design` (language-agnostic design
+ * smells, Issue #662) are the two language-agnostic buckets — neither names
+ * a language, so both are candidates on every repo that has code.
+ */
 export type BucketPick =
   | { kind: "language"; language: SupportedLanguage }
-  | { kind: "general" };
+  | { kind: "general" }
+  | { kind: "design" };
 
 /** Internal weighted-entry shape. */
 interface WeightedBucket {
@@ -59,16 +72,17 @@ interface WeightedBucket {
 }
 
 /**
- * Pick a best-practices bucket — either a specific supported language or
- * the `general` bucket — weighted by per-bucket byte counts.
+ * Pick a best-practices bucket — a specific supported language, or one of
+ * the language-agnostic `general` / `design` buckets — weighted by
+ * per-bucket byte counts.
  *
  * @param repoLanguages Detected language stats for the repo. May include
  *   optional `bestPracticesMarkers` for framework/IaC buckets the GitHub
  *   Languages API does not surface directly.
  * @param rng Random number generator returning a value in `[0, 1)`.
  *   Defaults to `Math.random` — pass a seeded RNG for deterministic tests.
- * @returns The picked bucket, or `{ kind: "general" }` if no supported
- *   language is detected.
+ * @returns The picked bucket, or `{ kind: "general" }` if the repo has no
+ *   detected code at all.
  */
 export function pickBucket(
   repoLanguages: RepoLanguages,
@@ -76,15 +90,32 @@ export function pickBucket(
 ): BucketPick {
   const weighted = collectWeightedBuckets(repoLanguages);
 
-  if (weighted.length === 0) {
+  // Weight of the repo's dominant language: the largest supported bucket
+  // when one is detected, otherwise the largest language the Languages API
+  // reported at all. The second case is what lets an unsupported-language
+  // repo (Bash, Python, COBOL) still draw a language-agnostic bucket.
+  const dominantWeight = weighted.length > 0
+    ? Math.max(...weighted.map((w) => w.weight))
+    : dominantRawWeight(repoLanguages);
+
+  if (dominantWeight <= 0) {
+    // No code at all — only repo-level hygiene has anything to review.
     return { kind: "general" };
   }
 
-  // `general` competes on par with the dominant language.
-  const maxLangWeight = Math.max(...weighted.map((w) => w.weight));
-  weighted.push({ bucket: { kind: "general" }, weight: maxLangWeight });
+  // Both language-agnostic buckets compete on par with the dominant language.
+  weighted.push({ bucket: { kind: "general" }, weight: dominantWeight });
+  weighted.push({ bucket: { kind: "design" }, weight: dominantWeight });
 
   return weightedPick(weighted, rng);
+}
+
+/**
+ * Largest byte count across every language the Languages API reported,
+ * supported or not. Returns 0 for a repo with no detected code.
+ */
+function dominantRawWeight(langs: RepoLanguages): number {
+  return Math.max(0, ...Object.values(langs.raw));
 }
 
 /**

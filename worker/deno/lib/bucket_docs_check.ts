@@ -11,7 +11,7 @@
  *
  * The check fails loudly when a bucket file exists with no link from the
  * standard, or when a bucket link in the standard does not resolve on disk —
- * so adding a ninth bucket without documenting it reddens CI.
+ * so adding a new bucket without documenting it reddens CI.
  *
  * Enforced by this repository's own Deno test
  * (`worker/deno/tests/bucket_docs_test.ts`), deliberately *not* by a shared

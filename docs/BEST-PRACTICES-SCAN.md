@@ -204,7 +204,7 @@ sequenceDiagram
     Filer->>Filer: 1/18 RNG picks best-practices<br/>(uniform over the registered templates)
     Filer->>Template: buildIssueBody(repo)
     Template->>Picker: pickBucket(detected languages)
-    Picker-->>Template: BucketPick (e.g. `rust` / `general`)
+    Picker-->>Template: BucketPick (e.g. `rust` / `general` / `design`)
     Template->>Template: load prompts/best_practices/<br/>+ inline buckets/<bucket>.md
     Template->>GH: gh issue create — title `Run a best-practices scan`,<br/>label `idle-task`, no milestone
     GH-->>Filer: new human-style wrapper issue
@@ -238,13 +238,13 @@ flowchart TD
     Idle[Idle trigger<br/>run_core: nothing claimable]
 
     Idle --> Pick{1/18 RNG over the<br/>registered idle-task templates}
-    Pick -- best-practices --> Bucket[pickBucket — SLOC-weighted<br/>across detected languages<br/>+ general at dominant weight]
+    Pick -- best-practices --> Bucket[pickBucket — SLOC-weighted<br/>across detected languages<br/>+ general and design at dominant weight]
     Bucket --> FileWrapper[File wrapper issue<br/>title: 'Run a best-practices scan'<br/>label: idle-task<br/>no milestone — skipMilestone: true]:::output
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
     Claim --> Before[Snapshot 1 — list open<br/>`best-practices` issues BEFORE]:::phase
     Before --> Lang{bucket is a language?}
     class Pick,Lang,CIGate gate;
-    Lang -- general --> Run[Invoke Claude<br/>read-only static review]:::phase
+    Lang -- general / design --> Run[Invoke Claude<br/>read-only static review]:::phase
     Lang -- language --> CIGate{CI-gate check:<br/>linter AND compile gates<br/>both invoked in CI?}
     CIGate -- both present --> Run
     CIGate -- either missing --> FileLinter[File missing-CI-gate issue<br/>severity:high — names which gate(s)<br/>missing — counts to 6-cap]:::output
@@ -299,9 +299,14 @@ chooses the bucket at file time using a SLOC-weighted random pick:
 2. **Weight each detected supported bucket** by its byte count from
    `RepoLanguages.raw` (a KISS SLOC proxy — bytes correlate strongly
    with SLOC within a single ecosystem).
-3. **Add `general`** as a single bucket whose weight equals the
-   dominant detected language's weight, so it competes on par with
-   the largest language present.
+3. **Add `general` and `design`** — the two language-agnostic buckets —
+   each as a single bucket whose weight equals the dominant detected
+   language's weight, so both compete on par with the largest language
+   present. Because neither names a language, a repo written entirely in
+   unsupported languages (Bash, Python, COBOL) still draws one of them:
+   its dominant raw byte count supplies the weight. A repo with no
+   detected code at all has nothing to design-review, so it falls back to
+   `general` alone.
 4. **Draw uniformly** over the cumulative weight to pick the bucket.
 
 The TypeScript vs React decision is mutually exclusive: the bucket is
@@ -338,6 +343,7 @@ to that bucket's own run.
 | `aws-cloudformation` | CFN templates (YAML/JSON with `AWSTemplateFormatVersion`) | [cfn-lint](https://github.com/aws-cloudformation/cfn-lint), [AWS CFN user guide](https://docs.aws.amazon.com/AWSCloudFormation/) | [buckets/aws-cloudformation.md](../prompts/best_practices/buckets/aws-cloudformation.md) |
 | `terraform` | `*.tf`, `*.tfvars` | [Terraform docs](https://developer.hashicorp.com/terraform/docs), [tflint](https://github.com/terraform-linters/tflint) | [buckets/terraform.md](../prompts/best_practices/buckets/terraform.md) |
 | `general` | Repo-level hygiene (no language-specific code) | [Open Source Guides](https://opensource.guide/), [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver.org/), [SPDX](https://spdx.org/licenses/), [SLSA](https://slsa.dev/) | [buckets/general.md](../prompts/best_practices/buckets/general.md) |
+| `design` | Design smells in any language (no language idioms, no repo hygiene) | [Refactoring, ch. 3](https://martinfowler.com/books/refactoring.html), [Refactoring catalogue](https://refactoring.guru/refactoring/smells) | [buckets/design.md](../prompts/best_practices/buckets/design.md) |
 
 The `general` bucket is repo-level hygiene only — README, licence,
 CI/CD presence, dependency tooling, SBOM/lockfile pinning, repo
@@ -361,6 +367,43 @@ value or fixture data instead of doing the work earns a finding —
 `severity:medium` — see below). It does **not** review
 language-specific code quality; that belongs to the per-language
 buckets.
+
+### The `design` bucket — a named baseline of design smells
+
+The `design` bucket is the second language-agnostic bucket. It carries a
+fixed baseline of the twelve named smells from _Refactoring_ ch. 3 —
+mysterious name, duplicated code, feature envy, data clumps, primitive
+obsession, repeated switches, shotgun surgery, divergent change,
+speculative generality, message chains, middle man, refused bequest —
+each written as _what it is_ → _how to fix it_. It scores the shape of
+the code (naming, coupling, cohesion, delegation), never a language's
+idioms and never repo hygiene, so it applies to a repo in a language
+with no bucket of its own.
+
+Three limits keep it from becoming noise — the guide's two binding rules
+and its own finding cap — all set in
+[buckets/design.md](../prompts/best_practices/buckets/design.md):
+
+- **The repo overrides the baseline.** A convention the repository
+  documents wins; where a documented standard endorses the shape a smell
+  would flag, the candidate is dropped.
+- **Every smell is a judgement call.** Findings are titled and phrased
+  as possibilities ("Possible Feature Envy in …"), never as violations,
+  and anything the repo's own tooling already enforces is skipped.
+- **Tighter caps than the other buckets.** At most **three** findings per
+  run (against the orchestrator's six), severity floor `low` and ceiling
+  `medium` — a design smell is a maintainability judgement, never
+  `severity:high`.
+
+Two of the twelve overlap sibling scans, so the guide hands each shape to
+one owner: duplicated code belongs to the `duplicated_knowledge` scan,
+and unreferenced code — the dead half of speculative generality — belongs
+to the `dead_code` scan. The `design` bucket files only the design-shaped
+remainder (for speculative generality: the seam that _is_ used, by one
+caller, built for a hypothetical second case). The object-oriented
+smells — middle man and refused bequest — apply only where the repo
+actually uses delegation or an inheritance hierarchy, and are silent on a
+procedural or declarative repo such as Bash or Terraform.
 
 ### GitHub-native security scanning
 
@@ -529,7 +572,7 @@ operational/workflow label is ever added.
 | Label | Allowed values | Meaning |
 | ----- | -------------- | ------- |
 | `best-practices` | (constant) | Always present; used by the before/after snapshot query. The finding-id dedup look-up is repo-wide (Issue #539) and does not filter on it. |
-| `lang:<bucket>` | `lang:rust`, `lang:typescript`, `lang:react`, `lang:java`, `lang:html`, `lang:aws-cloudformation`, `lang:terraform`, `lang:general` | The bucket the finding belongs to. Matches the wrapper's bucket marker. |
+| `lang:<bucket>` | `lang:rust`, `lang:typescript`, `lang:react`, `lang:java`, `lang:html`, `lang:aws-cloudformation`, `lang:terraform`, `lang:general`, `lang:design` | The bucket the finding belongs to. Matches the wrapper's bucket marker. |
 | `severity:<level>` | `severity:high`, `severity:medium`, `severity:low` | Exactly one per issue. |
 
 Operational labels (`planning`, `work-on`, `top-priority`,
@@ -557,8 +600,10 @@ Within the same priority tier the order Claude emitted is preserved.
 
 A language-targeted run with no linter-in-CI gate gives the
 missing-linter finding the first slot and leaves five slots for the
-LLM. A `general` run skips the linter check entirely and the LLM has
-all six slots.
+LLM. A `general` or `design` run skips the linter check entirely and the
+LLM has all six slots — though the `design` guide caps its own runs at
+three findings, none above `severity:medium`, because named smells
+over-report on any real codebase.
 
 **No overflow tracker.** Unlike the security-scan template, the
 best-practices scan does **not** file an overflow tracker when more
@@ -680,8 +725,8 @@ same finding and the run still respects the 6-cap. The rendered
 finding title and body name which gate (linter, compile, or both)
 is missing so the developer knows which fix to apply.
 
-The check fires only on **language-targeted** runs. The `general`
-bucket is repo-level hygiene; the per-language linter and compile
+The check fires only on **language-targeted** runs. The `general` and
+`design` buckets name no language; the per-language linter and compile
 invocations belong to their own bucket's run.
 
 ### Fail safe — zero workflows loaded

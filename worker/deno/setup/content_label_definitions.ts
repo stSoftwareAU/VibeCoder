@@ -259,12 +259,14 @@ const OUTCOME_LABELS: readonly LabelDefinition[] = [
 /**
  * `lang:*` buckets from the best-practices scan.
  *
- * One entry per {@link SupportedLanguage} bucket plus `general` and the
- * legacy `lang:github-actions` bucket. Colours follow each language's own
- * brand colour so the bucket is recognisable at a glance.
+ * One entry per {@link SupportedLanguage} bucket, plus the two
+ * language-agnostic buckets (`general`, `design`) and the legacy
+ * `lang:github-actions` bucket. Colours follow each language's own brand
+ * colour so the bucket is recognisable at a glance.
  */
 const LANGUAGE_LABELS: readonly LabelDefinition[] = [
   ["general", "c2e0c6"],
+  ["design", "bfd4f2"],
   ["rust", "dea584"],
   ["typescript", "1d76db"],
   ["react", "61dafb"],

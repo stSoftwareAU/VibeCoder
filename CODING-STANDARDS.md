@@ -237,10 +237,18 @@ manual is [docs/BEST-PRACTICES-SCAN.md](docs/BEST-PRACTICES-SCAN.md).
 | [`terraform`](prompts/best_practices/buckets/terraform.md)                   | Module composition, state handling, provider/version pinning            |
 | [`aws-cloudformation`](prompts/best_practices/buckets/aws-cloudformation.md) | Well-Architected pillars, template structure, stack safety              |
 | [`general`](prompts/best_practices/buckets/general.md)                       | Repo-level hygiene only — never language-specific code quality          |
+| [`design`](prompts/best_practices/buckets/design.md)                         | Language-agnostic design smells (Fowler ch. 3), reported as judgement calls |
+
+Two buckets name no language: `general` scores repo-level hygiene, and
+`design` scores the shape of the code — naming, coupling, cohesion,
+delegation — against the twelve named smells from _Refactoring_ ch. 3. Both
+compete with the dominant detected language when the bucket is picked, so a
+repo in a language with no bucket of its own still receives design feedback.
 
 **Which surface does a new rule belong on?** If it holds regardless of language,
 it belongs here. If it names a language, a framework, or their tooling, it
-belongs in that language's bucket.
+belongs in that language's bucket. If it is a design judgement that holds in
+any language — a smell rather than a rule — it belongs in the `design` bucket.
 
 **Worked example.** "Never `unwrap()`" is a Rust rule, so it is not in this
 document: [`buckets/rust.md`](prompts/best_practices/buckets/rust.md) carries
@@ -250,7 +258,7 @@ examples, and clearly unreachable branches". Searching here for "unwrap" or
 section.
 
 Every bucket file must be listed above, and every link must resolve:
-`worker/deno/tests/bucket_docs_test.ts` fails CI when a ninth bucket is added
+`worker/deno/tests/bucket_docs_test.ts` fails CI when a new bucket is added
 without documenting it here.
 
 ## Deno / TypeScript Conventions
