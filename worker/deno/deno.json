@@ -18,7 +18,8 @@
     "green-gate-report": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts green-gate-report",
     "security-tabletop": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tabletop",
     "publish-decision-check": "deno run --frozen --lock=deno.lock --allow-read --allow-env mod.ts publish-decision-check --repo ../..",
-    "security-tree-sweep": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tree-sweep --repo ../.. --slug stSoftwareAU/VibeCoder"
+    "security-tree-sweep": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tree-sweep --repo ../.. --slug stSoftwareAU/VibeCoder",
+    "references-refresh": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys=hostname mod.ts references-refresh --repo ../.. --slug stSoftwareAU/VibeCoder"
   },
   "compilerOptions": {
     "strict": true,
