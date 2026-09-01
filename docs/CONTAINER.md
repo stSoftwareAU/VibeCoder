@@ -303,9 +303,11 @@ exits non-zero naming the path rather than hashing a shorter list and quietly
 producing a different tag.
 
 Naming the tag takes the deployment's selection as well as the definition, so
-`worker/deno/lib/container_image_selection.ts` reads it once for every caller —
-the launch plan, `container-image-hash`, setup's worker-image check and the
-tabletop runner (Issue #743). A caller that resolved the reference from the
+the callers that only name it — setup's worker-image check and the tabletop
+runner — read it through `worker/deno/lib/container_image_selection.ts`
+(Issue #743), and the launch plan and `container-image-hash` read the same
+`.config.json` through `readContainerToolsSelection`, which also gives them the
+verbatim spec the build carries. A caller that resolved the reference from the
 checkout alone named a tag the launcher never builds: setup reported a built
 image as "not built yet", and the tabletop runner refused to start over an
 image `./run.sh` had just produced.

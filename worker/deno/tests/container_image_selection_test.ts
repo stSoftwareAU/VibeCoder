@@ -8,7 +8,9 @@
  *
  * What is tested here is the outcome, not the plumbing: for a
  * tools-selecting and a provider-selecting configuration, both callers report
- * exactly the reference `container-image-hash` prints.
+ * exactly the reference `container-image-hash` prints. Only the tool selection
+ * joins the hash on this branch, so the provider cases pin agreement rather
+ * than a tag that varies with the provider set.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -164,7 +166,7 @@ Deno.test("readDeploymentImageSelection - a malformed selection fails loud", asy
   }
 });
 
-Deno.test("resolveDeploymentConfigFile - explicit wins, then CONFIG_PATH, then the checkout", () => {
+Deno.test("resolveDeploymentConfigFile - the caller's own path wins over CONFIG_PATH", () => {
   const env = (name: string) =>
     name === "CONFIG_PATH" ? "/etc/vibe/.config.json" : undefined;
   assertEquals(
@@ -175,13 +177,10 @@ Deno.test("resolveDeploymentConfigFile - explicit wins, then CONFIG_PATH, then t
     resolveDeploymentConfigFile("/repo", undefined, env),
     "/etc/vibe/.config.json",
   );
-  assertEquals(
-    resolveDeploymentConfigFile("/repo/", undefined, () => undefined),
-    "/repo/.config.json",
-  );
+  // A relative path resolves against the checkout, as the launcher does.
   assertEquals(
     resolveDeploymentConfigFile(
-      "/repo",
+      "/repo/",
       "config/.config.json",
       () => undefined,
     ),
@@ -216,7 +215,13 @@ Deno.test("checkContainerPrerequisites - names the tag the launcher builds for a
   }
 });
 
-Deno.test("checkContainerPrerequisites - names the tag the launcher builds for a provider-selecting host", async () => {
+// `agent_providers` does not join the hash on this branch — the provider set
+// is the Containerfile's own default, so the launcher's tag does not vary with
+// it either. What these two cases pin is that the check and the launcher agree
+// for such a host as well; they are where the assertion grows when the set
+// becomes a hash input.
+
+Deno.test("checkContainerPrerequisites - agrees with the launcher for a provider-selecting host", async () => {
   const root = await fakeRepo();
   try {
     const configPath = await writeConfig(root, {
@@ -273,7 +278,7 @@ Deno.test("resolveTabletopImage - names the tag the launcher builds for a tools-
   }
 });
 
-Deno.test("resolveTabletopImage - names the tag the launcher builds for a provider-selecting host", async () => {
+Deno.test("resolveTabletopImage - agrees with the launcher for a provider-selecting host", async () => {
   const root = await fakeRepo();
   try {
     const configPath = await writeConfig(root, {

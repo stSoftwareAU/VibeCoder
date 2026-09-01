@@ -9,8 +9,12 @@
  * worker-image check and the tabletop runner came to disagree with the
  * launcher.
  *
- * This module is the single place those selections are read, so a selection
- * that joins the hash is added here once rather than in every caller.
+ * This module is where a caller that only *names* the tag — setup's
+ * worker-image check, the tabletop runner — reads them, so a selection that
+ * joins the hash is added here once rather than in each of those callers. The
+ * launch plan and `container-image-hash` read the same `.config.json` through
+ * `readContainerToolsSelection`, because they also need the verbatim spec the
+ * build carries.
  *
  * Fail-loud: a malformed selection throws with the offending field named
  * rather than falling back to a selection-free tag that would quietly match
@@ -33,7 +37,9 @@ function isAbsolute(path: string): boolean {
  *
  * Mirrors the launcher's own rule (`resolveContainerLaunchHostPaths`): an
  * explicit path, else `CONFIG_PATH`, else `.config.json` beside the checkout —
- * a relative value resolved against the checkout either way.
+ * a relative value resolved against the checkout either way. The fallbacks are
+ * nullish, exactly as the launcher's are, so an empty value cannot mean one
+ * file here and another there.
  *
  * @param baseDir - The worker checkout
  * @param explicit - A caller-supplied path, if it has one
@@ -45,7 +51,7 @@ export function resolveDeploymentConfigFile(
   explicit: string | undefined,
   env: (name: string) => string | undefined,
 ): string {
-  const configured = explicit?.trim() || env("CONFIG_PATH") || ".config.json";
+  const configured = explicit ?? env("CONFIG_PATH") ?? ".config.json";
   const root = baseDir.replace(/[/\\]+$/, "");
   return isAbsolute(configured) ? configured : `${root}/${configured}`;
 }
