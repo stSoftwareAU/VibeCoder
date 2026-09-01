@@ -45,6 +45,7 @@
  */
 
 import { extractAcceptanceCriteria } from "./acceptance_criteria_gate.ts";
+import { reviewBlockTemplateLines } from "./review_block_template.ts";
 
 /** The Spec axis vocabulary — the closure statuses of a criterion. */
 export type SpecStatus = "met" | "partial" | "missing" | "unrequested";
@@ -411,7 +412,10 @@ export function validateIndependentReview(opts: {
  * Build the issue comment posted when the independent-review gate blocks the PR.
  *
  * Names every rule broken and restates both blocks, so the next attempt can fix
- * the summary without re-deriving the format.
+ * the summary without re-deriving the format. The shape printed is
+ * `REVIEW_BLOCK_TEMPLATE`, the same block the acceptance-criteria gate prints,
+ * so a run blocked by either gate is handed one shape rather than two that
+ * contradict each other (Issue #751).
  */
 export function buildIndependentReviewComment(
   result: IndependentReviewResult,
@@ -430,23 +434,10 @@ export function buildIndependentReviewComment(
     "reviewer only the diff and `CODING-STANDARDS.md` — then record both in " +
     "`docs/archive/pr-summaries/pr-summary-<issue>.md`:",
     "",
-    "```markdown",
-    "## Acceptance Criteria",
+    ...reviewBlockTemplateLines(),
     "",
-    '<!-- vibe-spec-review inputs="diff+issue-body" -->',
-    "",
-    "- **met** — <criterion> — evidence: `tests/foo_test.ts::does the thing` — " +
-    "reviewer: met",
-    "- **partial** — <criterion> — evidence: `lib/foo.ts` — reviewer: missing " +
-    "— reason: <why you departed from the reviewer>",
-    "",
-    "## Standards Review",
-    "",
-    '<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->',
-    "",
-    "- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — " +
-    "reason: <fixed here, or why it stands>",
-    "- **clean** — <the areas the reviewer checked and found compliant>",
-    "```",
+    "Keep the `reviewer:` field as the reviewer wrote it. Where your own " +
+    "status departs from it, say so out loud in the entry's `reason:` — an " +
+    "unrecorded departure is the self-assessment the axis exists to remove.",
   ].join("\n");
 }
