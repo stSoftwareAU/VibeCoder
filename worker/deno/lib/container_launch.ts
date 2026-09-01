@@ -86,6 +86,7 @@ import {
   buildMountArguments,
   type ContainerMount,
   type ContainerRuntimeDescriptor,
+  type TmpfsOwnershipStyle,
 } from "./container_runtime.ts";
 import type { ContainerManifest } from "./container_manifest.ts";
 import {
@@ -441,7 +442,9 @@ export const SCRATCH_TMPFS_MOUNTS: readonly string[] = [
   // Docker honours `uid=`/`gid=`, so the mount arrives owned by the worker
   // and 0700 means what it says. Apple container ignores the options
   // entirely and mounts 1777 root-owned; there the entrypoint's own 0700
-  // subdirectory is the protection instead.
+  // subdirectory is the protection instead. Podman refuses the pair outright
+  // and spells the same request `U`, which `tmpfsArgument` substitutes per
+  // dialect (Issue #727).
   `${SECRETS_MOUNT_PATH}:rw,nosuid,nodev,noexec,mode=0700,uid=\${uid},gid=\${gid}`,
 ];
 
@@ -461,21 +464,53 @@ export function scratchTmpfsMounts(
   );
 }
 
+/** The kernel tmpfs options that name an owner (Issue #727). */
+const TMPFS_OWNER_OPTION = /^(uid|gid)=/;
+
 /**
- * The `--tmpfs` value this dialect will actually honour (Issue #570).
+ * The `--tmpfs` value this dialect will actually honour (Issue #570, #727).
  *
  * A dialect that ignores the `path:options` form gets the bare path: passing
  * options it does not parse mounts a directory *named* for the whole string
  * and leaves the intended path absent — a failure that looks like success.
  * The entrypoint applies the permissions there instead.
+ *
+ * Ownership is a second, narrower question (Issue #727). Podman parses the
+ * option list but hands it to the OCI runtime rather than the kernel's tmpfs
+ * parser, so `uid=`/`gid=` are refused — `unknown mount option "uid=1000"` —
+ * and the refusal kills the launch. Its own spelling is `U`, which Podman
+ * rewrites into the exec user's `uid=`/`gid=` before the runtime sees the
+ * mount. Only the ownership pair is rewritten: `mode=0700` and `noexec` are
+ * honoured by Podman as they are by Docker, and dropping them would hand back
+ * the world-readable credential directory Issue #564 closed.
+ *
+ * @param dialect - The runtime's tmpfs capabilities.
+ * @param mount - A declared `path:options` scratch mount, already substituted.
+ * @returns The value to pass after `--tmpfs`.
  */
 export function tmpfsArgument(
-  dialect: { tmpfsHonoursOptions: boolean },
+  dialect: {
+    tmpfsHonoursOptions: boolean;
+    tmpfsOwnership: TmpfsOwnershipStyle;
+  },
   mount: string,
 ): string {
-  if (dialect.tmpfsHonoursOptions) return mount;
   const separator = mount.indexOf(":");
-  return separator === -1 ? mount : mount.slice(0, separator);
+  if (!dialect.tmpfsHonoursOptions) {
+    return separator === -1 ? mount : mount.slice(0, separator);
+  }
+  if (separator === -1 || dialect.tmpfsOwnership === "mount-options") {
+    return mount;
+  }
+  const path = mount.slice(0, separator);
+  const options = mount.slice(separator + 1).split(",");
+  const kept = options.filter((option) => !TMPFS_OWNER_OPTION.test(option));
+  // A mount that never asked for an owner is passed through untouched: only
+  // the credentials mount carries `uid=`/`gid=`, and adding `U` to the
+  // agents' shared 1777 scratch would change a mount this issue is not about.
+  if (kept.length === options.length) return mount;
+  if (dialect.tmpfsOwnership === "chown-flag") kept.push("U");
+  return `${path}:${kept.join(",")}`;
 }
 
 /** Path fragments that identify a container-runtime control socket. */
@@ -670,11 +705,12 @@ function assertRunArgumentsContained(
   args: string[],
   expectReadOnlyRoot = false,
   /**
-   * The container user, when the caller emitted user-owned tmpfs mounts. The
-   * scratch check compares against the SUBSTITUTED mounts, since that is what
-   * the arguments carry (Issue #570).
+   * The `--tmpfs` values the caller emitted, when it emitted any. The scratch
+   * check compares against exactly those: they carry the substituted
+   * container user (Issue #570) and the ownership spelling this dialect
+   * accepts (Issue #727), which is what the arguments themselves hold.
    */
-  user?: { uid: number; gid: number },
+  expectedTmpfsArguments?: readonly string[],
 ): void {
   for (const arg of args) {
     const lower = arg.toLowerCase();
@@ -703,9 +739,7 @@ function assertRunArgumentsContained(
   // write is a container that cannot run, so the pairing is checked here as
   // well as gated at the point it is emitted.
   if (readOnly) {
-    const expected = user
-      ? scratchTmpfsMounts(user)
-      : [...SCRATCH_TMPFS_MOUNTS];
+    const expected = expectedTmpfsArguments ?? SCRATCH_TMPFS_MOUNTS;
     const missing = expected.filter((mount) => !args.includes(mount));
     if (missing.length > 0) {
       throw new Error(
@@ -963,9 +997,12 @@ export function buildContainerLaunchPlan(
   // precondition of read-only support, so `--read-only` can never be emitted
   // without these mounts; a runtime that took a tmpfs but no `--read-only`
   // still gets a disposable root, exactly as before.
+  const tmpfsArguments: string[] = [];
   if (dialect.supportsTmpfs) {
     for (const mount of scratchTmpfsMounts(manifest.user)) {
-      runArgs.push("--tmpfs", tmpfsArgument(dialect, mount));
+      const value = tmpfsArgument(dialect, mount);
+      tmpfsArguments.push(value);
+      runArgs.push("--tmpfs", value);
     }
   }
 
@@ -1016,7 +1053,7 @@ export function buildContainerLaunchPlan(
   // Last, so the launcher can append the worker's own arguments after it.
   runArgs.push(image);
 
-  assertRunArgumentsContained(runArgs, readOnlyRoot, manifest.user);
+  assertRunArgumentsContained(runArgs, readOnlyRoot, tmpfsArguments);
 
   // The volume init (Issues #4186, #229): a fresh named volume is
   // root-owned and the worker runs as the manifest's unprivileged account,

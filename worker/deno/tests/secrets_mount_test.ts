@@ -61,21 +61,75 @@ Deno.test("tmpfsArgument - a dialect that ignores options gets the bare path", (
   // path absent — a failure that looks like success.
   assertEquals(
     tmpfsArgument(
-      { tmpfsHonoursOptions: false },
+      { tmpfsHonoursOptions: false, tmpfsOwnership: "none" },
       "/run/vibe-secrets:rw,mode=0700",
     ),
     "/run/vibe-secrets",
   );
   // Nothing to strip.
   assertEquals(
-    tmpfsArgument({ tmpfsHonoursOptions: false }, "/run/vibe-secrets"),
+    tmpfsArgument(
+      { tmpfsHonoursOptions: false, tmpfsOwnership: "none" },
+      "/run/vibe-secrets",
+    ),
     "/run/vibe-secrets",
   );
 });
 
 Deno.test("tmpfsArgument - a dialect that parses options gets them intact", () => {
   const mount = "/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700";
-  assertEquals(tmpfsArgument({ tmpfsHonoursOptions: true }, mount), mount);
+  assertEquals(
+    tmpfsArgument(
+      { tmpfsHonoursOptions: true, tmpfsOwnership: "mount-options" },
+      mount,
+    ),
+    mount,
+  );
+});
+
+Deno.test("tmpfsArgument - a dialect that refuses uid=/gid= asks for the owner its own way (Issue #727)", () => {
+  // Podman parses the option list but refuses the ownership pair —
+  //   Error: unknown mount option "uid=1000"
+  // — and the refusal kills the launch. `U` is its spelling of the same
+  // request: Podman rewrites it into the exec user's uid=/gid= itself.
+  const argument = tmpfsArgument(
+    { tmpfsHonoursOptions: true, tmpfsOwnership: "chown-flag" },
+    "/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700,uid=1000,gid=1000",
+  );
+  assertEquals(
+    argument,
+    "/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700,U",
+  );
+  // The hardening survives: dropping mode=0700 or noexec to work around the
+  // refusal would hand back the world-readable credential directory #564
+  // closed.
+  assert(argument.includes("mode=0700"), argument);
+  assert(argument.includes("noexec"), argument);
+});
+
+Deno.test("tmpfsArgument - a dialect that cannot express ownership at all just drops it (Issue #727)", () => {
+  assertEquals(
+    tmpfsArgument(
+      { tmpfsHonoursOptions: true, tmpfsOwnership: "none" },
+      "/run/vibe-secrets:rw,noexec,mode=0700,uid=1000,gid=1000",
+    ),
+    "/run/vibe-secrets:rw,noexec,mode=0700",
+  );
+});
+
+Deno.test("tmpfsArgument - a mount that never asked for an owner is untouched (Issue #727)", () => {
+  // The agents' shared scratch is 1777 by design: it must not acquire `U`
+  // and become owned by the worker's account.
+  const scratch = "/tmp:rw,nosuid,nodev,exec,mode=1777";
+  for (const ownership of ["mount-options", "chown-flag", "none"] as const) {
+    assertEquals(
+      tmpfsArgument(
+        { tmpfsHonoursOptions: true, tmpfsOwnership: ownership },
+        scratch,
+      ),
+      scratch,
+    );
+  }
 });
 
 Deno.test("entrypoint - probes the secrets mount rather than trusting it", async () => {
