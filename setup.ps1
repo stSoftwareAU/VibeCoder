@@ -62,11 +62,45 @@ $ScriptDir = if ($PSScriptRoot) {
     Split-Path -Parent $MyInvocation.MyCommand.Definition
 }
 
-$ConfigFile = if ($env:CONFIG_FILE) {
-    $env:CONFIG_FILE
-} else {
-    Join-Path $ScriptDir ".config.json"
+# The one .config.json this host uses (Issue #750).
+#
+# CONFIG_FILE is canonical; CONFIG_PATH is the launcher's older spelling, kept
+# as an alias so hosts configured against it keep working. A relative value in
+# either resolves against the checkout, never the working directory, so setup
+# and .\run.ps1 name the same file. Both set to different files is a deployment
+# fault — setup would read one while the launcher stages the other — so it is
+# reported rather than silently answered differently on each side. The rule is
+# worker/deno/lib/host_config_path.ts, and host_config_path_test.ts drives this
+# function through the same matrix to prove the two agree.
+function Resolve-VibeConfigFile {
+    param([Parameter(Mandatory = $true)][string]$BaseDir)
+
+    $resolveOne = {
+        param([string]$Value)
+        if ([System.IO.Path]::IsPathRooted($Value)) { return $Value }
+        return (Join-Path $BaseDir ($Value -replace '^\.[\\/]', ''))
+    }
+
+    $canonical = if ($env:CONFIG_FILE -and $env:CONFIG_FILE.Trim()) {
+        & $resolveOne $env:CONFIG_FILE.Trim()
+    } else { $null }
+    $aliasPath = if ($env:CONFIG_PATH -and $env:CONFIG_PATH.Trim()) {
+        & $resolveOne $env:CONFIG_PATH.Trim()
+    } else { $null }
+
+    if ($canonical -and $aliasPath -and ($canonical -ne $aliasPath)) {
+        throw ("CONFIG_FILE and CONFIG_PATH are both set and name different " +
+            "files: CONFIG_FILE=$canonical, CONFIG_PATH=$aliasPath. Setup " +
+            "would read one and the launcher stage the other - set one, or " +
+            "set both to the same file.")
+    }
+
+    if ($canonical) { return $canonical }
+    if ($aliasPath) { return $aliasPath }
+    return (Join-Path $BaseDir ".config.json")
 }
+
+$ConfigFile = Resolve-VibeConfigFile -BaseDir $ScriptDir
 
 # `$IsWindows` only exists in PowerShell Core, and Set-StrictMode makes reading
 # an undefined variable a hard error — so the platform is resolved once, here,
