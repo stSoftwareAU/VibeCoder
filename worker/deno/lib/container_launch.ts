@@ -356,6 +356,16 @@ export interface ContainerLaunchPlan {
    * itself rather than wedging the volume unowned forever.
    */
   initArgs: string[];
+  /**
+   * Arguments that remove one named volume, before its name (Issue #731).
+   *
+   * The verb is the runtime's, not the launcher's guess: Docker and Podman
+   * spell it `volume rm`, Apple `container` spells it `volume delete`, and
+   * `run.sh` hardcoded the latter — which Podman does not have, so recovery
+   * removed nothing and the `volume create` after it failed on a name that
+   * was still taken.
+   */
+  volumeRemoveArgs: string[];
   /** Arguments that report whether the image is already present. */
   imageInspectArgs: string[];
   /** Arguments that build the image. */
@@ -1078,6 +1088,7 @@ export function buildContainerLaunchPlan(
       .map((mount) => mount.source),
     volumes: volumeMounts.map((mount) => mount.source),
     initArgs,
+    volumeRemoveArgs: [...dialect.volumeRemoveArgs],
     imageInspectArgs: [...dialect.imageInspectArgs, image],
     buildArgs,
     builderStopArgs: [...dialect.builderStopArgs],
@@ -1111,6 +1122,8 @@ export interface ParsedContainerLaunchPlan {
   ensure: string[];
   volume: string[];
   init: string[];
+  /** The runtime's own "remove one volume" verb (Issue #731). */
+  volumeRemove: string[];
   exists: string[];
   build: string[];
   run: string[];
@@ -1136,6 +1149,7 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.ensureDirectories.map((dir) => `ensure=${dir}`),
     ...plan.volumes.map((name) => `volume=${name}`),
     ...plan.initArgs.map((arg) => `init=${arg}`),
+    ...plan.volumeRemoveArgs.map((arg) => `volume-remove=${arg}`),
     ...plan.imageInspectArgs.map((arg) => `exists=${arg}`),
     ...plan.buildArgs.map((arg) => `build=${arg}`),
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
@@ -1176,6 +1190,7 @@ export function parseContainerLaunchPlanText(
     ensure: [],
     volume: [],
     init: [],
+    volumeRemove: [],
     exists: [],
     build: [],
     run: [],
@@ -1210,6 +1225,9 @@ export function parseContainerLaunchPlanText(
         break;
       case "init":
         parsed.init.push(value);
+        break;
+      case "volume-remove":
+        parsed.volumeRemove.push(value);
         break;
       case "exists":
         parsed.exists.push(value);

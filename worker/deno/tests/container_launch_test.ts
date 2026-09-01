@@ -1151,3 +1151,38 @@ Deno.test("buildContainerLaunchPlan - passes the supervisor run cap into the con
     false,
   );
 });
+
+// --- The runtime's own volume-removal verb (Issue #731) --------------------
+
+Deno.test("buildContainerLaunchPlan - carries the runtime's own volume-removal verb (Issue #731)", () => {
+  // `run.sh` hardcoded `volume delete`, which Podman does not have: the error
+  // was swallowed, the volume survived, and the `volume create` after it
+  // failed with "already exists". The verb belongs to the runtime, so the
+  // plan carries it.
+  assertEquals(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("podman") }))
+      .volumeRemoveArgs,
+    ["volume", "rm"],
+  );
+  assertEquals(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("docker") }))
+      .volumeRemoveArgs,
+    ["volume", "rm"],
+  );
+  // Apple `container` really does spell it `delete`, which is where the
+  // hardcoded verb came from — so "just use rm everywhere" would break it.
+  assertEquals(
+    buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor("apple-container") }),
+    ).volumeRemoveArgs,
+    ["volume", "delete"],
+  );
+});
+
+Deno.test("renderContainerLaunchPlan - the launchers receive the removal verb (Issue #731)", () => {
+  const plan = buildContainerLaunchPlan(
+    inputs({ descriptor: descriptorFor("podman") }),
+  );
+  const parsed = parseContainerLaunchPlanText(renderContainerLaunchPlan(plan));
+  assertEquals(parsed.volumeRemove, ["volume", "rm"]);
+});
