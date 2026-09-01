@@ -1497,6 +1497,46 @@ Deno.test("run.sh - a refused container start quotes the runtime client's own st
   }
 });
 
+Deno.test("run.sh - the client's stderr reaches the console while the container is still running (Issue #711)", async () => {
+  // Capturing the output must not take it away from the console, and must not
+  // hold it back until the container exits: the container's output IS this
+  // run's console, so an operator watching a launch has to see it as it is
+  // produced. The stub prints its line and then stalls, so a console line read
+  // before the launcher returns can only have been streamed.
+  const line = "[stub] pulling image layers";
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_STDERR: line,
+    STUB_RUN_SLEEP: "30",
+  }, { denoStub: true });
+  const child = spawnLauncher(harness);
+  const reader = child.stderr.getReader();
+  const decoder = new TextDecoder();
+  let console_ = "";
+  try {
+    const deadline = Date.now() + 30_000;
+    while (!console_.includes(line) && Date.now() < deadline) {
+      const read = await Promise.race([
+        reader.read(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+      ]);
+      if (read === null || read.done) break;
+      console_ += decoder.decode(read.value, { stream: true });
+    }
+    assert(
+      console_.includes(line),
+      `the container's stderr was not on the console while it was still ` +
+        `running: ${console_}`,
+    );
+  } finally {
+    child.kill("SIGTERM");
+    await reader.cancel();
+    await child.stdout.cancel();
+    await child.status;
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - a container that started is never quoted as failure evidence (Issue #711)", async () => {
   // Exit status 1 is the worker reporting its own failure from inside a
   // container that started perfectly well, so its console output says nothing
@@ -1519,6 +1559,71 @@ Deno.test("run.sh - a container that started is never quoted as failure evidence
         args.join(" ")
       }`,
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a failed launch records exactly one outcome (Issue #711)", async () => {
+  // Bash runs an EXIT trap in asynchronous subshells too, so the launcher's
+  // own background jobs — the watchdog, and the capture's drain guard — each
+  // used to be able to run `on_exit` on their way out. That is not a tidiness
+  // problem: the extra record was a status 0, which resets the consecutive
+  // failure count the self-heal escalation is built on, and it deleted the
+  // capture the real record was about to quote.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_EXIT: "125",
+    STUB_RUN_STDERR: "Error: no such image",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 125, outcome.stderr);
+
+    const records = (await denoInvocationOrder(harness)).filter((command) =>
+      command === "container-restart-backoff"
+    );
+    assertEquals(
+      records.length,
+      1,
+      "one failed launch is one launcher outcome, never two",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the statuses it treats as a refused start are the recorder's own (Issue #711)", async () => {
+  // The launcher cannot import the recorder's list, so it carries a copy —
+  // and a copy nothing checks is a copy that drifts. Pinned in both
+  // directions: a status added to or removed from either side fails here.
+  const source = await Deno.readTextFile(RUN_SH);
+  const declaration = source.match(
+    /CONTAINER_START_EXIT_STATUSES=\(([^)]*)\)/,
+  );
+  assert(
+    declaration,
+    "run.sh must name the statuses it treats as a refused container start",
+  );
+  const statuses = (declaration[1] ?? "").trim().split(/\s+/).map(Number);
+  assertEquals(statuses, [...CONTAINER_START_EXIT_CODES]);
+});
+
+Deno.test("run.sh - the stderr capture leaves nothing behind in the temporary directory (Issue #711)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  const tmp = `${harness.tmpDir}/tmp`;
+  await Deno.mkdir(tmp, { recursive: true });
+  harness.env.TMPDIR = tmp;
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The capture and the FIFO it streams through are both the launcher's, so
+    // both go with it — a launcher that leaked a FIFO per launch would fill
+    // the host it is meant to keep launching.
+    const leftovers: string[] = [];
+    for await (const entry of Deno.readDir(tmp)) leftovers.push(entry.name);
+    assertEquals(leftovers, []);
   } finally {
     await harness.cleanup();
   }

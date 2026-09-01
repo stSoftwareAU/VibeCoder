@@ -184,8 +184,9 @@ case "\${sub}" in
     # What the runtime client says when it refuses to start the container
     # (Issue #711) — the "no such image", "invalid reference format" or
     # "permission denied" line that a container_start escalation exists to
-    # quote. Written before any stall, so a test can also see it reach the
-    # console while the container is still running.
+    # quote. Written before \`STUB_RUN_SLEEP\` stalls the stub, so a test can
+    # watch it reach the console while the container is still running, which is
+    # what "streamed, not buffered until exit" means.
     if [[ -n "\${STUB_RUN_STDERR:-}" ]]; then
       printf '%s\\n' "\${STUB_RUN_STDERR}" >&2
     fi
