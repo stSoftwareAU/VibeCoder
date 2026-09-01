@@ -31,6 +31,7 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import {
   type AllPrerequisitesResult,
   checkAllPrerequisites,
@@ -1443,7 +1444,13 @@ if (import.meta.main) {
   }
 
   if (!configPath) {
-    configPath = Deno.env.get("CONFIG_FILE") ?? `${scriptDir}/.config.json`;
+    // CONFIG_FILE, with CONFIG_PATH as its alias, resolved by the same rule
+    // the launcher uses — setup must not write one file while `./run.sh`
+    // stages another (Issue #750).
+    configPath = resolveHostConfigPath({
+      baseDir: scriptDir,
+      env: (name) => Deno.env.get(name),
+    });
   }
 
   let ok = true;

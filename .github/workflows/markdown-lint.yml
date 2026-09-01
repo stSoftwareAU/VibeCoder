@@ -84,7 +84,7 @@ jobs:
           deno-version-file: .deno-version
       - if: steps.detect-deno.outputs.present == 'true'
         name: Validate Mermaid blocks
-        run: deno run --frozen --lock=worker/deno/deno.lock --allow-read --allow-env=DEBUG,LOG_LEVEL,CONFIG_PATH,OUTPUT_JSON worker/deno/mod.ts check-mermaid
+        run: deno run --frozen --lock=worker/deno/deno.lock --allow-read --allow-env=DEBUG,LOG_LEVEL,CONFIG_FILE,CONFIG_PATH,OUTPUT_JSON worker/deno/mod.ts check-mermaid
       # Issue #4191: the published threat model cites a file path for every
       # control and every attack path. A rename that leaves those citations
       # dangling must fail here, not sit unnoticed in a document that still
