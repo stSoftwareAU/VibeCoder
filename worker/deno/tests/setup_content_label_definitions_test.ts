@@ -93,6 +93,7 @@ Deno.test("lang bucket labels - the best-practices buckets are all named", () =>
   for (
     const bucket of [
       "general",
+      "design",
       "rust",
       "typescript",
       "react",

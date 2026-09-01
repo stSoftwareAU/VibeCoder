@@ -232,11 +232,12 @@ export interface ScanError {
 // ---------------------------------------------------------------------------
 
 /**
- * Return the bucket slug for a `BucketPick` — `"general"` for the
- * general bucket, the language string otherwise.
+ * Return the bucket slug for a `BucketPick` — the language string for a
+ * language pick, otherwise the language-agnostic bucket's own name
+ * (`"general"`, or `"design"` from Issue #662).
  */
 export function bucketSlug(pick: BucketPick): string {
-  return pick.kind === "general" ? "general" : pick.language;
+  return pick.kind === "language" ? pick.language : pick.kind;
 }
 
 /**
@@ -254,7 +255,8 @@ export function parseBucketFromBody(body: string): string | null {
 
 /**
  * Return true when `slug` is one of the language buckets that triggers
- * the linter-in-CI pre-check. `general` and any unknown slug return false.
+ * the linter-in-CI pre-check. The language-agnostic buckets (`general`,
+ * `design`) and any unknown slug return false.
  */
 export function isLanguageBucket(slug: string): slug is SupportedLanguage {
   return LANGUAGE_BUCKETS.has(slug as SupportedLanguage);

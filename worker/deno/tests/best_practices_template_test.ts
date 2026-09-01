@@ -317,6 +317,14 @@ Deno.test("bucketSlug - returns the language name for a language pick", () => {
   assertEquals(bucketSlug({ kind: "language", language: "rust" }), "rust");
 });
 
+Deno.test("bucketSlug - returns 'design' for the design pick (Issue #662)", () => {
+  assertEquals(bucketSlug({ kind: "design" }), "design");
+});
+
+Deno.test("parseBucketFromBody - recovers the design bucket", () => {
+  assertEquals(parseBucketFromBody("**Bucket:** `design`"), "design");
+});
+
 Deno.test("parseBucketFromBody - extracts the bucket from a wrapper body", () => {
   const body = "**Bucket:** `rust`\n\n# Best-Practices Review";
   assertEquals(parseBucketFromBody(body), "rust");
@@ -333,6 +341,11 @@ Deno.test("parseBucketFromBody - returns null when no bucket line", () => {
 
 Deno.test("isLanguageBucket - general is NOT a language bucket", () => {
   assertEquals(isLanguageBucket("general"), false);
+});
+
+Deno.test("isLanguageBucket - design is NOT a language bucket (Issue #662)", () => {
+  // Language-agnostic, so a design run has no linter/compile gate to check.
+  assertEquals(isLanguageBucket("design"), false);
 });
 
 Deno.test("isLanguageBucket - language buckets are recognised", () => {
