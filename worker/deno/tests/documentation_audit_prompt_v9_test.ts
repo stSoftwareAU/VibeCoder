@@ -162,8 +162,14 @@ Deno.test("documentation_audit v9 - check 13 collapses per source file", async (
 
 Deno.test("documentation_audit v9 - check 13 has worked examples for both verdicts", async () => {
   const [v8, v9] = await Promise.all([loadV8(), loadV9()]);
-  assertStringIncludes(v9, '<example name="comment-contradicts-adjacent-code">');
-  assertStringIncludes(v9, '<example name="comment-documents-a-guard-the-code-lacks">');
+  assertStringIncludes(
+    v9,
+    '<example name="comment-contradicts-adjacent-code">',
+  );
+  assertStringIncludes(
+    v9,
+    '<example name="comment-documents-a-guard-the-code-lacks">',
+  );
   assertStringIncludes(v9, '<example name="comment-explaining-why">');
   assert(
     !v8.includes("check 13"),
@@ -184,6 +190,29 @@ Deno.test("documentation_audit v9 - Phase 1 inventories the source comments chec
     !v8.includes("Source comments"),
     "v8 is the negative control: its inventory stops at prose",
   );
+});
+
+Deno.test("documentation_audit v9 - the Phase 2 sweep bound cannot starve check 13", async () => {
+  const v9 = await loadV9();
+  const bound = v9.slice(
+    v9.indexOf("**Bound the sweep, not just the results.**"),
+    v9.indexOf("### 1. Unabsorbed PR-summary learnings"),
+  );
+  assert(bound.length > 0, "the Phase 2 sweep bound was not found");
+  // The source-comment shortlist is ranked below the docs in the drift
+  // order, so without an exemption a repo with six drafty documents would
+  // stop sweeping before check 13 ever ran.
+  assertStringIncludes(bound, "**Check 13 is exempt from that stop rule**");
+  assertStringIncludes(bound, "as you open it");
+});
+
+Deno.test("documentation_audit v9 - an unresolved check-13 direction does not outrank a confirmed finding", async () => {
+  const v9 = await loadV9();
+  const check = v9.slice(
+    v9.indexOf("### 13. Comment contradicts the code"),
+    v9.indexOf("<examples>"),
+  );
+  assertStringIncludes(check, "possible-bug shape at `severity:medium`");
 });
 
 Deno.test("documentation_audit v9 - renumbers the check counts consistently", async () => {
@@ -214,7 +243,9 @@ Deno.test("documentation_audit v9 - severity guidance covers a contradicting com
 
 Deno.test("documentation_audit v9 - the suggested-fix guidance tells the filer what to write", async () => {
   const v9 = await loadV9();
-  const phase4 = v9.slice(v9.indexOf("## Phase 4 — File one issue per finding"));
+  const phase4 = v9.slice(
+    v9.indexOf("## Phase 4 — File one issue per finding"),
+  );
   assertStringIncludes(phase4, "for a contradicting comment (check 13)");
 });
 
@@ -236,7 +267,10 @@ Deno.test("operator manual - documents the thirteen-check catalogue including ch
 
 Deno.test("operator manual - the sibling table keeps the doc-coverage boundary", async () => {
   const manual = await readDoc("docs/DOCUMENTATION-AUDIT-SCAN.md");
-  assertStringIncludes(manual, "Comments that contradict the code they sit beside");
+  assertStringIncludes(
+    manual,
+    "Comments that contradict the code they sit beside",
+  );
 });
 
 Deno.test("design principles - records check 13 and no longer claims twelve checks", async () => {

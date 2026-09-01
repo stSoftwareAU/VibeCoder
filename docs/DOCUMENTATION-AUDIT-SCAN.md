@@ -59,7 +59,7 @@ a finding against the convention itself.
 | Concern                                        | Owned by                                 |
 | ---------------------------------------------- | ---------------------------------------- |
 | Prose / Markdown documentation rot             | **this scan** (`documentation-audit`)    |
-| Comments that contradict the code they sit beside | **this scan** (check 13)              |
+| Comments that contradict the code they sit beside | **this scan** (check 13) |
 | Code doc-comment coverage (missing or paraphrase-only docstrings) | [`doc-coverage`](IDLE-TASK-FRAMEWORK.md) |
 | Spelling mistakes on PRs                       | `spelling-fix`                           |
 
@@ -150,9 +150,10 @@ onward) turns the same verification on the comments inside the source itself.
 
 ### Cap pressure — verification out-produces drift
 
-Four systematic verification checks over a large `docs/` tree can find far more
-than the six-finding cap allows, so the audit would file nothing but check-10
-findings against one document. Two rules keep the mix balanced:
+Four systematic verification checks — three over a large `docs/` tree, one over
+the source-comment shortlist — can find far more than the six-finding cap allows,
+so the audit would file nothing but check-10 findings against one document. Two
+rules keep the mix balanced:
 
 - **Collapse per document.** All of one document's dead references are a single
   finding; all of its broken fences are another; all of one source file's
