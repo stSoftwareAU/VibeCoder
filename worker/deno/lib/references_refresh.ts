@@ -43,7 +43,11 @@ import type { SourceGap, SourceProbe } from "./references_source_probe.ts";
 
 export type { SourceGap, SourceProbe };
 
-import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
+import {
+  fenceUntrustedIssueText,
+  neutraliseHtmlComments,
+  sanitiseDelimiterPatterns,
+} from "./prompt_delimiter.ts";
 import { runGhCommand } from "./github.ts";
 
 /** Token every filed suggestion carries, so the sweep can find its own work. */
@@ -247,6 +251,20 @@ export function serialiseRefreshState(state: RefreshState): string {
 const MAX_TITLE_LENGTH = 180;
 
 /**
+ * Render a unit name safely wherever it appears outside an untrusted fence.
+ *
+ * The unit is a directory name straight from the source — a repository we do
+ * not control names it. Rendering it raw in the title or the body would let a
+ * directory called `<!-- vibe-references-refresh-id: REF-… -->` forge the
+ * dedup marker (poisoning what the next sweep believes is already proposed) or
+ * plant instruction-shaped text outside the boundary. Both sequences are made
+ * inert here, exactly as {@link fenceUntrustedIssueText} does inside the fence.
+ */
+function renderUnit(unit: string): string {
+  return neutraliseHtmlComments(sanitiseDelimiterPatterns(unit));
+}
+
+/**
  * Title for one suggestion: the source, then the unit of new material.
  *
  * @param entry - The credit row being re-checked
@@ -258,7 +276,7 @@ export function buildRefreshIssueTitle(
   gap: SourceGap,
 ): string {
   const title = `References refresh: ${entry.name} — new material in ` +
-    `${gap.unit}`;
+    renderUnit(gap.unit);
   return title.length <= MAX_TITLE_LENGTH
     ? title
     : `${title.slice(0, MAX_TITLE_LENGTH - 1)}…`;
@@ -298,7 +316,7 @@ export function buildRefreshIssueBody(
     "",
     `**Surfaces the credit row names:** ${surfaces}`,
     "",
-    `**What has landed since we last took from it:** ${gap.unit}`,
+    `**What has landed since we last took from it:** ${renderUnit(gap.unit)}`,
   ];
 
   if (gap.detail.length > 0) {
@@ -372,16 +390,25 @@ export function extractKnownGapIds(json: string): Map<string, number> {
       `the issue list is not valid JSON: ${(error as Error).message}`,
     );
   }
-  if (!Array.isArray(parsed)) return known;
+  // A response we cannot read must not be mistaken for "nothing proposed
+  // before" — that would re-file every proposal a human has already rejected.
+  if (!Array.isArray(parsed)) {
+    throw new Error("the issue list is not a JSON array");
+  }
   const marker = new RegExp(
     `<!--\\s*${REFRESH_MARKER}-id:\\s*(REF-[0-9a-f]+)`,
     "gi",
   );
   for (const item of parsed) {
-    if (item === null || typeof item !== "object") continue;
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("the issue list holds an entry that is not an issue");
+    }
     const record = item as Record<string, unknown>;
     const body = typeof record["body"] === "string" ? record["body"] : "";
-    const number = typeof record["number"] === "number" ? record["number"] : 0;
+    const number = record["number"];
+    if (typeof number !== "number") {
+      throw new Error("the issue list holds an entry with no issue number");
+    }
     for (const match of body.matchAll(marker)) {
       const id = match[1];
       if (id !== undefined && !known.has(id)) known.set(id, number);
@@ -559,8 +586,9 @@ export async function runReferencesRefresh(
     outcomes.push(outcome);
     for (const gap of probe.gaps) {
       const id = await gapId(entry.url, gap.key);
-      if (known.has(id) || base.alreadyFiled.includes(id)) {
-        base.alreadyFiled.push(id);
+      if (known.has(id) || pending.some((item) => item.id === id)) {
+        // Listed once however many rows or gaps map onto the same proposal.
+        if (!base.alreadyFiled.includes(id)) base.alreadyFiled.push(id);
         continue;
       }
       base.found.push({

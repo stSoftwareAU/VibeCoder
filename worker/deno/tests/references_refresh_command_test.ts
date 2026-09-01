@@ -103,12 +103,15 @@ Deno.test("worker/deno/deno.json registers a references-refresh task", async () 
 // ---------------------------------------------------------------------------
 
 Deno.test("parseMaxIssues defaults, accepts an integer and rejects nonsense", () => {
-  assertEquals(parseMaxIssues(undefined), { maxIssues: DEFAULT_MAX_ISSUES });
-  assertEquals(parseMaxIssues("3"), { maxIssues: 3 });
-  assertEquals(parseMaxIssues(7), { maxIssues: 7 });
-  assert("error" in parseMaxIssues("0"));
-  assert("error" in parseMaxIssues("-2"));
-  assert("error" in parseMaxIssues("many"));
+  assertEquals(parseMaxIssues(undefined), {
+    ok: true,
+    value: DEFAULT_MAX_ISSUES,
+  });
+  assertEquals(parseMaxIssues("3"), { ok: true, value: 3 });
+  assertEquals(parseMaxIssues(7), { ok: true, value: 7 });
+  assertEquals(parseMaxIssues("0").ok, false);
+  assertEquals(parseMaxIssues("-2").ok, false);
+  assertEquals(parseMaxIssues("many").ok, false);
 });
 
 Deno.test("an unusable --max-issues fails before anything is swept", async () => {

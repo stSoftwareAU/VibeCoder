@@ -23,7 +23,7 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import type { Command, CommandResult } from "../types.ts";
+import type { Command, CommandResult, Result } from "../types.ts";
 import {
   createDefaultRefreshDeps,
   DEFAULT_MAX_ISSUES,
@@ -68,24 +68,22 @@ function resolve(repoDir: string, path: string): string {
 }
 
 /**
- * Parse `--max-issues`; returns an error string for anything unusable.
+ * Parse `--max-issues`.
  *
  * @param raw - The argument as parsed from the command line
  * @returns The cap, or the reason it is not one
  */
-export function parseMaxIssues(
-  raw: unknown,
-): { maxIssues: number } | { error: string } {
-  if (raw === undefined) return { maxIssues: DEFAULT_MAX_ISSUES };
+export function parseMaxIssues(raw: unknown): Result<number, string> {
+  if (raw === undefined) return { ok: true, value: DEFAULT_MAX_ISSUES };
   const value = typeof raw === "number"
     ? raw
     : typeof raw === "string"
     ? Number.parseInt(raw, 10)
     : Number.NaN;
   if (!Number.isInteger(value) || value < 1) {
-    return { error: "--max-issues must be a positive integer" };
+    return { ok: false, error: "--max-issues must be a positive integer" };
   }
-  return { maxIssues: value };
+  return { ok: true, value };
 }
 
 /** Resolve the `owner/repo` slug: `--slug`, else `gh repo view` in the checkout. */
@@ -123,7 +121,7 @@ export function createReferencesRefreshCommand(deps?: RefreshDeps): Command {
       args: Record<string, unknown>,
     ): Promise<CommandResult<RefreshResult>> {
       const cap = parseMaxIssues(args["max-issues"]);
-      if ("error" in cap) {
+      if (!cap.ok) {
         return {
           success: false,
           message: `❌ References refresh could not run: ${cap.error}`,
@@ -150,7 +148,7 @@ export function createReferencesRefreshCommand(deps?: RefreshDeps): Command {
             stringArg(args, "state", DEFAULT_STATE_PATH),
           ),
           fileIssues: boolArg(args, "file-issues"),
-          maxIssues: cap.maxIssues,
+          maxIssues: cap.value,
           now: new Date(),
           ...(sourceFilter !== undefined ? { sourceFilter } : {}),
         }, resolved);

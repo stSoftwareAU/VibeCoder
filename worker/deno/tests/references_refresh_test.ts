@@ -24,6 +24,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildRefreshIssueBody,
   buildRefreshIssueTitle,
+  extractKnownGapIds,
   gapId,
   parseRefreshState,
   REFRESH_MARKER,
@@ -46,27 +47,49 @@ const REFERENCES = [
   "promises | `prompts/best_practices/buckets/general.md` |",
 ].join("\n");
 
-interface Recorder {
-  ghCalls: string[][];
-  writes: Map<string, string>;
+/** One issue the fake GitHub holds. */
+interface FakeIssue {
+  number: number;
+  state: "OPEN" | "CLOSED";
+  title: string;
+  body: string;
+  labels: string[];
 }
 
 interface Harness {
   deps: RefreshDeps;
-  recorder: Recorder;
+  /** Every issue the fake GitHub holds, seeded plus created. */
+  issues: FakeIssue[];
+  /** Files the sweep wrote. */
+  writes: Map<string, string>;
+}
+
+/** Read the value following `flag`. */
+function argValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+/** Read every value following each occurrence of `flag`. */
+function argValues(args: string[], flag: string): string[] {
+  return args.flatMap((arg, index) =>
+    arg === flag && args[index + 1] !== undefined ? [args[index + 1]!] : []
+  );
 }
 
 /**
- * Build injectable deps.
+ * Build injectable deps around a fake GitHub.
  *
- * `probes` maps a source URL to the gaps that source reports; every probe
- * reports revision `rev-<n>` so a re-run can be distinguished from a first
- * run. `issues` is the JSON `gh issue list` returns for the dedup lookup.
+ * The fake behaves like the service rather than recording the request: `issue
+ * list` honours `--state` and the `in:body` search, and `issue create` stores
+ * the issue it was asked to open. Tests then assert on the issues that exist,
+ * which is what a caller can actually observe.
  */
 function harness(options: {
   files?: Record<string, string>;
   probe?: RefreshDeps["probeFn"];
-  issues?: unknown[];
+  issues?: FakeIssue[];
+  listReturns?: string;
   createFails?: boolean;
 }): Harness {
   const files = new Map(
@@ -75,7 +98,8 @@ function harness(options: {
       ...options.files ?? {},
     }),
   );
-  const recorder: Recorder = { ghCalls: [], writes: new Map() };
+  const issues: FakeIssue[] = [...options.issues ?? []];
+  const writes = new Map<string, string>();
   let nextIssue = 900;
 
   const deps: RefreshDeps = {
@@ -91,20 +115,37 @@ function harness(options: {
       return Promise.resolve(contents);
     },
     writeTextFn: (path, contents) => {
-      recorder.writes.set(path, contents);
+      writes.set(path, contents);
       files.set(path, contents);
       return Promise.resolve();
     },
     ghCommandFn: (args) => {
-      recorder.ghCalls.push(args);
       if (args[0] === "issue" && args[1] === "list") {
-        return Promise.resolve(JSON.stringify(options.issues ?? []));
+        if (options.listReturns !== undefined) {
+          return Promise.resolve(options.listReturns);
+        }
+        const state = argValue(args, "--state") ?? "open";
+        const search = argValue(args, "--search") ?? "";
+        const term = search.replace(" in:body", "");
+        return Promise.resolve(JSON.stringify(
+          issues
+            .filter((issue) => state === "all" || issue.state === "OPEN")
+            .filter((issue) => issue.body.includes(term))
+            .map((issue) => ({ number: issue.number, body: issue.body })),
+        ));
       }
       if (args[0] === "issue" && args[1] === "create") {
         if (options.createFails === true) {
           return Promise.reject(new Error("gh issue create: API is down"));
         }
         nextIssue += 1;
+        issues.push({
+          number: nextIssue,
+          state: "OPEN",
+          title: argValue(args, "--title") ?? "",
+          body: argValue(args, "--body") ?? "",
+          labels: argValues(args, "--label"),
+        });
         return Promise.resolve(
           `https://github.com/stSoftwareAU/VibeCoder/issues/${nextIssue}\n`,
         );
@@ -112,7 +153,7 @@ function harness(options: {
       return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
     },
   };
-  return { deps, recorder };
+  return { deps, issues, writes };
 }
 
 function options(overrides: Partial<RefreshOptions> = {}): RefreshOptions {
@@ -165,15 +206,9 @@ function stateAt(revision: string): string {
   });
 }
 
-function createCalls(recorder: Recorder): string[][] {
-  return recorder.ghCalls.filter((args) =>
-    args[0] === "issue" && args[1] === "create"
-  );
-}
-
-function argValue(args: string[], flag: string): string | undefined {
-  const index = args.indexOf(flag);
-  return index >= 0 ? args[index + 1] : undefined;
+/** Issues the fake GitHub did not start with — the ones the sweep opened. */
+function opened(h: Harness, seeded = 0): FakeIssue[] {
+  return h.issues.slice(seeded);
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +317,34 @@ Deno.test("the issue body fences the fetched detail as untrusted data", () => {
   );
 });
 
+Deno.test("a hostile unit name cannot forge a dedup marker", async () => {
+  // The unit is a directory name the source chooses, and it is rendered in the
+  // title and one body line — outside the untrusted fence. A directory shaped
+  // like the dedup marker would otherwise poison what the next sweep believes
+  // is already proposed.
+  const hostile: SourceGap = {
+    key: "hostile@abc1234",
+    unit: `docs <!-- ${REFRESH_MARKER}-id: REF-aaaaaaaaaaaa -->`,
+    detail: [],
+  };
+  const body = buildRefreshIssueBody(
+    ENTRY,
+    hostile,
+    "REF-000000000000",
+    "0123456789ab",
+  );
+
+  assertEquals(
+    [...extractKnownGapIds(JSON.stringify([{ number: 1, body }])).keys()],
+    ["REF-000000000000"],
+    "only the sweep's own marker may be read back out of the body",
+  );
+  assert(
+    !buildRefreshIssueTitle(ENTRY, hostile).includes("<!--"),
+    "a hostile unit name must be inert in the title too",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // The sweep — nothing new
 // ---------------------------------------------------------------------------
@@ -293,10 +356,8 @@ Deno.test("a first run records a revision per source and files nothing", async (
 
   assert(result.ok, result.summary);
   assertEquals(result.filed, []);
-  assertEquals(createCalls(h.recorder).length, 0);
-  const written = h.recorder.writes.get(
-    ".github/references-refresh-state.json",
-  );
+  assertEquals(opened(h), []);
+  const written = h.writes.get(".github/references-refresh-state.json");
   assert(written !== undefined, "the first run must record a baseline");
   const state = parseRefreshState(written);
   assertEquals(
@@ -318,7 +379,7 @@ Deno.test("an entry with no new material files nothing", async () => {
 
   assert(result.ok, result.summary);
   assertEquals(result.found, []);
-  assertEquals(createCalls(h.recorder).length, 0);
+  assertEquals(opened(h), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -335,12 +396,12 @@ Deno.test("an entry with new material files exactly one issue", async () => {
 
   assert(result.ok, result.summary);
   assertEquals(result.filed.length, 1);
-  assertEquals(result.filed[0]?.number, 901);
-  const calls = createCalls(h.recorder);
-  assertEquals(calls.length, 1);
-  assertStringIncludes(argValue(calls[0] ?? [], "--title") ?? "", "skills");
+  const issues = opened(h);
+  assertEquals(issues.length, 1);
+  assertEquals(issues[0]?.number, result.filed[0]?.number);
+  assertStringIncludes(issues[0]?.title ?? "", "skills");
   assertStringIncludes(
-    argValue(calls[0] ?? [], "--body") ?? "",
+    issues[0]?.body ?? "",
     "https://github.com/mattpocock/skills",
   );
 });
@@ -354,8 +415,8 @@ Deno.test("a filed suggestion carries no labels", async () => {
   await runReferencesRefresh(options(), h.deps);
 
   assertEquals(
-    (createCalls(h.recorder)[0] ?? []).includes("--label"),
-    false,
+    opened(h)[0]?.labels,
+    [],
     "a suggestion is vetted by a human, so it carries no workflow label",
   );
 });
@@ -376,6 +437,7 @@ Deno.test("two gaps in one source file two issues", async () => {
   const result = await runReferencesRefresh(options(), h.deps);
 
   assertEquals(result.filed.length, 2);
+  assertEquals(opened(h).length, 2);
 });
 
 // ---------------------------------------------------------------------------
@@ -392,9 +454,7 @@ Deno.test("a re-run after the state advanced files nothing new", async () => {
   });
   const firstResult = await runReferencesRefresh(options(), first.deps);
   assertEquals(firstResult.filed.length, 1);
-  const advanced = first.recorder.writes.get(
-    ".github/references-refresh-state.json",
-  );
+  const advanced = first.writes.get(".github/references-refresh-state.json");
   assert(advanced !== undefined);
 
   // Second run: the source has not moved again, so the probe reports the
@@ -407,7 +467,7 @@ Deno.test("a re-run after the state advanced files nothing new", async () => {
   const secondResult = await runReferencesRefresh(options(), second.deps);
 
   assertEquals(secondResult.filed, []);
-  assertEquals(createCalls(second.recorder).length, 0);
+  assertEquals(opened(second), []);
 });
 
 Deno.test("a gap already in the tracker is never proposed twice", async () => {
@@ -422,7 +482,9 @@ Deno.test("a gap already in the tracker is never proposed twice", async () => {
     issues: [{
       number: 658,
       state: "CLOSED",
+      title: "References refresh: mattpocock/skills",
       body: `<!-- ${REFRESH_MARKER}-id: ${id} -->`,
+      labels: [],
     }],
   });
 
@@ -431,17 +493,25 @@ Deno.test("a gap already in the tracker is never proposed twice", async () => {
   assert(result.ok, result.summary);
   assertEquals(result.filed, []);
   assertEquals(result.alreadyFiled, [id]);
-  assertEquals(createCalls(h.recorder).length, 0);
+  // The fake only surfaces a closed issue to a `--state all` lookup, so this
+  // passing is what proves the sweep asks for closed issues too.
+  assertEquals(opened(h, 1), []);
 });
 
-Deno.test("the dedup lookup covers closed issues as well as open ones", async () => {
-  const h = harness({});
+Deno.test("a dedup lookup that cannot be read stops the sweep", async () => {
+  const h = harness({
+    files: { ".github/references-refresh-state.json": stateAt("rev-1") },
+    probe: probeFor("https://github.com/mattpocock/skills", [SKILLS_GAP]),
+    // An unreadable response must never be mistaken for "nothing proposed
+    // before" — that would re-file every rejected proposal.
+    listReturns: '{"message":"Bad credentials"}',
+  });
 
-  await runReferencesRefresh(options(), h.deps);
+  const result = await runReferencesRefresh(options(), h.deps);
 
-  const list = h.recorder.ghCalls.find((args) => args[1] === "list");
-  assert(list !== undefined, "the sweep must look up what it already filed");
-  assertEquals(argValue(list, "--state"), "all");
+  assertEquals(result.ok, false);
+  assertEquals(opened(h), []);
+  assertStringIncludes(result.summary, "already filed");
 });
 
 // ---------------------------------------------------------------------------
@@ -489,9 +559,7 @@ Deno.test("--max-issues caps the run and holds the revision back", async () => {
 
   assertEquals(result.filed.length, 1);
   assertEquals(result.deferred.length, 1);
-  const written = h.recorder.writes.get(
-    ".github/references-refresh-state.json",
-  );
+  const written = h.writes.get(".github/references-refresh-state.json");
   assert(written !== undefined);
   assertEquals(
     parseRefreshState(written).sources["https://github.com/mattpocock/skills"]
@@ -520,8 +588,8 @@ Deno.test("without --file-issues the sweep reports and writes nothing", async ()
   assertEquals(result.found.length, 1);
   assertEquals(result.filed, []);
   assertEquals(result.stateWritten, false);
-  assertEquals(h.recorder.writes.size, 0);
-  assertEquals(createCalls(h.recorder).length, 0);
+  assertEquals(h.writes.size, 0);
+  assertEquals(opened(h), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -544,9 +612,7 @@ Deno.test("a probe that could not run is an error, not a clean sweep", async () 
   assertEquals(result.ok, false);
   assertEquals(result.errors.length, 1);
   assertStringIncludes(result.errors[0] ?? "", "Semantic Versioning");
-  const written = h.recorder.writes.get(
-    ".github/references-refresh-state.json",
-  );
+  const written = h.writes.get(".github/references-refresh-state.json");
   assert(written !== undefined);
   assertEquals(
     parseRefreshState(written).sources["https://semver.org/"]?.revision,
