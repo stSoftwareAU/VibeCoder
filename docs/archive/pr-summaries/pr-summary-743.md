@@ -186,4 +186,12 @@ ok | 10 passed | 0 failed (23ms)
   `container_image_hash_test.ts`, `setup_prerequisites_test.ts`,
   `tabletop_container_runner_test.ts`, `container_containment_test.ts` — 91
   passed, 0 failed.
-- `./quality.sh` run in the foreground before the PR.
+- `./quality.sh` run in the foreground before the PR: every check passes except
+  `deno tests`, which reports three pre-existing failures unrelated to this
+  change — `tests/run_core_test.ts` and
+  `tests/run_core_rate_limit_resume_test.ts` abort with `gh command failed:
+  GraphQL: API rate limit already exceeded`, and
+  `tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
+  config dir is restaged writable` fails on this host. The last one was
+  reproduced on a clean `origin/main` worktree (`21 passed | 1 failed`), so it
+  is not introduced here.
