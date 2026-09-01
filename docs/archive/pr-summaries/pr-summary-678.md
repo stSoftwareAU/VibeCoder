@@ -59,13 +59,26 @@ flowchart TD
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-Test run (`worker/deno`):
+Test run (`worker/deno`) across every suite touching this change:
 
 ```text
 deno test --allow-all tests/milestone_ruleset_read_test.ts \
-  tests/milestone_ruleset_check_test.ts
-ok | 44 passed | 0 failed
+  tests/milestone_ruleset_check_test.ts tests/repo_rulesets_test.ts \
+  tests/default_branch_ruleset_test.ts tests/default_branch_ruleset_audit_test.ts
+ok | 93 passed | 0 failed
 ```
+
+`./quality.sh` reports every stage PASSED except `deno tests`, which fails on 33
+tests in three files unrelated to this change:
+`tests/run_core_test.ts` and `tests/run_core_rate_limit_resume_test.ts` (an
+uncaught `gh` call reaching the live API: "GraphQL: API rate limit already
+exceeded for user ID 23146043") and
+`tests/service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh config dir is restaged writable`
+(the container's ambient gh-config path leaks into the assertion). **These are
+pre-existing and environmental**: the identical 33 failures reproduce on the
+merge-base commit `1ba7c8f`, already merged to `main`, in a clean worktree with
+none of this branch's changes present. Full suite on this branch:
+`16208 passed | 33 failed`, the same 33.
 
 ## Reproduction
 
