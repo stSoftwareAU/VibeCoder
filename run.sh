@@ -441,6 +441,9 @@ fi
 # Read the NUL-delimited "key=value" plan into the argument lists it names.
 IMAGE=""
 WATCHDOG_SECONDS=""
+LOW_FLOOR_GB=""
+LOW_FLOOR_PERCENT=""
+LOW_FLOOR_ORIGIN=""
 ensure_dirs=()
 volume_names=()
 init_args=()
@@ -466,6 +469,9 @@ while IFS= read -r -d '' token; do
     builder-stop) builder_stop_args+=("${value}") ;;
     builder-absent) builder_absent_patterns+=("${value}") ;;
     run) run_args+=("${value}") ;;
+    low-floor-gb) LOW_FLOOR_GB="${value}" ;;
+    low-floor-percent) LOW_FLOOR_PERCENT="${value}" ;;
+    low-floor-origin) LOW_FLOOR_ORIGIN="${value}" ;;
     *)
       echo "Error: unrecognised launch-plan key: ${key}" >&2
       exit 1
@@ -488,6 +494,28 @@ if ! [[ "${WATCHDOG_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
     "(got \"${WATCHDOG_SECONDS}\") - refusing to launch" >&2
   exit 1
 fi
+
+# The claiming floor the worker stops claiming at (Issue #732), resolved by
+# the plan from VIBE_HOST_DISK_LOW_FLOOR_GB / _PERCENT, then .config.json's
+# host_disk_low_floor_gb / host_disk_low_floor_percent, then the
+# DEFAULT_LOW_FLOOR_* constants in worker/deno/lib/host_disk.ts. This shell
+# holds no default of its own precisely so it cannot drift from those
+# constants - a launcher healing at a different floor than the worker claims
+# at would either wipe the clones early or never fire at all.
+#
+# Re-exported as the resolved answer so every host-side step below - the
+# work-volume heal and the container-store reclaim - gates on the one number
+# the plan resolved, rather than each re-deriving a floor of its own.
+if ! [[ "${LOW_FLOOR_GB}" =~ ^[0-9]+(\.[0-9]+)?$ ]] ||
+  ! [[ "${LOW_FLOOR_PERCENT}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "Error: launch plan carries no usable claiming floor" \
+    "(got \"${LOW_FLOOR_GB}\" GB / \"${LOW_FLOOR_PERCENT}\" percent)" \
+    "- refusing to launch" >&2
+  exit 1
+fi
+export VIBE_HOST_DISK_LOW_FLOOR_GB="${LOW_FLOOR_GB}"
+export VIBE_HOST_DISK_LOW_FLOOR_PERCENT="${LOW_FLOOR_PERCENT}"
+log_run_core "host-disk: claiming floor ${LOW_FLOOR_ORIGIN} (Issue #732)"
 
 # Only the read/write mounts are created here; a missing config file or
 # credential directory already failed the plan above.
@@ -834,19 +862,21 @@ host_disk_field_kb() {
     awk -v f="$1" 'NR>1 {v=$(NF-f)} END {print v}'
 }
 
-# The floor the worker stops claiming at, in kilobytes: the larger of
-# VIBE_HOST_DISK_LOW_FLOOR_GB and VIBE_HOST_DISK_LOW_FLOOR_PERCENT of the
-# filesystem. Kept in step with DEFAULT_LOW_FLOOR_GB / DEFAULT_LOW_FLOOR_PERCENT
-# in worker/deno/lib/host_disk.ts — healing at a different floor than the
-# worker claims at would either wipe the clones early or never fire at all.
+# The floor the worker stops claiming at, in kilobytes: the larger of the
+# plan's GB term and its percentage of the filesystem. Both terms were
+# validated and exported where the plan was parsed (Issue #732), so this
+# function holds no default of its own — and therefore cannot drift from the
+# worker's DEFAULT_LOW_FLOOR_GB / DEFAULT_LOW_FLOOR_PERCENT, which is what the
+# plan resolved them from. awk does the arithmetic because a configured
+# percentage may be fractional and bash cannot multiply one.
 claim_floor_kb() {
-  local total_kb="$1" gb="${VIBE_HOST_DISK_LOW_FLOOR_GB:-20}"
-  local pct="${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-10}" by_gb by_pct
-  [[ "${gb}" =~ ^[0-9]+$ ]] || gb=20
-  [[ "${pct}" =~ ^[0-9]+$ && "${pct}" -le 100 ]] || pct=10
-  by_gb=$((gb * 1024 * 1024))
-  by_pct=$((total_kb * pct / 100))
-  if ((by_gb > by_pct)); then printf '%s' "${by_gb}"; else printf '%s' "${by_pct}"; fi
+  awk -v total="$1" -v gb="${VIBE_HOST_DISK_LOW_FLOOR_GB}" \
+    -v pct="${VIBE_HOST_DISK_LOW_FLOOR_PERCENT}" \
+    'BEGIN {
+       by_gb = gb * 1024 * 1024
+       by_pct = total * pct / 100
+       printf "%d", (by_gb > by_pct ? by_gb : by_pct)
+     }'
 }
 
 # Kilobytes the runtime's store holds for a named volume; non-zero when the
@@ -952,7 +982,27 @@ if [[ "${disk_avail_kb}" =~ ^[0-9]+$ && "${disk_hard_floor_gb}" =~ ^[0-9]+$ ]]; 
     log_run_core "host-disk: refused launch - $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} is below the ${disk_hard_floor_gb} GB hard floor (Issue #226)"
     exit 1
   fi
-  log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}"
+  # Name the claiming floor beside the free space it is compared against
+  # (Issue #732). The claim guard itself runs inside the container, so
+  # without this line the only way to learn which number refused a host's
+  # work was to read the source and do the percentage arithmetic by hand -
+  # which is exactly how the 1.875 TB host of Issue #722 found its ~187 GB
+  # floor. The launch continues either way: a host that cannot claim must
+  # still run and report (Issue #477).
+  disk_total_kb="$(host_disk_field_kb 4)"
+  if [[ "${disk_total_kb}" =~ ^[1-9][0-9]*$ ]]; then
+    claim_floor_mb=$(($(claim_floor_kb "${disk_total_kb}") / 1024))
+    claim_state="above"
+    if ((disk_avail_kb / 1024 < claim_floor_mb)); then
+      claim_state="below - the worker will not claim new work"
+    fi
+    echo "[run.sh] host disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}," \
+      "${claim_state} the ${claim_floor_mb} MB claiming floor" \
+      "(${LOW_FLOOR_ORIGIN}) (Issue #732)" >&2
+    log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} - ${claim_state} the ${claim_floor_mb} MB claiming floor: ${LOW_FLOOR_ORIGIN} (Issue #732)"
+  else
+    log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}"
+  fi
 fi
 
 # Exit status this launcher reports after reaping a wedged container - a named

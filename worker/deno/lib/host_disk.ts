@@ -28,6 +28,11 @@
  *   drains the pool exactly as the spend ceiling does) and reports
  *   `host-disk: degraded`; below the **hard floor** the launcher never
  *   starts it.
+ * - The low floor is configurable (Issue #732): `VIBE_HOST_DISK_LOW_FLOOR_GB`
+ *   / `_PERCENT` for one run, `host_disk_low_floor_gb` /
+ *   `host_disk_low_floor_percent` in `.config.json` for the host, else the
+ *   defaults below. The launcher resolves it once and hands the answer to
+ *   the container, so every consumer gates on the same number.
  *
  * Every probe is injectable; nothing here runs a subprocess in tests.
  *
@@ -48,6 +53,10 @@ export const HOST_DISK_TOTAL_ENV = "VIBE_HOST_DISK_TOTAL_BYTES";
 export const HOST_DISK_LOW_FLOOR_GB_ENV = "VIBE_HOST_DISK_LOW_FLOOR_GB";
 export const HOST_DISK_LOW_FLOOR_PERCENT_ENV =
   "VIBE_HOST_DISK_LOW_FLOOR_PERCENT";
+
+/** The same two floors as `.config.json` spells them (Issue #732). */
+export const HOST_DISK_LOW_FLOOR_GB_KEY = "host_disk_low_floor_gb";
+export const HOST_DISK_LOW_FLOOR_PERCENT_KEY = "host_disk_low_floor_percent";
 
 /** Below this much free the worker stops claiming new work. */
 export const DEFAULT_LOW_FLOOR_GB = 20;
@@ -123,6 +132,21 @@ export interface DiskFloors {
   lowFloorPercent: number;
 }
 
+/** The floors as `.config.json` set them — either term, or neither. */
+export interface ConfiguredDiskFloors {
+  lowFloorGb?: number;
+  lowFloorPercent?: number;
+}
+
+/** Where a resolved floor term came from (Issue #732). */
+export type DiskFloorOrigin = "environment" | "config" | "default";
+
+/** The floors plus the origin of each term, so a refusal can name it. */
+export interface ResolvedDiskFloors extends DiskFloors {
+  lowFloorGbOrigin: DiskFloorOrigin;
+  lowFloorPercentOrigin: DiskFloorOrigin;
+}
+
 /** A finite number from an env value, or null when unset/blank/garbage. */
 function envNumber(value: string | undefined): number | null {
   const trimmed = value?.trim() ?? "";
@@ -131,17 +155,94 @@ function envNumber(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** A usable GB floor, or null when the value cannot be one. */
+function usableGb(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+/** A usable percentage floor, or null when the value cannot be one. */
+function usablePercent(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 &&
+      value <= 100
+    ? value
+    : null;
+}
+
+/**
+ * Resolve the claiming floor from the environment, `.config.json` and the
+ * defaults, in that order of precedence (Issue #732).
+ *
+ * The percentage term is a floor for *small* disks, and on a large one it
+ * dominates: a 1.875 TB filesystem asked for ~187 GB free before any work
+ * was claimed, which no host on that fleet ever had. The two environment
+ * overrides were the only escape and were undocumented, so the same floor is
+ * now settable in `.config.json` alongside the rest of a host's
+ * configuration. Precedence is environment (one run) → `.config.json` (the
+ * host's standing answer) → the built-in defaults, matching `run_mode`.
+ *
+ * Each term resolves independently: a host may pin the GB term in
+ * `.config.json` and try a percentage for one run without losing the other.
+ *
+ * @param env - Environment reader
+ * @param configured - Floors read from `.config.json`, when any are set
+ * @returns Both floors and where each came from
+ */
 export function resolveDiskFloors(
   env: (name: string) => string | undefined,
-): DiskFloors {
-  const gb = envNumber(env(HOST_DISK_LOW_FLOOR_GB_ENV)) ?? NaN;
-  const percent = envNumber(env(HOST_DISK_LOW_FLOOR_PERCENT_ENV)) ?? NaN;
+  configured: ConfiguredDiskFloors = {},
+): ResolvedDiskFloors {
+  const envGb = usableGb(envNumber(env(HOST_DISK_LOW_FLOOR_GB_ENV)));
+  const configGb = usableGb(configured.lowFloorGb);
+  const envPercent = usablePercent(
+    envNumber(env(HOST_DISK_LOW_FLOOR_PERCENT_ENV)),
+  );
+  const configPercent = usablePercent(configured.lowFloorPercent);
   return {
-    lowFloorGb: Number.isFinite(gb) && gb >= 0 ? gb : DEFAULT_LOW_FLOOR_GB,
-    lowFloorPercent: Number.isFinite(percent) && percent >= 0 && percent <= 100
-      ? percent
-      : DEFAULT_LOW_FLOOR_PERCENT,
+    lowFloorGb: envGb ?? configGb ?? DEFAULT_LOW_FLOOR_GB,
+    lowFloorGbOrigin: envGb !== null
+      ? "environment"
+      : configGb !== null
+      ? "config"
+      : "default",
+    lowFloorPercent: envPercent ?? configPercent ?? DEFAULT_LOW_FLOOR_PERCENT,
+    lowFloorPercentOrigin: envPercent !== null
+      ? "environment"
+      : configPercent !== null
+      ? "config"
+      : "default",
   };
+}
+
+/** Name the source of one resolved term, for an operator-facing line. */
+function originLabel(origin: DiskFloorOrigin, envName: string, key: string) {
+  if (origin === "environment") return envName;
+  if (origin === "config") return `.config.json ${key}`;
+  return "default";
+}
+
+/**
+ * One operator-facing phrase naming the resolved floor and where it came
+ * from (Issue #732), so a launch that refuses to claim is self-explanatory.
+ *
+ * @param floors - The resolved floors
+ * @returns e.g. `20 GB (default) or 1% of the filesystem
+ *   (.config.json host_disk_low_floor_percent), whichever is larger`
+ */
+export function describeDiskFloors(floors: ResolvedDiskFloors): string {
+  const gb = originLabel(
+    floors.lowFloorGbOrigin,
+    HOST_DISK_LOW_FLOOR_GB_ENV,
+    HOST_DISK_LOW_FLOOR_GB_KEY,
+  );
+  const percent = originLabel(
+    floors.lowFloorPercentOrigin,
+    HOST_DISK_LOW_FLOOR_PERCENT_ENV,
+    HOST_DISK_LOW_FLOOR_PERCENT_KEY,
+  );
+  return `${floors.lowFloorGb} GB (${gb}) or ${floors.lowFloorPercent}% of ` +
+    `the filesystem (${percent}), whichever is larger`;
 }
 
 /** The larger of the two floors, in bytes, for a filesystem of `totalBytes`. */

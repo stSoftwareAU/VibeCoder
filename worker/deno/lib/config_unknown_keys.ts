@@ -192,6 +192,11 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Deployer-supplied container build-time tools (Issue #69, parent #5)
   "container_tools",
+
+  // Host claiming floor (Issue #732) — read on the host by the launch plan,
+  // not by the worker's config loader, so these are not WorkerConfig fields.
+  "host_disk_low_floor_gb",
+  "host_disk_low_floor_percent",
 ]);
 
 /**

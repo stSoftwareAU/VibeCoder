@@ -738,8 +738,11 @@ takes it:
 2. **A host below its claiming floor is healed.** When the refusal coincides
    with less free space than the floor the worker stops claiming at — the
    larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and
-   `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), the same floor
-   `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
+   `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), configurable per host and
+   resolved once by the launch plan
+   ([Host-disk claiming floor](CONFIGURATION.md#-host-disk-claiming-floor)),
+   the same floor `worker/deno/lib/host_disk.ts` applies — the launcher
+   deletes and recreates
    the volume, then runs the init again to re-own it. This happens **before
    any container starts**, so no work is in flight: the clones re-clone and
    the approval snapshots re-baseline.

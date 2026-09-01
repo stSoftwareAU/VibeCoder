@@ -354,6 +354,12 @@ $BuildArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderStopArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderAbsentPatterns = [System.Collections.Generic.List[string]]::new()
 $RunArgs = [System.Collections.Generic.List[string]]::new()
+# The resolved claiming floor (Issue #732). Windows has no work-volume heal to
+# gate - Docker and Podman bind-mount a host directory, so nothing here needs
+# the number - but the plan carries it and this launcher reports it, so an
+# operator can see which floor the worker inside the container will refuse to
+# claim below, and where that floor came from.
+$LowFloorOrigin = ""
 
 try {
     # The plan resolves and validates the container runtime, computes the
@@ -410,6 +416,11 @@ try {
             "builder-stop" { $BuilderStopArgs.Add($value) }
             "builder-absent" { $BuilderAbsentPatterns.Add($value) }
             "run" { $RunArgs.Add($value) }
+            # The GB and percent terms are the container's to enforce; this
+            # launcher only reports the phrase that names both and their source.
+            "low-floor-gb" { }
+            "low-floor-percent" { }
+            "low-floor-origin" { $LowFloorOrigin = $value }
             default {
                 [Console]::Error.WriteLine(
                     "Error: unrecognised launch-plan key: $key")
@@ -757,6 +768,13 @@ try {
     }
 } catch {
     [Console]::Error.WriteLine("[run.ps1] warning: could not measure free disk: $_")
+}
+
+# Name the claiming floor the worker inside the container will gate on
+# (Issue #732), so a host that stops claiming is self-explanatory here too.
+if ($LowFloorOrigin -ne "") {
+    [Console]::Error.WriteLine(
+        "[run.ps1] host disk: claiming floor $LowFloorOrigin (Issue #732)")
 }
 
 Write-LaunchPhase "container_run"

@@ -314,19 +314,11 @@ Deno.test("pruneContainerStore - a builder delete that recovered nothing says so
   assertStringIncludes(builder.detail!, "reclaimed nothing");
 });
 
-Deno.test("run.sh's work-volume heal floor does not drift from the worker's (Issue #493)", async () => {
-  // One host disk, one floor. `run.sh` cannot import the constants, so this
-  // is what keeps its fallbacks honest — the same guard
-  // `work_volume_ratchet_test.ts` puts on the volume name.
-  const runSh = await Deno.readTextFile(
-    new URL("../../../run.sh", import.meta.url),
-  );
-  assertStringIncludes(
-    runSh,
-    `local total_kb="$1" gb="\${VIBE_HOST_DISK_LOW_FLOOR_GB:-${DEFAULT_LOW_FLOOR_GB}}"`,
-  );
-  assertStringIncludes(
-    runSh,
-    `local pct="\${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-${DEFAULT_LOW_FLOOR_PERCENT}}"`,
-  );
-});
+// The guard that used to live here — "run.sh's work-volume heal floor does not
+// drift from the worker's (Issue #493)" — read run.sh's own `:-20` / `:-10`
+// fallbacks out of the shell source. Issue #732 deleted those fallbacks: the
+// floor now rides the launch plan, so run.sh has no second copy of the
+// constants to drift from. The invariant is asserted on behaviour instead, by
+// `container_launch_test.ts` ("hands the resolved claiming floor to both
+// sides") for what the plan emits, and by `run_sh_launcher_test.ts` for
+// run.sh consuming it.

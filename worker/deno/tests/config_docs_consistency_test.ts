@@ -15,6 +15,12 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { KNOWN_CONFIG_KEYS } from "../lib/config_unknown_keys.ts";
+import {
+  HOST_DISK_LOW_FLOOR_GB_ENV,
+  HOST_DISK_LOW_FLOOR_GB_KEY,
+  HOST_DISK_LOW_FLOOR_PERCENT_ENV,
+  HOST_DISK_LOW_FLOOR_PERCENT_KEY,
+} from "../lib/host_disk.ts";
 
 // tests/ → worker/deno/ → worker/ → repo root
 function repoPath(relative: string): URL {
@@ -84,6 +90,39 @@ Deno.test("config docs - no JSON example advertises a dead / hardwired key", asy
         );
       }
     }
+  }
+});
+
+Deno.test("config docs - the host-disk claiming floor documents both keys and both env vars (Issue #732)", async () => {
+  // The two environment overrides worked long before they were documented,
+  // so the only way an operator on a large filesystem could raise the floor
+  // was to read the launcher's source. Both spellings of each term must stay
+  // in the reference, alongside the `.config.json` keys that replaced the
+  // need for them.
+  const markdown = await read("docs/CONFIGURATION.md");
+  for (
+    const documented of [
+      HOST_DISK_LOW_FLOOR_GB_KEY,
+      HOST_DISK_LOW_FLOOR_PERCENT_KEY,
+      HOST_DISK_LOW_FLOOR_GB_ENV,
+      HOST_DISK_LOW_FLOOR_PERCENT_ENV,
+    ]
+  ) {
+    assert(
+      markdown.includes(documented),
+      `docs/CONFIGURATION.md must document ${documented}`,
+    );
+  }
+  // And the keys are recognised, so setting them as documented does not
+  // trigger an unknown-key warning.
+  for (
+    const key of [HOST_DISK_LOW_FLOOR_GB_KEY, HOST_DISK_LOW_FLOOR_PERCENT_KEY]
+  ) {
+    assertEquals(
+      KNOWN_CONFIG_KEYS.has(key),
+      true,
+      `${key} is documented and must be a recognised config key`,
+    );
   }
 });
 

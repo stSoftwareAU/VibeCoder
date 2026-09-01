@@ -1327,6 +1327,61 @@ and the streak resets as soon as the floor accepts the issue, so an issue that
 genuinely fits a later cycle is never claimed on a doomed slice. Entries expire
 after seven days.
 
+### 💾 Host-disk claiming floor
+
+A host below its **free-disk** claiming floor stops taking new work
+(Issue #226): GRQ-23 crashed with its data volume full, having claimed two
+issues whose work was then lost. The floor is the **larger** of an absolute
+gigabyte term and a percentage of the filesystem — the percentage is there so a
+small disk is not gated on 20 GB it never had.
+
+On a large disk the percentage dominates, and unconfigured it can demand more
+than any host will ever have free: on a 1.875 TB filesystem 10 % is ~187 GB, so
+37.5 GB free was judged low and the host claimed nothing (Issue #732). Both
+terms are therefore configurable.
+
+| Setting | `.config.json` key | Environment override | Default |
+| --- | --- | --- | --- |
+| Absolute term, whole gigabytes | `host_disk_low_floor_gb` | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` |
+| Percentage of the filesystem (0–100, may be fractional) | `host_disk_low_floor_percent` | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` |
+
+```json
+{
+  "host_disk_low_floor_gb": 20,
+  "host_disk_low_floor_percent": 1
+}
+```
+
+- **Precedence** — environment variable (one run) → `.config.json` (the host's
+  standing answer) → the built-in default, the same order
+  [Run Mode](#-run-mode) uses. **Each term resolves on its own**, so a host can
+  pin the gigabyte term in `.config.json` and try a percentage for a single run
+  without losing the other.
+- **An unconfigured host is unchanged** — the larger of 20 GB or 10 %, exactly
+  as before this key existed.
+- **One resolution per launch.** The launcher resolves the floor once (in the
+  `container-launch-plan` command), gates its own work-volume heal on it and
+  hands the resolved pair to the container, so the launcher and the worker
+  can never disagree about what "low" means. The defaults live in
+  `DEFAULT_LOW_FLOOR_GB` / `DEFAULT_LOW_FLOOR_PERCENT`
+  (`worker/deno/lib/host_disk.ts`) and nowhere else.
+- **The resolved floor is reported.** Every launch names the floor, the free
+  space it is compared against and where each term came from, on stderr and in
+  `~/logs/run_core.log`:
+
+  ```text
+  [run.sh] host disk: 38400 MB free on /Users/vibe, above the 20480 MB claiming
+  floor (20 GB (.config.json host_disk_low_floor_gb) or 1% of the filesystem
+  (.config.json host_disk_low_floor_percent), whichever is larger) (Issue #732)
+  ```
+
+- **A malformed floor fails the launch.** A key that is not a number, a
+  negative gigabyte term or a percentage outside 0–100 stops the launch naming
+  the key — a host must never gate on a floor nobody configured.
+- **Separate from the hard floor.** `VIBE_HOST_DISK_HARD_FLOOR_GB` (5 GB) is
+  what refuses a *launch*; this floor only stops new *claims*, because a host
+  that cannot claim must still run and report (Issue #477).
+
 ### 🕰️ The cycle-deadline model
 
 This is the canonical description of what the cycle deadline does (Issue #397).

@@ -39,7 +39,13 @@ import {
 import { detectContainerRuntime } from "../lib/container_runtime.ts";
 import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
 import { readRunCapPassthrough } from "../lib/run_hard_cap.ts";
-import { formatGb, probeDiskReading } from "../lib/host_disk.ts";
+import {
+  describeDiskFloors,
+  formatGb,
+  probeDiskReading,
+  resolveDiskFloors,
+} from "../lib/host_disk.ts";
+import { readConfiguredDiskFloors } from "../lib/host_disk_floor_config.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
 import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
@@ -194,6 +200,21 @@ export async function buildLaunchPlanForCommand(
     hostDisk = undefined;
   }
 
+  // The claiming floor (Issue #732), resolved once for this launch:
+  // environment → `.config.json` → the built-in defaults. Reported on stderr
+  // because a host that refuses to claim must be able to say which number
+  // refused it and where that number came from — the reporter of #722 could
+  // only discover the ~187 GB floor his 1.875 TB filesystem had scaled to by
+  // reading the source. Fail loud: a malformed floor key stops the launch
+  // rather than silently gating on a floor nobody configured.
+  const diskFloors = resolveDiskFloors(
+    (name) => Deno.env.get(name),
+    await readConfiguredDiskFloors(hostPaths.configFile),
+  );
+  console.error(
+    `container-launch-plan: claiming floor ${describeDiskFloors(diskFloors)}`,
+  );
+
   // The supervisor's wall-clock cap (Issue #421), forwarded so the worker's
   // progress-extension policy can stop the run before loop.sh's `timeout`
   // does. Absent — run.sh invoked outside loop.sh — means no ceiling inside
@@ -254,6 +275,7 @@ export async function buildLaunchPlanForCommand(
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),
+    diskFloors,
     ...(runCap ? { runCap } : {}),
     resources,
     ...(containerfile ? { containerfile } : {}),

@@ -12,12 +12,15 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   classifyHostDisk,
+  type ConfiguredDiskFloors,
   DEFAULT_LOW_FLOOR_GB,
   DEFAULT_LOW_FLOOR_PERCENT,
+  describeDiskFloors,
   type DiskReading,
   estimateHostFree,
   HOST_DISK_AVAIL_ENV,
   HOST_DISK_LOW_FLOOR_GB_ENV,
+  HOST_DISK_LOW_FLOOR_PERCENT_ENV,
   HOST_DISK_TOTAL_ENV,
   HostDiskMonitor,
   lowFloorBytes,
@@ -40,15 +43,162 @@ Deno.test("parseDfKP - reads total, used and available from df -kP", () => {
 });
 
 Deno.test("resolveDiskFloors - defaults, and env overrides that are sane", () => {
+  // Issue #732 added the origins; the floors themselves are unchanged.
   assertEquals(resolveDiskFloors(() => undefined), {
     lowFloorGb: DEFAULT_LOW_FLOOR_GB,
     lowFloorPercent: DEFAULT_LOW_FLOOR_PERCENT,
+    lowFloorGbOrigin: "default",
+    lowFloorPercentOrigin: "default",
   });
   const env = (n: string) => n === HOST_DISK_LOW_FLOOR_GB_ENV ? "50" : "abc";
   assertEquals(resolveDiskFloors(env).lowFloorGb, 50);
   assertEquals(
     resolveDiskFloors(env).lowFloorPercent,
     DEFAULT_LOW_FLOOR_PERCENT,
+  );
+});
+
+// --- The configurable claiming floor (Issue #732) ---------------------------
+//
+// On a 1.875 TB filesystem the 10% term scales to ~187 GB, so 37.5 GB free was
+// judged "low" and the host claimed nothing. The formula is unchanged; what
+// changed is that the floor can be configured, and that the resolution says
+// where each term came from.
+
+/** Floors as a table row: env, config, and what must come out. */
+const FLOOR_CASES: Array<{
+  name: string;
+  env: Record<string, string>;
+  config: ConfiguredDiskFloors;
+  gb: number;
+  percent: number;
+  gbOrigin: string;
+  percentOrigin: string;
+}> = [
+  {
+    name: "unconfigured — the built-in defaults",
+    env: {},
+    config: {},
+    gb: DEFAULT_LOW_FLOOR_GB,
+    percent: DEFAULT_LOW_FLOOR_PERCENT,
+    gbOrigin: "default",
+    percentOrigin: "default",
+  },
+  {
+    name: ".config.json sets both terms",
+    env: {},
+    config: { lowFloorGb: 20, lowFloorPercent: 1 },
+    gb: 20,
+    percent: 1,
+    gbOrigin: "config",
+    percentOrigin: "config",
+  },
+  {
+    name: "the environment alone",
+    env: {
+      [HOST_DISK_LOW_FLOOR_GB_ENV]: "30",
+      [HOST_DISK_LOW_FLOOR_PERCENT_ENV]: "2",
+    },
+    config: {},
+    gb: 30,
+    percent: 2,
+    gbOrigin: "environment",
+    percentOrigin: "environment",
+  },
+  {
+    name: "both set — the environment wins, per the documented precedence",
+    env: {
+      [HOST_DISK_LOW_FLOOR_GB_ENV]: "30",
+      [HOST_DISK_LOW_FLOOR_PERCENT_ENV]: "2",
+    },
+    config: { lowFloorGb: 20, lowFloorPercent: 1 },
+    gb: 30,
+    percent: 2,
+    gbOrigin: "environment",
+    percentOrigin: "environment",
+  },
+  {
+    name: "each term resolves on its own",
+    env: { [HOST_DISK_LOW_FLOOR_PERCENT_ENV]: "2" },
+    config: { lowFloorGb: 40 },
+    gb: 40,
+    percent: 2,
+    gbOrigin: "config",
+    percentOrigin: "environment",
+  },
+  {
+    name: "an unusable env value falls through to .config.json",
+    env: {
+      [HOST_DISK_LOW_FLOOR_GB_ENV]: "abc",
+      [HOST_DISK_LOW_FLOOR_PERCENT_ENV]: "500",
+    },
+    config: { lowFloorGb: 20, lowFloorPercent: 1 },
+    gb: 20,
+    percent: 1,
+    gbOrigin: "config",
+    percentOrigin: "config",
+  },
+  {
+    name: "a zero floor is a configured floor, not an absent one",
+    env: {},
+    config: { lowFloorGb: 0, lowFloorPercent: 0 },
+    gb: 0,
+    percent: 0,
+    gbOrigin: "config",
+    percentOrigin: "config",
+  },
+];
+
+for (const testCase of FLOOR_CASES) {
+  Deno.test(`resolveDiskFloors - ${testCase.name} (Issue #732)`, () => {
+    const resolved = resolveDiskFloors(
+      (name) => testCase.env[name],
+      testCase.config,
+    );
+    assertEquals(resolved.lowFloorGb, testCase.gb);
+    assertEquals(resolved.lowFloorPercent, testCase.percent);
+    assertEquals(resolved.lowFloorGbOrigin, testCase.gbOrigin);
+    assertEquals(resolved.lowFloorPercentOrigin, testCase.percentOrigin);
+  });
+}
+
+Deno.test("classifyHostDisk - a configured floor lets a large filesystem claim (Issue #732)", () => {
+  // The reported host: 1.875 TB with 37.5 GB free.
+  const total = 1920 * GIB;
+  const free = 37.5 * GIB;
+
+  // Unconfigured, the 10% term demands ~192 GB and the host claims nothing.
+  const unconfigured = resolveDiskFloors(() => undefined);
+  assertEquals(classifyHostDisk(free, total, unconfigured).level, "low");
+
+  // Configured 20 GB / 1%: the floor is 20 GB and the host claims work.
+  const configured = resolveDiskFloors(() => undefined, {
+    lowFloorGb: 20,
+    lowFloorPercent: 1,
+  });
+  assertEquals(lowFloorBytes(total, configured), 20 * GIB);
+  assertEquals(classifyHostDisk(free, total, configured).level, "ok");
+});
+
+Deno.test("describeDiskFloors - names both terms and where each came from (Issue #732)", () => {
+  const described = describeDiskFloors(
+    resolveDiskFloors(
+      (name) => name === HOST_DISK_LOW_FLOOR_PERCENT_ENV ? "1" : undefined,
+      { lowFloorGb: 20 },
+    ),
+  );
+  assertStringIncludes(
+    described,
+    "20 GB (.config.json host_disk_low_floor_gb)",
+  );
+  assertStringIncludes(
+    described,
+    `1% of the filesystem (${HOST_DISK_LOW_FLOOR_PERCENT_ENV})`,
+  );
+  assertStringIncludes(described, "whichever is larger");
+  assertStringIncludes(
+    describeDiskFloors(resolveDiskFloors(() => undefined)),
+    `${DEFAULT_LOW_FLOOR_GB} GB (default)`,
   );
 });
 

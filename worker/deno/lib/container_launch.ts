@@ -100,6 +100,13 @@ import {
   enabledAgentProviders,
 } from "./agent_provider.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
+import {
+  describeDiskFloors,
+  HOST_DISK_LOW_FLOOR_GB_ENV,
+  HOST_DISK_LOW_FLOOR_PERCENT_ENV,
+  type ResolvedDiskFloors,
+  resolveDiskFloors,
+} from "./host_disk.ts";
 
 /**
  * Named volume holding the worker's work directory (Issue #4186): repo
@@ -205,6 +212,15 @@ export interface ContainerLaunchInputs {
    * container mode sees only the volume image.
    */
   hostDisk?: { availableBytes: number; totalBytes: number };
+  /**
+   * The claiming floor this host resolved (Issue #732), from the environment,
+   * `.config.json` or the defaults. It rides the plan so the launcher's own
+   * work-volume heal and the worker inside the container gate on one number,
+   * and so a refused claim can name where that number came from. Optional:
+   * absent resolves to the built-in defaults, which is what an unconfigured
+   * host has always used.
+   */
+  diskFloors?: ResolvedDiskFloors;
   /**
    * The supervisor's wall-clock cap and the epoch-seconds this run started
    * (Issue #421), passed in as VIBE_RUN_MAX_SECONDS / VIBE_RUN_STARTED_EPOCH
@@ -372,6 +388,12 @@ export interface ContainerLaunchPlan {
   builderAbsentPatterns: string[];
   /** Arguments that run the worker container. */
   runArgs: string[];
+  /**
+   * The claiming floor this launch resolved (Issue #732). The launcher gates
+   * its own work-volume heal on it and reports it, so the floor that refused
+   * a claim is visible on the host as well as inside the container.
+   */
+  diskFloors: ResolvedDiskFloors;
 }
 
 /** Flags that would broaden the container beyond its intended privileges. */
@@ -1038,6 +1060,20 @@ export function buildContainerLaunchPlan(
       `VIBE_HOST_DISK_TOTAL_BYTES=${Math.floor(inputs.hostDisk.totalBytes)}`,
     );
   }
+  // The claiming floor, resolved once on the host (Issue #732). Passing the
+  // answer rather than the inputs is what keeps the launcher's heal and the
+  // worker's claim guard on one number: `.config.json` is mounted read-only
+  // inside the container, but only the host resolves it against the
+  // environment, and two resolutions are two floors waiting to disagree.
+  const diskFloors = inputs.diskFloors ?? resolveDiskFloors(() => undefined);
+  runArgs.push(
+    "--env",
+    `${HOST_DISK_LOW_FLOOR_GB_ENV}=${diskFloors.lowFloorGb}`,
+  );
+  runArgs.push(
+    "--env",
+    `${HOST_DISK_LOW_FLOOR_PERCENT_ENV}=${diskFloors.lowFloorPercent}`,
+  );
   // The supervisor's cap (Issue #421): inside the container the worker cannot
   // see loop.sh's `timeout`, so the cap and the run's start epoch are handed
   // over explicitly. Without them the progress-extension policy applies no
@@ -1144,6 +1180,7 @@ export function buildContainerLaunchPlan(
     builderStopArgs: [...dialect.builderStopArgs],
     builderAbsentPatterns: [...dialect.builderAbsentPatterns],
     runArgs,
+    diskFloors,
   };
 }
 
@@ -1161,7 +1198,10 @@ export type ContainerLaunchPlanKey =
   | "init"
   | "exists"
   | "build"
-  | "run";
+  | "run"
+  | "low-floor-gb"
+  | "low-floor-percent"
+  | "low-floor-origin";
 
 /** A parsed plan, as the launcher reconstructs it. */
 export interface ParsedContainerLaunchPlan {
@@ -1175,6 +1215,10 @@ export interface ParsedContainerLaunchPlan {
   exists: string[];
   build: string[];
   run: string[];
+  /** The resolved claiming floor, as the launchers read it (Issue #732). */
+  lowFloorGb: string;
+  lowFloorPercent: string;
+  lowFloorOrigin: string;
 }
 
 /**
@@ -1202,6 +1246,13 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
     ...plan.builderAbsentPatterns.map((p) => `builder-absent=${p}`),
     ...plan.runArgs.map((arg) => `run=${arg}`),
+    // The resolved claiming floor (Issue #732): the launcher gates its own
+    // work-volume heal on these rather than re-deriving a floor of its own,
+    // so the shell can no longer drift from DEFAULT_LOW_FLOOR_GB /
+    // DEFAULT_LOW_FLOOR_PERCENT, and the origin makes a refusal traceable.
+    `low-floor-gb=${plan.diskFloors.lowFloorGb}`,
+    `low-floor-percent=${plan.diskFloors.lowFloorPercent}`,
+    `low-floor-origin=${describeDiskFloors(plan.diskFloors)}`,
   ];
 
   for (const token of tokens) {
@@ -1240,6 +1291,9 @@ export function parseContainerLaunchPlanText(
     exists: [],
     build: [],
     run: [],
+    lowFloorGb: "",
+    lowFloorPercent: "",
+    lowFloorOrigin: "",
   };
 
   for (const token of text.split("\0")) {
@@ -1280,6 +1334,15 @@ export function parseContainerLaunchPlanText(
         break;
       case "run":
         parsed.run.push(value);
+        break;
+      case "low-floor-gb":
+        parsed.lowFloorGb = value;
+        break;
+      case "low-floor-percent":
+        parsed.lowFloorPercent = value;
+        break;
+      case "low-floor-origin":
+        parsed.lowFloorOrigin = value;
         break;
       default:
         throw new Error(`Unknown launch-plan key: ${key}`);

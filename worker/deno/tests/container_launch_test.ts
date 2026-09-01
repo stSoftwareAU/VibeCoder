@@ -41,6 +41,11 @@ import {
   parseContainerManifest,
 } from "../lib/container_manifest.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
+import {
+  DEFAULT_LOW_FLOOR_GB,
+  DEFAULT_LOW_FLOOR_PERCENT,
+  resolveDiskFloors,
+} from "../lib/host_disk.ts";
 
 const TEST_FILE_PATH = new URL(import.meta.url).pathname;
 const REPO_ROOT = TEST_FILE_PATH.replace(/\/worker\/deno\/tests\/[^/]+$/, "");
@@ -1125,9 +1130,51 @@ Deno.test("buildContainerLaunchPlan - passes the host disk reading into the cont
   );
   const bare = buildContainerLaunchPlan(inputs());
   assertEquals(
-    bare.runArgs.some((arg) => arg.startsWith("VIBE_HOST_DISK_")),
+    bare.runArgs.some((arg) => arg.startsWith("VIBE_HOST_DISK_AVAIL_BYTES")),
     false,
   );
+  assertEquals(
+    bare.runArgs.some((arg) => arg.startsWith("VIBE_HOST_DISK_TOTAL_BYTES")),
+    false,
+  );
+});
+
+Deno.test("buildContainerLaunchPlan - hands the resolved claiming floor to both sides (Issue #732)", () => {
+  // One resolution on the host: the container gates its claims on these
+  // values and the launcher gates its work-volume heal on the same plan
+  // keys, so the two cannot disagree about what "low" means.
+  const configured = buildContainerLaunchPlan(
+    inputs({
+      diskFloors: resolveDiskFloors(() => undefined, {
+        lowFloorGb: 20,
+        lowFloorPercent: 1,
+      }),
+    }),
+  );
+  assertEquals(
+    configured.runArgs.includes("VIBE_HOST_DISK_LOW_FLOOR_GB=20"),
+    true,
+  );
+  assertEquals(
+    configured.runArgs.includes("VIBE_HOST_DISK_LOW_FLOOR_PERCENT=1"),
+    true,
+  );
+
+  const rendered = parseContainerLaunchPlanText(
+    renderContainerLaunchPlan(configured),
+  );
+  assertEquals(rendered.lowFloorGb, "20");
+  assertEquals(rendered.lowFloorPercent, "1");
+  assertStringIncludes(rendered.lowFloorOrigin, ".config.json");
+
+  // An unconfigured host still gets a floor, and it is the worker's own
+  // default — the launcher holds no second copy of these numbers to drift.
+  const bare = parseContainerLaunchPlanText(
+    renderContainerLaunchPlan(buildContainerLaunchPlan(inputs())),
+  );
+  assertEquals(bare.lowFloorGb, String(DEFAULT_LOW_FLOOR_GB));
+  assertEquals(bare.lowFloorPercent, String(DEFAULT_LOW_FLOOR_PERCENT));
+  assertStringIncludes(bare.lowFloorOrigin, "default");
 });
 
 Deno.test("buildContainerLaunchPlan - passes the supervisor run cap into the container (Issue #421)", () => {

@@ -36,6 +36,10 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
 import {
+  DEFAULT_LOW_FLOOR_GB,
+  DEFAULT_LOW_FLOOR_PERCENT,
+} from "../lib/host_disk.ts";
+import {
   BASH_LAUNCHER,
   buildCount,
   builderHealed,
@@ -1358,6 +1362,139 @@ Deno.test("run.sh - volumes too small to hold the missing space are escalated, n
       await runCoreLog(harness),
       "the host's missing space is somewhere else",
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- The configurable claiming floor (Issue #732) ---------------------------
+//
+// On a 1.875 TB filesystem the default 10% term scales to ~187 GB, so a host
+// with 37.5 GB free refused to claim anything and the only escape was an
+// undocumented environment variable. The floor is now settable in
+// `.config.json`, resolved once by the plan, and reported by the launcher.
+
+Deno.test("run.sh - a .config.json claiming floor reaches the container and the log (Issue #732)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    // The override the reporter of #722 had to pass on the command line,
+    // written where the rest of the host's configuration lives.
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/config.json`,
+      JSON.stringify({
+        repos: ["org/repo1"],
+        host_disk_low_floor_gb: 20,
+        host_disk_low_floor_percent: 1,
+      }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The worker gates its claims on the resolved floor, not on its defaults.
+    const args = await recorded(harness, "run");
+    assert(args, `no container run was recorded: ${outcome.stderr}`);
+    assert(
+      args.includes("VIBE_HOST_DISK_LOW_FLOOR_GB=20"),
+      `container run must carry the configured GB floor: ${args.join(" ")}`,
+    );
+    assert(
+      args.includes("VIBE_HOST_DISK_LOW_FLOOR_PERCENT=1"),
+      `container run must carry the configured percent floor: ${
+        args.join(" ")
+      }`,
+    );
+
+    // A refused claim is self-explanatory: the launcher names the floor, the
+    // free space it is compared against, and where the floor came from.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "MB claiming floor");
+    assertStringIncludes(log, "20 GB (.config.json host_disk_low_floor_gb)");
+    assertStringIncludes(log, "1% of the filesystem");
+    assertStringIncludes(outcome.stderr, "MB free on");
+    assertStringIncludes(outcome.stderr, "MB claiming floor");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the environment still overrides a configured floor (Issue #732)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "2",
+  });
+  try {
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/config.json`,
+      JSON.stringify({
+        repos: ["org/repo1"],
+        host_disk_low_floor_gb: 20,
+        host_disk_low_floor_percent: 1,
+      }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "run");
+    assert(args, `no container run was recorded: ${outcome.stderr}`);
+    // Each term resolves on its own: the environment took the percentage,
+    // `.config.json` kept the gigabyte term.
+    assert(args.includes("VIBE_HOST_DISK_LOW_FLOOR_PERCENT=2"), args.join(" "));
+    assert(args.includes("VIBE_HOST_DISK_LOW_FLOOR_GB=20"), args.join(" "));
+    assertStringIncludes(
+      await runCoreLog(harness),
+      "2% of the filesystem (VIBE_HOST_DISK_LOW_FLOOR_PERCENT)",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - an unconfigured host reports the default floor (Issue #732)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "run");
+    assert(args, `no container run was recorded: ${outcome.stderr}`);
+    // Unchanged behaviour: the larger of 20 GB and 10% of the filesystem.
+    assert(
+      args.includes(`VIBE_HOST_DISK_LOW_FLOOR_GB=${DEFAULT_LOW_FLOOR_GB}`),
+      args.join(" "),
+    );
+    assert(
+      args.includes(
+        `VIBE_HOST_DISK_LOW_FLOOR_PERCENT=${DEFAULT_LOW_FLOOR_PERCENT}`,
+      ),
+      args.join(" "),
+    );
+    assertStringIncludes(
+      await runCoreLog(harness),
+      `${DEFAULT_LOW_FLOOR_GB} GB (default)`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a malformed .config.json floor fails the launch loudly (Issue #732)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/config.json`,
+      JSON.stringify({
+        repos: ["org/repo1"],
+        host_disk_low_floor_percent: 500,
+      }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "an unusable floor must fail the launch");
+    assertStringIncludes(outcome.stderr, "host_disk_low_floor_percent");
+    // Nothing launched on a floor nobody configured.
+    assertEquals(await recorded(harness, "run"), null);
   } finally {
     await harness.cleanup();
   }
