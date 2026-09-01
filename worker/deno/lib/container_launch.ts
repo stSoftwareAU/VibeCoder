@@ -349,6 +349,16 @@ export interface ContainerLaunchPlan {
    */
   volumes: string[];
   /**
+   * Arguments that remove one named volume, before its name (Issue #731).
+   *
+   * The removal verb is *not* shared: Docker and Podman spell it
+   * `volume rm`, Apple container spells it `volume delete`, and Podman
+   * rejects `delete` outright. The launcher's recovery paths recreate a
+   * volume, so they take the verb from the dialect here rather than guessing
+   * one that works on the runtime the author happened to be running.
+   */
+  volumeRemoveArgs: string[];
+  /**
    * Arguments for the one-shot volume-ownership init run (Issue #4186): a
    * fresh named volume is root-owned, so root chowns the mount roots to the
    * image's worker account before the worker starts. Idempotent — the
@@ -1138,6 +1148,7 @@ export function buildContainerLaunchPlan(
       .filter((mount) => !mount.volume && !mount.readOnly)
       .map((mount) => mount.source),
     volumes: volumeMounts.map((mount) => mount.source),
+    volumeRemoveArgs: [...dialect.volumeRemoveArgs],
     initArgs,
     imageInspectArgs: [...dialect.imageInspectArgs, image],
     buildArgs,
@@ -1158,6 +1169,7 @@ export type ContainerLaunchPlanKey =
   | "watchdog"
   | "ensure"
   | "volume"
+  | "volume-remove"
   | "init"
   | "exists"
   | "build"
@@ -1171,6 +1183,7 @@ export interface ParsedContainerLaunchPlan {
   watchdog: string;
   ensure: string[];
   volume: string[];
+  volumeRemove: string[];
   init: string[];
   exists: string[];
   build: string[];
@@ -1196,6 +1209,7 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     `watchdog=${plan.watchdogSeconds}`,
     ...plan.ensureDirectories.map((dir) => `ensure=${dir}`),
     ...plan.volumes.map((name) => `volume=${name}`),
+    ...plan.volumeRemoveArgs.map((arg) => `volume-remove=${arg}`),
     ...plan.initArgs.map((arg) => `init=${arg}`),
     ...plan.imageInspectArgs.map((arg) => `exists=${arg}`),
     ...plan.buildArgs.map((arg) => `build=${arg}`),
@@ -1236,6 +1250,7 @@ export function parseContainerLaunchPlanText(
     watchdog: "",
     ensure: [],
     volume: [],
+    volumeRemove: [],
     init: [],
     exists: [],
     build: [],
@@ -1268,6 +1283,9 @@ export function parseContainerLaunchPlanText(
         break;
       case "volume":
         parsed.volume.push(value);
+        break;
+      case "volume-remove":
+        parsed.volumeRemove.push(value);
         break;
       case "init":
         parsed.init.push(value);

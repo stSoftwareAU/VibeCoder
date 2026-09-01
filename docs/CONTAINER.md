@@ -727,7 +727,8 @@ fstrim: /home/vibe/auto-issue-work: FITRIM ioctl failed: Operation not permitted
 
 So GRQ-23 carried a 26 GB volume image for 12.1 GB of live data, sat below
 its floor for three days claiming nothing out of 43 claimable issues, and the
-only remedy on offer — `container volume delete vibe-work` — was addressed to
+only remedy on offer — removing `vibe-work` by hand, spelled `volume rm` on
+Docker and Podman and `volume delete` on Apple container — was addressed to
 a human who was not there. An unattended host has no human, so the launcher
 takes it:
 
@@ -739,8 +740,14 @@ takes it:
    with less free space than the floor the worker stops claiming at — the
    larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and
    `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), the same floor
-   `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
-   the volume, then runs the init again to re-own it. This happens **before
+   `worker/deno/lib/host_disk.ts` applies — the launcher removes and recreates
+   the volume, then runs the init again to re-own it. The removal verb travels
+   in the launch plan with the rest of the runtime dialect (Issue #731):
+   `volume rm` on Docker and Podman, `volume delete` on Apple container. Podman
+   has no `volume delete` at all, and the launcher used to run it for every
+   runtime and discard the failure, so the volume survived and the `volume
+   create` that followed failed with "volume with name vibe-work already
+   exists". This happens **before
    any container starts**, so no work is in flight: the clones re-clone and
    the approval snapshots re-baseline.
 3. **The attempt is bounded and never silent.** At most one recreate per
@@ -750,6 +757,8 @@ takes it:
    because the host's missing space is elsewhere. Free space is **re-measured**
    after the recreate: a heal that did not clear the floor is reported as
    `[WORK_VOLUME_UNRECOVERED]` on stderr and in `run_core.log`, never as a fix.
+   A removal the runtime refuses is reported the same way, quoting the
+   runtime's own message, and no `volume create` follows it (Issue #731).
 4. **The launch still proceeds.** Only the hard floor refuses a launch — a
    host that cannot claim must still run and report, or it vanishes from the
    fleet board (Issue #477).
@@ -762,7 +771,7 @@ flowchart TD
     G -->|"no"| N["recorded in run_core.log;<br/>nothing destroyed"]
     G -->|"yes"| B{"recreated within<br/>24 h, or volume &lt; 1 GB?"}
     B -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
-    B -->|"no"| D["delete + create volume,<br/>re-run the init"]
+    B -->|"no"| D["remove (the runtime's own verb)<br/>+ create volume, re-run the init"]
     D --> M{"floor cleared?<br/>(re-measured)"}
     M -->|"yes"| H["host recovered<br/>without an operator"]
     M -->|"no"| E

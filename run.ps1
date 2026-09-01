@@ -348,6 +348,7 @@ $Image = ""
 $WatchdogSeconds = ""
 $EnsureDirs = [System.Collections.Generic.List[string]]::new()
 $VolumeNames = [System.Collections.Generic.List[string]]::new()
+$VolumeRemoveArgs = [System.Collections.Generic.List[string]]::new()
 $InitArgs = [System.Collections.Generic.List[string]]::new()
 $ExistsArgs = [System.Collections.Generic.List[string]]::new()
 $BuildArgs = [System.Collections.Generic.List[string]]::new()
@@ -404,6 +405,7 @@ try {
             "watchdog" { $WatchdogSeconds = $value }
             "ensure" { $EnsureDirs.Add($value) }
             "volume" { $VolumeNames.Add($value) }
+            "volume-remove" { $VolumeRemoveArgs.Add($value) }
             "init" { $InitArgs.Add($value) }
             "exists" { $ExistsArgs.Add($value) }
             "build" { $BuildArgs.Add($value) }
@@ -423,7 +425,8 @@ try {
 
 if (-not $Runtime -or -not $Image -or $RunArgs.Count -eq 0 -or
     $BuildArgs.Count -eq 0 -or $ExistsArgs.Count -eq 0 -or
-    $VolumeNames.Count -eq 0 -or $InitArgs.Count -eq 0) {
+    $VolumeNames.Count -eq 0 -or $InitArgs.Count -eq 0 -or
+    $VolumeRemoveArgs.Count -eq 0) {
     [Console]::Error.WriteLine(
         "Error: incomplete container launch plan - refusing to launch")
     Exit-Launcher 1
@@ -681,11 +684,13 @@ if ($BuilderStopArgs.Count -gt 0) {
 Write-LaunchPhase "volume_init"
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
-# live on runtime-managed volumes, not host directories. `volume inspect` /
-# `volume create` are spelled identically on Docker and Podman; the plan
-# supplies the names. The ownership init runs on every launch - an idempotent
-# root chown of the mount roots, so a first launch that dies between create
-# and chown heals on the next one.
+# live on runtime-managed volumes, not host directories. `volume inspect` and
+# `volume create` are spelled identically on Docker and Podman, so they are
+# written here; removal is taken from the plan (Issue #731), because that verb
+# is not shared - `volume rm` on Docker and Podman, `volume delete` on Apple
+# container, and Podman rejects `delete` outright. The ownership init runs on
+# every launch - an idempotent root chown of the mount roots, so a first launch
+# that dies between create and chown heals on the next one.
 foreach ($volume in $VolumeNames) {
     $inspected = Invoke-HostCommand -FilePath $Runtime `
         -ArgumentList @("volume", "inspect", $volume) -Capture
@@ -714,7 +719,24 @@ if ($initialised.ExitCode -eq 3) {
         }
         if (-not $volume) { continue }
         [Console]::Error.WriteLine("[run.ps1] recreating volume $volume - filesystem unrepairable (Issue #229)")
-        Invoke-HostCommand -FilePath $Runtime -ArgumentList @("volume", "rm", $volume) -Capture | Out-Null
+        $removed = Invoke-HostCommand -FilePath $Runtime `
+            -ArgumentList (@($VolumeRemoveArgs) + $volume) -Capture
+        if ($removed.ExitCode -ne 0) {
+            # A volume that is gone is removed, however the command reported
+            # itself; one that survived is a failure worth saying out loud
+            # (Issue #731), and the `volume create` below would only fail on a
+            # name that is still taken.
+            $survivor = Invoke-HostCommand -FilePath $Runtime `
+                -ArgumentList @("volume", "inspect", $volume) -Capture
+            if ($survivor.ExitCode -eq 0) {
+                $detail = ($removed.StdErr -replace "`r?`n", " ").Trim()
+                if (-not $detail) { $detail = "exited $($removed.ExitCode) and said nothing" }
+                [Console]::Error.WriteLine(
+                    "[run.ps1] could not remove volume ${volume}: $detail")
+                Write-RunCoreLog "volume-init: could not remove $volume - $detail - not recreated (Issue #731)"
+                continue
+            }
+        }
         Invoke-HostCommand -FilePath $Runtime -ArgumentList @("volume", "create", $volume) -Capture | Out-Null
         $recreated = $true
     }

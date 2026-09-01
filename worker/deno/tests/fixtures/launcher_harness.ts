@@ -166,10 +166,29 @@ case "\${sub}" in
     exit "\${STUB_VOLUME_INSPECT_EXIT:-1}"
     ;;
   volume-delete|volume-rm|volume-remove)
+    # The removal verb is NOT shared across runtimes (Issue #731): Docker and
+    # Podman spell it \`rm\`, Apple container spells it \`delete\`, and Podman
+    # has no \`volume delete\` sub-command at all. \`STUB_VOLUME_REMOVE_VERB\`
+    # pins the one spelling this runtime accepts; any other is refused the way
+    # Podman refuses it, and the volume survives.
+    verb="\${sub#volume-}"
+    if [[ -n "\${STUB_VOLUME_REMOVE_VERB:-}" &&
+      "\${verb}" != "\${STUB_VOLUME_REMOVE_VERB}" ]]; then
+      printf 'Error: unrecognized command "%s volume %s"\\n' \\
+        "\$(basename "\$0")" "\${verb}" >&2
+      exit 125
+    fi
+    if [[ -n "\${STUB_VOLUME_REMOVE_STDERR:-}" ]]; then
+      printf '%s\\n' "\${STUB_VOLUME_REMOVE_STDERR}" >&2
+    fi
+    remove_status="\${STUB_VOLUME_REMOVE_EXIT:-0}"
     # One line per removal (Issue #478), so a test can see every volume the
-    # launcher recreated rather than only the last one.
-    printf '%s\\n' "\${*: -1}" >> "\${record_dir}/volume-removed.lines"
-    exit "\${STUB_VOLUME_DELETE_EXIT:-0}"
+    # launcher recreated rather than only the last one. Only a removal that
+    # succeeded is a removal.
+    if [[ "\${remove_status}" -eq 0 ]]; then
+      printf '%s\\n' "\${*: -1}" >> "\${record_dir}/volume-removed.lines"
+    fi
+    exit "\${remove_status}"
     ;;
   volume-*)
     exit 0
@@ -183,6 +202,12 @@ case "\${sub}" in
     # \`VOLUME_UNREPAIRABLE\` (#229) and \`VOLUME_TRIM_REFUSED\` (#478) from it.
     if [[ -n "\${STUB_INIT_STDOUT:-}" ]]; then
       printf '%b\\n' "\${STUB_INIT_STDOUT}"
+    fi
+    # The init a recreate re-runs answers separately (Issue #731), so a test
+    # can drive the "unrepairable, then repaired" sequence \`run.sh\` recovers
+    # from rather than only a volume that fails for ever.
+    if [[ "\${count}" -ge 2 ]]; then
+      exit "\${STUB_INIT_RETRY_EXIT:-\${STUB_INIT_EXIT:-0}}"
     fi
     exit "\${STUB_INIT_EXIT:-0}"
     ;;

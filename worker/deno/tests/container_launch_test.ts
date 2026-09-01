@@ -871,7 +871,34 @@ Deno.test("renderContainerLaunchPlan - round-trips through the launcher's framin
   assertEquals(parsed.exists, plan.imageInspectArgs);
   assertEquals(parsed.ensure, plan.ensureDirectories);
   assertEquals(parsed.volume, plan.volumes);
+  assertEquals(parsed.volumeRemove, plan.volumeRemoveArgs);
   assertEquals(parsed.init, plan.initArgs);
+});
+
+Deno.test("buildContainerLaunchPlan - the plan carries the runtime's own volume-removal verb (Issue #731)", () => {
+  // `volume delete` was written into run.sh for every runtime. Podman has no
+  // such sub-command: it answered "unrecognized command", the volume survived
+  // and the `volume create` that followed failed with "volume with name
+  // vibe-work already exists". The verb is per-runtime, so it travels in the
+  // plan with the rest of the dialect rather than being guessed in the shell.
+  assertEquals(
+    buildContainerLaunchPlan(inputs()).volumeRemoveArgs,
+    ["volume", "rm"],
+    "Docker takes `volume rm`",
+  );
+  assertEquals(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("podman") }))
+      .volumeRemoveArgs,
+    ["volume", "rm"],
+    "Podman takes `volume rm` and rejects `volume delete`",
+  );
+  assertEquals(
+    buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor("apple-container") }),
+    ).volumeRemoveArgs,
+    ["volume", "delete"],
+    "Apple container spells the removal `volume delete`",
+  );
 });
 
 // ---------------------------------------------------------------------------
