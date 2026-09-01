@@ -101,8 +101,9 @@ Deno.test("extractSetupContract - names a script that decides for itself", () =>
 
   const faults = setupContractFaults(contract);
   // Delegation, lockfile, every shared subcommand, the supervisor, gh
-  // provisioning, credential validation and the cache-only work dir removal.
-  assertEquals(faults.length, 7, faults.join("\n"));
+  // provisioning, credential validation, the provider gate (Issue #745) and
+  // the cache-only work dir removal.
+  assertEquals(faults.length, 8, faults.join("\n"));
 });
 
 Deno.test("setupContractFaults - a dropped setup step is named", () => {
@@ -114,6 +115,9 @@ Deno.test("setupContractFaults - a dropped setup step is named", () => {
         .filter((s) => s !== "branch-protection-sync")
         .map((s) => `run_setup_cli ${s}`),
       "run_setup_cli launchagent",
+      // Compliant in every other respect, including the provider gate the
+      // credential prompts run behind (Issue #745).
+      "run_setup_cli agent-providers",
       "write_gh_hosts_file() { : > hosts.yml; }",
       "claude -p 'Say hello'",
       'rm -rf "${dir}/.vibe-cache"',
@@ -224,4 +228,47 @@ Deno.test("setup.sh and setup.ps1 - both mint and prove a claude credential", ()
       `${contract.name} must prove the token with a live call`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Provider-gated credential prompts (Issues #730, #745)
+// ---------------------------------------------------------------------------
+
+Deno.test("both setup scripts ask which providers this host runs before prompting (Issue #745)", () => {
+  assertEquals(SETUP_SH.gatesCredentialsByProvider, true, "setup.sh");
+  assertEquals(SETUP_PS1.gatesCredentialsByProvider, true, "setup.ps1");
+});
+
+Deno.test("a setup script that drops the provider gate is a fault, on either platform (Issue #745)", () => {
+  const blindSh = extractSetupContract(
+    "setup.sh",
+    SETUP_SH_SOURCE.replaceAll("run_setup_cli agent-providers", "true"),
+    "bash",
+  );
+  const blindPs1 = extractSetupContract(
+    "setup.ps1",
+    SETUP_PS1_SOURCE.replaceAll(
+      'Invoke-VibeSetupCliCapture -Arguments @("agent-providers")',
+      '""',
+    ),
+    "powershell",
+  );
+
+  for (const contract of [blindSh, blindPs1]) {
+    assertEquals(contract.gatesCredentialsByProvider, false, contract.name);
+    const fault = setupContractFaults(contract).find((entry) =>
+      entry.includes("coding-agent providers this host runs")
+    );
+    assert(fault, `${contract.name}: no fault raised for the dropped gate`);
+    assertStringIncludes(fault, "Codex-only host");
+  }
+
+  // And the two are reported as diverging when only one keeps the gate.
+  const report = compareSetupContracts(SETUP_SH, blindPs1);
+  assert(
+    report.divergences.some((entry) =>
+      entry.includes("provider-gated credential prompts")
+    ),
+    report.divergences.join("\n"),
+  );
 });

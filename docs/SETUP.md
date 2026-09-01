@@ -73,7 +73,10 @@ background service is offered, where files land — is covered in
    prompt. The flows the run will drive are named before it drives them, so a
    misconfigured provider set is visible rather than silent. An existing
    credential file is never overwritten without an explicit `y`, and
-   declining an offer never fails the run.
+   declining an offer never fails the run. `setup.ps1` does the same on
+   Windows, from the same `agent-providers` answer (Issue #745), and
+   `setup_parity_test.ts` fails the quality gate if either script drops the
+   gate and goes back to prompting for Claude regardless.
 
 4. **Interactive configuration prompts** — also terminal-only. Collects the
    key configuration answers (repositories to monitor, allowed authors,

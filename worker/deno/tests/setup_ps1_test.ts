@@ -89,6 +89,17 @@ function pwshTest(name: string, fn: () => Promise<void>): void {
   Deno.test({ name, ignore: PWSH === null, fn });
 }
 
+/** Whether a path exists, for asserting that a file was *not* written. */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
 /** POSIX permission bits of a path. */
 async function modeOf(path: string): Promise<number> {
   const info = await Deno.stat(path);
@@ -628,3 +639,189 @@ Deno.test({
     }
   },
 });
+
+// ── Provider-gated interactive credentials (Issue #745) ─────────────────
+//
+// setup.sh runs one credential flow per *configured* provider (Issue #730);
+// setup.ps1 ran the Claude flow unconditionally, so a Codex-only Windows host
+// was asked for a `CLAUDE_CODE_OAUTH_TOKEN` it would never use. These cases
+// drive the real flow with only the terminal replaced — `Read-VibeSecret` is
+// the console, and the console is the external service a test may fake.
+
+/** A `claude` on PATH, so "does this host have the CLI?" is not the gate. */
+async function stubClaudeCli(dir: string): Promise<void> {
+  const stub = `${dir}/claude`;
+  await Deno.writeTextFile(stub, "#!/bin/bash\nexit 0\n");
+  await Deno.chmod(stub, 0o755);
+}
+
+pwshTest(
+  "setup.ps1 - a Codex flow asks for the Codex credential and never mentions Claude (Issue #745)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      await stubClaudeCli(tmp);
+      const run = await runPwsh(
+        `
+    function Read-VibeSecret { param([string] $Prompt) return "sk-codex-pasted" }
+    Invoke-VibeProviderCredentialFlow -Dir (Get-VibeCredentialDir) -Id "codex"
+        `,
+        {
+          HOME: tmp,
+          CONFIG_FILE: `${tmp}/.config.json`,
+          PATH: `${tmp}:/usr/bin:/bin`,
+        },
+      );
+      assertEquals(run.code, 0, run.output);
+
+      const dir = `${tmp}/.vibe-coder/credentials`;
+      assertEquals(
+        await Deno.readTextFile(`${dir}/codex/provider.env`),
+        "OPENAI_API_KEY=sk-codex-pasted\n",
+      );
+      assertEquals(await modeOf(`${dir}/codex/provider.env`), 0o600);
+      // No Claude prompt, no Claude token, no Claude credential written —
+      // even with a `claude` CLI sitting on PATH.
+      assert(
+        !run.output.includes("CLAUDE_CODE_OAUTH_TOKEN"),
+        `a Codex host was asked for a Claude token:\n${run.output}`,
+      );
+      assert(
+        !run.output.includes("setup-token"),
+        `a Codex host was offered claude setup-token:\n${run.output}`,
+      );
+      assertEquals(await exists(`${dir}/claude/provider.env`), false);
+      // The prompt names the variable and where to get it.
+      assertStringIncludes(run.output, "OPENAI_API_KEY");
+      assertStringIncludes(run.output, "platform.openai.com");
+      assertStringIncludes(run.output, "VIBE_LAUNCHAGENT_OPENAI_API_KEY");
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - a Claude flow keeps today's behaviour (Issue #745)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await runPwsh(
+        `
+    function Read-VibeSecret { param([string] $Prompt) return "sk-ant-oat01-pasted" }
+    Invoke-VibeProviderCredentialFlow -Dir (Get-VibeCredentialDir) -Id "claude"
+        `,
+        { HOME: tmp, CONFIG_FILE: `${tmp}/.config.json` },
+      );
+      assertEquals(run.code, 0, run.output);
+
+      const dir = `${tmp}/.vibe-coder/credentials`;
+      assertEquals(
+        await Deno.readTextFile(`${dir}/claude/provider.env`),
+        "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-pasted\n",
+      );
+      assertEquals(await modeOf(`${dir}/claude/provider.env`), 0o600);
+      // The by-hand recipe is still spelled out in full.
+      assertStringIncludes(run.output, "claude setup-token");
+      assertStringIncludes(run.output, "sk-ant-oat01-");
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - the provider set comes from the setup CLI, and an unresolved one is empty (Issue #745)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const stub = `${tmp}/deno`;
+      await Deno.writeTextFile(
+        stub,
+        `#!/bin/bash\nif [[ "$*" == *agent-providers* ]]; then printf 'codex\\ngemini\\n'; exit 0; fi\nexit 0\n`,
+      );
+      await Deno.chmod(stub, 0o755);
+
+      const run = await runPwsh(
+        `    Write-Output "IDS=$((Get-VibeConfiguredAgentProviders) -join ',')"`,
+        {
+          HOME: tmp,
+          CONFIG_FILE: `${tmp}/.config.json`,
+          PATH: `${tmp}:/usr/bin:/bin`,
+        },
+      );
+      assertEquals(run.code, 0, run.output);
+      assertStringIncludes(run.output, "IDS=codex,gemini");
+
+      // A selection that cannot be resolved yields nothing, so the caller
+      // stops rather than falling back to Claude on a Codex host.
+      await Deno.writeTextFile(stub, "#!/bin/bash\nexit 1\n");
+      await Deno.chmod(stub, 0o755);
+      const failed = await runPwsh(
+        `    Write-Output "IDS=$((Get-VibeConfiguredAgentProviders) -join ',')"`,
+        {
+          HOME: tmp,
+          CONFIG_FILE: `${tmp}/.config.json`,
+          PATH: `${tmp}:/usr/bin:/bin`,
+        },
+      );
+      assertEquals(failed.code, 0, failed.output);
+      assertStringIncludes(failed.output, "IDS=");
+      assert(
+        !failed.output.includes("IDS=claude"),
+        `an unresolved selection must not fall back to Claude:\n${failed.output}`,
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - every configured provider gets a flow, in order (Issue #745)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await runPwsh(
+        `
+    function Read-VibeSecret { param([string] $Prompt) return "sk-$($Prompt.Trim().Split(' ')[0])" }
+    Invoke-VibeInteractiveCredentials -GhSource "" -Providers @("codex", "gemini")
+        `,
+        { HOME: tmp, CONFIG_FILE: `${tmp}/.config.json` },
+      );
+      assertEquals(run.code, 0, run.output);
+
+      const dir = `${tmp}/.vibe-coder/credentials`;
+      assertEquals(
+        await Deno.readTextFile(`${dir}/codex/provider.env`),
+        "OPENAI_API_KEY=sk-OPENAI_API_KEY\n",
+      );
+      assertEquals(
+        await Deno.readTextFile(`${dir}/gemini/provider.env`),
+        "GEMINI_API_KEY=sk-GEMINI_API_KEY\n",
+      );
+      assertEquals(await exists(`${dir}/claude/provider.env`), false);
+      // The run says which flows it will drive before driving them.
+      assertStringIncludes(run.output, "codex gemini");
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - an unregistered provider is reported, not guessed at (Issue #745)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await runPwsh(
+        `    Invoke-VibeProviderCredentialFlow -Dir (Get-VibeCredentialDir) -Id "nosuch"`,
+        { HOME: tmp, CONFIG_FILE: `${tmp}/.config.json` },
+      );
+      assertStringIncludes(run.output, "No credential row");
+      assertStringIncludes(run.output, "nosuch");
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
