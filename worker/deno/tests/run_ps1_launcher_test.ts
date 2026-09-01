@@ -641,3 +641,56 @@ Deno.test({
     }
   },
 });
+
+// ---------------------------------------------------------------------------
+// Self-heal attribution (Issue #710)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "run.ps1 - attributes a failed volume init to volume preparation, not runtime detection (Issue #710)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_INIT_EXIT: "125",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 125, outcome.stderr);
+      const marker = await Deno.readTextFile(
+        `${harness.tmpDir}/home/.vibe-coder/last-launch-phase`,
+      );
+      assertEquals(marker.trim(), "volume_init");
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - the outcome recorder may read the hostname, so the alert can name the host (Issue #710)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" }, {
+      denoStub: true,
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      const args = await recorded(harness, "container-restart-backoff");
+      assert(args, "the launcher must record its own outcome");
+      assert(
+        args.some((arg) => arg.startsWith("--allow-sys=")) &&
+          args.some((arg) => arg.includes("hostname")),
+        `the recorder cannot resolve the host without --allow-sys=hostname: ${
+          args.join(" ")
+        }`,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});

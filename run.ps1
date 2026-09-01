@@ -186,6 +186,10 @@ if (-not $DenoCmd) {
     outcome themselves - one failure must be counted once, not twice.
     Best-effort: a recorder that cannot run says so on stderr and never
     changes this launcher's exit status.
+
+    --allow-sys=hostname: the escalation this recorder files names the machine
+    it is about (Issues #633, #710). Without it Deno.hostname() is refused, the
+    report is titled `unknown-host` and says `Host: unknown`.
 #>
 function Write-RestartOutcome {
     param([Parameter(Mandatory = $true)][int] $Status)
@@ -198,6 +202,7 @@ function Write-RestartOutcome {
             "run",
             "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
             "--allow-env", "--allow-read", "--allow-write", "--allow-run", "--allow-net",
+            "--allow-sys=hostname",
             "$BaseDir/worker/deno/mod.ts", "container-restart-backoff",
             "--exit-status", "$Status"
         ) | Out-Null
@@ -631,6 +636,15 @@ if ($BuilderStopArgs.Count -gt 0) {
         }
     }
 }
+
+# Work-volume preparation (Issue #710). Everything from here to the launch
+# below drives the container runtime - `volume create`, and the ownership init,
+# which is itself a `run`. Those failures used to reach the supervisor still
+# carrying the `runtime_detection` marker written on this script's first page,
+# so an init container that never started (the runtime's own 125) was reported
+# as a runtime-detection failure. The marker now names the phase the launcher
+# is really in. Mirrors run.sh.
+Write-LaunchPhase "volume_init"
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
 # live on runtime-managed volumes, not host directories. `volume inspect` /
