@@ -211,8 +211,9 @@ runtimes disagree about how:
 | Apple `container` | no `tmpfs` at all; the entrypoint's own `0700` sub-directory under the durable state root is the protection |
 
 The `mode=0700` and `noexec` half is **not** dropped to work around Podman's
-refusal: that would hand back the world-readable credential directory Issue
-#564 closed. The dialect therefore records the two capabilities separately —
+refusal: that would hand back the world-readable credential directory that
+Issue #564 closed. The dialect therefore records the two capabilities
+separately —
 `tmpfsHonoursOptions` (does the runtime parse `path:options` at all?) and
 `tmpfsOwnership` (how does it say "this mount belongs to the container
 user"?).
