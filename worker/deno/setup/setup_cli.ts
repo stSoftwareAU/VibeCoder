@@ -84,6 +84,7 @@ import {
   rulesetReadFailedFinding,
 } from "../lib/milestone_ruleset_check.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
+import { explainRulesetFailure } from "../lib/ruleset_failure.ts";
 import {
   backfillIdleTaskLabels,
   formatBackfillEvent,
@@ -1167,8 +1168,16 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
     let milestoneRulesetErrors = 0;
     for (const r of summary.results) {
       if (!r.ok) {
+        // Why it failed decides what an operator does next: a private
+        // repository on a free plan needs GitHub Pro, which no token scope
+        // or organisation policy will fix (Issue #733). Every case stays
+        // non-fatal — setup finishes and the remaining checks still run.
         printWarning(
-          `Ruleset sync for ${r.repo} failed: ${r.error ?? "unknown error"}`,
+          explainRulesetFailure({
+            repo: r.repo,
+            error: r.error ?? "unknown error",
+            ...(r.visibility ? { visibility: r.visibility } : {}),
+          }).message,
         );
         continue;
       }
