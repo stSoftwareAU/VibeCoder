@@ -21,6 +21,7 @@ import {
   containerTargetPaths,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
+import { CONTAINER_START_EXIT_CODES } from "../lib/container_restart_backoff.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
@@ -36,6 +37,7 @@ import {
   POWERSHELL_LAUNCHER,
   PWSH,
   recorded,
+  recordedLaunchLog,
   removedImages,
   REPO_ROOT,
   runCoreLog,
@@ -640,6 +642,242 @@ Deno.test({
       await harness.cleanup();
     }
   },
+});
+
+// ---------------------------------------------------------------------------
+// The container start the runtime client refused (Issue #720)
+// ---------------------------------------------------------------------------
+//
+// The Windows counterpart of the run.sh capture (Issue #711). A
+// `container_start` escalation filed from a Windows host named the phase and
+// the exit status and nothing about why, because the client's stderr was
+// inherited by the console and kept nowhere. `run.ps1` now pumps that stream to
+// the console *and* to a capture, and hands the capture to the recorder as
+// `--launch-log` for exactly the statuses that become a `container_start`
+// escalation.
+
+Deno.test({
+  name:
+    "run.ps1 - a refused container start quotes the runtime client's own stderr (Issue #720)",
+  ignore,
+  fn: async () => {
+    const refusal =
+      'Error: no such image "vibe-coder:deadbeef"; refusing to start';
+    for (const status of CONTAINER_START_EXIT_CODES) {
+      const harness = await setupHarness({
+        STUB_IMAGE_INSPECT_EXIT: "0",
+        STUB_RUN_EXIT: `${status}`,
+        STUB_RUN_STDERR: refusal,
+      }, { denoStub: true });
+      try {
+        const outcome = await runLauncher(harness);
+        assertEquals(outcome.code, status, outcome.stderr);
+
+        // The container's output IS this run's console, so capturing it must
+        // not take it away from the console.
+        assertStringIncludes(outcome.stderr, refusal);
+
+        const args = await recorded(harness, "container-restart-backoff");
+        assert(args, "a refused start must still record its outcome");
+        assert(
+          args.includes("--launch-log"),
+          `a container_start escalation with no evidence: ${args.join(" ")}`,
+        );
+
+        // The launcher removes the capture on its way out; handing it over
+        // while it is still readable is the behaviour, not naming the path.
+        const log = await recordedLaunchLog(harness);
+        assert(
+          log !== null,
+          "the run capture was deleted before the outcome was recorded",
+        );
+        assertStringIncludes(log, refusal);
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - the client's stderr reaches the console while the container is still running (Issue #720)",
+  ignore,
+  fn: async () => {
+    // Capturing the output must not hold it back until the container exits:
+    // the container's output IS this run's console, so an operator watching a
+    // launch has to see it as it is produced. The stub prints its line and then
+    // stalls, so a console line read before the launcher returns can only have
+    // been streamed.
+    const line = "[stub] pulling image layers";
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_STDERR: line,
+      STUB_RUN_SLEEP: "30",
+    }, { denoStub: true });
+    const child = spawnLauncher(harness);
+    const reader = child.stderr.getReader();
+    const decoder = new TextDecoder();
+    let console_ = "";
+    try {
+      const deadline = Date.now() + 60_000;
+      while (!console_.includes(line) && Date.now() < deadline) {
+        const read = await Promise.race([
+          reader.read(),
+          new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), 5_000)
+          ),
+        ]);
+        if (read === null || read.done) break;
+        console_ += decoder.decode(read.value, { stream: true });
+      }
+      assert(
+        console_.includes(line),
+        `the container's stderr was not on the console while it was still ` +
+          `running: ${console_}`,
+      );
+    } finally {
+      child.kill("SIGTERM");
+      await reader.cancel();
+      await child.stdout.cancel();
+      await child.status;
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a container that started is never quoted as failure evidence (Issue #720)",
+  ignore,
+  fn: async () => {
+    // Exit status 1 is the worker reporting its own failure from inside a
+    // container that started perfectly well, so its console output says nothing
+    // about a launch that did not fail.
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_EXIT: "1",
+      STUB_RUN_STDERR: "worker: the run failed for its own reasons",
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 1, outcome.stderr);
+
+      const args = await recorded(harness, "container-restart-backoff");
+      assert(args, "run.ps1 must record its own launcher outcome");
+      assertEquals(
+        args.includes("--launch-log"),
+        false,
+        `a container that started must not be quoted as a refused start: ${
+          args.join(" ")
+        }`,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - keeps reaping a container that outruns the watchdog while it is still writing (Issue #720)",
+  ignore,
+  fn: async () => {
+    // The regression the capture could introduce: the pump is what the
+    // launcher waits in, so a deadline checked only while the stream is idle
+    // would let a chatty container postpone its own reaping indefinitely —
+    // the wedge the watchdog exists to end (Issue #4173).
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_SLEEP: "60",
+      STUB_RUN_STDERR: "[stub] still working",
+      // 600 writes, one every 50ms: the container is still talking well past
+      // the 2s deadline below, and falls quiet ~30s in.
+      STUB_RUN_STDERR_REPEAT: "0.05",
+      STUB_KILL_EXIT: "1",
+      VIBE_CONTAINER_WATCHDOG_SECONDS: "2",
+      VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    });
+    try {
+      const started = Date.now();
+      const outcome = await runLauncher(harness);
+      const elapsed = Date.now() - started;
+
+      assertEquals(outcome.code, CONTAINER_WEDGED_EXIT_STATUS, outcome.stderr);
+      assertStringIncludes(outcome.stderr, "watchdog");
+      // The stream really was flowing across the deadline, so the reap was
+      // not merely an idle timeout.
+      assertStringIncludes(outcome.stderr, "[stub] still working");
+      // Reaped on the deadline, not when the container happened to fall
+      // quiet: a launcher that waits out the chatter takes the writer's whole
+      // ~30s, five times this bound.
+      assert(
+        elapsed < 20_000,
+        `the wedge was reaped ${elapsed}ms in, long after the 2s deadline - ` +
+          `the container's own output postponed it`,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - the stderr capture leaves nothing behind in the temporary directory (Issue #720)",
+  ignore,
+  fn: async () => {
+    const refusal = "Error: invalid reference format";
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_EXIT: "125",
+      STUB_RUN_STDERR: refusal,
+    }, { denoStub: true });
+    const tmp = `${harness.tmpDir}/tmp`;
+    await Deno.mkdir(tmp, { recursive: true });
+    // .NET reads TMPDIR on Unix and TMP/TEMP on Windows; the launcher's
+    // temporary directory is whichever this host uses.
+    harness.env.TMPDIR = tmp;
+    harness.env.TMP = tmp;
+    harness.env.TEMP = tmp;
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 125, outcome.stderr);
+
+      // The capture existed and was quoted — the recorder's copy of it is the
+      // proof, so an empty directory below cannot mean "never created".
+      const log = await recordedLaunchLog(harness);
+      assert(log !== null, "no capture was handed to the outcome recorder");
+      assertStringIncludes(log, refusal);
+
+      // And it did not outlive the launcher: one leaked capture per launch
+      // would fill the host it is meant to keep launching.
+      const leftovers: string[] = [];
+      for await (const entry of Deno.readDir(tmp)) leftovers.push(entry.name);
+      assertEquals(leftovers, []);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test("run.ps1 - the statuses it treats as a refused start are the recorder's own (Issue #720)", async () => {
+  // The launcher cannot import the recorder's list, so it carries a copy —
+  // and a copy nothing checks is a copy that drifts. Pinned in both
+  // directions: a status added to or removed from either side fails here.
+  // Runs everywhere, PowerShell or not: it is the contract that is asserted.
+  const source = await Deno.readTextFile(`${REPO_ROOT}/run.ps1`);
+  const declaration = source.match(
+    /\$ContainerStartExitStatuses = @\(([^)]*)\)/,
+  );
+  assert(
+    declaration,
+    "run.ps1 must name the statuses it treats as a refused container start",
+  );
+  const statuses = (declaration[1] ?? "").split(",").map((status) =>
+    Number(status.trim())
+  );
+  assertEquals(statuses, [...CONTAINER_START_EXIT_CODES]);
 });
 
 // ---------------------------------------------------------------------------
