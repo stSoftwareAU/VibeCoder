@@ -63,9 +63,15 @@ fi
 # disposition, the stub dies silently, and neither the marker nor the status
 # the launcher reports ever appears.
 sleep_pid=""
+stderr_pid=""
 on_term() {
   if [[ -n "\${sleep_pid}" ]]; then
     kill "\${sleep_pid}" 2>/dev/null || true
+  fi
+  # The repeating stderr writer (Issue #720) goes with the stub that started
+  # it: an orphan still holding the launcher's pipe would stall the test.
+  if [[ -n "\${stderr_pid}" ]]; then
+    kill "\${stderr_pid}" 2>/dev/null || true
   fi
   # Only a \`run\` is the container the launcher forwards termination to; the
   # short-lived sub-commands have no marker to write.
@@ -189,6 +195,20 @@ case "\${sub}" in
     # what "streamed, not buffered until exit" means.
     if [[ -n "\${STUB_RUN_STDERR:-}" ]]; then
       printf '%s\\n' "\${STUB_RUN_STDERR}" >&2
+    fi
+    # A container that never stops writing (Issue #720). A launcher that only
+    # looks at its watchdog deadline while the stream is idle would let this
+    # one run past the deadline until it fell quiet, so the repeat is what
+    # makes that regression visible. Bounded at 600 writes, so no writer can
+    # outlive the test that started it - and \`|| break\` ends it the moment
+    # the launcher's pipe is gone.
+    if [[ -n "\${STUB_RUN_STDERR_REPEAT:-}" ]]; then
+      for _ in \$(seq 1 600); do
+        printf '%s\\n' "\${STUB_RUN_STDERR:-[stub] still running}" >&2 ||
+          break
+        sleep "\${STUB_RUN_STDERR_REPEAT}"
+      done &
+      stderr_pid=\$!
     fi
     if [[ -n "\${STUB_RUN_SLEEP:-}" ]]; then
       # Streams detached: when this stub is SIGKILLed (the watchdog path of

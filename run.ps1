@@ -835,6 +835,17 @@ function Wait-ContainerExit {
 
     try {
         while ($true) {
+            # Wall-clock, and tested before anything is read: the deadline is
+            # how long the client may run, not how long it may stay quiet. A
+            # container writing steadily must not be able to postpone its own
+            # reaping - that is the wedge this watchdog exists to end (Issue
+            # #4173). The copy stops here; the reaper's own report is what the
+            # wedge is then documented by.
+            if (-not $Process.HasExited -and
+                $elapsed.ElapsedMilliseconds -ge $DeadlineMs) {
+                break
+            }
+
             if ($null -eq $pending) {
                 $pending = $source.ReadAsync($buffer, 0, $buffer.Length)
             }
@@ -846,8 +857,14 @@ function Wait-ContainerExit {
                     $pending = $null
                 }
             } catch {
-                # A broken pipe is the client's stderr ending, not a launch
-                # failure - there is simply nothing further to copy.
+                # The stream ended in a way this launcher did not choose. Said
+                # aloud rather than swallowed: the capture stops mid-refusal,
+                # and evidence that ends early must not read as evidence that
+                # ended.
+                [Console]::Error.WriteLine(
+                    "[run.ps1] warning: the container's stderr could not be " +
+                    "read to the end ($($_.Exception.Message)) - the " +
+                    "captured evidence is incomplete (Issue #720)")
                 $read = 0
                 $pending = $null
             }
@@ -860,7 +877,6 @@ function Wait-ContainerExit {
                 $console.Flush()
                 $Capture.Write($buffer, 0, $read)
                 $Capture.Flush()
-                continue
             }
 
             if ($Process.HasExited) {
@@ -874,9 +890,6 @@ function Wait-ContainerExit {
                     $truncated = $true
                     break
                 }
-            } elseif ($elapsed.ElapsedMilliseconds -ge $DeadlineMs) {
-                # The wedge: the caller reaps, and the copy stops here.
-                break
             }
         }
     } finally {

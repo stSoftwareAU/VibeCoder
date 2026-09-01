@@ -780,19 +780,78 @@ Deno.test({
 
 Deno.test({
   name:
+    "run.ps1 - keeps reaping a container that outruns the watchdog while it is still writing (Issue #720)",
+  ignore,
+  fn: async () => {
+    // The regression the capture could introduce: the pump is what the
+    // launcher waits in, so a deadline checked only while the stream is idle
+    // would let a chatty container postpone its own reaping indefinitely —
+    // the wedge the watchdog exists to end (Issue #4173).
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_SLEEP: "60",
+      STUB_RUN_STDERR: "[stub] still working",
+      // 600 writes, one every 50ms: the container is still talking well past
+      // the 2s deadline below, and falls quiet ~30s in.
+      STUB_RUN_STDERR_REPEAT: "0.05",
+      STUB_KILL_EXIT: "1",
+      VIBE_CONTAINER_WATCHDOG_SECONDS: "2",
+      VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
+    });
+    try {
+      const started = Date.now();
+      const outcome = await runLauncher(harness);
+      const elapsed = Date.now() - started;
+
+      assertEquals(outcome.code, CONTAINER_WEDGED_EXIT_STATUS, outcome.stderr);
+      assertStringIncludes(outcome.stderr, "watchdog");
+      // The stream really was flowing across the deadline, so the reap was
+      // not merely an idle timeout.
+      assertStringIncludes(outcome.stderr, "[stub] still working");
+      // Reaped on the deadline, not when the container happened to fall
+      // quiet: a launcher that waits out the chatter takes the writer's whole
+      // ~30s, five times this bound.
+      assert(
+        elapsed < 20_000,
+        `the wedge was reaped ${elapsed}ms in, long after the 2s deadline - ` +
+          `the container's own output postponed it`,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "run.ps1 - the stderr capture leaves nothing behind in the temporary directory (Issue #720)",
   ignore,
   fn: async () => {
-    const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+    const refusal = "Error: invalid reference format";
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_EXIT: "125",
+      STUB_RUN_STDERR: refusal,
+    }, { denoStub: true });
     const tmp = `${harness.tmpDir}/tmp`;
     await Deno.mkdir(tmp, { recursive: true });
+    // .NET reads TMPDIR on Unix and TMP/TEMP on Windows; the launcher's
+    // temporary directory is whichever this host uses.
     harness.env.TMPDIR = tmp;
+    harness.env.TMP = tmp;
+    harness.env.TEMP = tmp;
     try {
       const outcome = await runLauncher(harness);
-      assertEquals(outcome.code, 0, outcome.stderr);
+      assertEquals(outcome.code, 125, outcome.stderr);
 
-      // A launcher that leaked a capture per launch would fill the host it is
-      // meant to keep launching.
+      // The capture existed and was quoted — the recorder's copy of it is the
+      // proof, so an empty directory below cannot mean "never created".
+      const log = await recordedLaunchLog(harness);
+      assert(log !== null, "no capture was handed to the outcome recorder");
+      assertStringIncludes(log, refusal);
+
+      // And it did not outlive the launcher: one leaked capture per launch
+      // would fill the host it is meant to keep launching.
       const leftovers: string[] = [];
       for await (const entry of Deno.readDir(tmp)) leftovers.push(entry.name);
       assertEquals(leftovers, []);
@@ -800,6 +859,25 @@ Deno.test({
       await harness.cleanup();
     }
   },
+});
+
+Deno.test("run.ps1 - the statuses it treats as a refused start are the recorder's own (Issue #720)", async () => {
+  // The launcher cannot import the recorder's list, so it carries a copy —
+  // and a copy nothing checks is a copy that drifts. Pinned in both
+  // directions: a status added to or removed from either side fails here.
+  // Runs everywhere, PowerShell or not: it is the contract that is asserted.
+  const source = await Deno.readTextFile(`${REPO_ROOT}/run.ps1`);
+  const declaration = source.match(
+    /\$ContainerStartExitStatuses = @\(([^)]*)\)/,
+  );
+  assert(
+    declaration,
+    "run.ps1 must name the statuses it treats as a refused container start",
+  );
+  const statuses = (declaration[1] ?? "").split(",").map((status) =>
+    Number(status.trim())
+  );
+  assertEquals(statuses, [...CONTAINER_START_EXIT_CODES]);
 });
 
 // ---------------------------------------------------------------------------
