@@ -46,6 +46,7 @@ import {
   CLAUDE_PROVIDER_ID,
 } from "../lib/agent_provider.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
+import { readDeploymentImageSelection } from "../lib/container_image_selection.ts";
 import {
   type ContainerRuntimeDescriptor,
   type ContainerRuntimeProbe,
@@ -528,7 +529,13 @@ export async function checkContainerPrerequisites(
   const repoRoot = resolved.repoRoot ?? defaultRepoRoot();
   let image: string;
   try {
-    image = await resolveContainerImageReference(repoRoot);
+    // The deployment's own selections, exactly as the launcher reads them:
+    // without them this check names a tag no host that selects tools or
+    // providers ever builds, and reports a built image as missing (#743).
+    image = await resolveContainerImageReference(
+      repoRoot,
+      (await readDeploymentImageSelection({ repoRoot })).options,
+    );
   } catch (error) {
     return [runtimeResult, {
       ok: false,
