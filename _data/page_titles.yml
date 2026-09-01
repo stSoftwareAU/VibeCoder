@@ -290,3 +290,7 @@ docs/SPEC-KIT-COMPARISON.md:
 docs/REFERENCES.md:
   title: "Vibe Coder: References"
   page_icon: "📚"
+
+docs/RETRO-SCAN.md:
+  title: "Vibe Coder: Retro Scan"
+  page_icon: "🔁"
