@@ -88,9 +88,16 @@ The schema is one object, every field required:
 
 **Where the versions come from.** `worker/deno/mod.ts release-manifest
 --release <tag>` prints the manifest on stdout, resolving each version through
-`resolveDynamicVersions()` — the same release-age gate an unpinned update goes
-through. What a release records is therefore exactly what dynamic mode would
-have installed when the release was minted, not merely upstream's newest.
+`resolveQuarantineClearedVersions()` — the same release-age gate an unpinned
+update goes through, asked for the **newest release that has already cleared
+the 24h quarantine window** (Issue #726). What a release records is therefore a
+version a host may install today, not merely upstream's newest.
+
+Reading the newest release alone made the step fail on nearly every merge: the
+Claude CLI publishes several times a day, so its newest release is almost
+always inside the window, and an all-or-nothing manifest published nothing at
+all. The window is untouched — a release inside it is still never recorded; the
+manifest now names the newest release outside it.
 
 The shape, the generator and the parser share one definition in
 `worker/deno/lib/release_manifest.ts`, so every reader validates the asset the
@@ -114,11 +121,16 @@ with.
 
 ### The rules
 
-- **All-or-nothing.** A tool whose version cannot be resolved — or that the
-  release-age gate reports ineligible — fails the step naming that tool, and
-  nothing is published. A manifest naming two tools out of three would let a
-  host silently drift on the third, the failure mode `pinned_tool_versions`
+- **All-or-nothing.** A tool whose version cannot be resolved — or that has no
+  release at all past the quarantine window — fails the step naming that tool,
+  and nothing is published. A manifest naming two tools out of three would let
+  a host silently drift on the third, the failure mode `pinned_tool_versions`
   being all-or-nothing already guards against (Issue #622).
+- **Quarantine-cleared, not merely newest.** A release still inside the 24h
+  window is never recorded; the newest release *outside* it is (Issue #726).
+  Only stable `MAJOR.MINOR.PATCH` releases are candidates — pre-releases,
+  drafts and unpublished npm versions are not part of the series a host
+  installs from.
 - **Strict on the way back in.** The parser rejects malformed JSON, a missing
   or non-semver version, an unknown tool key and a partial manifest. A reader
   never acts on half a manifest.
@@ -175,10 +187,10 @@ workflow — the second attempt sees it and either skips or mints the next
 number), and a token without `contents: write` (check the job-level
 `permissions:` block).
 
-A red **manifest** step names the tool it could not record — usually a release
-inside the 24-hour quarantine window, or an upstream lookup that failed. The
-tag is already minted by then, so re-running the workflow on the same commit
-publishes the manifest against that tag once the tool resolves.
+A red **manifest** step names the tool it could not record — an upstream lookup
+that failed, or a tool with no release at all past the 24-hour quarantine
+window. The tag is already minted by then, so re-running the workflow on the
+same commit publishes the manifest against that tag once the tool resolves.
 
 ## Tests
 
@@ -194,4 +206,8 @@ publishes the manifest against that tag once the tool resolves.
   newest-release selection, the pin comparison (including the incomparable
   commit-SHA pin) and the manifest lookup, over injected `gh` responses.
 - `worker/deno/tests/release_manifest_command_test.ts` — the
-  `release-manifest` command, over a stubbed release-age gate.
+  `release-manifest` command, over a stubbed release-age gate, including the
+  quarantined-latest release the manifest now falls back from (Issue #726).
+- `worker/deno/tests/tool_release_age_test.ts` — the quarantine window itself,
+  including the release-history parsing and the newest-aged selection the
+  fallback rests on.
