@@ -116,7 +116,13 @@ background service is offered, where files land — is covered in
      collaborator on every monitored repository, filing an issue where it is
      not.
    - `branch-protection-sync` — applies the default-branch ruleset to every
-     monitored repository.
+     monitored repository, then reports each repository's `milestone/**`
+     ruleset. On a terminal it offers to create a missing one, mirroring the
+     default-branch checks — but only when an answer could change something
+     (Issue #678). It stays quiet when a `milestone/**` ruleset already exists,
+     says so and asks nothing when there is no default-branch gate to mirror
+     (nothing could be created), and warns with the read error — never
+     "missing" — when the repository's rulesets cannot be read at all.
    - `backfill-idle-task-labels` — adds the `idle-task` label to existing
      security-scan wrapper issues that lack it; already-labelled wrappers are
      not touched again.

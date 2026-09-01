@@ -363,21 +363,18 @@ Deno.test("createMilestoneRuleset - a 404 is explained as a permission problem (
   assertStringIncludes(result.error.message, "'write', which is not enough");
 });
 
-Deno.test("setup_cli - the ruleset write uses the operator's credentials, not the service account's", async () => {
-  // The service-account gh config holds `write`; creating a ruleset needs
-  // admin. Passing `ghConfigDir` here is what produced the 404 storm.
-  const source = await Deno.readTextFile(
-    new URL("../setup/setup_cli.ts", import.meta.url),
-  );
-  const createIndex = source.indexOf("await createMilestoneRuleset(");
-  assert(createIndex !== -1, "setup must still offer to create the ruleset");
-  const call = source.slice(createIndex, createIndex + 200);
-  assertStringIncludes(call, "createSetupGhJson()");
-  assert(
-    !/createSetupGhJson\(ghConfigDir\)/.test(call),
-    "the create must not run as the service account (Issue #595)",
-  );
-});
+// The Issue #595 property — the ruleset write runs as the OPERATOR, never as
+// the service account — was asserted here by reading `setup_cli.ts` as text
+// and grepping the call site for `createSetupGhJson()`. That test verified
+// nothing executable and broke on any refactor of the surrounding code: Issue
+// #678 moved the call into `reportMilestoneRuleset`, and it kept passing only
+// because the literal happened to stay inside its 200-character window.
+//
+// It is replaced by a test that RUNS the code and asserts which identity the
+// write was issued under:
+//   tests/milestone_ruleset_read_test.ts
+//     :: reportMilestoneRuleset - answering yes creates under the OPERATOR identity
+// Coverage of the property is retained; only the source-text assertion is gone.
 
 // ---------------------------------------------------------------------------
 // The default branch (Issue #553). "Auto-merge not set, apparently at random"

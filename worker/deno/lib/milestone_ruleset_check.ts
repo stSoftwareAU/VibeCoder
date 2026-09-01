@@ -95,6 +95,7 @@ export interface MilestoneRulesetFinding {
     | "ruleset-disabled"
     | "unreportable-checks"
     | "no-automerge-gate"
+    | "ruleset-read-failed"
     | "configured";
   message: string;
 }
@@ -350,6 +351,43 @@ export function assessMilestoneRuleset(
 /** `gh` executor seam, matching `repo_rulesets.ts`. */
 export type GhJson = (args: string[], stdin?: string) => Promise<string>;
 
+/** Outcome of reading a repository's rulesets. */
+export type RulesetRead =
+  | { ok: true; rulesets: RulesetDetail[] }
+  | { ok: false; error: Error };
+
+/** The message of a thrown value, whatever it is. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A ruleset summary as the LIST endpoint returns it. */
+interface RulesetSummary {
+  id?: number;
+  /** `Repository` for the repo's own rulesets, `Organization` for inherited. */
+  source_type?: string;
+  /** The org login, or `owner/repo`, the ruleset is defined on. */
+  source?: string;
+}
+
+/**
+ * The API path that serves one ruleset's detail.
+ *
+ * The list endpoint includes rulesets INHERITED from the organisation, and
+ * those are not addressable under the repository: GitHub serves an org-level
+ * ruleset from `/orgs/{org}/rulesets/{id}` and answers the repository path for
+ * the same id with 404. Reading every id from the repository path therefore
+ * failed the whole read on any repo whose organisation defines a ruleset —
+ * which, now that a failed read is loud (Issue #678), would warn on every run
+ * about a repository whose `milestone/**` ruleset is present and readable.
+ */
+function rulesetDetailPath(repo: string, summary: RulesetSummary): string {
+  if (summary.source_type === "Organization" && summary.source) {
+    return `orgs/${summary.source}/rulesets/${summary.id}`;
+  }
+  return `repos/${repo}/rulesets/${summary.id}`;
+}
+
 /**
  * Read every ruleset on the repository in DETAIL shape.
  *
@@ -357,34 +395,110 @@ export type GhJson = (args: string[], stdin?: string) => Promise<string>;
  * so each ruleset is fetched by id — the only shape that can answer whether
  * the branch is gated and whether the service account can still push it.
  *
- * @returns The rulesets, or an empty list when they cannot be read (setup
- *   warns about what it can see; it does not fail the run over a read).
+ * A read that FAILS is reported as a failure, never as an empty repository
+ * (Issue #678). Reading rulesets needs administration access on some
+ * repositories and GitHub answers a read it will not serve with 404, so
+ * swallowing the error made "cannot see it" look exactly like "it is not
+ * there" — which is how setup kept offering to create a ruleset that already
+ * existed. The same reasoning covers a single unreadable ruleset, an empty
+ * response body and a summary carrying no id: each could be the milestone
+ * ruleset, so the whole read fails rather than quietly omitting one.
+ *
+ * @returns The rulesets, or the error that stopped them being read.
  */
-export async function fetchRulesetDetails(
+export async function readRulesetDetails(
   repo: string,
   ghFn: GhJson,
-): Promise<RulesetDetail[]> {
-  let summaries: Array<{ id?: number }> = [];
+): Promise<RulesetRead> {
+  let summaries: RulesetSummary[];
   try {
     const raw = await ghFn(["api", `repos/${repo}/rulesets`]);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(parsed)) summaries = parsed;
-  } catch {
-    return [];
+    // An empty body is not an empty list: `gh` prints nothing when it could
+    // not serve the read, and reading that as "no rulesets" is the same
+    // silent failure this function exists to remove (Issue #678).
+    if (!raw.trim()) {
+      return {
+        ok: false,
+        error: new Error(
+          "could not read the repository's rulesets: the list endpoint " +
+            "answered with an empty body",
+        ),
+      };
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return {
+        ok: false,
+        error: new Error(
+          "could not read the repository's rulesets: the list endpoint " +
+            "answered with something that is not a list of rulesets",
+        ),
+      };
+    }
+    summaries = parsed;
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `could not read the repository's rulesets: ${messageOf(error)}`,
+      ),
+    };
   }
 
-  const details: RulesetDetail[] = [];
+  const rulesets: RulesetDetail[] = [];
   for (const summary of summaries) {
-    if (typeof summary.id !== "number") continue;
+    if (typeof summary.id !== "number") {
+      return {
+        ok: false,
+        error: new Error(
+          "could not read the repository's rulesets: the list endpoint " +
+            "returned a ruleset with no id, which cannot be fetched",
+        ),
+      };
+    }
+    const path = rulesetDetailPath(repo, summary);
     try {
-      const raw = await ghFn(["api", `repos/${repo}/rulesets/${summary.id}`]);
-      if (raw) details.push(JSON.parse(raw) as RulesetDetail);
-    } catch {
-      // A ruleset that cannot be read is reported by its absence, not by a
-      // throw: setup's job here is to warn, never to fail.
+      const raw = await ghFn(["api", path]);
+      if (!raw.trim()) {
+        return {
+          ok: false,
+          error: new Error(
+            `could not read ruleset ${summary.id}: the response was empty`,
+          ),
+        };
+      }
+      rulesets.push(JSON.parse(raw) as RulesetDetail);
+    } catch (error) {
+      return {
+        ok: false,
+        error: new Error(
+          `could not read ruleset ${summary.id}: ${messageOf(error)}`,
+        ),
+      };
     }
   }
-  return details;
+  return { ok: true, rulesets };
+}
+
+/**
+ * The finding for a ruleset state that could not be read (Issue #678).
+ *
+ * Says plainly that nothing is known, so no caller mistakes it for "the
+ * ruleset is missing" and offers to create one.
+ */
+export function rulesetReadFailedFinding(
+  error: Error,
+): MilestoneRulesetFinding {
+  return {
+    severity: "warning",
+    code: "ruleset-read-failed",
+    message: `${error.message}. Setup cannot tell which branches are gated, ` +
+      `so it reports nothing further here and does not offer to create the ` +
+      `\`milestone/**\` ruleset — an unreadable state is never reported as ` +
+      `missing (Issue #678). Check that the identity setup reads with can ` +
+      `read this repository's rulesets; on some repositories that needs ` +
+      `admin.`,
+  };
 }
 
 /**
@@ -417,18 +531,31 @@ export async function fetchServiceAccountPermission(
  *
  * Read-only: two `gh` reads per ruleset plus one permission read, at setup
  * time only — the same budget discipline `branch_protection_sync.ts` documents.
+ * A caller that has already read the rulesets passes them in and spends none
+ * of that budget twice.
+ *
+ * @returns The findings, or a single `ruleset-read-failed` warning when the
+ *   rulesets could not be read — never a "missing ruleset" claim built on a
+ *   read that failed (Issue #678).
  */
 export async function checkMilestoneRuleset(
   repo: string,
   login: string,
   ghFn: GhJson,
+  options: { rulesets?: readonly RulesetDetail[] } = {},
 ): Promise<MilestoneRulesetFinding[]> {
-  const [rulesets, permission, reportedChecks] = await Promise.all([
-    fetchRulesetDetails(repo, ghFn),
+  const [read, permission, reportedChecks] = await Promise.all([
+    options.rulesets
+      ? Promise.resolve<RulesetRead>({
+        ok: true,
+        rulesets: [...options.rulesets],
+      })
+      : readRulesetDetails(repo, ghFn),
     fetchServiceAccountPermission(repo, login, ghFn),
     fetchMilestonePrCheckNames(repo, ghFn),
   ]);
-  return assessMilestoneRuleset(rulesets, {
+  if (!read.ok) return [rulesetReadFailedFinding(read.error)];
+  return assessMilestoneRuleset(read.rulesets, {
     login,
     ...(permission !== undefined ? { permission } : {}),
   }, reportedChecks);
@@ -495,6 +622,61 @@ export type CreateMilestoneResult =
   | { ok: true; created: false; reason: string }
   | { ok: false; error: Error };
 
+/** What creating the `milestone/**` ruleset would do, decided without writing. */
+export type MilestoneRulesetPlan =
+  /** A ruleset already covers `milestone/**` — there is nothing to create. */
+  | { kind: "covered" }
+  /** It can be created, mirroring `mirror`'s required contexts. */
+  | { kind: "creatable"; contexts: string[]; mirror: RulesetDetail }
+  /** It cannot be created, and `reason` says why an answer would not help. */
+  | { kind: "not-creatable"; reason: string };
+
+/**
+ * Decide what a create would do, without writing anything (Issue #678).
+ *
+ * Setup asks the operator whether to create the ruleset, and a question whose
+ * only possible outcome is a refusal must never be asked: on a repository
+ * whose default branch takes direct pushes there is no gate to mirror, so
+ * answering yes creates nothing and the same question returns on every run.
+ * This is the predicate that stops that, and the one {@link
+ * createMilestoneRuleset} writes from — one decision, one place.
+ *
+ * @param rulesets - Every ruleset on the repository, in detail shape.
+ */
+export function planMilestoneRuleset(
+  rulesets: readonly RulesetDetail[],
+): MilestoneRulesetPlan {
+  if (rulesets.some(coversMilestoneBranches)) return { kind: "covered" };
+
+  // Mirror the default-branch gate rather than invent one.
+  const mirror = rulesets.find((r) =>
+    (r.conditions?.ref_name?.include ?? []).some((pattern) =>
+      pattern === "~DEFAULT_BRANCH" || pattern.startsWith("refs/heads/")
+    ) &&
+    (r.rules ?? []).some((rule) =>
+      rule.type === "required_status_checks" &&
+      (rule.parameters?.required_status_checks ?? []).length > 0
+    )
+  );
+  if (!mirror) {
+    return {
+      kind: "not-creatable",
+      reason:
+        "no existing ruleset requires status checks, so there is no check set " +
+        "to mirror — a guessed one would block every milestone PR on a " +
+        "context that never reports",
+    };
+  }
+
+  const contexts = (mirror.rules ?? [])
+    .filter((rule) => rule.type === "required_status_checks")
+    .flatMap((rule) => rule.parameters?.required_status_checks ?? [])
+    .map((check) => check.context)
+    .filter((context): context is string => typeof context === "string");
+
+  return { kind: "creatable", contexts, mirror };
+}
+
 /**
  * Create the `milestone/**` ruleset, mirroring the repository's own
  * default-branch gate.
@@ -520,38 +702,24 @@ export async function createMilestoneRuleset(
     bypassActors?: RulesetBypassActorBody[];
   } = {},
 ): Promise<CreateMilestoneResult> {
-  const rulesets = options.rulesets ?? await fetchRulesetDetails(repo, ghFn);
+  let rulesets = options.rulesets;
+  if (!rulesets) {
+    // A read that failed must never be mistaken for "nothing covers
+    // `milestone/**`" — that would create a second, conflicting ruleset
+    // (Issue #678).
+    const read = await readRulesetDetails(repo, ghFn);
+    if (!read.ok) return { ok: false, error: read.error };
+    rulesets = read.rulesets;
+  }
 
-  if (rulesets.some(coversMilestoneBranches)) {
+  const plan = planMilestoneRuleset(rulesets);
+  if (plan.kind === "covered") {
     return { ok: true, created: false, reason: "already covered" };
   }
-
-  // Mirror the default-branch gate rather than invent one.
-  const defaultBranchRuleset = rulesets.find((r) =>
-    (r.conditions?.ref_name?.include ?? []).some((pattern) =>
-      pattern === "~DEFAULT_BRANCH" || pattern.startsWith("refs/heads/")
-    ) &&
-    (r.rules ?? []).some((rule) =>
-      rule.type === "required_status_checks" &&
-      (rule.parameters?.required_status_checks ?? []).length > 0
-    )
-  );
-  if (!defaultBranchRuleset) {
-    return {
-      ok: true,
-      created: false,
-      reason:
-        "no existing ruleset requires status checks, so there is no check set " +
-        "to mirror — a guessed one would block every milestone PR on a " +
-        "context that never reports",
-    };
+  if (plan.kind === "not-creatable") {
+    return { ok: true, created: false, reason: plan.reason };
   }
-
-  const contexts = (defaultBranchRuleset.rules ?? [])
-    .filter((rule) => rule.type === "required_status_checks")
-    .flatMap((rule) => rule.parameters?.required_status_checks ?? [])
-    .map((check) => check.context)
-    .filter((context): context is string => typeof context === "string");
+  const { contexts, mirror: defaultBranchRuleset } = plan;
 
   const bypassActors = options.bypassActors ??
     (defaultBranchRuleset.bypass_actors ?? [])
