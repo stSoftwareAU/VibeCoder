@@ -54,6 +54,8 @@ flowchart LR
 - The GitHub, Anthropic (or other provider) credentials you will type into the
   session. **Nothing goes in the template**: it carries no credential, and
   neither does the user data.
+- Outbound access is limited to HTTPS, HTTP, DNS and NTP — there is no
+  outbound SSH, so `gh` and `git` must authenticate over HTTPS.
 
 ## Launch
 
@@ -110,13 +112,18 @@ The bar is the full cycle, not just a green setup. Run it in order:
 #    the podman branch)
 deno run --allow-run --allow-env worker/deno/mod.ts container-runtime-detect
 
-# 2. Authenticate the tooling interactively — these credentials are typed
-#    here, never baked into the template
+# 2. Authenticate GitHub. Choose HTTPS when asked: the host has no outbound
+#    SSH, so a git-over-SSH remote would hang.
 gh auth login
-claude   # sign in, then exit
 
-# 3. One-time setup
-./setup.sh < /dev/null
+# 3. One-time setup — run it on the session's terminal with no stdin
+#    redirect. Every credential and configuration prompt is behind a TTY
+#    check, so `./setup.sh < /dev/null` would skip all of them and step 4
+#    would then exit on the missing configuration. Setup offers to run
+#    `claude setup-token` for the long-lived OAuth token the containerised
+#    worker reads, and asks for the monitored repositories and the allowed
+#    author.
+./setup.sh
 
 # 4. Launch: builds the worker image with podman, then starts the container
 ./run.sh

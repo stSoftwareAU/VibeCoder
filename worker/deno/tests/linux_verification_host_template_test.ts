@@ -78,6 +78,26 @@ function resourcesOfType(type: string): Map<string, Node> {
   return found;
 }
 
+/**
+ * Every value stored under `key` anywhere in the parsed template.
+ *
+ * Templates nest — a property can sit under a resource, a list item, or an
+ * intrinsic — so a question like "is a key pair configured anywhere?" is asked
+ * of the parsed model at any depth rather than of the file's characters.
+ */
+export function valuesOfKey(node: unknown, key: string): unknown[] {
+  if (Array.isArray(node)) {
+    return node.flatMap((item) => valuesOfKey(item, key));
+  }
+  if (typeof node !== "object" || node === null) return [];
+  const found: unknown[] = [];
+  for (const [name, value] of Object.entries(node as Node)) {
+    if (name === key) found.push(value);
+    found.push(...valuesOfKey(value, key));
+  }
+  return found;
+}
+
 /** The single resource of `type` — the template declares exactly one. */
 function soleResource(type: string): Node {
   const found = resourcesOfType(type);
@@ -86,8 +106,9 @@ function soleResource(type: string): Node {
 }
 
 // ---------------------------------------------------------------------------
-// Fn::Sub helpers — exported so they are exercised directly below, and so the
-// artefact tests and the unit tests share one implementation.
+// Fn::Sub and script helpers. Each is exported so it is addressable on its own
+// and is covered by unit tests over synthetic inputs below, as well as being
+// used by the artefact tests further down.
 // ---------------------------------------------------------------------------
 
 /**
@@ -158,6 +179,32 @@ const PSEUDO_PARAMETERS: Record<string, string> = {
   "AWS::URLSuffix": "amazonaws.com",
 };
 
+/**
+ * Package names an `apt-get install` line in `script` installs — flags and
+ * the command itself dropped, so the assertion is about the package set and
+ * not about how the line happens to be written.
+ */
+export function aptPackages(script: string): string[] {
+  const packages: string[] = [];
+  for (const match of script.matchAll(/apt-get\s+install\s+([^\n]*)/g)) {
+    for (const token of (match[1] ?? "").trim().split(/\s+/)) {
+      if (token && !token.startsWith("-")) packages.push(token);
+    }
+  }
+  return packages;
+}
+
+/**
+ * The script up to and including its `trap` line: the options, the failure
+ * handler and the trap that arms it, with nothing that touches the host.
+ */
+export function scriptPrelude(script: string): string {
+  const lines = script.split("\n");
+  const trapIndex = lines.findIndex((line) => line.trim().startsWith("trap "));
+  assert(trapIndex >= 0, "the bootstrap should install an ERR trap");
+  return lines.slice(0, trapIndex + 1).join("\n");
+}
+
 function userDataScript(): string {
   const instance = soleResource("AWS::EC2::Instance");
   const script = extractUserDataScript(instance.UserData);
@@ -168,9 +215,32 @@ function userDataScript(): string {
   return script;
 }
 
+/** The UserData script as CloudFormation would render it on the host. */
+function renderedUserData(overrides: Record<string, string> = {}): string {
+  return renderSubScript(userDataScript(), {
+    ...parameterDefaults(),
+    ...PSEUDO_PARAMETERS,
+    ...overrides,
+  });
+}
+
 // ---------------------------------------------------------------------------
-// Unit tests for the Fn::Sub helpers
+// Unit tests for the script helpers
 // ---------------------------------------------------------------------------
+
+Deno.test("aptPackages lists installed packages and drops flags", () => {
+  assertEquals(
+    aptPackages("apt-get update\napt-get install -y git podman\n"),
+    ["git", "podman"],
+  );
+  assertEquals(aptPackages("apt-get update"), []);
+});
+
+Deno.test("scriptPrelude stops at the trap that arms the failure handler", () => {
+  const script =
+    "set -e\nfail() { :; }\ntrap 'fail' ERR\napt-get install -y git";
+  assertEquals(scriptPrelude(script), "set -e\nfail() { :; }\ntrap 'fail' ERR");
+});
 
 Deno.test("substitutionNames lists template substitutions and skips shell escapes", () => {
   const script = 'echo "${AutoStopHours}" "${!HOME}" "${AWS::StackName}"';
@@ -221,10 +291,9 @@ Deno.test("template parses and declares the CloudFormation format version", () =
 });
 
 Deno.test("access is SSM only: no key pair and no inbound rule anywhere", () => {
-  const raw = read(TEMPLATE_PATH);
   assertEquals(
-    raw.includes("KeyName"),
-    false,
+    valuesOfKey(template(), "KeyName"),
+    [],
     "a key pair would be a second way in — SSM Session Manager is the only access path",
   );
   assertEquals(
@@ -282,10 +351,16 @@ Deno.test("the instance profile grants the SSM managed policy and nothing wider"
     undefined,
     "no inline policy: the host needs nothing beyond SSM core",
   );
+  // Walk the parsed template rather than its characters, so a wildcard
+  // survives no spelling — "*", ['*'], or a block sequence.
+  const grants = [
+    ...valuesOfKey(template(), "Action"),
+    ...valuesOfKey(template(), "Resource"),
+  ].flatMap((value) => Array.isArray(value) ? value : [value]);
   assertEquals(
-    read(TEMPLATE_PATH).includes('Action: "*"'),
-    false,
-    "no wildcard IAM action",
+    grants.filter((grant) => grant === "*"),
+    [],
+    "no wildcard IAM action or resource",
   );
 });
 
@@ -374,10 +449,7 @@ Deno.test("every UserData substitution resolves to a declared parameter or pseud
 });
 
 Deno.test("the rendered UserData script is valid bash", async () => {
-  const rendered = renderSubScript(userDataScript(), {
-    ...parameterDefaults(),
-    ...PSEUDO_PARAMETERS,
-  });
+  const rendered = renderedUserData();
   const check = new Deno.Command("bash", {
     args: ["-n", "-"],
     stdin: "piped",
@@ -397,52 +469,119 @@ Deno.test("the rendered UserData script is valid bash", async () => {
   );
 });
 
-Deno.test("the UserData script fails loud rather than booting a half-built host", () => {
-  const script = userDataScript();
-  assertStringIncludes(script, "set -euo pipefail");
-  assertStringIncludes(script, "trap");
-  assertStringIncludes(
-    script,
-    "FAILED",
-    "a failed bootstrap must leave a status an operator can read over SSM",
-  );
-});
-
-Deno.test("the UserData script installs the launcher prerequisites and clones the checkout", () => {
-  const script = userDataScript();
-  for (
-    const needle of [
-      "podman",
-      "git",
-      "gh",
-      "https://deno.land/install.sh",
-      "https://claude.ai/install.sh",
-      "git clone",
-      "${VibeCoderRepositoryUrl}",
-    ]
-  ) {
-    assertStringIncludes(script, needle);
+Deno.test("a failing bootstrap step records FAILED instead of carrying on", async () => {
+  // Run the script's own prelude — its options, its fail() and its ERR trap —
+  // against a failing command, with the status and log paths redirected into a
+  // temporary directory. This exercises the fail-loud machinery rather than
+  // asserting that the words are present in the file.
+  const directory = await Deno.makeTempDir({ prefix: "vibe-bootstrap-" });
+  try {
+    const prelude = scriptPrelude(renderedUserData()).replaceAll(
+      "/var/log/vibe-bootstrap",
+      `${directory}/vibe-bootstrap`,
+    );
+    const result = await new Deno.Command("bash", {
+      args: ["-c", `${prelude}\nfalse\necho "OK" > "$STATUS"\n`],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(
+      result.success,
+      false,
+      "the failing step must abort the bootstrap",
+    );
+    const status = await Deno.readTextFile(
+      `${directory}/vibe-bootstrap.status`,
+    );
+    assertStringIncludes(
+      status,
+      "FAILED",
+      "a failed bootstrap must leave a status an operator can read over SSM",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
   }
 });
 
-Deno.test("the UserData script schedules the parameterised auto-stop", () => {
+Deno.test("the UserData script installs the launcher prerequisites and clones the checkout", () => {
+  const packages = aptPackages(renderedUserData());
+  for (const required of ["git", "gh", "jq", "podman", "unzip"]) {
+    assert(
+      packages.includes(required),
+      `the bootstrap should install ${required}; it installs ${
+        packages.join(", ")
+      }`,
+    );
+  }
   const script = userDataScript();
-  assertStringIncludes(script, "${AutoStopHours}");
-  assertStringIncludes(script, "shutdown");
+  assertStringIncludes(script, "https://deno.land/install.sh");
+  assertStringIncludes(script, "https://claude.ai/install.sh");
+  assertStringIncludes(script, "git clone ${VibeCoderRepositoryUrl}");
+});
+
+Deno.test("the bootstrap proves each prerequisite runs before it reports OK", () => {
+  const lines = renderedUserData().split("\n").map((line) => line.trim());
+  const okIndex = lines.findIndex((line) => line.startsWith('echo "OK"'));
+  assert(okIndex > 0, "the bootstrap should record a final OK status");
+  const beforeOk = lines.slice(0, okIndex).join("\n");
+  for (const tool of ["podman", "git", "gh", "deno", "claude"]) {
+    assertStringIncludes(
+      beforeOk,
+      `${tool} --version`,
+      `OK must mean ${tool} actually runs, not that its installer did not obviously fail`,
+    );
+  }
+});
+
+Deno.test("every piped installer sets pipefail inside its own shell", () => {
+  // runuser starts a fresh login shell, so the outer `set -o pipefail` does
+  // not apply: without this, a failed download exits 0 through the
+  // interpreter and the bootstrap continues as though it had worked.
+  for (const line of renderedUserData().split("\n")) {
+    if (!line.includes("runuser") || !line.includes("|")) continue;
+    assertStringIncludes(
+      line,
+      "set -o pipefail",
+      `unguarded pipeline: ${line.trim()}`,
+    );
+  }
+});
+
+Deno.test("the auto-stop delay is computed from the parameter, in minutes", async () => {
+  const cases: [string, string][] = [["3", "+180"], ["8", "+480"]];
+  for (const [hours, expected] of cases) {
+    const rendered = renderedUserData({ AutoStopHours: hours });
+    const line = rendered.split("\n").map((l) => l.trim()).find((l) =>
+      l.startsWith("shutdown ")
+    );
+    assert(line !== undefined, "the bootstrap should schedule a shutdown");
+    // Evaluate the real command line with `shutdown` stubbed out, so the
+    // arithmetic is checked as bash would compute it.
+    const result = await new Deno.Command("bash", {
+      args: ["-c", `shutdown() { printf '%s' "$2"; }\n${line}`],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(
+      new TextDecoder().decode(result.stdout),
+      expected,
+      `AutoStopHours=${hours} should stop the host after ${expected} minutes`,
+    );
+  }
 });
 
 Deno.test("podman is left stock so the known environment faults still reproduce", () => {
-  const raw = read(TEMPLATE_PATH);
+  const script = renderedUserData();
   for (const patch of ["registries.conf", "short-name-mode"]) {
     assertEquals(
-      raw.includes(patch),
+      script.includes(patch),
       false,
       `pre-patching ${patch} would hide the podman faults this host exists to reproduce (Issue #722)`,
     );
   }
   assertEquals(
-    /\bdocker\.io\/|install -y docker/.test(raw),
-    false,
+    aptPackages(script).filter((name) => name.startsWith("docker")),
+    [],
     "only podman is installed, so the launcher's podman branch is the path exercised",
   );
 });

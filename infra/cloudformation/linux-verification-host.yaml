@@ -287,13 +287,19 @@ Resources:
 
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
-            apt-get install -y curl ca-certificates git gh jq podman uidmap
+            # unzip is not decoration: the Deno installer aborts without it.
+            apt-get install -y curl ca-certificates git gh jq podman uidmap unzip
 
             # Deno and the coding-agent CLI have no distribution package; the
             # upstream installers are the documented path. Both install under
             # the ubuntu user's home, never as root.
-            runuser -l ubuntu -c 'curl -fsSL https://deno.land/install.sh | sh'
-            runuser -l ubuntu -c 'curl -fsSL https://claude.ai/install.sh | bash'
+            #
+            # `set -o pipefail` is repeated inside each login shell on purpose:
+            # the outer shell's options do not cross runuser, so without it a
+            # failed download exits 0 through the interpreter and the bootstrap
+            # would carry on as though the install had worked.
+            runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://deno.land/install.sh | sh'
+            runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
 
             cat > /etc/profile.d/vibe-verification.sh <<'PROFILE'
             # Deno and the coding-agent CLI install under the user's home.
@@ -307,11 +313,21 @@ Resources:
             # user lingers.
             loginctl enable-linger ubuntu
 
+            # Positively confirm every prerequisite before the status file says
+            # OK. "The installer did not obviously fail" is not success: each
+            # binary has to run, in the same login shell the operator will get,
+            # or the ERR trap records FAILED instead.
+            runuser -l ubuntu -c 'podman --version'
+            runuser -l ubuntu -c 'git --version'
+            runuser -l ubuntu -c 'gh --version'
+            runuser -l ubuntu -c 'deno --version'
+            runuser -l ubuntu -c 'claude --version'
+            test -d "$RUNTIME/.git"
+
             # Auto-stop. Not re-armed by a later boot: cloud-init runs the
             # user data once, so a restarted instance needs the shutdown
             # scheduling again by hand (the guide says so).
-            shutdown -h "+$(( ${AutoStopHours} * 60 ))" \
-              "Vibe Coder verification host auto-stop after ${AutoStopHours}h"
+            shutdown -h "+$(( ${AutoStopHours} * 60 ))" "Vibe Coder verification host auto-stop"
 
             echo "OK" > "$STATUS"
 
