@@ -147,6 +147,10 @@ docs/DEPLOYMENT.md:
   title: "Vibe Coder: Deployment Guide"
   page_icon: "📦"
 
+docs/EC2-LINUX-VERIFICATION.md:
+  title: "Vibe Coder: Linux Verification Host"
+  page_icon: "🐧"
+
 docs/CONTAINER.md:
   title: "Vibe Coder: Container Image"
   page_icon: "🐳"
