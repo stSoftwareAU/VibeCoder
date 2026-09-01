@@ -23,6 +23,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { reviewBlockTemplateLines } from "./review_block_template.ts";
+
 /** Statuses a criterion may be closed out with. */
 export type CriterionStatus = "met" | "partial" | "missing";
 
@@ -283,6 +285,12 @@ export function validateAcceptanceClosure(opts: {
  *
  * Names every rule broken and restates the required shape, so the next attempt
  * can fix the summary without re-deriving the format.
+ *
+ * The shape printed is `REVIEW_BLOCK_TEMPLATE`, the same block the
+ * independent-review gate prints, including its `## Standards Review` half:
+ * that gate runs immediately after this one at the same chokepoint, so a
+ * criteria block written from a template it rejects only trades one block for
+ * the next (Issue #751).
  */
 export function buildClosureGateComment(
   result: AcceptanceClosureResult,
@@ -297,16 +305,10 @@ export function buildClosureGateComment(
     "",
     "Add a `## Acceptance Criteria` block to " +
     "`docs/archive/pr-summaries/pr-summary-<issue>.md` with one entry per " +
-    "criterion, in this shape:",
+    "criterion, in this shape — the `## Standards Review` half is printed with " +
+    "it because the independent-review gate runs next and blocks a criteria " +
+    "block raised without it:",
     "",
-    "```markdown",
-    "## Acceptance Criteria",
-    "",
-    "- **met** — <criterion> — evidence: `tests/foo_test.ts::does the thing`",
-    "- **partial** — <criterion> — evidence: `lib/foo.ts` — reason: <one line>",
-    "- **missing** — <criterion> — reason: <one line>",
-    "- **unrequested** — <change in the diff not traceable to the issue> — " +
-    "reason: <why it is here>",
-    "```",
+    ...reviewBlockTemplateLines(),
   ].join("\n");
 }
