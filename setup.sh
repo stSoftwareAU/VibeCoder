@@ -30,9 +30,16 @@ set -euo pipefail
 #
 #   Container-owned — reported for information only, never required on the
 #   host, because the container image provides them:
-#   - the coding-agent CLI (claude, codex, gemini)
 #   - jq (host jq is only used by setup.sh's interactive config merge)
 #   - timeout (or gtimeout on macOS)
+#
+#   Provider-gated (Issue #730) — demanded only of a host that runs that
+#   provider, from the `agent_provider` / `agent_providers` selection in
+#   .config.json:
+#   - claude: host-fatal wherever Claude is configured, because setup mints
+#     and validates the worker's OAuth token with `claude setup-token`. A
+#     Codex-only host is never asked for it, and one credential flow runs per
+#     configured provider instead of an unconditional Claude prompt.
 #
 # Environment variables:
 #   VIBE_ALLOWED_AUTHOR     - GitHub username to process issues from
@@ -242,6 +249,26 @@ deepseek|VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY|DEEPSEEK_API_KEY
 PROVIDER_TABLE
 }
 
+# The provider id used when nothing selects one — mirrors
+# DEFAULT_AGENT_PROVIDER_ID in worker/deno/lib/agent_provider.ts.
+VIBE_DEFAULT_AGENT_PROVIDER="claude"
+
+# One provider's row from the table above.
+#
+# Prints `subdir|provisioning variable|credential variables`, or returns 1 when
+# the provider has no row — which the caller reports loudly rather than
+# silently skipping a credential the worker will then fail its preflight on.
+vibe_provider_credential_row() {
+    local wanted="$1" subdir provision_var var_list
+    while IFS='|' read -r subdir provision_var var_list; do
+        if [[ "$subdir" == "$wanted" ]]; then
+            printf '%s|%s|%s\n' "$subdir" "$provision_var" "$var_list"
+            return 0
+        fi
+    done < <(vibe_provider_credential_table)
+    return 1
+}
+
 # Set when this run provisioned (or found) usable gh material — consumed by
 # prompt_interactive_config to default gh_config_dir and skip the login prompt.
 VIBE_PROVISIONED_GH_CONFIG_DIR=""
@@ -253,11 +280,16 @@ VIBE_PROVISIONED_GH_CONFIG_DIR=""
 # leaves that provider unprovisioned and never touches an existing file, so
 # provisioning one vendor cannot wipe another's credential.
 #
-# Arguments: credential dir, sub-directory, provisioning variable, and the
-# comma-separated credential variable names.
+# Arguments: credential dir, sub-directory, provisioning variable, the
+# comma-separated credential variable names, and optionally "quiet" to
+# withhold the success line. The interactive flow passes "quiet" because it
+# only knows the credential is good once it has been validated — announcing
+# the write as a success and then deleting the file would print a ✓ for a
+# credential that never authenticated (Issue #3234).
 # Returns 0 when a credential was written, 1 when there was nothing to write.
 provision_provider_credential() {
     local dir="$1" subdir="$2" provision_var="$3" var_list="$4"
+    local announce="${5:-announce}"
     local provider_dir name value candidate
 
     provider_dir="${dir}/${subdir}"
@@ -286,7 +318,9 @@ provision_provider_credential() {
         printf '%s=%s\n' "$name" "$value" > "${provider_dir}/provider.env"
     )
     chmod 600 "${provider_dir}/provider.env"
-    print_success "Provisioned ${subdir} credential (owner-only) in ${provider_dir}/provider.env"
+    if [[ "$announce" != "quiet" ]]; then
+        print_success "Provisioned ${subdir} credential (owner-only) in ${provider_dir}/provider.env"
+    fi
     return 0
 }
 
@@ -359,7 +393,7 @@ write_gh_hosts_file() {
     chmod 600 "${gh_dir}/hosts.yml"
 }
 
-# Interactive credential provisioning (Issue #4161).
+# Interactive credential provisioning (Issues #4161, #730).
 #
 # `provision_vibe_credentials` above is env-var only, which suits CI and
 # unattended re-provisioning — but the operator's actual workflow is to walk
@@ -369,19 +403,34 @@ write_gh_hosts_file() {
 #   1. gh: when <dir>/gh/hosts.yml is missing and the configured gh_config_dir
 #      already holds a hosts.yml (the worker identity from `gh auth login`),
 #      offer to copy it in.
-#   2. claude: when <dir>/claude/provider.env is missing, prompt for the
-#      CLAUDE_CODE_OAUTH_TOKEN minted by `claude setup-token`. That token
-#      spends the operator's Claude subscription and simply rate-limits when
-#      the plan's usage window is exhausted — never an API key, whose metered
-#      billing is the failure mode this prompt exists to avoid. The paste is
-#      read without echo and expiry is handled by re-running setup.
+#   2. one credential flow per *configured* coding-agent provider, in the
+#      order .config.json enables them. A Codex-only host is asked for the
+#      Codex credential and never sees a Claude prompt (Issue #730); a host
+#      running both is asked for both.
+#
+# The provider list drives the loop and the credential table drives each
+# flow, so a provider registered in worker/deno/lib/agent_provider.ts and
+# listed in `vibe_provider_credential_table` is handled here with no further
+# edit. Claude keeps one refinement of its own — setup can run
+# `claude setup-token` for the operator — because its subscription token has
+# no paste-free equivalent elsewhere; every other provider falls through to
+# the generic hidden paste.
 #
 # Existing files are never re-prompted or overwritten; skipping warns loudly
 # that the containerised worker cannot pass its credential preflight yet.
 #
-# Argument: the gh config directory to offer as the copy source ("" for none).
+# Arguments: the gh config directory to offer as the copy source ("" for
+# none), then the configured provider ids. No ids means the default provider
+# alone — the selection `resolveEnabledAgentProviderIds` falls back to.
 interactive_credentials_flow() {
     local gh_source="$1"
+    shift || true
+    local -a providers=()
+    if [[ $# -gt 0 ]]; then
+        providers=("$@")
+    else
+        providers=("$VIBE_DEFAULT_AGENT_PROVIDER")
+    fi
     local dir
     dir="$(credential_dir)"
 
@@ -422,99 +471,238 @@ interactive_credentials_flow() {
         fi
     fi
 
-    local claude_env="${dir}/claude/provider.env"
+    # Say which flows this run will drive before driving them (Issue #730):
+    # a misconfigured provider set must be visible, not silent.
+    print_info "Coding-agent credential flows for this host: ${providers[*]}"
+
+    local provider_id
+    for provider_id in "${providers[@]}"; do
+        provider_credential_flow "$dir" "$provider_id"
+    done
+}
+
+# The credential variable one provider's interactive prompt fills.
+#
+# Defaults to the first name in that provider's table row, so a newly
+# registered provider is prompted for with no edit here. Claude overrides it:
+# its row leads with ANTHROPIC_API_KEY (metered, per-token billing), while the
+# credential setup must ask for is the subscription OAuth token
+# `claude setup-token` mints — rate-limiting is a far better failure mode than
+# a surprise bill.
+#
+# Arguments: provider id, the comma-separated credential variable names.
+provider_prompt_credential_var() {
+    local id="$1" var_list="$2"
+    case "$id" in
+        claude) printf '%s' "CLAUDE_CODE_OAUTH_TOKEN" ;;
+        *) printf '%s' "${var_list%%,*}" ;;
+    esac
+}
+
+# Where an operator gets one provider's credential, when we can say.
+#
+# A provider with no entry simply gets no hint line — the prompt still names
+# the variable and the provisioning variable, so it stays usable. Claude has
+# no entry either: its paste prompt spells the whole `claude setup-token`
+# recipe out instead.
+provider_credential_source_hint() {
+    case "$1" in
+        codex) printf '%s' "an OpenAI API key from https://platform.openai.com/api-keys" ;;
+        gemini) printf '%s' "a Google AI Studio key from https://aistudio.google.com/apikey" ;;
+        deepseek) printf '%s' "a key issued at https://platform.deepseek.com/api_keys" ;;
+        *) printf '' ;;
+    esac
+}
+
+# Validate a stored credential where the provider supports it.
+#
+# Claude's CLI can prove a token authenticates with a live call (Issue #4161).
+# No other vendor ships a comparably cheap, non-billing check, so their stored
+# credentials are taken at face value here — the worker's own credential
+# preflight still requires the file to be present and owner-only, and the
+# provider's auth-error detection still reports a bad key loudly at run time.
+#
+# Arguments: provider id, credential file. Returns 0 when the credential may
+# be kept.
+provider_credential_is_valid() {
+    local id="$1" file="$2"
+    case "$id" in
+        claude) claude_credential_is_valid "$file" ;;
+        *) return 0 ;;
+    esac
+}
+
+# Acquire a credential without a paste, where the provider's CLI can mint one.
+#
+# Sets VIBE_MINTED_CREDENTIAL to the captured secret, or empty when this
+# provider has no paste-free path, its CLI is absent, or the operator
+# declined. Claude is the only provider with one today; the generic paste
+# prompt covers every other.
+VIBE_MINTED_CREDENTIAL=""
+mint_provider_credential() {
+    local id="$1"
+    VIBE_MINTED_CREDENTIAL=""
+    [[ "$id" == "claude" ]] || return 0
+    command -v claude &>/dev/null || return 0
+
+    print_info "The containerised worker cannot reach the macOS Keychain, so the claude"
+    print_info "CLI needs a long-lived OAuth token. Setup can run \`claude setup-token\`"
+    print_info "for you: a browser opens, you sign in with the Claude account that"
+    print_info "holds your subscription, and the token is captured automatically."
+    print_info "(The token bills that subscription and can only ever rate-limit -"
+    print_info "never run up per-token API charges. It lasts about a year; re-run"
+    print_info "./setup.sh to replace it when it expires.)"
+    echo -n "  Run \`claude setup-token\` now? [Y/n] "
+    local run_setup_token=""
+    IFS= read -r run_setup_token || run_setup_token=""
+    if [[ "$run_setup_token" != "n" && "$run_setup_token" != "N" ]]; then
+        VIBE_MINTED_CREDENTIAL="$(capture_setup_token)"
+        if [[ -z "$VIBE_MINTED_CREDENTIAL" ]]; then
+            print_warning "No token captured from claude setup-token — paste one instead"
+        fi
+    fi
+}
+
+# Print the paste instructions for one provider.
+#
+# Claude's recipe is spelled out in full because minting its token is a
+# multi-step browser flow; every other provider gets the generic instructions
+# built from its own table row, which is what makes a new provider work here
+# without an edit.
+#
+# Arguments: provider id, the variable being asked for, the provisioning
+# variable, and the credential file it lands in.
+print_provider_credential_instructions() {
+    local id="$1" prompt_var="$2" provision_var="$3" env_file="$4" hint
+    hint="$(provider_credential_source_hint "$id")"
+
+    if [[ "$id" == "claude" ]]; then
+        print_info "To generate the token by hand:"
+        echo ""
+        echo "    1. Open a second terminal (leave this prompt waiting)."
+        echo "    2. Run:  claude setup-token"
+        echo "    3. A browser opens - sign in with the Claude account that holds"
+        echo "       your subscription. This token bills that subscription and can"
+        echo "       only ever rate-limit, never run up per-token API charges."
+        echo "       (Over SSH with no browser, the command prints a URL instead:"
+        echo "       open it on any device and paste the code back.)"
+        echo "    4. Copy the printed token (starts with sk-ant-oat01-...)."
+        echo "    5. Paste it below and press Enter. Nothing appears as you paste -"
+        echo "       input is hidden so the token stays out of your scrollback."
+        echo ""
+        return 0
+    fi
+
+    print_info "The containerised worker authenticates ${id} from ${env_file}."
+    if [[ -n "$hint" ]]; then
+        print_info "Paste ${prompt_var} below - ${hint}."
+    else
+        print_info "Paste ${prompt_var} below."
+    fi
+    print_info "Nothing appears as you paste - input is hidden so the secret stays"
+    print_info "out of your scrollback. Set ${provision_var} instead to provision it"
+    print_info "non-interactively on the next run."
+    echo ""
+}
+
+# Fill one provider's credential gap interactively (Issue #730).
+#
+# Every step comes from that provider's row in
+# `vibe_provider_credential_table`, and the write goes through
+# `provision_provider_credential` — the same owner-only path the
+# non-interactive flow uses — so there is exactly one place that decides where
+# a credential lands and how it is protected.
+#
+# Arguments: the credential directory, the provider id.
+provider_credential_flow() {
+    local dir="$1" id="$2"
+    local row="" subdir provision_var var_list prompt_var env_file
+
+    row="$(vibe_provider_credential_row "$id")" || {
+        print_error "No credential row for coding-agent provider '${id}' — add one to vibe_provider_credential_table in setup.sh before enabling it"
+        return 1
+    }
+    IFS='|' read -r subdir provision_var var_list <<< "$row"
+    env_file="${dir}/${subdir}/provider.env"
+    prompt_var="$(provider_prompt_credential_var "$id" "$var_list")"
 
     # An existing credential is exercised for real before it is trusted
     # (Issue #4161): an expired or revoked token is discarded here so the
     # acquisition below replaces it instead of the worker discovering the
     # problem unattended at 3am.
-    if [[ -f "$claude_env" ]] && ! claude_credential_is_valid "$claude_env"; then
-        print_warning "Stored claude credential failed validation (expired token?) — replacing it"
-        rm -f "$claude_env"
+    if [[ -f "$env_file" ]] && ! provider_credential_is_valid "$id" "$env_file"; then
+        print_warning "Stored ${id} credential failed validation (expired token?) — replacing it"
+        rm -f "$env_file"
     fi
 
     # Rotation path for a still-valid credential: offer to replace, default keep.
-    if [[ -f "$claude_env" ]]; then
-        echo -n "  Claude credential already provisioned - replace it (e.g. expired token)? [y/N] "
-        local replace_claude=""
-        IFS= read -r replace_claude || replace_claude=""
-        if [[ "$replace_claude" == "y" || "$replace_claude" == "Y" ]]; then
-            rm -f "$claude_env"
+    if [[ -f "$env_file" ]]; then
+        echo -n "  ${id} credential already provisioned - replace it (e.g. expired token)? [y/N] "
+        local replace_existing=""
+        IFS= read -r replace_existing || replace_existing=""
+        if [[ "$replace_existing" == "y" || "$replace_existing" == "Y" ]]; then
+            rm -f "$env_file"
         fi
     fi
 
-    # Two acquisition attempts: a token that fails its validation call is
+    # Two acquisition attempts: a credential that fails its validation call is
     # removed and the offer repeats once before setup gives up loudly.
     local _attempt
     # shellcheck disable=SC2034 # loop counter, intentionally unread
     for _attempt in 1 2; do
-        [[ -f "$claude_env" ]] && break
-        local oauth_token=""
+        [[ -f "$env_file" ]] && break
+        local secret=""
 
-        # Preferred path: run `claude setup-token` right here and capture the
-        # token it prints — the operator only does the browser sign-in.
-        if command -v claude &>/dev/null; then
-            print_info "The containerised worker cannot reach the macOS Keychain, so the claude"
-            print_info "CLI needs a long-lived OAuth token. Setup can run \`claude setup-token\`"
-            print_info "for you: a browser opens, you sign in with the Claude account that"
-            print_info "holds your subscription, and the token is captured automatically."
-            print_info "(The token bills that subscription and can only ever rate-limit -"
-            print_info "never run up per-token API charges. It lasts about a year; re-run"
-            print_info "./setup.sh to replace it when it expires.)"
-            echo -n "  Run \`claude setup-token\` now? [Y/n] "
-            local run_setup_token=""
-            IFS= read -r run_setup_token || run_setup_token=""
-            if [[ "$run_setup_token" != "n" && "$run_setup_token" != "N" ]]; then
-                oauth_token="$(capture_setup_token)"
-                if [[ -z "$oauth_token" ]]; then
-                    print_warning "No token captured from claude setup-token — paste one instead"
-                fi
-            fi
-        fi
+        # Preferred path where one exists: let the provider's own CLI mint the
+        # credential, so the operator only does the browser sign-in.
+        mint_provider_credential "$id"
+        secret="$VIBE_MINTED_CREDENTIAL"
+        VIBE_MINTED_CREDENTIAL=""
 
-        # Fallback: manual paste, with the full recipe spelled out so the
-        # operator needs nothing beyond this prompt.
-        if [[ -z "$oauth_token" ]]; then
-            print_info "To generate the token by hand:"
-            echo ""
-            echo "    1. Open a second terminal (leave this prompt waiting)."
-            echo "    2. Run:  claude setup-token"
-            echo "    3. A browser opens - sign in with the Claude account that holds"
-            echo "       your subscription. This token bills that subscription and can"
-            echo "       only ever rate-limit, never run up per-token API charges."
-            echo "       (Over SSH with no browser, the command prints a URL instead:"
-            echo "       open it on any device and paste the code back.)"
-            echo "    4. Copy the printed token (starts with sk-ant-oat01-...)."
-            echo "    5. Paste it below and press Enter. Nothing appears as you paste -"
-            echo "       input is hidden so the token stays out of your scrollback."
-            echo ""
-            echo -n "  CLAUDE_CODE_OAUTH_TOKEN (input hidden; Enter to skip): "
-            IFS= read -rs oauth_token || oauth_token=""
+        # Fallback: manual paste, with the recipe spelled out so the operator
+        # needs nothing beyond this prompt.
+        if [[ -z "$secret" ]]; then
+            print_provider_credential_instructions "$id" "$prompt_var" "$provision_var" "$env_file"
+            echo -n "  ${prompt_var} (input hidden; Enter to skip): "
+            IFS= read -rs secret || secret=""
             echo ""
         fi
 
         # Enter alone skips — leave the loop rather than re-asking.
-        [[ -n "$oauth_token" ]] || break
+        [[ -n "$secret" ]] || break
 
-        mkdir -p "${dir}/claude"
-        chmod 700 "$dir" "${dir}/claude"
-        (
-            umask 077
-            printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$oauth_token" > "$claude_env"
-        )
-        chmod 600 "$claude_env"
-
-        # The proof is a real completion, not the write (Issue #3234).
-        if claude_credential_is_valid "$claude_env"; then
-            print_success "Provisioned claude credential (owner-only) in ${claude_env} — validated with a live claude call"
+        # Hand the secret to the shared writer under the name it must be
+        # stored as: one owner-only write path for both credential flows. The
+        # operator's own value for that variable — they may have exported one
+        # before running setup — is put back afterwards rather than dropped.
+        local inherited="${!prompt_var:-}" wrote=0
+        printf -v "$prompt_var" '%s' "$secret"
+        if provision_provider_credential "$dir" "$subdir" "$prompt_var" "$prompt_var" quiet; then
+            wrote=1
+        fi
+        if [[ -n "$inherited" ]]; then
+            printf -v "$prompt_var" '%s' "$inherited"
         else
-            rm -f "$claude_env"
-            print_warning "The new claude credential failed validation (claude could not authenticate with it)"
+            unset "$prompt_var"
+        fi
+        if [[ "$wrote" -eq 0 ]]; then
+            print_error "Could not write the ${id} credential to ${env_file}"
+            return 1
+        fi
+
+        # The proof is a real completion, not the write (Issue #3234): the
+        # write itself is announced only once it has survived validation, so a
+        # credential that never authenticated never prints a success line.
+        if provider_credential_is_valid "$id" "$env_file"; then
+            print_success "Provisioned ${id} credential (owner-only) in ${env_file}"
+        else
+            rm -f "$env_file"
+            print_warning "The new ${id} credential failed validation (${id} could not authenticate with it)"
         fi
     done
 
-    if [[ ! -f "$claude_env" ]]; then
-        print_warning "No claude credential — the containerised worker fails its credential preflight until one is provisioned"
+    if [[ ! -f "$env_file" ]]; then
+        print_warning "No ${id} credential — the containerised worker fails its credential preflight until one is provisioned"
     fi
 }
 
@@ -597,6 +785,8 @@ capture_setup_token() {
 # TTY gate + config lookup for the flow above: resolve the configured
 # gh_config_dir as the copy source, then prompt. Non-interactive runs (cron,
 # launchd, CI) skip entirely and keep today's env-var-only behaviour.
+#
+# Arguments: the configured provider ids, passed straight through.
 prompt_interactive_credentials() {
     if [[ ! -t 0 ]]; then
         return 0
@@ -605,7 +795,27 @@ prompt_interactive_credentials() {
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         gh_source=$(jq -r '.gh_config_dir // empty' "$CONFIG_FILE" 2>/dev/null)
     fi
-    interactive_credentials_flow "$gh_source"
+    interactive_credentials_flow "$gh_source" "$@"
+}
+
+# The coding-agent providers this host is configured to run (Issue #730).
+#
+# Resolved by the Deno seam (worker/deno/setup/agent_providers.ts) rather than
+# parsed out of .config.json here: `agent_provider`, `agent_providers`, the
+# VIBE_AGENT_PROVIDER(S) overrides and the default all live there, and jq —
+# which this script would otherwise need — is container-owned and may not
+# exist on the host at all. Prints one id per line.
+#
+# A selection that cannot be resolved is fatal: prompting for the wrong
+# vendor's credential, or silently falling back to Claude on a Codex host, is
+# exactly the failure this gating exists to remove (Issue #3234).
+configured_agent_providers() {
+    local ids=""
+    if ! ids="$(run_setup_cli agent-providers)"; then
+        print_error "Could not resolve the configured coding-agent providers from ${CONFIG_FILE}"
+        return 1
+    fi
+    printf '%s\n' "$ids"
 }
 
 ################################################################################
@@ -1087,9 +1297,31 @@ main() {
     # config directory defaults to it and no login prompt is offered for it.
     provision_vibe_credentials
 
-    # Fill remaining credential gaps interactively (Issue #4161): offer to
-    # copy the existing gh identity and prompt for the claude OAuth token.
-    prompt_interactive_credentials
+    # Which coding agents this host runs decides which credentials it is asked
+    # for (Issue #730). Both this and the prerequisite probe above read the
+    # selection through the same seam (worker/deno/setup/agent_providers.ts)
+    # from the same file, so the tools the probe demanded and the credentials
+    # the prompts ask for describe one host, not two.
+    local provider_list provider_id
+    provider_list="$(configured_agent_providers)" || exit 1
+    local -a agent_providers=()
+    while IFS= read -r provider_id; do
+        if [[ -n "$provider_id" ]]; then
+            agent_providers+=("$provider_id")
+        fi
+    done <<< "$provider_list"
+    # An empty set is a fault in the resolution, not a licence to guess: the
+    # default provider here would prompt a Codex host for a Claude token.
+    if [[ ${#agent_providers[@]} -eq 0 ]]; then
+        print_error "No coding-agent provider resolved from ${CONFIG_FILE} — fix agent_provider/agent_providers and re-run setup"
+        exit 1
+    fi
+
+    # Fill remaining credential gaps interactively (Issues #4161, #730): offer
+    # to copy the existing gh identity, then run one credential flow per
+    # configured provider — Claude's OAuth token only on a host that runs
+    # Claude.
+    prompt_interactive_credentials "${agent_providers[@]}"
 
     # Prompt interactively when running in a terminal (Issue #583)
     prompt_interactive_config

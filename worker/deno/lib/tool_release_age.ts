@@ -63,6 +63,13 @@ const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 /**
+ * A plain stable release version: `MAJOR.MINOR.PATCH`, no pre-release suffix
+ * and no build metadata. Only these are considered when falling back to the
+ * newest release past the quarantine window (Issue #726).
+ */
+const STABLE_SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
+
+/**
  * `GOOS-GOARCH` asset suffix that marks a **binary** `gh` extension.
  *
  * Mirrors `gh`'s own rule (`isBinExtension` in `cli/cli`): an extension is
@@ -129,6 +136,20 @@ export interface ReleaseAgeGate {
   quarantineHours: number;
   /** Verdict for a channel. Never throws — failures become indeterminate. */
   check(channel: ReleaseChannel): Promise<ReleaseAgeVerdict>;
+  /**
+   * Verdict for the newest release of a channel that has *already* cleared the
+   * quarantine window (Issue #726).
+   *
+   * {@link check} answers "may the newest release be adopted?", which is the
+   * question an upgrade asks. A caller that has to name an installable version
+   * — the release tool-version manifest — asks this instead: upstream ships
+   * several times a day, so the newest release is usually inside the window and
+   * the honest answer is the newest one outside it, not a failure.
+   *
+   * Never throws, and never widens the embargo: a history with nothing past the
+   * window is ineligible, exactly as {@link check} would report it.
+   */
+  checkNewestAged(channel: ReleaseChannel): Promise<ReleaseAgeVerdict>;
 }
 
 /** An installed `gh` extension. */
@@ -302,6 +323,76 @@ export interface GhExtensionRelease {
 const ISO_INSTANT = String.raw`\d{4}-\d{2}-\d{2}T[\d:]+(?:\.\d+)?Z`;
 
 /**
+ * Parse the `<tag> <published_at>` lines of a whole release listing, newest
+ * publish first (Issue #726).
+ *
+ * The single-release parser above answers "what is newest"; this one keeps the
+ * releases behind it, so a caller can fall back to the newest release that has
+ * cleared the quarantine window. Only stable `MAJOR.MINOR.PATCH` tags are
+ * kept — the same series the pinned installer can install — and lines that do
+ * not match the shape (diagnostics on stderr) are ignored.
+ */
+export function parseGhReleaseListing(output: string): ReleaseCandidate[] {
+  const releaseLine = new RegExp(`^(\\S+)\\s+(${ISO_INSTANT})$`);
+  const seen = new Set<string>();
+  const dated: { candidate: ReleaseCandidate; publishedMs: number }[] = [];
+  for (const line of output.split("\n")) {
+    const match = line.trim().match(releaseLine);
+    if (!match) continue;
+    const tag = match[1]!;
+    const version = tag.replace(/^v/, "");
+    if (!STABLE_SEMVER_PATTERN.test(version) || seen.has(version)) continue;
+    const publishedMs = Date.parse(match[2]!);
+    if (Number.isNaN(publishedMs)) continue;
+    seen.add(version);
+    dated.push({
+      candidate: { version, publishedAt: match[2]!, ref: tag },
+      publishedMs,
+    });
+  }
+  return dated
+    .sort((a, b) => b.publishedMs - a.publishedMs)
+    .map((entry) => entry.candidate);
+}
+
+/**
+ * Pick the newest release in a history that has cleared the quarantine window
+ * (Issue #726).
+ *
+ * The history is evaluated newest first with the same {@link evaluateReleaseAge}
+ * every upgrade uses, so the window is applied identically — this only chooses
+ * *which* release the verdict describes. Nothing here widens the embargo: an
+ * empty history is indeterminate, and a history in which every release is still
+ * inside the window returns the newest release's own ineligible verdict, so the
+ * caller fails exactly as loudly as before.
+ */
+export function selectNewestAged(
+  source: string,
+  history: readonly ReleaseCandidate[],
+  quarantineHours: number,
+  now: Date,
+): ReleaseAgeVerdict {
+  const floor = normaliseQuarantineHours(quarantineHours);
+  const unknown: ReleaseCandidate = { version: null, publishedAt: null };
+  if (history.length === 0) {
+    return evaluateReleaseAge(source, unknown, floor, now);
+  }
+
+  const verdicts = history.map((candidate) =>
+    evaluateReleaseAge(source, candidate, floor, now)
+  );
+  const newest = verdicts[0]!;
+  const cleared = verdicts.find((verdict) => verdict.eligible);
+  if (!cleared) return newest;
+  if (cleared === newest) return cleared;
+  return {
+    ...cleared,
+    reason: `${cleared.reason} It is the newest release past the window — ` +
+      `${newest.version} is still inside it.`,
+  };
+}
+
+/**
  * True when an asset name marks the release as a **binary** `gh` extension
  * (Issue #3952) — see {@link BINARY_ASSET_SUFFIX}.
  */
@@ -402,6 +493,47 @@ export function parseNpmLatest(body: unknown): ReleaseCandidate {
   };
 }
 
+/**
+ * Every installable stable release the npm packument names, newest publish
+ * first (Issue #726).
+ *
+ * `dist-tags.latest` alone answers what an upgrade would adopt, but a caller
+ * that must name an *installable* version needs the releases behind it too, so
+ * the whole `time` map is read. A version is a candidate only when it is
+ * still published (present in `versions`), carries a plain `MAJOR.MINOR.PATCH`
+ * with no pre-release suffix, and was published no later than `latest` — a
+ * pre-release, an unpublished version, or one carrying a different dist-tag is
+ * not something `latest` ever offered, so it is never a fallback.
+ */
+export function parseNpmVersionHistory(body: unknown): ReleaseCandidate[] {
+  if (!body || typeof body !== "object") return [];
+  const record = body as {
+    "dist-tags"?: Record<string, unknown>;
+    time?: Record<string, unknown>;
+    versions?: Record<string, unknown>;
+  };
+  const latest = record["dist-tags"]?.["latest"];
+  const time = record.time;
+  if (typeof latest !== "string" || !latest || !time) return [];
+
+  const latestPublished = Date.parse(String(time[latest] ?? ""));
+  if (Number.isNaN(latestPublished)) return [];
+
+  const dated: { candidate: ReleaseCandidate; publishedMs: number }[] = [];
+  for (const [version, publishedAt] of Object.entries(time)) {
+    if (typeof publishedAt !== "string") continue;
+    if (!STABLE_SEMVER_PATTERN.test(version)) continue;
+    // `time` keeps entries for unpublished versions; `versions` does not.
+    if (record.versions && !(version in record.versions)) continue;
+    const publishedMs = Date.parse(publishedAt);
+    if (Number.isNaN(publishedMs) || publishedMs > latestPublished) continue;
+    dated.push({ candidate: { version, publishedAt }, publishedMs });
+  }
+  return dated
+    .sort((a, b) => b.publishedMs - a.publishedMs)
+    .map((entry) => entry.candidate);
+}
+
 /** Build the npm registry metadata URL for a package name. */
 export function npmRegistryUrl(pkg: string, base = NPM_REGISTRY_BASE): string {
   return `${base}/${pkg.replaceAll("/", "%2F")}`;
@@ -454,6 +586,33 @@ async function resolveGitHubLatestRelease(
     return { version: null, publishedAt: null };
   }
   return parseGhReleaseLine(result.value.output);
+}
+
+/**
+ * Resolve the published release history of `owner/repo` via `gh api`
+ * (Issue #726).
+ *
+ * Same validation as the single-release lookup — a malformed repository never
+ * reaches the API — and the same fail-closed contract: any failure yields an
+ * empty history, which is indeterminate rather than eligible. Drafts and
+ * pre-releases are filtered out by the projection, so the history holds only
+ * the releases the series actually publishes.
+ */
+async function resolveGitHubReleaseHistory(
+  repo: string,
+  runFn: ReleaseAgeGateDeps["runFn"],
+): Promise<ReleaseCandidate[]> {
+  if (!REPO_PATTERN.test(repo)) return [];
+  const result = await runFn([
+    "gh",
+    "api",
+    `repos/${repo}/releases`,
+    "--jq",
+    ".[] | select(.draft | not) | select(.prerelease | not) | " +
+    '.tag_name + " " + .published_at',
+  ], RELEASE_LOOKUP_TIMEOUT_SECONDS);
+  if (!result.ok || result.value.exitCode !== 0) return [];
+  return parseGhReleaseListing(result.value.output);
 }
 
 /**
@@ -550,29 +709,52 @@ export function createReleaseAgeGate(
   const now = deps.now ?? (() => new Date());
   const fetchMetadata = deps.fetchNpmMetadata ?? fetchNpmMetadata;
 
-  return {
-    quarantineHours,
-    async check(channel: ReleaseChannel): Promise<ReleaseAgeVerdict> {
-      const source = describeChannel(channel);
-      let candidate: ReleaseCandidate = { version: null, publishedAt: null };
-      try {
-        if (channel.kind === "npm") {
-          candidate = NPM_PACKAGE_PATTERN.test(channel.pkg)
-            ? parseNpmLatest(await fetchMetadata(channel.pkg))
-            : candidate;
-        } else if (channel.kind === "gh-extension") {
-          candidate = await resolveGhExtensionRef(channel.repo, deps.runFn);
-        } else {
-          candidate = await resolveGitHubLatestRelease(
-            channel.repo,
-            deps.runFn,
-          );
-        }
-      } catch {
-        // Any unexpected failure stays indeterminate — never eligible.
-        candidate = { version: null, publishedAt: null };
+  const check = async (channel: ReleaseChannel): Promise<ReleaseAgeVerdict> => {
+    const source = describeChannel(channel);
+    let candidate: ReleaseCandidate = { version: null, publishedAt: null };
+    try {
+      if (channel.kind === "npm") {
+        candidate = NPM_PACKAGE_PATTERN.test(channel.pkg)
+          ? parseNpmLatest(await fetchMetadata(channel.pkg))
+          : candidate;
+      } else if (channel.kind === "gh-extension") {
+        candidate = await resolveGhExtensionRef(channel.repo, deps.runFn);
+      } else {
+        candidate = await resolveGitHubLatestRelease(channel.repo, deps.runFn);
       }
-      return evaluateReleaseAge(source, candidate, quarantineHours, now());
-    },
+    } catch {
+      // Any unexpected failure stays indeterminate — never eligible.
+      candidate = { version: null, publishedAt: null };
+    }
+    return evaluateReleaseAge(source, candidate, quarantineHours, now());
   };
+
+  const checkNewestAged = async (
+    channel: ReleaseChannel,
+  ): Promise<ReleaseAgeVerdict> => {
+    // A `gh` extension is installed from exactly one ref — the latest release
+    // or branch HEAD — so there is no older release to fall back to: the
+    // single-candidate verdict is already the whole answer.
+    if (channel.kind === "gh-extension") return await check(channel);
+
+    let history: ReleaseCandidate[] = [];
+    try {
+      history = channel.kind === "npm"
+        ? (NPM_PACKAGE_PATTERN.test(channel.pkg)
+          ? parseNpmVersionHistory(await fetchMetadata(channel.pkg))
+          : [])
+        : await resolveGitHubReleaseHistory(channel.repo, deps.runFn);
+    } catch {
+      // Same fail-closed contract as `check`: unreadable is not eligible.
+      history = [];
+    }
+    return selectNewestAged(
+      describeChannel(channel),
+      history,
+      quarantineHours,
+      now(),
+    );
+  };
+
+  return { quarantineHours, check, checkNewestAged };
 }

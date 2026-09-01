@@ -62,9 +62,18 @@ background service is offered, where files land — is covered in
 
 3. **Interactive credential top-up** — skipped entirely when no terminal is
    attached. Fills whatever phase 2 left empty: offers to copy the existing
-   `gh` identity into the credential directory, and prompts for the
-   coding-agent OAuth token (minted with `claude setup-token`), validating it
-   before it is stored. Declining an offer never fails the run.
+   `gh` identity into the credential directory, then runs **one credential
+   flow per configured coding-agent provider**, in the order
+   `.config.json` enables them (Issue #730). Claude's flow is the one it
+   always was — setup offers to run `claude setup-token` for you and proves
+   the token with a live call before storing it; every other provider gets a
+   hidden paste of its own credential variable, written to
+   `<provider>/provider.env` with the same owner-only permissions. A
+   Codex-only host is asked for `OPENAI_API_KEY` and never sees a Claude
+   prompt. The flows the run will drive are named before it drives them, so a
+   misconfigured provider set is visible rather than silent. An existing
+   credential file is never overwritten without an explicit `y`, and
+   declining an offer never fails the run.
 
 4. **Interactive configuration prompts** — also terminal-only. Collects the
    key configuration answers (repositories to monitor, allowed authors,
@@ -389,10 +398,17 @@ same set, stated as the state your host must reach:
 - [ ] **`gh`** installed **and authenticated** (`gh auth status` passes) —
   host-fatal.
 - [ ] **`deno`** installed — host-fatal.
-- [ ] **`claude`** (the Claude Code CLI) installed — host-fatal, even though
-  the worker runs the coding agent inside the container: setup mints and
-  validates the worker's OAuth token with `claude setup-token`, so the host
-  needs the CLI too.
+- [ ] **`claude`** (the Claude Code CLI) installed — host-fatal **on a host
+  that runs Claude**, even though the worker runs the coding agent inside the
+  container: setup mints and validates the worker's OAuth token with
+  `claude setup-token`, so the host needs the CLI too. A host whose
+  `agent_provider` / `agent_providers` selects other vendors is not asked for
+  it at all (Issue #730) — the probe reports
+  `claude CLI not required — this host is configured for codex` and moves on.
+  On the **very first** run there is no `.config.json` to read yet, so the
+  probe falls back to the default provider (Claude). Say which agent that host
+  runs on the command line instead — `VIBE_AGENT_PROVIDER=codex ./setup.sh` —
+  and the same gate applies from the first probe.
 - [ ] **A container runtime** installed *and answering its probe* —
   host-fatal. The **worker image** must be present or buildable from the
   committed definition; a missing image is fine (the launcher builds it on
@@ -401,6 +417,11 @@ same set, stated as the state your host must reach:
 - [ ] **`jq`** and **`timeout`** — informational only. The
   [image](CONTAINER.md) provides both to the worker, so a host without them
   still passes.
+
+The three recipes below install the whole list, `claude` included. Skip the
+`claude` step on a host whose configured providers do not include Claude — the
+probe does not ask for it there (Issue #730), and nothing else in setup uses
+it.
 
 ### macOS
 
@@ -520,6 +541,7 @@ decline the offers to stay manual. A pass prints one `✓` line per check
 (informational gaps print as `ℹ`), ends with the headline, and exits `0`:
 
 ```text
+ℹ  Configured coding-agent providers: claude
 ✓  git is installed
 ✓  gh CLI authenticated as: your-login
 ✓  deno is installed
@@ -539,9 +561,13 @@ headline, and exits `1`:
 ✗  gh CLI is not authenticated
 ℹ  Run: gh auth login
 ✗  Some host prerequisites are missing or not configured (run mode: container).
-ℹ  Container mode needs git, an authenticated gh, deno, the claude CLI (setup mints the worker's OAuth token with it) and a working container runtime on the host; the image provides jq and timeout.
+ℹ  Container mode needs git, an authenticated gh, deno, the claude CLI (setup mints the worker's OAuth token with it) and a working container runtime on the host; the image provides jq and timeout. Configured coding-agent providers: claude.
 ℹ  VIBE_SKIP_PREREQ_CHECK=true skips the whole probe (CI only — it hides real gaps).
 ```
+
+The claude CLI appears in that sentence only when Claude is among the
+configured providers; a Codex-only host is told what *it* needs, and never
+`VIBE_SKIP_PREREQ_CHECK` as a workaround for a provider it does not run.
 
 Out of scope here: credentials beyond `gh auth login`
 ([next section](#manual-setup-credentials)), `.config.json`
@@ -861,8 +887,10 @@ its agent would have no credential mounted, as does an id that is not
 registered.
 
 Each enabled vendor needs its own `<provider>/provider.env` from
-[the credential layout above](#providerproviderenv), and the container image
-must have been built with that provider installed — see
+[the credential layout above](#providerproviderenv). The image itself follows
+the same key: the launcher builds it with the enabled set (`AGENT_PROVIDERS`)
+and the set is part of the image tag, so a host that adds a provider rebuilds
+on its next launch — see
 [the coding-agent provider layer](CONTAINER.md#the-coding-agent-provider-layer)
 in the Container Guide.
 

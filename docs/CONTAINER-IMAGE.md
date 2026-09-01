@@ -75,6 +75,26 @@ loudly, naming the fragments that do exist (`install-providers.sh`,
 changes the image tag rather than reusing a tag whose contents
 differ.
 
+The launchers pass the deployment's own set (Issue #729). The launch plan
+resolves `.config.json`'s `agent_providers` **once** — the same resolution that
+decides which credential directories are mounted — and carries it into the
+build as `--build-arg AGENT_PROVIDERS=<ids>`, so a Codex-only configuration
+builds a Codex image instead of taking the Claude default. That value is mixed
+into the image tag as well, so a host that switches providers rebuilds rather
+than reusing an image with the wrong agents baked in. A set that is already the
+manifest's `installedProviders` passes no argument and hashes nothing extra, so
+the default fleet build and its tag are byte-for-byte unchanged.
+
+```mermaid
+flowchart LR
+    C[".config.json<br/>agent_providers"] --> R["enabledAgentProviders()"]
+    R --> M["read-only credential mounts"]
+    R --> A["--build-arg<br/>AGENT_PROVIDERS=codex"]
+    R --> T["image tag"]
+    A -->|the image default| N["no argument — today's image"]
+    style N fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 `COPY providers/*.sh` is a glob, not a bare directory COPY, because Apple
 container 1.2.2's builder silently materialises `COPY providers
 /tmp/providers` (and the trailing-slash form) as an empty directory; the glob

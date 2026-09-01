@@ -82,8 +82,10 @@ An id that is set but not registered fails loudly at startup with the supported
 ids named — the worker never silently falls back to the default and runs an
 agent you did not choose.
 
-The default container image installs Claude Code alone, so choosing another
-provider also means building the image with it in the `AGENT_PROVIDERS` set.
+The default container image installs Claude Code alone, and the launcher builds
+the image with whatever `agent_providers` lists — it passes the set as
+`--build-arg AGENT_PROVIDERS` and mixes it into the image tag, so a Codex-only
+host builds and runs a Codex image rather than reusing the default one.
 
 - [Container Image — the coding-agent provider layer](docs/CONTAINER.md#the-coding-agent-provider-layer)
   — how the seam works, what the image installs, and how to add the next
