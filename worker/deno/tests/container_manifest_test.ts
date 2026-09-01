@@ -179,6 +179,9 @@ Deno.test("isRegistryQualifiedImage - a registry host, a port or localhost quali
   // Short names Podman refuses to guess a registry for.
   assert(!isRegistryQualifiedImage("ruby:3.4-trixie"));
   assert(!isRegistryQualifiedImage("denoland/deno:bin-2.9.6@sha256:abc"));
+  // Degenerate references name no host at all, so they never qualify.
+  assert(!isRegistryQualifiedImage(""));
+  assert(!isRegistryQualifiedImage("/library/ruby:3.4-trixie"));
 });
 
 Deno.test("parseContainerManifest - rejects an image with no digest", () => {
