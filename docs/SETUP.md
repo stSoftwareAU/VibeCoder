@@ -532,6 +532,11 @@ decline the offers to stay manual. A pass prints one `✓` line per check
 ✓  All host prerequisites satisfied (run mode: container)
 ```
 
+The worker-image line names the tag **this** deployment builds: the check reads
+the `container_tools` selection out of the same `.config.json` setup resolved,
+so a host that selects extra tools sees the reference `./run.sh` builds rather
+than a selection-free one (Issue #743).
+
 A fail marks each host-fatal gap with `✗` and its fix, ends with the failing
 headline, and exits `1`:
 

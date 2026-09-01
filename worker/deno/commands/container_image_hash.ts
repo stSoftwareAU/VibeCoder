@@ -30,6 +30,7 @@ import {
   resolveContainerImageReference,
 } from "../lib/container_image_hash.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
+import { resolveDeploymentConfigFile } from "../lib/container_image_selection.ts";
 
 /** What the command reports alongside the printed reference. */
 export interface ContainerImageHashResult {
@@ -48,28 +49,23 @@ export interface ContainerImageHashResult {
   containerTools: string[];
 }
 
-/** Whether a path is absolute on either host style. */
-function isAbsolute(path: string): boolean {
-  return path.startsWith("/") || path.startsWith("\\") ||
-    /^[A-Za-z]:[/\\]/.test(path);
-}
-
 /**
- * Where the deployment's configuration lives, mirroring the launcher's own
- * rule (`resolveContainerLaunchHostPaths`): an explicit `--config`, else
- * `CONFIG_PATH`, else `.config.json` beside the checkout — a relative value
- * resolved against the base directory either way.
+ * Where the deployment's configuration lives: an explicit `--config`, else
+ * `CONFIG_PATH`, else `.config.json` beside the checkout.
+ *
+ * The rule itself lives in `lib/container_image_selection.ts` (Issue #743), so
+ * this command and the other callers that name the image tag cannot resolve a
+ * different configuration from one another.
  */
 export function resolveConfigFile(
   baseDir: string,
   args: Record<string, unknown>,
   env: (name: string) => string | undefined,
 ): string {
-  const configured = typeof args["config"] === "string"
+  const explicit = typeof args["config"] === "string"
     ? args["config"] as string
-    : env("CONFIG_PATH") ?? ".config.json";
-  const root = baseDir.replace(/[/\\]+$/, "");
-  return isAbsolute(configured) ? configured : `${root}/${configured}`;
+    : undefined;
+  return resolveDeploymentConfigFile(baseDir, explicit, env);
 }
 
 export const containerImageHashCommand: Command = {

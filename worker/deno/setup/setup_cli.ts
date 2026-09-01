@@ -299,6 +299,9 @@ async function runPrerequisites(
     skipAuthCheck: skipAuth,
     ghConfigDir,
     repoRoot: scriptDir,
+    // The worker-image check names the tag this deployment's selections
+    // produce, so it reads the configuration setup itself resolved (#743).
+    configPath,
     runMode,
   };
   const probe = await repairMacOsContainerRuntime(

@@ -42,6 +42,10 @@
 
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
+  readDeploymentImageSelection,
+  resolveDeploymentConfigFile,
+} from "../lib/container_image_selection.ts";
+import {
   type ContainerRuntimeDescriptor,
   type ContainerRuntimeProbe,
   detectContainerRuntime,
@@ -92,6 +96,14 @@ export interface PrerequisiteOptions {
    * Defaults to the checkout this module was loaded from.
    */
   repoRoot?: string;
+  /**
+   * The deployment's `.config.json` (Issue #743). Its selections are part of
+   * the image's identity, so the worker-image check reads them to name the
+   * tag the launcher builds rather than a selection-free one. Defaults to the
+   * launcher's own rule: `CONFIG_PATH`, else `.config.json` beside the
+   * checkout.
+   */
+  configPath?: string;
   /** Container-runtime probe override (testing). */
   containerProbe?: ContainerRuntimeProbe;
   /**
@@ -466,7 +478,17 @@ export async function checkContainerPrerequisites(
   const repoRoot = resolved.repoRoot ?? defaultRepoRoot();
   let image: string;
   try {
-    image = await resolveContainerImageReference(repoRoot);
+    // The tag covers this deployment's own selections (Issue #743): resolving
+    // it from the checkout alone reported an image the launcher never builds,
+    // so a host whose image *was* built read "not built yet".
+    const selection = await readDeploymentImageSelection(
+      resolveDeploymentConfigFile(
+        repoRoot,
+        resolved.configPath,
+        (name) => Deno.env.get(name),
+      ),
+    );
+    image = await resolveContainerImageReference(repoRoot, selection);
   } catch (error) {
     return [runtimeResult, {
       ok: false,
@@ -475,8 +497,9 @@ export async function checkContainerPrerequisites(
       hint:
         `Restore the container definition under ${
           repoRoot.replace(/[/\\]+$/, "")
-        }/container/ (Containerfile, entrypoint.sh, tools.json, providers) — ` +
-        `the worker runs only inside the image it builds from them.`,
+        }/container/ (Containerfile, entrypoint.sh, tools.json, providers), ` +
+        `and fix any container_tools selection the message names — the ` +
+        `worker runs only inside the image it builds from them.`,
     }];
   }
 

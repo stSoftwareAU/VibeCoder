@@ -43,6 +43,10 @@ import {
   parseContainerManifest,
 } from "./container_manifest.ts";
 import { resolveContainerImageReference } from "./container_image_hash.ts";
+import {
+  readDeploymentImageSelection,
+  resolveDeploymentConfigFile,
+} from "./container_image_selection.ts";
 import { GH_CREDENTIAL_SUBDIR } from "./credential_preflight.ts";
 import {
   HOSTILE_PRE_COMMIT_HOOK,
@@ -88,6 +92,39 @@ export interface TabletopContainerRunnerOptions {
   readonly image?: string;
   /** Host the egress fixture probes. */
   readonly egressProbeUrl?: string;
+  /**
+   * The deployment's `.config.json` (Issue #743) — its selections are part of
+   * the image's identity. Defaults to the launcher's own rule: `CONFIG_PATH`,
+   * else `.config.json` beside the checkout.
+   */
+  readonly configFile?: string;
+}
+
+/**
+ * The image this run must find, as the launcher names it (Issue #743).
+ *
+ * An explicit override wins; otherwise the reference covers the deployment's
+ * own selections, exactly as `./run.sh` builds it. Deriving it from the
+ * checkout alone made the runner refuse to start over an image the launcher
+ * never builds.
+ *
+ * @param options - The runner's repository root, override and config path
+ * @returns The image reference the run inspects
+ * @throws When the container definition or the selection is unreadable
+ */
+export async function resolveTabletopImage(
+  options: TabletopContainerRunnerOptions,
+): Promise<string> {
+  const override = options.image?.trim();
+  if (override) return override;
+  const selection = await readDeploymentImageSelection(
+    resolveDeploymentConfigFile(
+      options.repoRoot,
+      options.configFile,
+      (name) => Deno.env.get(name),
+    ),
+  );
+  return await resolveContainerImageReference(options.repoRoot, selection);
 }
 
 interface CommandResult {
@@ -398,8 +435,7 @@ export function createTabletopContainerRunner(
       const manifest = parseContainerManifest(
         await Deno.readTextFile(`${options.repoRoot}/container/tools.json`),
       );
-      const image = options.image?.trim() ||
-        await resolveContainerImageReference(options.repoRoot);
+      const image = await resolveTabletopImage(options);
       const present = await runRuntime(
         descriptor.executable,
         [...descriptor.dialect.imageInspectArgs, image],
