@@ -937,6 +937,27 @@ export async function resolveDynamicVersion(
   const verdict = await resolveAgeGate(logger, options).check(
     TOOL_CHANNELS[tool],
   );
+  return verdictToCandidate(tool, verdict);
+}
+
+/**
+ * Report what dynamic mode would install right now for every tool, in the
+ * canonical claude → gh → deno order (Issue #623).
+ */
+export function resolveDynamicVersions(
+  logger: Logger,
+  options: ToolUpdateOptions = {},
+): Promise<DynamicVersionCandidate[]> {
+  return Promise.all(
+    UPDATE_TOOLS.map((tool) => resolveDynamicVersion(logger, tool, options)),
+  );
+}
+
+/** Fold a gate verdict into the candidate shape callers report. */
+function verdictToCandidate(
+  tool: PinnedTool,
+  verdict: ReleaseAgeVerdict,
+): DynamicVersionCandidate {
   return {
     tool,
     version: verdict.eligible ? verdict.version : null,
@@ -950,15 +971,42 @@ export async function resolveDynamicVersion(
 }
 
 /**
- * Report what dynamic mode would install right now for every tool, in the
- * canonical claude → gh → deno order (Issue #623).
+ * Report the newest release of one tool that has cleared the quarantine window
+ * (Issue #726).
+ *
+ * {@link resolveDynamicVersion} answers "may upstream's newest be adopted?" —
+ * the question an upgrade asks, and one whose answer is routinely "not yet":
+ * the Claude CLI ships several times a day, so its newest release is almost
+ * always inside the 24h window. A caller that has to *name* an installable
+ * version — the release tool-version manifest — asks this instead, and gets
+ * the newest release the embargo has already let through.
+ *
+ * The embargo is unchanged: a tool with nothing past the window is still
+ * reported ineligible, with the gate's own reason.
  */
-export function resolveDynamicVersions(
+export async function resolveQuarantineClearedVersion(
+  logger: Logger,
+  tool: PinnedTool,
+  options: ToolUpdateOptions = {},
+): Promise<DynamicVersionCandidate> {
+  const verdict = await resolveAgeGate(logger, options).checkNewestAged(
+    TOOL_CHANNELS[tool],
+  );
+  return verdictToCandidate(tool, verdict);
+}
+
+/**
+ * Report the newest quarantine-cleared release of every tool, in the canonical
+ * claude → gh → deno order (Issue #726).
+ */
+export function resolveQuarantineClearedVersions(
   logger: Logger,
   options: ToolUpdateOptions = {},
 ): Promise<DynamicVersionCandidate[]> {
   return Promise.all(
-    UPDATE_TOOLS.map((tool) => resolveDynamicVersion(logger, tool, options)),
+    UPDATE_TOOLS.map((tool) =>
+      resolveQuarantineClearedVersion(logger, tool, options)
+    ),
   );
 }
 
