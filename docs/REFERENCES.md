@@ -111,6 +111,70 @@ to know whether it has moved on.
   the hard way at 3 a.m. — see [Lessons learnt](LESSONS-LEARNT.md). Nobody else
   is to blame for those.
 
+## How to refresh our good ideas
+
+Going back to thirty sources by hand needs somebody to remember. This does not:
+
+```bash
+cd worker/deno
+
+# Report only — says what has moved, files nothing.
+deno task references-refresh
+
+# Raise the suggestions, then commit the recorded revisions.
+deno task references-refresh --file-issues
+
+# One source at a time, when a full sweep is more than you want.
+deno task references-refresh --source mattpocock/skills --file-issues
+```
+
+**It only ever raises suggestions.** The sweep changes no prompt and no doc.
+Its entire output is unlabelled issues, one per unit of new material, each
+crediting the source and naming the surfaces this page's "where it shows up"
+column points at. Nothing carries a `work-on` label, so the fleet never picks
+one up; a human reads the source, decides whether the idea is worth having, and
+writes it in our own words — rule 3, unchanged. Close a proposal you do not
+want and it is never raised again.
+
+It is a command rather than an idle task for exactly that reason: idle tasks
+file work the fleet then acts on, and nothing here may be acted on unvetted.
+The trigger, the timing and the vetting all stay with the person who owns the
+decision.
+
+```mermaid
+flowchart LR
+    D["📚 docs/REFERENCES.md<br/>credit rows"] --> P["🔍 probe each source"]
+    S["🗂️ .github/<br/>references-refresh-state.json"] -. "last revision" .-> P
+    P --> G{"anything new?"}
+    G -- no --> Q["✅ nothing filed"]
+    G -- yes --> X["🚫 already proposed?<br/>open or closed"]
+    X -- yes --> Q
+    X -- no --> I["📝 suggestion issue<br/>unlabelled, for a human"]
+    P --> S
+    style I fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style Q fill:#adb5bd,stroke:#6c757d,color:#000
+```
+
+Three things worth knowing before you run it:
+
+- **Per-source change detection.** A GitHub source is tracked by the head
+  commit of its default branch, and the sweep asks the API which files changed
+  since the commit it recorded — so each directory of changed files becomes one
+  proposal. Every other source is a page: the sweep fingerprints its visible
+  text, so a rotating nonce or a reflowed paragraph does not read as new
+  material. Specifications that barely move (SPDX, SemVer) therefore cost one
+  cheap request and file nothing.
+- **The recorded revisions are committed state.** They live in
+  `.github/references-refresh-state.json`, written only by `--file-issues`.
+  Commit that file after a sweep, or the next one starts from scratch. A
+  proposal that could not be filed — the `--max-issues` cap, an API failure —
+  deliberately holds its source's revision back so the next run finds it again.
+- **Fetched material is untrusted.** A source we do not control could otherwise
+  post instructions into our issue tracker, so the little detail an issue
+  carries is fenced with the same untrusted-content boundary an issue body gets.
+  Rule 2 is untouched: this is a maintenance sweep a person starts, no worker
+  run depends on it, and nothing fetched is ever spliced into a prompt.
+
 ## Adding an entry
 
 You are adding one because you took an idea from somewhere. So: read the

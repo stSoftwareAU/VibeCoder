@@ -188,6 +188,7 @@ import { securityTabletopCommand } from "./commands/security_tabletop.ts";
 import { publishDecisionCheckCommand } from "./commands/publish_decision_check.ts";
 import { supplyChainGateCommand } from "./commands/supply_chain_gate.ts";
 import { securityTreeSweepCommand } from "./commands/security_tree_sweep.ts";
+import { referencesRefreshCommand } from "./commands/references_refresh.ts";
 import { exportBrandingCommand } from "./commands/export_branding.ts";
 import { exportScrubGateCommand } from "./commands/export_scrub_gate.ts";
 import { exportRedactCommand } from "./commands/export_redact.ts";
@@ -382,6 +383,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(publishDecisionCheckCommand);
   registry.register(supplyChainGateCommand);
   registry.register(securityTreeSweepCommand);
+  registry.register(referencesRefreshCommand);
   registry.register(exportBrandingCommand);
   registry.register(exportScrubGateCommand);
   registry.register(exportRedactCommand);
@@ -620,6 +622,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "supply-chain-gate",
       // Whole-tree security sweep; runs in CI with no config (Issue #4193).
       "security-tree-sweep",
+      // Maintenance sweep a person starts in a checkout with no config (#665).
+      "references-refresh",
       // Export pipeline stages; run over a staging tree with no config
       // (Issues #4196, #4197).
       "export-branding",
@@ -727,6 +731,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "supply-chain-gate",
       // Whole-tree security sweep; runs in CI with no config (Issue #4193).
       "security-tree-sweep",
+      // Maintenance sweep a person starts in a checkout with no config (#665).
+      "references-refresh",
       // Export pipeline stages; run over a staging tree with no config
       // (Issues #4196, #4197).
       "export-branding",
