@@ -294,9 +294,18 @@ export function probedAgentProviders(
   opts: PrerequisiteOptions = {},
 ): readonly string[] {
   const providers = opts.agentProviders;
-  return providers === undefined || providers.length === 0
-    ? [CLAUDE_PROVIDER_ID]
-    : providers;
+  if (providers === undefined) return [CLAUDE_PROVIDER_ID];
+  // An explicitly empty set is a caller fault, never a licence to fall back to
+  // the default provider: probing a host for Claude's tooling because the
+  // selection came through empty is the silent wrong answer (Issue #3234).
+  if (providers.length === 0) {
+    throw new Error(
+      "The prerequisite probe was given an empty coding-agent provider set, " +
+        "so it cannot tell which tooling this host needs. Pass the resolved " +
+        "providers, or omit the option to probe for the default provider.",
+    );
+  }
+  return providers;
 }
 
 /**

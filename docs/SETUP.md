@@ -414,6 +414,11 @@ same set, stated as the state your host must reach:
   [image](CONTAINER.md) provides both to the worker, so a host without them
   still passes.
 
+The three recipes below install the whole list, `claude` included. Skip the
+`claude` step on a host whose configured providers do not include Claude — the
+probe does not ask for it there (Issue #730), and nothing else in setup uses
+it.
+
 ### macOS
 
 ```bash

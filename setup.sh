@@ -280,11 +280,16 @@ VIBE_PROVISIONED_GH_CONFIG_DIR=""
 # leaves that provider unprovisioned and never touches an existing file, so
 # provisioning one vendor cannot wipe another's credential.
 #
-# Arguments: credential dir, sub-directory, provisioning variable, and the
-# comma-separated credential variable names.
+# Arguments: credential dir, sub-directory, provisioning variable, the
+# comma-separated credential variable names, and optionally "quiet" to
+# withhold the success line. The interactive flow passes "quiet" because it
+# only knows the credential is good once it has been validated — announcing
+# the write as a success and then deleting the file would print a ✓ for a
+# credential that never authenticated (Issue #3234).
 # Returns 0 when a credential was written, 1 when there was nothing to write.
 provision_provider_credential() {
     local dir="$1" subdir="$2" provision_var="$3" var_list="$4"
+    local announce="${5:-announce}"
     local provider_dir name value candidate
 
     provider_dir="${dir}/${subdir}"
@@ -313,7 +318,9 @@ provision_provider_credential() {
         printf '%s=%s\n' "$name" "$value" > "${provider_dir}/provider.env"
     )
     chmod 600 "${provider_dir}/provider.env"
-    print_success "Provisioned ${subdir} credential (owner-only) in ${provider_dir}/provider.env"
+    if [[ "$announce" != "quiet" ]]; then
+        print_success "Provisioned ${subdir} credential (owner-only) in ${provider_dir}/provider.env"
+    fi
     return 0
 }
 
@@ -666,16 +673,19 @@ provider_credential_flow() {
         # Hand the secret to the shared writer under the name it must be
         # stored as: one owner-only write path for both credential flows.
         printf -v "$prompt_var" '%s' "$secret"
-        if ! provision_provider_credential "$dir" "$subdir" "$prompt_var" "$prompt_var"; then
+        if ! provision_provider_credential "$dir" "$subdir" "$prompt_var" "$prompt_var" quiet; then
             unset "$prompt_var"
             print_error "Could not write the ${id} credential to ${env_file}"
             return 1
         fi
         unset "$prompt_var"
 
-        # The proof is a real completion, not the write (Issue #3234).
-        # `provision_provider_credential` already reported the write itself.
-        if ! provider_credential_is_valid "$id" "$env_file"; then
+        # The proof is a real completion, not the write (Issue #3234): the
+        # write itself is announced only once it has survived validation, so a
+        # credential that never authenticated never prints a success line.
+        if provider_credential_is_valid "$id" "$env_file"; then
+            print_success "Provisioned ${id} credential (owner-only) in ${env_file}"
+        else
             rm -f "$env_file"
             print_warning "The new ${id} credential failed validation (${id} could not authenticate with it)"
         fi
@@ -1278,8 +1288,10 @@ main() {
     provision_vibe_credentials
 
     # Which coding agents this host runs decides which credentials it is asked
-    # for (Issue #730). Resolved once, from the same seam the prerequisite
-    # probe uses, so the probe and the prompts can never disagree.
+    # for (Issue #730). Both this and the prerequisite probe above read the
+    # selection through the same seam (worker/deno/setup/agent_providers.ts)
+    # from the same file, so the tools the probe demanded and the credentials
+    # the prompts ask for describe one host, not two.
     local provider_list provider_id
     provider_list="$(configured_agent_providers)" || exit 1
     local -a agent_providers=()
@@ -1288,12 +1300,18 @@ main() {
             agent_providers+=("$provider_id")
         fi
     done <<< "$provider_list"
+    # An empty set is a fault in the resolution, not a licence to guess: the
+    # default provider here would prompt a Codex host for a Claude token.
+    if [[ ${#agent_providers[@]} -eq 0 ]]; then
+        print_error "No coding-agent provider resolved from ${CONFIG_FILE} — fix agent_provider/agent_providers and re-run setup"
+        exit 1
+    fi
 
     # Fill remaining credential gaps interactively (Issues #4161, #730): offer
     # to copy the existing gh identity, then run one credential flow per
     # configured provider — Claude's OAuth token only on a host that runs
     # Claude.
-    prompt_interactive_credentials ${agent_providers[@]+"${agent_providers[@]}"}
+    prompt_interactive_credentials "${agent_providers[@]}"
 
     # Prompt interactively when running in a terminal (Issue #583)
     prompt_interactive_config

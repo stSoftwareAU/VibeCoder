@@ -14,7 +14,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   readConfiguredAgentProviders,
   resolveSetupAgentProviderIds,
@@ -23,6 +23,7 @@ import {
   checkAllPrerequisites,
   checkClaudeCli,
   type PrerequisiteOptions,
+  probedAgentProviders,
 } from "../setup/prerequisites.ts";
 import { prerequisiteSummaryLines } from "../setup/setup_cli.ts";
 import {
@@ -217,6 +218,67 @@ Deno.test("checkAllPrerequisites - a two-provider host requires the claude CLI",
     ]),
   );
   assertEquals(present.ok, true);
+});
+
+Deno.test("probedAgentProviders - an empty set is a fault, not a fallback to Claude", () => {
+  // Omitting the option probes for the default provider (every pre-existing
+  // caller); handing the probe an empty set means the resolution failed, and
+  // guessing Claude there is the silent wrong answer.
+  assertEquals(probedAgentProviders(), [CLAUDE_PROVIDER_ID]);
+  assertEquals(probedAgentProviders({ agentProviders: [CODEX_PROVIDER_ID] }), [
+    CODEX_PROVIDER_ID,
+  ]);
+  const error = assertThrows(
+    () => probedAgentProviders({ agentProviders: [] }),
+    Error,
+  );
+  assert(error.message.includes("empty"), error.message);
+});
+
+Deno.test("setup_cli agent-providers - prints the ids, and prints nothing at all for a broken selection", async () => {
+  // The contract setup.sh depends on: ids on stdout, or a non-zero exit with
+  // an empty stdout so the shell cannot read a guess.
+  const dir = await Deno.makeTempDir();
+  try {
+    const cli = new URL("../setup/setup_cli.ts", import.meta.url).pathname;
+    const run = async (config: string) => {
+      const { code, stdout, stderr } = await new Deno.Command(Deno.execPath(), {
+        args: [
+          "run",
+          "--allow-all",
+          cli,
+          "agent-providers",
+          "--config-path",
+          config,
+        ],
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      return {
+        code,
+        stdout: new TextDecoder().decode(stdout),
+        stderr: new TextDecoder().decode(stderr),
+      };
+    };
+
+    const good = await run(
+      await configFile(dir, {
+        agent_provider: CODEX_PROVIDER_ID,
+      }),
+    );
+    assertEquals(good.code, 0, good.stderr);
+    assertEquals(good.stdout.trim(), CODEX_PROVIDER_ID);
+
+    const brokenPath = `${dir}/broken.json`;
+    await Deno.writeTextFile(brokenPath, "{ not json");
+    const broken = await run(brokenPath);
+    assertEquals(broken.code, 1);
+    assertEquals(broken.stdout, "");
+    assert(broken.stderr.includes(brokenPath), broken.stderr);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("prerequisiteSummaryLines - names the claude CLI only when Claude is configured", () => {

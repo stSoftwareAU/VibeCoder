@@ -22,6 +22,7 @@ import {
 import {
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
+  DEFAULT_AGENT_PROVIDER_ID,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 
@@ -94,7 +95,8 @@ function assertNoClaudePrompt(output: string): void {
 }
 
 const codexCredentials = resolveAgentProvider(CODEX_PROVIDER_ID).credentials;
-const claudeSubdir = resolveAgentProvider(CLAUDE_PROVIDER_ID).credentials.subdir;
+const claudeSubdir =
+  resolveAgentProvider(CLAUDE_PROVIDER_ID).credentials.subdir;
 
 Deno.test("interactive_credentials_flow - a Codex-only host is asked for the Codex credential, never Claude's", async () => {
   const tmp = await Deno.makeTempDir();
@@ -300,7 +302,9 @@ Deno.test("setup.sh - a Codex-only host with no claude CLI reaches the configura
       `${bin}/gh`,
       '#!/bin/bash\nif [[ "$1 $2" == "api user" ]]; then echo worker; fi\nexit 0\n',
     );
-    for (const stub of ["docker", "gh"]) await Deno.chmod(`${bin}/${stub}`, 0o755);
+    for (const stub of ["docker", "gh"]) {
+      await Deno.chmod(`${bin}/${stub}`, 0o755);
+    }
     for (const real of ["git", "deno"]) {
       const path = real === "deno"
         ? Deno.execPath()
@@ -328,7 +332,7 @@ Deno.test("setup.sh - a Codex-only host with no claude CLI reaches the configura
         "run_setup_cli prerequisites",
         "provision_vibe_credentials",
         'providers="$(configured_agent_providers)"',
-        'prompt_interactive_credentials $providers',
+        "prompt_interactive_credentials $providers",
         "prompt_interactive_config",
         "run_setup_cli config",
       ].join("\n    "),
@@ -354,6 +358,70 @@ Deno.test("setup.sh - a Codex-only host with no claude CLI reaches the configura
     // And the report says which providers it probed for.
     assert(output.includes(CODEX_PROVIDER_ID), output);
     assertNoClaudePrompt(output);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("provider_credential_flow - a provider with no credential row fails loudly", async () => {
+  // The credential table is what makes the loop provider-agnostic; a provider
+  // missing from it must stop the flow, not be skipped into a preflight
+  // failure at first run.
+  const tmp = await Deno.makeTempDir();
+  try {
+    const { code, output } = await runSetupFunction(
+      tmp,
+      `provider_credential_flow "$(credential_dir)" aider`,
+    );
+    assertEquals(code, 1, output);
+    assert(output.includes("aider"), output);
+    assert(output.includes("vibe_provider_credential_table"), output);
+    assertEquals(await exists(`${tmp}/.vibe-coder/credentials/aider`), false);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("configured_agent_providers - an unusable selection stops setup rather than guessing", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const config = `${tmp}/.config.json`;
+    await Deno.writeTextFile(config, "{ not json");
+    const { code, output } = await runSetupFunction(
+      tmp,
+      "configured_agent_providers",
+      {
+        configFile: config,
+        path: `${Deno.execPath().replace(/\/[^/]+$/, "")}:/usr/bin:/bin`,
+        env: {
+          DENO_DIR: Deno.env.get("DENO_DIR") ??
+            `${Deno.env.get("HOME")}/.cache/deno`,
+        },
+      },
+    );
+    assertEquals(code, 1, output);
+    // Never a provider id on stdout: the caller must not read a guess.
+    assert(
+      !output.split("\n").some((line) => line.trim() === CLAUDE_PROVIDER_ID),
+      `no provider id may be printed for a broken configuration: ${output}`,
+    );
+    assert(output.includes(config), output);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("setup.sh - the default provider mirrors the registered default", async () => {
+  // VIBE_DEFAULT_AGENT_PROVIDER is a shell copy of DEFAULT_AGENT_PROVIDER_ID;
+  // this fails the gate if the two ever drift.
+  const tmp = await Deno.makeTempDir();
+  try {
+    const { code, output } = await runSetupFunction(
+      tmp,
+      'printf "%s\\n" "$VIBE_DEFAULT_AGENT_PROVIDER"',
+    );
+    assertEquals(code, 0, output);
+    assertEquals(output.trim(), DEFAULT_AGENT_PROVIDER_ID);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
