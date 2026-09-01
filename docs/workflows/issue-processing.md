@@ -668,6 +668,17 @@ to surface, not a pass. The gate comments on the issue naming every rule broken
 and the required shape, so the next attempt is productive. Issues with **no**
 acceptance criteria are unaffected: the gate does not apply and nothing changes.
 
+**One shape, both gates.** The remediation comment prints
+[`REVIEW_BLOCK_TEMPLATE`](../../worker/deno/lib/review_block_template.ts) — the
+whole two-axis block, `## Standards Review` included — and so does the
+independent-review gate below. A blocked run writes its next summary from the
+comment it was just handed, so two templates meant two shapes: the closure
+gate's `unrequested` line carried no `reviewer:` field, the independent gate
+rejected exactly that, and Issue #728 died in `completion` four times over
+copying one gate's answer into the other's rejection. `review_block_template_test.ts`
+feeds the printed block back through both validators, so the shapes cannot
+drift apart again (Issue #751).
+
 ```mermaid
 flowchart TD
     P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/"]
