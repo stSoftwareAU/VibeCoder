@@ -1,12 +1,20 @@
 /**
  * Integration tests for the acceptance-criteria closure gate running in the
- * LIVE completion phase (Issue #518).
+ * LIVE completion phase (Issue #518), and for the independent two-axis review
+ * gate that now sits beside it (Issue #663).
  *
  * The planner publishes `## Acceptance Criteria` into every sub-issue and
  * nothing downstream read it back, so a run could raise a PR that never said
  * which criteria it met. These tests drive `workOnIssueCompletion` — the path
  * `issue_worker.ts` actually runs — and assert on the observable outcome
  * (whether `gh pr create` was invoked), not on how the gate is called.
+ *
+ * Issue #663 changed what a passing summary looks like: the closure block must
+ * also record the independent Spec reviewer's provenance and per-entry verdict,
+ * and the Standards axis must be reported under its own heading. Only
+ * `SUMMARY_WITH_BLOCK` was updated for that — the existing assertions are
+ * unchanged, and `SUMMARY_SELF_ASSESSED` keeps the old shape as the negative
+ * control for the new gate.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -45,8 +53,8 @@ Closed the loop. Closes #518.
 - \`worker/deno/tests/acceptance_criteria_gate_test.ts\`
 `;
 
-/** The same summary carrying the closure block. */
-const SUMMARY_WITH_BLOCK = `## Summary
+/** The same summary carrying the closure block, self-assessed (Issue #663). */
+const SUMMARY_SELF_ASSESSED = `## Summary
 
 Closed the loop. Closes #518.
 
@@ -54,6 +62,29 @@ Closed the loop. Closes #518.
 
 - **met** — the prompt requires the closure block — evidence: \`prompts/issue/v36.md\`
 - **met** — a test drives the verifier both ways — evidence: \`worker/deno/tests/acceptance_criteria_gate_test.ts\`
+
+## Test Plan
+
+- \`worker/deno/tests/acceptance_criteria_gate_test.ts\`
+`;
+
+/** The closure block as both gates now require it: judged independently. */
+const SUMMARY_WITH_BLOCK = `## Summary
+
+Closed the loop. Closes #518.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the prompt requires the closure block — evidence: \`prompts/issue/v36.md\` — reviewer: met
+- **met** — a test drives the verifier both ways — evidence: \`worker/deno/tests/acceptance_criteria_gate_test.ts\` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, TDD, fail-loud error handling
 
 ## Test Plan
 
@@ -196,6 +227,23 @@ Deno.test(
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.comments.length, 0);
+  },
+);
+
+Deno.test(
+  "completion - a self-assessed closure block is blocked by the review gate",
+  async () => {
+    const outcome = await runCompletion(
+      ISSUE_WITH_CRITERIA,
+      SUMMARY_SELF_ASSESSED,
+    );
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertStringIncludes(outcome.reason ?? "", "Independent Spec/Standards");
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.comments[0]!, "Independent review missing");
+    assertStringIncludes(outcome.comments[0]!, "vibe-spec-review");
   },
 );
 

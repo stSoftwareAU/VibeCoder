@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how th
 
 ## ⚡ TL;DR
 
-**When a CI check fails on a PR authored by the configured GitHub user, the worker automatically attempts to fix it.** It extracts failure annotations (file, line, message), classifies the failure (test, build, lint, infrastructure, transient —), sends them to Claude with the `ci_fix` prompt (currently `v4`), and pushes a fix commit. The worker retries up to 3 times per check before giving up and posting a classifier-aware comment. CI fix runs at **priority 1.55** — after PR feedback (1) and spelling/quality fixes (1.5), but before branch updates (1.6).
+**When a CI check fails on a PR authored by the configured GitHub user, the worker automatically attempts to fix it.** It extracts failure annotations (file, line, message), classifies the failure (test, build, lint, infrastructure, transient —), sends them to Claude with the latest `ci_fix` prompt (from [`prompts/ci_fix/`](../../prompts/ci_fix/)), and pushes a fix commit. The worker retries up to 3 times per check before giving up and posting a classifier-aware comment. CI fix runs at **priority 1.55** — after PR feedback (1) and spelling/quality fixes (1.5), but before branch updates (1.6).
 
 ```mermaid
 flowchart TD
@@ -76,6 +76,40 @@ flowchart TD
 7. **Quality gate** — If Claude made changes, the worker runs quality checks (`./quality.sh` or the repository's custom quality command). If quality fails, Claude is retried once.
 8. **Commit and push** — Changes are committed with the message `Fix CI failure ($check_name) for PR #$pr_number` and pushed.
 9. **Reply** — The worker posts a comment on the PR with the fix summary from `.pr_response_message`, or a generic message if none was provided.
+
+## 🔁 The reproduction loop before the fix
+
+Until Issue #661 the whole of the prompt's diagnosis guidance was "read the failing test, CI config, and relevant source to find the root cause" — straight to hypothesis, with nothing between a plausible theory and a pushed commit, and no way to tell "the check is green now" from "the check is green because the cause is gone". The `ci_fix` prompt now gates the fix behind a **red-capable command**: one command, run once in the run, that drives the failing path and reproduces the check's own symptom. No red command, no hypothesis.
+
+The gate is **cheap where the failure is mechanical**. A lint violation, a formatting drift, a type error or a `semgrep` finding is already reproduced by the tool that reported it, so running that tool *is* the loop — one line, no ceremony. The rest of the discipline is for failures the log does not explain: an assertion failure, a crash, a flake, an order-dependent test.
+
+- **Bounded, with an honest give-up path.** Roughly three shapes of command; if none goes red the run says which it tried, what each did instead, and why the symptom would not reproduce. A loop that could not be built is a legitimate reportable outcome — a fix guessed without one is not.
+- **Minimise before fixing.** Cut one element at a time, re-running each time, until removing anything left turns it green. What survives is the regression test the fix ships with.
+- **Three to five ranked, falsifiable hypotheses before instrumenting**, each stating the prediction that would kill it. One hypothesis anchors the run on the first plausible idea.
+- **Tagged instrumentation.** Temporary debug logs carry a unique `[DEBUG-…]` prefix so a single `grep -rn "\[DEBUG-" .` clears them before the commit. The pre-existing scratch-file rule only covers files *beside* the source; instrumentation hides *inside* it.
+- **The reply carries the evidence.** Both `.pr_response_message` skeletons — changed-code and no-change — have a `**Reproduction:**` line, so a reviewer sees the command and its symptom, or the commands tried and why none went red.
+
+```mermaid
+flowchart TD
+    F["Failing check"] --> M{"Does the tool output<br/>already name file + rule?"}
+    M -->|"yes — lint, format,<br/>type, semgrep"| T["Run that tool once<br/>(the loop, in one line)"]
+    M -->|"no — assertion, crash,<br/>flake, order-dependent"| L["Build a red-capable command<br/>deterministic · seconds · unattended"]
+    L --> R{"Red within a<br/>bounded attempt?"}
+    R -->|no| N["No-change reply:<br/>commands tried, what each did"]
+    R -->|yes| S["Minimise → regression test"]
+    S --> H["3–5 ranked falsifiable<br/>hypotheses + predictions"]
+    H --> I["Instrument, tagged [DEBUG-…]"]
+    T --> FIX["Fix the root cause"]
+    I --> FIX
+    FIX --> G["Re-run the loop: green,<br/>grep out [DEBUG-…]"]
+    style F fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style M fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style N fill:#707070,stroke:,color:#fff
+    style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+```
+
+The reporting end of the same discipline is the `## Reproduction` block a `bug`-labelled issue run must write — see [Issue processing § Reproduction status](issue-processing.md#-reproduction-status-on-a-bug-fix). Credit for the phase-gated shape belongs to [mattpocock/skills](https://github.com/mattpocock/skills) (see [REFERENCES.md](../REFERENCES.md)); the bound and the give-up path are ours, because these runs are unattended and budgeted.
 
 ## 🔒 Cross-host locking
 

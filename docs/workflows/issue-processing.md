@@ -646,7 +646,7 @@ inside the existing implementation run rather than as a new loop (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
 
 **What the run must produce.** When the issue body carries a
-`## Acceptance Criteria` section, `prompts/issue/v37.md` requires the run to walk
+`## Acceptance Criteria` section, `prompts/issue/` requires the run to walk
 each criterion before writing the PR summary and record the assessment as a
 `## Acceptance Criteria` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md`:
@@ -670,7 +670,7 @@ acceptance criteria are unaffected: the gate does not apply and nothing changes.
 
 ```mermaid
 flowchart TD
-    P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/v37.md"]
+    P["Planner publishes sub-issue<br/>## Acceptance Criteria"] --> I["Implementation run<br/>prompts/issue/"]
     I --> S["PR summary carries<br/>## Acceptance Criteria block"]
     S --> G{"Closure gate<br/>every criterion assessed,<br/>evidence + reasons present?"}
     G -->|yes| PR["PR created"]
@@ -678,6 +678,66 @@ flowchart TD
     N["Issue with no criteria"] --> PR
     style P fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style B fill:#c45858,stroke:#6b2020,color:#fff
+```
+
+## 🔍 Independent review on two axes
+
+The closure block above says **which** criteria were met; Issue #663 added **who
+judged them**. Until then the verdict was self-assessed by the agent that wrote
+the code, in the same context that produced it — which is why the prompt had to
+counter-steer in wording ("do not inflate a status", "when in doubt use
+`partial`"). Adopted from `skills/engineering/code-review/SKILL.md` in
+[mattpocock/skills](https://github.com/mattpocock/skills), which solves the same
+problem structurally: review the diff on two axes, in independent sub-agent
+contexts so they cannot pollute each other, and report them under separate
+headings.
+
+**What the run must produce.** When the issue states criteria, `prompts/issue/`
+dispatches two reviewer sub-agents in parallel before the PR summary is written,
+each given the finished diff and nothing from the author's context:
+
+- **Spec reviewer** — inputs `git diff <base>...HEAD` and the issue body. Three
+  questions: which requirements are missing or partial, what behaviour is in the
+  diff that was not asked for, and which requirements look implemented but are
+  implemented wrongly. Its verdicts populate the `## Acceptance Criteria` block,
+  one `reviewer:` verdict per entry.
+- **Standards reviewer** — inputs the same diff and `CODING-STANDARDS.md`. Its
+  findings go under a separate `## Standards Review` heading as `violation`
+  entries (with `file:line` and whether the violation was fixed) and the `clean`
+  areas it checked.
+
+**The reviewer challenges; it does not silently win.** A reviewer that saw only
+the diff is sometimes wrong about a criterion satisfied by code it could not
+see, so the run may depart from its verdict — but only out loud, keeping the
+`reviewer:` field as written and adding a one-line `reason:`. An unrecorded
+departure is the self-assessment the axis exists to remove.
+
+**The gate.** [`independent_review_gate.ts`](../../worker/deno/lib/independent_review_gate.ts)
+runs beside the closure gate at the same PR-creation chokepoint and blocks when
+the criteria block carries no `vibe-spec-review` provenance marker, when an entry
+names no `reviewer:` verdict, when a departure from that verdict carries no
+reason, when the `## Standards Review` section is absent, unsourced or empty,
+when a `violation` names no evidence or outcome, or when either axis carries the
+other's findings — never merged, never reranked, because a change can pass one
+axis and fail the other and reporting them together lets one mask the other.
+Issues with **no** acceptance criteria are unaffected: no reviewers, no blocks,
+no gate.
+
+```mermaid
+flowchart TD
+    D["Diff: git diff base...HEAD"] --> SP["Spec reviewer sub-agent<br/>diff + issue body"]
+    D --> ST["Standards reviewer sub-agent<br/>diff + CODING-STANDARDS.md"]
+    SP --> AC["## Acceptance Criteria<br/>met / partial / missing + reviewer:"]
+    ST --> SR["## Standards Review<br/>violation / clean"]
+    AC --> G{"Independent-review gate<br/>provenance, verdicts,<br/>axes kept apart?"}
+    SR --> G
+    G -->|yes| PR["PR created"]
+    G -->|no| B["Blocked: comment names<br/>each rule broken; run fails"]
+    style SP fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style ST fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style G fill:#7aa8d4,stroke:#1d3f5a,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style B fill:#c45858,stroke:#6b2020,color:#fff
 ```
@@ -696,7 +756,7 @@ not the three-command structure: no new label, no new priority tier, no separate
 lane — just a conditional block in the existing PR-summary contract.
 
 **What the run must produce.** When the issue carries the `bug` label,
-`prompts/issue/v37.md` requires a `## Reproduction` block in
+`prompts/issue/` requires a `## Reproduction` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md` recording three things — the
 symptom, the status, and the regression test that covers it:
 
@@ -715,6 +775,18 @@ symptom, the status, and the regression test that covers it:
 - **`not-run`** — the reproduction was not performed, with a one-line `reason:`.
   This is a legitimate, reportable outcome, not a failure to hide.
 
+**How a run climbs to `verified`.** The three statuses defined what to report but
+not how to get there, so a hard bug degraded to `not-run` with no ladder to
+climb (Issue #661). The prompt now names the method, and it is the same loop the
+[CI-fix workflow](ci-fix.md#-the-reproduction-loop-before-the-fix) gained: build a
+**red-capable command** first — deterministic, seconds, unattended (`< /dev/null`),
+narrow — run it against the unfixed code and watch it go red; **minimise** the red
+scenario one element at a time until removing anything left turns it green, and
+that minimised scenario is the regression test; apply the fix and watch the same
+command go green. The attempt is bounded, and a loop that never went red is
+reported as `partial` or `not-run` naming what was tried — the ladder has an
+honest bottom rung, which is why it does not become a licence to over-claim.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
@@ -726,7 +798,7 @@ required shape. Issues **without** the `bug` label are unaffected.
 
 ```mermaid
 flowchart TD
-    B["Issue labelled bug"] --> I["Implementation run<br/>prompts/issue/v37.md"]
+    B["Issue labelled bug"] --> I["Implementation run<br/>prompts/issue/"]
     I --> S["PR summary carries<br/>## Reproduction block"]
     S --> G{"Reproduction gate<br/>symptom + status + test?<br/>verified only if observed?"}
     G -->|yes| PR["PR created"]
