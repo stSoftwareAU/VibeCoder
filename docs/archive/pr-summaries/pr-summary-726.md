@@ -76,6 +76,43 @@ flowchart TD
     E --> G["tool-versions.json published on the release"]
 ```
 
+## Quality gate
+
+`./quality.sh` passes every check except `deno tests`, which fails on **three
+pre-existing, environment-caused failures unrelated to this diff** — stated
+plainly rather than reported as a pass:
+
+```text
+./tests/run_core_rate_limit_resume_test.ts (uncaught error)
+./tests/run_core_test.ts (uncaught error)
+  error: gh command failed: GraphQL: API rate limit already exceeded for user ID …
+applyServiceAccountEnv - an unwritable gh config dir is restaged writable
+  => ./tests/service_account_env_test.ts:385
+  [Diff] Actual: /home/vibe/auto-issue-work/.container-state/gh-config
+       Expected: /tmp/f942638d94370d56/vibe-gh-config
+FAILED | 16529 passed (4 steps) | 33 failed | 48 ignored (8m52s)
+```
+
+The first two exhaust the host's GitHub API rate limit; the third reads the
+live worker's own `gh` config staging (the same host state that logged
+`[SECURITY] cannot re-stage the gh credential` during this run). None of the
+three files import `software_updates.ts`, `tool_release_age.ts` or
+`release_manifest.ts`, and `Validate Scripts` is green on `main` and on the
+PRs merged either side of this one.
+
+The tests this change touches pass under the gate's exact flags:
+
+```console
+$ deno test --no-check --allow-read --allow-env --allow-run --allow-write \
+    --allow-sys=hostname tests/tool_release_age_test.ts \
+    tests/software_updates_test.ts tests/release_manifest_command_test.ts \
+    tests/release_manifest_test.ts
+ok | 188 passed | 0 failed (30s)
+```
+
+Every other gate check — lint, type check, fmt, markdownlint, mermaid, semgrep,
+the chokepoint and workflow-hygiene checks — passed.
+
 ## Test Plan
 
 Added — `worker/deno/tests/tool_release_age_test.ts`:
