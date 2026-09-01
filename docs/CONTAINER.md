@@ -29,8 +29,8 @@ setting and [Containment](CONTAINMENT.md) for the boundary.
 
 | Component                        | Source                                             | Pinned by                       |
 | -------------------------------- | -------------------------------------------------- | ------------------------------- |
-| `bash`, GNU coreutils (`timeout`), `git` (≥ 2.41), `curl`, CA certificates, `ruby` (≥ 3.1) | `ruby:3.4-trixie` base image | Image digest                    |
-| `deno`                           | `denoland/deno:bin-*` build stage                   | Image digest                    |
+| `bash`, GNU coreutils (`timeout`), `git` (≥ 2.41), `curl`, CA certificates, `ruby` (≥ 3.1) | `docker.io/library/ruby:3.4-trixie` base image | Image digest                    |
+| `deno`                           | `docker.io/denoland/deno:bin-*` build stage                   | Image digest                    |
 | `gh`                             | GitHub release tarball                              | Version + SHA-256 per architecture |
 | `jq`                             | GitHub release binary                               | Version + SHA-256 per architecture |
 | the coding-agent binaries (`claude`, …) | one `container/providers/<id>.sh` per id in `AGENT_PROVIDERS` | Version + SHA-256 per architecture |

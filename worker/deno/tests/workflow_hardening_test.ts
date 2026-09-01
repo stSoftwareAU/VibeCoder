@@ -86,7 +86,8 @@ Deno.test(".deno-version / .node-version - agree with the container image's pins
     new URL("container/Containerfile", REPO_ROOT),
   );
   const denoImage = containerfile.match(
-    /^ARG DENO_IMAGE="denoland\/deno:bin-([0-9.]+)@/m,
+    // The reference is registry-qualified for Podman (Issue #728).
+    /^ARG DENO_IMAGE="[^"]*denoland\/deno:bin-([0-9.]+)@/m,
   )?.[1];
   const nodeArg = containerfile.match(/^ARG NODE_VERSION="([0-9.]+)"/m)?.[1];
   assertEquals(

@@ -28,8 +28,8 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Image | Digest | Declared in | Verdict |
 | --- | --- | --- | --- |
-| denoland/deno:bin-2.9.6 | sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba | container/Containerfile:14 (ARG DENO_IMAGE) | digest-pinned |
-| ruby:3.4-trixie | sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b | container/Containerfile:16 (ARG BASE_IMAGE) | digest-pinned |
+| docker.io/denoland/deno:bin-2.9.6 | sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba | container/Containerfile:14 (ARG DENO_IMAGE) | digest-pinned |
+| docker.io/library/ruby:3.4-trixie | sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b | container/Containerfile:16 (ARG BASE_IMAGE) | digest-pinned |
 
 ## Container tools (container/tools.json)
 

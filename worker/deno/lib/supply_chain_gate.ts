@@ -22,6 +22,9 @@
  *                             reason.
  *   - `container-base-digest` every `FROM` under `container/` resolves to an
  *                             `@sha256:` digest, through `ARG` defaults.
+ *   - `container-base-registry` every such `FROM` also names its registry, so
+ *                             Podman's enforcing short-name mode can resolve
+ *                             it on a fresh host (Issue #728).
  *   - `renovate-automerge` /  Renovate may auto-merge only pin-class updates
  *     `renovate-release-age`  and must keep the release-age quarantine.
  *   - `inventory-stale`       `docs/audits/dependency-inventory.md` matches
@@ -36,6 +39,7 @@
  */
 
 import { extractUsesValue } from "./action_pin_scanner.ts";
+import { isRegistryQualifiedImage } from "./container_manifest.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,6 +51,7 @@ export type GateRule =
   | "action-pin-comment"
   | "deno-frozen"
   | "container-base-digest"
+  | "container-base-registry"
   | "renovate-automerge"
   | "renovate-release-age"
   | "renovate-parse"
@@ -679,6 +684,36 @@ export function findTagOnlyBaseImages(
     }));
 }
 
+/**
+ * Flag every `FROM` whose resolved image does not name its registry
+ * (Issue #728).
+ *
+ * Docker resolves a short name against Docker Hub; Podman's default
+ * `short-name-mode = "enforcing"` refuses to guess one, so an unqualified
+ * base image fails to build on a host with no `unqualified-search-registries`.
+ *
+ * @param file - Repo-relative path, for the finding.
+ * @param text - Raw Containerfile text.
+ * @returns One finding per unqualified reference; empty when all are
+ *   registry-qualified.
+ */
+export function findUnqualifiedBaseImages(
+  file: string,
+  text: string,
+): GateFinding[] {
+  return listBaseImages(text)
+    .filter((ref) => !isRegistryQualifiedImage(ref.resolved))
+    .map((ref) => ({
+      rule: "container-base-registry" as const,
+      file,
+      line: ref.line,
+      message: `FROM ${ref.raw}` +
+        (ref.arg ? ` resolves via ARG ${ref.arg} to` : " is") +
+        ` "${ref.resolved}", a short name Podman cannot resolve without a ` +
+        `search registry — name the registry (e.g. docker.io/library/...)`,
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // (d) Renovate policy
 // ---------------------------------------------------------------------------
@@ -1237,6 +1272,7 @@ export async function runSupplyChainGate(
     checked.containerFiles++;
     checked.baseImages += listBaseImages(text).length;
     findings.push(...findTagOnlyBaseImages(file, text));
+    findings.push(...findUnqualifiedBaseImages(file, text));
   }
 
   const renovate = await readOptional(repoDir, "renovate.json");
