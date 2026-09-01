@@ -46,6 +46,7 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   AGENT_PROVIDER_CONFIG_KEY,
+  agentProvidersBuildValue,
   ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
   enabledAgentProviders,
 } from "../lib/agent_provider.ts";
@@ -191,11 +192,22 @@ export async function buildLaunchPlanForCommand(
   const { tools, specJson: containerToolsSpecJson } =
     await readContainerToolsSelection(hostPaths.configFile);
 
-  // The selected tools are baked into the image, so they are part of its
-  // identity (Issue #73) — the plan must name the tag the build produces, not
-  // a tools-free one another deployment's cache would satisfy.
+  // One resolution of the enabled set for the whole launch (Issue #729): the
+  // credential mounts, the build argument and the image tag all come from this
+  // value, so a `.config.json` selection cannot mean one provider set to the
+  // mounts and another to the build — which is exactly the reported defect.
+  const providers = enabledAgentProviders(selection);
+  const agentProviders = agentProvidersBuildValue(
+    providers.map((provider) => provider.id),
+    manifest.installedProviders,
+  );
+
+  // The selected tools and providers are baked into the image, so they are part
+  // of its identity (Issues #73, #729) — the plan must name the tag the build
+  // produces, not one another deployment's cache would satisfy.
   const image = await resolveContainerImageReference(baseDir, {
     containerTools: tools,
+    ...(agentProviders ? { agentProviders } : {}),
   });
 
   // Stage the configuration into its own directory for the read-only mount.
@@ -301,7 +313,7 @@ export async function buildLaunchPlanForCommand(
     containerName,
     watchdogSeconds,
     hostPaths,
-    agentProviders: enabledAgentProviders(selection),
+    agentProviders: providers,
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),

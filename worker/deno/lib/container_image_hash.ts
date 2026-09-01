@@ -12,11 +12,13 @@
  * genuinely change what the image contains belong in the list.
  *
  * Not every input is a committed file. The deployer-selected `container_tools`
- * spec (Issue #73, parent #5) is baked into the image by the build, so it is
- * mixed into the hash alongside the enumerated files — two deployments that
- * select different tool sets must build different images, or one host's cached
- * `vibe-coder:<hash>` silently satisfies another host's requirement and the
- * selected tool is quietly missing.
+ * spec (Issue #73, parent #5) and the deployment's coding-agent provider set
+ * (Issue #729) are both baked into the image by the build, so they are mixed
+ * into the hash alongside the enumerated files — two deployments that select
+ * different tool sets or different agents must build different images, or one
+ * host's cached `vibe-coder:<hash>` silently satisfies another host's
+ * requirement and the selected tool, or the selected agent, is quietly
+ * missing.
  *
  * Fails loud: a missing enumerated input throws with the path named, and a
  * malformed tool spec throws with the offending field named, rather than
@@ -75,6 +77,15 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
  */
 export const CONTAINER_TOOLS_HASH_INPUT = "container_tools";
 
+/**
+ * Label the selected coding-agent provider set is hashed under (Issue #729).
+ *
+ * Like the tool spec, the set comes from the deployment's `.config.json` and
+ * is baked into the image by the build's `AGENT_PROVIDERS` argument, so it
+ * sits beside {@link CONTAINER_IMAGE_INPUTS} rather than inside it.
+ */
+export const AGENT_PROVIDERS_HASH_INPUT = "agent_providers";
+
 /** What a caller may mix into the hash beyond the enumerated files. */
 export interface ContainerImageHashOptions {
   /**
@@ -87,6 +98,17 @@ export interface ContainerImageHashOptions {
    * with the offending field named instead of silently changing the tag.
    */
   containerTools?: unknown;
+  /**
+   * The `AGENT_PROVIDERS` value this deployment's build passes (Issue #729),
+   * as {@link agentProvidersBuildValue} derives it from the enabled set.
+   *
+   * Absent or empty means the build takes the image's default set, and
+   * produces exactly the tag the enumerated files alone produce — so a fleet
+   * that never selects a provider does not rebuild. Any other set is a
+   * different image: without this a host switching to Codex would keep
+   * reusing the cached Claude image under an identical tag.
+   */
+  agentProviders?: string;
 }
 
 const encoder = new TextEncoder();
@@ -196,26 +218,28 @@ export async function computeContainerImageHash(
   // that is wrong rather than on whatever the filesystem complains about next.
   const spec = canonicalContainerToolsSpec(options.containerTools);
 
-  for (const relative of CONTAINER_IMAGE_INPUTS) {
-    const bytes = await readInput(repoRoot, relative);
+  /** Frame one input by label and byte length, then its bytes. */
+  const push = (label: string, bytes: Uint8Array): void => {
     parts.push(
       encoder.encode(
-        `${relative}${FIELD_SEPARATOR}${bytes.length}${FIELD_SEPARATOR}`,
+        `${label}${FIELD_SEPARATOR}${bytes.length}${FIELD_SEPARATOR}`,
       ),
     );
     parts.push(bytes);
     parts.push(encoder.encode("\n"));
+  };
+
+  for (const relative of CONTAINER_IMAGE_INPUTS) {
+    push(relative, await readInput(repoRoot, relative));
   }
 
-  if (spec !== "") {
-    const bytes = encoder.encode(spec);
-    parts.push(
-      encoder.encode(
-        `${CONTAINER_TOOLS_HASH_INPUT}${FIELD_SEPARATOR}${bytes.length}${FIELD_SEPARATOR}`,
-      ),
-    );
-    parts.push(bytes);
-    parts.push(encoder.encode("\n"));
+  if (spec !== "") push(CONTAINER_TOOLS_HASH_INPUT, encoder.encode(spec));
+
+  // The provider set (Issue #729), last so a deployment that selects none
+  // hashes exactly the byte stream it did before this issue.
+  const providers = options.agentProviders?.trim() ?? "";
+  if (providers !== "") {
+    push(AGENT_PROVIDERS_HASH_INPUT, encoder.encode(providers));
   }
 
   const total = parts.reduce((sum, part) => sum + part.length, 0);

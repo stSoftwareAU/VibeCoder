@@ -18,6 +18,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  AGENT_PROVIDERS_HASH_INPUT,
   canonicalContainerToolsSpec,
   computeContainerImageHash,
   CONTAINER_IMAGE_INPUTS,
@@ -58,6 +59,15 @@ async function fakeRepo(): Promise<string> {
   for (const relative of CONTAINER_IMAGE_INPUTS) {
     await writeInput(root, relative, `contents of ${relative}\n`);
   }
+  // The real manifest, because the command reads `installedProviders` from it
+  // to decide whether this deployment's provider set overrides the image
+  // default (Issue #729). Its bytes are hashed like any other input, and every
+  // assertion here compares references derived from this same root.
+  await writeInput(
+    root,
+    "container/tools.json",
+    await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
+  );
   await writeInput(root, "docs/NOTES.md", "unrelated documentation\n");
   await writeInput(root, "worker/deno/mod.ts", "// unrelated source\n");
   return root;
@@ -558,6 +568,51 @@ async function writeConfig(root: string, containerTools: unknown) {
   );
 }
 
+/**
+ * Run `fn` with the provider environment overrides cleared (#729).
+ *
+ * The suite itself runs inside a worker image, which stamps
+ * `VIBE_IMAGE_AGENT_PROVIDERS`; leaving it set would have the command judge a
+ * configured set against *this* image rather than the one the test's fake
+ * repository describes.
+ */
+async function withoutProviderEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const names = [
+    "VIBE_IMAGE_AGENT_PROVIDERS",
+    "VIBE_AGENT_PROVIDER",
+    "VIBE_AGENT_PROVIDERS",
+  ];
+  const saved = names.map((name) => [name, Deno.env.get(name)] as const);
+  for (const [name] of saved) Deno.env.delete(name);
+  try {
+    return await fn();
+  } finally {
+    for (const [name, value] of saved) {
+      if (value !== undefined) Deno.env.set(name, value);
+    }
+  }
+}
+
+/** Write a `.config.json` selecting a coding-agent provider set (#729). */
+async function writeProviderConfig(
+  root: string,
+  active: string,
+  enabled: string[],
+) {
+  await Deno.writeTextFile(
+    `${root}/.config.json`,
+    JSON.stringify(
+      {
+        repos: ["stSoftwareAU/VibeCoder"],
+        agent_provider: active,
+        agent_providers: enabled,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 Deno.test("container-image-hash - prints the reference for the given base dir", async () => {
   const root = await fakeRepo();
   try {
@@ -690,6 +745,86 @@ Deno.test("container-image-hash - an absent config selects no tools", async () =
 
     assertEquals(result.success, true);
     assertEquals(result.message, await resolveContainerImageReference(root));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+// The provider set is baked into the image too (Issue #729): a host that
+// switches to Codex must be told to rebuild, not handed the tag of the Claude
+// image it already has.
+Deno.test("container-image-hash - the configured provider set moves the printed reference", async () => {
+  const root = await fakeRepo();
+  try {
+    await writeProviderConfig(root, "codex", ["codex"]);
+
+    const result = await withoutProviderEnv(() =>
+      containerImageHashCommand.execute(
+        commandArgs(root),
+        buildDefaultWorkerConfig(),
+      )
+    );
+
+    const data = result.data as {
+      image: string;
+      inputs: string[];
+      agentProviders: string;
+    };
+    assertEquals(result.success, true);
+    assertEquals(data.agentProviders, "codex");
+    assertEquals(
+      data.inputs,
+      [...CONTAINER_IMAGE_INPUTS, AGENT_PROVIDERS_HASH_INPUT],
+    );
+    assertEquals(
+      data.image,
+      await resolveContainerImageReference(root, { agentProviders: "codex" }),
+    );
+    assert(
+      data.image !== await resolveContainerImageReference(root),
+      "the configured providers do not change the reference the command prints",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("container-image-hash - selecting the image's own provider set keeps today's reference", async () => {
+  const root = await fakeRepo();
+  try {
+    await writeProviderConfig(root, "claude", ["claude"]);
+
+    const result = await withoutProviderEnv(() =>
+      containerImageHashCommand.execute(
+        commandArgs(root),
+        buildDefaultWorkerConfig(),
+      )
+    );
+
+    const data = result.data as { agentProviders: string; inputs: string[] };
+    assertEquals(result.success, true);
+    assertEquals(result.message, await resolveContainerImageReference(root));
+    assertEquals(data.agentProviders, "");
+    assertEquals(data.inputs, [...CONTAINER_IMAGE_INPUTS]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("container-image-hash - an unsupported provider fails the command, naming the id", async () => {
+  const root = await fakeRepo();
+  try {
+    await writeProviderConfig(root, "kimi", ["kimi"]);
+
+    const result = await withoutProviderEnv(() =>
+      containerImageHashCommand.execute(
+        commandArgs(root),
+        buildDefaultWorkerConfig(),
+      )
+    );
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "kimi");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
