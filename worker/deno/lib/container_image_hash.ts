@@ -50,8 +50,10 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   "container/volume-init.sh",
   "container/tools.json",
   // The provider-set installer (Issue #4105): it decides which fragments run,
-  // so a change to it changes what the image contains. The set itself is the
-  // Containerfile's AGENT_PROVIDERS default, already hashed above.
+  // so a change to it changes what the image contains. The image's *default*
+  // set is the Containerfile's AGENT_PROVIDERS default, already hashed above;
+  // a deployment that selects a different one contributes it separately, under
+  // AGENT_PROVIDERS_HASH_INPUT (Issue #729).
   "container/install-providers.sh",
   // The deployer-supplied tool installer (Issue #71): the build runs it over
   // the VIBE_CONTAINER_TOOLS spec, so a change to it changes what the image

@@ -32,12 +32,8 @@ import {
   resolveContainerImageReference,
 } from "../lib/container_image_hash.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
-import {
-  agentProvidersBuildValue,
-  resolveEnabledAgentProviderIds,
-} from "../lib/agent_provider.ts";
+import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
-import { readAgentProviderSelection } from "./container_launch_plan.ts";
 
 /** What the command reports alongside the printed reference. */
 export interface ContainerImageHashResult {
@@ -88,16 +84,16 @@ async function readAgentProvidersBuildValue(
     throw error;
   }
 
-  const selection = await readAgentProviderSelection(configFile);
   const manifest = parseContainerManifest(
     await Deno.readTextFile(
       `${baseDir.replace(/[/\\]+$/, "")}/container/tools.json`,
     ),
   );
-  return agentProvidersBuildValue(
-    resolveEnabledAgentProviderIds(selection),
+  const { buildValue } = await readConfiguredAgentProviderSet(
+    configFile,
     manifest.installedProviders,
   );
+  return buildValue;
 }
 
 /** Whether a path is absolute on either host style. */

@@ -35,6 +35,8 @@ import {
   CONTAINER_RUNTIMES,
   type ContainerRuntimeDescriptor,
 } from "../lib/container_runtime.ts";
+import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
+import { withoutProviderEnv } from "./fixtures/provider_env.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
@@ -134,6 +136,96 @@ Deno.test("agentProvidersBuildValue - an unusable set fails loud", () => {
       message = (error as Error).message;
     }
     assert(message !== "", `${JSON.stringify(set)} did not throw`);
+    assertStringIncludes(message, expected);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The launcher reads the set the deployment configured (Issue #729)
+// ---------------------------------------------------------------------------
+
+/** Write a `.config.json` carrying a provider selection, and return its path. */
+async function writeConfig(
+  selection: Record<string, unknown>,
+): Promise<string> {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-provider-config-" });
+  const path = `${dir}/.config.json`;
+  await Deno.writeTextFile(
+    path,
+    JSON.stringify({ repos: ["stSoftwareAU/VibeCoder"], ...selection }),
+  );
+  return path;
+}
+
+Deno.test("readConfiguredAgentProviderSet - a Codex-only config resolves to a Codex build", async () => {
+  const path = await writeConfig({
+    agent_provider: "codex",
+    agent_providers: ["codex"],
+  });
+  try {
+    const set = await withoutProviderEnv(() =>
+      readConfiguredAgentProviderSet(path, IMAGE_DEFAULT)
+    );
+
+    // The mounts and the build follow one resolution, not two.
+    assertEquals(set.providers.map((provider) => provider.id), ["codex"]);
+    assertEquals(set.buildValue, "codex");
+  } finally {
+    await Deno.remove(path.slice(0, path.lastIndexOf("/")), {
+      recursive: true,
+    });
+  }
+});
+
+Deno.test("readConfiguredAgentProviderSet - a Claude-only config needs no build argument", async () => {
+  for (
+    const selection of [
+      { agent_provider: "claude", agent_providers: ["claude"] },
+      // A deployment that configures nothing is the same default set.
+      {},
+    ]
+  ) {
+    const path = await writeConfig(selection);
+    try {
+      const set = await withoutProviderEnv(() =>
+        readConfiguredAgentProviderSet(path, IMAGE_DEFAULT)
+      );
+
+      assertEquals(set.providers.map((provider) => provider.id), ["claude"]);
+      assertEquals(set.buildValue, undefined);
+    } finally {
+      await Deno.remove(path.slice(0, path.lastIndexOf("/")), {
+        recursive: true,
+      });
+    }
+  }
+});
+
+Deno.test("readConfiguredAgentProviderSet - an unusable configuration fails loud", async () => {
+  for (
+    const [selection, expected] of [
+      [{ agent_provider: "kimi" }, "Unsupported coding-agent provider"],
+      [{ agent_providers: "codex" }, "must be an array of provider ids"],
+      [{ agent_provider: 7 }, `"agent_provider" must be a string`],
+      [
+        { agent_provider: "claude", agent_providers: ["codex"] },
+        "exclude the active provider",
+      ],
+    ] as const
+  ) {
+    const path = await writeConfig(selection as Record<string, unknown>);
+    let message = "";
+    try {
+      await withoutProviderEnv(() =>
+        readConfiguredAgentProviderSet(path, IMAGE_DEFAULT)
+      );
+    } catch (error) {
+      message = (error as Error).message;
+    } finally {
+      await Deno.remove(path.slice(0, path.lastIndexOf("/")), {
+        recursive: true,
+      });
+    }
     assertStringIncludes(message, expected);
   }
 });

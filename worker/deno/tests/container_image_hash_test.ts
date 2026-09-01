@@ -32,6 +32,7 @@ import {
   resolveConfigFile,
 } from "../commands/container_image_hash.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { withoutProviderEnv } from "./fixtures/provider_env.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
@@ -566,31 +567,6 @@ async function writeConfig(root: string, containerTools: unknown) {
       2,
     ),
   );
-}
-
-/**
- * Run `fn` with the provider environment overrides cleared (#729).
- *
- * The suite itself runs inside a worker image, which stamps
- * `VIBE_IMAGE_AGENT_PROVIDERS`; leaving it set would have the command judge a
- * configured set against *this* image rather than the one the test's fake
- * repository describes.
- */
-async function withoutProviderEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const names = [
-    "VIBE_IMAGE_AGENT_PROVIDERS",
-    "VIBE_AGENT_PROVIDER",
-    "VIBE_AGENT_PROVIDERS",
-  ];
-  const saved = names.map((name) => [name, Deno.env.get(name)] as const);
-  for (const [name] of saved) Deno.env.delete(name);
-  try {
-    return await fn();
-  } finally {
-    for (const [name, value] of saved) {
-      if (value !== undefined) Deno.env.set(name, value);
-    }
-  }
 }
 
 /** Write a `.config.json` selecting a coding-agent provider set (#729). */

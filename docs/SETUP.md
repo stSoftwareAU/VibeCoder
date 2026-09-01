@@ -861,8 +861,10 @@ its agent would have no credential mounted, as does an id that is not
 registered.
 
 Each enabled vendor needs its own `<provider>/provider.env` from
-[the credential layout above](#providerproviderenv), and the container image
-must have been built with that provider installed — see
+[the credential layout above](#providerproviderenv). The image itself follows
+the same key: the launcher builds it with the enabled set (`AGENT_PROVIDERS`)
+and the set is part of the image tag, so a host that adds a provider rebuilds
+on its next launch — see
 [the coding-agent provider layer](CONTAINER.md#the-coding-agent-provider-layer)
 in the Container Guide.
 

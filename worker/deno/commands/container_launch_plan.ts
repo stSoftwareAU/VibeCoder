@@ -44,12 +44,7 @@ import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
 import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
-import {
-  AGENT_PROVIDER_CONFIG_KEY,
-  agentProvidersBuildValue,
-  ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
-  enabledAgentProviders,
-} from "../lib/agent_provider.ts";
+import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
 
 /** What the command reports alongside the rendered plan. */
@@ -84,62 +79,6 @@ async function assertPresent(
   if (!matches) {
     throw new Error(`Cannot launch: ${path} is not a ${kind}. ${remedy}`);
   }
-}
-
-/**
- * Read the provider selection out of `.config.json` (Issue #4108).
- *
- * The launcher runs on the host, before the worker loads its configuration,
- * so the enabled set has to be read here — otherwise the plan would mount the
- * default provider's credentials whatever the deployment enabled.
- *
- * @param configFile - Host path of the worker configuration file.
- * @returns The configured active provider and enabled set, when set.
- * @throws When the file is unparseable or either key has the wrong shape —
- *   a launch must not silently fall back to the default set (Issue #3234).
- */
-export async function readAgentProviderSelection(
-  configFile: string,
-): Promise<{ configured?: string; configuredProviders?: string[] }> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await Deno.readTextFile(configFile));
-  } catch (error) {
-    throw new Error(
-      `Cannot launch: ${configFile} is not readable JSON ` +
-        `(${(error as Error).message}). Fix it, or re-run ./setup.sh.`,
-    );
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(
-      `Cannot launch: ${configFile} does not hold a JSON object.`,
-    );
-  }
-
-  const record = parsed as Record<string, unknown>;
-  const active = record[AGENT_PROVIDER_CONFIG_KEY];
-  if (active !== undefined && typeof active !== "string") {
-    throw new Error(
-      `Cannot launch: ${configFile} key "${AGENT_PROVIDER_CONFIG_KEY}" must ` +
-        `be a string.`,
-    );
-  }
-  const enabled = record[ENABLED_AGENT_PROVIDERS_CONFIG_KEY];
-  if (
-    enabled !== undefined &&
-    (!Array.isArray(enabled) || enabled.some((id) => typeof id !== "string"))
-  ) {
-    throw new Error(
-      `Cannot launch: ${configFile} key ` +
-        `"${ENABLED_AGENT_PROVIDERS_CONFIG_KEY}" must be an array of ` +
-        `provider ids.`,
-    );
-  }
-
-  return {
-    configured: active as string | undefined,
-    configuredProviders: enabled as string[] | undefined,
-  };
 }
 
 /** Build the plan for one launch. Separated so the tests can call it. */
@@ -181,7 +120,15 @@ export async function buildLaunchPlanForCommand(
     "file",
     "Run ./setup.sh to create it, or set CONFIG_PATH.",
   );
-  const selection = await readAgentProviderSelection(hostPaths.configFile);
+  // One resolution of the enabled set for the whole launch (Issue #729): the
+  // credential mounts, the build argument and the image tag all come from this
+  // value, so a `.config.json` selection cannot mean one provider set to the
+  // mounts and another to the build — which is exactly the reported defect.
+  const { providers, buildValue: agentProviders } =
+    await readConfiguredAgentProviderSet(
+      hostPaths.configFile,
+      manifest.installedProviders,
+    );
 
   // The launcher runs on the host, before the worker loads its configuration,
   // so the tool selection is read here (Issue #72). Validation is fail-loud at
@@ -191,16 +138,6 @@ export async function buildLaunchPlanForCommand(
   // was written.
   const { tools, specJson: containerToolsSpecJson } =
     await readContainerToolsSelection(hostPaths.configFile);
-
-  // One resolution of the enabled set for the whole launch (Issue #729): the
-  // credential mounts, the build argument and the image tag all come from this
-  // value, so a `.config.json` selection cannot mean one provider set to the
-  // mounts and another to the build — which is exactly the reported defect.
-  const providers = enabledAgentProviders(selection);
-  const agentProviders = agentProvidersBuildValue(
-    providers.map((provider) => provider.id),
-    manifest.installedProviders,
-  );
 
   // The selected tools and providers are baked into the image, so they are part
   // of its identity (Issues #73, #729) — the plan must name the tag the build
