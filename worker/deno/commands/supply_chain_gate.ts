@@ -54,8 +54,8 @@ export const supplyChainGateCommand: Command = {
   name: "supply-chain-gate",
   description:
     "Fail on unpinned actions, unfrozen deno invocations, tag-referenced " +
-    "container bases, permissive Renovate automerge or a stale dependency " +
-    "inventory (Issue #4192)",
+    "or short-named container bases, permissive Renovate automerge or a " +
+    "stale dependency inventory (Issue #4192)",
   async execute(
     args: Record<string, unknown>,
   ): Promise<CommandResult<GateReport>> {

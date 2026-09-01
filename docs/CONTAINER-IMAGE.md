@@ -12,7 +12,11 @@ enforces a size margin on the Containerfile; keep new commentary here.
 Standard OCI instructions only, so the file builds identically under Apple
 `container`, `docker build` and `podman build`. Every version installed is
 pinned in `container/tools.json`; `container_manifest_test.ts` fails the
-quality gate when the two drift apart. Both base images are pinned by
+quality gate when the two drift apart. Both base images are registry-qualified
+(`docker.io/library/ruby`, `docker.io/denoland/deno`) — Docker guesses Docker
+Hub for a short name, but Podman's default `short-name-mode = "enforcing"`
+refuses to, so an unqualified reference fails to build on a fresh host with no
+`unqualified-search-registries` (Issue #728). They are pinned by
 immutable digest and every downloaded tool is verified against a recorded
 SHA-256, so nothing in the build resolves to "whatever upstream published
 most recently". Tarballs from npm are downloaded and checksum-verified first,
