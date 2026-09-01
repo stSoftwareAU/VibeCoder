@@ -45,6 +45,7 @@ import {
   type LaunchOutcome,
   mountValues,
   recorded,
+  recordedLaunchLog,
   removedImages,
   removedVolumes,
   REPO_ROOT,
@@ -1355,6 +1356,91 @@ Deno.test("run.sh - volumes too small to hold the missing space are escalated, n
     assertStringIncludes(
       await runCoreLog(harness),
       "the host's missing space is somewhere else",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The outcome record run.sh makes on its own way out (Issue #709)
+// ---------------------------------------------------------------------------
+//
+// Under cron / launchd / Task Scheduler there is no supervisor, so run.sh
+// records its own launcher outcome — and that record is what escalates. Two
+// things it hands the recorder decide whether the resulting GitHub issue is
+// actionable: permission to read the hostname, and the failing build's own
+// log. Issue #709 is the report that arrived without either: it was titled
+// `unknown-host`, said `Host: unknown`, and named no cause for the build
+// failure it was reporting.
+
+Deno.test("run.sh - lets the outcome recorder read the hostname, so its escalation names the machine (Issue #709)", async () => {
+  const harness = await setupHarness(
+    { STUB_IMAGE_INSPECT_EXIT: "0" },
+    { denoStub: true },
+  );
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "container-restart-backoff");
+    assert(args, "run.sh must record its own launcher outcome");
+    assert(
+      args.includes("--allow-sys=hostname"),
+      "without --allow-sys=hostname Deno.hostname() throws and every host " +
+        `files its escalation as "unknown-host": ${args.join(" ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a failed image build hands its own log to the outcome recorder (Issue #709)", async () => {
+  const buildFailure = "Error: unable to prepare context: no such file or " +
+    "directory";
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: buildFailure,
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a build that never succeeded must fail");
+
+    const args = await recorded(harness, "container-restart-backoff");
+    assert(args, "a failed build must still record its outcome");
+    assert(
+      args.includes("--launch-log"),
+      `an image_build escalation with no evidence: ${args.join(" ")}`,
+    );
+
+    // The launcher deletes the build log on its way out; handing it over
+    // before that deletion is the behaviour, not merely naming the path.
+    const log = await recordedLaunchLog(harness);
+    assert(log !== null, "the build log was deleted before it was reported");
+    assertStringIncludes(log, buildFailure);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a build that succeeded is not quoted as failure evidence (Issue #709)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "0",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "container-restart-backoff");
+    assert(args, "run.sh must record its own launcher outcome");
+    assertEquals(
+      args.includes("--launch-log"),
+      false,
+      `a successful build must not be reported as a failure's log: ${
+        args.join(" ")
+      }`,
     );
   } finally {
     await harness.cleanup();

@@ -105,6 +105,11 @@ WEDGE_MARKER=""
 # Where the image build's output is captured, so a failed build can be
 # classified by container-build-heal (Issue #4441). Set only when a build runs.
 BUILD_LOG=""
+# The log the outcome recorder quotes as evidence in its escalation (Issue
+# #709). Set only on a path that is about to fail with a diagnosable cause -
+# a successful build's output is not what a later failure was caused by, and
+# an alert that quoted it would point the reader at the wrong thing.
+EVIDENCE_LOG=""
 
 # Exit status container-build-heal reports for a build failure it does not
 # cover, as opposed to 0 (healed - retry) or any other status (the heal itself
@@ -177,11 +182,24 @@ record_outcome() {
   if [[ -n "${VIBE_SUPERVISOR_RECORDS_OUTCOME:-}" ]]; then
     return 0
   fi
+  # --allow-sys=hostname: this record is what escalates, and the escalation is
+  # titled for the host. Without the permission Deno.hostname() throws, the
+  # report is filed as "unknown-host" - and the title is also its dedup key,
+  # so every host in the fleet collapses onto one issue per phase and no
+  # report can be traced to a machine. Issues #709, #710 and #711 arrived
+  # exactly that way. loop.sh has carried the flag since Issue #633.
+  #
+  # --launch-log: the failing build's own output, when a build is what failed
+  # (Issue #709). An image_build escalation without it says the environment
+  # cannot be rebuilt and nothing at all about why, which is the difference
+  # between a report an operator can act on and one they cannot.
   if ! bounded 120 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-write --allow-run --allow-net \
+    --allow-sys=hostname \
     "${BASE_DIR}/worker/deno/mod.ts" container-restart-backoff \
-    --exit-status "${status}" </dev/null >/dev/null; then
+    --exit-status "${status}" \
+    ${EVIDENCE_LOG:+--launch-log "${EVIDENCE_LOG}"} </dev/null >/dev/null; then
     echo "[run.sh] warning: could not record launcher outcome ${status}" >&2
   fi
 }
@@ -195,10 +213,13 @@ on_exit() {
   if [[ -n "${WEDGE_MARKER}" ]]; then
     rm -f "${WEDGE_MARKER}"
   fi
+  record_outcome "${status}"
+  # Removed after the record, never before it: the recorder quotes this log as
+  # the image-build evidence, and deleting it first is what left Issue #709
+  # reporting a failed build it could say nothing about.
   if [[ -n "${BUILD_LOG}" ]]; then
     rm -f "${BUILD_LOG}"
   fi
-  record_outcome "${status}"
 }
 trap on_exit EXIT
 
@@ -545,6 +566,10 @@ if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
 
     if ((build_status != 0)); then
       echo "Error: failed to build ${IMAGE}" >&2
+      # The build's own diagnostics are the only account of why this host
+      # cannot reconstruct its environment, so the escalation carries them
+      # (Issue #709).
+      EVIDENCE_LOG="${BUILD_LOG}"
       exit "${build_status}"
     fi
   fi

@@ -174,6 +174,12 @@ if (-not $DenoCmd) {
     exit 1
 }
 
+# The log the outcome recorder quotes as evidence in its escalation (Issue
+# #709). Set only on a path that is about to fail with a diagnosable cause - a
+# successful build's output is not what a later failure was caused by, and an
+# alert that quoted it would point the reader at the wrong thing.
+$EvidenceLog = ""
+
 <#
 .SYNOPSIS
     Record this launcher's outcome for the self-heal backoff (Issue #4072).
@@ -186,6 +192,16 @@ if (-not $DenoCmd) {
     outcome themselves - one failure must be counted once, not twice.
     Best-effort: a recorder that cannot run says so on stderr and never
     changes this launcher's exit status.
+
+    --allow-sys=hostname: this record is what escalates, and the escalation is
+    titled for the host. Without the permission Deno.hostname() throws, the
+    report is filed as "unknown-host" - and the title is also its dedup key,
+    so every host in the fleet collapses onto one issue per phase and no
+    report can be traced to a machine (Issue #709).
+
+    $EvidenceLog carries the failing build's own output when a build is what
+    failed, so an image_build escalation names a cause instead of only saying
+    the environment cannot be rebuilt (Issue #709).
 #>
 function Write-RestartOutcome {
     param([Parameter(Mandatory = $true)][int] $Status)
@@ -193,14 +209,20 @@ function Write-RestartOutcome {
     if ([Environment]::GetEnvironmentVariable("VIBE_SUPERVISOR_RECORDS_OUTCOME")) {
         return
     }
+    $recordArgs = @(
+        "run",
+        "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+        "--allow-env", "--allow-read", "--allow-write", "--allow-run", "--allow-net",
+        "--allow-sys=hostname",
+        "$BaseDir/worker/deno/mod.ts", "container-restart-backoff",
+        "--exit-status", "$Status"
+    )
+    if ($EvidenceLog) {
+        $recordArgs += @("--launch-log", "$EvidenceLog")
+    }
     try {
-        Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
-            "run",
-            "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
-            "--allow-env", "--allow-read", "--allow-write", "--allow-run", "--allow-net",
-            "$BaseDir/worker/deno/mod.ts", "container-restart-backoff",
-            "--exit-status", "$Status"
-        ) | Out-Null
+        Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList $recordArgs |
+            Out-Null
     } catch {
         [Console]::Error.WriteLine(
             "[run.ps1] warning: could not record launcher outcome $Status")
@@ -552,6 +574,11 @@ if ($present.ExitCode -ne 0) {
 
         if ($buildStatus -ne 0) {
             [Console]::Error.WriteLine("Error: failed to build $Image")
+            # The build's own diagnostics are the only account of why this host
+            # cannot reconstruct its environment, so the escalation carries
+            # them (Issue #709). Exit-Launcher records the outcome before it
+            # exits, so the log is still there when the recorder reads it.
+            $EvidenceLog = $BuildLog
             Exit-Launcher $buildStatus
         }
     } finally {

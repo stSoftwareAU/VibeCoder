@@ -63,7 +63,8 @@ docker image rm "$IMAGE"        # podman image rm / container images delete
 A rebuild takes several minutes. If the build itself fails, `run.sh` records
 `image_build` in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, and the
 self-heal escalation reports that phase through GitHub after two consecutive
-failures.
+failures. That report quotes the failing build's own output, so the cause is in
+the issue itself rather than only in whatever the scheduler captured of stderr.
 
 ### Where a launcher failure is reported
 
@@ -75,6 +76,13 @@ per phase, updated on the decaying re-notify schedule rather than re-filed
 channel can deliver, the attempt is queued and the streak carries it, and
 `self-heal-summary` shows it as `escalation_undeliverable` — a host that cannot
 report is itself the thing to look at.
+
+A report titled `unknown-host` is a fault in the reporter, not a nameless
+machine: the outcome recorder was invoked without `--allow-sys=hostname`, so
+`Deno.hostname()` threw. Because the title is also the deduplication key, every
+host in the fleet then shares one issue per phase. All four call sites pass the
+flag and a test holds them there (Issue #709); a recurrence means a fifth caller
+was added without it.
 
 ### The image store is filling the disk
 

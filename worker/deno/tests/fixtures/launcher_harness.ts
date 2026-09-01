@@ -289,6 +289,17 @@ function denoStubSource(full: boolean): string {
       ;;
     container-restart-backoff)
       printf '%s\\0' "\$@" > "\${record_dir}/container-restart-backoff.args"
+      # Snapshot the log the recorder was handed (Issue #709). The launcher
+      # deletes its build log on the way out, so copying it here is the only
+      # way a test can prove the evidence was still alive when the outcome
+      # was recorded — and what it said.
+      prev=""
+      for a in "\$@"; do
+        if [[ "\${prev}" == "--launch-log" ]]; then
+          cp "\${a}" "\${record_dir}/outcome-launch.log" 2>/dev/null || true
+        fi
+        prev="\${a}"
+      done
       echo 60
       exit 0
       ;;`
@@ -475,6 +486,26 @@ export async function recorded(
       `${harness.recordDir}/${subCommand}.args`,
     );
     return text.split("\0").filter((arg) => arg !== "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The log the launcher handed its outcome recorder (Issue #709).
+ *
+ * `--launch-log` is what turns an `image_build` escalation from "the image
+ * could not be built" into the build's own diagnostics, so the content — not
+ * merely the flag — is the behaviour worth asserting.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The log's contents, or null when none was handed over
+ */
+export async function recordedLaunchLog(
+  harness: Harness,
+): Promise<string | null> {
+  try {
+    return await Deno.readTextFile(`${harness.recordDir}/outcome-launch.log`);
   } catch {
     return null;
   }
