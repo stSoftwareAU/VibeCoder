@@ -1446,3 +1446,74 @@ Deno.test("run.sh - a build that succeeded is not quoted as failure evidence (Is
     await harness.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Self-heal attribution (Issue #710)
+// ---------------------------------------------------------------------------
+
+/** The phase marker the launcher left behind, trimmed. */
+async function launchPhase(harness: Harness): Promise<string> {
+  const marker = await Deno.readTextFile(
+    `${harness.tmpDir}/home/.vibe-coder/last-launch-phase`,
+  );
+  return marker.trim();
+}
+
+Deno.test("run.sh - attributes a failed volume init to volume preparation, not runtime detection (Issue #710)", async () => {
+  // The reported alert: `Failure phase: runtime_detection` with exit status
+  // 125, which only the runtime client produces. The volume init IS a
+  // `run`, and it happens long after runtime detection succeeded.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_EXIT: "125",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 125, outcome.stderr);
+    assertEquals(await launchPhase(harness), "volume_init");
+    assertEquals(
+      await recorded(harness, "run"),
+      null,
+      "the worker container must not start after a failed volume init",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a clean launch still reaches the container_run phase (Issue #710)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertEquals(await launchPhase(harness), "container_run");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the outcome recorder may read the hostname, so the alert can name the host (Issue #710)", async () => {
+  // Issue #633 gave loop.sh `--allow-sys=hostname` for exactly this reason;
+  // the launcher's own recorder (the cron/launchd path, where there is no
+  // supervisor) was left without it, so every alert it filed was titled
+  // `unknown-host` and said `Host: unknown`.
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" }, {
+    denoStub: true,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "container-restart-backoff");
+    assert(args, "the launcher must record its own outcome");
+    assert(
+      args.some((arg) => arg.startsWith("--allow-sys=")) &&
+        args.some((arg) => arg.includes("hostname")),
+      `the recorder cannot resolve the host without --allow-sys=hostname: ${
+        args.join(" ")
+      }`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});

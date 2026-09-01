@@ -176,6 +176,12 @@ fi
 # exit status.
 # Invoked from the EXIT trap below; shellcheck cannot see that call and reports
 # it as never-invoked (SC2317 on older versions, SC2329 on newer ones).
+#
+# --allow-sys=hostname: the escalation this recorder files names the machine it
+# is about (Issues #633, #710). Without it `Deno.hostname()` is refused, the
+# report is titled `unknown-host` and says `Host: unknown`, which is close to
+# useless in a fleet reporting into one shared repository. loop.sh has carried
+# the flag since #633; the scheduler path through this launcher had not.
 # shellcheck disable=SC2317,SC2329
 record_outcome() {
   local status="$1"
@@ -676,6 +682,15 @@ if [[ ${#builder_stop_args[@]} -gt 0 ]]; then
   fi
   rm -f "${builder_stop_err}"
 fi
+
+# Work-volume preparation (Issue #710). Everything from here to the launch
+# below drives the container runtime - `volume create`, and the ownership init,
+# which is itself a `run`. Those failures used to reach the supervisor still
+# carrying the `runtime_detection` marker written on this script's first line,
+# so an init container that never started (the runtime's own 125) was reported
+# as a runtime-detection failure while the same alert said the status came from
+# the runtime client. The marker now names the phase the launcher is really in.
+record_phase volume_init
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
 # live on runtime-managed volumes, not host directories. `volume inspect` /

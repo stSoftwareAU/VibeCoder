@@ -197,7 +197,7 @@ $EvidenceLog = ""
     titled for the host. Without the permission Deno.hostname() throws, the
     report is filed as "unknown-host" - and the title is also its dedup key,
     so every host in the fleet collapses onto one issue per phase and no
-    report can be traced to a machine (Issue #709).
+    report can be traced to a machine (Issues #633, #709, #710).
 
     $EvidenceLog carries the failing build's own output when a build is what
     failed, so an image_build escalation names a cause instead of only saying
@@ -658,6 +658,15 @@ if ($BuilderStopArgs.Count -gt 0) {
         }
     }
 }
+
+# Work-volume preparation (Issue #710). Everything from here to the launch
+# below drives the container runtime - `volume create`, and the ownership init,
+# which is itself a `run`. Those failures used to reach the supervisor still
+# carrying the `runtime_detection` marker written on this script's first page,
+# so an init container that never started (the runtime's own 125) was reported
+# as a runtime-detection failure. The marker now names the phase the launcher
+# is really in. Mirrors run.sh.
+Write-LaunchPhase "volume_init"
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
 # live on runtime-managed volumes, not host directories. `volume inspect` /

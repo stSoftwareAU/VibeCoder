@@ -149,6 +149,21 @@ Deno.test("resolveFailurePhase - names the phase the launcher reached", () => {
   assertEquals(resolveFailurePhase("seatbelt_run", 125), "worker_run");
 });
 
+Deno.test("resolveFailurePhase - volume preparation is its own phase (Issue #710)", () => {
+  // The launcher prepares the work volumes with runtime `volume create` and a
+  // short-lived `run` of the ownership init - after the image exists and
+  // before the worker container starts. Those failures used to carry the
+  // `runtime_detection` marker, so a 125 from the init container was reported
+  // as a runtime-detection failure while the same alert said the status came
+  // from the runtime client. The two now agree.
+  assertEquals(resolveFailurePhase("volume_init", 125), "volume_init");
+  assertEquals(resolveFailurePhase("volume_init", 1), "volume_init");
+  assertEquals(
+    describeFailurePhase("volume_init"),
+    "work volume preparation",
+  );
+});
+
 Deno.test("escalationThresholdFor - a failed image build escalates earlier", () => {
   const config = { ...CONTAINER_RESTART_DEFAULTS };
   assert(
@@ -339,6 +354,7 @@ Deno.test("buildContainerEscalationParams - each phase is described in the messa
   const phases = [
     "runtime_detection",
     "image_build",
+    "volume_init",
     "container_start",
     "worker_run",
   ] as const;

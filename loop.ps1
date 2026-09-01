@@ -77,8 +77,8 @@ $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyCont
     --allow-sys=hostname: the escalation is titled for the host. Without the
     permission Deno.hostname() throws and the report is filed as
     "unknown-host" - which is also its dedup key, so every host in the fleet
-    collapses onto one issue per phase (Issue #709). loop.sh has carried the
-    flag since Issue #633.
+    collapses onto one issue per phase (Issues #633, #709, #710). loop.sh has
+    carried the flag since Issue #633.
 #>
 function Get-NextSleepSeconds {
     param([Parameter(Mandatory = $true)][int] $Status)
