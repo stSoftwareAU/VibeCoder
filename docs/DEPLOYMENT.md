@@ -11,6 +11,7 @@ runs itself and is steered entirely through GitHub. See
 
 - [Requirements](#requirements)
 - [Run mode: container only](#-run-mode-container-only)
+- [Verifying the Linux/podman path](#-verifying-the-linuxpodman-path)
 - [Upgrading an existing host — the hard cutover](#upgrading-an-existing-host--the-hard-cutover)
 - [Keeping a host up to date: dynamic or frozen](#-keeping-a-host-up-to-date-dynamic-or-frozen)
 - [Installation](#installation)
@@ -121,6 +122,17 @@ flowchart TD
     style X fill:#c9184a,stroke:#800f2f,color:#fff
     style X1 fill:#c9184a,stroke:#800f2f,color:#fff
 ```
+
+## 🐧 Verifying the Linux/podman path
+
+The Linux branch of that probe — Docker, then Podman — is confirmed on a
+disposable EC2 host, because the maintainer develops on macOS. One
+CloudFormation stack
+([`infra/cloudformation/linux-verification-host.yaml`](../infra/cloudformation/linux-verification-host.yaml))
+launches an Ubuntu instance reachable only through SSM Session Manager, with
+the host prerequisites installed and an auto-stop timer. The launch,
+verification and tear-down commands are in
+[Linux Verification Host](EC2-LINUX-VERIFICATION.md).
 
 ## 🚚 Upgrading an existing host — the hard cutover
 

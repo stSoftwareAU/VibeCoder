@@ -174,11 +174,16 @@ if (-not $DenoCmd) {
     exit 1
 }
 
-# The log the outcome recorder quotes as evidence in its escalation (Issue
-# #709). Set only on a path that is about to fail with a diagnosable cause - a
-# successful build's output is not what a later failure was caused by, and an
-# alert that quoted it would point the reader at the wrong thing.
+# The log the outcome recorder quotes as evidence in its escalation (Issues
+# #709, #720). Set only on a path that is about to fail with a diagnosable
+# cause - a successful build's output is not what a later failure was caused
+# by, and an alert that quoted it would point the reader at the wrong thing.
 $EvidenceLog = ""
+
+# The container run client's own stderr, kept beside the console (Issue #720).
+# Created just before the container starts and removed by Exit-Launcher, after
+# the outcome recorder has had its chance to quote it.
+$RunLog = ""
 
 <#
 .SYNOPSIS
@@ -199,9 +204,10 @@ $EvidenceLog = ""
     so every host in the fleet collapses onto one issue per phase and no
     report can be traced to a machine (Issues #633, #709, #710).
 
-    $EvidenceLog carries the failing build's own output when a build is what
-    failed, so an image_build escalation names a cause instead of only saying
-    the environment cannot be rebuilt (Issue #709).
+    $EvidenceLog carries the failing step's own output - the build's, when a
+    build is what failed (Issue #709), or the run client's refusal, when the
+    container never started (Issue #720) - so the escalation names a cause
+    instead of only naming the phase and the exit status.
 #>
 function Write-RestartOutcome {
     param([Parameter(Mandatory = $true)][int] $Status)
@@ -241,6 +247,12 @@ function Exit-Launcher {
     # must not outlive the launcher on any exit path.
     if ($PlanFile) {
         Remove-Item -LiteralPath "$PlanFile.Containerfile" -Force -ErrorAction SilentlyContinue
+    }
+    # Removed after the record, never before it: the recorder quotes this
+    # capture as the refused start's evidence, and deleting it first is what
+    # left Issue #711 reporting a start it could say nothing about (Issue #720).
+    if ($RunLog) {
+        Remove-Item -LiteralPath $RunLog -Force -ErrorAction SilentlyContinue
     }
     exit $Code
 }
@@ -749,6 +761,176 @@ try {
 
 Write-LaunchPhase "container_run"
 
+# Statuses the runtime client reports when it refused to start the container at
+# all - no such image, an argument it would not accept, an entrypoint it could
+# not execute. They are exactly the statuses the recorder turns into a
+# container_start escalation, so they are the ones whose evidence is the
+# client's own refusal (Issues #711, #720). Pinned against
+# CONTAINER_START_EXIT_CODES in worker/deno/lib/container_restart_backoff.ts by
+# the launcher tests: that list is the contract, this is its copy.
+$ContainerStartExitStatuses = @(125, 126, 127)
+
+# How long the capture is given to drain once the client has exited, before it
+# is quoted as far as it got. Seconds, because end-of-file arrives with the
+# client's last write; the bound is only there so a runtime helper still
+# holding the pipe cannot stall this launcher.
+$RunDrainSeconds = 10
+
+# How long each read of the client's stderr is waited on before the pump looks
+# up: short enough that the client's exit and the watchdog deadline are both
+# noticed promptly, long enough that an idle container costs nothing.
+$RunPumpPollMs = 250
+
+<#
+.SYNOPSIS
+    Wait for the runtime client, copying its stderr to the console and to the
+    capture as it arrives (Issue #720).
+
+.DESCRIPTION
+    The Windows counterpart of run.sh's tee (Issue #711). A container_start
+    escalation filed from a Windows host used to name the phase and the exit
+    status and nothing about why, because the client's stderr was inherited by
+    the console and kept nowhere.
+
+    The copy is driven from this thread rather than from a background reader:
+    `Register-ObjectEvent` handlers do not run while the runspace is blocked in
+    `WaitForExit`, so an event-based tee would hold the container's output back
+    until the run ended, and `ReadToEnd` would deadlock a long run outright.
+    Reading in bounded slices keeps the output live AND keeps the watchdog
+    deadline enforced, because the pump is what the launcher waits in.
+
+    Bytes, not lines: the console gets exactly what the client wrote, when it
+    wrote it, so a progress line without a trailing newline is not held back.
+
+.PARAMETER Process
+    The runtime client, started with its standard error redirected.
+
+.PARAMETER Capture
+    Open stream the copy is written to. Closed before this returns, so the
+    outcome recorder can read the file behind it.
+
+.PARAMETER DeadlineMs
+    The watchdog deadline, in milliseconds.
+
+.OUTPUTS
+    True when the client exited within the deadline, false when it did not -
+    the wedge the caller reaps.
+#>
+function Wait-ContainerExit {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process] $Process,
+        [Parameter(Mandatory = $true)][System.IO.Stream] $Capture,
+        [Parameter(Mandatory = $true)][int] $DeadlineMs
+    )
+
+    # Never disposed: this is the launcher's own stderr handle, and closing it
+    # would take the console away from everything that reports after the run.
+    $console = [Console]::OpenStandardError()
+    $source = $Process.StandardError.BaseStream
+    $buffer = [byte[]]::new(8192)
+    $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+    $sinceExit = $null
+    $pending = $null
+    $truncated = $false
+
+    try {
+        while ($true) {
+            # Wall-clock, and tested before anything is read: the deadline is
+            # how long the client may run, not how long it may stay quiet. A
+            # container writing steadily must not be able to postpone its own
+            # reaping - that is the wedge this watchdog exists to end (Issue
+            # #4173). The copy stops here; the reaper's own report is what the
+            # wedge is then documented by.
+            if (-not $Process.HasExited -and
+                $elapsed.ElapsedMilliseconds -ge $DeadlineMs) {
+                break
+            }
+
+            if ($null -eq $pending) {
+                $pending = $source.ReadAsync($buffer, 0, $buffer.Length)
+            }
+            # -1 means "nothing arrived in this slice"; 0 means end of stream.
+            $read = -1
+            try {
+                if ($pending.Wait($RunPumpPollMs)) {
+                    $read = $pending.Result
+                    $pending = $null
+                }
+            } catch {
+                # The stream ended in a way this launcher did not choose. Said
+                # aloud rather than swallowed: the capture stops mid-refusal,
+                # and evidence that ends early must not read as evidence that
+                # ended.
+                [Console]::Error.WriteLine(
+                    "[run.ps1] warning: the container's stderr could not be " +
+                    "read to the end ($($_.Exception.Message)) - the " +
+                    "captured evidence is incomplete (Issue #720)")
+                $read = 0
+                $pending = $null
+            }
+
+            if ($read -eq 0) { break }
+            if ($read -gt 0) {
+                # Flushed per slice: evidence half-held in a buffer is evidence
+                # a killed launcher never wrote.
+                $console.Write($buffer, 0, $read)
+                $console.Flush()
+                $Capture.Write($buffer, 0, $read)
+                $Capture.Flush()
+            }
+
+            if ($Process.HasExited) {
+                # The client is gone but its stderr is still open, which means
+                # a runtime helper inherited it. Bounded, so that helper cannot
+                # become the wedge the watchdog exists to end.
+                if ($null -eq $sinceExit) {
+                    $sinceExit = [System.Diagnostics.Stopwatch]::StartNew()
+                }
+                if ($sinceExit.Elapsed.TotalSeconds -ge $RunDrainSeconds) {
+                    $truncated = $true
+                    break
+                }
+            }
+        }
+    } finally {
+        $Capture.Dispose()
+    }
+
+    if ($truncated) {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: the container's stderr was still being " +
+            "written ${RunDrainSeconds}s after the client exited - the " +
+            "captured evidence is incomplete (Issue #720)")
+    }
+
+    $remaining = [int][Math]::Max(
+        0, [double]$DeadlineMs - $elapsed.ElapsedMilliseconds)
+    return $Process.WaitForExit($remaining)
+}
+
+# Capture the client's stderr while it still reaches the console (Issue #720).
+# Opened before the container starts, because a capture armed after the launch
+# would miss the refusal it exists to record. A host that cannot open one
+# launches without it and says so: evidence is what a failure would be reported
+# with, and the worker run itself is what the host is for - so an unwritable
+# temporary directory costs the report its cause, never the run.
+$RunCapture = $null
+try {
+    $captureCandidate = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ("vibe-run-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+    $RunCapture = [System.IO.File]::Open(
+        $captureCandidate,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::ReadWrite)
+    $RunLog = $captureCandidate
+} catch {
+    [Console]::Error.WriteLine(
+        "[run.ps1] warning: could not open a capture for the container's " +
+        "stderr ($($_.Exception.Message)) - a refused container start will " +
+        "be reported without the runtime's own explanation (Issue #720)")
+}
+
 # Start the container rather than waiting on it blindly, so this launcher
 # survives to report the container's exit status.
 #
@@ -765,6 +947,10 @@ foreach ($argument in $RunArgs) { [void]$runInfo.ArgumentList.Add($argument) }
 foreach ($argument in $args) { [void]$runInfo.ArgumentList.Add([string]$argument) }
 $runInfo.UseShellExecute = $false
 $runInfo.RedirectStandardInput = $true
+# Standard output stays inherited: it is the worker's own console and nothing
+# reads it here. Only the stream a refused start explains itself on is
+# redirected, and it is copied straight back out (Issue #720).
+$runInfo.RedirectStandardError = $null -ne $RunCapture
 
 $container = [System.Diagnostics.Process]::Start($runInfo)
 $container.StandardInput.Close()
@@ -773,8 +959,15 @@ $wedged = $false
 try {
     # The outer watchdog (Issue #4173): the runtime client is waited on under
     # the plan's deadline instead of for ever, because a wedged container VM
-    # leaves that client waiting on it indefinitely.
-    if (-not $container.WaitForExit($WatchdogMs)) {
+    # leaves that client waiting on it indefinitely. With a capture open, the
+    # wait happens inside the stderr pump so the console stays live (#720).
+    $exitedInTime = if ($RunCapture) {
+        Wait-ContainerExit -Process $container -Capture $RunCapture `
+            -DeadlineMs $WatchdogMs
+    } else {
+        $container.WaitForExit($WatchdogMs)
+    }
+    if (-not $exitedInTime) {
         $wedged = $true
         [Console]::Error.WriteLine(
             "[run.ps1] watchdog: $ContainerName is still running after " +
@@ -838,4 +1031,14 @@ if ($wedged) {
     Exit-Launcher $ContainerWedgedExitStatus
 }
 
-Exit-Launcher $container.ExitCode
+# A status only the runtime client produces means the container never started,
+# so its stderr is what the escalation is about (Issue #720). Any other status
+# came from a container that ran: its output is the worker's own console, not
+# an account of a launch that failed, and quoting it would point the reader at
+# the wrong thing.
+$runStatus = $container.ExitCode
+if ($RunLog -and $ContainerStartExitStatuses -contains $runStatus) {
+    $EvidenceLog = $RunLog
+}
+
+Exit-Launcher $runStatus
