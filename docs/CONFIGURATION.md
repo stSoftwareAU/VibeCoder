@@ -1806,13 +1806,34 @@ operational purposes:
 
 | Variable                        | Default        | Description                                                   |
 | ------------------------------- | -------------- | ------------------------------------------------------------- |
-| `CONFIG_FILE`                   | `.config.json` | Path to the configuration file                                |
+| `CONFIG_FILE`                   | `<checkout>/.config.json` | Path to the configuration file, for setup and the launcher alike. `CONFIG_PATH` is accepted as an alias (the launcher's older spelling); a relative value resolves against the checkout, and setting both to different files is refused rather than silently resolved two ways — see [One config file, one name](#one-config-file-one-name-issue-750) |
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
 | `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
 | `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
 | `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
 | `WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES` | `2147483648` (2 GiB) | Cap on a side/data clone's `.git`; over it the clone is dropped even while warm, because each blobless refresh leaves a tree of blobs git will not prune (`0` disables) — see [A warm clone's object store is capped too](CONTAINER.md#a-warm-clones-object-store-is-capped-too-issue-387) |
+
+### One config file, one name (Issue #750)
+
+Setup read `CONFIG_FILE` while the launcher read `CONFIG_PATH`, so a host that
+relocated its `.config.json` and set only one of them had setup reading and
+writing `<checkout>/.config.json` while `./run.sh` staged the relocated file —
+two different files, with nothing reporting the split.
+
+`CONFIG_FILE` is canonical and `CONFIG_PATH` is its alias. One rule answers
+both, in
+[`worker/deno/lib/host_config_path.ts`](../worker/deno/lib/host_config_path.ts):
+
+- a relative value resolves against the **checkout**, never the working
+  directory, in `setup.sh`, `setup.ps1`, the setup CLI and the launcher alike;
+- both set to the same file (once resolved) is fine;
+- both set to **different** files is a deployment fault and is reported as one
+  — setup would read one while the launcher staged the other.
+
+Inside the container `CONFIG_PATH` keeps its second, unrelated meaning: the
+launcher sets it to the staged read-only copy of the file it resolved on the
+host.
 
 ### 💰 Daily Spend Ceiling
 

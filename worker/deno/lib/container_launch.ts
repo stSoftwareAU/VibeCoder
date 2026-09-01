@@ -492,80 +492,20 @@ const RUNTIME_SOCKET_HINTS: readonly string[] = [
 /** Container names the runtimes accept, and a shell cannot misread. */
 const CONTAINER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
-/**
- * How the launching host spells its own paths (Issue #4066).
- *
- * Only the *host* side of a mount differs: `run.ps1` hands over
- * `C:\Users\vibe\logs` where `run.sh` hands over `/Users/vibe/logs`. The
- * in-container side is POSIX on every host, so the worker sees one
- * environment regardless of which launcher started it.
- */
-export type LauncherPathStyle = "posix" | "windows";
+// The host path helpers moved to host_path_style.ts so setup and the launcher
+// resolve a relative path against the same base in the same spelling (#750).
+// The two names container_launch has always published are re-exported here.
+import {
+  isAbsolutePath,
+  isRootPath,
+  joinPath,
+  type LauncherPathStyle,
+  normalisePath as normalise,
+  pathStyleFor,
+} from "./host_path_style.ts";
+import { resolveHostConfigPath } from "./host_config_path.ts";
 
-/** A Windows drive-letter path, the only absolute form Windows hosts use. */
-const WINDOWS_ABSOLUTE_RE = /^[A-Za-z]:[\\/]/;
-
-/** A bare Windows drive root (`C:`, `C:\`, `C:/`). */
-const WINDOWS_ROOT_RE = /^[A-Za-z]:[\\/]?$/;
-
-/**
- * The path style a host path is written in.
- *
- * Derived from the path itself rather than from `Deno.build.os`, so the plan
- * a given set of host paths produces is the same wherever it is computed.
- *
- * @param path - A host path (typically the worker checkout)
- * @returns The style that path is spelled in
- */
-export function pathStyleFor(path: string): LauncherPathStyle {
-  return WINDOWS_ABSOLUTE_RE.test(path.trim()) ? "windows" : "posix";
-}
-
-/** The separator paths are joined with in a given style. */
-function separatorFor(style: LauncherPathStyle): string {
-  return style === "windows" ? "\\" : "/";
-}
-
-/** Strip trailing separators so `/a/b/` and `/a/b` compare equal. */
-function normalise(path: string, style: LauncherPathStyle = "posix"): string {
-  const trimmed = path.trim();
-  if (style === "windows") {
-    // The drive root keeps its separator: `C:` alone is a drive-relative
-    // path on Windows, which is not the same thing as `C:\`.
-    if (WINDOWS_ROOT_RE.test(trimmed)) return trimmed;
-    return trimmed.replace(/[\\/]+$/, "");
-  }
-  if (trimmed.length > 1 && trimmed.endsWith("/")) {
-    return trimmed.replace(/\/+$/, "");
-  }
-  return trimmed;
-}
-
-/** True when the path is absolute in the given style. */
-function isAbsolutePath(path: string, style: LauncherPathStyle): boolean {
-  return style === "windows"
-    ? WINDOWS_ABSOLUTE_RE.test(path)
-    : path.startsWith("/");
-}
-
-/** True when the path is the filesystem (or drive) root. */
-function isRootPath(path: string, style: LauncherPathStyle): boolean {
-  return style === "windows" ? WINDOWS_ROOT_RE.test(path) : path === "/";
-}
-
-/** Join a relative path onto a base in the host's own spelling. */
-function joinPath(
-  base: string,
-  relative: string,
-  style: LauncherPathStyle,
-): string {
-  const separator = separatorFor(style);
-  const trimmed = relative.replace(/^\.[\\/]/, "");
-  const spelled = style === "windows"
-    ? trimmed.replace(/\//g, separator)
-    : trimmed;
-  return `${base}${separator}${spelled}`;
-}
+export { type LauncherPathStyle, pathStyleFor };
 
 /**
  * A path reduced to a comparable form.
@@ -788,10 +728,9 @@ export function resolveContainerLaunchHostPaths(
     env("WORK_DIR") ?? joinPath(home, "auto-issue-work", style),
     style,
   );
-  const configFile = normalise(
-    absolute(env("CONFIG_PATH") ?? ".config.json"),
-    style,
-  );
+  // CONFIG_FILE, with CONFIG_PATH as its alias — setup resolves the same
+  // file the same way, so a relocated config is one file, not two (#750).
+  const configFile = resolveHostConfigPath({ baseDir: base, env, style });
   const credentialDir = normalise(
     env("VIBE_CREDENTIAL_DIR") ??
       joinPath(home, DEFAULT_CREDENTIAL_DIR_SUFFIX, style),

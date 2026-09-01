@@ -740,7 +740,10 @@ See [SECURITY.md — Token Security](../SECURITY.md#-token-security) and
 
 `.config.json` lives in the root of the VibeCoder checkout — every script
 defaults to `<checkout>/.config.json`, and the `CONFIG_FILE` environment
-variable can point elsewhere. On the automated route the file is composed in
+variable can point elsewhere (`CONFIG_PATH` is accepted as its alias; a
+relative value resolves against the checkout, and setting both to different
+files is refused — see
+[One config file, one name](CONFIGURATION.md#one-config-file-one-name-issue-750)). On the automated route the file is composed in
 two passes: the Deno setup CLI's `config` subcommand merges any `VIBE_*`
 environment variables over whatever the file already holds and writes only
 values that differ from the built-in defaults, then `setup.sh` merges the

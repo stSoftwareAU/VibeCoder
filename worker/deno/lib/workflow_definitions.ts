@@ -743,7 +743,7 @@ jobs:
           deno-version: v2.x
       - if: steps.detect-deno.outputs.present == 'true'
         name: Validate Mermaid blocks
-        run: deno run --allow-read --allow-env=DEBUG,LOG_LEVEL,CONFIG_PATH,OUTPUT_JSON worker/deno/mod.ts check-mermaid
+        run: deno run --allow-read --allow-env=DEBUG,LOG_LEVEL,CONFIG_FILE,CONFIG_PATH,OUTPUT_JSON worker/deno/mod.ts check-mermaid
 `,
 };
 
