@@ -744,12 +744,11 @@ takes it:
    the volume, then runs the init again to re-own it. The removal verb travels
    in the launch plan with the rest of the runtime dialect (Issue #731):
    `volume rm` on Docker and Podman, `volume delete` on Apple container. Podman
-   has no `volume delete` at all, and the launcher used to run it for every
-   runtime and discard the failure, so the volume survived and the `volume
-   create` that followed failed with "volume with name vibe-work already
-   exists". This happens **before
-   any container starts**, so no work is in flight: the clones re-clone and
-   the approval snapshots re-baseline.
+   has no `volume delete` at all, and the launcher used to run that spelling for
+   every runtime and discard the failure, so the volume survived and the
+   recreate then failed on a name that was still taken. This happens **before
+   any container starts**, so no work is in flight: the clones re-clone and the
+   approval snapshots re-baseline.
 3. **The attempt is bounded and never silent.** At most one recreate per
    `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24), recorded in
    `~/.vibe-coder/work-volume-heal`; volumes holding less than

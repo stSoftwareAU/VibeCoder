@@ -34,6 +34,7 @@ function plan(): ContainerLaunchPlan {
     mounts: [],
     ensureDirectories: [],
     volumes: ["vibe-tabletop-work-1234"],
+    volumeRemoveArgs: ["volume", "rm"],
     initArgs: ["run", "--rm", "vibe-coder:abc123"],
     imageInspectArgs: ["image", "inspect", "vibe-coder:abc123"],
     buildArgs: ["build"],

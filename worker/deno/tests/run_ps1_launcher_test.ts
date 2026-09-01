@@ -21,6 +21,10 @@ import {
   containerTargetPaths,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
+import {
+  candidatesForPlatform,
+  normaliseHostPlatform,
+} from "../lib/container_runtime.ts";
 import { CONTAINER_START_EXIT_CODES } from "../lib/container_restart_backoff.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
@@ -32,6 +36,7 @@ import {
   builderHealed,
   denoInvocationOrder,
   type Harness,
+  initCount,
   type LaunchOutcome,
   mountValues,
   POWERSHELL_LAUNCHER,
@@ -39,6 +44,7 @@ import {
   recorded,
   recordedLaunchLog,
   removedImages,
+  removedVolumes,
   REPO_ROOT,
   runCoreLog,
   runLauncher as runHarnessLauncher,
@@ -927,6 +933,94 @@ Deno.test({
           args.join(" ")
         }`,
       );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+// --- Recovery removes volumes with the verb the runtime accepts (#731) -----
+//
+// `run.ps1` drives Docker and Podman, and it carried the same shape run.sh
+// did: a removal whose failure went nowhere, followed by a `volume create`
+// that could only fail on a name still taken. The verb now comes from the
+// launch plan, and a refused removal is reported instead of discarded.
+
+/** The removal verb the runtime this host would select actually accepts. */
+const REMOVE_VERB = candidatesForPlatform(
+  normaliseHostPlatform(Deno.build.os),
+)[0]!.dialect
+  .volumeRemoveArgs[1]!;
+
+/** The spelling that runtime rejects — `rm` and `delete` are not synonyms. */
+const REJECTED_VERB = REMOVE_VERB === "rm" ? "delete" : "rm";
+
+/** An init that reports the work volume unrepairable, then comes back clean. */
+const UNREPAIRABLE_ENV = {
+  STUB_IMAGE_INSPECT_EXIT: "0",
+  STUB_INIT_EXIT: "3",
+  STUB_INIT_RETRY_EXIT: "0",
+};
+
+Deno.test({
+  name:
+    "run.ps1 - recreates an unrepairable volume with the verb its runtime accepts (Issues #731, #229)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      ...UNREPAIRABLE_ENV,
+      STUB_INIT_STDOUT: `VOLUME_UNREPAIRABLE ${TARGETS.work}`,
+      STUB_VOLUME_REMOVE_VERB: REMOVE_VERB,
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+      assertEquals(
+        await recorded(harness, `volume-${REJECTED_VERB}`),
+        null,
+        `the launcher must not spell the removal 'volume ${REJECTED_VERB}'`,
+      );
+      assertEquals(await initCount(harness), 2);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a removal the runtime refuses is surfaced, and no volume create follows it (Issue #731)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      ...UNREPAIRABLE_ENV,
+      STUB_INIT_STDOUT: `VOLUME_UNREPAIRABLE ${TARGETS.work}`,
+      // The volumes are there and the runtime will not remove them.
+      STUB_VOLUME_INSPECT_EXIT: "0",
+      STUB_VOLUME_REMOVE_EXIT: "125",
+      STUB_VOLUME_REMOVE_STDERR: `Error: volume ${WORK_VOLUME_NAME} is in use`,
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, `expected a failed launch: ${outcome.stderr}`);
+
+      assertStringIncludes(
+        outcome.stderr,
+        `could not remove volume ${WORK_VOLUME_NAME}`,
+      );
+      assertStringIncludes(
+        outcome.stderr,
+        `Error: volume ${WORK_VOLUME_NAME} is in use`,
+      );
+      assertEquals(await removedVolumes(harness), []);
+      assertEquals(
+        await recorded(harness, "volume-create"),
+        null,
+        "a removal that failed must not fall through to a create that cannot work",
+      );
+      assertEquals(await initCount(harness), 1);
     } finally {
       await harness.cleanup();
     }

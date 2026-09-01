@@ -766,7 +766,9 @@ remove_volume() {
   local volume="$1" err status=0
   volume_remove_detail=""
   err="$(mktemp -t vibe-volume-remove.XXXXXX)"
-  "${RUNTIME}" "${volume_remove_args[@]}" "${volume}" \
+  # Bounded, like every other helper here: this path runs because the runtime
+  # has just misbehaved, and a wedged client must not wedge the launcher.
+  bounded 120 "${RUNTIME}" "${volume_remove_args[@]}" "${volume}" \
     </dev/null >/dev/null 2>"${err}" || status=$?
   volume_remove_detail="$(tr '\n' ' ' <"${err}" | sed 's/[[:space:]]*$//')"
   rm -f "${err}"
@@ -777,7 +779,8 @@ remove_volume() {
   # Message-agnostic, so no runtime's wording has to be kept in step here: a
   # volume that is gone is removed, however the command reported itself, and
   # only one that survived is a failure.
-  if ! "${RUNTIME}" volume inspect "${volume}" </dev/null >/dev/null 2>&1; then
+  if ! bounded 120 "${RUNTIME}" volume inspect "${volume}" \
+    </dev/null >/dev/null 2>&1; then
     volume_remove_detail=""
     return 0
   fi
@@ -976,7 +979,9 @@ heal_untrimmable_volumes() {
     recreated=1
   done
   # Nothing was destroyed, so nothing was healed: the interval must not be
-  # spent on a recreate that never happened.
+  # spent on a recreate that never happened. One volume recreated does spend
+  # it - clones were destroyed, and the interval bounds the destruction, not
+  # the success; any volume the runtime refused was reported above.
   ((recreated)) || return 0
   mkdir -p "$(dirname "${HEAL_STATE_FILE}")" 2>/dev/null || true
   printf '%s\n' "${now}" >"${HEAL_STATE_FILE}" 2>/dev/null || true

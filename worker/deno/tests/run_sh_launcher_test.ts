@@ -1376,9 +1376,10 @@ Deno.test("run.sh - volumes too small to hold the missing space are escalated, n
 // exists" — a misleading report of a removal that had never happened.
 
 /** The removal verb the runtime this host would select actually accepts. */
-const REMOVE_VERB =
-  candidatesForPlatform(normaliseHostPlatform(Deno.build.os))[0]!.dialect
-    .volumeRemoveArgs[1]!;
+const REMOVE_VERB = candidatesForPlatform(
+  normaliseHostPlatform(Deno.build.os),
+)[0]!.dialect
+  .volumeRemoveArgs[1]!;
 
 /** The spelling that runtime rejects — `rm` and `delete` are not synonyms. */
 const REJECTED_VERB = REMOVE_VERB === "rm" ? "delete" : "rm";
