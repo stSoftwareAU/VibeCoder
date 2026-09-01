@@ -62,6 +62,7 @@ import { ALERT_FEED_ISSUE_TITLE } from "./idle_task_templates/alert_feed_templat
 import { WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE } from "./idle_task_templates/workflow_annotation_scan_template.ts";
 import { PRIVATE_REPO_REFERENCE_ISSUE_TITLE } from "./idle_task_templates/private_repo_reference_template.ts";
 import { DUPLICATED_KNOWLEDGE_ISSUE_TITLE } from "./idle_task_templates/duplicated_knowledge_template.ts";
+import { RETRO_ISSUE_TITLE } from "./idle_task_templates/retro_template.ts";
 import { assertNever } from "./assert_never.ts";
 
 // ---------------------------------------------------------------------------
@@ -91,9 +92,10 @@ const TITLE_TO_TEMPLATE: ReadonlyMap<string, string> = new Map([
   [WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE, "workflow-annotation-scan"],
   [PRIVATE_REPO_REFERENCE_ISSUE_TITLE, "private-repo-reference-audit"],
   [DUPLICATED_KNOWLEDGE_ISSUE_TITLE, "duplicated-knowledge"],
+  [RETRO_ISSUE_TITLE, "retro"],
 ]);
 
-/** The seventeen wrapper titles the sweep is allowed to rescue. */
+/** The eighteen wrapper titles the sweep is allowed to rescue. */
 export const IDLE_TASK_WRAPPER_TITLES: readonly string[] = Array.from(
   TITLE_TO_TEMPLATE.keys(),
 );

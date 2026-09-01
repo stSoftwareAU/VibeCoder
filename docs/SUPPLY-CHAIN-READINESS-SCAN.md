@@ -179,7 +179,7 @@ sequenceDiagram
 
     Main->>Filer: idle pass — nothing claimable
     Filer->>Filer: cross-repo wrapper check<br/>(any open idle-task anywhere?)
-    Filer->>Filer: 1/17 RNG picks supply-chain-readiness<br/>(uniform over the registered templates)
+    Filer->>Filer: 1/18 RNG picks supply-chain-readiness<br/>(uniform over the registered templates)
     Filer->>Template: buildIssueBody(repo)
     Template->>Template: load prompts/supply_chain_readiness/<br/>(substitute placeholders)
     Template->>GH: gh issue create — title `Run a supply-chain readiness scan`,<br/>label `idle-task`, no milestone
@@ -205,7 +205,7 @@ flowchart TD
     classDef output fill:#dcfce7,stroke:#15803d,color:#1f2937;
 
     Idle[Idle trigger<br/>run_core: nothing claimable]
-    Idle --> Pick{1/17 RNG over the<br/>registered idle-task templates}
+    Idle --> Pick{1/18 RNG over the<br/>registered idle-task templates}
     Pick -- supply-chain-readiness --> FileWrapper[File wrapper issue<br/>title: 'Run a supply-chain readiness scan'<br/>label: idle-task<br/>no milestone — skipMilestone: true]:::output
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
     Claim --> Ensure[Ensure `supply-chain-readiness` label exists]:::phase

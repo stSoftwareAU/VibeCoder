@@ -46,6 +46,7 @@ const CROSS_REPO_PROMPT_NAMES = [
   "github_actions_audit",
   "orphan_deps",
   "private_repo_reference_audit",
+  "retro",
   "security_scan",
   "supply_chain_readiness",
   "test_audit",

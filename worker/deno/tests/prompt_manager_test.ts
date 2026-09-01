@@ -241,6 +241,7 @@ const SCAN_TYPES_WITH_OPEN_ISSUE_TITLES = [
   "private_repo_reference_audit",
   "doc_coverage",
   "duplicated_knowledge",
+  "retro",
   "dead_code",
   "deprecated_api",
   "format_drift",

@@ -2,12 +2,11 @@
  * Tests for {@link createAllIdleTaskWrappers} (Issue #2577).
  *
  * Covers:
- *   - all-on-clean — a clean repo gets exactly seventeen wrappers filed, one
- *     per canonical template, each carrying the `idle-task` label and no
- *     milestone;
+ *   - all-on-clean — a clean repo gets exactly one wrapper per canonical
+ *     template, each carrying the `idle-task` label and no milestone;
  *   - partial-skip — a repo that already has some wrappers open skips those and
  *     files the rest, reporting the skipped templates;
- *   - full-skip — a repo with all seventeen wrappers open files nothing;
+ *   - full-skip — a repo with every wrapper already open files nothing;
  *   - canonical titles — every filed `--title` is a member of the
  *     `IDLE_TASK_WRAPPER_TITLES` allowlist;
  *   - partial progress (Issue #3862) — a mid-sweep `gh` failure never discards
@@ -47,6 +46,12 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Registry size, derived — never hard-coded, so registering a template keeps
+ * these expectations honest instead of pinning today's number (Issue #664).
+ */
+const TEMPLATE_COUNT = IDLE_TASK_WRAPPER_TITLES.length;
 
 interface GhCall {
   args: string[];
@@ -148,7 +153,7 @@ async function withRepoRootCwd<T>(fn: () => Promise<T>): Promise<T> {
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "createAllIdleTaskWrappers - clean repo gets exactly seventeen wrappers with idle-task label and no milestone",
+  "createAllIdleTaskWrappers - clean repo gets one wrapper per template with idle-task label and no milestone",
   async () => {
     const gh = makeMockGh();
     const ensureCalls: string[] = [];
@@ -170,12 +175,12 @@ Deno.test(
     assert(result.ok, "expected ok result");
     if (!result.ok) return;
 
-    // Exactly seventeen wrappers filed, one per canonical template.
-    assertEquals(result.value.created.length, 17);
+    // Exactly one wrapper filed per canonical template.
+    assertEquals(result.value.created.length, TEMPLATE_COUNT);
     assertEquals(result.value.skipped.length, 0);
 
     const creates = createCalls(gh.calls);
-    assertEquals(creates.length, 17);
+    assertEquals(creates.length, TEMPLATE_COUNT);
 
     // Label ensured once.
     assertEquals(ensureCalls, ["org/fresh"]);
@@ -226,7 +231,7 @@ Deno.test(
     if (!result.ok) return;
 
     const creates = createCalls(gh.calls);
-    assertEquals(creates.length, 17);
+    assertEquals(creates.length, TEMPLATE_COUNT);
 
     // Every wrapper — including the six native prompts that pre-embed the
     // footer via a trailing {{ATTRIBUTION_FOOTER}} — must never carry two
@@ -275,7 +280,7 @@ Deno.test(
     if (!result.ok) return;
 
     const creates = createCalls(gh.calls);
-    assertEquals(creates.length, 17);
+    assertEquals(creates.length, TEMPLATE_COUNT);
 
     for (const c of creates) {
       const body = bodyOf(c);
@@ -323,11 +328,11 @@ Deno.test(
     assert(result.ok);
     if (!result.ok) return;
 
-    assertEquals(result.value.created.length, 15);
+    assertEquals(result.value.created.length, TEMPLATE_COUNT - 2);
     assertEquals(result.value.skipped.length, 2);
 
     const creates = createCalls(gh.calls);
-    assertEquals(creates.length, 15);
+    assertEquals(creates.length, TEMPLATE_COUNT - 2);
 
     // None of the filed titles is one of the already-open ones.
     for (const c of creates) {
@@ -358,7 +363,7 @@ Deno.test(
     if (!result.ok) return;
 
     assertEquals(result.value.created.length, 0);
-    assertEquals(result.value.skipped.length, 17);
+    assertEquals(result.value.skipped.length, TEMPLATE_COUNT);
     assertEquals(createCalls(gh.calls).length, 0);
   },
 );
@@ -443,8 +448,8 @@ Deno.test(
     if (result.ok) return;
 
     const partial = partialFromSweepError(result.error);
-    // Fifteen creatable templates; the third attempt failed, the rest ran.
-    assertEquals(partial.created.length, 14);
+    // Two skipped; the third create attempt failed, the rest ran.
+    assertEquals(partial.created.length, TEMPLATE_COUNT - 3);
     assertEquals(partial.skipped.length, 2);
     assertEquals(partial.failed?.length, 1);
     assertEquals(partial.failed?.[0]?.terminal, false);
@@ -453,7 +458,7 @@ Deno.test(
     assertEquals(isTerminalSweepError(result.error), false);
 
     // The sweep attempted every creatable template despite the failure.
-    assertEquals(createCalls(gh.calls).length, 15);
+    assertEquals(createCalls(gh.calls).length, TEMPLATE_COUNT - 2);
   },
 );
 

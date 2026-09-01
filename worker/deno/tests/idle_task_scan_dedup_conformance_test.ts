@@ -87,6 +87,10 @@ import {
   assemblePrivateRepoReferencePrompt,
   createPrivateRepoReferenceTemplate,
 } from "../lib/idle_task_templates/private_repo_reference_template.ts";
+import {
+  assembleRetroPrompt,
+  createRetroTemplate,
+} from "../lib/idle_task_templates/retro_template.ts";
 import { createSecurityScanTemplate } from "../lib/idle_task_templates/security_scan_template.ts";
 import { buildSecurityScanPrompt } from "../lib/security_scanner.ts";
 import {
@@ -467,6 +471,24 @@ const HARNESSES: ScanHarness[] = [
       }),
     assemble: (template, scan) =>
       assemblePrivateRepoReferencePrompt(template, {
+        ...NO_IDS,
+        openIssueTitles: scan.openIssueTitles,
+      }),
+  },
+  {
+    name: "retro",
+    create: ({ gh, capture }) =>
+      createRetroTemplate({
+        ghCommandFn: gh,
+        loadPromptFn: okPrompt,
+        ensureLabelFn: labelOk,
+        runScanFn: (opts) => {
+          capture(opts);
+          return scanOk();
+        },
+      }),
+    assemble: (template, scan) =>
+      assembleRetroPrompt(template, {
         ...NO_IDS,
         openIssueTitles: scan.openIssueTitles,
       }),

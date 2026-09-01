@@ -179,6 +179,13 @@ const SCAN_CATEGORY_LABELS: readonly LabelDefinition[] = [
     category: "content",
   },
   {
+    name: "retro",
+    colour: "0052cc",
+    description:
+      "Retro candidate — environment improvement from a finished run",
+    category: "content",
+  },
+  {
     name: "format-drift",
     colour: "1d76db",
     description: "Formatting drift finding",

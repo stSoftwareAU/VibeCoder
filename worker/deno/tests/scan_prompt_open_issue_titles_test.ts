@@ -45,6 +45,7 @@ const SCAN_PROMPT_TYPES = [
   "github_actions_audit",
   "orphan_deps",
   "private_repo_reference_audit",
+  "retro",
   "security_scan",
   "supply_chain_detection",
   "supply_chain_readiness",

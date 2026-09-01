@@ -34,4 +34,5 @@ export const IDLE_TASK_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "workflow-annotation-scan",
   "private-repo-reference-audit",
   "duplicated-knowledge",
+  "retro",
 ]);

@@ -201,7 +201,7 @@ sequenceDiagram
 
     Main->>Filer: idle pass — nothing claimable
     Filer->>Filer: cross-repo wrapper check<br/>(any open idle-task anywhere?)
-    Filer->>Filer: 1/17 RNG picks best-practices<br/>(uniform over the registered templates)
+    Filer->>Filer: 1/18 RNG picks best-practices<br/>(uniform over the registered templates)
     Filer->>Template: buildIssueBody(repo)
     Template->>Picker: pickBucket(detected languages)
     Picker-->>Template: BucketPick (e.g. `rust` / `general` / `design`)
@@ -237,7 +237,7 @@ flowchart TD
 
     Idle[Idle trigger<br/>run_core: nothing claimable]
 
-    Idle --> Pick{1/17 RNG over the<br/>registered idle-task templates}
+    Idle --> Pick{1/18 RNG over the<br/>registered idle-task templates}
     Pick -- best-practices --> Bucket[pickBucket — SLOC-weighted<br/>across detected languages<br/>+ general and design at dominant weight]
     Bucket --> FileWrapper[File wrapper issue<br/>title: 'Run a best-practices scan'<br/>label: idle-task<br/>no milestone — skipMilestone: true]:::output
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
