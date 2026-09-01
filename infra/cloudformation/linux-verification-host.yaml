@@ -1,0 +1,354 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Vibe Coder Linux/podman verification host (Issue #721).
+#
+# One throwaway Ubuntu 24.04 EC2 instance whose only access path is SSM
+# Session Manager, so the launcher's Linux/podman branch can be exercised by
+# hand on a real Linux host. The maintainer develops on macOS, so that branch
+# has never been confirmed anywhere else.
+#
+# Two deliberate design points a reviewer should not "fix":
+#
+#   * Only podman is installed. The launcher probes Docker first and podman
+#     second, so leaving Docker out is what forces the podman branch to run.
+#   * The host stays stock Ubuntu apart from the documented installs. The
+#     podman environment faults reported in Issue #722 must still reproduce
+#     here, so nothing pre-patches them.
+#
+# Intrinsics are written in full function form (`Ref:`, `Fn::Sub:`) rather
+# than the `!Ref` short tags so the template parses with a standard YAML
+# parser — the repository's test suite reads it that way
+# (worker/deno/tests/linux_verification_host_template_test.ts).
+#
+# Australian English spelling used throughout (behaviour, colour).
+
+Description: >-
+  Vibe Coder Linux/podman verification host: one Ubuntu EC2 instance in its own
+  VPC, reachable only through SSM Session Manager (no key pair, no inbound
+  rules), with the launcher prerequisites installed and an auto-stop timer.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues:
+      - t3.large
+      - t3.xlarge
+      - m6i.large
+      - m6i.xlarge
+      - c6i.xlarge
+    Description: >-
+      Instance size. t3.large (2 vCPU / 8 GiB) is the accepted default: enough
+      to build the worker image and run one issue end to end.
+
+  RootVolumeSizeGb:
+    Type: Number
+    Default: 100
+    MinValue: 60
+    MaxValue: 500
+    Description: >-
+      Root volume size in GiB. The worker refuses to claim work below the
+      larger of 20 GB and 10% of the filesystem, so the disk must clear that
+      floor with the image and work volume already on it. At 100 GiB the floor
+      is the 20 GB constant.
+
+  AutoStopHours:
+    Type: Number
+    Default: 8
+    MinValue: 1
+    MaxValue: 24
+    Description: >-
+      Hours after boot at which the instance stops itself. Covers a
+      monitoring session without leaving a forgotten instance running; the
+      stack itself is torn down by hand.
+
+  VibeCoderRepositoryUrl:
+    Type: String
+    Default: https://github.com/stSoftwareAU/VibeCoder.git
+    AllowedPattern: ^https://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+$
+    Description: >-
+      HTTPS clone URL of the checkout the bootstrap clones for verification.
+
+  UbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: >-
+      Canonical's public SSM parameter for the current Ubuntu 24.04 x86_64
+      image. Resolved at deploy time, so no image id is pinned in the
+      template and the same template works in every region.
+
+Resources:
+  # --- Network: self-contained, egress only -------------------------------
+  VerificationVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::StackName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::StackName}-igw
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        Ref: VerificationVpc
+      InternetGatewayId:
+        Ref: InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VerificationVpc
+      CidrBlock: 10.42.0.0/24
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      # A public address is how the instance reaches the SSM endpoints and the
+      # package mirrors without a NAT gateway. Nothing can reach back in: the
+      # security group has no inbound rule at all.
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::StackName}-public
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VerificationVpc
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::StackName}-public
+
+  DefaultEgressRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId:
+        Ref: PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PublicSubnet
+      RouteTableId:
+        Ref: PublicRouteTable
+
+  # Declaring egress explicitly replaces CloudFormation's default allow-all
+  # rule; declaring no ingress at all is what makes Session Manager the only
+  # way in — the agent dials out, nothing dials in.
+  HostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: >-
+        Vibe Coder verification host: no inbound access; outbound limited to
+        the ports the bootstrap and the SSM agent need.
+      VpcId:
+        Ref: VerificationVpc
+      SecurityGroupEgress:
+        - Description: HTTPS — SSM endpoints, GitHub, container registries, installers
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - Description: HTTP — Ubuntu package mirrors
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - Description: DNS over UDP
+          IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+        - Description: DNS over TCP
+          IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+        - Description: NTP — clock skew breaks TLS and the SSM agent
+          IpProtocol: udp
+          FromPort: 123
+          ToPort: 123
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::StackName}-host
+
+  # --- Identity: SSM core and nothing else --------------------------------
+  HostRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                Fn::Sub: ec2.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - Fn::Sub: arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::StackName}-host
+
+  HostInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - Ref: HostRole
+
+  # --- The host -----------------------------------------------------------
+  VerificationHost:
+    Type: AWS::EC2::Instance
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      ImageId:
+        Ref: UbuntuAmiId
+      InstanceType:
+        Ref: InstanceType
+      SubnetId:
+        Ref: PublicSubnet
+      SecurityGroupIds:
+        - Fn::GetAtt: [HostSecurityGroup, GroupId]
+      IamInstanceProfile:
+        Ref: HostInstanceProfile
+      # The auto-stop timer powers the instance off; "stop" is what turns that
+      # into a stopped instance you can start again rather than a lost one.
+      InstanceInitiatedShutdownBehavior: stop
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize:
+              Ref: RootVolumeSizeGb
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${AWS::StackName}-linux-verification-host
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash
+            # Bootstrap the Vibe Coder Linux/podman verification host.
+            #
+            # Installs the host-side prerequisites only — the worker's own
+            # toolchain lives in the container image. Mirrors the documented
+            # manual Linux path in docs/SETUP.md so this host exercises the
+            # instructions a reader would follow, not a private variant.
+            #
+            # Shell variables are written ${!LIKE_THIS} because CloudFormation
+            # renders this block through Fn::Sub; only the two stack
+            # parameters below are substituted.
+            set -euo pipefail
+
+            STATUS=/var/log/vibe-bootstrap.status
+            LOG=/var/log/vibe-bootstrap.log
+            RUNTIME=/home/ubuntu/vibe-coder-runtime
+
+            exec >> "$LOG" 2>&1
+
+            # Fail loud: cloud-init failures are invisible unless something
+            # records them, so the status file is the first thing the
+            # verification guide tells an operator to read.
+            fail() {
+              echo "FAILED at line $1 - see $LOG" > "$STATUS"
+            }
+            trap 'fail ${!LINENO}' ERR
+
+            echo "RUNNING" > "$STATUS"
+
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            # unzip is not decoration: the Deno installer aborts without it.
+            apt-get install -y curl ca-certificates git gh jq podman uidmap unzip
+
+            # Deno and the coding-agent CLI have no distribution package; the
+            # upstream installers are the documented path. Both install under
+            # the ubuntu user's home, never as root.
+            #
+            # `set -o pipefail` is repeated inside each login shell on purpose:
+            # the outer shell's options do not cross runuser, so without it a
+            # failed download exits 0 through the interpreter and the bootstrap
+            # would carry on as though the install had worked.
+            runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://deno.land/install.sh | sh'
+            runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
+
+            cat > /etc/profile.d/vibe-verification.sh <<'PROFILE'
+            # Deno and the coding-agent CLI install under the user's home.
+            export PATH="$HOME/.deno/bin:$HOME/.local/bin:$PATH"
+            PROFILE
+            chmod 0644 /etc/profile.d/vibe-verification.sh
+
+            runuser -l ubuntu -c "git clone ${VibeCoderRepositoryUrl} $RUNTIME"
+
+            # Rootless podman containers die with the login session unless the
+            # user lingers.
+            loginctl enable-linger ubuntu
+
+            # Positively confirm every prerequisite before the status file says
+            # OK. "The installer did not obviously fail" is not success: each
+            # binary has to run, in the same login shell the operator will get,
+            # or the ERR trap records FAILED instead.
+            runuser -l ubuntu -c 'podman --version'
+            runuser -l ubuntu -c 'git --version'
+            runuser -l ubuntu -c 'gh --version'
+            runuser -l ubuntu -c 'deno --version'
+            runuser -l ubuntu -c 'claude --version'
+            test -d "$RUNTIME/.git"
+
+            # Auto-stop. Not re-armed by a later boot: cloud-init runs the
+            # user data once, so a restarted instance needs the shutdown
+            # scheduling again by hand (the guide says so).
+            shutdown -h "+$(( ${AutoStopHours} * 60 ))" "Vibe Coder verification host auto-stop"
+
+            echo "OK" > "$STATUS"
+
+Outputs:
+  InstanceId:
+    Description: Instance id — the target for aws ssm start-session.
+    Value:
+      Ref: VerificationHost
+
+  StartSessionCommand:
+    Description: Copy-paste command that opens a shell on the host.
+    Value:
+      Fn::Sub: aws ssm start-session --target ${VerificationHost}
+
+  BootstrapStatusFile:
+    Description: >-
+      Read this first in the session — RUNNING, OK, or FAILED with the line
+      number; the full log is /var/log/vibe-bootstrap.log.
+    Value: /var/log/vibe-bootstrap.status
+
+  AutoStopAfterHours:
+    Description: Hours after boot at which the instance stops itself.
+    Value:
+      Ref: AutoStopHours
