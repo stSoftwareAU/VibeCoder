@@ -502,10 +502,11 @@ provider_prompt_credential_var() {
 # Where an operator gets one provider's credential, when we can say.
 #
 # A provider with no entry simply gets no hint line — the prompt still names
-# the variable and the provisioning variable, so it stays usable.
+# the variable and the provisioning variable, so it stays usable. Claude has
+# no entry either: its paste prompt spells the whole `claude setup-token`
+# recipe out instead.
 provider_credential_source_hint() {
     case "$1" in
-        claude) printf '%s' "minted by \`claude setup-token\` (subscription token, never an API key)" ;;
         codex) printf '%s' "an OpenAI API key from https://platform.openai.com/api-keys" ;;
         gemini) printf '%s' "a Google AI Studio key from https://aistudio.google.com/apikey" ;;
         deepseek) printf '%s' "a key issued at https://platform.deepseek.com/api_keys" ;;
@@ -671,14 +672,23 @@ provider_credential_flow() {
         [[ -n "$secret" ]] || break
 
         # Hand the secret to the shared writer under the name it must be
-        # stored as: one owner-only write path for both credential flows.
+        # stored as: one owner-only write path for both credential flows. The
+        # operator's own value for that variable — they may have exported one
+        # before running setup — is put back afterwards rather than dropped.
+        local inherited="${!prompt_var:-}" wrote=0
         printf -v "$prompt_var" '%s' "$secret"
-        if ! provision_provider_credential "$dir" "$subdir" "$prompt_var" "$prompt_var" quiet; then
+        if provision_provider_credential "$dir" "$subdir" "$prompt_var" "$prompt_var" quiet; then
+            wrote=1
+        fi
+        if [[ -n "$inherited" ]]; then
+            printf -v "$prompt_var" '%s' "$inherited"
+        else
             unset "$prompt_var"
+        fi
+        if [[ "$wrote" -eq 0 ]]; then
             print_error "Could not write the ${id} credential to ${env_file}"
             return 1
         fi
-        unset "$prompt_var"
 
         # The proof is a real completion, not the write (Issue #3234): the
         # write itself is announced only once it has survived validation, so a

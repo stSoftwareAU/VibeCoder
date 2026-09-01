@@ -40,7 +40,11 @@
  * Issue #4149: The split follows the resolved run mode.
  */
 
-import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
+import {
+  AGENT_PROVIDER_CONFIG_KEY,
+  AGENT_PROVIDER_ENV,
+  CLAUDE_PROVIDER_ID,
+} from "../lib/agent_provider.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   type ContainerRuntimeDescriptor,
@@ -340,10 +344,14 @@ export async function checkClaudeCli(
       ok: false,
       tool: "claude",
       message: "claude CLI is not installed",
-      hint: "Required on the host in every run mode: setup mints and " +
+      hint: "Required on a host that runs Claude: setup mints and " +
         "validates the worker's OAuth token with `claude setup-token` " +
         "(Issue #4161). Install from: " +
-        "https://docs.anthropic.com/en/docs/claude-code",
+        "https://docs.anthropic.com/en/docs/claude-code — or, if this host " +
+        "runs another agent, select it and re-run: set " +
+        `"${AGENT_PROVIDER_CONFIG_KEY}" in .config.json, or ` +
+        `${AGENT_PROVIDER_ENV}=<provider> ./setup.sh on a host that has no ` +
+        "configuration yet (Issue #730).",
     };
   }
   return { ok: true, tool: "claude", message: "claude CLI is installed" };

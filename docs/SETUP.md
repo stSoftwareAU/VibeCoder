@@ -405,6 +405,10 @@ same set, stated as the state your host must reach:
   `agent_provider` / `agent_providers` selects other vendors is not asked for
   it at all (Issue #730) — the probe reports
   `claude CLI not required — this host is configured for codex` and moves on.
+  On the **very first** run there is no `.config.json` to read yet, so the
+  probe falls back to the default provider (Claude). Say which agent that host
+  runs on the command line instead — `VIBE_AGENT_PROVIDER=codex ./setup.sh` —
+  and the same gate applies from the first probe.
 - [ ] **A container runtime** installed *and answering its probe* —
   host-fatal. The **worker image** must be present or buildable from the
   committed definition; a missing image is fine (the launcher builds it on

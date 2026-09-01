@@ -27,6 +27,7 @@ import {
 } from "../setup/prerequisites.ts";
 import { prerequisiteSummaryLines } from "../setup/setup_cli.ts";
 import {
+  AGENT_PROVIDER_ENV,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
 } from "../lib/agent_provider.ts";
@@ -137,6 +138,32 @@ Deno.test("resolveSetupAgentProviderIds - no configuration yet resolves to the d
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("resolveSetupAgentProviderIds - VIBE_AGENT_PROVIDER selects the provider on a host with no configuration yet", async () => {
+  // The first ./setup.sh on a bare Codex host has no .config.json to read, so
+  // the environment override is the only way to say "this host runs Codex"
+  // before the file exists. It has to reach the probe, or that host is back
+  // to a claude prerequisite it cannot satisfy.
+  const dir = await Deno.makeTempDir();
+  const previous = Deno.env.get(AGENT_PROVIDER_ENV);
+  try {
+    Deno.env.set(AGENT_PROVIDER_ENV, CODEX_PROVIDER_ID);
+    assertEquals(await resolveSetupAgentProviderIds(`${dir}/.config.json`), [
+      CODEX_PROVIDER_ID,
+    ]);
+  } finally {
+    if (previous === undefined) Deno.env.delete(AGENT_PROVIDER_ENV);
+    else Deno.env.set(AGENT_PROVIDER_ENV, previous);
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("checkClaudeCli - a missing claude CLI says how to select another provider", async () => {
+  const result = await checkClaudeCli(hostWith(["git", "gh", "deno"]));
+  assertEquals(result.ok, false);
+  assert(result.hint?.includes(AGENT_PROVIDER_ENV), result.hint);
+  assert(result.hint?.includes("setup-token"), result.hint);
 });
 
 Deno.test("resolveSetupAgentProviderIds - a broken or unusable selection fails loudly", async () => {
