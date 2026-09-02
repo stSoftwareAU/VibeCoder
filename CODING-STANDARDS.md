@@ -166,7 +166,10 @@ unfixed code and passes after the fix, and state that linkage in the PR summary.
   (`assertLinearGrowth`), which times the same work at size N and 4N and fails
   only when the cost grew faster than the input. A slower fleet host inflates
   both readings and stays green; an absolute millisecond budget does not
-  (Issue #530).
+  (Issue #530). The rule in one line: **compare two readings of the same work,
+  never a reading against a constant.** A ratio assertion is permitted and is
+  not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
+  is one (Issue #786).
 
 ## Quality Gates
 
@@ -286,7 +289,12 @@ keys, OAuth tokens, SSH keys. Never stage or commit a hidden path outside the
 small allowlist.
 
 **Allowlist — the only hidden paths that may ever be tracked:** `.gitignore`,
-`.gitattributes`, `.github/` (workflow YAML), `.markdownlint-cli2.jsonc`.
+`.gitattributes`, `.github/` (workflow YAML), `.vscode/` (shared editor
+settings), `.markdownlint-cli2.jsonc`. These are the five entries
+`REQUIRED_GITIGNORE_PATTERNS` re-allows in
+`worker/deno/lib/gitignore_enforcer.ts`, which is what writes each repository's
+`.gitignore`; this list and `prompts/coding_guidelines/` restate it, and
+neither may drift from it.
 
 **Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
 `.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,
