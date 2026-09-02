@@ -27,6 +27,10 @@
   // signal-rich.
   "ignores": [
     "docs/archive/**",
+    // Worker-generated handover notes on interrupted issue branches
+    // (Issue #769) — machine-written, never hand-edited, and gone once
+    // the branch merges.
+    "docs/handover/**",
     "node_modules/**",
     "_site/**",
     "vendor/**",

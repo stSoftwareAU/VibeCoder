@@ -14,11 +14,14 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildHandoverNote,
   extractAttemptLines,
+  HANDOVER_MARKER,
   handoverNotePath,
   MAX_PRIOR_ATTEMPTS,
   writeHandoverNote,
 } from "../lib/handover_note.ts";
 import { classifyStagedPath } from "../lib/pre_commit_safety.ts";
+import { describeWipCause } from "../lib/wip_checkpoint.ts";
+import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
 
 const FACTS = {
   issueNumber: 769,
@@ -99,6 +102,51 @@ Deno.test("buildHandoverNote #769 - carries no host paths, session ids or provid
       `handover note leaked '${forbidden}':\n${note}`,
     );
   }
+});
+
+Deno.test("describeWipCause #769 - every cause has prose the note can print", () => {
+  const causes = [
+    "timed-out",
+    "killed",
+    "external-sigterm",
+    "scheduled-release",
+  ] as const;
+  const phrases = causes.map(describeWipCause);
+  for (const phrase of phrases) assert(phrase.length > 0, phrase);
+  assertEquals(new Set(phrases).size, causes.length, "each cause reads apart");
+});
+
+Deno.test("buildHandoverNote #769 - carries the structure marker a reader can key on", () => {
+  assertStringIncludes(buildHandoverNote(FACTS), HANDOVER_MARKER);
+});
+
+Deno.test("buildHandoverNote #769 - a long dirty list is truncated and says so", () => {
+  const note = buildHandoverNote({
+    ...FACTS,
+    dirtyFiles: Array.from({ length: 25 }, (_, i) => `src/file-${i}.ts`),
+  });
+  assertStringIncludes(note, "src/file-19.ts");
+  assertEquals(note.includes("src/file-20.ts"), false, note);
+  assertStringIncludes(note, "and 5 more file(s)");
+});
+
+Deno.test("buildHandoverNote #769 - non-portable paths are dropped and counted", () => {
+  const note = buildHandoverNote({
+    ...FACTS,
+    dirtyFiles: ["src/kept.ts", "/tmp/dropped.ts", "~/also-dropped.ts"],
+  });
+  assertStringIncludes(note, "src/kept.ts");
+  assertStringIncludes(note, "2 path(s) were omitted");
+});
+
+Deno.test("buildHandoverNote #769 - Liquid tags in interpolated content are defused", () => {
+  const note = buildHandoverNote({
+    ...FACTS,
+    wipCommitSubjects: ["fix: escape {% raw %} and {{ site.url }}"],
+  });
+  assertEquals(note.includes("{%"), false, note);
+  assertEquals(note.includes("{{"), false, note);
+  assertStringIncludes(note, "{ % raw %} and { { site.url }}");
 });
 
 Deno.test("extractAttemptLines #769 - reads back the attempts a note records", () => {
@@ -231,7 +279,7 @@ Deno.test("writeHandoverNote #769 - records the wind-down notice the run was han
   try {
     await Deno.mkdir(`${repoPath}/.git`);
     await Deno.writeTextFile(
-      `${repoPath}/.vibe-run-budget.md`,
+      `${repoPath}/${WIND_DOWN_NOTICE_FILENAME}`,
       "# Run budget: 120s remaining — wind down now",
     );
     await writeHandoverNote({

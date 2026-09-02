@@ -34,6 +34,7 @@ import {
   type WipPreservationCause,
 } from "./wip_checkpoint.ts";
 import { WIND_DOWN_NOTICE_FILENAME } from "./wind_down_notice.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Directory holding one handover note per issue, relative to the clone. */
 export const HANDOVER_DIR = "docs/handover";
@@ -102,6 +103,18 @@ function isPortablePath(path: string): boolean {
     !path.includes("\\");
 }
 
+/**
+ * Defuse Liquid tags in interpolated content.
+ *
+ * The note is committed into a repository whose `docs/` tree may be built by
+ * GitHub Pages, and a stray `{%`/`{{` inside a commit subject or a path would
+ * break that build. Only interpolated values are treated — the note's own
+ * prose carries no braces.
+ */
+function defuseLiquid(text: string): string {
+  return text.replace(/\{\{/g, "{ {").replace(/\{%/g, "{ %");
+}
+
 /** The one-line summary of an attempt, and the unit the tail is kept in. */
 function buildAttemptLine(facts: HandoverFacts): string {
   const files = facts.dirtyFiles.length;
@@ -149,7 +162,7 @@ export function buildHandoverNote(facts: HandoverFacts): string {
     "## This attempt",
     "",
     `- ${buildAttemptLine(facts)}`,
-    `- Branch: \`${facts.branch}\``,
+    `- Branch: \`${defuseLiquid(facts.branch)}\``,
     `- Wind-down notice: ${
       facts.windDownNoticeDelivered
         ? "delivered — the run was warned it was running out of budget"
@@ -162,7 +175,7 @@ export function buildHandoverNote(facts: HandoverFacts): string {
 
   if (commits.length > 0) {
     lines.push("Commits this run added to the branch, newest first:", "");
-    for (const subject of commits) lines.push(`- ${subject}`);
+    for (const subject of commits) lines.push(`- ${defuseLiquid(subject)}`);
     lines.push("");
   } else {
     lines.push(
@@ -177,7 +190,7 @@ export function buildHandoverNote(facts: HandoverFacts): string {
       "same interruption:",
       "",
     );
-    for (const file of listed) lines.push(`- \`${file}\``);
+    for (const file of listed) lines.push(`- \`${defuseLiquid(file)}\``);
     const unlisted = files.length - listed.length;
     if (unlisted > 0) lines.push(`- …and ${unlisted} more file(s)`);
     lines.push("");
@@ -221,25 +234,50 @@ export function buildHandoverNote(facts: HandoverFacts): string {
     lines.push("");
   }
 
-  return lines.join("\n");
+  // The note is committed and pushed, so it is an outbound sink like any
+  // other: anything the run's own commit subjects or paths carried through
+  // is redacted before it can reach the branch.
+  return redactSecrets(lines.join("\n"));
 }
 
-/** Read the note this write replaces, or `undefined` when there is none. */
-async function readExistingNote(path: string): Promise<string | undefined> {
+/**
+ * Read the note this write replaces, or `undefined` when there is none.
+ *
+ * "No note yet" and "the note could not be read" are different facts: the
+ * first is the ordinary first interruption, the second is a fault and is
+ * logged as one. Neither stops the new note being written — losing the tail
+ * is better than losing the note.
+ */
+async function readExistingNote(
+  path: string,
+  logger?: { warn: (message: string) => void },
+): Promise<string | undefined> {
   try {
     return await Deno.readTextFile(path);
-  } catch {
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) {
+      logger?.warn(
+        `Existing handover note could not be read, so the previous-attempts ` +
+          `tail is lost: ${
+            err instanceof Error ? err.message : String(err)
+          } (Issue #769)`,
+      );
+    }
     return undefined;
   }
 }
 
-/** True when `path` exists. */
+/**
+ * True when `path` exists. A stat fault other than "not found" is a real
+ * failure and is raised, never reported as a benign absence.
+ */
 async function pathExists(path: string): Promise<boolean> {
   try {
     await Deno.stat(path);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return false;
+    throw err;
   }
 }
 
@@ -277,7 +315,7 @@ export async function writeHandoverNote(
       return { kind: "skipped", reason };
     }
 
-    const existing = await readExistingNote(absolutePath);
+    const existing = await readExistingNote(absolutePath, logger);
     const windDownNoticeDelivered = facts.windDownNoticeDelivered ??
       await pathExists(`${repoPath}/${WIND_DOWN_NOTICE_FILENAME}`);
     const note = buildHandoverNote({

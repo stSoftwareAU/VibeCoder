@@ -34,6 +34,9 @@ exclude:
   - prompts
   - hooks
   - docs/archive
+  # Worker-generated handover notes left on interrupted issue branches
+  # (Issue #769). They are resume state for the next claim, not site content.
+  - docs/handover
   - .git
   - .github
   - .cursor
