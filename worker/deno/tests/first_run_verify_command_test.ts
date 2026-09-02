@@ -30,14 +30,17 @@ async function withoutWorkaroundEnv(body: () => Promise<void>): Promise<void> {
   const saved = new Map<string, string>();
   for (const { name } of WORKAROUND_ENV_VARS) {
     const value = Deno.env.get(name);
-    if (value !== undefined) {
-      saved.set(name, value);
-      Deno.env.delete(name);
-    }
+    if (value !== undefined) saved.set(name, value);
+    Deno.env.delete(name);
   }
   try {
     await body();
   } finally {
+    // Clear first, then restore: a variable the body set must not survive into
+    // the next test. Deno runs a file's tests in one process, and a leaked
+    // VIBE_SKIP_PREREQ_CHECK would silently turn every later prerequisite
+    // check into a skip.
+    for (const { name } of WORKAROUND_ENV_VARS) Deno.env.delete(name);
     for (const [name, value] of saved) Deno.env.set(name, value);
   }
 }
