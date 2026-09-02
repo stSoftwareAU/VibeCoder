@@ -2018,9 +2018,9 @@ never dropped from cost tracking. These rows mirror `MODEL_PRICING` in
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts).
 
 Fable (alias `fable`) is the top tier above Opus with a 1M-token context
-window. It is the default for the eight planning-shaped phases (`planning`,
-`grill_me`, `refinement`, `revision`, `question`, `clarification`, `quorum`,
-`quorum_judge`) under, and.
+window. It is the default for the eight planning-shaped phases: `planning`,
+`grill_me`, `refinement`, `revision`, `question`, `clarification`, `quorum`
+and `quorum_judge`.
 
 Sonnet 5 (model id `claude-sonnet-5`, alias `sonnet`) is **cheaper** than the
 Sonnet 4.x line it replaces ($2 / $10 rather than $3 / $15 per MTok) — the
@@ -2041,11 +2041,13 @@ What changed for the worker is the **cache-read rate**: 5.1 prices cache hits
 at 0.025× base input — **$0.25 / MTok, a quarter of the Fable 5 rate** — while
 input, output and cache writes are unchanged. Since the eight planning-shaped
 phases replay a large cached prefix, that is where the saving lands.
-`claude-fable-5` keeps its own $1.00 row so a run-stats comment for a run
-actually served by Fable 5 is still costed at the rate it was billed at, and
-`lookupModelPricing()` classifies by minor version, so a dated
-`claude-fable-5-1-…` id prices at the 5.1 rate and a dated `claude-fable-5-2026…`
-id at the 5.0 rate.
+`claude-fable-5` keeps its own $1.00 row so a run whose **served** model was
+Fable 5 is still costed at the rate it was billed at, and `lookupModelPricing()`
+classifies by minor version, so a dated `claude-fable-5-1-…` id prices at the
+5.1 rate and a dated `claude-fable-5-2026…` id at the 5.0 rate. A run that
+reported **no** served model is costed against the requested `fable` alias,
+which prices at the current tier rate — the same alias-follows-the-latest rule
+the `opus` and `sonnet` rows use.
 
 **The flip is the CLI's, not the worker's.** The Claude CLI resolves the alias
 locally — `claude --model fable --print --output-format stream-json` on CLI

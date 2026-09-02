@@ -151,9 +151,11 @@ export const TIER_CURRENT_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
  */
 export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   // Claude Fable 5.1 — current top tier (Issue #747). Must precede the
-  // `claude-fable-5` row: prefixes are matched in order, and every released
-  // Fable 5 snapshot id carries a `2026…` date suffix, so no Fable 5 id can
-  // be captured by the `claude-fable-5-1` prefix.
+  // `claude-fable-5` row: `lookupModelPricing` classifies every `claude-fable-…`
+  // id by version before it reaches this map, but `estimateBatchCost`
+  // (`batch_api.ts`) walks these rows in insertion order and takes the first
+  // whose key the model id contains. Every released Fable 5 snapshot id carries
+  // a `2026…` date suffix, so no Fable 5 id is captured by the 5.1 key.
   ["claude-fable-5-1", FABLE_5_1_PRICING],
   // Claude Fable 5 — the previous top tier (Issue #2619)
   ["claude-fable-5", FABLE_5_PRICING],
