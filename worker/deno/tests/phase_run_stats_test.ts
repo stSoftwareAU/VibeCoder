@@ -26,6 +26,8 @@ import {
   reportPhaseDegradation,
 } from "../lib/phase_run_stats.ts";
 import { DEGRADED_MODEL_LABEL } from "../lib/planning_degraded_label.ts";
+import { buildIssueRunStatsMarker } from "../lib/issue_run_stats_comment.ts";
+import { getRunId } from "../lib/run_id.ts";
 import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
@@ -207,7 +209,7 @@ for (const { phase, heading } of PROMOTED_PHASES) {
     assertStringIncludes(comments[0]!.body, "Estimate only");
   });
 
-  Deno.test(`reportPhaseDegradation - ${phase}: healthy round skips a second stats comment`, async () => {
+  Deno.test(`reportPhaseDegradation - ${phase}: healthy round skips a second stats comment for the same run`, async () => {
     pinPhasesToFable();
     const { ghCommandFn, addLabelCalls } = fakeGh();
     const { postComment, comments } = fakePost();
@@ -222,15 +224,46 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       runGhCommand: ghCommandFn,
       logger,
       cacheDir: Deno.makeTempDirSync(),
-      // The issue already carries the planning-path stats comment.
+      // This run already posted its stats comment.
       listIssueComments: () =>
-        Promise.resolve([{ body: "## Planning run model stats\n\n- x" }]),
+        Promise.resolve([{
+          body: `${buildIssueRunStatsMarker(getRunId())}\n## Run model stats`,
+        }]),
     });
 
     resetModelResolution();
     assertEquals(verdict.degraded, false);
     assertEquals(addLabelCalls.length, 0);
     assertEquals(comments.length, 0);
+  });
+
+  Deno.test(`reportPhaseDegradation - ${phase}: an earlier run's stats comment does not suppress this run (Issue #797)`, async () => {
+    pinPhasesToFable();
+    const { ghCommandFn } = fakeGh();
+    const { postComment, comments } = fakePost();
+    const { logger } = recordingLogger();
+
+    await reportPhaseDegradation({
+      phase,
+      repo: "owner/repo",
+      issueNumber: 5,
+      claudeResult: { runStats: runStats(["claude-fable-5-20250101"]) },
+      postComment,
+      runGhCommand: ghCommandFn,
+      logger,
+      cacheDir: Deno.makeTempDirSync(),
+      // The planning path reported an earlier, different run.
+      listIssueComments: () =>
+        Promise.resolve([{
+          body:
+            "## Planning run model stats\n\n- **Estimated cost (USD, estimate only):** ~$0.50",
+        }]),
+    });
+
+    resetModelResolution();
+    assertEquals(comments.length, 1);
+    assertStringIncludes(comments[0]!.body, heading);
+    assertStringIncludes(comments[0]!.body, "Issue total across 2 run-stats");
   });
 }
 

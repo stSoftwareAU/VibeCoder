@@ -1,19 +1,25 @@
 /**
- * Tests for issue_run_stats_comment.ts — one cost/model stats comment per
- * issue, posted at wrap-up on every worker-handled path (Issue #3756).
+ * Tests for issue_run_stats_comment.ts — one cost/model stats comment per run,
+ * posted at wrap-up on every worker-handled path (Issues #3756, #797).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildIssueCostTotalLine,
   buildIssueRunStatsComment,
+  buildIssueRunStatsMarker,
   ghIssueCommentLister,
   hasIssueRunStatsComment,
+  hasRunStatsCommentForRun,
   ISSUE_RUN_STATS_DISCLAIMER,
-  ISSUE_RUN_STATS_MARKER,
+  ISSUE_RUN_STATS_MARKER_PREFIX,
   postIssueRunStatsComment,
+  sanitiseStatsRunId,
+  tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
+import { formatUsd } from "../lib/cost_estimate.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import type { RunStats } from "../lib/run_stats.ts";
 import type { Logger } from "../types.ts";
@@ -93,11 +99,89 @@ Deno.test("buildIssueRunStatsComment - carries marker and disclaimer", () => {
   const body = buildIssueRunStatsComment({
     phase: "issue",
     claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-abc-123456",
   });
 
-  assertStringIncludes(body, ISSUE_RUN_STATS_MARKER);
+  assertStringIncludes(body, ISSUE_RUN_STATS_MARKER_PREFIX);
+  assertStringIncludes(body, buildIssueRunStatsMarker("vibe-abc-123456"));
   assertStringIncludes(body, ISSUE_RUN_STATS_DISCLAIMER);
   assertStringIncludes(body, "not included");
+});
+
+Deno.test("buildIssueRunStatsComment - marker is run-scoped (Issue #797)", () => {
+  const first = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-one",
+  });
+  const second = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-two",
+  });
+
+  assertStringIncludes(first, 'run="vibe-run-one"');
+  assertStringIncludes(second, 'run="vibe-run-two"');
+  assertEquals(hasRunStatsCommentForRun([first], "vibe-run-two"), false);
+  assertEquals(hasRunStatsCommentForRun([first], "vibe-run-one"), true);
+});
+
+Deno.test("buildIssueRunStatsComment - adds the cumulative issue total from the second comment on", () => {
+  const earlier = buildIssueRunStatsComment({
+    phase: "grill_me",
+    claudeResults: [claudeResult(["claude-fable-5"])],
+    runId: "vibe-run-one",
+  });
+  // The first comment on an issue carries no total — its own figure is it.
+  assertEquals(earlier.includes("Issue total across"), false);
+
+  const later = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-two",
+    priorComments: [earlier],
+  });
+
+  // The rendered total is this run plus the earlier one, not just this run.
+  const expected = tallyIssueCost([earlier]).total +
+    tallyIssueCost([later]).total;
+  assertStringIncludes(
+    later,
+    `**Issue total across 2 run-stats comments:** ~${formatUsd(expected)}`,
+  );
+
+  // A third run tallies both prior comments without double-counting the
+  // cumulative line the second one carries.
+  const third = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-three",
+    priorComments: [earlier, later],
+  });
+  assertStringIncludes(
+    third,
+    "**Issue total across 3 run-stats comments:** ~$",
+  );
+  assertEquals(
+    tallyIssueCost([earlier, later, third]).total,
+    expected + tallyIssueCost([third]).total,
+  );
+});
+
+Deno.test("sanitiseStatsRunId - a run id can never break out of the marker", () => {
+  const marker = buildIssueRunStatsMarker('evil" --><script>x</script>');
+  assertEquals(
+    marker,
+    '<!-- vibe-issue-run-stats run="evil----script-x-script-" -->',
+  );
+  // Neither the attribute quote nor the comment terminator survives.
+  assertEquals(marker.split('"').length, 3);
+  assertEquals(marker.indexOf("-->"), marker.length - 3);
+  assertEquals(sanitiseStatsRunId("   "), "unknown");
+  assertEquals(
+    sanitiseStatsRunId("vibe-lkz3p9x-1a2b3c"),
+    "vibe-lkz3p9x-1a2b3c",
+  );
 });
 
 Deno.test("buildIssueRunStatsComment - heading names the phase", () => {
@@ -152,9 +236,65 @@ Deno.test("buildIssueRunStatsComment - surfaces a degraded run", () => {
 
 Deno.test("hasIssueRunStatsComment - detects the hidden marker", () => {
   assertEquals(
-    hasIssueRunStatsComment([`${ISSUE_RUN_STATS_MARKER}\nanything`]),
+    hasIssueRunStatsComment([
+      `${buildIssueRunStatsMarker("vibe-run-one")}\nanything`,
+    ]),
     true,
   );
+});
+
+// ============================================================================
+// tallyIssueCost / buildIssueCostTotalLine
+// ============================================================================
+
+Deno.test("tallyIssueCost - sums the run totals across stats comments", () => {
+  const tally = tallyIssueCost([
+    "## Grill-me run model stats\n- **Estimated cost (USD, estimate only):** ~$1.34",
+    "## Issue run model stats\n- **Estimated cost (USD, estimate only):** ~$12.50",
+  ]);
+
+  assertEquals(tally.runs, 2);
+  assertEquals(tally.total, 13.84);
+  assertEquals(tally.partial, false);
+  assertStringIncludes(
+    buildIssueCostTotalLine(tally),
+    "**Issue total across 2 run-stats comments:** ~$13.84",
+  );
+});
+
+Deno.test("tallyIssueCost - ignores comments that are not run stats", () => {
+  const tally = tallyIssueCost([
+    "Quoting a cost line in prose: - **Estimated cost (USD, estimate only):** ~$99.00",
+    "## Issue run model stats\n- **Estimated cost (USD, estimate only):** ~$2.00",
+  ]);
+
+  assertEquals(tally.runs, 1);
+  assertEquals(tally.total, 2);
+  assertEquals(buildIssueCostTotalLine(tally), "");
+});
+
+Deno.test("tallyIssueCost - an unpriced or partial run makes the total partial, never silently low", () => {
+  const unpriced = tallyIssueCost([
+    "## Issue run model stats\n- **Tokens:** input 10",
+    "## Issue run model stats\n- **Estimated cost (USD, estimate only):** ~$2.00",
+  ]);
+  assertEquals(unpriced.partial, true);
+  assertEquals(unpriced.total, 2);
+  assertStringIncludes(buildIssueCostTotalLine(unpriced), "(partial");
+
+  const partial = tallyIssueCost([
+    "## Issue run model stats\n- **Estimated cost (USD, estimate only):** ~$1.00 (partial — see below)",
+    "## Issue run model stats\n- **Estimated cost (USD, estimate only):** ~$2.00",
+  ]);
+  assertEquals(partial.partial, true);
+  assertEquals(partial.total, 3);
+});
+
+Deno.test("tallyIssueCost - parses thousands separators", () => {
+  const tally = tallyIssueCost([
+    "## Issue run model stats\n- **Estimated cost (USD, estimate only):** ~$1,234.56",
+  ]);
+  assertEquals(tally.total, 1234.56);
 });
 
 Deno.test("hasIssueRunStatsComment - detects the legacy planning comment", () => {
@@ -189,6 +329,7 @@ Deno.test("postIssueRunStatsComment - posts once when the issue has none", async
     issueNumber: 42,
     phase: "issue",
     claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-one",
     getIssueComments: gh.getIssueComments,
     postComment: gh.postComment,
     logger: makeLogger(),
@@ -196,18 +337,21 @@ Deno.test("postIssueRunStatsComment - posts once when the issue has none", async
 
   assertEquals(result.posted, true);
   assertEquals(gh.posted.length, 1);
-  assertStringIncludes(gh.posted[0]!, ISSUE_RUN_STATS_MARKER);
+  assertStringIncludes(gh.posted[0]!, buildIssueRunStatsMarker("vibe-run-one"));
 });
 
-Deno.test("postIssueRunStatsComment - skips when a stats comment already exists", async () => {
+Deno.test("postIssueRunStatsComment - skips when this run already posted", async () => {
+  // Business-logic change (Issue #797): the guard is run-scoped, so what it
+  // suppresses is a *repeat* post inside one run, not the next run's costs.
   const gh = makeGitHubDouble([
-    `${ISSUE_RUN_STATS_MARKER}\n## Issue run model stats`,
+    `${buildIssueRunStatsMarker("vibe-run-one")}\n## Issue run model stats`,
   ]);
   const result = await postIssueRunStatsComment({
     repo: "org/repo",
     issueNumber: 42,
     phase: "issue",
     claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-one",
     getIssueComments: gh.getIssueComments,
     postComment: gh.postComment,
     logger: makeLogger(),
@@ -218,23 +362,54 @@ Deno.test("postIssueRunStatsComment - skips when a stats comment already exists"
   assertEquals(gh.posted.length, 0);
 });
 
-Deno.test("postIssueRunStatsComment - skips when the planning path already posted", async () => {
+Deno.test("postIssueRunStatsComment - an earlier run's comment no longer hides this run's cost (Issue #797)", async () => {
+  // Reproduces issue #762: a cheap grill-me round posted first and, under the
+  // old issue-scoped guard, the work-on run that completed the issue reported
+  // nothing at all.
+  const grillMe = buildIssueRunStatsComment({
+    phase: "grill_me",
+    claudeResults: [claudeResult(["claude-fable-5"])],
+    runId: "vibe-run-one",
+  });
+  const gh = makeGitHubDouble([grillMe]);
+
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 762,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-two",
+    getIssueComments: gh.getIssueComments,
+    postComment: gh.postComment,
+    logger: makeLogger(),
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(gh.posted.length, 1);
+  assertStringIncludes(gh.posted[0]!, "## Issue run model stats");
+  assertStringIncludes(gh.posted[0]!, "Estimated cost (USD, estimate only)");
+  assertStringIncludes(gh.posted[0]!, "**Issue total across 2 run-stats");
+});
+
+Deno.test("postIssueRunStatsComment - a legacy planning stats comment does not suppress this run", async () => {
+  // The pre-#3756 planning comment carries no run marker, so it counts toward
+  // the issue total but never blocks a later run's own figures (Issue #797).
   const gh = makeGitHubDouble([
-    "## Planning run model stats\n\n- **Degraded:** no",
+    "## Planning run model stats\n\n- **Estimated cost (USD, estimate only):** ~$0.50\n- **Degraded:** no",
   ]);
   const result = await postIssueRunStatsComment({
     repo: "org/repo",
     issueNumber: 7,
     phase: "issue",
     claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-two",
     getIssueComments: gh.getIssueComments,
     postComment: gh.postComment,
     logger: makeLogger(),
   });
 
-  assertEquals(result.posted, false);
-  assertEquals(result.reason, "already_posted");
-  assertEquals(gh.posted.length, 0);
+  assertEquals(result.posted, true);
+  assertStringIncludes(gh.posted[0]!, "**Issue total across 2 run-stats");
 });
 
 Deno.test("postIssueRunStatsComment - posts nothing when there are no stats", async () => {
@@ -308,10 +483,13 @@ Deno.test("ghIssueCommentLister - backs the duplicate guard end to end", async (
     issueNumber: 5,
     phase: "issue",
     claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-one",
     getIssueComments: ghIssueCommentLister(() =>
       Promise.resolve(
         JSON.stringify({
-          comments: [{ body: `${ISSUE_RUN_STATS_MARKER}\nold` }],
+          comments: [{
+            body: `${buildIssueRunStatsMarker("vibe-run-one")}\nold`,
+          }],
         }),
       )
     ),
