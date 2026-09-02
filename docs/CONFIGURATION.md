@@ -296,7 +296,7 @@ explicitly overridden.
 | `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
-| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
+| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in — Java and Maven are the first expected use. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or `JAVA_HOME` at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked Java + Maven example](CONTAINER.md#deployer-supplied-build-time-tools). |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
@@ -848,6 +848,15 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   default branch mid-run. The skip is reported, never silent. Give the worker
   its own dedicated clone rather than relying on the skip
   (see [Deployment](DEPLOYMENT.md)).
+- **An update that actually changed the checkout names the variable**
+  (Issue #735). Moving the commit or discarding uncommitted work adds one line
+  to stderr and `run_core.log` —
+  `The checkout update changed <path> (HEAD <before> → <after>; 2 uncommitted
+  change(s) discarded). Local edits in this checkout do not survive a launch —
+  set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly as it is.` — so an
+  operator debugging a launcher fault learns about the opt-out at the moment it
+  discards their patch, rather than from this page. An update that changed
+  nothing says nothing.
 - **Three consecutive failures raise one GitHub issue** titled
   `Worker checkout update failing on <host>` against the checkout's own origin
   repository, carrying the "active development tree" diagnosis (Issue #4204).
@@ -1814,11 +1823,54 @@ operational purposes:
 | ------------------------------- | -------------- | ------------------------------------------------------------- |
 | `CONFIG_FILE`                   | `<checkout>/.config.json` | Path to the configuration file, for setup and the launcher alike. `CONFIG_PATH` is accepted as an alias (the launcher's older spelling); a relative value resolves against the checkout, and setting both to different files is refused rather than silently resolved two ways — see [One config file, one name](#one-config-file-one-name-issue-750) |
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
+| `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
+| `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
 | `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
 | `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
 | `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
 | `WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES` | `2147483648` (2 GiB) | Cap on a side/data clone's `.git`; over it the clone is dropped even while warm, because each blobless refresh leaves a tree of blobs git will not prune (`0` disables) — see [A warm clone's object store is capped too](CONTAINER.md#a-warm-clones-object-store-is-capped-too-issue-387) |
+
+### The claiming floor (Issue #732)
+
+The worker stops claiming new work when the filesystem holding the container
+store falls below a floor. The floor is the **larger** of two terms:
+
+| Term | `.config.json` key | Environment variable | Default |
+| --- | --- | --- | --- |
+| Gigabytes | `host_disk_low_floor_gb` | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` |
+| Percentage of the filesystem | `host_disk_low_floor_percent` | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` |
+
+**Precedence, per term:** the `.config.json` key wins, then the environment
+variable, then the default — the rule Issue #289 set for every other knob. The
+terms resolve independently, so a deployment may pin the percentage in its
+configuration and still raise the gigabyte term for one launch from the
+environment. A value that is negative, not a number, or (for the percentage)
+over 100 is ignored and the next source applies.
+
+The default formula is unchanged, and it is worth knowing what it does on a
+large disk: 10 % of a 1.875 TB filesystem is ≈ 187 GB, so such a host is
+"low" with 37.5 GB free and refuses work. That is the reported case, and the
+answer is to state the floor the host actually wants:
+
+```json
+{
+  "host_disk_low_floor_gb": 20,
+  "host_disk_low_floor_percent": 1
+}
+```
+
+The launcher names the resolved floor and its origin on every launch, so a
+refused claim says which number refused it and which knob would move it:
+
+```
+host-disk: 38400 MB free on /var/lib/containers; claiming floor 20480 MB
+(larger of 20 GB and 1% of 1966080 MB; gb=config,percent=config)
+```
+
+The same resolution feeds the launcher's low-disk self-heal and the worker's
+own claim gate — they ride the launch plan together — so the two can never
+heal at one floor and claim at another.
 
 ### One config file, one name (Issue #750)
 

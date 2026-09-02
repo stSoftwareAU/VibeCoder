@@ -43,6 +43,9 @@ Deno.test("resolveDiskFloors - defaults, and env overrides that are sane", () =>
   assertEquals(resolveDiskFloors(() => undefined), {
     lowFloorGb: DEFAULT_LOW_FLOOR_GB,
     lowFloorPercent: DEFAULT_LOW_FLOOR_PERCENT,
+    // Issue #732: each term now says where it came from.
+    lowFloorGbSource: "default",
+    lowFloorPercentSource: "default",
   });
   const env = (n: string) => n === HOST_DISK_LOW_FLOOR_GB_ENV ? "50" : "abc";
   assertEquals(resolveDiskFloors(env).lowFloorGb, 50);
@@ -53,7 +56,12 @@ Deno.test("resolveDiskFloors - defaults, and env overrides that are sane", () =>
 });
 
 Deno.test("lowFloorBytes - the larger of the GB floor and the percent floor", () => {
-  const floors = { lowFloorGb: 20, lowFloorPercent: 10 };
+  const floors = {
+    lowFloorGb: 20,
+    lowFloorPercent: 10,
+    lowFloorGbSource: "default" as const,
+    lowFloorPercentSource: "default" as const,
+  };
   // 100 GB disk: 10% = 10 GB < 20 GB → 20 GB.
   assertEquals(lowFloorBytes(100 * GIB, floors), 20 * GIB);
   // 1 TB disk: 10% = 100 GB > 20 GB → 100 GB.
@@ -72,7 +80,12 @@ Deno.test("estimateHostFree - host loses every byte the volume gains, never rega
 });
 
 Deno.test("classifyHostDisk - the crashed host (23 GB of 460 GB) is low; a roomy host is ok", () => {
-  const floors = { lowFloorGb: 20, lowFloorPercent: 10 };
+  const floors = {
+    lowFloorGb: 20,
+    lowFloorPercent: 10,
+    lowFloorGbSource: "default" as const,
+    lowFloorPercentSource: "default" as const,
+  };
   // 23 GB free is above 20 GB but below 10% of 460 GB (46 GB) → low.
   const low = classifyHostDisk(23 * GIB, 460 * GIB, floors);
   assertEquals(low.level, "low");

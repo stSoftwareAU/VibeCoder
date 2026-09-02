@@ -199,7 +199,9 @@ Claude Code CLI: it runs under its own command, against DeepSeek's endpoint,
 with its own credential, so a `claude` + `deepseek` pair is a genuine
 two-vendor plan-off rather than two Claude runs.
 
-…built from an image that carries the same set:
+…built from an image that carries the same set. `./run.sh` does that itself —
+it passes `agent_providers` into the build and into the image tag (Issue #729),
+so the trio above is installed on the next launch. The equivalent by hand:
 
 ```bash
 docker build -f container/Containerfile \

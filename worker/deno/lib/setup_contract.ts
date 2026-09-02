@@ -53,6 +53,15 @@ export const SUPERVISOR_SUBCOMMANDS: readonly string[] = [
   "scheduled-task",
 ];
 
+/**
+ * The subcommand that answers "which coding agents does this host run?".
+ *
+ * Not a setup *step* — a query, like `scheduled-task --status` — so it is not
+ * in `SHARED_SETUP_SUBCOMMANDS`; what matters is that both scripts ask it
+ * before prompting for any credential (Issues #730, #745).
+ */
+const AGENT_PROVIDERS_SUBCOMMAND = "agent-providers";
+
 /** Provisioning variables, one per registered coding-agent provider. */
 const PROVIDER_PROVISION_VAR = /VIBE_LAUNCHAGENT_[A-Z]+_API_KEY/g;
 
@@ -61,8 +70,10 @@ const SUBCOMMAND_INVOCATION: Record<LauncherDialect, RegExp> = {
   // `run_setup_cli label-sync || print_warning ...`
   bash: /\brun_setup_cli\s+([a-z][a-z-]*)/g,
   // `Invoke-VibeSetupCli -Arguments @("label-sync")`
+  // `Capture` included: a query form still names the subcommand the script
+  // depends on, and `agent-providers` is only ever read that way (Issue #745).
   powershell:
-    /Invoke-VibeSetupCli(?:OrExit)?\s+-Arguments\s+@\(\s*["']([a-z][a-z-]*)["']/g,
+    /Invoke-VibeSetupCli(?:OrExit|Capture)?\s+-Arguments\s+@\(\s*["']([a-z][a-z-]*)["']/g,
 };
 
 /** What one setup script's source says it does. */
@@ -87,6 +98,12 @@ export interface SetupContract {
   validatesClaudeCredential: boolean;
   /** True when the script can mint a token with `claude setup-token`. */
   capturesSetupToken: boolean;
+  /**
+   * True when the script asks the setup CLI which coding-agent providers this
+   * host runs, and so prompts for those credentials rather than Claude's
+   * regardless (Issues #730, #745).
+   */
+  gatesCredentialsByProvider: boolean;
   /**
    * True when the script removes a host work dir that holds only setup's own
    * `.vibe-cache` (Issue #134). A directory holding worker data still gets a
@@ -155,6 +172,7 @@ export function extractSetupContract(
     provisionsGhCredential: runs(code, "hosts.yml"),
     validatesClaudeCredential: runs(code, "claude", "-p"),
     capturesSetupToken: runs(code, "claude setup-token"),
+    gatesCredentialsByProvider: invoked.includes(AGENT_PROVIDERS_SUBCOMMAND),
     // The removal is detected by its command, not its message: the one line
     // that recursively deletes the `.vibe-cache` subtree (Issue #134).
     removesCacheOnlyWorkDir: dialect === "bash"
@@ -177,6 +195,7 @@ export type SetupComparedField =
   | "providerProvisionVars"
   | "provisionsGhCredential"
   | "validatesClaudeCredential"
+  | "gatesCredentialsByProvider"
   | "removesCacheOnlyWorkDir";
 
 /** What each compared field is called in a divergence message. */
@@ -188,6 +207,7 @@ const COMPARED_FIELDS: Record<SetupComparedField, string> = {
   providerProvisionVars: "provider provisioning variables",
   provisionsGhCredential: "gh credential provisioning",
   validatesClaudeCredential: "live credential validation",
+  gatesCredentialsByProvider: "provider-gated credential prompts",
   removesCacheOnlyWorkDir: "cache-only host work dir removal",
 };
 
@@ -330,6 +350,13 @@ export function setupContractFaults(contract: SetupContract): string[] {
       `${contract.name} stores a credential without proving it works, so an ` +
         `expired token is discovered by the unattended worker instead ` +
         `(Issues #3234, #4161)`,
+    );
+  }
+  if (!contract.gatesCredentialsByProvider) {
+    faults.push(
+      `${contract.name} prompts for credentials without asking which ` +
+        `coding-agent providers this host runs, so a Codex-only host is ` +
+        `asked for a Claude token it will never use (Issues #730, #745)`,
     );
   }
   if (!contract.removesCacheOnlyWorkDir) {

@@ -130,6 +130,22 @@ export const ENABLED_AGENT_PROVIDERS_ENV = "VIBE_AGENT_PROVIDERS";
  */
 export const IMAGE_AGENT_PROVIDERS_ENV = "VIBE_IMAGE_AGENT_PROVIDERS";
 
+/**
+ * Build argument the Containerfile selects the installed set with (#729).
+ *
+ * The launchers pass it from the deployment's enabled set, so a `.config.json`
+ * selecting Codex builds a Codex image instead of taking the Containerfile's
+ * Claude default.
+ */
+export const AGENT_PROVIDERS_BUILD_ARG = "AGENT_PROVIDERS";
+
+/**
+ * The shape every provider id has: the id is also a filename
+ * (`container/providers/<id>.sh`) and a build-argument element, so anything
+ * outside this alphabet is refused rather than passed on.
+ */
+const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+
 /** The provider id Claude Code is registered under. */
 export const CLAUDE_PROVIDER_ID = "claude";
 
@@ -786,7 +802,7 @@ export function imageAgentProviderIds(
   const ids: string[] = [];
   for (const raw of stamped.split(",")) {
     const id = raw.trim();
-    if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+    if (!PROVIDER_ID_PATTERN.test(id)) {
       throw new Error(
         `${IMAGE_AGENT_PROVIDERS_ENV}=${JSON.stringify(stamped)} is not a ` +
           `provider set: ${
@@ -1039,4 +1055,61 @@ export function enabledAgentProviders(
   selection: EnabledAgentProviderSelection = {},
 ): AgentProviderDescriptor[] {
   return resolveEnabledAgentProviderIds(selection).map(resolveAgentProvider);
+}
+
+/**
+ * The {@link AGENT_PROVIDERS_BUILD_ARG} value one image build needs (#729).
+ *
+ * The set handed in is the very one the credential and mount path resolved —
+ * `resolveEnabledAgentProviderIds` for a configured deployment, or the ids of
+ * the descriptors a caller drove the plan with — so a single `.config.json`
+ * value cannot mean one thing to the build and another to the mounts. Only the
+ * *shape* is re-checked here: registration is settled upstream, and the
+ * per-invocation seam deliberately accepts a descriptor a caller constructed
+ * without registering it ({@link selectAgentProvider}).
+ *
+ * `undefined` means the set is already what the image installs by default
+ * (`container/tools.json` `installedProviders`, which the Containerfile
+ * restates as the argument's default), so no `--build-arg` is passed and the
+ * default fleet build stays byte-for-byte what it was. Order is significant:
+ * the fragments install in the order requested, so a re-ordered set is a
+ * different build and a different image.
+ *
+ * @param enabled - The providers this deployment enabled, in install order.
+ * @param imageDefault - The set a default image build installs.
+ * @returns The comma-separated set, or undefined when it is the default.
+ * @throws When the set is empty, or holds a blank, malformed or duplicated id
+ *   — a build argument that cannot name a fragment must fail here, not as a
+ *   half-installed image (Issue #3234).
+ */
+export function agentProvidersBuildValue(
+  enabled: readonly string[],
+  imageDefault: readonly string[],
+): string | undefined {
+  const ids: string[] = [];
+  for (const raw of enabled) {
+    const id = raw.trim();
+    if (!PROVIDER_ID_PATTERN.test(id)) {
+      throw new Error(
+        `The coding-agent providers the image build was given include ` +
+          `${JSON.stringify(raw)}, which is not a lower-case provider id.`,
+      );
+    }
+    if (ids.includes(id)) {
+      throw new Error(
+        `The coding-agent providers the image build was given list ` +
+          `${JSON.stringify(id)} twice.`,
+      );
+    }
+    ids.push(id);
+  }
+  if (ids.length === 0) {
+    throw new Error(
+      `The coding-agent providers the image build was given enable no ` +
+        `provider — the image would install no coding agent. Supported ` +
+        `providers: ${agentProviderIds().join(", ")}.`,
+    );
+  }
+  const value = ids.join(",");
+  return value === imageDefault.join(",") ? undefined : value;
 }

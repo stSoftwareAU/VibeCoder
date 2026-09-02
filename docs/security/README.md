@@ -37,7 +37,6 @@ Related index entries outside this directory:
   [Supply-chain triage](../SUPPLY-CHAIN-TRIAGE.md) — what happens to findings
   after a scan files them.
 - [Supply-chain gate](../SUPPLY-CHAIN-GATE.md) — the CI job and command
-  that fail on an unpinned `uses:`, an unfrozen `deno`
-  invocation, a tag-referenced container base, a permissive Renovate
-  auto-merge policy or a stale
-  dependency inventory.
+  that fail on an unpinned `uses:`, an unfrozen `deno` invocation, a
+  tag-referenced or short-named container base, a permissive Renovate
+  auto-merge policy or a stale dependency inventory.

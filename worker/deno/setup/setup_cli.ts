@@ -12,6 +12,7 @@
  * Subcommands:
  *   prerequisites      Check all prerequisites
  *   config             Write config from VIBE_* env vars
+ *   agent-providers    Print the configured coding-agent provider ids
  *   launchagent        Setup macOS LaunchAgent
  *   scheduled-task     Register the Windows Task Scheduler entry
  *   screenshot         Setup Playwright MCP for screenshots
@@ -83,11 +84,14 @@ import {
   rulesetReadFailedFinding,
 } from "../lib/milestone_ruleset_check.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
+import { explainRulesetFailure } from "../lib/ruleset_failure.ts";
 import {
   backfillIdleTaskLabels,
   formatBackfillEvent,
   formatBackfillSummary,
 } from "../lib/idle_task_backfill.ts";
+import { resolveSetupAgentProviderIds } from "./agent_providers.ts";
+import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { loadExistingConfig } from "./config_setup.ts";
 import { runUpdateModeSetup } from "./update_mode_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
@@ -243,14 +247,20 @@ export async function repairMacOsContainerRuntime(
 export function prerequisiteSummaryLines(
   ok: boolean,
   runMode: RunMode,
+  agentProviders: readonly string[] = [CLAUDE_PROVIDER_ID],
 ): string[] {
   if (ok) {
     return [`All host prerequisites satisfied (run mode: ${runMode})`];
   }
-  const needs =
-    "Container mode needs git, an authenticated gh, deno, the claude CLI " +
-    "(setup mints the worker's OAuth token with it) and a working " +
-    "container runtime on the host; the image provides jq and timeout.";
+  // The claude CLI is only demanded of a host that runs Claude (Issue #730),
+  // so the report must not tell a Codex-only operator to install it.
+  const claudeNeed = agentProviders.includes(CLAUDE_PROVIDER_ID)
+    ? "the claude CLI (setup mints the worker's OAuth token with it) and "
+    : "";
+  const needs = `Container mode needs git, an authenticated gh, deno, ` +
+    `${claudeNeed}a working container runtime on the host; the image ` +
+    `provides jq and timeout. Configured coding-agent providers: ` +
+    `${agentProviders.join(", ")}.`;
   return [
     `Some host prerequisites are missing or not configured ` +
     `(run mode: ${runMode}).`,
@@ -281,6 +291,19 @@ async function runPrerequisites(
     return false;
   }
 
+  // Which coding agents this host runs decides whose tooling is host-fatal
+  // (Issue #730). Resolved from the same seam `setup.sh` uses, and a broken
+  // or unusable selection stops the run rather than silently probing for the
+  // default provider's CLI.
+  let agentProviders: string[];
+  try {
+    agentProviders = await resolveSetupAgentProviderIds(configPath);
+  } catch (error) {
+    printError((error as Error).message);
+    return false;
+  }
+  printInfo(`Configured coding-agent providers: ${agentProviders.join(", ")}`);
+
   // Load gh_config_dir from existing config so the auth check uses the right identity
   let ghConfigDir: string | undefined;
   try {
@@ -301,6 +324,7 @@ async function runPrerequisites(
     ghConfigDir,
     repoRoot: scriptDir,
     runMode,
+    agentProviders,
   };
   const probe = await repairMacOsContainerRuntime(
     await checkAllPrerequisites(probeOptions),
@@ -336,12 +360,41 @@ async function runPrerequisites(
     }
   }
 
-  const [headline, ...detail] = prerequisiteSummaryLines(result.ok, runMode);
+  const [headline, ...detail] = prerequisiteSummaryLines(
+    result.ok,
+    runMode,
+    agentProviders,
+  );
   if (result.ok) printSuccess(headline!);
   else printError(headline!);
   for (const line of detail) printInfo(line);
 
   return result.ok;
+}
+
+/**
+ * `agent-providers`: print the configured coding-agent provider ids, one per
+ * line (Issue #730).
+ *
+ * `setup.sh` captures this to decide which credential flows to run, so stdout
+ * carries the ids and nothing else — the same contract `run-mode` gives the
+ * launchers. A selection that cannot be resolved exits non-zero with the
+ * reason on stderr and an empty stdout, so the caller stops rather than
+ * prompting for the wrong vendor's credential.
+ *
+ * @param configPath - Host path of the worker configuration file
+ * @returns True when the selection resolved
+ */
+async function runAgentProviders(configPath: string): Promise<boolean> {
+  let providers: string[];
+  try {
+    providers = await resolveSetupAgentProviderIds(configPath);
+  } catch (error) {
+    printError((error as Error).message);
+    return false;
+  }
+  for (const id of providers) console.log(id);
+  return true;
 }
 
 async function runConfig(configPath: string): Promise<boolean> {
@@ -1115,8 +1168,16 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
     let milestoneRulesetErrors = 0;
     for (const r of summary.results) {
       if (!r.ok) {
+        // Why it failed decides what an operator does next: a private
+        // repository on a free plan needs GitHub Pro, which no token scope
+        // or organisation policy will fix (Issue #733). Every case stays
+        // non-fatal — setup finishes and the remaining checks still run.
         printWarning(
-          `Ruleset sync for ${r.repo} failed: ${r.error ?? "unknown error"}`,
+          explainRulesetFailure({
+            repo: r.repo,
+            error: r.error ?? "unknown error",
+            ...(r.visibility ? { visibility: r.visibility } : {}),
+          }).message,
         );
         continue;
       }
@@ -1382,6 +1443,8 @@ Subcommands:
   prerequisites   Check all prerequisites (--auto-install consents in advance
                   to every offered install — Issue #33)
   config          Write config from VIBE_* env vars
+  agent-providers Print the configured coding-agent provider ids, one per line
+                  (Issue #730 — setup.sh runs each one's credential flow)
   launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
   screenshot      Setup Playwright MCP for screenshots
   label-sync      Synchronise labels across repos
@@ -1461,6 +1524,9 @@ if (import.meta.main) {
       break;
     case "config":
       ok = await runConfig(configPath);
+      break;
+    case "agent-providers":
+      ok = await runAgentProviders(configPath);
       break;
     case "launchagent":
       ok = status

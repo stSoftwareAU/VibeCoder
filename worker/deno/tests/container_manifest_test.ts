@@ -19,6 +19,7 @@ import {
   findContainerfileViolations,
   findMissingRuntimeTools,
   findProviderInstallViolations,
+  isRegistryQualifiedImage,
   parseContainerManifest,
   REQUIRED_REPO_TOOLCHAIN_COMMANDS,
   REQUIRED_RUNTIME_TOOLS,
@@ -27,6 +28,11 @@ import {
   CONTAINERFILE_SIZE_CAP_BYTES,
   stripContainerfile,
 } from "../lib/containerfile_strip.ts";
+import {
+  findTagOnlyBaseImages,
+  findUnqualifiedBaseImages,
+  listBaseImages,
+} from "../lib/supply_chain_gate.ts";
 import {
   CONTAINER_BROWSERS_PATH,
   PLAYWRIGHT_INSTALLER_VERSION,
@@ -50,7 +56,7 @@ function manifestObject(): Record<string, unknown> {
     user: { name: "vibe", uid: 1000, gid: 1000 },
     images: [
       {
-        name: "ruby",
+        name: "docker.io/library/ruby",
         tag: "3.4-trixie",
         digest: DIGEST_A,
         arg: "BASE_IMAGE",
@@ -58,7 +64,7 @@ function manifestObject(): Record<string, unknown> {
         minVersions: { git: "2.41", ruby: "3.1" },
       },
       {
-        name: "denoland/deno",
+        name: "docker.io/denoland/deno",
         tag: "bin-2.9.5",
         digest: DIGEST_B,
         arg: "DENO_IMAGE",
@@ -86,8 +92,8 @@ function manifestText(
 
 /** A Containerfile that agrees with `manifestObject()`. */
 const GOOD_CONTAINERFILE = `
-ARG DENO_IMAGE="denoland/deno:bin-2.9.5@${DIGEST_B}"
-ARG BASE_IMAGE="ruby:3.4-trixie@${DIGEST_A}"
+ARG DENO_IMAGE="docker.io/denoland/deno:bin-2.9.5@${DIGEST_B}"
+ARG BASE_IMAGE="docker.io/library/ruby:3.4-trixie@${DIGEST_A}"
 
 FROM \${DENO_IMAGE} AS deno
 FROM \${BASE_IMAGE}
@@ -150,6 +156,32 @@ Deno.test("parseContainerManifest - rejects a floating image tag", () => {
     Error,
     "latest",
   );
+});
+
+Deno.test("parseContainerManifest - rejects an unqualified image name (Issue #728)", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        manifestText((m) => {
+          (m.images as Array<Record<string, unknown>>)[0]!.name = "ruby";
+        }),
+      ),
+    Error,
+    "registry-qualified",
+  );
+});
+
+Deno.test("isRegistryQualifiedImage - a registry host, a port or localhost qualifies (Issue #728)", () => {
+  assert(isRegistryQualifiedImage("docker.io/library/ruby:3.4-trixie"));
+  assert(isRegistryQualifiedImage("ghcr.io/owner/image@sha256:abc"));
+  assert(isRegistryQualifiedImage("registry.example.com:5000/team/base"));
+  assert(isRegistryQualifiedImage("localhost/built-here"));
+  // Short names Podman refuses to guess a registry for.
+  assert(!isRegistryQualifiedImage("ruby:3.4-trixie"));
+  assert(!isRegistryQualifiedImage("denoland/deno:bin-2.9.6@sha256:abc"));
+  // Degenerate references name no host at all, so they never qualify.
+  assert(!isRegistryQualifiedImage(""));
+  assert(!isRegistryQualifiedImage("/library/ruby:3.4-trixie"));
 });
 
 Deno.test("parseContainerManifest - rejects an image with no digest", () => {
@@ -357,8 +389,8 @@ Deno.test("findContainerfileViolations - flags a missing sha256 ARG", () => {
 Deno.test("findContainerfileViolations - flags an undigested FROM", () => {
   const manifest = parseContainerManifest(manifestText());
   const floating = GOOD_CONTAINERFILE.replace(
-    `ARG BASE_IMAGE="ruby:3.4-trixie@${DIGEST_A}"`,
-    'ARG BASE_IMAGE="ruby:3.4-trixie"',
+    `ARG BASE_IMAGE="docker.io/library/ruby:3.4-trixie@${DIGEST_A}"`,
+    'ARG BASE_IMAGE="docker.io/library/ruby:3.4-trixie"',
   );
 
   const violations = findContainerfileViolations(floating, manifest);
@@ -455,8 +487,33 @@ Deno.test("container/ - the committed definition matches its pinned manifest", a
     assert(pinned.includes(required), `${required} must be pinned`);
   }
   assert(
-    manifest.images.some((i) => i.name === "denoland/deno"),
+    manifest.images.some((i) => i.name === "docker.io/denoland/deno"),
     "deno must come from a digest-pinned image",
+  );
+});
+
+Deno.test("container/Containerfile - every base image is registry-qualified and digest-pinned (Issue #728)", async () => {
+  const containerfile = await Deno.readTextFile(
+    new URL("container/Containerfile", REPO_ROOT),
+  );
+
+  // Docker resolves a short name against Docker Hub; Podman's default
+  // short-name-mode = "enforcing" refuses to guess, so a fresh host cannot
+  // build the image at all. Both rules are asserted over the resolved `FROM`
+  // references, so a literal `FROM ruby:...` fails here too. Which registry
+  // is named is the manifest's business — `findContainerfileViolations`
+  // holds the ARG to `container/tools.json`'s exact `name:tag@digest`.
+  assert(
+    listBaseImages(containerfile).length >= 2,
+    "the definition must declare its base images",
+  );
+  assertEquals(
+    findUnqualifiedBaseImages("container/Containerfile", containerfile),
+    [],
+  );
+  assertEquals(
+    findTagOnlyBaseImages("container/Containerfile", containerfile),
+    [],
   );
 });
 

@@ -28,6 +28,8 @@ import {
   containerTargetPaths,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
+import { CONTAINER_RUNTIMES } from "../lib/container_runtime.ts";
+import { executableLines } from "../lib/launcher_source.ts";
 import { CONTAINER_START_EXIT_CODES } from "../lib/container_restart_backoff.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
@@ -1695,6 +1697,258 @@ Deno.test("run.sh - the outcome recorder may read the hostname, so the alert can
         args.join(" ")
       }`,
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- The runtime's own volume-removal verb (Issue #731) --------------------
+//
+// `run.sh` hardcoded `volume delete`, which Podman does not have, and threw
+// the error away with `2>&1 || true`: the volume survived, and the very next
+// `volume create` failed with `volume with name vibe-work already exists` —
+// a message describing neither the fault nor its cause. The verb now comes
+// from the plan, and a removal that leaves the volume in place is reported.
+
+Deno.test("run.sh - recreates a volume with the verb its runtime spells, never a hardcoded one (Issue #731)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // Which verb depends on the runtime this host probes — `volume rm` on
+    // Docker and Podman, `volume delete` on Apple `container` — so what is
+    // asserted is that the launcher used *a runtime's own* verb, with the
+    // volume's name after it, and that the removal actually happened.
+    const verbs = Object.values(CONTAINER_RUNTIMES).map((candidate) =>
+      candidate.dialect.volumeRemoveArgs.join(" ")
+    );
+    const removals = (await invocationOrder(harness)).filter((invocation) =>
+      invocation.startsWith("volume-") &&
+      !["volume-inspect", "volume-create", "volume-ls"].includes(invocation)
+    );
+    assert(removals.length > 0, `no volume removal was recorded: ${verbs}`);
+    for (const removal of removals) {
+      assert(
+        verbs.includes(removal.replace("volume-", "volume ")),
+        `${removal} is no supported runtime's removal verb (${
+          verbs.join(", ")
+        })`,
+      );
+    }
+
+    assertEquals(await removedVolumes(harness), [
+      WORK_VOLUME_NAME,
+      APPROVAL_STATE_VOLUME_NAME,
+    ]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - names no volume verb of its own (Issue #731)", async () => {
+  // The regression is a hardcoded verb, and a hardcoded verb is visible in
+  // the source: every removal must go through the plan's `volume_remove_args`.
+  const source = executableLines(
+    await Deno.readTextFile(RUN_SH),
+    "bash",
+  ).join("\n");
+  assertEquals(
+    source.includes("volume delete"),
+    false,
+    "run.sh must not spell a removal verb itself",
+  );
+  assertEquals(
+    source.includes("volume rm"),
+    false,
+    "run.sh must not spell a removal verb itself",
+  );
+  assertStringIncludes(source, '"${volume_remove_args[@]}"');
+});
+
+Deno.test("run.sh - a removal that leaves the volume in place is reported, not followed by a doomed create (Issue #731)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+    // The reported failure chain: the removal fails and the volume is still
+    // there, so a `volume create` would fail with "already exists".
+    STUB_VOLUME_DELETE_EXIT: "1",
+    STUB_VOLUME_INSPECT_EXIT: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+
+    // The runtime's own words reach the operator, rather than /dev/null.
+    assertStringIncludes(outcome.stderr, "could not remove volume");
+    assertStringIncludes(outcome.stderr, WORK_VOLUME_NAME);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, `removing ${WORK_VOLUME_NAME} failed`);
+    // And the recovery says it did not recover, rather than claiming a fix.
+    assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
+
+    // The worker still launches: a host that cannot claim must still run and
+    // report (Issue #477).
+    assert(await recorded(harness, "run"), "the worker must still start");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - removing a volume that is not there is not a failure (Issue #731)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+    // The removal reports a failure, but the volume is gone — there was
+    // nothing to remove, which is not a fault.
+    STUB_VOLUME_DELETE_EXIT: "1",
+    STUB_VOLUME_INSPECT_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(
+      outcome.stderr.includes("could not remove volume"),
+      false,
+      `an absent volume must not be reported as a removal failure:\n${outcome.stderr}`,
+    );
+    assert(
+      await recorded(harness, "volume-create"),
+      "the recreate must go on to create the volume",
+    );
+    // A fresh volume is root-owned, so the init ran again.
+    assertEquals(await initCount(harness), 2);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- A refused FITRIM is not, by itself, a work refusal (Issue #734) -------
+//
+// Report item 9 of #722: Podman refuses FITRIM on a named volume, and the
+// refusal *appeared* to activate low-disk recovery. It does not: the heal
+// needs the refusal **and** a host below its claiming floor, and the hard
+// floor is a measurement of the host that no message can move. What the
+// refusal does do is make the reading what it is — a runtime that cannot
+// discard never gives the guest's freed blocks back — so any disk decision
+// taken after one now says so, rather than leaving an unexplained refusal.
+
+Deno.test("run.sh - a refused trim alone starts no recovery and stops no launch (Issue #734)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    // Floors of zero: whatever this host has free is above them, so the only
+    // thing that could act here is the refusal itself.
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "0",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // Nothing was destroyed and nothing was recreated…
+    assertEquals(await removedVolumes(harness), []);
+    assertEquals(await initCount(harness), 1);
+    // …and the launch went ahead.
+    assert(await recorded(harness, "run"), "the worker must still start");
+    assertEquals(
+      outcome.stderr.includes("refusing to launch"),
+      false,
+      outcome.stderr,
+    );
+
+    // The refusal is still recorded as the fact it is.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "the runtime refused to trim");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a disk refusal after a refused trim names the refusal (Issue #734)", async () => {
+  // The reported host's real shape: the trim cannot return the space, so the
+  // reading stays low and the floor fires on its own. An operator reading
+  // "refusing to launch: N MB free" with no mention of the refused trim is
+  // left with an unexplained work refusal.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+
+    assertStringIncludes(outcome.stderr, "hard floor");
+    assertStringIncludes(outcome.stderr, "refused to trim");
+    assertStringIncludes(outcome.stderr, WORK_VOLUME_NAME);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "refused launch");
+    assertStringIncludes(log, "refused to trim");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a disk reading with no refused trim says nothing about one (Issue #734)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "hard floor");
+    assertEquals(
+      outcome.stderr.includes("refused to trim"),
+      false,
+      `a host whose trim worked must not be told one was refused:\n${outcome.stderr}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- The launcher names the floor that refused a claim (Issue #732) --------
+
+Deno.test("run.sh - the disk reading names the claiming floor and where it came from (Issue #732)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    // A floor stated for this launch, so the origin is not "default".
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "1",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "claiming floor");
+    // The two terms, the filesystem they were taken against, and the knob
+    // that set them — so a refused claim is self-explanatory.
+    assertStringIncludes(log, "larger of 1 GB and 1% of");
+    assertStringIncludes(log, "gb=env,percent=env");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - an unconfigured host reports the default floor as default (Issue #732)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "larger of 20 GB and 10% of");
+    assertStringIncludes(log, "gb=default,percent=default");
   } finally {
     await harness.cleanup();
   }

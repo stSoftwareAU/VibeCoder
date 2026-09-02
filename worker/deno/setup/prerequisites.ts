@@ -40,7 +40,13 @@
  * Issue #4149: The split follows the resolved run mode.
  */
 
+import {
+  AGENT_PROVIDER_CONFIG_KEY,
+  AGENT_PROVIDER_ENV,
+  CLAUDE_PROVIDER_ID,
+} from "../lib/agent_provider.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
+import { readDeploymentImageSelection } from "../lib/container_image_selection.ts";
 import {
   type ContainerRuntimeDescriptor,
   type ContainerRuntimeProbe,
@@ -100,6 +106,16 @@ export interface PrerequisiteOptions {
    * passes the mode it resolved from `.config.json`; tests override it here.
    */
   runMode?: RunMode;
+  /**
+   * The coding-agent providers this host is configured to run (Issue #730).
+   *
+   * A provider's own tooling is only demanded of a host that runs it: the
+   * `claude` CLI is host-fatal because setup mints the worker's OAuth token
+   * with it, which is no reason at all to demand it of a Codex-only host.
+   * Setup passes the set resolved by `setup/agent_providers.ts`; absent, the
+   * default provider alone applies, so every existing caller is unchanged.
+   */
+  agentProviders?: readonly string[];
 }
 
 /** Probe options with the run mode resolved — what the checks work from. */
@@ -272,7 +288,40 @@ export async function checkGhAuth(
   return { ok: true, tool: "gh", message: "gh CLI is authenticated" };
 }
 
-/** Check that the Claude CLI is installed. */
+/**
+ * Report the providers a probe is classifying for.
+ *
+ * @param opts - Probe options, resolved or raw
+ * @returns The configured provider ids — the default provider alone when the
+ *   caller named none.
+ */
+export function probedAgentProviders(
+  opts: PrerequisiteOptions = {},
+): readonly string[] {
+  const providers = opts.agentProviders;
+  if (providers === undefined) return [CLAUDE_PROVIDER_ID];
+  // An explicitly empty set is a caller fault, never a licence to fall back to
+  // the default provider: probing a host for Claude's tooling because the
+  // selection came through empty is the silent wrong answer (Issue #3234).
+  if (providers.length === 0) {
+    throw new Error(
+      "The prerequisite probe was given an empty coding-agent provider set, " +
+        "so it cannot tell which tooling this host needs. Pass the resolved " +
+        "providers, or omit the option to probe for the default provider.",
+    );
+  }
+  return providers;
+}
+
+/**
+ * Check that the Claude CLI is installed — on a host that runs Claude.
+ *
+ * The host CLI mints and validates the worker's OAuth token
+ * (`claude setup-token`, Issue #4161), so it stays host-fatal wherever Claude
+ * is among the configured providers. A host that runs another vendor's agent
+ * needs none of that, and demanding it there stopped setup before it wrote
+ * `.config.json` at all (Issue #730).
+ */
 export async function checkClaudeCli(
   opts: PrerequisiteOptions = {},
 ): Promise<PrerequisiteResult> {
@@ -280,16 +329,30 @@ export async function checkClaudeCli(
   if (resolved.skipAuthCheck || resolved.skipPrereqCheck) {
     return { ok: true, tool: "claude", message: "Skipped" };
   }
+  const providers = probedAgentProviders(resolved);
+  if (!providers.includes(CLAUDE_PROVIDER_ID)) {
+    return {
+      ok: true,
+      tool: "claude",
+      informational: true,
+      message: `claude CLI not required — this host is configured for ` +
+        `${providers.join(", ")}`,
+    };
+  }
   const exists = await commandExists("claude", resolved.runCommand);
   if (!exists) {
     return {
       ok: false,
       tool: "claude",
       message: "claude CLI is not installed",
-      hint: "Required on the host in every run mode: setup mints and " +
+      hint: "Required on a host that runs Claude: setup mints and " +
         "validates the worker's OAuth token with `claude setup-token` " +
         "(Issue #4161). Install from: " +
-        "https://docs.anthropic.com/en/docs/claude-code",
+        "https://docs.anthropic.com/en/docs/claude-code — or, if this host " +
+        "runs another agent, select it and re-run: set " +
+        `"${AGENT_PROVIDER_CONFIG_KEY}" in .config.json, or ` +
+        `${AGENT_PROVIDER_ENV}=<provider> ./setup.sh on a host that has no ` +
+        "configuration yet (Issue #730).",
     };
   }
   return { ok: true, tool: "claude", message: "claude CLI is installed" };
@@ -466,7 +529,13 @@ export async function checkContainerPrerequisites(
   const repoRoot = resolved.repoRoot ?? defaultRepoRoot();
   let image: string;
   try {
-    image = await resolveContainerImageReference(repoRoot);
+    // The deployment's own selections, exactly as the launcher reads them:
+    // without them this check names a tag no host that selects tools or
+    // providers ever builds, and reports a built image as missing (#743).
+    image = await resolveContainerImageReference(
+      repoRoot,
+      (await readDeploymentImageSelection({ repoRoot })).options,
+    );
   } catch (error) {
     return [runtimeResult, {
       ok: false,
@@ -527,8 +596,11 @@ function asContainerOwned(result: PrerequisiteResult): PrerequisiteResult {
  * `claude` is deliberately NOT here (Issue #4161): the image carries its own
  * copy for the worker, but setup needs the host CLI to mint the worker's
  * OAuth token (`claude setup-token`) and to validate it. A container-mode
- * host without claude cannot finish setup, so the check stays fatal and the
- * auto-install driver offers the Homebrew cask.
+ * host that runs Claude cannot finish setup without it, so the check stays
+ * fatal and the auto-install driver offers the Homebrew cask. A host that
+ * runs another vendor's agent never reaches that check at all — it is gated
+ * on the configured providers (Issue #730), not listed here, because a
+ * provider's own tooling is not "container-owned" for the host that runs it.
  */
 const CONTAINER_OWNED_TOOLS: ReadonlySet<string> = new Set([
   "jq",

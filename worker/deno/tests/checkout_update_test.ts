@@ -13,6 +13,10 @@
  * checkout already on the pin does no git write, and a ref that does not
  * resolve fails loudly into the same streak.
  *
+ * Issue #735 adds the discoverability line: an update that actually changed
+ * the checkout names `VIBE_SKIP_CHECKOUT_UPDATE` — the opt-out that would have
+ * preserved the overwritten work — and one that changed nothing stays quiet.
+ *
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
 
@@ -20,9 +24,11 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   CHECKOUT_UPDATE_ESCALATION_THRESHOLD,
   CHECKOUT_UPDATE_FAILURE_STREAK_FILE,
+  checkoutOverwriteNotice,
   type CheckoutUpdateDeps,
   diagnoseUpdateFailure,
   parseOriginRepo,
+  SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
 } from "../lib/checkout_update.ts";
 import type { Result } from "../types.ts";
@@ -331,6 +337,99 @@ Deno.test("diagnoseUpdateFailure - enriches only an actual development tree", ()
   assertStringIncludes(
     diagnoseUpdateFailure(bare, "trunk", { branch: "wip", dirtyFiles: 0 }),
     "active development tree",
+  );
+});
+
+// ============================================================================
+// The opt-out is named where it matters (Issue #735)
+// ============================================================================
+
+Deno.test("checkoutOverwriteNotice - names the opt-out only when the checkout changed (Issue #735)", () => {
+  const repoDir = "/tmp/repo";
+  const unchanged = checkoutOverwriteNotice(
+    repoDir,
+    { head: OTHER_SHA, dirtyFiles: 0 },
+    { head: OTHER_SHA, dirtyFiles: 0 },
+  );
+  assertEquals(unchanged, "", "an update that overwrote nothing says nothing");
+
+  const moved = checkoutOverwriteNotice(
+    repoDir,
+    { head: OTHER_SHA, dirtyFiles: 0 },
+    { head: PINNED_SHA, dirtyFiles: 0 },
+  );
+  assertStringIncludes(moved, repoDir);
+  assertStringIncludes(moved, SKIP_CHECKOUT_UPDATE_ENV);
+
+  const discarded = checkoutOverwriteNotice(
+    repoDir,
+    { head: OTHER_SHA, dirtyFiles: 3 },
+    { head: OTHER_SHA, dirtyFiles: 0 },
+  );
+  assertStringIncludes(discarded, "3 uncommitted change(s) discarded");
+  assertStringIncludes(discarded, SKIP_CHECKOUT_UPDATE_ENV);
+
+  // Unreadable state is never guessed at: no state, no claim.
+  assertEquals(
+    checkoutOverwriteNotice(
+      repoDir,
+      { head: null, dirtyFiles: null },
+      { head: PINNED_SHA, dirtyFiles: 0 },
+    ),
+    "",
+  );
+  // Work that appeared during the update is not work the update discarded.
+  assertEquals(
+    checkoutOverwriteNotice(
+      repoDir,
+      { head: OTHER_SHA, dirtyFiles: 0 },
+      { head: OTHER_SHA, dirtyFiles: 2 },
+    ),
+    "",
+  );
+});
+
+Deno.test("updateCheckout - an update that moved the checkout logs the opt-out (Issue #735)", async () => {
+  const order: string[] = [];
+  // Two reads: the snapshot before the update, and the one after it.
+  const heads = [OTHER_SHA, PINNED_SHA];
+  const outcome = await updateCheckout(
+    OPTIONS,
+    recordingDeps(order, {
+      readHeadCommit: (_repoDir) => {
+        order.push("readHeadCommit");
+        return Promise.resolve(heads.shift() ?? PINNED_SHA);
+      },
+      describeCheckoutState: (_repoDir) =>
+        Promise.resolve({ branch: "trunk", dirtyFiles: 0 }),
+    }),
+  );
+
+  assertEquals(outcome.ok, true);
+  assertStringIncludes(outcome.overwriteNotice, SKIP_CHECKOUT_UPDATE_ENV);
+  assert(
+    order.some((entry) =>
+      entry.startsWith("log:") && entry.includes(SKIP_CHECKOUT_UPDATE_ENV)
+    ),
+    "the hint must reach run_core.log, not only the command's message",
+  );
+});
+
+Deno.test("updateCheckout - an update that changed nothing keeps quiet (Issue #735)", async () => {
+  const order: string[] = [];
+  const outcome = await updateCheckout(
+    OPTIONS,
+    recordingDeps(order, {
+      describeCheckoutState: (_repoDir) =>
+        Promise.resolve({ branch: "trunk", dirtyFiles: 0 }),
+    }),
+  );
+
+  assertEquals(outcome.ok, true);
+  assertEquals(outcome.overwriteNotice, "");
+  assertEquals(
+    order.some((entry) => entry.includes(SKIP_CHECKOUT_UPDATE_ENV)),
+    false,
   );
 });
 

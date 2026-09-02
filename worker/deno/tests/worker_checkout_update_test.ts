@@ -18,6 +18,11 @@
  * and fails loudly on a pin that does not resolve or a mode that cannot be
  * read.
  *
+ * Issue #735 covers discoverability: an update that actually changed the
+ * checkout — moved the commit, or discarded uncommitted work — names
+ * `VIBE_SKIP_CHECKOUT_UPDATE` in the message the launchers print and in
+ * `run_core.log`, and an update that changed nothing stays quiet.
+ *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
@@ -610,6 +615,78 @@ Deno.test(`worker-checkout-update - ${SKIP_CHECKOUT_UPDATE_ENV} wins over frozen
     } else {
       Deno.env.set(SKIP_CHECKOUT_UPDATE_ENV, previous);
     }
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// ============================================================================
+// The opt-out is named where it matters — an update that changed the
+// checkout (Issue #735)
+// ============================================================================
+
+Deno.test(`worker-checkout-update - an update that moves the checkout names ${SKIP_CHECKOUT_UPDATE_ENV} (Issue #735)`, async () => {
+  const { tmp, remote, seed, clone, logDir } = await makeCheckout();
+  try {
+    await pushSecondCommit(seed, remote);
+
+    const result = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+
+    assertEquals(result.success, true, result.message);
+    // The launchers print this message on stderr, so the operator watching a
+    // launch learns the opt-out without reading docs/CONFIGURATION.md.
+    assertStringIncludes(result.message, SKIP_CHECKOUT_UPDATE_ENV);
+    assertStringIncludes(await runCoreLog(logDir), SKIP_CHECKOUT_UPDATE_ENV);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test(`worker-checkout-update - discarding a local patch names ${SKIP_CHECKOUT_UPDATE_ENV} (Issue #735)`, async () => {
+  const { tmp, clone, logDir } = await makeCheckout();
+  try {
+    // The reported case: a launcher fix applied by hand, with nothing new on
+    // origin — the update discards the patch without moving the commit.
+    await Deno.writeTextFile(`${clone}/file.txt`, "locally patched\n");
+
+    const result = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+
+    assertEquals(result.success, true, result.message);
+    assertEquals(await Deno.readTextFile(`${clone}/file.txt`), "one\n");
+    assertStringIncludes(result.message, SKIP_CHECKOUT_UPDATE_ENV);
+    assertStringIncludes(result.message, "uncommitted change");
+    assertStringIncludes(await runCoreLog(logDir), SKIP_CHECKOUT_UPDATE_ENV);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test(`worker-checkout-update - an update that changes nothing stays quiet about ${SKIP_CHECKOUT_UPDATE_ENV} (Issue #735)`, async () => {
+  const { tmp, clone, logDir } = await makeCheckout();
+  try {
+    // Already on the tip with a clean tree: nothing was overwritten, so the
+    // hint would be noise on every launch of every healthy host.
+    const result = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+
+    assertEquals(result.success, true, result.message);
+    assertEquals(
+      result.message.includes(SKIP_CHECKOUT_UPDATE_ENV),
+      false,
+      "an update that overwrote nothing must not advertise the opt-out",
+    );
+    assertEquals(
+      (await runCoreLog(logDir)).includes(SKIP_CHECKOUT_UPDATE_ENV),
+      false,
+    );
+  } finally {
     await Deno.remove(tmp, { recursive: true });
   }
 });
