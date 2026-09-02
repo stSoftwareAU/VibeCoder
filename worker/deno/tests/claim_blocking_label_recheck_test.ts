@@ -55,7 +55,7 @@ function mutated(calls: string[][]): { assigned: boolean; commented: boolean } {
 }
 
 Deno.test("claim - needs-human applied since the snapshot refuses the claim (Issue #831)", async () => {
-  const { gh, calls } = ghStub(["bug", LABEL_DEFAULTS.needsHumanLabel]);
+  const { gh } = ghStub(["bug", LABEL_DEFAULTS.needsHumanLabel]);
 
   const result = await claimIssue({
     repo: "stSoftwareAU/VibeCoder",
