@@ -6,8 +6,9 @@
  *
  * These tests assert real behaviour via the shared recorder:
  *   - a `fable`-served round (expected fable) is NOT degraded → no label, and
- *     one cost/model stats comment per issue (Issue #3756 — healthy rounds used
- *     to post nothing at all);
+ *     one cost/model stats comment per run (Issue #3756 — healthy rounds used
+ *     to post nothing at all; Issue #797 — the guard is run-scoped, so an
+ *     earlier run's comment no longer hides this run's cost);
  *   - an `opus`-served round when fable is expected IS degraded → labels + posts;
  *   - the explicit pre-flight `preflightDegraded` flag IS degraded even when the
  *     served model matches the expected (fable) model;
@@ -173,13 +174,15 @@ Deno.test("buildPhaseInvocations - carries the explicit pre-flight flag + reason
 });
 
 // ---------------------------------------------------------------------------
-// Healthy path — no label, but one cost/model stats comment per issue
+// Healthy path — no label, but one cost/model stats comment per run
 //
 // Behaviour change (Issue #3756): a healthy round used to report NOTHING, so
 // most issues the Vibe Coder wrapped up carried no cost indication. It now
-// posts the stats block once per issue. The `no label` half of the original
-// assertion is unchanged; the `no comment` half is deliberately replaced by
-// the one-comment-per-issue assertions below.
+// posts the stats block once per run (Issue #797 narrowed the guard from
+// per-issue to per-run, so an earlier run's comment no longer suppresses this
+// one). The `no label` half of the original assertion is unchanged; the `no
+// comment` half is deliberately replaced by the one-comment-per-run assertions
+// below.
 // ---------------------------------------------------------------------------
 
 for (const { phase, heading } of PROMOTED_PHASES) {
