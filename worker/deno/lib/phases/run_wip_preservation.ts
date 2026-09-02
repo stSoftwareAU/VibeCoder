@@ -17,13 +17,17 @@
 
 import type { PhaseState } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
-import { preserveTimedOutWip } from "../wip_checkpoint.ts";
+import {
+  preserveTimedOutWip,
+  type WipPreservationCause,
+} from "../wip_checkpoint.ts";
 import {
   describeHandoverFile,
   handoverFilePath,
   handoverFileUrl,
   type PreservedWip,
 } from "../preserved_wip_branch.ts";
+import { writeHandoverNote } from "../handover_note.ts";
 
 /** What preservation found and did. */
 export interface PreservedRunWip {
@@ -66,19 +70,126 @@ export async function commitsSinceExecuteStart(
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** Uncommitted files in the clone. Any git error counts as 0. */
-async function countDirtyFiles(
+/**
+ * Repo-relative paths of the uncommitted files in the clone, or `null` when
+ * git could not be asked.
+ *
+ * Preservation still treats `null` as "nothing to preserve" — that is the
+ * long-standing behaviour, and a rescue must not throw — but the handover
+ * note must not turn a failed `git status` into "the working tree was clean"
+ * in a permanent record, so the failure is distinguished and logged.
+ */
+async function listDirtyFiles(
   state: PhaseState,
   deps: WorkerDeps,
-): Promise<number> {
+): Promise<string[] | null> {
   const statusResult = await deps.git.runGitCommand(
     ["status", "--porcelain"],
     { cwd: state.repoPath },
   );
-  if (!statusResult.ok || statusResult.value.code !== 0) return 0;
-  return statusResult.value.stdout.trim().split("\n").filter((l) =>
-    l.trim().length > 0
-  ).length;
+  if (!statusResult.ok || statusResult.value.code !== 0) {
+    deps.logger.warn(
+      "Could not list the uncommitted files before preserving the run — the " +
+        "handover note records the working tree as unknown (Issue #769)",
+      {
+        error: statusResult.ok
+          ? `git status exited ${statusResult.value.code}: ` +
+            (statusResult.value.stderr.trim() || "(no output)")
+          : statusResult.error.message,
+      },
+    );
+    return null;
+  }
+  return statusResult.value.stdout.split("\n")
+    .filter((line) => line.trim().length > 0)
+    // Porcelain v1: two status columns, a space, then the path. A rename
+    // reads `R  old -> new`; the new path is the one that matters.
+    .map((line) => line.slice(3).trim())
+    .map((path) => path.split(" -> ").pop() ?? path)
+    .map(decodePorcelainPath)
+    .filter((path) => path.length > 0);
+}
+
+/** The one-character escapes git's C-style quoting emits. */
+const C_QUOTE_ESCAPES: Record<string, number> = {
+  n: 0x0a,
+  t: 0x09,
+  r: 0x0d,
+  f: 0x0c,
+  b: 0x08,
+  v: 0x0b,
+  a: 0x07,
+  '"': 0x22,
+  "\\": 0x5c,
+};
+
+/**
+ * Undo git's C-style quoting of a porcelain path, so a path with a space or a
+ * non-ASCII character reads as itself in the handover note rather than as its
+ * escape sequence.
+ *
+ * Git quotes each non-ASCII *byte* as a three-digit octal escape, so the
+ * escapes are decoded to bytes and the bytes decoded as UTF-8 — `JSON.parse`
+ * cannot do this, because `\303` is not a JSON escape.
+ */
+function decodePorcelainPath(path: string): string {
+  if (!path.startsWith('"') || !path.endsWith('"')) return path;
+  const body = path.slice(1, -1);
+  const encoder = new TextEncoder();
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "\\") {
+      bytes.push(...encoder.encode(body[i]));
+      continue;
+    }
+    const next = body[++i];
+    if (next === undefined) break;
+    const simple = C_QUOTE_ESCAPES[next];
+    if (simple !== undefined) {
+      bytes.push(simple);
+      continue;
+    }
+    const octal = body.slice(i, i + 3);
+    if (/^[0-7]{3}$/.test(octal)) {
+      bytes.push(parseInt(octal, 8));
+      i += 2;
+      continue;
+    }
+    bytes.push(...encoder.encode(next));
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
+/**
+ * Subjects of the commits this run added to the branch, newest first — the
+ * "what was done" the handover note reports (Issue #769) — or `null` when the
+ * log could not be read, for the same reason as {@link listDirtyFiles}.
+ */
+async function wipCommitSubjects(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<string[] | null> {
+  if (!state.executeStartHeadSha) return null;
+  const log = await deps.git.runGitCommand(
+    ["log", "--format=%s", `${state.executeStartHeadSha}..HEAD`],
+    { cwd: state.repoPath },
+  );
+  if (!log.ok || log.value.code !== 0) {
+    deps.logger.warn(
+      "Could not read the commits this run added — the handover note records " +
+        "what was done as unknown (Issue #769)",
+      {
+        error: log.ok
+          ? `git log exited ${log.value.code}: ` +
+            (log.value.stderr.trim() || "(no output)")
+          : log.error.message,
+      },
+    );
+    return null;
+  }
+  return log.value.stdout.split("\n").map((s) => s.trim()).filter((s) =>
+    s.length > 0
+  );
 }
 
 export interface PreserveRunWipOptions {
@@ -101,6 +212,25 @@ export interface PreserveRunWipOptions {
   inspectWorkingTree?: boolean;
   /** Refresh durable resume state after a successful push (Issue #4170). */
   onPreserved?: () => Promise<void>;
+  /**
+   * Facts for the portable handover note committed beside the work
+   * (Issue #769). Omitted — as the completion phase's #218 rescue omits it —
+   * no note is written and preservation behaves exactly as it did before.
+   * The issue the note is written for is `issueNumber` above, so the note
+   * and the release comment can never name different files.
+   */
+  handover?: {
+    /** What stopped the run. */
+    cause: WipPreservationCause;
+    /** Seconds the execute ran before it was stopped. */
+    elapsedSeconds: number;
+  };
+}
+
+/** Commit subject when the handover note is the only thing to commit. */
+function buildHandoverOnlyWipCommitMessage(issueNumber: number): string {
+  return `wip: handover note for the interrupted run on issue ` +
+    `#${issueNumber} (Issue #769)`;
 }
 
 /**
@@ -150,6 +280,58 @@ async function resolvePreservedWip(
 }
 
 /**
+ * The one sentence naming the checkpoint commits already on the branch —
+ * shared so the "clean tree" and "note-only commit" wordings cannot drift.
+ */
+function describeCheckpointCommits(commits: number, branch: string): string {
+  return `WIP preserved: ${commits} checkpoint commit` +
+    `${commits === 1 ? "" : "s"} pushed to '${branch}' ` +
+    `— the next claim resumes from that branch (Issue #4170).`;
+}
+
+/**
+ * Write the portable handover note into the tree, before any commit runs, so
+ * the preserving `commitAndPushPending` carries it to the branch (Issue
+ * #769). Returns true when a note is now on disk waiting to be committed.
+ *
+ * Written whenever this run has something to hand over — uncommitted work, or
+ * checkpoint commits a later claim will resume from — and the working tree is
+ * this run's to touch. A failure is logged inside `writeHandoverNote` and
+ * reported as `false`: losing the note must never cost the code.
+ */
+async function writeHandoverForRun(
+  options: PreserveRunWipOptions,
+  dirtyPaths: readonly string[] | null,
+  wipCommits: number,
+): Promise<boolean> {
+  const { state, deps, handover, issueNumber } = options;
+  if (!handover || issueNumber === undefined) return false;
+  // `inspectWorkingTree: false` means the tree is not this run's work and must
+  // be left alone (the zero-output timeout). Writing a note there would force
+  // a commit whose `git add -A` sweeps in exactly the files that guard
+  // excludes, so the note is skipped rather than the guard broken.
+  if (options.inspectWorkingTree === false) return false;
+  if ((dirtyPaths?.length ?? 0) === 0 && wipCommits === 0) return false;
+  const outcome = await writeHandoverNote({
+    repoPath: state.repoPath,
+    facts: {
+      issueNumber,
+      branch: state.branchName,
+      cause: handover.cause,
+      elapsedSeconds: handover.elapsedSeconds,
+      interruptedAtIso: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      dirtyFiles: dirtyPaths,
+      wipCommitSubjects: await wipCommitSubjects(state, deps),
+    },
+    logger: {
+      info: (m: string) => deps.logger.info(m),
+      warn: (m: string) => deps.logger.warn(m),
+    },
+  });
+  return outcome.kind === "written";
+}
+
+/**
  * Preserve the working tree onto the claim-locked branch and describe the
  * outcome.
  *
@@ -162,24 +344,32 @@ export async function preserveRunWip(
 ): Promise<PreservedRunWip> {
   const { state, deps } = options;
   const logger = deps.logger;
-  const dirtyFiles = options.inspectWorkingTree === false
-    ? 0
-    : await countDirtyFiles(state, deps);
+  const dirtyPaths = options.inspectWorkingTree === false
+    ? []
+    : await listDirtyFiles(state, deps);
+  const dirtyFiles = dirtyPaths?.length ?? 0;
   // The phase-end checkpoint (#4170) may already have committed and pushed
   // the run's work before this counted dirty files — on VibeCoder#174 the
   // tree was clean, a WIP commit was on the branch, and the release comment
   // still said "without creating changes". Count what the run added so the
   // message tells the truth.
   const wipCommits = await commitsSinceExecuteStart(state, deps);
+  // Written before any commit, so the same preserving commit carries it
+  // (Issue #769). A clean tree that gained only the note is still committed
+  // below — otherwise the note would never reach the branch on the very path
+  // the issue names.
+  const noteWritten = await writeHandoverForRun(
+    options,
+    dirtyPaths,
+    wipCommits,
+  );
 
-  if (dirtyFiles === 0) {
+  if (dirtyFiles === 0 && !noteWritten) {
     if (wipCommits === 0) return { dirtyFiles, wipCommits, pushed: false };
     const preserved = await resolvePreservedWip(options);
     state.preservedWip = preserved;
     return {
-      wipNote: `WIP preserved: ${wipCommits} checkpoint commit` +
-        `${wipCommits === 1 ? "" : "s"} pushed to '${state.branchName}' ` +
-        `— the next claim resumes from that branch (Issue #4170).` +
+      wipNote: describeCheckpointCommits(wipCommits, state.branchName) +
         describeHandoverFile(preserved),
       preserved,
       dirtyFiles,
@@ -191,7 +381,12 @@ export async function preserveRunWip(
   const preserved = await preserveTimedOutWip({
     repoPath: state.repoPath,
     branchName: state.branchName,
-    message: options.buildMessage(dirtyFiles),
+    // A clean tree still needs a commit when the note is the only new file;
+    // the note only exists when `issueNumber` was supplied, so the subject
+    // always names the real issue.
+    message: dirtyFiles > 0 || options.issueNumber === undefined
+      ? options.buildMessage(dirtyFiles)
+      : buildHandoverOnlyWipCommitMessage(options.issueNumber),
     logger: {
       info: (m: string) => logger.info(m),
       warn: (m: string) => logger.warn(m),
@@ -216,8 +411,13 @@ export async function preserveRunWip(
     const onBranch = await resolvePreservedWip(options);
     state.preservedWip = onBranch;
     return {
-      wipNote: `WIP preserved: committed and pushed to '${state.branchName}' ` +
-        `— the next claim resumes from that branch (Issue #47).` +
+      wipNote: (dirtyFiles > 0
+        ? `WIP preserved: committed and pushed to '${state.branchName}' ` +
+          `— the next claim resumes from that branch (Issue #47).`
+        // Nothing was dirty: the checkpoints already hold the work and this
+        // commit carried the note alone. Say so, rather than claiming the
+        // working tree was rescued.
+        : describeCheckpointCommits(wipCommits, state.branchName)) +
         describeHandoverFile(onBranch),
       preserved: onBranch,
       dirtyFiles,

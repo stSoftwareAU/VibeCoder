@@ -633,6 +633,12 @@ async function executeClaudeBody(
           elapsedSeconds,
           dirtyFiles,
         }),
+      // The portable half of the handover (Issue #769): a note committed
+      // beside the code, readable on any host by any provider.
+      handover: {
+        cause: scheduled ? "scheduled-release" : "timed-out",
+        elapsedSeconds,
+      },
       // Refresh the durable resume state so resume-on-reclaim (#4170) finds
       // the checkpoint when session resume is enabled.
       onPreserved: () => saveCheckpointState(),
@@ -737,6 +743,7 @@ async function executeClaudeBody(
           elapsedSeconds,
           dirtyFiles,
         }),
+      handover: { cause: "killed", elapsedSeconds },
       onPreserved: () => saveCheckpointState(),
     });
 
@@ -805,6 +812,7 @@ async function executeClaudeBody(
           elapsedSeconds,
           dirtyFiles,
         }),
+      handover: { cause: "scheduled-release", elapsedSeconds },
       onPreserved: () => saveCheckpointState(),
     });
     // Same ordering as every other stop path (#218): the work is safe before
@@ -864,6 +872,7 @@ async function executeClaudeBody(
           elapsedSeconds,
           dirtyFiles,
         }),
+      handover: { cause: "external-sigterm", elapsedSeconds },
       onPreserved: () => saveCheckpointState(),
     });
     const disposition = await classifyExistingPr(ctx, deps);
