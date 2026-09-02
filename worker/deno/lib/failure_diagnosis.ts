@@ -481,10 +481,19 @@ function formatExtensionHistory(ctx: DiagnosticContext): string {
 /**
  * The extension telemetry a timeout diagnosis should state (Issue #768).
  *
- * A caller holding the snapshot passes it directly; the CLI-shaped callers
- * carry it in the `key=value` diagnostic context instead, so both reach the
- * one rendering path. `undefined` means the feature was not active for the
- * run, which is what keeps the legacy wording byte-identical.
+ * A caller holding the snapshot passes it directly; the label-failure and CLI
+ * callers only ever hold the `key=value` diagnostic context, so that is
+ * decoded here and both reach the one rendering path.
+ *
+ * Every figure must parse. `buildDiagnosticContext` writes them as one set,
+ * so a partial or unreadable set is not a run without extensions — and
+ * rendering a missing figure as `0s` would put a measured-looking lie in an
+ * operator artefact. Such a context yields `undefined`, which states nothing
+ * about extensions rather than stating something false.
+ *
+ * `undefined` therefore covers both "the feature was not active" and "the
+ * context did not carry a readable snapshot", and in each case the wording
+ * stays the pre-#764 text byte for byte.
  */
 function resolveExtensionTelemetry(
   diagnosticContext: string,
@@ -493,17 +502,29 @@ function resolveExtensionTelemetry(
   if (extensions) return extensions;
   if (!diagnosticContext) return undefined;
   const ctx = parseDiagnosticContext(diagnosticContext);
-  if (ctx.extensionsGranted === undefined) return undefined;
-  const seconds = (value: string | undefined): number => {
+  const seconds = (value: string | undefined): number | undefined => {
+    if (value === undefined || value.trim() === "") return undefined;
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
+    return Number.isFinite(parsed) ? parsed : undefined;
   };
+  const granted = seconds(ctx.extensionsGranted);
+  const extendedSeconds = seconds(ctx.extendedSeconds);
+  const baseTimeoutSeconds = seconds(ctx.claudeTimeout);
+  const finalDeadlineSeconds = seconds(ctx.finalDeadlineSeconds);
+  const elapsedSeconds = seconds(ctx.elapsedSeconds);
+  if (
+    granted === undefined || extendedSeconds === undefined ||
+    baseTimeoutSeconds === undefined || finalDeadlineSeconds === undefined ||
+    elapsedSeconds === undefined
+  ) {
+    return undefined;
+  }
   return {
-    granted: seconds(ctx.extensionsGranted),
-    extendedSeconds: seconds(ctx.extendedSeconds),
-    baseTimeoutSeconds: seconds(ctx.claudeTimeout),
-    finalDeadlineSeconds: seconds(ctx.finalDeadlineSeconds),
-    elapsedSeconds: seconds(ctx.elapsedSeconds),
+    granted,
+    extendedSeconds,
+    baseTimeoutSeconds,
+    finalDeadlineSeconds,
+    elapsedSeconds,
     ...(ctx.extensionRefused ? { refusalReason: ctx.extensionRefused } : {}),
   };
 }

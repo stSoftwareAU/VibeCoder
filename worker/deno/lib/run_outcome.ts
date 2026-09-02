@@ -48,10 +48,9 @@ export type RunOutcome =
       /** Raw failure message, for downstream classification/filing. */
       message: string;
       /**
-       * What the re-armable deadline did to the run (Issue #768). Carried so
-       * the release comment states the grants and the last refusal rather
-       * than leaving a timeout kill unexplained. Absent when the progress
-       * extension was not active.
+       * What the re-armable deadline did to the run (Issue #768), so the
+       * release comment states the grants and the last refusal rather than
+       * leaving a timeout kill unexplained.
        */
       extensions?: ExtensionTelemetry;
     }

@@ -38,6 +38,9 @@ import { buildDiagnosticContext } from "../lib/execute_claude_phase.ts";
 import { deriveRunOutcome } from "../lib/run_outcome.ts";
 import { renderRunOutcomeClause } from "../lib/heartbeat_storage.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
+import { workOnIssue } from "../lib/issue_worker.ts";
+import { markIssueAsFailedOnce } from "../lib/label_failure.ts";
+import { failureDiagnosisCommand } from "../commands/failure_diagnosis.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -130,6 +133,24 @@ Deno.test("formatTimeoutExtensionSummary - a run never refused says so rather th
   assertStringIncludes(summary, "no extension check was refused");
 });
 
+Deno.test("formatTimeoutExtensionSummary - a single grant reads in the singular (Issue #768)", () => {
+  const summary = formatTimeoutExtensionSummary(
+    buildExtensionTelemetry({
+      baseTimeoutSeconds: 3600,
+      startMs: 0,
+      deadlineMs: 4_200_000,
+      nowMs: 4_201_000,
+      granted: 1,
+      refusalReason: "descendant CPU idle for 240s",
+    }),
+  );
+  assertStringIncludes(summary, "1 extension granted (+600s)");
+  assert(
+    !summary.includes("1 extensions"),
+    `one grant must not read as a plural: ${summary}`,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // The release comment
 // ---------------------------------------------------------------------------
@@ -170,6 +191,26 @@ Deno.test("getFailureDiagnosis - the extension telemetry also arrives via the di
   assertStringIncludes(diagnosis, "deadline armed at kill 5640s");
   assertStringIncludes(diagnosis, "4 extensions granted");
   assertStringIncludes(diagnosis, "working tree unchanged");
+});
+
+Deno.test("getFailureDiagnosis - a partial telemetry context states nothing rather than a fabricated zero (Issue #768)", () => {
+  // A truncated or corrupted context is not a run without extensions. Reading
+  // the missing figures as `0s` would put a measured-looking lie in the
+  // comment, so the diagnosis keeps its pre-extension wording instead.
+  const diagnosis = getFailureDiagnosis(
+    "timeout",
+    "assessed_clear",
+    "health_check=passed;clarity=assessed_clear;elapsed_seconds=5645;" +
+      "no_output_timeout=600;claude_timeout=3600;extensions_granted=4",
+  );
+  assert(
+    !diagnosis.includes("Progress extension"),
+    `an unreadable snapshot must state nothing: ${diagnosis}`,
+  );
+  assert(
+    !diagnosis.includes("0s"),
+    `no figure may be invented from a missing field: ${diagnosis}`,
+  );
 });
 
 Deno.test("getFailureDiagnosis - the extension off keeps the pre-existing wording (Issue #768)", () => {
@@ -318,27 +359,137 @@ async function runTimedOutPhase(
   return { state, reason: result.reason ?? "" };
 }
 
-Deno.test("execute_phase - a timed-out run hands its extension telemetry to the release comment (Issue #768)", async () => {
-  const { state, reason } = await runTimedOutPhase(extendedRun());
+Deno.test("execute_phase - a timed-out run records the kill's extension telemetry (Issue #768)", async () => {
+  const { state } = await runTimedOutPhase(extendedRun());
   assertEquals(state.extensionTelemetry?.granted, 4);
-
-  // The same derivation workOnIssue performs at the release site.
-  const clause = renderRunOutcomeClause(deriveRunOutcome({
-    success: false,
-    phase: "execute",
-    reason,
-    elapsedSeconds: 5645,
-    ...(state.extensionTelemetry
-      ? { extensions: state.extensionTelemetry }
-      : {}),
-  }));
-  assertStringIncludes(clause, "4 extensions granted");
-  assertStringIncludes(clause, "working tree unchanged");
+  assertEquals(
+    state.extensionTelemetry?.refusalReason,
+    "working tree unchanged despite tool activity 31s ago",
+  );
 });
 
 Deno.test("execute_phase - with the extension off no telemetry is recorded (Issue #768)", async () => {
   const { state } = await runTimedOutPhase();
   assertEquals(state.extensionTelemetry, undefined);
+});
+
+/** Drive the whole orchestrator to a timeout and return its run outcome. */
+async function runTimedOutIssue(extensions?: ExtensionTelemetry) {
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            output: "Still reading the codebase",
+            exitCode: 124,
+            rawExitCode: 143,
+            timedOut: true,
+            timeoutReason: "hard-timeout",
+            ...(extensions ? { extensions } : {}),
+          },
+        })) as never,
+    },
+    pr: {
+      findExistingPrForIssue: (() =>
+        Promise.resolve({ ok: true, value: null })) as never,
+    },
+  });
+  return await workOnIssue({
+    repo: "org/repo",
+    issueNumber: 768,
+    issueTitle: "A run killed at its deadline",
+    issueBody: "Do the thing.",
+    issueLabels: [],
+    issueComments: "",
+    githubUser: "testbot",
+    config: buildDefaultWorkerConfig(),
+  }, deps);
+}
+
+Deno.test("workOnIssue - the release outcome the orchestrator derives carries the telemetry (Issue #768)", async () => {
+  // The production wiring, not a copy of it: `workOnIssue` is the only place
+  // that lifts the execute phase's snapshot onto the outcome the claim-release
+  // comment renders. Drop that wiring and this test goes red.
+  const result = await runTimedOutIssue(extendedRun());
+  assertEquals(result.success, false);
+  assert(result.outcome, "the run must carry an outcome");
+  const clause = renderRunOutcomeClause(result.outcome);
+  assertStringIncludes(clause, "Likely cause: Claude ran out of time.");
+  assertNamesTheFigures(clause, { base: 3600, armed: 5640, elapsed: 5645 });
+  assertStringIncludes(clause, "4 extensions granted");
+  assertStringIncludes(clause, "last check refused because working tree");
+});
+
+Deno.test("workOnIssue - with the extension off the release comment is unchanged (Issue #768)", async () => {
+  const result = await runTimedOutIssue();
+  assert(result.outcome, "the run must carry an outcome");
+  const clause = renderRunOutcomeClause(result.outcome);
+  assertStringIncludes(clause, "Likely cause: Claude ran out of time.");
+  assert(
+    !clause.includes("Progress extension"),
+    `a run without telemetry must say nothing about extensions: ${clause}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The first-attempt failure comment
+// ---------------------------------------------------------------------------
+
+Deno.test("markIssueAsFailedOnce - the comment names the grants and the refusal (Issue #768)", async () => {
+  const cacheDir = await Deno.makeTempDir({ prefix: "failed_once_768_" });
+  const calls: string[][] = [];
+  try {
+    const result = await markIssueAsFailedOnce({
+      repo: "org/repo",
+      issueNumber: 768,
+      githubUser: "testbot",
+      failureMessage: "Claude timed out after 5645 seconds",
+      diagnosticContext: buildDiagnosticContext({
+        clarityStatus: "assessed_clear",
+        elapsedSeconds: 5645,
+        claudeNoOutputTimeout: 600,
+        claudeTimeout: 3600,
+        extensions: extendedRun(),
+      }),
+    }, {
+      ghCommandFn: ((args: string[]) => {
+        calls.push(args);
+        return Promise.resolve("");
+      }) as never,
+      cacheDir,
+    });
+    assertEquals(result.ok, true);
+    const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment");
+    assert(comment, "a failure comment must be posted");
+    const body = comment[comment.indexOf("--body") + 1] ?? "";
+    assertStringIncludes(body, "4 extensions granted");
+    assertStringIncludes(body, "last check refused because working tree");
+  } finally {
+    await Deno.remove(cacheDir, { recursive: true });
+  }
+});
+
+Deno.test("failure-diagnosis CLI - get-diagnosis-oneliner reports the telemetry the context carries (Issue #768)", async () => {
+  const context = buildDiagnosticContext({
+    clarityStatus: "assessed_clear",
+    elapsedSeconds: 5645,
+    claudeNoOutputTimeout: 600,
+    claudeTimeout: 3600,
+    extensions: extendedRun(),
+  });
+  const withContext = await failureDiagnosisCommand.execute({
+    operation: "get-diagnosis-oneliner",
+    category: "timeout",
+    "diagnostic-context": context,
+  }, buildDefaultWorkerConfig());
+  assertStringIncludes(withContext.message ?? "", "4 extensions granted");
+
+  const without = await failureDiagnosisCommand.execute({
+    operation: "get-diagnosis-oneliner",
+    category: "timeout",
+  }, buildDefaultWorkerConfig());
+  assertEquals(without.message, "Likely cause: Claude ran out of time.");
 });
 
 // ---------------------------------------------------------------------------

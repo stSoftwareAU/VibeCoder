@@ -127,8 +127,6 @@ export function formatTimeoutExtensionSummary(
     ? `${granted} extension${granted === 1 ? "" : "s"} granted ` +
       `(+${extendedSeconds}s)`
     : "no extensions granted";
-  // An em dash after "no extensions granted" — the refusal is the finding
-  // there; a semicolon after a grant count, where it is a closing detail.
   const joiner = granted > 0 ? "; " : " — ";
   const refusal = refusalReason
     ? `last check refused because ${refusalReason}`
