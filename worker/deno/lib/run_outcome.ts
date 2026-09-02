@@ -22,6 +22,7 @@ import {
 } from "./failure_diagnosis.ts";
 import type { ClaimStaleReason, StaleClaim } from "./claim_freshness.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
+import type { PreservedWip } from "./preserved_wip_branch.ts";
 
 /**
  * Short facts a run wants stated on the release comment alongside whatever it
@@ -53,6 +54,12 @@ export type RunOutcome =
        * leaving a timeout kill unexplained.
        */
       extensions?: ExtensionTelemetry;
+      /**
+       * Where the run's work in progress was preserved (Issue #770). Present
+       * only when preservation put it on a pushed branch, so the release
+       * comment can name that branch instead of a generic "WIP preserved".
+       */
+      preservedWip?: PreservedWip;
     }
     | { kind: "no_pr_expected"; phase: string; summary: string }
     /**
@@ -128,6 +135,12 @@ export interface RunOutcomeSource {
    * name the grants and the last refusal.
    */
   extensions?: ExtensionTelemetry;
+  /**
+   * Branch the run's work in progress was pushed to (Issue #770), from
+   * `PhaseState.preservedWip`. Carried onto a `no_pr` outcome so the release
+   * comment names it; ignored when the run raised a PR.
+   */
+  preservedWip?: PreservedWip;
 }
 
 /** PR number parsed from a GitHub PR URL, or 0. */
@@ -172,6 +185,9 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
     elapsedSeconds: Math.max(0, Math.round(elapsedSeconds)),
     message: source.reason,
     ...(source.extensions ? { extensions: source.extensions } : {}),
+    // Only when the work reached a pushed branch (Issue #770) — the source
+    // field is set by preservation itself, never guessed from the title.
+    ...(source.preservedWip ? { preservedWip: source.preservedWip } : {}),
   };
 }
 

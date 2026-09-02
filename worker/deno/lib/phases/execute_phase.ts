@@ -33,10 +33,8 @@ import {
 } from "../session_resume.ts";
 import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
-import {
-  PRIOR_PROGRESS_PROMPT_NOTE,
-  saveResumeState,
-} from "../resume_state_store.ts";
+import { saveResumeState } from "../resume_state_store.ts";
+import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
   startWipCheckpoints,
@@ -341,8 +339,15 @@ async function executeClaudeBody(
   // Prior progress exists (Issue #4170): setup resumed a checkpointed
   // branch, so tell the agent to review and continue instead of starting
   // again. Appended after the cached prefix so prompt caching is intact.
+  //
+  // When that branch carries the interrupted run's handover file (Issue #771),
+  // its content is spliced in here — fenced and framed as prior-run status —
+  // instead of the generic "review `git log`" paragraph alone. It rides the
+  // user prompt, so the budget check below measures it like any other prompt
+  // input. Independent of `enable_session_resume` and of the provider: the
+  // committed file is the contract, a `--resume` transcript is the bonus.
   const userPrompt = state.resumedFromCheckpoint
-    ? basePrompt + PRIOR_PROGRESS_PROMPT_NOTE
+    ? basePrompt + buildPriorProgressNote(issueNumber, state.handoverNote)
     : basePrompt;
 
   // --- Context budget hard ceiling (Issue #3713) ---
@@ -617,6 +622,8 @@ async function executeClaudeBody(
     const wip = await preserveRunWip({
       state,
       deps,
+      issueNumber: ctx.issueNumber,
+      repo: ctx.repo,
       // Zero output means the agent produced nothing, so nothing in the tree
       // is its work — leave the tree alone, as before.
       inspectWorkingTree: state.claudeOutput.length > 0,
@@ -661,8 +668,14 @@ async function executeClaudeBody(
     // A scheduled release says so instead (Issue #424): the run did not run
     // out of time on this issue, the fleet stopped it, and the wording must
     // not send a human off to split the issue into sub-issues.
+    //
+    // Either way the note names the branch the push targeted (Issue #770).
+    // A scheduled release folds it into its own reason; a timeout appends it,
+    // as before. `foldedNote` is what the reason already carries, so the
+    // branch is never stated twice.
+    const foldedNote = scheduled && wip.preserved ? wipNote : undefined;
     const baseReason = (scheduled
-      ? buildScheduledReleaseReason(scheduled)
+      ? buildScheduledReleaseReason(scheduled, foldedNote)
       : state.claudeOutput.length === 0
       ? `Claude timed out with zero output and made no changes`
       : dirtyFiles > 0
@@ -672,7 +685,7 @@ async function executeClaudeBody(
       : wipCommits > 0
       ? `Claude timed out with its work preserved on the branch`
       : `Claude timed out without creating changes`) +
-      (wipNote ? ` — ${wipNote}` : "");
+      (wipNote && wipNote !== foldedNote ? ` — ${wipNote}` : "");
     const reason = formatDetailedFailureMessage(baseReason, {
       elapsedSeconds,
       timedOut: true,
@@ -715,6 +728,8 @@ async function executeClaudeBody(
     const wip = await preserveRunWip({
       state,
       deps,
+      issueNumber: ctx.issueNumber,
+      repo: ctx.repo,
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
         buildInterruptedWipCommitMessage({
@@ -781,6 +796,8 @@ async function executeClaudeBody(
     const wip = await preserveRunWip({
       state,
       deps,
+      issueNumber: ctx.issueNumber,
+      repo: ctx.repo,
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
         buildInterruptedWipCommitMessage({
@@ -806,9 +823,12 @@ async function executeClaudeBody(
     if (disposition.kind === "superseded") {
       return supersededResult("execute", disposition, wip, deps);
     }
+    // The note names the branch the push targeted (Issue #770); folding it
+    // into the scheduled-release reason states that exactly once.
+    const foldedNote = wip.preserved ? wip.wipNote : undefined;
     const reason = formatDetailedFailureMessage(
-      buildScheduledReleaseReason("cycle-ended") +
-        (wip.wipNote ? ` — ${wip.wipNote}` : ""),
+      buildScheduledReleaseReason("cycle-ended", foldedNote) +
+        (wip.wipNote && wip.wipNote !== foldedNote ? ` — ${wip.wipNote}` : ""),
       {
         elapsedSeconds,
         outputSize: state.claudeOutput.length,
@@ -835,6 +855,8 @@ async function executeClaudeBody(
     const wip = await preserveRunWip({
       state,
       deps,
+      issueNumber: ctx.issueNumber,
+      repo: ctx.repo,
       inspectWorkingTree: state.claudeOutput.length > 0,
       buildMessage: (dirtyFiles) =>
         buildInterruptedWipCommitMessage({

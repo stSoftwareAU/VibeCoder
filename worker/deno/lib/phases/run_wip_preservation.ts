@@ -18,6 +18,12 @@
 import type { PhaseState } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { preserveTimedOutWip } from "../wip_checkpoint.ts";
+import {
+  describeHandoverFile,
+  handoverFilePath,
+  handoverFileUrl,
+  type PreservedWip,
+} from "../preserved_wip_branch.ts";
 
 /** What preservation found and did. */
 export interface PreservedRunWip {
@@ -26,6 +32,13 @@ export interface PreservedRunWip {
    * failed). Absent only when there was nothing at all to preserve.
    */
   wipNote?: string;
+  /**
+   * Where the work now lives (Issue #770). Set ONLY when the work is on the
+   * branch this run pushed — never when preservation failed and the work is
+   * still local, because a comment naming a branch that was never pushed
+   * sends a reader to a dead ref.
+   */
+  preserved?: PreservedWip;
   /** Uncommitted files present before preservation ran. */
   dirtyFiles: number;
   /** Commits this run had already added to the branch (#4170 checkpoints). */
@@ -74,6 +87,13 @@ export interface PreserveRunWipOptions {
   /** Commit subject for the one-shot preservation commit. */
   buildMessage: (dirtyFiles: number) => string;
   /**
+   * The issue being worked (Issue #770) — used to look up the handover file
+   * on the branch. Absent → the note names the branch alone.
+   */
+  issueNumber?: number;
+  /** `owner/repo`, so the handover file can be linked rather than just named. */
+  repo?: string;
+  /**
    * Skip the working-tree inspection entirely (the execute phase's
    * zero-output timeout: the agent produced nothing, so anything dirty is
    * not its work). Defaults to true — inspect.
@@ -81,6 +101,52 @@ export interface PreserveRunWipOptions {
   inspectWorkingTree?: boolean;
   /** Refresh durable resume state after a successful push (Issue #4170). */
   onPreserved?: () => Promise<void>;
+}
+
+/**
+ * Describe where the work now is (Issue #770): the branch this run pushed,
+ * plus the handover file (#769) when one is committed on it.
+ *
+ * The handover lookup asks git what is IN the branch's tree rather than what
+ * is on disk, so the comment can only advertise a file a reader will actually
+ * find there. Any git trouble degrades to "no handover file" — naming the
+ * branch alone is correct, a broken link is not.
+ */
+async function resolvePreservedWip(
+  options: PreserveRunWipOptions,
+): Promise<PreservedWip> {
+  const { state, deps, issueNumber, repo } = options;
+  const branch = state.branchName;
+  if (issueNumber === undefined) return { branch };
+  const path = handoverFilePath(issueNumber);
+  const listed = await deps.git.runGitCommand(
+    ["ls-tree", "--name-only", "HEAD", "--", path],
+    { cwd: state.repoPath },
+  );
+  if (!listed.ok || listed.value.code !== 0) {
+    // Degrading to "no handover file" is right — a broken link is worse than
+    // none — but the lookup failing is not the same as the file being absent,
+    // so say so rather than letting a git fault pass for a clean answer.
+    deps.logger.warn(
+      "Could not look up the handover file on the preserved branch — the " +
+        "release comment names the branch alone (Issue #770)",
+      {
+        branch,
+        path,
+        error: listed.ok
+          ? `git ls-tree exited ${listed.value.code}: ` +
+            (listed.value.stderr.trim() || "(no output)")
+          : listed.error.message,
+      },
+    );
+    return { branch };
+  }
+  if (listed.value.stdout.trim() !== path) return { branch };
+  return {
+    branch,
+    handoverPath: path,
+    ...(repo ? { handoverUrl: handoverFileUrl(repo, branch, path) } : {}),
+  };
 }
 
 /**
@@ -107,14 +173,15 @@ export async function preserveRunWip(
   const wipCommits = await commitsSinceExecuteStart(state, deps);
 
   if (dirtyFiles === 0) {
+    if (wipCommits === 0) return { dirtyFiles, wipCommits, pushed: false };
+    const preserved = await resolvePreservedWip(options);
+    state.preservedWip = preserved;
     return {
-      ...(wipCommits > 0
-        ? {
-          wipNote: `WIP preserved: ${wipCommits} checkpoint commit` +
-            `${wipCommits === 1 ? "" : "s"} pushed to '${state.branchName}' ` +
-            `— the next claim resumes from that branch (Issue #4170)`,
-        }
-        : {}),
+      wipNote: `WIP preserved: ${wipCommits} checkpoint commit` +
+        `${wipCommits === 1 ? "" : "s"} pushed to '${state.branchName}' ` +
+        `— the next claim resumes from that branch (Issue #4170).` +
+        describeHandoverFile(preserved),
+      preserved,
       dirtyFiles,
       wipCommits,
       pushed: false,
@@ -146,18 +213,26 @@ export async function preserveRunWip(
 
   if (preserved.kind === "pushed") {
     await options.onPreserved?.().catch(() => undefined);
+    const onBranch = await resolvePreservedWip(options);
+    state.preservedWip = onBranch;
     return {
       wipNote: `WIP preserved: committed and pushed to '${state.branchName}' ` +
-        `— the next claim resumes from that branch (Issue #47)`,
+        `— the next claim resumes from that branch (Issue #47).` +
+        describeHandoverFile(onBranch),
+      preserved: onBranch,
       dirtyFiles,
       wipCommits,
       pushed: true,
     };
   }
   if (preserved.kind === "clean") {
+    const onBranch = await resolvePreservedWip(options);
+    state.preservedWip = onBranch;
     return {
       wipNote:
-        `WIP already checkpointed on '${state.branchName}' (Issue #4170)`,
+        `WIP already checkpointed on '${state.branchName}' (Issue #4170).` +
+        describeHandoverFile(onBranch),
+      preserved: onBranch,
       dirtyFiles,
       wipCommits,
       pushed: false,

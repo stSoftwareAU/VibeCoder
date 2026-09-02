@@ -29,8 +29,8 @@ setting and [Containment](CONTAINMENT.md) for the boundary.
 
 | Component                        | Source                                             | Pinned by                       |
 | -------------------------------- | -------------------------------------------------- | ------------------------------- |
-| `bash`, GNU coreutils (`timeout`), `git` (≥ 2.41), `curl`, CA certificates, `ruby` (≥ 3.1) | `ruby:3.4-trixie` base image | Image digest                    |
-| `deno`                           | `denoland/deno:bin-*` build stage                   | Image digest                    |
+| `bash`, GNU coreutils (`timeout`), `git` (≥ 2.41), `curl`, CA certificates, `ruby` (≥ 3.1) | `docker.io/library/ruby:3.4-trixie` base image | Image digest                    |
+| `deno`                           | `docker.io/denoland/deno:bin-*` build stage                   | Image digest                    |
 | `gh`                             | GitHub release tarball                              | Version + SHA-256 per architecture |
 | `jq`                             | GitHub release binary                               | Version + SHA-256 per architecture |
 | the coding-agent binaries (`claude`, …) | one `container/providers/<id>.sh` per id in `AGENT_PROVIDERS` | Version + SHA-256 per architecture |
@@ -261,8 +261,9 @@ it would invalidate the image on every commit:
 | `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
 | `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
+| `agent_providers` (`.config.json`) | The coding-agent CLIs this deployment bakes in |
 
-The last one is not a committed file. `container_tools` is the deployment's own
+The last two are not committed files. `container_tools` is the deployment's own
 selection (see
 [Deployer-supplied build-time tools](CONTAINER-IMAGE.md#deployer-supplied-build-time-tools)),
 and the
@@ -276,10 +277,30 @@ exactly the tag it got before the selection existed, so no existing host
 rebuilds. A malformed spec exits non-zero naming the offending field rather
 than falling back to a tools-free tag.
 
+`agent_providers` works the same way (Issue #729): the launch plan carries the
+deployment's enabled set into the build as `--build-arg AGENT_PROVIDERS=<ids>`
+and mixes that value into the tag, so a host switching from Claude to Codex
+rebuilds instead of reusing an image with the wrong agent CLIs installed. A set
+that is already the image's default (`container/tools.json`
+`installedProviders`) passes no argument and leaves the tag exactly where it
+was.
+
+**Every caller reads both selections through one reader.** Because the tag is
+derived from the deployment's own configuration, anything that *names* the
+image must read that configuration too — otherwise it names a tag the launcher
+never builds. Setup's worker-image check and the security tabletop runner did
+not, and reported a built image as missing on any host that selected tools or a
+provider set (Issues #743, #749). Both now call
+[`readDeploymentImageSelection`](../worker/deno/lib/container_image_selection.ts),
+as does `container-image-hash` itself, and
+`container_image_selection_test.ts` pins their answer to the launcher's — so a
+fourth input added to the hash cannot be added to the launcher alone.
+
 ```mermaid
 flowchart LR
     I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
     C["container_tools<br/>(.config.json)"] --> H
+    G["agent_providers<br/>(.config.json)"] --> H
     W["docs/, worker/ sources,<br/>cloned repos"] -.ignored.-> H
     H --> R["vibe-coder:&lt;short hash&gt;"]
     R --> D{"image present<br/>locally?"}
@@ -717,14 +738,21 @@ fstrim: /home/vibe/auto-issue-work: FITRIM ioctl failed: Operation not permitted
 
 So GRQ-23 carried a 26 GB volume image for 12.1 GB of live data, sat below
 its floor for three days claiming nothing out of 43 claimable issues, and the
-only remedy on offer — `container volume delete vibe-work` — was addressed to
+only remedy on offer — a hand-run `volume delete vibe-work` — was addressed to
 a human who was not there. An unattended host has no human, so the launcher
 takes it:
 
 1. **The refusal is a fact, not a warning.** `volume-init.sh` prints
    `VOLUME_TRIM_REFUSED <target>` on stdout; `run.sh` maps each target back to
    its named volume and records the refusal in `run_core.log`. A launch where
-   FITRIM was refused is never recorded as a successful trim.
+   FITRIM was refused is never recorded as a successful trim. The refusal
+   never *causes* a disk decision — the heal below needs the host to be below
+   its claiming floor as well, and the hard floor is a measurement of the host
+   — but because a runtime that cannot discard never returns the guest's freed
+   blocks, it is usually the reason the reading is what it is. So every disk
+   decision taken after a refusal names it (Issue #734): an operator reading
+   `refusing to launch: 900 MB free` with no mention of the refused trim is
+   left with an unexplained work refusal.
 2. **A host below its claiming floor is healed.** When the refusal coincides
    with less free space than the floor the worker stops claiming at — the
    larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and
@@ -732,7 +760,12 @@ takes it:
    `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
    the volume, then runs the init again to re-own it. This happens **before
    any container starts**, so no work is in flight: the clones re-clone and
-   the approval snapshots re-baseline.
+   the approval snapshots re-baseline. The removal verb comes from the launch
+   plan, because the runtimes disagree about it — Docker and Podman say
+   `volume rm`, Apple `container` says `volume delete` — and a removal that
+   leaves the volume in place is reported in the runtime's own words rather
+   than followed by a `volume create` that is certain to fail with
+   "already exists" (Issue #731).
 3. **The attempt is bounded and never silent.** At most one recreate per
    `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24), recorded in
    `~/.vibe-coder/work-volume-heal`; volumes holding less than
@@ -1163,9 +1196,9 @@ construction and the containment boundary do not change.
 | id       | binary   | fragment | credential variables               | notes |
 | -------- | -------- | -------- | ---------------------------------- | ----- |
 | `claude` | `claude` | `container/providers/claude.sh` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | The default; installed by a default image build |
-| `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; add it to `AGENT_PROVIDERS` to install it |
-| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, add it to `AGENT_PROVIDERS` to install it |
-| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY` | Carried on the Claude CLI under its own command and its own pin; add it to `AGENT_PROVIDERS` to install it |
+| `codex` | `codex` | `container/providers/codex.sh` | `OPENAI_API_KEY`, `CODEX_API_KEY` | Pinned and selectable; enable it in `agent_providers` and the launcher builds it in |
+| `gemini` | `gemini` | `container/providers/gemini.sh` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Quorum's judge; pinned and selectable, enable it in `agent_providers` and the launcher builds it in |
+| `deepseek` | `deepseek` | `container/providers/deepseek.sh` | `DEEPSEEK_API_KEY` | Carried on the Claude CLI under its own command and its own pin; enable it in `agent_providers` and the launcher builds it in |
 
 Each vendor's credential is provisioned into its own
 `<credential dir>/<id>/provider.env` by `setup.sh` — the variables per vendor
@@ -1228,9 +1261,11 @@ provider its own variables and writes only the files it has
 credentials for. DeepSeek's is the case worth stating outright: the binary is
 Anthropic's, but `deepseek/provider.env` holds a **DeepSeek** key
 (`DEEPSEEK_API_KEY`, provisioned from `VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY`), and
-Anthropic's own credentials are denied to the DeepSeek child. The default image
-still installs Claude alone, so a run using another provider also needs it in
-the image's `AGENT_PROVIDERS` set.
+Anthropic's own credentials are denied to the DeepSeek child. A default image
+build still installs Claude alone, but the launcher builds whatever
+`agent_providers` enables — it passes the set as `--build-arg AGENT_PROVIDERS`
+and mixes it into the image tag (Issue #729), so selecting another provider is
+one decision, not two.
 
 Each fragment reads its pins from `container/tools.json` with `jq`, verifies
 the download against the pinned SHA-256 (per architecture, or one `noarch`
@@ -1313,9 +1348,10 @@ neither the Containerfile nor `container/install-providers.sh` names a provider.
    `VIBE_LAUNCHAGENT_*` provisioning variable `setup.sh` reads), the child
    environment allowlist/denylist — naming the *other* vendors' credential
    variables so none crosses — and the invocation the CLI takes.
-4. **Build it in** — pass the new id in `AGENT_PROVIDERS`, and enable it for a
-   run with `agent_providers`. Add it to `installedProviders` in the manifest
-   only if a *default* image build should carry it.
+4. **Enable it** — add the id to `agent_providers` in `.config.json`; the
+   launcher passes the set to the build as `AGENT_PROVIDERS` on the next
+   launch. Add it to `installedProviders` in the manifest only if a *default*
+   image build should carry it.
 
 The image tag follows the set, so the new provider produces a new
 `vibe-coder:<hash>` rather than reusing a tag whose contents differ. A trio in

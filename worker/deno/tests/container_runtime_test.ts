@@ -19,6 +19,7 @@ import {
   buildMountArguments,
   candidatesForPlatform,
   CONTAINER_RUNTIME_KINDS,
+  CONTAINER_RUNTIMES,
   type ContainerRuntimeCandidate,
   type ContainerRuntimeKind,
   type ContainerRuntimeProbe,
@@ -311,6 +312,29 @@ Deno.test("candidatesForPlatform - dialects record the flags each runtime suppor
     assertEquals(candidate.dialect.supportsUserns, true);
     assertEquals(candidate.dialect.supportsSecurityOpt, true);
   }
+});
+
+Deno.test("dialects - tmpfs options and tmpfs ownership are separate capabilities (Issue #727)", () => {
+  // Podman parses `path:options` exactly as Docker does — it must NOT be
+  // flipped to "ignores options", which would drop mode=0700 and noexec from
+  // the credentials mount and reopen Issue #564 — but it refuses the kernel's
+  // uid=/gid= pair and takes its own `U` instead.
+  assertEquals(CONTAINER_RUNTIMES.docker.dialect.tmpfsHonoursOptions, true);
+  assertEquals(
+    CONTAINER_RUNTIMES.docker.dialect.tmpfsOwnership,
+    "mount-options",
+  );
+  assertEquals(CONTAINER_RUNTIMES.podman.dialect.tmpfsHonoursOptions, true);
+  assertEquals(CONTAINER_RUNTIMES.podman.dialect.tmpfsOwnership, "chown-flag");
+  // Apple container honours neither: the whole string becomes the mount path.
+  assertEquals(
+    CONTAINER_RUNTIMES["apple-container"].dialect.tmpfsHonoursOptions,
+    false,
+  );
+  assertEquals(
+    CONTAINER_RUNTIMES["apple-container"].dialect.tmpfsOwnership,
+    "none",
+  );
 });
 
 Deno.test("buildMountArguments - renders a mount in the runtime's dialect", async () => {

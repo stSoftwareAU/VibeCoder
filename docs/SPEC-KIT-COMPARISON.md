@@ -53,7 +53,7 @@ this assessment was worth doing.
 
 | spec-kit | Vibe Coder equivalent | Verdict |
 | --- | --- | --- |
-| `/speckit.constitution` → `constitution.md` in the repo | `prompts/coding_guidelines/v42.md`, fleet-wide, injected as the system prompt on every run | Present, different trust model — see [rejected](#considered-and-rejected) |
+| `/speckit.constitution` → `constitution.md` in the repo | `prompts/coding_guidelines/`, fleet-wide, injected as the system prompt on every run | Present, different trust model — see [rejected](#considered-and-rejected) |
 | `/speckit.specify` → `spec.md` | Issue body, converged into `## Current Understanding` between HTML markers | Present, stored in GitHub |
 | `/speckit.clarify` | Grill-me rounds plus the clarity assessment (`CLEAR` / questions / `TOO_COMPLEX`) | Present, and stronger — it can hand the issue back to a human via `needs-human` |
 | `/speckit.plan` → `plan.md` | Quorum plan-off, then planning draft → adversarial critique → publish | Present, stored in GitHub |

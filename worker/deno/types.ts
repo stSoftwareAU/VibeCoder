@@ -356,6 +356,17 @@ export interface WorkerConfig {
   enableModelFallback: boolean;
   /** Minimum free disk space in MB before large git operations (Issue #1174, default: 500) */
   minDiskSpaceMb: number;
+  /**
+   * Gigabyte term of the claiming floor (Issue #732). Unset → the
+   * `VIBE_HOST_DISK_LOW_FLOOR_GB` override, else 20.
+   */
+  hostDiskLowFloorGb?: number;
+  /**
+   * Percentage term of the claiming floor (Issue #732). Unset → the
+   * `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` override, else 10. The floor is the
+   * larger of the two terms.
+   */
+  hostDiskLowFloorPercent?: number;
   /** Whether to periodically sync milestone branches with the default branch (Issue #1238, default: true) */
   syncMilestoneBranches: boolean;
   /** Cooldown in seconds between sync attempts for the same milestone (Issue #1238, default: 3600) */
@@ -1133,6 +1144,10 @@ export interface ConfigFile {
   enable_model_fallback?: boolean;
   /** Minimum free disk space in MB before large git operations (Issue #1174) */
   min_disk_space_mb?: number;
+  /** Gigabyte term of the claiming floor (Issue #732) */
+  host_disk_low_floor_gb?: number;
+  /** Percentage term of the claiming floor (Issue #732) */
+  host_disk_low_floor_percent?: number;
   /** Whether to periodically sync milestone branches with the default branch (Issue #1238) */
   sync_milestone_branches?: boolean;
   /** Cooldown in seconds between milestone branch sync attempts (Issue #1238) */

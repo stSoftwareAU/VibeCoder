@@ -334,10 +334,12 @@ function Write-VibeGhHostsFile {
     Provision one provider's credential file from the environment.
 
 .DESCRIPTION
-    The provisioning variable wins; failing that, the provider's own credential
-    variables are read in the order the descriptor lists them. Setting neither
-    leaves that provider unprovisioned and never touches an existing file, so
-    provisioning one vendor cannot wipe another's credential.
+    An explicit -VarName/-Secret pair wins — that is the interactive flow handing
+    over the secret it was just given. Failing that the provisioning variable
+    wins, and failing that the provider's own credential variables are read in
+    the order the descriptor lists them. Setting none of them leaves that
+    provider unprovisioned and never touches an existing file, so provisioning
+    one vendor cannot wipe another's credential.
 
 .OUTPUTS
     True when a credential was written, false when there was nothing to write.
@@ -345,13 +347,24 @@ function Write-VibeGhHostsFile {
 function Set-VibeProviderCredential {
     param(
         [Parameter(Mandatory = $true)][string] $Dir,
-        [Parameter(Mandatory = $true)][pscustomobject] $Provider
+        [Parameter(Mandatory = $true)][pscustomobject] $Provider,
+        [string] $VarName = "",
+        [string] $Secret = "",
+        [switch] $Quiet
     )
 
     $name = ""
     $value = ""
     $provisioned = [Environment]::GetEnvironmentVariable($Provider.ProvisionVar)
-    if ($provisioned) {
+    # PowerShell variable names are case-insensitive, so the parameters cannot
+    # be $Name/$Value: they would be the same variables as the locals below.
+    if ($VarName -and $Secret) {
+        # A secret the operator just pasted: stored under the name the prompt
+        # asked for, never round-tripped through this process's environment
+        # (Issue #745).
+        $name = $VarName
+        $value = $Secret
+    } elseif ($provisioned) {
         $name = $Provider.Vars[0]
         $value = $provisioned
     } else {
@@ -375,8 +388,10 @@ function Set-VibeProviderCredential {
     $file = Join-Path $providerDir "provider.env"
     Write-VibeTextFile -Path $file -Content "$name=$value`n"
     Protect-VibePath -Path $file -Mode "600"
-    Write-VibeSuccess ("Provisioned $($Provider.Subdir) credential " +
-        "(owner-only) in $file")
+    if (-not $Quiet) {
+        Write-VibeSuccess ("Provisioned $($Provider.Subdir) credential " +
+            "(owner-only) in $file")
+    }
     return $true
 }
 
@@ -575,13 +590,293 @@ function Read-VibeSecret {
 
 <#
 .SYNOPSIS
-    Fill remaining credential gaps interactively (Issue #4161).
+    One provider's row from the credential table.
 
-.PARAMETER GhSource
-    The gh config directory to offer as the copy source ("" for none).
+.DESCRIPTION
+    Returns $null when the provider has no row, which the caller reports
+    loudly rather than guessing at a directory name or a variable — the
+    setup.sh twin of this is `vibe_provider_credential_row` (Issue #745).
+#>
+function Get-VibeProviderCredentialRow {
+    param([Parameter(Mandatory = $true)][string] $Id)
+
+    foreach ($row in Get-VibeProviderCredentialTable) {
+        if ($row.Subdir -eq $Id) { return $row }
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    The credential variable one provider's interactive prompt fills.
+
+.DESCRIPTION
+    Defaults to the first name in that provider's row, so a newly registered
+    provider is prompted for with no edit here. Claude overrides it: its row
+    leads with ANTHROPIC_API_KEY (metered, per-token billing), while the
+    credential setup must ask for is the subscription OAuth token
+    `claude setup-token` mints — rate-limiting is a far better failure mode
+    than a surprise bill.
+#>
+function Get-VibeProviderPromptVariable {
+    param(
+        [Parameter(Mandatory = $true)][string] $Id,
+        [Parameter(Mandatory = $true)][string[]] $Vars
+    )
+
+    if ($Id -eq "claude") { return "CLAUDE_CODE_OAUTH_TOKEN" }
+    return $Vars[0]
+}
+
+<#
+.SYNOPSIS
+    Where an operator gets one provider's credential, when we can say.
+
+.DESCRIPTION
+    A provider with no entry simply gets no hint line — the prompt still names
+    the variable and the provisioning variable, so it stays usable. Claude has
+    no entry either: its paste prompt spells the whole `claude setup-token`
+    recipe out instead.
+#>
+function Get-VibeProviderCredentialSourceHint {
+    param([Parameter(Mandatory = $true)][string] $Id)
+
+    switch ($Id) {
+        "codex" { return "an OpenAI API key from https://platform.openai.com/api-keys" }
+        "gemini" { return "a Google AI Studio key from https://aistudio.google.com/apikey" }
+        "deepseek" { return "a key issued at https://platform.deepseek.com/api_keys" }
+        default { return "" }
+    }
+}
+
+<#
+.SYNOPSIS
+    Validate a stored credential where the provider supports it.
+
+.DESCRIPTION
+    Claude's CLI can prove a token authenticates with a live call (Issue
+    #4161). No other vendor ships a comparably cheap, non-billing check, so
+    their stored credentials are taken at face value here — the worker's own
+    credential preflight still requires the file to be present and owner-only,
+    and the provider's auth-error detection still reports a bad key loudly at
+    run time.
+#>
+function Test-VibeProviderCredential {
+    param(
+        [Parameter(Mandatory = $true)][string] $Id,
+        [Parameter(Mandatory = $true)][string] $Path
+    )
+
+    if ($Id -eq "claude") { return (Test-VibeClaudeCredential -Path $Path) }
+    return $true
+}
+
+<#
+.SYNOPSIS
+    Acquire a credential without a paste, where the provider's CLI can mint one.
+
+.DESCRIPTION
+    Returns the captured secret, or "" when this provider has no paste-free
+    path, its CLI is absent, or the operator declined. Claude is the only
+    provider with one today; the generic paste prompt covers every other.
+#>
+function Get-VibeMintedProviderCredential {
+    param([Parameter(Mandatory = $true)][string] $Id)
+
+    if ($Id -ne "claude") { return "" }
+    if (-not (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue)) {
+        return ""
+    }
+
+    Write-VibeInfo "The containerised worker cannot reach Windows Credential Manager,"
+    Write-VibeInfo "so the claude CLI needs a long-lived OAuth token. Setup can run"
+    Write-VibeInfo "``claude setup-token`` for you: a browser opens, you sign in with the"
+    Write-VibeInfo "Claude account that holds your subscription, and the token is"
+    Write-VibeInfo "captured automatically. (The token bills that subscription and can"
+    Write-VibeInfo "only ever rate-limit - never run up per-token API charges. It lasts"
+    Write-VibeInfo "about a year; re-run .\setup.ps1 to replace it when it expires.)"
+    $runSetupToken = Read-Host "  Run ``claude setup-token`` now? [Y/n]"
+    if ($runSetupToken -match '^[nN]') { return "" }
+
+    $token = Get-VibeSetupToken
+    if (-not $token) {
+        Write-VibeWarning ("No token captured from claude setup-token - " +
+            "paste one instead")
+    }
+    return $token
+}
+
+<#
+.SYNOPSIS
+    Print the paste instructions for one provider.
+
+.DESCRIPTION
+    Claude's recipe is spelled out in full because minting its token is a
+    multi-step browser flow; every other provider gets the generic
+    instructions built from its own table row, which is what makes a new
+    provider work here without an edit.
+#>
+function Write-VibeProviderCredentialInstructions {
+    param(
+        [Parameter(Mandatory = $true)][string] $Id,
+        [Parameter(Mandatory = $true)][string] $PromptVar,
+        [Parameter(Mandatory = $true)][string] $ProvisionVar,
+        [Parameter(Mandatory = $true)][string] $EnvFile
+    )
+
+    if ($Id -eq "claude") {
+        Write-VibeInfo "To generate the token by hand:"
+        Write-Host ""
+        Write-Host "    1. Open a second terminal (leave this prompt waiting)."
+        Write-Host "    2. Run:  claude setup-token"
+        Write-Host "    3. A browser opens - sign in with the Claude account that holds"
+        Write-Host "       your subscription. This token bills that subscription and can"
+        Write-Host "       only ever rate-limit, never run up per-token API charges."
+        Write-Host "    4. Copy the printed token (starts with sk-ant-oat01-...)."
+        Write-Host "    5. Paste it below and press Enter. Nothing appears as you paste -"
+        Write-Host "       input is hidden so the token stays out of your scrollback."
+        Write-Host ""
+        return
+    }
+
+    $hint = Get-VibeProviderCredentialSourceHint -Id $Id
+    Write-VibeInfo "The containerised worker authenticates $Id from $EnvFile."
+    if ($hint) {
+        Write-VibeInfo "Paste $PromptVar below - $hint."
+    } else {
+        Write-VibeInfo "Paste $PromptVar below."
+    }
+    Write-VibeInfo "Nothing appears as you paste - input is hidden so the secret stays"
+    Write-VibeInfo "out of your scrollback. Set $ProvisionVar instead to provision it"
+    Write-VibeInfo "non-interactively on the next run."
+    Write-Host ""
+}
+
+<#
+.SYNOPSIS
+    Fill one provider's credential gap interactively (Issue #745).
+
+.DESCRIPTION
+    Every step comes from that provider's row in
+    `Get-VibeProviderCredentialTable`, and the write goes through
+    `Set-VibeProviderCredential` — the same owner-only path the
+    non-interactive flow uses — so there is exactly one place that decides
+    where a credential lands and how it is protected. The bash twin is
+    `provider_credential_flow` in setup.sh (Issue #730).
+#>
+function Invoke-VibeProviderCredentialFlow {
+    param(
+        [Parameter(Mandatory = $true)][string] $Dir,
+        [Parameter(Mandatory = $true)][string] $Id
+    )
+
+    $row = Get-VibeProviderCredentialRow -Id $Id
+    if (-not $row) {
+        Write-VibeError ("No credential row for coding-agent provider '$Id' " +
+            "- add one to Get-VibeProviderCredentialTable in setup.ps1 before " +
+            "enabling it")
+        return
+    }
+
+    $envFile = Join-Path (Join-Path $Dir $row.Subdir) "provider.env"
+    $promptVar = Get-VibeProviderPromptVariable -Id $Id -Vars $row.Vars
+
+    # An existing credential is exercised for real before it is trusted: an
+    # expired or revoked token is discarded here so the acquisition below
+    # replaces it, instead of the worker discovering the problem at 3am.
+    if ((Test-Path -LiteralPath $envFile) -and
+        -not (Test-VibeProviderCredential -Id $Id -Path $envFile)) {
+        Write-VibeWarning ("Stored $Id credential failed validation " +
+            "(expired token?) - replacing it")
+        Remove-Item -LiteralPath $envFile -Force
+    }
+
+    # Rotation path for a still-valid credential: offer to replace, default keep.
+    if (Test-Path -LiteralPath $envFile) {
+        $replace = Read-Host ("  $Id credential already provisioned - " +
+            "replace it (e.g. expired token)? [y/N]")
+        if ($replace -match '^[yY]') { Remove-Item -LiteralPath $envFile -Force }
+    }
+
+    # Two acquisition attempts: a credential that fails its validation call is
+    # removed and the offer repeats once before setup gives up loudly.
+    foreach ($attempt in 1, 2) {
+        if (Test-Path -LiteralPath $envFile) { break }
+
+        # Preferred path where one exists: let the provider's own CLI mint the
+        # credential, so the operator only does the browser sign-in.
+        $secret = Get-VibeMintedProviderCredential -Id $Id
+
+        # Fallback: manual paste, with the recipe spelled out so the operator
+        # needs nothing beyond this prompt.
+        if (-not $secret) {
+            Write-VibeProviderCredentialInstructions -Id $Id `
+                -PromptVar $promptVar -ProvisionVar $row.ProvisionVar `
+                -EnvFile $envFile
+            $secret = Read-VibeSecret `
+                -Prompt "  $promptVar (input hidden; Enter to skip)"
+        }
+
+        # Enter alone skips — leave the loop rather than re-asking.
+        if (-not $secret) { break }
+
+        # Hand the secret to the shared writer under the name it must be
+        # stored as: one owner-only write path for both credential flows, and
+        # the name is the one the prompt asked for, so a value the operator
+        # happens to have exported cannot be written instead.
+        $written = Set-VibeProviderCredential -Dir $Dir -Provider $row `
+            -VarName $promptVar -Secret $secret -Quiet
+        if (-not $written) {
+            Write-VibeWarning "Could not store the $Id credential"
+            break
+        }
+
+        # The proof is a real completion, not the write (Issue #3234).
+        if (Test-VibeProviderCredential -Id $Id -Path $envFile) {
+            $validated = if ($Id -eq "claude") {
+                " - validated with a live claude call"
+            } else {
+                ""
+            }
+            Write-VibeSuccess ("Provisioned $Id credential (owner-only) in " +
+                "$envFile$validated")
+        } else {
+            Remove-Item -LiteralPath $envFile -Force
+            Write-VibeWarning ("The new $Id credential failed validation " +
+                "($Id could not authenticate with it)")
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $envFile)) {
+        Write-VibeWarning ("No $Id credential - the containerised worker " +
+            "fails its credential preflight until one is provisioned")
+    }
+}
+
+<#
+.SYNOPSIS
+    Fill remaining credential gaps interactively (Issues #4161, #730, #745).
+
+.DESCRIPTION
+    Two steps, mirroring setup.sh's `interactive_credentials_flow`:
+
+      1. gh: when <dir>/gh/hosts.yml is missing and the configured
+         gh_config_dir already holds one, offer to copy it in.
+      2. one credential flow per *configured* coding-agent provider, in the
+         order .config.json enables them. A Codex-only host is asked for the
+         Codex credential and never sees a Claude prompt (Issue #745); a host
+         running both is asked for both.
+
+    The provider list drives the loop and the credential table drives each
+    flow, so a provider registered in worker/deno/lib/agent_provider.ts and
+    listed in `Get-VibeProviderCredentialTable` is handled here with no
+    further edit.
 #>
 function Invoke-VibeInteractiveCredentials {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $GhSource)
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $GhSource,
+        [Parameter(Mandatory = $true)][string[]] $Providers
+    )
 
     $dir = Get-VibeCredentialDir
     $ghHosts = Join-Path $dir "gh/hosts.yml"
@@ -640,91 +935,42 @@ function Invoke-VibeInteractiveCredentials {
         }
     }
 
-    $claudeEnv = Join-Path $dir "claude/provider.env"
+    # Say which flows this run will drive before driving them (Issue #745):
+    # a misconfigured provider set must be visible, not silent.
+    Write-VibeInfo ("Coding-agent credential flows for this host: " +
+        ($Providers -join " "))
 
-    # An existing credential is exercised for real before it is trusted: an
-    # expired or revoked token is discarded here so the acquisition below
-    # replaces it, instead of the worker discovering the problem at 3am.
-    if ((Test-Path -LiteralPath $claudeEnv) -and
-        -not (Test-VibeClaudeCredential -Path $claudeEnv)) {
-        Write-VibeWarning ("Stored claude credential failed validation " +
-            "(expired token?) - replacing it")
-        Remove-Item -LiteralPath $claudeEnv -Force
+    foreach ($provider in $Providers) {
+        Invoke-VibeProviderCredentialFlow -Dir $dir -Id $provider
     }
+}
 
-    # Rotation path for a still-valid credential: offer to replace, default keep.
-    if (Test-Path -LiteralPath $claudeEnv) {
-        $replace = Read-Host ("  Claude credential already provisioned - " +
-            "replace it (e.g. expired token)? [y/N]")
-        if ($replace -match '^[yY]') { Remove-Item -LiteralPath $claudeEnv -Force }
-    }
+<#
+.SYNOPSIS
+    The coding-agent providers this host is configured to run (Issue #745).
 
-    # Two acquisition attempts: a token that fails its validation call is
-    # removed and the offer repeats once before setup gives up loudly.
-    foreach ($attempt in 1, 2) {
-        if (Test-Path -LiteralPath $claudeEnv) { break }
-        $oauthToken = ""
+.DESCRIPTION
+    Resolved by the Deno seam (worker/deno/setup/agent_providers.ts) through
+    the `agent-providers` subcommand rather than parsed out of .config.json
+    here: `agent_provider`, `agent_providers`, the VIBE_AGENT_PROVIDER(S)
+    overrides and the default all live there, and setup.sh reads the selection
+    the same way, so the two platforms cannot disagree about which host this
+    is.
 
-        if (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue) {
-            Write-VibeInfo "The containerised worker cannot reach Windows Credential Manager,"
-            Write-VibeInfo "so the claude CLI needs a long-lived OAuth token. Setup can run"
-            Write-VibeInfo "``claude setup-token`` for you: a browser opens, you sign in with the"
-            Write-VibeInfo "Claude account that holds your subscription, and the token is"
-            Write-VibeInfo "captured automatically. (The token bills that subscription and can"
-            Write-VibeInfo "only ever rate-limit - never run up per-token API charges. It lasts"
-            Write-VibeInfo "about a year; re-run .\setup.ps1 to replace it when it expires.)"
-            $runSetupToken = Read-Host "  Run ``claude setup-token`` now? [Y/n]"
-            if ($runSetupToken -notmatch '^[nN]') {
-                $oauthToken = Get-VibeSetupToken
-                if (-not $oauthToken) {
-                    Write-VibeWarning ("No token captured from claude " +
-                        "setup-token - paste one instead")
-                }
-            }
-        }
-
-        if (-not $oauthToken) {
-            Write-VibeInfo "To generate the token by hand:"
-            Write-Host ""
-            Write-Host "    1. Open a second terminal (leave this prompt waiting)."
-            Write-Host "    2. Run:  claude setup-token"
-            Write-Host "    3. A browser opens - sign in with the Claude account that holds"
-            Write-Host "       your subscription. This token bills that subscription and can"
-            Write-Host "       only ever rate-limit, never run up per-token API charges."
-            Write-Host "    4. Copy the printed token (starts with sk-ant-oat01-...)."
-            Write-Host "    5. Paste it below and press Enter. Nothing appears as you paste -"
-            Write-Host "       input is hidden so the token stays out of your scrollback."
-            Write-Host ""
-            $oauthToken = Read-VibeSecret `
-                -Prompt "  CLAUDE_CODE_OAUTH_TOKEN (input hidden; Enter to skip)"
-        }
-
-        # Enter alone skips — leave the loop rather than re-asking.
-        if (-not $oauthToken) { break }
-
-        $claudeDir = Join-Path $dir "claude"
-        New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
-        Protect-VibePath -Path $dir -Mode "700"
-        Protect-VibePath -Path $claudeDir -Mode "700"
-        Write-VibeTextFile -Path $claudeEnv `
-            -Content "CLAUDE_CODE_OAUTH_TOKEN=$oauthToken`n"
-        Protect-VibePath -Path $claudeEnv -Mode "600"
-
-        # The proof is a real completion, not the write (Issue #3234).
-        if (Test-VibeClaudeCredential -Path $claudeEnv) {
-            Write-VibeSuccess ("Provisioned claude credential (owner-only) in " +
-                "$claudeEnv - validated with a live claude call")
-        } else {
-            Remove-Item -LiteralPath $claudeEnv -Force
-            Write-VibeWarning ("The new claude credential failed validation " +
-                "(claude could not authenticate with it)")
-        }
-    }
-
-    if (-not (Test-Path -LiteralPath $claudeEnv)) {
-        Write-VibeWarning ("No claude credential - the containerised worker " +
-            "fails its credential preflight until one is provisioned")
-    }
+.OUTPUTS
+    The provider ids, or an empty array when the selection cannot be resolved
+    — which the caller treats as fatal. Prompting for the wrong vendor's
+    credential, or silently falling back to Claude on a Codex host, is exactly
+    the failure this gating exists to remove (Issue #3234).
+#>
+function Get-VibeConfiguredAgentProviders {
+    $output = Invoke-VibeSetupCliCapture -Arguments @("agent-providers")
+    if (-not $output) { return @() }
+    return @(
+        $output -split "`r?`n" |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
 }
 
 <#
@@ -741,7 +987,19 @@ function Invoke-VibeInteractiveCredentialsPrompt {
             $ghSource = [string]$config.gh_config_dir
         }
     }
-    Invoke-VibeInteractiveCredentials -GhSource $ghSource
+
+    # Which coding agents this host runs decides which credentials it is asked
+    # for (Issue #745). An empty set is a fault in the resolution, not a
+    # licence to guess: the default provider here would prompt a Codex host
+    # for a Claude token.
+    $providers = Get-VibeConfiguredAgentProviders
+    if ($providers.Count -eq 0) {
+        Write-VibeError ("No coding-agent provider resolved from $ConfigFile " +
+            "- fix agent_provider/agent_providers and re-run setup")
+        exit 1
+    }
+
+    Invoke-VibeInteractiveCredentials -GhSource $ghSource -Providers $providers
 }
 
 ################################################################################

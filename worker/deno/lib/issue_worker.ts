@@ -159,6 +159,9 @@ export async function workOnIssue(
         ...(state.extensionTelemetry
           ? { extensions: state.extensionTelemetry }
           : {}),
+        // Where the work in progress ended up (Issue #770), when a stopped
+        // run preserved it on a pushed branch.
+        ...(state.preservedWip ? { preservedWip: state.preservedWip } : {}),
       }),
       // Facts the run wants stated whatever it achieved (Issue #210).
       state.releaseNotes ?? [],

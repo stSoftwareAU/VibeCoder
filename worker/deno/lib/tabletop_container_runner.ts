@@ -43,6 +43,7 @@ import {
   parseContainerManifest,
 } from "./container_manifest.ts";
 import { resolveContainerImageReference } from "./container_image_hash.ts";
+import { readDeploymentImageSelection } from "./container_image_selection.ts";
 import { GH_CREDENTIAL_SUBDIR } from "./credential_preflight.ts";
 import {
   HOSTILE_PRE_COMMIT_HOOK,
@@ -378,6 +379,37 @@ async function readOrEmpty(path: string): Promise<string> {
  * @param options - Repository root and optional image/egress overrides.
  * @returns A runner that executes fixtures inside the real container.
  */
+/**
+ * The image this tabletop run drives (Issue #743).
+ *
+ * An explicit `--image` wins; otherwise the reference is derived from the
+ * checkout **and the deployment's own selections**, so the runner asks for the
+ * image `./run.sh` builds on this host rather than the default-configuration
+ * one. Without the selections a host that picks tools or a provider set was
+ * told to "build it with ./run.sh" — which builds a different tag.
+ *
+ * Separate from `run()` so it is testable: `run()` starts a real container and
+ * no unit test may, but which image it asks for is exactly what this issue is
+ * about.
+ *
+ * @param options - The runner's options, including the repository root
+ * @returns The image reference to inspect and run
+ * @throws When the configuration or the container definition cannot be read
+ */
+export async function resolveTabletopImage(
+  options: TabletopContainerRunnerOptions,
+): Promise<string> {
+  const override = options.image?.trim();
+  if (override) return override;
+  const selection = await readDeploymentImageSelection({
+    repoRoot: options.repoRoot,
+  });
+  return await resolveContainerImageReference(
+    options.repoRoot,
+    selection.options,
+  );
+}
+
 export function createTabletopContainerRunner(
   options: TabletopContainerRunnerOptions,
 ): TabletopRunner {
@@ -398,8 +430,7 @@ export function createTabletopContainerRunner(
       const manifest = parseContainerManifest(
         await Deno.readTextFile(`${options.repoRoot}/container/tools.json`),
       );
-      const image = options.image?.trim() ||
-        await resolveContainerImageReference(options.repoRoot);
+      const image = await resolveTabletopImage(options);
       const present = await runRuntime(
         descriptor.executable,
         [...descriptor.dialect.imageInspectArgs, image],

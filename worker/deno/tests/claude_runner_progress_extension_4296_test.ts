@@ -528,3 +528,55 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - an agent streaming inside one long tool call is extended, not killed (Issue #767)",
+  fn: async () => {
+    // The #732 shape: one tool call at the start, then nothing but stream
+    // chunks while the agent waits on a long-running tool. With a 1 s stall
+    // window the tool clock goes stale within the first budget, so before
+    // #767 this run was killed at its deadline with "tool activity stale".
+    const stub = await installStub(
+      `printf '%s\\n' '${TOOL_LINE}'\n` +
+        `for i in $(seq 1 40); do\n` +
+        `  printf '%s\\n' '{"type":"assistant","message":` +
+        `{"content":[{"type":"text","text":"still waiting"}]}}'\n` +
+        `  sleep 0.1\n` +
+        `done\n` +
+        `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+    );
+    const { logger, lines } = recordingLogger();
+    const { calls, probe } = scriptedProbe(["advanced"]);
+    try {
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        timeoutSeconds: 2,
+        killAfterSeconds: 1,
+        logger,
+        progressExtension: {
+          policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 1 },
+          treeProbe: probe,
+        },
+      });
+
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assertEquals(
+        result.value.timedOut,
+        false,
+        "an agent still streaming inside a long tool call must not be killed",
+      );
+      assert(calls.length >= 1, "the deadline must have been evaluated");
+      const extensions = lines.filter((l) =>
+        l.includes("[progress-extension]")
+      );
+      assert(
+        extensions.some((l) => l.includes("agent output")),
+        `the grant must name the stream clock: ${JSON.stringify(extensions)}`,
+      );
+    } finally {
+      await stub.restore();
+    }
+  },
+});

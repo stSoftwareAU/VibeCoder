@@ -296,7 +296,7 @@ explicitly overridden.
 | `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
-| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. |
+| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in — Java and Maven are the first expected use. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or `JAVA_HOME` at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked Java + Maven example](CONTAINER.md#deployer-supplied-build-time-tools). |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
@@ -848,6 +848,15 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   default branch mid-run. The skip is reported, never silent. Give the worker
   its own dedicated clone rather than relying on the skip
   (see [Deployment](DEPLOYMENT.md)).
+- **An update that actually changed the checkout names the variable**
+  (Issue #735). Moving the commit or discarding uncommitted work adds one line
+  to stderr and `run_core.log` —
+  `The checkout update changed <path> (HEAD <before> → <after>; 2 uncommitted
+  change(s) discarded). Local edits in this checkout do not survive a launch —
+  set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly as it is.` — so an
+  operator debugging a launcher fault learns about the opt-out at the moment it
+  discards their patch, rather than from this page. An update that changed
+  nothing says nothing.
 - **Three consecutive failures raise one GitHub issue** titled
   `Worker checkout update failing on <host>` against the checkout's own origin
   repository, carrying the "active development tree" diagnosis (Issue #4204).
@@ -972,8 +981,8 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 3. `CLAUDE_MODEL` environment variable (base model for all phases)
 4. Built-in phase defaults (table above)
 
-**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable 5 (model id
-`claude-fable-5`, alias `fable`) is the top tier above Opus, with a 1M-token
+**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable (alias `fable`,
+served as `claude-fable-5-1` since 2026-09-01) is the top tier above Opus, with a 1M-token
 context window and a rate-limit fallback of `fable → opus → sonnet → haiku`
 . It is the default for the eight planning-shaped phases
 (`planning`, `grill_me`, `refinement`, `revision`, `question`, `clarification`,
@@ -1016,6 +1025,12 @@ below default to `standard`.
 | `issue`         | `standard`        | General implementation — balanced detail   |
 | `planning`      | `verbose`         | Architecture decisions need full reasoning |
 | `question`      | `verbose`         | Architecture decisions need full reasoning |
+
+> **📝 Note:** `grill_me` is deliberately absent from that table — it takes the
+> `standard` fallback, so every round is told "no running commentary while you
+> work". Nobody watches an unattended round in real time, so its template stops
+> asking for narration from `prompts/grill-me/v15.md` onwards (Issue #759); a
+> round's output is the comment it posts.
 
 **Resolution priority** (highest to lowest):
 
@@ -1175,7 +1190,7 @@ unless explicitly overridden.
 | Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
 | Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
-| Progress extension stall window | `progress_extension_stall_seconds` | `300` | A tool call older than this is no longer evidence of activity. Must be at least `progress_extension_check_seconds`. |
+| Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
@@ -1493,9 +1508,14 @@ deadline for **issue work only** is re-armable: when it expires the worker asks
 whether the agent is alive and whether anything is actually progressing, and
 only kills if either answer is no:
 
-- **Is the agent still calling tools?** The stream-json progress tracker
-  reports the last tool call; older than `progress_extension_stall_seconds`
-  counts as stalled. This must always hold.
+- **Is the agent still producing anything?** The stream-json progress tracker
+  reports both the last tool call and the last stdout chunk, and the **fresher
+  of the two** answers this question; only when *both* are older than
+  `progress_extension_stall_seconds` is the agent judged stalled. This must
+  always hold. Reading the tool clock alone killed an agent that was waiting
+  *inside* one long tool call — `TaskOutput` polling a background job, a
+  multi-minute build — because no new `tool_use` event appears for as long as
+  that call runs (Issue #767).
 - **Is anything progressing?** Two independent signals, and *either* one is
   enough:
   - **The checkout is changing.** A read-only `git status` / `rev-parse` /
@@ -1587,6 +1607,11 @@ release**, not as the issue defeating the agent:
 - The preserved work lands in a `wip:` commit whose subject names the real
   cause (`wip: execute was released on schedule (cycle ended or run hard cap
   reached) after …`), so the next claimant reads what actually happened.
+- The release comment carries a **Work in progress** line naming the branch
+  that work is on, and links the handover file when one exists (Issue #770).
+  The branch named is the one the push targeted, so a retitled issue cannot
+  point a reader at a ref nothing wrote, and a run that preserved nothing names
+  no branch.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
@@ -1831,11 +1856,54 @@ operational purposes:
 | ------------------------------- | -------------- | ------------------------------------------------------------- |
 | `CONFIG_FILE`                   | `<checkout>/.config.json` | Path to the configuration file, for setup and the launcher alike. `CONFIG_PATH` is accepted as an alias (the launcher's older spelling); a relative value resolves against the checkout, and setting both to different files is refused rather than silently resolved two ways — see [One config file, one name](#one-config-file-one-name-issue-750) |
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
+| `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
+| `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
 | `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
 | `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
 | `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
 | `WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES` | `2147483648` (2 GiB) | Cap on a side/data clone's `.git`; over it the clone is dropped even while warm, because each blobless refresh leaves a tree of blobs git will not prune (`0` disables) — see [A warm clone's object store is capped too](CONTAINER.md#a-warm-clones-object-store-is-capped-too-issue-387) |
+
+### The claiming floor (Issue #732)
+
+The worker stops claiming new work when the filesystem holding the container
+store falls below a floor. The floor is the **larger** of two terms:
+
+| Term | `.config.json` key | Environment variable | Default |
+| --- | --- | --- | --- |
+| Gigabytes | `host_disk_low_floor_gb` | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` |
+| Percentage of the filesystem | `host_disk_low_floor_percent` | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` |
+
+**Precedence, per term:** the `.config.json` key wins, then the environment
+variable, then the default — the rule Issue #289 set for every other knob. The
+terms resolve independently, so a deployment may pin the percentage in its
+configuration and still raise the gigabyte term for one launch from the
+environment. A value that is negative, not a number, or (for the percentage)
+over 100 is ignored and the next source applies.
+
+The default formula is unchanged, and it is worth knowing what it does on a
+large disk: 10 % of a 1.875 TB filesystem is ≈ 187 GB, so such a host is
+"low" with 37.5 GB free and refuses work. That is the reported case, and the
+answer is to state the floor the host actually wants:
+
+```json
+{
+  "host_disk_low_floor_gb": 20,
+  "host_disk_low_floor_percent": 1
+}
+```
+
+The launcher names the resolved floor and its origin on every launch, so a
+refused claim says which number refused it and which knob would move it:
+
+```
+host-disk: 38400 MB free on /var/lib/containers; claiming floor 20480 MB
+(larger of 20 GB and 1% of 1966080 MB; gb=config,percent=config)
+```
+
+The same resolution feeds the launcher's low-disk self-heal and the worker's
+own claim gate — they ride the launch plan together — so the two can never
+heal at one floor and claim at another.
 
 ### One config file, one name (Issue #750)
 
@@ -1971,9 +2039,19 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   retitle: renaming an issue mid-flight used to orphan its WIP branch, because
   the next claim derived a different slug and started from scratch (#220).
 - Every claim logs which branch it resumed, or that no prior branch existed.
+- When a branch was resumed, the worker reads the handover file the
+  interrupted run committed to it (`docs/archive/handover/issue-<N>.md`,
+  Issue #769) and splices that content into the execute prompt, framed as a
+  prior-run **status report** — untrusted repository prose, fenced, capped at
+  8,000 characters and counted against the context budget, never a directive
+  that can redirect the run (Issue #771). This works on any fleet host and
+  under any provider, so it does **not** depend on `enable_session_resume`;
+  a branch with no handover file falls back to the generic "prior progress
+  exists, review `git log`" note and still resumes.
 - When session resume is enabled and a branch was resumed, the worker also
-  passes `--resume` so the durable transcript replays the prior conversation,
-  and tells the agent prior progress exists on the branch.
+  passes `--resume` so the durable transcript replays the prior conversation.
+  That replay is a same-host optimisation layered on top: the committed
+  handover is the portable contract and is spliced either way.
 - The resume file is deleted on successful PR creation and on claim release,
   so deliberate outcomes always start the next attempt clean. The one
   exception is a release whose run **preserved WIP** on the issue branch

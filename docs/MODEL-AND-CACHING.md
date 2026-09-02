@@ -161,13 +161,15 @@ switching model families per phase. Model tier is the *secondary* lever, applied
 at **both** extremes: the **eight planning-shaped
 phases** (`planning`, `grill_me`, `refinement`, `revision`, `question`,
 `clarification`, `quorum`, `quorum_judge`)
-run on the **Fable 5** tier above Opus at `high` effort — wherever the Vibe Coder
+run on the **Fable** tier above Opus at `high` effort — wherever the Vibe Coder
 interprets the user's words into an implementable state, a better result compounds
 downstream — while the three trivial phases stay on **Haiku**. Everything in
 between runs on **Opus**. The worker passes tier *aliases* (`fable`, `opus`,
 `haiku`) to the Claude CLI, which resolves each to the latest model of that tier;
 combined with the CLI minimum-version floor, the tiers stay current
-with no per-release config change.
+with no per-release config change. Since 2026-09-01 the latest Fable is
+**Fable 5.1** (`claude-fable-5-1`), which cut cache reads to $0.25/MTok — see
+[Fable 5.1 — the current top tier](#fable-51--the-current-top-tier-issue-747).
 
 ### Phase-Specific Defaults
 
@@ -178,7 +180,7 @@ guiding rule: **wherever the Vibe Coder interprets the user's words
 into an implementable state, use the highest model available.** That names
 eight *planning-shaped* phases — `planning`, `grill_me`, `refinement`,
 `revision`, `question`, `clarification`, and the two Quorum phases `quorum` and
-`quorum_judge` — each of which defaults to the **Fable 5** top
+`quorum_judge` — each of which defaults to the **Fable** top
 tier at `high` effort. When Fable is unavailable they reroute to **Opus at `max`
 effort** and the run is recorded degraded (see
 [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)).
@@ -187,14 +189,14 @@ Everything else runs on **Opus** (implementation and reactive fixes) or **Haiku*
 
 | Phase | Model | Effort | When Fable unavailable |
 |-------|-------|--------|------------------------|
-| planning | Fable 5 | high | Opus @ max, recorded degraded |
-| grill_me | Fable 5 | high | Opus @ max, recorded degraded |
-| refinement | Fable 5 | high | Opus @ max, recorded degraded |
-| revision | Fable 5 | high | Opus @ max, recorded degraded |
-| question | Fable 5 | high | Opus @ max, recorded degraded |
-| clarification | Fable 5 | high | Opus @ max, recorded degraded |
-| quorum | Fable 5 | high | Opus @ max, recorded degraded |
-| quorum_judge | Fable 5 | high | Opus @ max, recorded degraded |
+| planning | Fable | high | Opus @ max, recorded degraded |
+| grill_me | Fable | high | Opus @ max, recorded degraded |
+| refinement | Fable | high | Opus @ max, recorded degraded |
+| revision | Fable | high | Opus @ max, recorded degraded |
+| question | Fable | high | Opus @ max, recorded degraded |
+| clarification | Fable | high | Opus @ max, recorded degraded |
+| quorum | Fable | high | Opus @ max, recorded degraded |
+| quorum_judge | Fable | high | Opus @ max, recorded degraded |
 | issue (implementation) | Opus | high | unchanged |
 | ci_fix | Opus | medium | unchanged |
 | pr_feedback | Opus | medium | unchanged |
@@ -229,7 +231,9 @@ made that model worth revisiting:
 - **A single model spans the full effort range.** Opus 4.8 supports
   `max`/`xhigh`/`high`/`medium`/`low`, so one tier can express the whole
   complexity spectrum via effort alone.
-- **The Opus↔Sonnet price gap shrank to ~1.7×** ($5 vs $3 per Mtok input).
+- **The Opus↔Sonnet price gap shrank to ~1.7×** ($5 vs $3 per Mtok input, the
+  rates when this decision was taken; Sonnet 5 has since reopened the gap to
+  ~2.5× at $2 — see [Model Pricing](#model-pricing)).
   At that gap, routing reactive phases to Sonnet saves little, while
   maintaining two model families with different behaviours costs clarity.
 
@@ -951,7 +955,7 @@ one specific model regardless of routing.
 
 #### Grill-me degraded-model detection
 
-The `grill_me` phase routes to the **same** Fable 5 top tier as planning
+The `grill_me` phase routes to the **same** Fable top tier as planning
 (`DEFAULT_CLAUDE_MODEL_GRILL_ME = DEFAULT_CLAUDE_MODEL_TOP_TIER`) with the same
 "plan-quality compounds across every downstream sub-issue" rationale, so
 a silent Fable→Opus degradation on a requirements-interrogation round is exactly
@@ -975,8 +979,8 @@ round, so only the grill-me issue itself is labelled. Every GitHub operation is
 non-fatal and never aborts the round.
 
 > **Superseded in part by.** Healthy rounds no longer report
-> *nothing*: they post the stats block **once per issue**. See
-> [One cost/model stats comment per issue](#one-costmodel-stats-comment-per-issue).
+> *nothing*: they post the stats block **once per run**. See
+> [One cost/model stats comment per run](#one-costmodel-stats-comment-per-run).
 
 - Implementation:
   [`worker/deno/lib/grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts)
@@ -993,7 +997,7 @@ Fable→Opus substitution on any of them was previously invisible; each now post
 `## <Phase> run model stats` comment and applies the `degraded-model` label to
 **the issue itself** (no sub-issue fan-out) **only on a degraded round** —
 healthy Fable-served rounds apply no label, exactly like grill-me. (Since
- a healthy round still posts its stats block once per issue; only
+ a healthy round still posts its stats block once per run; only
 the label is degraded-only.)
 
 The verdict helpers are **not** forked: the four phases call the generic
@@ -1033,7 +1037,7 @@ the phase.
   [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) and is carried
   on the run record by `claude_runner.ts`.
 
-#### One cost/model stats comment per issue
+#### One cost/model stats comment per run
 
 Only the planning close path posted stats on a healthy run. Every other phase
 reported them **only when the round was degraded**, and a `work-on` issue —
@@ -1041,9 +1045,19 @@ auto-closed by its merged PR, with no worker attached at that moment — got
 nothing at all. Most issues the Vibe Coder completed therefore carried no cost
 indication.
 
-The rule is now **exactly one stats comment per issue, posted when the worker
-wraps that issue up**. Cost visibility without comment flooding: completing
-issues is the job, and a per-round stats comment is noise.
+Issue #3756 closed that gap with an **issue-scoped** guard: the first wrap-up to
+reach the issue posted, and every later run stayed silent. On
+[#762](https://github.com/stSoftwareAU/VibeCoder/issues/762) the winner was a
+$1.34 grill-me round, so the `work-on` run that actually completed the issue —
+16 follow-up issues and a PR — reported nothing. That is the defect #797
+reported: the cost of the completed issue was invisible.
+
+The guard is therefore **run-scoped** (Issue #797): the marker carries the run
+id, and a post is suppressed only when *this run* already posted. Every
+completed run reports what it cost, a repeat post inside one run is still
+suppressed, and from the second stats comment onward each block carries the
+cumulative issue total so the issue's cost is readable without adding comments
+up by hand.
 
 ```mermaid
 flowchart TD
@@ -1054,9 +1068,9 @@ flowchart TD
     C --> F["postIssueRunStatsComment()"]
     D --> F
     E --> F
-    F --> G{"Issue already has a<br/>run-stats comment?"}
-    G -->|yes| H["Skip — one per issue"]
-    G -->|no| I["Post the shared stats block<br/>+ marker + estimate disclaimer"]
+    F --> G{"Did <b>this run</b> already<br/>post its stats?"}
+    G -->|yes| H["Skip — one per run"]
+    G -->|no| I["Post the shared stats block<br/>+ run marker + issue total<br/>+ estimate disclaimer"]
     style I fill:#2d6a4f,stroke:#1b4332,color:#fff
     style H fill:#adb5bd,stroke:#6c757d,color:#000
 ```
@@ -1065,13 +1079,18 @@ flowchart TD
   built by `buildDegradationReport` — the heading names the phase that posted it
   (`## Issue run model stats` for a `work-on` run).
 - **Duplicate guard.** The comment carries a hidden
-  `<!-- vibe-issue-run-stats -->` marker; the guard matches that marker **or**
-  any `## … run model stats` heading, so the pre-existing planning comment
-  counts. Whichever path gets there first wins.
-- **Estimate disclaimer.** KISS on multi-run/multi-worker coverage — no
-  cross-worker or cross-phase aggregation infrastructure. Each comment states
-  that the figures are an estimate covering only the posting worker's own
-  run(s), excluding earlier phases and other Vibe Coders on the same issue.
+  `<!-- vibe-issue-run-stats run="<run id>" -->` marker and the guard matches
+  that exact run. The run id is sanitised to `[A-Za-z0-9._-]` before it reaches
+  the marker, so a malformed `VIBE_RUN_ID` can never close the comment early.
+- **Cumulative issue total.** `tallyIssueCost()` sums the
+  `Estimated cost (USD, estimate only)` line of every run-stats comment on the
+  issue — including the pre-#3756 planning and degraded-round comments, matched
+  by heading. A comment that carries no parseable figure marks the total
+  `(partial)` rather than letting the sum read as complete.
+- **Estimate disclaimer.** KISS on multi-worker coverage — no cross-worker
+  aggregation infrastructure. Each comment states that the figures are an
+  estimate covering the run that posted them, and that the total only sums the
+  comments visible on the issue.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
@@ -1993,29 +2012,83 @@ flowchart LR
 
 > **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — `MODEL_PRICING` holds Claude rows only, so a `gpt-5-codex` or `gemini-2.5-pro` id is charged at the dearest known rate and named in `unpricedModels` rather than costed at zero. `MODEL_PRICING` has no `deepseek-reasoner` or `deepseek-chat` row either, so a DeepSeek run is charged at the dearest known rate and named in `unpricedModels`.
 
-Approximate list prices (USD per million tokens, as of July 2026):
+Approximate list prices (USD per million tokens, as of September 2026):
 
 | Model | Input | Output | Cache Write | Cache Read |
 |-------|------:|-------:|------------:|-----------:|
+| Claude Fable 5.1 | $10.00 | $50.00 | $12.50 | $0.25 |
 | Claude Fable 5 | $10.00 | $50.00 | $12.50 | $1.00 |
 | Claude Opus 5 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.5–4.8 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.0/4.1 | $15.00 | $75.00 | $18.75 | $1.50 |
+| Claude Sonnet 5 | $2.00 | $10.00 | $2.50 | $0.20 |
 | Claude Sonnet 4.6 | $3.00 | $15.00 | $3.75 | $0.30 |
 | Claude Haiku 4.5 | $1.00 | $5.00 | $1.25 | $0.10 |
 
 Opus 5 (model id `claude-opus-5`, alias `opus`) lands at the **same** price point
 as the modern Opus 4.5–4.8 line ($5 / $25 per MTok, cache $6.25 / $0.50) — a
 step-change in capability over Opus 4.8 for free. The `claude-opus-5` pricing row
-and the 5-family fallback parser were added in so Opus 5 traffic is
+and the 5-family fallback parser were added together so Opus 5 traffic is
 never dropped from cost tracking. These rows mirror `MODEL_PRICING` in
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts).
 
-Fable 5 (model id `claude-fable-5`, alias `fable`) is the top tier above Opus
-with a 1M-token context window. It is the default for the eight
-planning-shaped phases (`planning`, `grill_me`, `refinement`, `revision`,
-`question`, `clarification`, `quorum`, `quorum_judge`) under,
-and.
+Fable (alias `fable`) is the top tier above Opus with a 1M-token context
+window. It is the default for the eight planning-shaped phases: `planning`,
+`grill_me`, `refinement`, `revision`, `question`, `clarification`, `quorum`
+and `quorum_judge`.
+
+Sonnet 5 (model id `claude-sonnet-5`, alias `sonnet`) is **cheaper** than the
+Sonnet 4.x line it replaces: $2 / $10 rather than $3 / $15 per MTok. That looks
+like an expired introductory rate and is not — it is worth citing, because the
+introductory window closed on 2026-08-31 and the obvious reading is that the
+price reverted. Anthropic's
+[pricing page](https://platform.claude.com/docs/en/about-claude/pricing) says
+otherwise, in a note beside the table:
+
+> The $2/$10 per million input/output token pricing for Claude Sonnet 5,
+> announced at launch as introductory pricing through August 31, 2026, is now
+> the standard price. The previously scheduled increase to $3/$15 per million
+> input/output tokens on September 1, 2026 will not occur.
+
+Sonnet is not a phase default; it is the third rung of the
+`fable → opus → sonnet → haiku` rate-limit ladder, so the row matters for
+costing a downgraded run.
+
+#### Fable 5.1 — the current top tier (Issue #747)
+
+Anthropic released **Fable 5.1** (`claude-fable-5-1`) on 2026-09-01. The worker
+requests the tier alias `fable`, never a pinned model id, so the Claude CLI
+serves 5.1 with no routing change, and the served-vs-expected detector accepts
+it: `modelsMatch()` passes both on the `claude-fable-5` prefix and on the
+`fable` tier family, so a healthy 5.1 run reports `Degraded: no`
+(`worker/deno/tests/planning_run_stats_test.ts`).
+
+What changed for the worker is the **cache-read rate**: 5.1 prices cache hits
+at 0.025× base input — **$0.25 / MTok, a quarter of the Fable 5 rate** — while
+input, output and cache writes are unchanged. Since the eight planning-shaped
+phases replay a large cached prefix, that is where the saving lands.
+`claude-fable-5` keeps its own $1.00 row so a run whose **served** model was
+Fable 5 is still costed at the rate it was billed at, and `lookupModelPricing()`
+classifies by minor version, so a dated `claude-fable-5-1-…` id prices at the
+5.1 rate and a dated `claude-fable-5-2026…` id at the 5.0 rate. A run that
+reported **no** served model is costed against the requested `fable` alias,
+which prices at the current tier rate — the same alias-follows-the-latest rule
+the `opus` and `sonnet` rows use.
+
+**The flip is the CLI's, not the worker's.** The Claude CLI resolves the alias
+locally — `claude --model fable --print --output-format stream-json` on CLI
+2.1.223 still reports `"model":"claude-fable-5"` at init — so a container whose
+CLI predates the 5.1 alias table keeps being served Fable 5 and is costed at the
+Fable 5 row. Both rows are carried for exactly that reason: no configuration
+changes on either side of the flip, and the
+[minimum-version floor](CONFIGURATION.md#-minimum-version-floor) (`claude`,
+2.1.170) is what keeps the CLI current enough to pick the new alias up.
+
+Fable 5.1's three breaking Messages-API changes — forced `tool_choice` rejected,
+thinking blocks bound to the model and to an unedited conversation prefix — do
+**not** reach the worker: it drives the Claude Code CLI, which owns request
+construction and conversation history. Everything the worker sends is a CLI flag
+(`--model`, `--effort`, `--session-id`).
 
 #### Tier ordering after Opus 5 (decision, no code)
 
@@ -2468,7 +2541,7 @@ Model selection and caching behaviour can be customised in `.config.json`:
 |-----|------|---------|-------------|
 | `claude_model` | string | `"opus"` | Global default model |
 | `phase_model_overrides` | object | `{}` | Per-phase model overrides |
-| `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while the agent is calling tools and something is progressing — the working tree, or a descendant process doing work (Issue #508) — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
+| `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while the agent is still producing output — a tool call or a stdout chunk inside the stall window (Issue #767) — and something is progressing — the working tree, or a descendant process doing work (Issue #508) — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
 | `claude_kill_after` | number | `30` | Grace period (seconds) before SIGKILL |
 | `enable_model_fallback` | boolean | `true` | Auto-downgrade model on rate limit |
 | `enable_session_resume` | boolean | `false` | Enable CLI-level session continuity |

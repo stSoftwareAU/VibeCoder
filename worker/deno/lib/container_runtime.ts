@@ -57,6 +57,21 @@ export const CONTAINER_RUNTIME_KINDS = [
 export type ContainerRuntimeKind = typeof CONTAINER_RUNTIME_KINDS[number];
 
 /**
+ * How a dialect expresses tmpfs ownership (Issue #727).
+ *
+ * - `mount-options` — the kernel's own `uid=`/`gid=` tmpfs options, which
+ *   Docker passes straight through.
+ * - `chown-flag` — Podman's `U`, which Podman itself translates into
+ *   `uid=<exec user>,gid=<exec user>` for a tmpfs mount
+ *   (`libpod/container_internal_common.go`). Podman rejects the raw
+ *   `uid=`/`gid=` pair with `unknown mount option "uid=1000"`, so `U` is the
+ *   only way to ask it for an owned tmpfs.
+ * - `none` — the dialect cannot express ownership at all, so the entrypoint's
+ *   own 0700 sub-directory is the protection instead.
+ */
+export type TmpfsOwnershipStyle = "mount-options" | "chown-flag" | "none";
+
+/**
  * The argument-dialect differences the launchers need.
  *
  * `run.sh` and `run.ps1` read these rather than each embedding per-runtime
@@ -94,6 +109,22 @@ export interface ContainerRuntimeDialect {
    * applies the permissions itself.
    */
   tmpfsHonoursOptions: boolean;
+  /**
+   * How this dialect says "this tmpfs belongs to the container user"
+   * (Issue #727).
+   *
+   * Separate from {@link ContainerRuntimeDialect.tmpfsHonoursOptions} because
+   * honouring `mode=`/`noexec` and honouring `uid=`/`gid=` are not the same
+   * capability: Podman parses the option list but refuses the ownership pair
+   * outright —
+   *
+   *     Error: unknown mount option "uid=1000"
+   *
+   * — and refusing the mount refuses the whole launch. Ownership still has to
+   * be expressed somehow, since a `mode=0700` tmpfs that lands root-owned is
+   * unusable by the unprivileged account the container runs as.
+   */
+  tmpfsOwnership: TmpfsOwnershipStyle;
   /**
    * Whether `--read-only` (an immutable container root filesystem) is
    * understood (Issue #516).
@@ -293,7 +324,10 @@ export class ContainerRuntimeUnavailableError extends Error {
 // The runtime catalogue
 // ---------------------------------------------------------------------------
 
-/** Docker and Podman share the OCI-style flag dialect. */
+/**
+ * Docker and Podman share the OCI-style flag dialect, bar tmpfs ownership
+ * (see {@link PODMAN_DIALECT}).
+ */
 const OCI_DIALECT: ContainerRuntimeDialect = {
   mountFlag: "--volume",
   mountSeparator: ":",
@@ -304,6 +338,8 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
   supportsTmpfs: true,
   // Docker and Podman parse `path:options` and mount accordingly.
   tmpfsHonoursOptions: true,
+  // Docker passes the kernel's own tmpfs options through untouched.
+  tmpfsOwnership: "mount-options",
   supportsReadOnly: true,
   // Explicit rather than implicit: the launcher asks for bridge networking so
   // a reviewer can see host networking was never requested.
@@ -333,6 +369,28 @@ const OCI_DIALECT: ContainerRuntimeDialect = {
 };
 
 /**
+ * Podman is Docker's dialect with one exception: tmpfs ownership
+ * (Issue #727).
+ *
+ * `--tmpfs path:rw,...,uid=1000,gid=1000` is refused outright —
+ *
+ *     Error: unknown mount option "uid=1000"
+ *
+ * — because Podman hands a `--tmpfs` option list straight to the OCI runtime
+ * rather than to the kernel's tmpfs parser. Its own spelling is `U`, which
+ * Podman rewrites into `uid=<exec user>,gid=<exec user>` before the runtime
+ * sees it (`libpod/container_internal_common.go`, unchanged since 3.4), so
+ * the mount still arrives owned by the account the container runs as. The
+ * rest of the option list — `mode=0700`, `noexec`, `nosuid`, `nodev` — is
+ * parsed exactly as Docker parses it and is NOT dropped: doing that would
+ * hand back the world-readable credential directory Issue #564 closed.
+ */
+const PODMAN_DIALECT: ContainerRuntimeDialect = {
+  ...OCI_DIALECT,
+  tmpfsOwnership: "chown-flag",
+};
+
+/**
  * Apple `container` takes `--volume src:dst[:ro]` but has neither `--userns`,
  * `--security-opt`, `--cap-drop`, `--tmpfs` nor `--read-only` — each container
  * is already its own lightweight VM with its own IP address, so there is no
@@ -350,6 +408,10 @@ const APPLE_DIALECT: ContainerRuntimeDialect = {
   // Measured on 1.2.2: the flag is accepted and the options become part of
   // the mount path (Issue #570).
   tmpfsHonoursOptions: false,
+  // No option is honoured, so ownership cannot be asked for either: the
+  // mount lands root-owned 1777 and the entrypoint's own 0700 sub-directory
+  // is the protection (Issue #570).
+  tmpfsOwnership: "none",
   supportsReadOnly: false,
   // Singular `image` — `container images ...` is not a subcommand on Apple
   // container 1.2.2: the CLI resolves it as a plugin named `container-images`,
@@ -435,7 +497,7 @@ export const CONTAINER_RUNTIMES: Readonly<
     installHint:
       "install Podman from https://podman.io/docs/installation (on Windows " +
       "also run `podman machine start`)",
-    dialect: OCI_DIALECT,
+    dialect: PODMAN_DIALECT,
   },
 };
 

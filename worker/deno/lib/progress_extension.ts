@@ -20,10 +20,20 @@
  * of several progress signals rather than the only one — a descendant process
  * burning CPU (`descendant_progress.ts`) counts as work too.
  *
+ * Issue #767 then narrowed the *activity* half the same way #508 narrowed the
+ * tree half. The stall window was measured from the last `tool_use` event
+ * only, so an agent waiting inside one long tool call — `TaskOutput` polling
+ * a background job, a multi-minute build — looked identical to one that had
+ * stopped, and was killed while its stream was still moving. Liveness is
+ * therefore the fresher of the tool clock and the stdout-chunk clock; the
+ * progress question below is unchanged, so a chatty agent that changes
+ * nothing anywhere is still refused.
+ *
  * Rules encoded here:
  *
- *   - Extend only when the last tool call is inside the configured stall
- *     window **and** at least one progress signal holds: the working tree
+ *   - Extend only when the agent is still producing output — the last tool
+ *     call **or** the last stdout chunk is inside the configured stall
+ *     window — **and** at least one progress signal holds: the working tree
  *     `advanced` since the previous check, or external work is `active`.
  *   - `unknown` (the probe failed) is **not** progress, for either signal. An
  *     unverifiable run dies on schedule rather than extending forever on a
@@ -102,6 +112,22 @@ export interface ProgressExtensionInput {
   deadlineMs: number;
   /** Epoch-ms of the last tool call, or undefined when none has been seen. */
   lastToolCallAtMs?: number;
+  /**
+   * Epoch-ms of the last stdout chunk the agent produced (Issue #767).
+   *
+   * The liveness half of the gate asks whether the agent is still producing
+   * anything, and a `tool_use` event is only one way for it to answer. An
+   * agent waiting *inside* one long tool call — `TaskOutput` polling a
+   * background job, a `Bash` build, a subagent — emits no new tool call for
+   * as long as that call runs, while its stream keeps moving. Reading the
+   * tool clock alone therefore called a live agent stalled and killed it
+   * (the #732 claim, refused with `tool activity stale (last tool call 483s
+   * ago, window 300s)`).
+   *
+   * Omitted — every caller before #767 — the decision reduces exactly to the
+   * tool-clock rule it always was.
+   */
+  lastChunkAtMs?: number;
   /** Working-tree outcome since the previous check. */
   treeState: TreeProgressState;
   /**
@@ -350,14 +376,32 @@ export function decideProgressExtension(
   }
 
   const idleSeconds = seconds(input.nowMs - input.lastToolCallAtMs);
-  if (idleSeconds > policy.activityStallSeconds) {
+  // Liveness is "is the agent still producing anything?" (Issue #767), so the
+  // fresher of the two clocks answers it: an agent waiting inside one long
+  // tool call issues no new `tool_use` while its stream keeps moving, and
+  // reading the tool clock alone killed exactly that agent on #732.
+  const streamIdleSeconds = input.lastChunkAtMs === undefined
+    ? undefined
+    : seconds(input.nowMs - input.lastChunkAtMs);
+  const liveSeconds = Math.min(idleSeconds, streamIdleSeconds ?? idleSeconds);
+  if (liveSeconds > policy.activityStallSeconds) {
     return {
       action: "kill",
-      reason:
-        `tool activity stale (last tool call ${idleSeconds}s ago, window ` +
-        `${policy.activityStallSeconds}s)`,
+      reason: `tool activity stale (last tool call ${idleSeconds}s ago` +
+        (streamIdleSeconds === undefined
+          ? ""
+          : `, last agent output ${streamIdleSeconds}s ago`) +
+        `, window ${policy.activityStallSeconds}s)`,
     };
   }
+
+  // Name whichever clock kept the run alive, so the operator reading the log
+  // can tell "still calling tools" from "waiting inside one long tool call".
+  const activity =
+    streamIdleSeconds !== undefined && streamIdleSeconds < idleSeconds
+      ? `agent output ${streamIdleSeconds}s ago (last tool call ` +
+        `${idleSeconds}s ago)`
+      : `tool activity ${idleSeconds}s ago`;
 
   if (input.treeState === "unknown") {
     // Fail-safe direction (Issue #4294): a probe that cannot answer is not
@@ -376,10 +420,9 @@ export function decideProgressExtension(
       action: "kill",
       reason: externalState === undefined
         // No external probe wired — the pre-#508 wording, unchanged.
-        ? `working tree unchanged despite tool activity ${idleSeconds}s ago`
+        ? `working tree unchanged despite ${activity}`
         : `working tree unchanged and no descendant process doing work ` +
-          `(external ${externalState}) despite tool activity ` +
-          `${idleSeconds}s ago`,
+          `(external ${externalState}) despite ${activity}`,
     };
   }
 
@@ -389,7 +432,7 @@ export function decideProgressExtension(
   const advancing = input.treeState === "advanced"
     ? "working tree advanced"
     : "a descendant process is doing work (working tree unchanged)";
-  const progressing = `${advancing} and tool activity ${idleSeconds}s ago ` +
+  const progressing = `${advancing} and ${activity} ` +
     `(within the ${policy.activityStallSeconds}s window)`;
 
   // The supervisor's cap bounds the wall clock (Issue #421). Applied last:

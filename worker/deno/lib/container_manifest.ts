@@ -17,7 +17,11 @@
 
 /** A container image pinned by immutable digest. */
 export interface ContainerImagePin {
-  /** Repository, e.g. `buildpack-deps` or `denoland/deno`. */
+  /**
+   * Registry-qualified repository, e.g. `docker.io/library/ruby` or
+   * `docker.io/denoland/deno`. The registry is never implied: Podman refuses
+   * to resolve a short name (Issue #728).
+   */
   name: string;
   /** Human-readable tag recorded alongside the digest. */
   tag: string;
@@ -163,6 +167,26 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 const ARG_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 const VERSION_RE = /^\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?$/;
 
+/**
+ * True when an image reference names the registry it comes from (Issue #728).
+ *
+ * Docker silently resolves a short name such as `ruby:3.4-trixie` against
+ * Docker Hub, but Podman's default `short-name-mode = "enforcing"` refuses to
+ * guess a registry, so an unqualified base image fails to build on a fresh
+ * host with no `unqualified-search-registries`. A reference is qualified when
+ * its first path segment is a registry host: it carries a dot (`docker.io`),
+ * a port (`registry.example.com:5000`), or is Podman's special `localhost`.
+ *
+ * @param reference - An image reference, with or without tag and digest.
+ * @returns `true` when the reference names its registry.
+ */
+export function isRegistryQualifiedImage(reference: string): boolean {
+  const slash = reference.indexOf("/");
+  if (slash < 0) return false;
+  const host = reference.slice(0, slash);
+  return host === "localhost" || host.includes(".") || host.includes(":");
+}
+
 /** Throw a manifest error naming the offending field. */
 function fail(field: string, detail: string): never {
   throw new Error(`container/tools.json: ${field} ${detail}`);
@@ -213,6 +237,13 @@ function parseImage(value: unknown, index: number): ContainerImagePin {
 
   if (FLOATING_TAGS.has(tag)) {
     fail(`${field}.tag`, `must not be a floating alias such as "latest"`);
+  }
+  if (!isRegistryQualifiedImage(name)) {
+    fail(
+      `${field}.name`,
+      `must be registry-qualified (e.g. "docker.io/library/ruby"): Podman's ` +
+        `enforcing short-name mode cannot resolve "${name}"`,
+    );
   }
   if (!DIGEST_RE.test(digest)) {
     fail(`${field}.digest`, "must be a sha256:<64 hex> digest");

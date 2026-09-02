@@ -101,15 +101,25 @@ export type ScheduledReleaseReason = "cycle-ended" | "hard-cap";
  */
 export const SCHEDULED_RELEASE_MARKER = "Released on schedule:";
 
-/** The operator-facing reason line for a scheduled release (Issue #424). */
+/**
+ * The operator-facing reason line for a scheduled release (Issue #424).
+ *
+ * `preservedNote` is the note preservation itself wrote (Issue #770) — it
+ * names the branch the push actually targeted, and the handover file on it
+ * when one exists. Folded in here rather than appended by the caller so the
+ * reason states where the work is exactly once. Without it the wording is
+ * unchanged: a release that preserved nothing must not name a branch no push
+ * ever reached.
+ */
 export function buildScheduledReleaseReason(
   reason: ScheduledReleaseReason,
+  preservedNote?: string,
 ): string {
   const cause = reason === "hard-cap"
     ? "the supervisor's run hard cap was reached"
     : "the cycle ended";
-  return `${SCHEDULED_RELEASE_MARKER} ${cause} — WIP preserved, ` +
-    `resumes next cycle`;
+  return `${SCHEDULED_RELEASE_MARKER} ${cause} — ` +
+    (preservedNote ?? "WIP preserved, resumes next cycle");
 }
 
 /**
@@ -617,7 +627,7 @@ export function getFailureDiagnosis(
 
     case "scheduled_release":
       return `- The run was released on schedule — the cycle ended, or the supervisor's run hard cap was reached — while the agent was still progressing
-- WIP preserved: the work in progress was committed and pushed to the issue branch, and the next claim resumes from there
+- WIP preserved: the work in progress was committed and pushed to the issue branch — the claim-release comment's **Work in progress** line names that branch — and the next claim resumes from there
 - Nothing here reflects on the issue: it does not need re-scoping, simplifying or splitting`;
 
     case "rate_limit":

@@ -16,7 +16,11 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, GitHubComment } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { ISSUE_RUN_STATS_MARKER } from "../lib/issue_run_stats_comment.ts";
+import {
+  buildIssueRunStatsMarker,
+  ISSUE_RUN_STATS_MARKER,
+} from "../lib/issue_run_stats_comment.ts";
+import { getRunId } from "../lib/run_id.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 
 interface RecordedComment {
@@ -121,7 +125,8 @@ function statsCommentOn(
   issueNumber: number,
 ): RecordedComment | undefined {
   return comments.find((c) =>
-    c.issueNumber === issueNumber && c.body.includes(ISSUE_RUN_STATS_MARKER)
+    c.issueNumber === issueNumber &&
+    c.body.includes(ISSUE_RUN_STATS_MARKER)
   );
 }
 
@@ -171,17 +176,35 @@ Deno.test("completion - posts no stats comment when Claude never ran", async () 
   assertEquals(statsCommentOn(comments, ctx.issueNumber), undefined);
 });
 
-Deno.test("completion - skips when the issue already carries a stats comment", async () => {
+Deno.test("completion - skips when this run already posted its stats comment", async () => {
   const ctx = makeContext();
   const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
   const comments: RecordedComment[] = [];
   const deps = makeDeps(comments, [
-    "## Planning run model stats\n\n- **Degraded:** no",
+    `${buildIssueRunStatsMarker(getRunId())}\n## Issue run model stats`,
   ]);
 
   await workOnIssueCompletion(ctx, state, deps);
 
   assertEquals(statsCommentOn(comments, ctx.issueNumber), undefined);
+});
+
+Deno.test("completion - reports this run's cost even when an earlier run already posted (Issue #797)", async () => {
+  // Issue #762's shape: a cheap grill-me round reported first, and the run that
+  // actually completed the issue must still say what it cost.
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const comments: RecordedComment[] = [];
+  const deps = makeDeps(comments, [
+    "## Grill-me run model stats\n\n- **Estimated cost (USD, estimate only):** ~$1.34",
+  ]);
+
+  await workOnIssueCompletion(ctx, state, deps);
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected this run's stats comment on the issue");
+  assertStringIncludes(stats.body, "## Issue run model stats");
+  assertStringIncludes(stats.body, "Issue total across 2 run-stats comments");
 });
 
 Deno.test("completion - reports the deadline-extension counters in the stats comment (Issue #4298)", async () => {

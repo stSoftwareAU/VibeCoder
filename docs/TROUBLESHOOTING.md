@@ -272,6 +272,41 @@ working says so on every launch:
 `Checkout update skipped: update_mode=frozen, pinned to <ref>` in
 `run_core.log`.
 
+## 🩹 The launcher keeps overwriting my local fix
+
+Every launch updates the worker checkout before the container starts, so a
+patch applied by hand — a launcher fix while bringing a new platform up, for
+instance — is discarded by the next run. The update says so when it happens, on
+stderr and in `~/logs/run_core.log`:
+
+```text
+The checkout update changed /home/vibe/VibeCoder (HEAD 8b0f2c1a4d33 →
+1f9a77b0c512; 2 uncommitted change(s) discarded). Local edits in this checkout
+do not survive a launch — set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly
+as it is.
+```
+
+Set it on the launcher, which is the process that runs the update:
+
+```bash
+VIBE_SKIP_CHECKOUT_UPDATE=1 ./run.sh     # macOS / Linux
+$env:VIBE_SKIP_CHECKOUT_UPDATE = "1"; .\run.ps1    # Windows (PowerShell)
+```
+
+The checkout is then left exactly as it is — commit, branch, uncommitted work
+and untracked files alike — and the launch says so instead of updating:
+`VIBE_SKIP_CHECKOUT_UPDATE is set: leaving <path> exactly as it is`. Any
+non-empty value other than `0`, `false`, `no` or `off` turns the update off;
+`VIBE_SKIP_CHECKOUT_UPDATE=0` — and an empty value — leaves it running.
+
+This is the debugging escape hatch, not a deployment setting. Once the fix is
+committed and pushed, drop the variable so the host tracks the default branch
+again — a host that keeps it set runs whatever that checkout holds, forever.
+A host that must reproduce a known release wants
+[`update_mode: "frozen"`](CONFIGURATION.md#-host-side-checkout-update)
+instead, and a checkout that doubles as a development tree wants its own
+[dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone).
+
 ## 🔔 "A new release of Vibe Coder is available"
 
 A frozen host pinned behind the newest release says so once per launch, on
@@ -735,7 +770,9 @@ kept making progress. Reconstruct what happened from three places:
    ```
 
    Each names the reason, the elapsed time, the extension count and the new
-   deadline. `not extending after …` is the check that finally refused.
+   deadline. `not extending after …` is the check that finally refused, and it
+   names **every** signal the decision saw — `tree advanced, external idle` —
+   not only the one that stalled (Issue #767).
 
 2. **The kill line** — states the truth rather than the configured budget:
 
@@ -745,8 +782,11 @@ kept making progress. Reconstruct what happened from three places:
    despite tool activity 31s ago — killing process tree (PID 1234)
    ```
 
-   The clause after the semicolon is the signal that stalled: stale tool
-   activity, an unchanged working tree *with no descendant process doing work*
+   The clause after the semicolon is the signal that stalled: a silent agent
+   (`tool activity stale (last tool call 483s ago, last agent output 400s ago,
+   window 300s)` — **both** clocks must be stale before the run is judged
+   dead, Issue #767), an unchanged working tree *with no descendant process
+   doing work*
    (`working tree unchanged and no descendant process doing work (external
    idle) despite tool activity 31s ago`, Issue #508), or a working-tree probe
    that could not answer (`unknown` is never treated as progress). A trailing
@@ -804,9 +844,10 @@ order they appear:
    itself:
 
    ```text
-   [progress-extension] not extending after 10650s (extensions granted 5):
-   run hard cap reached — no runway left before the supervisor terminates this
-   run, so stopping now to preserve work in progress
+   [progress-extension] not extending after 10650s (extensions granted 5,
+   tree advanced, external idle): run hard cap reached — no runway left before
+   the supervisor terminates this run, so stopping now to preserve work in
+   progress
    ```
 
 Before that refusal the agent is handed its remaining budget so it can stop
@@ -846,6 +887,31 @@ granted — last check refused because …` means the very first check refused a
 the deadline never moved. The `worker-*.log` kill line carries the same
 figures. With `progress_extension_enabled` set to `false` neither surface says
 anything about extensions.
+
+When the run preserved work, the comment also names **where** (Issue #770):
+
+```text
+**Work in progress:** branch `issue-770-name-the-preserved-branch` holds the
+work in progress; the next claim resumes from it. Handover:
+[docs/archive/handover/issue-770.md](https://github.com/…).
+```
+
+The branch named is always the branch the push targeted — the resumed branch
+when a re-claim adopted one, never a name derived from the current title, so
+retitling an issue mid-flight cannot send you to a ref that does not exist. The
+handover link appears only when that file is committed on the branch
+(Issue #769); without it the line still names the branch. A run that preserved
+nothing names no branch at all.
+
+The **next** claim reads that same file out of the resumed working tree and
+splices it into its execute prompt (Issue #771), so a resume on a different
+host — or under a non-Claude provider — is briefed with what the interrupted
+run actually did rather than a generic "review `git log`" paragraph. The log
+line to look for is `Handover file read from the resumed branch (Issue #771)`,
+or its counterpart naming the path when no file was there. The content is
+fenced as untrusted prior-run **status**, capped at 8,000 characters, and
+measured by the context budget — so an oversized handover shows up as
+truncated, never as a silently larger prompt.
 
 ## 🎞️ Capturing a full agent transcript
 
