@@ -222,10 +222,7 @@ reason. Re-check this table when the guide changes.
 
 | Guide heading | Why it is out of scope |
 | --- | --- |
-| Claude Fable 5 | Model-specific page, not a technique. The worker picks its model at run time, so per-model tuning belongs with the model router, not with a prompt surface |
-| Claude Sonnet 5 | Model-specific page, as above. Scoring a template against one model's page would date the verdict the next time the router changes |
-| Prompting Claude Opus 5 | Model-specific page, as above. Its concrete carry-overs (verbosity, scope, subagent damping) are already rows 7, 20 and 17 |
-| Prompting Claude Opus 4.8 | Model-specific page, as above, and its guidance overlaps rows 7, 10 and 17 with no separate obligation on a prompt surface |
+| Model-specific guidance | A table of links to one prompting page per model — Fable 5.1 / Mythos 5.1, Fable 5 / Mythos 5, Sonnet 5, Opus 5, Opus 4.8 — not a technique. The worker picks its model at run time, so per-model tuning belongs with the model router, not with a prompt surface, and scoring a template against one model's page would date the verdict the next time the router changes. Their concrete carry-overs (verbosity and progress updates, scope, tool triggering, subagent damping) are already rows 7, 20, 10 and 17 |
 | Model self-knowledge | No surface asks Claude to identify its own model or emit a model string; the model id comes from configuration and the CLI invocation |
 | LaTeX output | No surface produces mathematical or scientific output, so there is no LaTeX default to override |
 | Document creation | No surface asks for a presentation, animation, or visual document; deliverables are code, Markdown, and filed issues |

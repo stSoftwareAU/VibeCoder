@@ -55,12 +55,16 @@ const IN_SCOPE_TECHNIQUES = [
   "Minimizing hallucinations in agentic coding",
 ];
 
-/** Guide headings that must be named in the out-of-scope table with a reason. */
+/**
+ * Guide headings that must be named in the out-of-scope table with a reason.
+ *
+ * The guide replaced its four per-model headings (`Claude Fable 5`,
+ * `Claude Sonnet 5`, `Prompting Claude Opus 5`, `Prompting Claude Opus 4.8`)
+ * with a single `Model-specific guidance` section listing one prompting page
+ * per model, so the table names that section instead (Issue #747).
+ */
 const OUT_OF_SCOPE_HEADINGS = [
-  "Claude Fable 5",
-  "Claude Sonnet 5",
-  "Prompting Claude Opus 5",
-  "Prompting Claude Opus 4.8",
+  "Model-specific guidance",
   "Model self-knowledge",
   "LaTeX output",
   "Document creation",
