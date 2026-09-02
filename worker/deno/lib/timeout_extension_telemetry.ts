@@ -111,6 +111,10 @@ export function formatExtensionHistory(telemetry: ExtensionTelemetry): string {
  * was extended and still ran out — and a run whose checks were never refused
  * says so rather than falling silent, which would be indistinguishable from
  * a message that simply lost the reason.
+ *
+ * The elapsed figure is labelled `agent elapsed`: the release comment already
+ * states the whole run's wall clock beside this sentence, and two unlabelled
+ * durations in one paragraph read as a contradiction.
  */
 export function formatTimeoutExtensionSummary(
   telemetry: ExtensionTelemetry,
@@ -133,7 +137,7 @@ export function formatTimeoutExtensionSummary(
     : "no extension check was refused";
   return `Progress extension: base timeout ${baseTimeoutSeconds}s, ` +
     `deadline armed at kill ${finalDeadlineSeconds}s, ` +
-    `elapsed ${elapsedSeconds}s, ${grants}${joiner}${refusal}`;
+    `agent elapsed ${elapsedSeconds}s, ${grants}${joiner}${refusal}`;
 }
 
 /**

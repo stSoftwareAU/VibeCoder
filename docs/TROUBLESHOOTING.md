@@ -839,9 +839,9 @@ really did exhaust its own `claude_timeout` — that is the case worth
 re-scoping.
 
 Such a comment then states what the progress extension did (Issue #768) —
-`Progress extension: base timeout 3600s, deadline armed at kill 5640s, elapsed
-5645s, 4 extensions granted (+2040s); last check refused because …` — so the
-grants and the stalled signal are readable off the issue. `no extensions
+`Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
+elapsed 5645s, 4 extensions granted (+2040s); last check refused because …` —
+so the grants and the stalled signal are readable off the issue. `no extensions
 granted — last check refused because …` means the very first check refused and
 the deadline never moved. The `worker-*.log` kill line carries the same
 figures. With `progress_extension_enabled` set to `false` neither surface says

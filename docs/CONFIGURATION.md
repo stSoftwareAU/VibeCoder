@@ -1614,8 +1614,11 @@ an operator reads — so diagnosing a kill never needs a dig through
   refused: working tree unchanged despite tool activity 31s ago — killing
   process tree (PID …)`; and
 - the **release comment** on the issue, whose timeout diagnosis carries
-  `Progress extension: base timeout 3600s, deadline armed at kill 5640s,
+  `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
   elapsed 5645s, 4 extensions granted (+2040s); last check refused because …`.
+  The elapsed figure is labelled `agent elapsed` because the same line already
+  states the whole run's wall clock — the agent's own run is the shorter of
+  the two.
 
 Zero grants is itself a finding and reads differently — `no extensions granted
 — last check refused because no tool activity recorded` — so a run refused at

@@ -95,14 +95,9 @@ export const failureDiagnosisCommand: Command = {
         const clarityStatus = String(
           args["clarity-status"] ?? "not_assessed",
         ) as ClarityStatus;
-        // The context carries a timed-out run's extension telemetry (Issue
-        // #768), so this verb reports the grants and the last refusal exactly
-        // as `get-diagnosis` does. Omitted, the wording is unchanged.
-        const diagnosticContext = String(args["diagnostic-context"] ?? "");
         const oneliner = getFailureDiagnosisOneliner(
           normaliseFailureCategory(category),
           clarityStatus,
-          diagnosticContext,
         );
         return {
           success: true,

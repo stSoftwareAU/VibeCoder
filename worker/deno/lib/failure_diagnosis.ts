@@ -479,11 +479,9 @@ function formatExtensionHistory(ctx: DiagnosticContext): string {
 }
 
 /**
- * The extension telemetry a timeout diagnosis should state (Issue #768).
- *
- * A caller holding the snapshot passes it directly; the label-failure and CLI
- * callers only ever hold the `key=value` diagnostic context, so that is
- * decoded here and both reach the one rendering path.
+ * Decode the extension telemetry a timeout diagnosis should state (Issue
+ * #768) from the `key=value` diagnostic context, which is the only form the
+ * multi-line diagnosis' callers hold.
  *
  * Every figure must parse. `buildDiagnosticContext` writes them as one set,
  * so a partial or unreadable set is not a run without extensions — and
@@ -497,9 +495,7 @@ function formatExtensionHistory(ctx: DiagnosticContext): string {
  */
 function resolveExtensionTelemetry(
   diagnosticContext: string,
-  extensions?: ExtensionTelemetry,
 ): ExtensionTelemetry | undefined {
-  if (extensions) return extensions;
   if (!diagnosticContext) return undefined;
   const ctx = parseDiagnosticContext(diagnosticContext);
   const seconds = (value: string | undefined): number | undefined => {
@@ -599,22 +595,18 @@ export function formatZeroOutputDiagnostics(diagnosticContext: string): string {
  * For zero_output failures, if diagnosticContext is provided, it is formatted
  * into actionable diagnostic lines instead of generic advice (Issue #533).
  *
- * For timeout failures the extension telemetry — passed directly, or carried
- * in the diagnostic context — adds the line that makes the kill readable
- * (Issue #768). Absent, the wording is the pre-#764 text byte for byte.
+ * For timeout failures the extension telemetry the diagnostic context carries
+ * adds the line that makes the kill readable (Issue #768). Absent, the
+ * wording is the pre-#764 text byte for byte.
  */
 export function getFailureDiagnosis(
   category: FailureCategory,
   clarityStatus: ClarityStatus = "not_assessed",
   diagnosticContext: string = "",
-  extensions?: ExtensionTelemetry,
 ): string {
   switch (category) {
     case "timeout": {
-      const telemetry = resolveExtensionTelemetry(
-        diagnosticContext,
-        extensions,
-      );
+      const telemetry = resolveExtensionTelemetry(diagnosticContext);
       const summary = telemetry
         ? `\n- ${formatTimeoutExtensionSummary(telemetry)}`
         : "";
@@ -716,29 +708,27 @@ export function getFailureDiagnosis(
  * likely cause without the full multi-line diagnosis, and by the claim-release
  * comment (`renderRunOutcomeClause`).
  *
- * A timeout states its extension telemetry when the run carried any (Issue
- * #768) — how many grants the deadline made and why the last check was
- * refused — so the release comment explains the kill instead of leaving it to
- * a code archaeology dig. Without telemetry the wording is unchanged.
+ * A timeout states the extension telemetry the caller holds (Issue #768) —
+ * how many grants the deadline made and why the last check was refused — so
+ * the release comment explains the kill instead of leaving it to a code
+ * archaeology dig. Without telemetry the wording is unchanged.
+ *
+ * @param extensions - The kill's snapshot, when the caller has one. The
+ * release comment does; `markIssueAsFailedOnce` does not, and its comment
+ * already carries the same history inside the raw failure message.
  */
 export function getFailureDiagnosisOneliner(
   category: FailureCategory,
   clarityStatus: ClarityStatus = "not_assessed",
-  diagnosticContext: string = "",
   extensions?: ExtensionTelemetry,
 ): string {
   switch (category) {
-    case "timeout": {
-      const telemetry = resolveExtensionTelemetry(
-        diagnosticContext,
-        extensions,
-      );
-      return telemetry
+    case "timeout":
+      return extensions
         ? `Likely cause: Claude ran out of time. ${
-          formatTimeoutExtensionSummary(telemetry)
+          formatTimeoutExtensionSummary(extensions)
         }.`
         : "Likely cause: Claude ran out of time.";
-    }
     // Deliberately not "Likely cause": nothing was diagnosed. The cycle
     // ended or the hard cap was reached and the work was parked (Issue #424).
     case "scheduled_release":

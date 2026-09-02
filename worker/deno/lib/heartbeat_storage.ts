@@ -543,7 +543,6 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
       const oneliner = getFailureDiagnosisOneliner(
         outcome.category,
         "not_assessed",
-        "",
         outcome.extensions,
       );
       const phase = boundOutcomeText(outcome.phase, 60);
