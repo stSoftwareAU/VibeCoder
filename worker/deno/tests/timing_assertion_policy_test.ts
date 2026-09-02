@@ -100,7 +100,10 @@ Deno.test("timing policy - the auditor exempts ratio assertions (Issue #786)", a
   assertStringIncludes(collapsed, "against a constant as a finding");
   // … and now says the growth pattern is not one.
   assertStringIncludes(collapsed, "Ratio assertions are not a finding");
-  assertStringIncludes(collapsed, HELPER);
+  // Not the helper by name: `test_audit` is filed into other repositories, so
+  // its body may not cite a VibeCoder-internal path (the cross-repo body
+  // guard). It describes the shape instead.
+  assertStringIncludes(collapsed, "times the same work at two input sizes");
   assertEquals(
     collapsed.includes("Flag any wall-clock comparison inside a unit test"),
     false,

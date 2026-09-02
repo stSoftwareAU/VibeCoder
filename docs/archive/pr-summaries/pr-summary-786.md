@@ -125,6 +125,15 @@ reviewer sub-agents.
   check still compares `loadPrompt(undefined)` against the resolved latest, so
   it still proves the worker loads what it resolves. Every check-11 assertion
   is untouched
+- **unrequested** — `test_audit/v13` describes the growth helper by shape
+  rather than by path — evidence: `prompts/test_audit/v13.md` — reason: found
+  by CI, not by me. `test_audit` is filed into **other** repositories, and
+  `idle_task_cross_repo_body_refs_test.ts` forbids a cross-repo body citing a
+  `worker/deno/…` path — it reads as noise in any other repo. The first draft
+  named `worker/deno/tests/support/growth.ts`; it now says "typically through a
+  shared growth helper the suite provides", which is the right thing for a
+  prompt that audits a repository it knows nothing about. `coding_guidelines`
+  is injected, not filed, so it still names the path
 - **unrequested** — the H1-version case — reason: `test_audit` carries its
   version in its H1, so the copy that produced v13 inherited `(v12)`. That is
   the defect class #792 sweeps; this change adds one such file, so it checks
