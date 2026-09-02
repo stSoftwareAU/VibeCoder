@@ -3446,6 +3446,12 @@ export async function createProductionRunCoreDeps(
         const census = buildIdleDecisionCensus({
           decisionPoint,
           workerUser: githubUser,
+          // Issue #753: the scan refuses a milestone held by any trusted
+          // account, not just this worker's own. Without the same set here,
+          // a human taking three milestone issues reads as three claimable
+          // issues the scan keeps refusing — and files an inversion issue
+          // about work that is simply in flight.
+          allowedAuthors: config.allowedAuthors ?? [],
           repos: perRepo,
           // Issue #460: a repo the scan claimed from this cycle was served,
           // not refused — whatever the run's outcome. The census withdraws
