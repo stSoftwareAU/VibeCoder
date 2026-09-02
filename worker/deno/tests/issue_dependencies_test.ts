@@ -251,6 +251,56 @@ Deno.test("hasBackReference - returns false for empty body", () => {
   assertEquals(hasBackReference("", 100), false);
 });
 
+// Issue #809 regression: every child of #796 wrote its parent link as
+// `Parent: #796`, which the old `part of|child of` pattern missed. Both child
+// sources yielded nothing, so the parent read as "not blocked" and was claimed
+// while all four children were open.
+Deno.test("hasBackReference - detects 'Parent: #N' (Issue #809)", () => {
+  assertEquals(hasBackReference("## Goal\n\nParent: #796  \n", 796), true);
+});
+
+Deno.test("hasBackReference - detects 'Parent #N' without a colon (Issue #809)", () => {
+  assertEquals(hasBackReference("Parent #796", 796), true);
+});
+
+Deno.test("hasBackReference - 'Parent:' matching is case insensitive (Issue #809)", () => {
+  assertEquals(hasBackReference("parent: #42", 42), true);
+  assertEquals(hasBackReference("PARENT: #42", 42), true);
+});
+
+Deno.test("hasBackReference - a passing 'parent of #N' mention is not a back-reference (Issue #809)", () => {
+  assertEquals(
+    hasBackReference("The parent of #100 is unclear to me.", 100),
+    false,
+  );
+});
+
+Deno.test("hasBackReference - does not match a longer word ending in 'parent' (Issue #809)", () => {
+  assertEquals(hasBackReference("grandparent: #100", 100), false);
+});
+
+Deno.test("hasBackReference - 'Parent: #N' still respects the number boundary (Issue #809)", () => {
+  assertEquals(hasBackReference("Parent: #1001", 100), false);
+});
+
+Deno.test("hasBackReference - finds the parent link past an earlier unrelated link (Issue #809)", () => {
+  assertEquals(hasBackReference("Part of #5\n\nParent: #796", 796), true);
+});
+
+Deno.test("hasBackReference - ignores a parent link inside a fenced code block (Issue #809)", () => {
+  const body = ["Example body shape:", "", "```md", "Parent: #796", "```"].join(
+    "\n",
+  );
+  assertEquals(hasBackReference(body, 796), false);
+});
+
+Deno.test("hasBackReference - ignores a parent link inside an inline code span (Issue #809)", () => {
+  assertEquals(
+    hasBackReference("Write the link as `Parent: #796` in the body.", 796),
+    false,
+  );
+});
+
 // =============================================================================
 // extractDependencyReferences tests
 // =============================================================================
@@ -398,6 +448,41 @@ Deno.test("checkParentBlocked - blocked when has open sub-issues from body task 
     assertEquals(result.value.openChildren, [10, 20]);
     assertEquals(result.value.closedChildren, [30]);
     assertEquals(result.value.totalChildren, 3);
+  }
+});
+
+// Issue #809 regression: the real shape of #796 — the sub-issues API returns
+// nothing (children were linked as a markdown task list, never registered as
+// native sub-issues) and every child writes its link as `Parent: #N`. Before
+// the fix the child set was empty and the parent read as "not blocked", so it
+// was claimed while all four children were open.
+Deno.test("checkParentBlocked - blocked when children only say 'Parent: #N' (Issue #809)", async () => {
+  const issues = new Map([
+    [796, {
+      state: "OPEN" as const,
+      body: `## Public VibeCoder work
+
+- [ ] #806
+- [ ] #805
+- [ ] #807
+- [ ] #808`,
+    }],
+    [805, { state: "OPEN" as const, body: "## Goal\n\nParent: #796  \n" }],
+    [806, { state: "OPEN" as const, body: "Parent: #796" }],
+    [807, { state: "OPEN" as const, body: "Parent #796" }],
+    [808, { state: "CLOSED" as const, body: "Parent: #796\n" }],
+  ]);
+  // No native sub-issues — the API returns [] for #796.
+  const fetcher = createMockFetcher(issues);
+
+  const result = await checkParentBlocked(fetcher, "owner/repo", 796);
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.isBlocked, true);
+    assertEquals(result.value.openChildren, [805, 806, 807]);
+    assertEquals(result.value.closedChildren, [808]);
+    assertEquals(result.value.totalChildren, 4);
   }
 });
 

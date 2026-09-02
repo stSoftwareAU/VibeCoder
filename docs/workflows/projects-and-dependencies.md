@@ -64,6 +64,7 @@ When **all** issues in a milestone are completed (each milestone-issue PR has au
    A **parent** issue lists **children** (sub-issues) via:
    - GitHub task list syntax in the body (e.g. `- [] `, `- [x] `), or
    - Sub-issues detected via API.  
+   A task-list reference only counts as a child when the referenced issue **links back** to the parent in its own body — otherwise a plain checklist item such as `- [ ] #747 body updated` would block the parent. The accepted back-reference wording is `Part of #N`, `Child of #N`, `Parent: #N` or `Parent #N` (case-insensitive; text inside code blocks or code spans is ignored). A passing mention such as "the parent of #N is unclear" is not a back-reference. Children found via the sub-issues API need no back-reference.  
    The worker does **not** select a parent for implementation until **all** of its child issues are closed. Children can be worked on independently (and in dependency order if they have "Depends on" among themselves).
 
 The worker uses both dependency checking and parent/child checking during issue selection so that only **ready** issues (no open dependencies, and not a parent with open children) are eligible. Dependency and parent/child checks are *suppression filters*: they remove a candidate from its tier but do not change the tier order itself. The overall order — the `top-priority` → `work-on` → `low-priority` → `idle-task` tiers, globally oldest-first within a tier — is documented in [issue-processing.md → Issue selection priority](issue-processing.md#-issue-selection-priority).
