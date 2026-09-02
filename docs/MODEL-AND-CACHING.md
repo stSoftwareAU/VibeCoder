@@ -161,13 +161,15 @@ switching model families per phase. Model tier is the *secondary* lever, applied
 at **both** extremes: the **eight planning-shaped
 phases** (`planning`, `grill_me`, `refinement`, `revision`, `question`,
 `clarification`, `quorum`, `quorum_judge`)
-run on the **Fable 5** tier above Opus at `high` effort — wherever the Vibe Coder
+run on the **Fable** tier above Opus at `high` effort — wherever the Vibe Coder
 interprets the user's words into an implementable state, a better result compounds
 downstream — while the three trivial phases stay on **Haiku**. Everything in
 between runs on **Opus**. The worker passes tier *aliases* (`fable`, `opus`,
 `haiku`) to the Claude CLI, which resolves each to the latest model of that tier;
 combined with the CLI minimum-version floor, the tiers stay current
-with no per-release config change.
+with no per-release config change. Since 2026-09-01 the latest Fable is
+**Fable 5.1** (`claude-fable-5-1`), which cut cache reads to $0.25/MTok — see
+[Fable 5.1 — the current top tier](#fable-51--the-current-top-tier-issue-747).
 
 ### Phase-Specific Defaults
 
@@ -178,7 +180,7 @@ guiding rule: **wherever the Vibe Coder interprets the user's words
 into an implementable state, use the highest model available.** That names
 eight *planning-shaped* phases — `planning`, `grill_me`, `refinement`,
 `revision`, `question`, `clarification`, and the two Quorum phases `quorum` and
-`quorum_judge` — each of which defaults to the **Fable 5** top
+`quorum_judge` — each of which defaults to the **Fable** top
 tier at `high` effort. When Fable is unavailable they reroute to **Opus at `max`
 effort** and the run is recorded degraded (see
 [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)).
@@ -187,14 +189,14 @@ Everything else runs on **Opus** (implementation and reactive fixes) or **Haiku*
 
 | Phase | Model | Effort | When Fable unavailable |
 |-------|-------|--------|------------------------|
-| planning | Fable 5 | high | Opus @ max, recorded degraded |
-| grill_me | Fable 5 | high | Opus @ max, recorded degraded |
-| refinement | Fable 5 | high | Opus @ max, recorded degraded |
-| revision | Fable 5 | high | Opus @ max, recorded degraded |
-| question | Fable 5 | high | Opus @ max, recorded degraded |
-| clarification | Fable 5 | high | Opus @ max, recorded degraded |
-| quorum | Fable 5 | high | Opus @ max, recorded degraded |
-| quorum_judge | Fable 5 | high | Opus @ max, recorded degraded |
+| planning | Fable | high | Opus @ max, recorded degraded |
+| grill_me | Fable | high | Opus @ max, recorded degraded |
+| refinement | Fable | high | Opus @ max, recorded degraded |
+| revision | Fable | high | Opus @ max, recorded degraded |
+| question | Fable | high | Opus @ max, recorded degraded |
+| clarification | Fable | high | Opus @ max, recorded degraded |
+| quorum | Fable | high | Opus @ max, recorded degraded |
+| quorum_judge | Fable | high | Opus @ max, recorded degraded |
 | issue (implementation) | Opus | high | unchanged |
 | ci_fix | Opus | medium | unchanged |
 | pr_feedback | Opus | medium | unchanged |
@@ -229,7 +231,9 @@ made that model worth revisiting:
 - **A single model spans the full effort range.** Opus 4.8 supports
   `max`/`xhigh`/`high`/`medium`/`low`, so one tier can express the whole
   complexity spectrum via effort alone.
-- **The Opus↔Sonnet price gap shrank to ~1.7×** ($5 vs $3 per Mtok input).
+- **The Opus↔Sonnet price gap shrank to ~1.7×** ($5 vs $3 per Mtok input, the
+  rates when this decision was taken; Sonnet 5 has since reopened the gap to
+  ~2.5× at $2 — see [Model Pricing](#model-pricing)).
   At that gap, routing reactive phases to Sonnet saves little, while
   maintaining two model families with different behaviours costs clarity.
 
@@ -951,7 +955,7 @@ one specific model regardless of routing.
 
 #### Grill-me degraded-model detection
 
-The `grill_me` phase routes to the **same** Fable 5 top tier as planning
+The `grill_me` phase routes to the **same** Fable top tier as planning
 (`DEFAULT_CLAUDE_MODEL_GRILL_ME = DEFAULT_CLAUDE_MODEL_TOP_TIER`) with the same
 "plan-quality compounds across every downstream sub-issue" rationale, so
 a silent Fable→Opus degradation on a requirements-interrogation round is exactly
@@ -1993,29 +1997,83 @@ flowchart LR
 
 > **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — `MODEL_PRICING` holds Claude rows only, so a `gpt-5-codex` or `gemini-2.5-pro` id is charged at the dearest known rate and named in `unpricedModels` rather than costed at zero. `MODEL_PRICING` has no `deepseek-reasoner` or `deepseek-chat` row either, so a DeepSeek run is charged at the dearest known rate and named in `unpricedModels`.
 
-Approximate list prices (USD per million tokens, as of July 2026):
+Approximate list prices (USD per million tokens, as of September 2026):
 
 | Model | Input | Output | Cache Write | Cache Read |
 |-------|------:|-------:|------------:|-----------:|
+| Claude Fable 5.1 | $10.00 | $50.00 | $12.50 | $0.25 |
 | Claude Fable 5 | $10.00 | $50.00 | $12.50 | $1.00 |
 | Claude Opus 5 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.5–4.8 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.0/4.1 | $15.00 | $75.00 | $18.75 | $1.50 |
+| Claude Sonnet 5 | $2.00 | $10.00 | $2.50 | $0.20 |
 | Claude Sonnet 4.6 | $3.00 | $15.00 | $3.75 | $0.30 |
 | Claude Haiku 4.5 | $1.00 | $5.00 | $1.25 | $0.10 |
 
 Opus 5 (model id `claude-opus-5`, alias `opus`) lands at the **same** price point
 as the modern Opus 4.5–4.8 line ($5 / $25 per MTok, cache $6.25 / $0.50) — a
 step-change in capability over Opus 4.8 for free. The `claude-opus-5` pricing row
-and the 5-family fallback parser were added in so Opus 5 traffic is
+and the 5-family fallback parser were added together so Opus 5 traffic is
 never dropped from cost tracking. These rows mirror `MODEL_PRICING` in
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts).
 
-Fable 5 (model id `claude-fable-5`, alias `fable`) is the top tier above Opus
-with a 1M-token context window. It is the default for the eight
-planning-shaped phases (`planning`, `grill_me`, `refinement`, `revision`,
-`question`, `clarification`, `quorum`, `quorum_judge`) under,
-and.
+Fable (alias `fable`) is the top tier above Opus with a 1M-token context
+window. It is the default for the eight planning-shaped phases: `planning`,
+`grill_me`, `refinement`, `revision`, `question`, `clarification`, `quorum`
+and `quorum_judge`.
+
+Sonnet 5 (model id `claude-sonnet-5`, alias `sonnet`) is **cheaper** than the
+Sonnet 4.x line it replaces: $2 / $10 rather than $3 / $15 per MTok. That looks
+like an expired introductory rate and is not — it is worth citing, because the
+introductory window closed on 2026-08-31 and the obvious reading is that the
+price reverted. Anthropic's
+[pricing page](https://platform.claude.com/docs/en/about-claude/pricing) says
+otherwise, in a note beside the table:
+
+> The $2/$10 per million input/output token pricing for Claude Sonnet 5,
+> announced at launch as introductory pricing through August 31, 2026, is now
+> the standard price. The previously scheduled increase to $3/$15 per million
+> input/output tokens on September 1, 2026 will not occur.
+
+Sonnet is not a phase default; it is the third rung of the
+`fable → opus → sonnet → haiku` rate-limit ladder, so the row matters for
+costing a downgraded run.
+
+#### Fable 5.1 — the current top tier (Issue #747)
+
+Anthropic released **Fable 5.1** (`claude-fable-5-1`) on 2026-09-01. The worker
+requests the tier alias `fable`, never a pinned model id, so the Claude CLI
+serves 5.1 with no routing change, and the served-vs-expected detector accepts
+it: `modelsMatch()` passes both on the `claude-fable-5` prefix and on the
+`fable` tier family, so a healthy 5.1 run reports `Degraded: no`
+(`worker/deno/tests/planning_run_stats_test.ts`).
+
+What changed for the worker is the **cache-read rate**: 5.1 prices cache hits
+at 0.025× base input — **$0.25 / MTok, a quarter of the Fable 5 rate** — while
+input, output and cache writes are unchanged. Since the eight planning-shaped
+phases replay a large cached prefix, that is where the saving lands.
+`claude-fable-5` keeps its own $1.00 row so a run whose **served** model was
+Fable 5 is still costed at the rate it was billed at, and `lookupModelPricing()`
+classifies by minor version, so a dated `claude-fable-5-1-…` id prices at the
+5.1 rate and a dated `claude-fable-5-2026…` id at the 5.0 rate. A run that
+reported **no** served model is costed against the requested `fable` alias,
+which prices at the current tier rate — the same alias-follows-the-latest rule
+the `opus` and `sonnet` rows use.
+
+**The flip is the CLI's, not the worker's.** The Claude CLI resolves the alias
+locally — `claude --model fable --print --output-format stream-json` on CLI
+2.1.223 still reports `"model":"claude-fable-5"` at init — so a container whose
+CLI predates the 5.1 alias table keeps being served Fable 5 and is costed at the
+Fable 5 row. Both rows are carried for exactly that reason: no configuration
+changes on either side of the flip, and the
+[minimum-version floor](CONFIGURATION.md#-minimum-version-floor) (`claude`,
+2.1.170) is what keeps the CLI current enough to pick the new alias up.
+
+Fable 5.1's three breaking Messages-API changes — forced `tool_choice` rejected,
+thinking blocks bound to the model and to an unedited conversation prefix — do
+**not** reach the worker: it drives the Claude Code CLI, which owns request
+construction and conversation history. Everything the worker sends is a CLI flag
+(`--model`, `--effort`, `--session-id`).
 
 #### Tier ordering after Opus 5 (decision, no code)
 

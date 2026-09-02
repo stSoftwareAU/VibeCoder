@@ -972,8 +972,8 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 3. `CLAUDE_MODEL` environment variable (base model for all phases)
 4. Built-in phase defaults (table above)
 
-**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable 5 (model id
-`claude-fable-5`, alias `fable`) is the top tier above Opus, with a 1M-token
+**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable (alias `fable`,
+served as `claude-fable-5-1` since 2026-09-01) is the top tier above Opus, with a 1M-token
 context window and a rate-limit fallback of `fable → opus → sonnet → haiku`
 . It is the default for the eight planning-shaped phases
 (`planning`, `grill_me`, `refinement`, `revision`, `question`, `clarification`,

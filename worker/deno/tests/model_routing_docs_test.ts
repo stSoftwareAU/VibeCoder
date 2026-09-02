@@ -24,7 +24,10 @@ const text = await Deno.readTextFile(DOC);
 
 /** Tier word the doc uses for a code model id. */
 function tierWord(model: string): string {
-  if (model === "fable") return "Fable 5";
+  // The doc names the *tier*, not a pinned version: the worker sends the
+  // `fable` alias and the CLI resolves it to the latest Fable, which has been
+  // Fable 5.1 rather than Fable 5 since 2026-09-01 (Issue #747).
+  if (model === "fable") return "Fable";
   if (model === "opus") return "Opus";
   if (model === "haiku") return "Haiku";
   if (model === "sonnet") return "Sonnet";
