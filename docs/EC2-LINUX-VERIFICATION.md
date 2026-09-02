@@ -125,18 +125,23 @@ gh auth login
 infra/verify/first-run.sh
 ```
 
-It walks eight stages — running `./setup.sh` at stage 3 and `./run.sh` at
-stage 5 — and records each one's output under the transcript directory, then
-prints `report.md`, the table to paste onto the issue you are verifying
-against:
+It runs seven stages — `./setup.sh` at stage 3, `./run.sh` at stage 5 — and
+records each one's output under the transcript directory, then prints
+`report.md`, the table to paste onto the issue you are verifying against. The
+report carries an eighth row, `volume-init`: `run.sh` swallows volume
+initialisation's own output, so that row is read back from the launcher's log
+and `~/logs/run_core.log` rather than from a stage of its own, and it is
+`SKIPPED` — never a pass — when neither source shows the initialisation ran.
 
 ```mermaid
 flowchart LR
     F["1 fresh-state<br/>no workaround present"] --> P["2 prerequisites"]
     P --> S["3 setup.sh"] --> C["4 .config.json<br/>Codex-only"]
-    C --> L["5 run.sh<br/>build + launch"] --> V["6 volume-init"]
-    V --> I["7 image stamp<br/>+ CLI"] --> W["8 claim one issue<br/>to completion"]
+    C --> L["5 run.sh<br/>build + launch"] --> I["6 image stamp<br/>+ CLI"]
+    I --> W["7 claim one issue<br/>to completion"]
+    L -. "run_core.log" .-> V["volume-init<br/>(read back, not run)"]
     W --> R["📄 report.md<br/>stages · expected warnings · defects"]
+    V --> R
     style F fill:#1d3557,stroke:#0d1b2a,color:#fff
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
