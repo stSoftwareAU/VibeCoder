@@ -181,6 +181,14 @@ export interface ConfigFileJson {
   idle_task_cadence?: unknown;
   /** Per-tool minimum version floors for software auto-update (Issue #2622) */
   software_min_versions?: Record<string, string>;
+  /**
+   * Post-run callback hooks (Issue #806, parent #796).
+   *
+   * Deliberately unvalidated here: `parseCallbacksConfig()` owns the shape and
+   * fails the config load loudly, so a hook that would never run is caught
+   * before any issue is claimed against it.
+   */
+  callbacks?: unknown;
 }
 
 // --- Helpers ---

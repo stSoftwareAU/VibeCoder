@@ -22,6 +22,7 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { stopHeartbeat } from "./heartbeat.ts";
 import { startPhaseProgress } from "./phase_progress.ts";
 import { recordStepDuration } from "./cycle_timings.ts";
+import { summariseCallbackTelemetry } from "./run_callback_telemetry.ts";
 import {
   deriveRunOutcome,
   expectedNoPrOutcome,
@@ -158,7 +159,11 @@ export async function workOnIssue(
       // Facts the run wants stated whatever it achieved (Issue #210).
       state.releaseNotes ?? [],
     );
-    return { ...result, outcome };
+    // Token and cost telemetry for the post-run callbacks (Issue #806).
+    // Summed from the same per-invocation stats the run-stats comment
+    // renders, and omitted when no invocation reported parseable usage.
+    const telemetry = summariseCallbackTelemetry(state.claudeRunStats ?? []);
+    return { ...result, outcome, ...(telemetry ? { telemetry } : {}) };
   } catch (err) {
     outcome = withRunOutcomeNotes(
       deriveRunOutcome({

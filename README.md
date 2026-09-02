@@ -140,6 +140,11 @@ host builds and runs a Codex image rather than reusing the default one.
   (The Anthropic Batch API was evaluated but deliberately not wired in — its
   async turnaround is incompatible with the worker's bounded interactive run;
   see [Model, Caching & Batching](docs/MODEL-AND-CACHING.md#batch-api).)
+- **Post-run callbacks** — Optional `success` / `failure` / `always`
+  executables run after a terminal issue run, following Jenkins and Azure
+  Pipelines outcome semantics. The public extension point for fleet-specific
+  reporting; a hook failure never rewrites the run's own result. See
+  [Post-Run Callbacks](docs/CONFIGURATION.md#-post-run-callbacks).
 - **Per-repo configuration** — Operator-side `repo_config` in `.config.json`
   customises worker behaviour per repository (e.g., skip screenshots for
   CLI-only projects). Configuration is operator-side only — target repos carry

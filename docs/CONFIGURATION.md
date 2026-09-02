@@ -1946,6 +1946,127 @@ flowchart TD
     G -- no --> I[Claim and process issue]
 ```
 
+## 🪝 Post-Run Callbacks
+
+Optional executables the worker runs after a terminal issue run, following
+Jenkins `post { success / failure / always }` and Azure Pipelines
+`succeeded() / failed() / always()` semantics (Issue #806). They are the public
+extension point for fleet-specific reporting — health records, session-log
+archival, spend accounting — so none of that policy has to live in VibeCoder.
+
+```json
+{
+  "callbacks": {
+    "success": "/opt/vibe-hooks/success.sh",
+    "failure": "/opt/vibe-hooks/failure.sh",
+    "always": "/opt/vibe-hooks/always.sh",
+    "timeout_seconds": 60
+  }
+}
+```
+
+All four entries are optional, and a configuration without a `callbacks` block
+behaves exactly as before.
+
+```mermaid
+flowchart LR
+    R["Issue run terminates"] --> D{Result}
+    D -- success --> S["callbacks.success"]
+    D -- failure --> F["callbacks.failure"]
+    S --> A["callbacks.always"]
+    F --> A
+    A --> O["Original VibeCoder outcome — unchanged"]
+```
+
+### Ordering and scope
+
+- `success` runs only after a terminal **successful** issue run; `failure` only
+  after a terminal **failed** one. Exactly one of the two runs.
+- `always` runs after the applicable outcome hook, in both cases — including
+  when that hook exited non-zero, timed out or could not be spawned.
+- A missing hook is a no-op.
+- A claim that was **skipped** (rejected, or already held by another worker)
+  runs no callbacks: no run happened to report.
+- A shutdown or an exception after a claim takes the failure/`always` path
+  exactly once.
+- Concurrent issue slots each receive their own context; hooks never share
+  state between slots.
+
+### Invocation and path rules
+
+- The configured path is executed **directly** — no shell, no `sh -c`, no
+  arguments — so no issue or repository text can be parsed as a command.
+- Paths must be **absolute** and POSIX. A relative path is rejected at config
+  load, because the worker's working directory changes between runs.
+- The path is resolved on the filesystem the **worker process** sees. The
+  worker runs inside the container ([Run Mode](#-run-mode) has one member), so
+  the hook must exist at that absolute path **inside the container** — a host
+  path that is not mounted in is not visible to it.
+- Every hook is bounded by `timeout_seconds` (default `60`, maximum `3600`);
+  a hook that exceeds it is terminated with `SIGTERM` and recorded as
+  `timed_out` with exit code `124`. A hook that ignores `SIGTERM`, or that
+  forks a child holding its output pipes, can outlive that signal — write
+  hooks that terminate on it.
+- stdout, stderr, the exit code and the duration are captured, redacted and
+  logged — including whatever a timed-out hook printed before it was killed.
+  Streams are truncated to 4000 characters each.
+- **A callback failure never rewrites the run's own result.** It is reported
+  loudly and the VibeCoder outcome stands.
+- A malformed `callbacks` block fails the config load rather than leaving a
+  hook that silently never runs.
+
+### What a hook receives
+
+The environment is **cleared** before it is populated: only `PATH`, `HOME`,
+`LANG`, `TZ` and `TMPDIR` are inherited from the worker, so no credential
+crosses into a callback. Transcript **contents** are never exported — only the
+path, and reading it is the callback author's decision.
+
+`VIBECODER_CALLBACK_CONTEXT` names a versioned JSON document written for that
+invocation and removed after it exits:
+
+```json
+{
+  "schemaVersion": 1,
+  "event": "success",
+  "runId": "vibe-mtk92vcu-ebcc11",
+  "result": "success",
+  "repository": "owner/repo",
+  "issueNumber": 806,
+  "host": "worker-1",
+  "workerName": "fleet-a",
+  "provider": "claude",
+  "sessionId": "…",
+  "sessionLogPath": "/home/vibe/logs/agent-….log",
+  "startedAt": "2026-09-02T01:00:00.000Z",
+  "finishedAt": "2026-09-02T01:31:12.000Z",
+  "durationSeconds": 1872,
+  "exitCode": 0,
+  "telemetry": {
+    "inputTokens": 1200,
+    "outputTokens": 340,
+    "cacheCreationTokens": 90,
+    "cacheReadTokens": 20,
+    "estimatedCostUsd": 0.42
+  }
+}
+```
+
+The same facts are exported as scalars, one variable each:
+`VIBECODER_CALLBACK_SCHEMA_VERSION`, `VIBECODER_CALLBACK_EVENT`,
+`VIBECODER_CALLBACK_CONTEXT`, `VIBECODER_RUN_ID`, `VIBECODER_RESULT`,
+`VIBECODER_REPOSITORY`, `VIBECODER_ISSUE_NUMBER`, `VIBECODER_HOST`,
+`VIBECODER_WORKER_NAME`, `VIBECODER_PROVIDER`, `VIBECODER_SESSION_ID`,
+`VIBECODER_SESSION_LOG_PATH`, `VIBECODER_STARTED_AT`,
+`VIBECODER_FINISHED_AT`, `VIBECODER_DURATION_SECONDS`,
+`VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`, `VIBECODER_OUTPUT_TOKENS`,
+`VIBECODER_CACHE_CREATION_TOKENS`, `VIBECODER_CACHE_READ_TOKENS` and
+`VIBECODER_ESTIMATED_COST_USD`.
+
+A fact the run could not supply — no provider, no session, no parseable token
+usage — is **omitted** from both the document and the environment rather than
+emitted empty, so a hook can test for presence truthfully.
+
 ## 🔄 Session Resume
 
 Session resume enables CLI-level session continuity across phases of the same

@@ -237,8 +237,13 @@ import {
 } from "./stuck_issue_detector.ts";
 import {
   deleteResumeState,
+  loadResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
+import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { hasAnyCallback } from "./run_callbacks_config.ts";
+import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
+import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
   resolveFleetPrAuthorSet,
@@ -328,6 +333,11 @@ import {
   fleetHealthCheckoutDirName,
   runFleetHealthReporting,
 } from "./fleet_health.ts";
+
+/** Home directory, in the order `agent_transcript.ts` resolves it. */
+function homeDirectory(): string | undefined {
+  return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -572,6 +582,13 @@ export async function createProductionRunCoreDeps(
 
   // Stable machine identifier used by GitHub heartbeat markers (Issue #1454)
   const machineId = await getMachineId(workDir);
+  /**
+   * CLI session id per released claim, keyed `owner/repo#number` (Issue
+   * #806). Captured at release — before the resume state that holds it is
+   * deleted — and consumed by that claim's callbacks, so concurrent slots
+   * never read each other's session.
+   */
+  const releasedSessionIds = new Map<string, string>();
   // Issue #253: trusted-author sets are a per-cycle snapshot, not values
   // captured once at start-up. The production refresh still copies the
   // static config arrays, so observable behaviour is unchanged; the
@@ -2846,6 +2863,11 @@ export async function createProductionRunCoreDeps(
           ...(result.outcome && !isExpectedSkip
             ? { outcome: result.outcome }
             : {}),
+          // Token and cost telemetry for the post-run callbacks (Issue
+          // #806); a skip never ran an agent, so it reports none.
+          ...(result.telemetry && !isExpectedSkip
+            ? { telemetry: result.telemetry }
+            : {}),
         },
       };
     },
@@ -3017,6 +3039,32 @@ export async function createProductionRunCoreDeps(
       issueNumber: number,
       outcome?: RunOutcome,
     ) {
+      // Issue #806: the run's CLI session id is read *before* the resume
+      // state is deleted below, so the post-run callbacks can identify the
+      // session even on the ordinary path that clears it.
+      if (hasAnyCallback(config.callbacks)) {
+        try {
+          const resume = await loadResumeState(workDir, repo, issueNumber);
+          const key = `${repo}#${issueNumber}`;
+          // Set OR clear: a later claim on the same issue with no session of
+          // its own must never be handed the previous run's id, and a skip
+          // (which fires no callbacks) must not leave an entry behind.
+          if (resume?.sessionId) {
+            releasedSessionIds.set(key, resume.sessionId);
+          } else {
+            releasedSessionIds.delete(key);
+          }
+        } catch (error) {
+          // Never silent: the hook simply sees no session id, and the log
+          // says why rather than leaving an unexplained gap in the context.
+          logger.warn(
+            `Could not read the session id for ${repo}#${issueNumber}'s ` +
+              `post-run callbacks: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+          );
+        }
+      }
       try {
         await libReleaseClaim(workDir, repo, issueNumber, {
           githubUser,
@@ -3071,6 +3119,36 @@ export async function createProductionRunCoreDeps(
       } else {
         await deleteResumeState(workDir, repo, issueNumber);
       }
+    },
+
+    /**
+     * Post-run callbacks for one terminal issue run (Issue #806, parent
+     * #796).
+     *
+     * Builds the versioned context from what this host can state truthfully —
+     * absent facts are omitted, never guessed — and hands it to
+     * `invokeRunCallbacks`, which bounds, captures and reports each hook
+     * without ever altering the run's own outcome.
+     */
+    async runIssueCallbacks(run) {
+      if (!hasAnyCallback(config.callbacks)) return;
+      const key = `${run.repo}#${run.issueNumber}`;
+      const sessionId = releasedSessionIds.get(key);
+      releasedSessionIds.delete(key);
+      await invokeRunCallbacks({
+        callbacks: config.callbacks,
+        context: buildIssueRunCallbackContext(run, {
+          runId: getRunId(),
+          host: Deno.hostname(),
+          ...(config.workerName ? { workerName: config.workerName } : {}),
+          ...(config.agentProvider ? { provider: config.agentProvider } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          // Same fallback order the transcript writer itself uses.
+          ...(homeDirectory() ? { home: homeDirectory()! } : {}),
+        }),
+        log: (message) => logger.info(message),
+        logError: (message) => logger.error(message),
+      });
     },
     async cleanupInProgressIssue() {
       try {

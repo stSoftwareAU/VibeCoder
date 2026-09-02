@@ -40,9 +40,11 @@ export interface SubprocessResult {
  *
  * @param executable - The command to run (e.g., "gh", "git", "df").
  * @param args - Command-line arguments.
- * @param options - Optional settings: cwd, timeout, quiet mode. `quiet`
- *   suppresses stdout only — stderr is always piped and captured so
- *   failure diagnostics survive (Issue #1979).
+ * @param options - Optional settings: cwd, timeout, quiet mode, environment.
+ *   `quiet` suppresses stdout only — stderr is always piped and captured so
+ *   failure diagnostics survive (Issue #1979). `clearEnv` starts the child
+ *   from an empty environment so only `env` reaches it — the callback
+ *   contract's credential boundary (Issue #806).
  * @returns Result containing the subprocess output or an error.
  */
 export async function runWithTimeout(
@@ -52,6 +54,20 @@ export async function runWithTimeout(
     cwd?: string;
     timeoutMs?: number;
     quiet?: boolean;
+    /** Environment entries to set on the child. */
+    env?: Record<string, string>;
+    /** Start from an empty environment rather than inheriting the worker's. */
+    clearEnv?: boolean;
+    /**
+     * Return whatever the child printed before it was killed on timeout,
+     * instead of empty streams (Issue #806).
+     *
+     * Off by default so every existing caller keeps the terse "Timed out
+     * after Nms" stderr it already handles. The callback contract turns it
+     * on because a hook's diagnostic output is exactly what an operator
+     * needs when the hook is the thing that hung.
+     */
+    captureOutputOnTimeout?: boolean;
   },
 ): Promise<Result<SubprocessResult>> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_SUBPROCESS_TIMEOUT_MS;
@@ -72,6 +88,8 @@ export async function runWithTimeout(
     const command = new Deno.Command(executable, {
       args,
       cwd: options?.cwd,
+      ...(options?.env ? { env: options.env } : {}),
+      ...(options?.clearEnv ? { clearEnv: true } : {}),
       stdin: "null",
       stdout: options?.quiet ? "null" : "piped",
       // stderr is always piped + captured. Muting stderr at the OS
@@ -100,13 +118,19 @@ export async function runWithTimeout(
         "timeout",
         `Subprocess timed out after ${timeoutMs}ms: ${cmdStr}`,
       );
+      const decode = (bytes: Uint8Array | null) =>
+        bytes ? new TextDecoder().decode(bytes).trim() : "";
+      const timedOutStderr = `Timed out after ${timeoutMs}ms`;
+      const captured = options?.captureOutputOnTimeout
+        ? decode(output.stderr)
+        : "";
       return {
         ok: true,
         value: {
           success: false,
           code: 124,
-          stdout: "",
-          stderr: `Timed out after ${timeoutMs}ms`,
+          stdout: options?.captureOutputOnTimeout ? decode(output.stdout) : "",
+          stderr: captured ? `${timedOutStderr}\n${captured}` : timedOutStderr,
           timedOut: true,
         },
       };
