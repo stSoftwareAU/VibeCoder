@@ -730,6 +730,8 @@ async function completionBody(
         const wip = await preserveRunWip({
           state,
           deps,
+          issueNumber,
+          repo,
           buildMessage: (dirtyFiles) =>
             buildUncommittedWorkWipCommitMessage({ dirtyFiles }),
         });
