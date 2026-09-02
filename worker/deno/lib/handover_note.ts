@@ -43,8 +43,15 @@ import { WIND_DOWN_NOTICE_FILENAME } from "./wind_down_notice.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { handoverFilePath } from "./preserved_wip_branch.ts";
 
-/** Machine-readable marker identifying a note and its structure version. */
-export const HANDOVER_MARKER = '<!-- vibe-handover version="1" -->';
+/**
+ * Machine-readable marker identifying a note and its structure version.
+ *
+ * Deliberately NOT an HTML comment: the resuming run splices this file into
+ * its prompt through `fenceUntrustedIssueText`, whose `neutraliseHtmlComments`
+ * rewrites `<!--` (Issue #771). A marker mangled before its only consumer
+ * reads it is not machine-readable, so it is a visible code span instead.
+ */
+export const HANDOVER_MARKER = "`vibe-handover version=1`";
 
 /** How many earlier attempts the "previous attempts" tail keeps. */
 export const MAX_PRIOR_ATTEMPTS = 3;
@@ -64,10 +71,20 @@ export interface HandoverFacts {
   elapsedSeconds: number;
   /** UTC instant of the interruption, ISO-8601 with seconds precision. */
   interruptedAtIso: string;
-  /** Repo-relative paths the interruption left uncommitted. */
-  dirtyFiles: readonly string[];
-  /** Subjects of the commits this run added to the branch. */
-  wipCommitSubjects: readonly string[];
+  /**
+   * Repo-relative paths the interruption left uncommitted — `null` when git
+   * could not be asked. An empty list means "the tree was clean", which is a
+   * fact; `null` means the worker does not know, and the note says so rather
+   * than writing a clean tree into a permanent record on a failed `git
+   * status`.
+   */
+  dirtyFiles: readonly string[] | null;
+  /**
+   * Subjects of the commits this run added to the branch — `null` when the
+   * log could not be read, distinguished from an empty list for the same
+   * reason as {@link HandoverFacts.dirtyFiles}.
+   */
+  wipCommitSubjects: readonly string[] | null;
   /**
    * Whether the run was handed a wind-down notice before it stopped
    * (Issue #508). Left undefined by callers that do not know; the writer
@@ -103,20 +120,26 @@ function isPortablePath(path: string): boolean {
 }
 
 /**
- * Replace anything that looks like an absolute host path with a marker.
+ * Replace anything unportable in free text the worker copies verbatim — the
+ * commit subjects the agent wrote.
  *
- * Applied to free text the worker copies verbatim — commit subjects the
- * agent wrote — because a host path there is just as useless to a worker on
- * another machine as one in the file list, and just as invisible to a
- * "file exists" check.
+ * Two shapes matter, and both survive a "file exists" check while making the
+ * note useless to a worker on another host: an absolute host path, and a
+ * session id (a UUID, or a long opaque hex token) tying the note to one
+ * conversation with one provider.
  */
-function stripHostPaths(text: string): string {
+function stripNonPortable(text: string): string {
   return text
     .replace(/[A-Za-z]:\\[^\s"'`]*/g, "<path>")
     .replace(
       /(^|[\s"'`(])~?\/[^\s"'`]+/g,
       (_m, lead: string) => `${lead}<path>`,
-    );
+    )
+    .replace(
+      /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+      "<session-id>",
+    )
+    .replace(/\b[0-9a-f]{32,}\b/gi, "<session-id>");
 }
 
 /**
@@ -131,14 +154,27 @@ function defuseLiquid(text: string): string {
   return text.replace(/\{\{/g, "{ {").replace(/\{%/g, "{ %");
 }
 
-/** The one-line summary of an attempt, and the unit the tail is kept in. */
-function buildAttemptLine(facts: HandoverFacts): string {
-  const files = facts.dirtyFiles.length;
-  const commits = facts.wipCommitSubjects.length;
+/** `"3"`, or `"an unknown number of"` when git could not be asked. */
+function countOrUnknown(items: readonly string[] | null): string {
+  return items === null ? "an unknown number of" : String(items.length);
+}
+
+/**
+ * The one-line summary of an attempt, and the unit the tail is kept in.
+ *
+ * Counts the files the note actually lists — not the raw input — so the line
+ * can never claim more preserved files than the body names.
+ */
+function buildAttemptLine(
+  facts: HandoverFacts,
+  listedFiles: readonly string[] | null,
+): string {
   return `${facts.interruptedAtIso} — execute ${
     describeWipCause(facts.cause)
-  } after ${facts.elapsedSeconds}s; ${files} uncommitted file(s) preserved; ` +
-    `${commits} commit(s) added to the branch`;
+  } after ${facts.elapsedSeconds}s; ${
+    countOrUnknown(listedFiles)
+  } uncommitted file(s) preserved; ` +
+    `${countOrUnknown(facts.wipCommitSubjects)} commit(s) added to the branch`;
 }
 
 /**
@@ -156,10 +192,12 @@ export function extractAttemptLines(note: string): string[] {
 
 /** Render the note a later claim (or a human) reads. */
 export function buildHandoverNote(facts: HandoverFacts): string {
-  const files = facts.dirtyFiles.filter(isPortablePath);
-  const dropped = facts.dirtyFiles.length - files.length;
+  const files = (facts.dirtyFiles ?? []).filter(isPortablePath);
+  const dropped = (facts.dirtyFiles ?? []).length - files.length;
   const listed = files.slice(0, MAX_LISTED_FILES);
-  const commits = facts.wipCommitSubjects.filter((s) => s.trim().length > 0);
+  const commits = (facts.wipCommitSubjects ?? []).filter((s) =>
+    s.trim().length > 0
+  );
   const priorAttempts = (facts.priorAttempts ?? []).slice(
     0,
     MAX_PRIOR_ATTEMPTS,
@@ -177,7 +215,7 @@ export function buildHandoverNote(facts: HandoverFacts): string {
     "",
     "## This attempt",
     "",
-    `- ${buildAttemptLine(facts)}`,
+    `- ${buildAttemptLine(facts, facts.dirtyFiles === null ? null : files)}`,
     `- Branch: \`${defuseLiquid(facts.branch)}\``,
     `- Wind-down notice: ${
       facts.windDownNoticeDelivered
@@ -192,9 +230,17 @@ export function buildHandoverNote(facts: HandoverFacts): string {
   if (commits.length > 0) {
     lines.push("Commits this run added to the branch, newest first:", "");
     for (const subject of commits) {
-      lines.push(`- ${defuseLiquid(stripHostPaths(subject))}`);
+      lines.push(`- ${defuseLiquid(stripNonPortable(subject))}`);
     }
     lines.push("");
+  } else if (facts.wipCommitSubjects === null) {
+    // Never write "no commits" from a failed `git log` — an unreadable log is
+    // not a fact about the run, and this note is a permanent record.
+    lines.push(
+      "The commit log could not be read at the interruption, so what this run",
+      "committed is unknown here — read `git log` on this branch.",
+      "",
+    );
   } else {
     lines.push(
       "No commit was recorded for this run beyond the preservation below.",
@@ -212,6 +258,13 @@ export function buildHandoverNote(facts: HandoverFacts): string {
     const unlisted = files.length - listed.length;
     if (unlisted > 0) lines.push(`- …and ${unlisted} more file(s)`);
     lines.push("");
+  } else if (facts.dirtyFiles === null) {
+    lines.push(
+      "The working tree could not be inspected at the interruption, so",
+      "whether anything was left uncommitted is unknown here — run",
+      "`git status` on this branch.",
+      "",
+    );
   } else {
     lines.push(
       "The working tree was clean at the interruption — the work above is",
@@ -234,7 +287,9 @@ export function buildHandoverNote(facts: HandoverFacts): string {
       "changes above is outstanding.",
     "",
     `Diff \`${defuseLiquid(facts.branch)}\` against its base branch to see ` +
-      `the ${commits.length} commit(s) and ${files.length} preserved ` +
+      `the ${countOrUnknown(facts.wipCommitSubjects)} commit(s) and ${
+        countOrUnknown(facts.dirtyFiles === null ? null : files)
+      } preserved ` +
       "file(s) named above, continue from them, and do not revert them " +
       "unless they are wrong.",
     "",

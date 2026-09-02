@@ -299,6 +299,9 @@ could reach and that a third party or a durable record could later read:
   crash-notification posts, which embed tails of subprocess output.
 - **Issue title and body edits** — the `editIssue` writes the revision and
   refinement processors make from model-authored `new_title` / `new_body`.
+- **Committed files** — text the worker writes into the clone and then pushes,
+  such as the interrupted-run handover note (Issue #769), which carries commit
+  subjects and paths an agent authored.
 
 Every branch of a sink counts, not just the obvious one. Revision and refinement
 each post model output twice — once when the JSON parse fails and once on the
@@ -408,6 +411,7 @@ only a decoded *credential shape* is masked.
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
 | Question-failure comment | `worker/deno/lib/label_question_failure.ts` | |
+| Interrupted-run handover note (committed and pushed) | `worker/deno/lib/handover_note.ts` | [#769](https://github.com/stSoftwareAU/VibeCoder/issues/769) |
 
 ```mermaid
 flowchart LR
@@ -419,6 +423,7 @@ flowchart LR
     P["handle_no_changes_phase.ts"] --> R
     G["gh_body_redaction.ts<br/>(--body / -f body= via spawnGh)"] --> R
     GA["gh_guard_cli.ts<br/>(agent bodies via the PATH shim)"] --> R
+    HN["handover_note.ts<br/>(note committed to the issue branch)"] --> R
     N["your new sink"] -.must call.-> R
     R --> RULES["RULES\n(add a rule for each\nnew credential shape)"]
     RULES --> O["masked text → public / permanent sink"]

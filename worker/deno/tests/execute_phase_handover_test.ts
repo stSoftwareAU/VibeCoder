@@ -55,6 +55,9 @@ const EXTERNAL_SIGTERM = {
   externalSigterm: true,
 };
 
+/** A timeout where the agent produced nothing at all (Issue #218 guard). */
+const TIMED_OUT_ZERO_OUTPUT = { ...TIMED_OUT, output: "" };
+
 /** The worker's own shutdown ended the run: the cycle is over. */
 const WORKER_SHUTDOWN = {
   output: "editing the parser, running deno test",
@@ -112,6 +115,8 @@ async function runInterrupted(options: {
   runnerValue: Record<string, unknown>;
   /** Files `git status --porcelain` reports as uncommitted. */
   dirty?: string[];
+  /** Raw porcelain lines, when the test needs git's own quoting/renames. */
+  statusLines?: string[];
   /** Make the note unwritable, to exercise the non-fatal failure path. */
   blockHandover?: boolean;
 }): Promise<HandoverRun> {
@@ -149,9 +154,9 @@ async function runInterrupted(options: {
             });
           if (args[0] === "status") {
             return ok(
-              dirty.map((f) =>
+              (options.statusLines ?? dirty.map((f) =>
                 ` M ${f}`
-              ).join("\n"),
+              )).join("\n"),
             );
           }
           if (args[0] === "rev-list" && args[1] === "--count") return ok("2\n");
@@ -252,6 +257,30 @@ Deno.test("execute_phase #769 - an external SIGTERM commits the handover note", 
   assert(run.noteAtCommit, "an external SIGTERM must write the note too");
   assertStringIncludes(run.noteAtCommit, "external SIGTERM");
   assertStringIncludes(run.reason, NOTE);
+});
+
+Deno.test("execute_phase #769 - git's porcelain quoting and renames read as real paths", async () => {
+  const run = await runInterrupted({
+    runnerValue: TIMED_OUT,
+    statusLines: [
+      ' M "worker/deno/lib/na\\303\\257ve parser.ts"',
+      "R  worker/deno/lib/old.ts -> worker/deno/lib/new.ts",
+    ],
+  });
+  assert(run.noteAtCommit, "the note must exist when the commit runs");
+  assertStringIncludes(run.noteAtCommit, "worker/deno/lib/naïve parser.ts");
+  // A rename names the destination — the path a resuming claim will find.
+  assertStringIncludes(run.noteAtCommit, "worker/deno/lib/new.ts");
+  assertEquals(run.noteAtCommit.includes("\\303"), false, run.noteAtCommit);
+});
+
+Deno.test("execute_phase #769 - a zero-output timeout leaves the tree alone and writes no note", async () => {
+  const run = await runInterrupted({ runnerValue: TIMED_OUT_ZERO_OUTPUT });
+  // The agent produced nothing, so nothing in the tree is its work. Writing a
+  // note here would force a commit whose `git add -A` sweeps in exactly the
+  // files that guard exists to exclude (Issue #218).
+  assertEquals(run.noteAtCommit, undefined);
+  assertEquals(run.commits, []);
 });
 
 Deno.test("execute_phase #769 - the committed note is portable across hosts and providers", async () => {

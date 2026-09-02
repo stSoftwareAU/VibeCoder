@@ -20,6 +20,7 @@ import {
 } from "../lib/handover_note.ts";
 import { handoverFilePath } from "../lib/preserved_wip_branch.ts";
 import { classifyStagedPath } from "../lib/pre_commit_safety.ts";
+import { fenceUntrustedIssueText } from "../lib/prompt_delimiter.ts";
 import { describeWipCause } from "../lib/wip_checkpoint.ts";
 import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
 
@@ -167,6 +168,52 @@ Deno.test("buildHandoverNote #769 - a host path inside a commit subject is strip
   assertStringIncludes(note, "<path>");
 });
 
+Deno.test("buildHandoverNote #769 - a session id inside a commit subject is stripped", () => {
+  const note = buildHandoverNote({
+    ...FACTS,
+    wipCommitSubjects: [
+      "chore: resume 3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "chore: cache 0123456789abcdef0123456789abcdef",
+    ],
+  });
+  assertEquals(note.includes("3f2504e0-4f89"), false, note);
+  assertEquals(note.includes("0123456789abcdef"), false, note);
+  assertStringIncludes(note, "<session-id>");
+});
+
+Deno.test("buildHandoverNote #769 - an unreadable git state is reported as unknown, never as clean", () => {
+  const note = buildHandoverNote({
+    ...FACTS,
+    dirtyFiles: null,
+    wipCommitSubjects: null,
+  });
+  // The note is a permanent record: "git could not tell us" must never be
+  // written down as "the tree was clean" or "no commits were made".
+  assertEquals(note.includes("The working tree was clean"), false, note);
+  assertEquals(note.includes("No commit was recorded"), false, note);
+  assertStringIncludes(note, "could not be inspected");
+  assertStringIncludes(note, "commit log could not be read");
+  assertStringIncludes(note, "an unknown number of uncommitted file(s)");
+});
+
+Deno.test("buildHandoverNote #769 - the attempt line counts only the files the note lists", () => {
+  const note = buildHandoverNote({
+    ...FACTS,
+    dirtyFiles: ["src/kept.ts", "/tmp/dropped.ts", "~/also-dropped.ts"],
+  });
+  assertStringIncludes(note, "1 uncommitted file(s) preserved");
+  assertEquals(note.includes("3 uncommitted file(s)"), false, note);
+});
+
+Deno.test("buildHandoverNote #769 - the structure marker survives the untrusted fencing #771 applies", () => {
+  const note = buildHandoverNote(FACTS);
+  const fenced = fenceUntrustedIssueText(note, "### handover").join("\n");
+  // #771 splices the note into a prompt through this fence, which rewrites
+  // `<!--`. A marker mangled before its only consumer reads it is not a
+  // machine-readable marker.
+  assertStringIncludes(fenced, HANDOVER_MARKER);
+});
+
 Deno.test("extractAttemptLines #769 - reads back the attempts a note records", () => {
   const first = buildHandoverNote(FACTS);
   const lines = extractAttemptLines(first);
@@ -262,7 +309,6 @@ Deno.test("writeHandoverNote #769 - a write failure is reported and logged, neve
   try {
     await Deno.mkdir(`${repoPath}/.git`);
     // A file where the handover directory must go: the write cannot succeed.
-    await Deno.mkdir(`${repoPath}/.github`);
     await Deno.mkdir(`${repoPath}/docs/archive`, { recursive: true });
     await Deno.writeTextFile(`${repoPath}/docs/archive/handover`, "in the way");
     const outcome = await writeHandoverNote({
