@@ -35,8 +35,14 @@ const SCALE: Record<string, string> = {
   "🟢": "low",
 };
 
-/** A stated pairing: `` `🟠` high ``, however the sentence wraps. */
-const PAIRING = /`(🔴|🟠|🟡|🟢)`\s+(critical|high|medium|low)/g;
+/**
+ * A stated pairing: `` `🟠` high ``, however the sentence wraps.
+ *
+ * The `u` flag is load-bearing: without it each emoji is a surrogate pair and
+ * the alternation is not a valid pattern over code points.
+ */
+const PAIRING =
+  /`(\u{1F534}|\u{1F7E0}|\u{1F7E1}|\u{1F7E2})`\s+(critical|high|medium|low)/gu;
 
 /** Every prompt family under `prompts/`. */
 async function families(): Promise<string[]> {
