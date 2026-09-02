@@ -104,14 +104,6 @@ export interface PreserveRunWipOptions {
 }
 
 /**
- * Preserve the working tree onto the claim-locked branch and describe the
- * outcome.
- *
- * Never throws and never fails the caller's phase: preservation is a
- * best-effort rescue, and a failure is reported in `wipNote` (Issue #47's
- * "uncommitted work remains only in the local clone") rather than swallowed.
- */
-/**
  * Describe where the work now is (Issue #770): the branch this run pushed,
  * plus the handover file (#769) when one is committed on it.
  *
@@ -141,6 +133,14 @@ async function resolvePreservedWip(
   };
 }
 
+/**
+ * Preserve the working tree onto the claim-locked branch and describe the
+ * outcome.
+ *
+ * Never throws and never fails the caller's phase: preservation is a
+ * best-effort rescue, and a failure is reported in `wipNote` (Issue #47's
+ * "uncommitted work remains only in the local clone") rather than swallowed.
+ */
 export async function preserveRunWip(
   options: PreserveRunWipOptions,
 ): Promise<PreservedRunWip> {

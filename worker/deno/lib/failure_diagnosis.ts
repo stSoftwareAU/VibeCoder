@@ -567,7 +567,7 @@ export function getFailureDiagnosis(
 
     case "scheduled_release":
       return `- The run was released on schedule — the cycle ended, or the supervisor's run hard cap was reached — while the agent was still progressing
-- WIP preserved: the work in progress was committed and pushed to the issue branch the release comment names (see **Work in progress**), and the next claim resumes from there
+- WIP preserved: the work in progress was committed and pushed to the issue branch — the claim-release comment's **Work in progress** line names that branch — and the next claim resumes from there
 - Nothing here reflects on the issue: it does not need re-scoping, simplifying or splitting`;
 
     case "rate_limit":

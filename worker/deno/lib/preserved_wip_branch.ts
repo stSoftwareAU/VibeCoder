@@ -23,9 +23,16 @@
  * issue branch (Issue #769). Defined here because #770 advertises the file
  * and #769 writes it — one constant, so the advertisement cannot point at a
  * path nothing writes.
+ *
+ * NOT the `.vibe/handover/…` the sketch in #769 suggested: `.vibe` is a
+ * hidden path, so the enforced `.gitignore` (`.*`) never stages it and
+ * `classifyStagedPath` rejects it outright — a handover written there could
+ * never reach the branch, and force-adding it would fail the pre-commit gate
+ * and take the WIP commit down with it. `preserved_wip_branch_test.ts` pins
+ * that this path stays committable.
  */
 export function handoverFilePath(issueNumber: number): string {
-  return `.vibe/handover/issue-${issueNumber}.md`;
+  return `docs/handover/issue-${issueNumber}.md`;
 }
 
 /** Where an interrupted run's work actually is. */

@@ -20,7 +20,10 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import { sweepHeartbeatComments } from "./heartbeat_sweep.ts";
-import { describePreservedBranch } from "./preserved_wip_branch.ts";
+import {
+  describePreservedBranch,
+  type PreservedWip,
+} from "./preserved_wip_branch.ts";
 
 /**
  * Generate the heartbeat file path for a given repo and issue.
@@ -456,7 +459,25 @@ export const OUTCOME_DETAIL_MAX_LENGTH = 200;
  * because it carries a branch name and a handover link, and truncating it
  * would point a reader at half a ref.
  */
-export const OUTCOME_WIP_MAX_LENGTH = 320;
+export const OUTCOME_WIP_MAX_LENGTH = 400;
+
+/**
+ * The `**Work in progress:**` line for a preserved branch (Issue #770).
+ *
+ * A line that does not fit drops the handover clause and keeps the branch:
+ * half a URL is a broken link, and the branch is the part a reader cannot do
+ * without. Only a branch name long enough to blow the bound on its own is
+ * ever truncated.
+ */
+function renderPreservedWipClause(preserved: PreservedWip): string {
+  const full = describePreservedBranch(preserved);
+  const text = full.length <= OUTCOME_WIP_MAX_LENGTH
+    ? full
+    : describePreservedBranch({ branch: preserved.branch });
+  return `\n**Work in progress:** ${
+    boundOutcomeText(text, OUTCOME_WIP_MAX_LENGTH)
+  }`;
+}
 
 /**
  * Flatten and bound free text spliced into the release body (Issue #4326).
@@ -560,12 +581,7 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
       // detail: a reader must be able to find the preserved branch even when
       // the message tail is trimmed to keep the block bounded.
       const wip = outcome.preservedWip
-        ? `\n**Work in progress:** ${
-          boundOutcomeText(
-            describePreservedBranch(outcome.preservedWip),
-            OUTCOME_WIP_MAX_LENGTH,
-          )
-        }`
+        ? renderPreservedWipClause(outcome.preservedWip)
         : "";
       const block = `\n**Outcome:** no PR raised — \`${display}\`.\n` +
         `**Diagnosis:** died in phase \`${phase}\` after ${
