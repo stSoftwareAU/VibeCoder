@@ -1402,8 +1402,12 @@ main() {
     # (Issue #2588 — part of #2561). Runs after the collaborator precheck
     # (which validates access). Setup-time only, never in the per-iteration
     # loop — one read + at most one PUT per repo. Idempotent and non-fatal.
+    # Non-fatal, and the *reason* is on the per-repository lines the CLI
+    # printed just above — a private repository on a free plan needs GitHub
+    # Pro, which reads identically to a bad token unless it is said out loud
+    # (Issue #733).
     run_setup_cli branch-protection-sync \
-        || print_warning "Ruleset sync had issues (non-fatal)"
+        || print_warning "Ruleset sync had issues — see the per-repository lines above (non-fatal)"
 
     # Back-fill `idle-task` label on existing `Run a security scan` wrappers
     # (Issue #2131). Idempotent — already-labelled wrappers emit
