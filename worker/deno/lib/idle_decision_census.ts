@@ -616,24 +616,39 @@ function isDependencyBlockedByOpenIssue(
 }
 
 /**
- * Work streams the worker already occupies — milestones (or `""` for the
- * default-branch stream) hosting an open issue assigned to `workerUser`.
+ * Work streams already occupied — milestones (or `""` for the default-branch
+ * stream) hosting an open issue assigned to anyone the claim scan honours.
  *
  * Mirrors {@link classifyIssues}' `stream_occupied` gate in
  * `idle_detect_diagnostics.ts`, which in turn mirrors the scan's
- * `isMilestoneOccupied`. The scan widens the set to the whole fleet
- * (`workerUser ∪ allowedAuthors`); the census keeps the narrower
- * worker-only set the audit uses, so the two instruments cannot disagree
- * and a sibling host's claim never silences this host's inversion signal.
+ * `isMilestoneOccupied` — **including its account set** (Issue #753). It did
+ * not: the census counted only `workerUser`'s own assignments, so a milestone
+ * held by anyone else read as claimable here and as `milestone-occupied`
+ * there. On stSoftwareAU/VibeCoder that filed an inversion issue naming three
+ * issues a human had taken, on three consecutive cycles — an alert whose
+ * "one of them is wrong" is answered by "neither".
+ *
+ * The narrower set was justified as keeping a sibling host's claim from
+ * silencing this host's signal. It does not survive the rule this instrument
+ * exists to apply: `milestone-occupied` is declared **`self`**-clearing in
+ * `skip_reason_clearing.ts` — the stream frees when the work lands — and the
+ * streak escalation is for gates that *never* clear. Work in flight, whoever
+ * holds it, is not a contradiction to report.
  */
 function occupiedStreamsFor(
   issues: CensusIssue[],
   workerUser: string,
+  allowedAuthors: readonly string[] = [],
 ): ReadonlySet<string> {
-  const lowerUser = workerUser.toLowerCase();
+  // The scan's own set, lowercased the same way: the worker is always
+  // included, so a misconfigured `allowedAuthors` never drops this host's own
+  // assignments.
+  const honoured = new Set(
+    [workerUser, ...allowedAuthors].map((a) => a.toLowerCase()),
+  );
   const occupied = new Set<string>();
   for (const issue of issues) {
-    if (issue.assignees.some((a) => a.toLowerCase() === lowerUser)) {
+    if (issue.assignees.some((a) => honoured.has(a.toLowerCase()))) {
       occupied.add(issue.milestone);
     }
   }
@@ -703,6 +718,7 @@ function countUnblocked(
   workerUser: string,
   repo: string,
   runLocalHolds: ReadonlySet<number>,
+  allowedAuthors: readonly string[] = [],
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
@@ -719,7 +735,11 @@ function countUnblocked(
     lowPriority: 0,
     idleTask: 0,
   };
-  const occupiedStreams = occupiedStreamsFor(issues, workerUser);
+  const occupiedStreams = occupiedStreamsFor(
+    issues,
+    workerUser,
+    allowedAuthors,
+  );
   // Every issue in this list is open — the census only ever reads open
   // issues — so membership is exactly "the dependency is still open".
   const openIssueNumbers = new Set(issues.map((i) => i.number));
@@ -861,6 +881,14 @@ export function buildIdleDecisionCensus(opts: {
    * behaviour.
    */
   claimedRepos?: readonly string[];
+  /**
+   * The trusted accounts the claim scan honours beside `workerUser`
+   * (`.config.json` `allowed_authors`), so this census models the scan's
+   * `milestone-occupied` gate over the same set (Issue #753). Omitted → the
+   * worker alone, which is what the census counted before and what made a
+   * human's assignment read as claimable work the scan was refusing.
+   */
+  allowedAuthors?: readonly string[];
 }): IdleDecisionCensus {
   const perRepo: RepoCensusEntry[] = [];
   for (const input of opts.repos) {
@@ -880,6 +908,7 @@ export function buildIdleDecisionCensus(opts: {
       opts.workerUser,
       input.repo,
       input.runLocalHolds ?? new Set<number>(),
+      opts.allowedAuthors ?? [],
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,

@@ -1407,3 +1407,123 @@ Deno.test("#655 - the cooldown gate is modelled, not silently over-counted", () 
       "after cycle while the census called them claimable",
   );
 });
+
+// --- The scan's own account set (Issue #753) -------------------------------
+//
+// The claim scan refuses a stream held by **any** trusted account
+// (`isMilestoneOccupied` over `workerUser ∪ allowedAuthors`); the census
+// counted only the worker's own assignments. On stSoftwareAU/VibeCoder a
+// human took two unmilestoned issues — occupying the default-branch stream —
+// and the scan then refused every other unmilestoned `work-on` issue with
+// `milestone-occupied`, while the census reported `work_on=3` and raised an
+// inversion on three consecutive cycles. Neither instrument was wrong about
+// its own rule; they were applying different ones.
+
+Deno.test("census - a trusted author's assignment occupies the stream, as the scan says it does (Issue #753)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    allowedAuthors: ["nleck"],
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          // A human holds one issue in the milestone…
+          issue(40, ["work-on"], ["nleck"], "v2"),
+          // …so its siblings are what the scan calls milestone-occupied.
+          issue(41, ["work-on"], [], "v2"),
+          issue(42, ["work-on"], [], "v2"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  // The held issue itself is not counted at all — an assigned issue is
+  // already refused by the label/assignee gate — so what is attributed to
+  // occupancy is its two siblings.
+  assertEquals(entry.streamOccupied, 2);
+  assertEquals(entry.inversionSignal, false);
+  assertEquals(census.inversionRepos, []);
+});
+
+Deno.test("census - the reported inversion is not raised once the sets agree (Issue #753)", () => {
+  // The filed case, in shape: a human holds two unmilestoned issues, which
+  // occupies the default-branch stream for the scan, and three other
+  // unmilestoned `work-on` issues are refused `milestone-occupied` while the
+  // census calls them claimable.
+  const issues = [
+    issue(750, ["bug"], ["nleck"]),
+    issue(751, ["bug"], ["nleck"]),
+    issue(743, ["work-on"]),
+    issue(745, ["work-on"]),
+    issue(747, ["work-on"]),
+  ];
+
+  const before = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [repoInput({ repo: "stSoftwareAU/VibeCoder", issues })],
+  });
+  // Without the scan's set, the human's assignments are invisible and all
+  // three read as claimable — `work_on=3`, the alert as filed.
+  assertEquals(before.perRepo[0]!.unblocked.workOn, 3);
+  assertEquals(before.perRepo[0]!.streamOccupied, 0);
+  assert(before.perRepo[0]!.inversionSignal);
+
+  const after = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    allowedAuthors: ["nleck"],
+    repos: [repoInput({ repo: "stSoftwareAU/VibeCoder", issues })],
+  });
+  assertEquals(after.perRepo[0]!.unblocked.workOn, 0);
+  assertEquals(after.perRepo[0]!.streamOccupied, 3);
+  assertEquals(after.perRepo[0]!.inversionSignal, false);
+  assertEquals(after.escalationRepos, []);
+});
+
+Deno.test("census - an account the scan does not honour still does not occupy (Issue #753)", () => {
+  // The narrow set existed so a sibling host's claim could not silence this
+  // host's signal. Honouring exactly the configured set keeps that: an
+  // account nobody trusts occupies nothing here, because it blocks nothing
+  // in the scan either.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    allowedAuthors: ["nleck"],
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(50, ["work-on"], ["stranger"], "v2"),
+          issue(51, ["work-on"], [], "v2"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.streamOccupied, 0);
+  assertEquals(entry.unblocked.workOn, 1);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - the account set is matched case-insensitively, as the scan matches it (Issue #753)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    allowedAuthors: ["NLeck"],
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(60, ["bug"], ["nleck"], "v2"),
+          issue(61, ["work-on"], [], "v2"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.streamOccupied, 1);
+  assertEquals(entry.unblocked.workOn, 0);
+});
