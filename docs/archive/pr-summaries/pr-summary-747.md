@@ -33,10 +33,28 @@ are priced at 0.025× base input rather than the standard 0.1×):
 | Fable 5.1 | $10 | $50 | $12.50 | **$0.25** | new row |
 | Fable 5 | $10 | $50 | $12.50 | $1.00 | unchanged |
 | Opus 5 / 4.5–4.8 | $5 | $25 | $6.25 | $0.50 | unchanged |
-| Sonnet 5 | $2 | $10 | $2.50 | $0.20 | **new row** — the launch rate is now standard; the scheduled rise to $3/$15 was cancelled |
+| Sonnet 5 | $2 | $10 | $2.50 | $0.20 | **new row** — see the citation below |
 | Sonnet 4.6 / 4.x | $3 | $15 | $3.75 | $0.30 | unchanged |
 | Haiku 4.5 | $1 | $5 | $1.25 | $0.10 | unchanged |
 | Opus 4.0/4.1, Haiku 3.5 | — | — | — | — | unchanged, still correct |
+
+**The Sonnet 5 rate needs its citation, because it looks wrong.** $2/$10 was
+announced as *introductory* pricing through 2026-08-31, so on 2026-09-02 the
+natural reading is that it lapsed and Sonnet 5 costs $3/$15. Both independent
+reviewers flagged it on exactly that reading, working from a cached model table.
+Anthropic's live pricing page carries a note beside the table that settles it:
+
+> The $2/$10 per million input/output token pricing for Claude Sonnet 5,
+> announced at launch as introductory pricing through August 31, 2026, is now
+> the standard price. The previously scheduled increase to $3/$15 per million
+> input/output tokens on September 1, 2026 will not occur.
+
+The citation now lives beside the constant (`worker/deno/lib/token_usage.ts`,
+`SONNET_5_PRICING`) and in `docs/MODEL-AND-CACHING.md`, so the next reader who
+has the same doubt does not have to re-derive it. Getting this wrong in the
+other direction would matter: an under-priced row is found by
+`lookupModelPricing` and therefore never reaches `UNPRICED_UPPER_BOUND_PRICING`,
+so the daily spend ceiling would guard a budget smaller than the real one.
 
 **Why the live-run check cannot pass in this container — measured, not assumed.**
 The installed Claude CLI is 2.1.223, and its binary contains no
@@ -106,22 +124,34 @@ review was exhaustive rather than a sample:
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — separate `claude-fable-5-1` row at $10 / $50 / $12.50 / $0.25 with `claude-fable-5` kept at $1.00 — evidence: `worker/deno/lib/token_usage.ts:65-82`, `worker/deno/tests/token_usage_test.ts::prices Fable 5.1 cache reads at a quarter of Fable 5` — reviewer: met
-- **met** — other current-model rows checked against Anthropic's published pricing, stale rates corrected — evidence: `worker/deno/lib/token_usage.ts:104-117` (Sonnet 5), `docs/MODEL-AND-CACHING.md` Model Pricing table — reviewer: met
+- **met** — separate `claude-fable-5-1` row at $10 / $50 / $12.50 / $0.25 with `claude-fable-5` kept at $1.00 — evidence: `worker/deno/lib/token_usage.ts` (`FABLE_5_1_PRICING`, `FABLE_5_PRICING`), `worker/deno/tests/token_usage_test.ts::prices Fable 5.1 cache reads at a quarter of Fable 5` — reviewer: met
+- **met** — other current-model rows checked against Anthropic's published pricing, stale rates corrected — evidence: `worker/deno/lib/token_usage.ts` (`SONNET_5_PRICING`), `docs/MODEL-AND-CACHING.md` Model Pricing table — reviewer: partial — reason: departed. The reviewer's only doubt was the Sonnet 5 rate, judged against a cached model table showing $2/$10 as introductory through 2026-08-31. The live pricing page states that rate is now standard and the rise to $3/$15 will not occur; that note is quoted above and is now cited beside the constant and in the doc. Opus and Haiku rows were checked and are unchanged
 - **partial** — prompt review of the phase templates, adjustments applied, each finding's outcome recorded — evidence: the Prompt review table above (one row per heading on the 5.1 prompting page); `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`; stSoftwareAU/VibeCoder#759 — reviewer: partial — reason: no `prompts/` template changed. One genuine gap was found and filed rather than edited (committed `vN.md` files are immutable and the winning side is a product call); every other heading is recorded above as no-change-needed or not-applicable with its reason
-- **met** — `docs/MODEL-AND-CACHING.md` updated where it names Fable 5 as the top tier, with the alias resolution and the $0.25/MTok cache-read rate — evidence: `docs/MODEL-AND-CACHING.md` "Fable 5.1 — the current top tier" and the Model Selection alias paragraph — reviewer: met
+- **met** — `docs/MODEL-AND-CACHING.md` updated where it names Fable 5 as the top tier, with the alias resolution and the $0.25/MTok cache-read rate — evidence: `docs/MODEL-AND-CACHING.md` "Fable 5.1 — the current top tier", the Model Selection alias paragraph, and the Phase-Specific Defaults table — reviewer: partial — reason: departed after fixing what the reviewer found. It was right: ten places still asserted "Fable 5" *is* the tier. The current-tense ones now say **Fable** (the tier the `fable` alias names) — the routing prose, the eight phase-table rows, the grill-me detection paragraph, and the tier definition in `docs/CONFIGURATION.md`; `worker/deno/tests/model_routing_docs_test.ts::tierWord` moves with them. Decision-record and incident passages keep "Fable 5" because they describe what was true then
 - **missing** — verify on a real run that the CLI serves `claude-fable-5-1` with `Degraded: no` — reviewer: missing — reason: not verifiable in this container and not because of the change: CLI 2.1.223 has no `claude-fable-5-1` in its binary at all (evidence above), so `--model fable` here can only resolve to `claude-fable-5`. What is proven instead is that the detector accepts 5.1 (`worker/deno/tests/planning_run_stats_test.ts::modelsMatch - Fable 5.1 satisfies a Fable-preferring phase`), so the first Fable-phase run on a 5.1-capable CLI reports `Degraded: no` and prices cache reads at $0.25/MTok without any further change
 - **unrequested** — the historical "Opus↔Sonnet gap shrank to ~1.7×" decision note gained a parenthetical saying Sonnet 5 reopened it to ~2.5× — reviewer: unrequested — reason: the line reads as a current rate in the same document the issue asked to refresh; the original figure is kept and marked as the rate at the time rather than rewritten
+- **unrequested** — the `claude-sonnet-5` row and the `SONNET_5_PRICING`/`SONNET_4_PRICING` split — reviewer: unrequested — reason: traceable to the "check the other current-model rows and correct any stale rate" criterion — `TIER_CURRENT_PRICING["sonnet"]` did point at the superseded $3/$15 — but it is the largest behavioural change here, so it is named rather than buried
+- **unrequested** — `worker/deno/tests/batch_api_fable_pricing_test.ts` and the `claude-fable-5-1` row-order fix in `docs/MODEL-AND-CACHING.md`/`docs/CONFIGURATION.md` — reviewer: unrequested — reason: both close defects the reviewers found in this diff's own work (an untested ordering invariant, and stale current-tense tier statements), so they are part of getting the requested change right rather than new scope
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — quality gates must pass: collapsing the four per-model rows broke the untouched guard `worker/deno/tests/prompt_best_practices_checklist_test.ts` — evidence: `worker/deno/tests/prompt_best_practices_checklist_test.ts:59` — reason: fixed here — the guide replaced those four headings with one `Model-specific guidance` section, so the constant now names that section and says why
+- **violation** — the load-bearing comment justifying the pricing-row order named a symbol that does not exist (`estimateBatchCost`), sending the next reader to a function they cannot find — evidence: `worker/deno/lib/token_usage.ts` (`MODEL_PRICING` header comment) — reason: fixed here — it now names the real consumer, the private `lookupPricing` in `batch_api.ts` reached from the exported `estimateBatchSavings`, and states the substring rule that makes the order load-bearing
+- **violation** — the invariant that comment protects had no test: `lookupModelPricing` never reaches `MODEL_PRICING` for a `claude-fable-…` id, so reordering the two Fable rows would break batch cost estimates with a green suite — evidence: `worker/deno/tests/token_usage_test.ts::returns pricing for a dated Fable 5 id` — reason: fixed here — `worker/deno/tests/batch_api_fable_pricing_test.ts` pins the ordering rule directly and exercises `estimateBatchSavings` on ids whose rows carry different rates
+- **violation** — a Standards Review bullet was written as `- **violation** *(from the spec reviewer, same axis)* — …`, which breaks `LEADING_TOKEN_RE` in `independent_review_gate.ts` so the gate silently drops the entry — evidence: this file, previous revision — reason: fixed here — every bullet now uses the plain shape both gates print
+- **violation** — the Sonnet 5 rate was asserted with no citation, on a date when the obvious reading is that the introductory rate lapsed — evidence: `worker/deno/lib/token_usage.ts` (`SONNET_5_PRICING`) — reason: fixed here — Anthropic's pricing-page note is quoted beside the constant, in `docs/MODEL-AND-CACHING.md`, and in the Evidence section above. The rate itself stands
+- **violation** — Boy Scout Rule: the reworded Fable paragraph carried a truncated sentence forward ("…`quorum_judge`) under, and."), and its twin four lines above ("…were added in so Opus 5 traffic is never dropped") was left in place — evidence: `docs/MODEL-AND-CACHING.md` Model Pricing section — reason: both fixed here
+- **violation** — `lookupModelPricing`'s docstring listed the bare aliases as `opus`/`sonnet`/`haiku`, omitting `fable` — the one alias whose value this change edits — evidence: `worker/deno/lib/token_usage.ts` (`lookupModelPricing` docstring) — reason: fixed here
 - **violation** — a PR summary under `docs/archive/pr-summaries/` was missing — evidence: commit `d5703f8` file list — reason: fixed here — this file
-- **violation** — Boy Scout Rule: the reworded Fable paragraph carried a truncated sentence forward ("…`quorum_judge`) under, and.") — evidence: `docs/MODEL-AND-CACHING.md` Model Pricing section — reason: fixed here — the sentence now ends cleanly
-- **violation** *(from the spec reviewer, same axis)* — a load-bearing comment gave the wrong reason for the row ordering — evidence: `worker/deno/lib/token_usage.ts:153` — reason: fixed here — `lookupModelPricing()` classifies fable ids by version before reaching the map, so the comment now names the consumer that really depends on insertion order, `estimateBatchCost` in `batch_api.ts`
-- **clean** — Australian English throughout; `deno fmt`/`deno lint`/`deno check` on the touched files; tests call real functions and assert results (no source-grepping); no error swallowing; renamed private constants have no stale references; commit cites Issue #747 and carries the `Vibe-Coder-Run-Id` trailer; no hidden paths staged; no `prompts/` file mutated, so prompt-version immutability holds
+- **violation** — quality gates must pass: collapsing the four per-model rows broke the untouched guard `worker/deno/tests/prompt_best_practices_checklist_test.ts` — evidence: `worker/deno/tests/prompt_best_practices_checklist_test.ts:59` — reason: fixed here — the guide replaced those four headings with one `Model-specific guidance` section, so the constant now names that section and says why
+- **clean** — Australian English throughout; `deno fmt`/`deno lint`/`deno check` clean on every touched file; tests call real functions and assert results, no source-grepping; no swallowed errors — an unpriced id still returns `null` and surfaces in `unpricedModels`; the renamed private constants (`FABLE_PRICING`, `SONNET_PRICING`) have no stale references left in the repo; the Model Pricing table mirrors `MODEL_PRICING` row for row and every in-doc anchor resolves; markdownlint and the Mermaid validator pass on all changed docs; no hidden paths staged; no `prompts/` file mutated, so prompt-version immutability holds; commits cite Issue #747 and carry the `Vibe-Coder-Run-Id` trailer
+
+Both reviewers also flagged that `git diff origin/main` appeared to delete
+`worker/deno/tests/idle_decision_census_test.ts` and the Issue #753 work. That
+was branch staleness, not an edit: `origin/main` had advanced one commit past
+the merge base. `origin/main` is merged in, so the reviewed diff and the PR diff
+now agree and nothing from #753 is reverted.
 
 ## Test Plan
 
@@ -133,6 +163,16 @@ Added to `worker/deno/tests/token_usage_test.ts`:
 - `returns pricing for Sonnet 5` — $2 / $10 / $2.50 / $0.20
 - `estimateCost prices Fable 5.1 cache reads at $0.25/MTok` — end-to-end cost breakdown
 
+New file `worker/deno/tests/batch_api_fable_pricing_test.ts` — pins the
+`MODEL_PRICING` row order that `batch_api.ts` depends on, which nothing tested:
+
+- `the Fable 5.1 row precedes Fable 5, so a 5.1 id does not match Fable 5 first`
+- `a dated Fable 5 id still selects the Fable 5 row`
+- `the Fable rows agree on the rates a batch estimate uses` — and says why that
+  makes the ordering test, not this one, the load-bearing guard
+- `Sonnet 5 is costed cheaper than Sonnet 4.6 through the batch path` — the case
+  where the order is observable in an estimate, since the rates differ
+
 Added to `worker/deno/tests/planning_run_stats_test.ts`:
 
 - `modelsMatch - Fable 5.1 satisfies a Fable-preferring phase` — `fable` and `claude-fable-5` both accept `claude-fable-5-1` (and its dated form); a different tier still fails
@@ -143,3 +183,4 @@ Modified, because the behaviour they pinned changed:
 - `resolves bare 'sonnet'/'haiku' aliases` — the `sonnet` alias now expects Sonnet 5's $2 / $10
 - `tier fallback gives Sonnet 4.x pricing for unknown 4-family minor` — renamed and re-commented: an unknown Sonnet **4** minor keeps $3 / $15 now that Sonnet 5 has its own branch
 - `prompt_best_practices_checklist_test.ts` out-of-scope heading list — tracks the guide's restructure into one `Model-specific guidance` section
+- `model_routing_docs_test.ts::tierWord` — the doc names the **tier** (`Fable`) rather than a pinned version, because the `fable` alias no longer means Fable 5

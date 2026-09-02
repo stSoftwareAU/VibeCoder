@@ -98,8 +98,14 @@ const OPUS_PRICING_LEGACY: ModelPricing = {
 };
 
 /**
- * Claude Sonnet 5 — current Sonnet (Issue #747). The $2/$10 launch rate is now
- * the standard price; the scheduled rise to $3/$15 was cancelled.
+ * Claude Sonnet 5 — current Sonnet (Issue #747).
+ *
+ * $2/$10 looks like the expired introductory rate and is not. Anthropic's
+ * pricing page (https://platform.claude.com/docs/en/about-claude/pricing)
+ * carries a note beside the table: the launch rate, announced as introductory
+ * through 2026-08-31, "is now the standard price", and "the previously
+ * scheduled increase to $3/$15 per million input/output tokens on
+ * September 1, 2026 will not occur". Checked 2026-09-02.
  */
 const SONNET_5_PRICING: ModelPricing = {
   inputPerMillion: 2,
@@ -152,10 +158,13 @@ export const TIER_CURRENT_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
 export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   // Claude Fable 5.1 — current top tier (Issue #747). Must precede the
   // `claude-fable-5` row: `lookupModelPricing` classifies every `claude-fable-…`
-  // id by version before it reaches this map, but `estimateBatchCost`
-  // (`batch_api.ts`) walks these rows in insertion order and takes the first
-  // whose key the model id contains. Every released Fable 5 snapshot id carries
-  // a `2026…` date suffix, so no Fable 5 id is captured by the 5.1 key.
+  // id by version before it reaches this map, but `lookupPricing` in
+  // `batch_api.ts` (reached from the exported `estimateBatchSavings`) walks
+  // these rows in insertion order and takes the first whose key the model id
+  // contains — and `"claude-fable-5-1".includes("claude-fable-5")` is true.
+  // Every released Fable 5 snapshot id carries a `2026…` date suffix, so no
+  // Fable 5 id is captured by the 5.1 key. Pinned by
+  // `batch_api_fable_pricing_test.ts`.
   ["claude-fable-5-1", FABLE_5_1_PRICING],
   // Claude Fable 5 — the previous top tier (Issue #2619)
   ["claude-fable-5", FABLE_5_PRICING],
@@ -290,6 +299,9 @@ export function isModelTier(value: string): value is ModelTier {
 /** Minor version at/above which Opus uses the modern (4.5+) reduced pricing. */
 const OPUS_MODERN_MIN_MINOR = 5;
 
+/** Major version at/above which Fable can carry the cheaper cache-read rate. */
+const FABLE_CHEAP_CACHE_MIN_MAJOR = 5;
+
 /** Minor version at/above which Fable 5 uses the cheaper 5.1 cache-read rate. */
 const FABLE_CHEAP_CACHE_MIN_MINOR = 1;
 
@@ -327,7 +339,8 @@ function parseClaudeModernVersion(
  * Look up pricing for a model name.
  *
  * Resolution order (Issue #2389):
- *   1. Bare tier alias (`opus`/`sonnet`/`haiku`) → current tier pricing.
+ *   1. Bare tier alias (`fable`/`opus`/`sonnet`/`haiku`) → current tier
+ *      pricing, so an alias always costs at the latest model of its tier.
  *   2. Claude 4/5 family id → classify by version so future minors
  *      inherit the modern reduced pricing instead of the legacy row.
  *   3. Explicit prefix match for the remaining (legacy 3-x) models.
@@ -357,9 +370,11 @@ export function lookupModelPricing(model: string): ModelPricing | null {
       return modern ? OPUS_PRICING_MODERN : OPUS_PRICING_LEGACY;
     }
     if (parsed.tier === "fable") {
-      return parsed.minor >= FABLE_CHEAP_CACHE_MIN_MINOR
-        ? FABLE_5_1_PRICING
-        : FABLE_5_PRICING;
+      // Both halves matter: the cheap cache-read rate arrived with 5.1, so a
+      // hypothetical `claude-fable-4-1` must not inherit it on minor alone.
+      const cheapCache = parsed.major >= FABLE_CHEAP_CACHE_MIN_MAJOR &&
+        parsed.minor >= FABLE_CHEAP_CACHE_MIN_MINOR;
+      return cheapCache ? FABLE_5_1_PRICING : FABLE_5_PRICING;
     }
     if (parsed.tier === "sonnet") {
       return parsed.major >= SONNET_MODERN_MIN_MAJOR
