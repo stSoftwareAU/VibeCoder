@@ -586,18 +586,27 @@ export function buildPlanningSummaryComment(
  * ("Add only descriptive labels … not reserved workflow labels"), which the
  * model could ignore because it carried no rationale. This mirrors the strong
  * wording in `prompts/coding_guidelines/`: it names that the worker account is
- * not on the trusted-author allowlist, that any reserved label is silently
- * stripped by the `label_security` check (Issue #1344), the canonical
- * pickup-priority order, and that `idle-task` is the only self-appliable label.
+ * not on the trusted-author allowlist, that a reserved label it adds to an
+ * existing issue is stripped by the `label_security` check (Issue #1344), the
+ * canonical pickup-priority order, and that `idle-task` is the only
+ * self-appliable label.
+ *
+ * `needs-human` is stated separately and for its own reason (Issue #780): the
+ * code *trusts* a `needs-human` this worker adds to an existing issue, so the
+ * reason it must not go on a sub-issue is the post-creation strip on an issue
+ * the planner filed — not `label_security`.
  */
 export const RESERVED_LABEL_PROHIBITION =
   "Add only descriptive labels (e.g. `bug`, `enhancement`, `documentation`) " +
   "to each sub-issue. Never add a reserved workflow label (`top-priority`, " +
-  "`work-on`, `low-priority`, `failed`, `refine-issue`, `planning`, " +
-  "`question`, `best-model`, `needs-human`, " +
+  "`work-on`, `low-priority`, `failed`, `failed-once`, `refine-issue`, " +
+  "`planning`, `question`, `best-model`, " +
   "`needs-failure-detection-repair`): the worker account is not on the " +
-  "trusted-author allowlist, so any reserved label is silently stripped by " +
-  "the `label_security` check (Issue #1344) and applying it is wasted effort. " +
+  "trusted-author allowlist, so any reserved label it adds to an existing " +
+  "issue is stripped by the `label_security` check (Issue #1344). Do not add " +
+  "`needs-human` to a sub-issue either: every reserved label on an issue the " +
+  "planner files is removed after creation (Issue #780), so it would not " +
+  "survive — say it in the plan instead. " +
   "The canonical pickup-priority order is `top-priority` > `work-on` > " +
   "`low-priority` > `idle-task`; only `idle-task` is self-appliable by the " +
   "Vibe Coder.";
