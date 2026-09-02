@@ -1828,3 +1828,90 @@ Deno.test("run.sh - removing a volume that is not there is not a failure (Issue 
     await harness.cleanup();
   }
 });
+
+// --- A refused FITRIM is not, by itself, a work refusal (Issue #734) -------
+//
+// Report item 9 of #722: Podman refuses FITRIM on a named volume, and the
+// refusal *appeared* to activate low-disk recovery. It does not: the heal
+// needs the refusal **and** a host below its claiming floor, and the hard
+// floor is a measurement of the host that no message can move. What the
+// refusal does do is make the reading what it is — a runtime that cannot
+// discard never gives the guest's freed blocks back — so any disk decision
+// taken after one now says so, rather than leaving an unexplained refusal.
+
+Deno.test("run.sh - a refused trim alone starts no recovery and stops no launch (Issue #734)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    // Floors of zero: whatever this host has free is above them, so the only
+    // thing that could act here is the refusal itself.
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "0",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "0",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // Nothing was destroyed and nothing was recreated…
+    assertEquals(await removedVolumes(harness), []);
+    assertEquals(await initCount(harness), 1);
+    // …and the launch went ahead.
+    assert(await recorded(harness, "run"), "the worker must still start");
+    assertEquals(
+      outcome.stderr.includes("refusing to launch"),
+      false,
+      outcome.stderr,
+    );
+
+    // The refusal is still recorded as the fact it is.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "the runtime refused to trim");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a disk refusal after a refused trim names the refusal (Issue #734)", async () => {
+  // The reported host's real shape: the trim cannot return the space, so the
+  // reading stays low and the floor fires on its own. An operator reading
+  // "refusing to launch: N MB free" with no mention of the refused trim is
+  // left with an unexplained work refusal.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+
+    assertStringIncludes(outcome.stderr, "hard floor");
+    assertStringIncludes(outcome.stderr, "refused to trim");
+    assertStringIncludes(outcome.stderr, WORK_VOLUME_NAME);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "refused launch");
+    assertStringIncludes(log, "refused to trim");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a disk reading with no refused trim says nothing about one (Issue #734)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    VIBE_HOST_DISK_HARD_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "hard floor");
+    assertEquals(
+      outcome.stderr.includes("refused to trim"),
+      false,
+      `a host whose trim worked must not be told one was refused:\n${outcome.stderr}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
