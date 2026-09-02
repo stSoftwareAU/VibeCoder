@@ -29,7 +29,9 @@
  * always has. `VIBE_SKIP_CHECKOUT_UPDATE` is the way out for the checkouts
  * where that is wrong: a development tree someone is working in, and CI, whose
  * checkout is a pull-request merge commit that must not be reset to the
- * default branch mid-run. The skip says so loudly and is never silent.
+ * default branch mid-run. The skip says so loudly and is never silent — and an
+ * update that *did* change the checkout names the same variable in this
+ * command's message, which both launchers print on stderr (Issue #735).
  *
  * Under `update_mode: "frozen"` (Issue #624, part of #583) that sequence would
  * drag the host to the tip of the default branch and defeat the pin, so the
@@ -45,12 +47,16 @@
  */
 
 import type { Command, CommandResult, Result, UpdateMode } from "../types.ts";
-import { updateCheckout } from "../lib/checkout_update.ts";
+import {
+  SKIP_CHECKOUT_UPDATE_ENV,
+  updateCheckout,
+} from "../lib/checkout_update.ts";
 import { DEFAULT_UPDATE_MODE, UPDATE_MODES } from "../lib/config_defaults.ts";
 import { pinValueErrors } from "../lib/config_validator.ts";
 
-/** Environment variable that turns the update off (see the module doc). */
-export const SKIP_CHECKOUT_UPDATE_ENV = "VIBE_SKIP_CHECKOUT_UPDATE";
+// The name lives beside the update it turns off, so the variable this command
+// reads and the one an overwrite advertises cannot drift (Issue #735).
+export { SKIP_CHECKOUT_UPDATE_ENV };
 
 /** What the command reports back to the launcher. */
 export interface WorkerCheckoutUpdateResult {
@@ -285,11 +291,17 @@ export async function updateWorkerCheckout(
     };
   }
 
+  const summary = outcome.mode === "frozen"
+    ? `update_mode=frozen: ${repoDir} is held at pinned_ref ${outcome.ref}`
+    : `updated ${repoDir} to origin/${outcome.branch}`;
+
   return {
     success: true,
-    message: outcome.mode === "frozen"
-      ? `update_mode=frozen: ${repoDir} is held at pinned_ref ${outcome.ref}`
-      : `updated ${repoDir} to origin/${outcome.branch}`,
+    // The launchers print this on stderr, so an update that overwrote local
+    // work names the opt-out where the operator is already looking (#735).
+    message: outcome.overwriteNotice === ""
+      ? summary
+      : `${summary}. ${outcome.overwriteNotice}`,
     data,
   };
 }
