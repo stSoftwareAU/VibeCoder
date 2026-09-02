@@ -979,8 +979,8 @@ round, so only the grill-me issue itself is labelled. Every GitHub operation is
 non-fatal and never aborts the round.
 
 > **Superseded in part by.** Healthy rounds no longer report
-> *nothing*: they post the stats block **once per issue**. See
-> [One cost/model stats comment per issue](#one-costmodel-stats-comment-per-issue).
+> *nothing*: they post the stats block **once per run**. See
+> [One cost/model stats comment per run](#one-costmodel-stats-comment-per-run).
 
 - Implementation:
   [`worker/deno/lib/grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts)
@@ -997,7 +997,7 @@ Fable→Opus substitution on any of them was previously invisible; each now post
 `## <Phase> run model stats` comment and applies the `degraded-model` label to
 **the issue itself** (no sub-issue fan-out) **only on a degraded round** —
 healthy Fable-served rounds apply no label, exactly like grill-me. (Since
- a healthy round still posts its stats block once per issue; only
+ a healthy round still posts its stats block once per run; only
 the label is degraded-only.)
 
 The verdict helpers are **not** forked: the four phases call the generic
@@ -1037,7 +1037,7 @@ the phase.
   [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) and is carried
   on the run record by `claude_runner.ts`.
 
-#### One cost/model stats comment per issue
+#### One cost/model stats comment per run
 
 Only the planning close path posted stats on a healthy run. Every other phase
 reported them **only when the round was degraded**, and a `work-on` issue —
@@ -1045,9 +1045,19 @@ auto-closed by its merged PR, with no worker attached at that moment — got
 nothing at all. Most issues the Vibe Coder completed therefore carried no cost
 indication.
 
-The rule is now **exactly one stats comment per issue, posted when the worker
-wraps that issue up**. Cost visibility without comment flooding: completing
-issues is the job, and a per-round stats comment is noise.
+Issue #3756 closed that gap with an **issue-scoped** guard: the first wrap-up to
+reach the issue posted, and every later run stayed silent. On
+[#762](https://github.com/stSoftwareAU/VibeCoder/issues/762) the winner was a
+$1.34 grill-me round, so the `work-on` run that actually completed the issue —
+16 follow-up issues and a PR — reported nothing. That is the defect #797
+reported: the cost of the completed issue was invisible.
+
+The guard is therefore **run-scoped** (Issue #797): the marker carries the run
+id, and a post is suppressed only when *this run* already posted. Every
+completed run reports what it cost, a repeat post inside one run is still
+suppressed, and from the second stats comment onward each block carries the
+cumulative issue total so the issue's cost is readable without adding comments
+up by hand.
 
 ```mermaid
 flowchart TD
@@ -1058,9 +1068,9 @@ flowchart TD
     C --> F["postIssueRunStatsComment()"]
     D --> F
     E --> F
-    F --> G{"Issue already has a<br/>run-stats comment?"}
-    G -->|yes| H["Skip — one per issue"]
-    G -->|no| I["Post the shared stats block<br/>+ marker + estimate disclaimer"]
+    F --> G{"Did <b>this run</b> already<br/>post its stats?"}
+    G -->|yes| H["Skip — one per run"]
+    G -->|no| I["Post the shared stats block<br/>+ run marker + issue total<br/>+ estimate disclaimer"]
     style I fill:#2d6a4f,stroke:#1b4332,color:#fff
     style H fill:#adb5bd,stroke:#6c757d,color:#000
 ```
@@ -1069,13 +1079,18 @@ flowchart TD
   built by `buildDegradationReport` — the heading names the phase that posted it
   (`## Issue run model stats` for a `work-on` run).
 - **Duplicate guard.** The comment carries a hidden
-  `<!-- vibe-issue-run-stats -->` marker; the guard matches that marker **or**
-  any `## … run model stats` heading, so the pre-existing planning comment
-  counts. Whichever path gets there first wins.
-- **Estimate disclaimer.** KISS on multi-run/multi-worker coverage — no
-  cross-worker or cross-phase aggregation infrastructure. Each comment states
-  that the figures are an estimate covering only the posting worker's own
-  run(s), excluding earlier phases and other Vibe Coders on the same issue.
+  `<!-- vibe-issue-run-stats run="<run id>" -->` marker and the guard matches
+  that exact run. The run id is sanitised to `[A-Za-z0-9._-]` before it reaches
+  the marker, so a malformed `VIBE_RUN_ID` can never close the comment early.
+- **Cumulative issue total.** `tallyIssueCost()` sums the
+  `Estimated cost (USD, estimate only)` line of every run-stats comment on the
+  issue — including the pre-#3756 planning and degraded-round comments, matched
+  by heading. A comment that carries no parseable figure marks the total
+  `(partial)` rather than letting the sum read as complete.
+- **Estimate disclaimer.** KISS on multi-worker coverage — no cross-worker
+  aggregation infrastructure. Each comment states that the figures are an
+  estimate covering the run that posted them, and that the total only sums the
+  comments visible on the issue.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
