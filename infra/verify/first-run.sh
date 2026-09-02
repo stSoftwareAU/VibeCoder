@@ -16,9 +16,13 @@
 # This file only sequences the run: it gathers facts, starts `setup.sh` and
 # `run.sh`, waits on the container and the worker, and captures what each
 # stage printed. Every judgement — fresh state, the Codex-only configuration,
-# the image, expected warning versus new defect, the verdict and the report —
-# is made by `first-run-verify` in worker/deno, where it is unit-tested
-# without a host.
+# the image, whether the worker claimed and completed, expected warning versus
+# new defect, the verdict and the report — is made by `first-run-verify` in
+# worker/deno, where it is unit-tested without a host.
+#
+# It leaves no worker behind: the launcher and any vibe-coder container are
+# stopped on exit, however the run ends. The image it built is left alone —
+# re-provision the host before the next run, which stage 1 requires anyway.
 #
 # Usage:
 #   infra/verify/first-run.sh [--transcript-dir DIR] [--repo-root DIR]
@@ -41,6 +45,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -P "${SCRIPT_DIR}/../.." && pwd -P)"
 TRANSCRIPT_DIR=""
+# The provider this verification configures. Issue #736 is the Codex-only run;
+# a bare host has no .config.json for setup to read the selection from.
+PROVIDER="codex"
 CLAIM_TIMEOUT=2700
 LAUNCH_TIMEOUT=1800
 POLL_INTERVAL=15
@@ -142,9 +149,19 @@ check_fresh_state() {
     return 1
   fi
 
-  podman image ls --format '{{.Repository}}' >"${images}" 2>/dev/null || : >"${images}"
-  git -C "${REPO_ROOT}" status --porcelain >"${status_file}" 2>&1 ||
-    echo "?? the checkout could not be read" >"${status_file}"
+  # A podman that cannot list its images is a fault, never an empty list: an
+  # empty list reads as "no image was pre-built", which is the fresh-state
+  # answer this run must earn rather than inherit from a broken probe.
+  if ! podman image ls --format '{{.Repository}}' >"${images}" 2>"${log}"; then
+    echo "podman could not list its images, so freshness cannot be judged" \
+      >>"${log}"
+    return 1
+  fi
+  if ! git -C "${REPO_ROOT}" status --porcelain >"${status_file}" 2>>"${log}"; then
+    echo "the checkout could not be read, so it cannot be shown unpatched" \
+      >>"${log}"
+    return 1
+  fi
   claude_on_path="$(command -v claude >/dev/null 2>&1 && echo true || echo false)"
 
   {
@@ -152,12 +169,13 @@ check_fresh_state() {
     verify --mode preflight \
       --config-file "${CONFIG_FILE_RESOLVED}" \
       --claude-on-path "${claude_on_path}" \
+      --declared-provider "${PROVIDER}" \
       --images "${images}" \
       --checkout-status "${status_file}" \
       --user-registries "${HOME}/.config/containers/registries.conf" \
       --system-registries /etc/containers/registries.conf \
       --out "${FRESH_STATE_JSON}"
-  } >"${log}" 2>&1
+  } >>"${log}" 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -166,6 +184,7 @@ check_fresh_state() {
 
 check_prerequisites() {
   local log="$1" missing=() tool
+  local runtime_file="${TRANSCRIPT_DIR}/container-runtime.txt"
   {
     for tool in podman deno gh git codex; do
       if command -v "${tool}" >/dev/null 2>&1; then
@@ -175,10 +194,6 @@ check_prerequisites() {
         printf '%s: ABSENT\n' "${tool}"
       fi
     done
-    echo
-    echo "== container runtime the launcher will use =="
-    (cd "${REPO_ROOT}" && deno run --allow-run --allow-env \
-      worker/deno/mod.ts container-runtime-detect) 2>&1 || true
     echo
     echo "== free space =="
     df -h / 2>&1 || true
@@ -191,9 +206,23 @@ check_prerequisites() {
     printf 'missing host prerequisites: %s\n' "${missing[*]}" >>"${log}"
     return 1
   fi
+
   # The launcher must take the podman branch: Docker is deliberately absent.
-  if ! grep -qi podman "${log}"; then
-    echo "the launcher did not resolve podman as this host's runtime" >>"${log}"
+  # The detector's own answer is captured to its own file and its exit status
+  # is honoured — grepping this stage's log would only find the `podman:
+  # /usr/bin/podman` line written above, so the check could never fail.
+  echo "== container runtime the launcher will use ==" >>"${log}"
+  if ! (cd "${REPO_ROOT}" && deno run --allow-run --allow-env \
+    worker/deno/mod.ts container-runtime-detect) >"${runtime_file}" 2>>"${log}"; then
+    cat "${runtime_file}" >>"${log}"
+    echo "the launcher's runtime detection failed, so the runtime it would" \
+      "use is unknown" >>"${log}"
+    return 1
+  fi
+  cat "${runtime_file}" >>"${log}"
+  if ! grep -qi podman "${runtime_file}"; then
+    echo "the launcher resolved $(tr -d '\n' <"${runtime_file}")," \
+      "not podman, as this host's runtime" >>"${log}"
     return 1
   fi
   return 0
@@ -211,10 +240,16 @@ check_prerequisites() {
 
 run_setup() {
   local log="$1" status=0
+  # A bare host has no .config.json for setup to read the provider selection
+  # from - criterion 2 requires setup to write it - so the run says which agent
+  # this host is being configured for, which docs/SETUP.md names as the
+  # first-run way to do it (Issue #730). The preflight records the declaration
+  # in the report so a reader judges it rather than finding it in a log.
+  export VIBE_AGENT_PROVIDER="${PROVIDER}"
   if [[ -t 0 ]] && command -v script >/dev/null 2>&1; then
     script -q -e -c "cd '${REPO_ROOT}' && ./setup.sh" "${log}" || status=$?
   else
-    (cd "${REPO_ROOT}" && ./setup.sh) >"${log}" 2>&1 || status=$?
+    (cd "${REPO_ROOT}" && ./setup.sh) >"${log}" 2>&1 </dev/null || status=$?
     echo "setup.sh ran with no terminal attached - every interactive prompt was skipped" >>"${log}"
   fi
   return "${status}"
@@ -238,6 +273,18 @@ check_config() {
 
 LAUNCH_LOG=""
 LAUNCH_PID=""
+RUN_CORE_OFFSET=0
+
+# Only the run_core.log this launch wrote. `tail -c +N` counts from byte N, so
+# the offset recorded before the launch becomes the first byte to read.
+run_core_window() {
+  local out="${TRANSCRIPT_DIR}/run_core-window.log"
+  : >"${out}"
+  if [[ -f "${RUN_CORE_LOG}" ]]; then
+    tail -c "+$((RUN_CORE_OFFSET + 1))" "${RUN_CORE_LOG}" >"${out}"
+  fi
+  printf '%s' "${out}"
+}
 
 launcher_running() { kill -0 "${LAUNCH_PID}" 2>/dev/null; }
 
@@ -256,6 +303,13 @@ reap_launcher() {
 run_launcher() {
   local log="$1" waited=0 status=0
   LAUNCH_LOG="${log}"
+  # run_core.log is appended to and never truncated, so an earlier launch on
+  # this host would otherwise hand this run its refused trim or its refused
+  # launch. Only the bytes this launch appends are read back.
+  RUN_CORE_OFFSET=0
+  if [[ -f "${RUN_CORE_LOG}" ]]; then
+    RUN_CORE_OFFSET="$(wc -c <"${RUN_CORE_LOG}")"
+  fi
   (cd "${REPO_ROOT}" && ./run.sh) >"${log}" 2>&1 </dev/null &
   LAUNCH_PID=$!
   while ((waited < LAUNCH_TIMEOUT)); do
@@ -328,38 +382,35 @@ check_image() {
 # ---------------------------------------------------------------------------
 
 check_claim() {
-  local log="$1" waited=0 claimed="" completed=""
+  local log="$1" waited=0 status=0 verdict="" died=""
+  # Which markers mean "claimed" and "completed" is decided by `first-run-verify`
+  # alongside every other signature this run reads. A launcher that has already
+  # exited ends the wait at once: sitting out the full claim timeout for a
+  # container that died in the first seconds reports nothing extra.
   while ((waited < CLAIM_TIMEOUT)); do
-    if [[ -f "${WORKER_LOG}" ]] &&
-      grep -q 'Successfully processed' "${WORKER_LOG}" 2>/dev/null; then
-      completed="yes"
+    if verify --mode claim --worker-log "${WORKER_LOG}" >/dev/null 2>&1; then
+      break
+    fi
+    if [[ -n "${LAUNCH_PID}" ]] && ! launcher_running; then
+      died="yes"
       break
     fi
     sleep "${POLL_INTERVAL}"
     waited=$((waited + POLL_INTERVAL))
   done
-  if [[ -f "${WORKER_LOG}" ]] &&
-    grep -qE 'Claimed by |Processing .*#[0-9]+' "${WORKER_LOG}" 2>/dev/null; then
-    claimed="yes"
-  fi
+
+  verdict="$(verify --mode claim --worker-log "${WORKER_LOG}" 2>&1)" || status=$?
   {
     echo "== ${WORKER_LOG} (tail) =="
     tail -n 200 "${WORKER_LOG}" 2>&1 || echo "(no worker log)"
     echo
-    printf 'claimed: %s\n' "${claimed:-no}"
-    printf 'completed: %s\n' "${completed:-no}"
+    printf '%s\n' "${verdict}"
     printf 'waited: %ss of %ss\n' "${waited}" "${CLAIM_TIMEOUT}"
-  } >"${log}" 2>&1
-
-  if [[ -z "${completed}" ]]; then
-    if [[ -z "${claimed}" ]]; then
-      echo "the worker claimed no issue within ${CLAIM_TIMEOUT}s" >>"${log}"
-    else
-      echo "the worker claimed an issue but did not complete one within ${CLAIM_TIMEOUT}s" >>"${log}"
+    if [[ -n "${died}" ]]; then
+      echo "run.sh exited before the worker finished, so the wait ended early"
     fi
-    return 1
-  fi
-  return 0
+  } >"${log}" 2>&1
+  return "${status}"
 }
 
 # ---------------------------------------------------------------------------
@@ -399,6 +450,27 @@ stage() {
   fi
 }
 
+# Leave the host as the run found it, whatever happened. The worker runs in the
+# foreground under run.sh, so without this a verification would exit leaving a
+# worker claiming issues and its own stage-1 gate would refuse the next run on
+# the same host. The built image is deliberately left alone: removing it is the
+# operator's call, and the guide says to re-provision between runs.
+stop_worker() {
+  if [[ -n "${LAUNCH_PID}" ]] && kill -0 "${LAUNCH_PID}" 2>/dev/null; then
+    say "stopping the launcher (pid ${LAUNCH_PID})"
+    kill "${LAUNCH_PID}" 2>/dev/null || :
+    wait "${LAUNCH_PID}" 2>/dev/null || :
+  fi
+  local container
+  while read -r container; do
+    [[ -n "${container}" ]] || continue
+    say "stopping container ${container}"
+    podman stop --time 30 "${container}" >/dev/null 2>&1 ||
+      say "could not stop ${container} - stop it by hand before the next run"
+  done < <(podman ps --format '{{.Names}}' 2>/dev/null | grep '^vibe-coder' || :)
+}
+trap stop_worker EXIT
+
 say "transcript directory: ${TRANSCRIPT_DIR}"
 
 stage fresh-state check_fresh_state
@@ -412,23 +484,27 @@ stage claim check_claim
 # The fresh-state verdict is read back from the file the preflight wrote, so
 # the report states the decision that was actually taken rather than one
 # recomputed later. A preflight that wrote none is a host never confirmed
-# fresh, which is a refusal, not a blank.
-if [[ ! -f "${FRESH_STATE_JSON}" ]]; then
-  printf '{"violations":["the preflight wrote no verdict, so the host was never confirmed fresh"],"notes":[]}' \
-    >"${FRESH_STATE_JSON}"
+# fresh; the report mode says so itself, so no verdict is ever hand-written
+# here.
+REPORT_ARGS=(
+  --stages "${STAGES_FILE}"
+  --fresh-state "${FRESH_STATE_JSON}"
+  --transcript "${TRANSCRIPT_DIR}"
+  --checkout "${REPO_ROOT}"
+  --host "$(uname -srm 2>/dev/null || echo unknown)"
+  --commit "$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  --run-core-log "$(run_core_window)"
+  --worker-log "${WORKER_LOG}"
+  --out "${REPORT}"
+)
+# Named only when a launch actually produced one: a sentinel path would be read
+# back as empty evidence, which is the silence this run must not report as calm.
+if [[ -n "${LAUNCH_LOG}" ]]; then
+  REPORT_ARGS+=(--launch-log "${LAUNCH_LOG}")
 fi
 
 REPORT_STATUS=0
-verify --mode report \
-  --stages "${STAGES_FILE}" \
-  --fresh-state "${FRESH_STATE_JSON}" \
-  --transcript "${TRANSCRIPT_DIR}" \
-  --checkout "${REPO_ROOT}" \
-  --host "$(uname -srm 2>/dev/null || echo unknown)" \
-  --commit "$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-  --launch-log "${LAUNCH_LOG:-/nonexistent}" \
-  --run-core-log "${RUN_CORE_LOG}" \
-  --out "${REPORT}" || REPORT_STATUS=$?
+verify --mode report "${REPORT_ARGS[@]}" || REPORT_STATUS=$?
 
 if ((REPORT_STATUS == 0)); then
   say "every stage passed with no workaround; paste ${REPORT} onto the issue"

@@ -17,6 +17,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   analyseDiskChain,
   classifyOutput,
+  evaluateClaim,
   evaluateCodexOnlyConfig,
   evaluateFreshState,
   evaluateImage,
@@ -35,7 +36,7 @@ function freshFacts(overrides: Partial<FreshStateFacts> = {}): FreshStateFacts {
     configFile: "/home/ubuntu/vibe-coder-runtime/.config.json",
     configFileExists: false,
     claudeOnPath: false,
-    localImages: ["localhost/ubuntu", "docker.io/library/node"],
+    localImages: [],
     checkoutStatus: "",
     userRegistriesConf: null,
     systemRegistriesConf: null,
@@ -80,17 +81,28 @@ Deno.test("evaluateFreshState - a Claude CLI on PATH refuses a Codex-only run", 
   assertStringIncludes(verdict.violations[0]!, "Issue #730");
 });
 
-Deno.test("evaluateFreshState - a worker image already built refuses the run, however Podman spells it", () => {
-  // Podman lists a locally built image as `localhost/vibe-coder`, Docker as
-  // the bare name: both are an image the build did not have to produce.
-  for (const image of ["vibe-coder", "localhost/vibe-coder"]) {
+// Business-logic change (Issue #736): the earlier rule refused only a
+// pre-built `vibe-coder` image, so a host that already held the base layers
+// passed as fresh and the short-name resolution the build is meant to prove
+// had already happened. The issue's Scope says "no pre-pulled or manually
+// tagged images", so any image at all now refuses the run.
+Deno.test("evaluateFreshState - any image already on the host refuses the run", () => {
+  for (
+    const image of [
+      "vibe-coder",
+      "localhost/vibe-coder",
+      "docker.io/library/node",
+    ]
+  ) {
     const verdict = evaluateFreshState(freshFacts({ localImages: [image] }));
     assertEquals(verdict.violations.length, 1, `${image} should be refused`);
-    assertStringIncludes(verdict.violations[0]!, "already present");
+    assertStringIncludes(verdict.violations[0]!, image);
   }
-  // An image whose name merely contains the worker's is a different image.
+});
+
+Deno.test("evaluateFreshState - a runtime holding nothing is the fresh case, and blanks are not images", () => {
   assertEquals(
-    evaluateFreshState(freshFacts({ localImages: ["vibe-coder-tools"] }))
+    evaluateFreshState(freshFacts({ localImages: ["", "  ", "<none>"] }))
       .violations,
     [],
   );
@@ -144,12 +156,27 @@ Deno.test("evaluateFreshState - every workaround present is reported at once", (
   assertEquals(verdict.violations.length, 4);
 });
 
-Deno.test("evaluateFreshState - a split configuration is refused", () => {
+// Business-logic change (Issue #736): `configFileSplit` was a field no
+// production caller ever set — the shell learns of a split `CONFIG_FILE` /
+// `CONFIG_PATH` from `resolveHostConfigPath` throwing in `--mode config-path`,
+// which fails stage 1 before this decision is reached. The dead field and its
+// tautological test are gone; the declared provider takes its place as the one
+// thing the run tells the preflight about itself.
+Deno.test("evaluateFreshState - the declared provider is recorded, not refused", () => {
+  const verdict = evaluateFreshState(freshFacts({ declaredProvider: "codex" }));
+  assertEquals(verdict.violations, []);
+  assertEquals(verdict.notes.length, 1);
+  assertStringIncludes(verdict.notes[0]!, "VIBE_AGENT_PROVIDER=codex");
+  assertStringIncludes(verdict.notes[0]!, "docs/SETUP.md");
+});
+
+Deno.test("evaluateFreshState - the distribution's own aliases block is recorded, not refused", () => {
   const verdict = evaluateFreshState(freshFacts({
-    configFileSplit: "CONFIG_FILE and CONFIG_PATH name different files",
+    systemRegistriesConf: '[aliases]\n"node" = "docker.io/library/node"\n',
   }));
-  assertEquals(verdict.violations.length, 1);
-  assertStringIncludes(verdict.violations[0]!, "different files");
+  assertEquals(verdict.violations, []);
+  assertEquals(verdict.notes.length, 1);
+  assertStringIncludes(verdict.notes[0]!, "distribution");
 });
 
 Deno.test("evaluateCodexOnlyConfig - a Codex-only configuration passes", () => {
@@ -447,4 +474,76 @@ Deno.test("parseStages - a malformed record fails loud rather than dropping a st
     }
     assertStringIncludes(message, expected);
   }
+});
+
+Deno.test("evaluateClaim - a worker that finished one issue passes", () => {
+  const verdict = evaluateClaim(
+    "Processing issue owner/repo#42\nSuccessfully processed owner/repo#42\n",
+  );
+  assertEquals(verdict, {
+    claimed: true,
+    completed: true,
+    detail: "one issue completed",
+  });
+});
+
+Deno.test("evaluateClaim - a worker that claimed but finished nothing is not a pass", () => {
+  const verdict = evaluateClaim("Processing issue owner/repo#42\n");
+  assertEquals(verdict.claimed, true);
+  assertEquals(verdict.completed, false);
+  assertStringIncludes(verdict.detail, "did not complete");
+});
+
+Deno.test("evaluateClaim - a silent log is nothing seen, never a pass", () => {
+  const verdict = evaluateClaim("");
+  assertEquals(verdict.claimed, false);
+  assertEquals(verdict.completed, false);
+  assertStringIncludes(verdict.detail, "claimed no issue");
+});
+
+Deno.test("analyseDiskChain - the worker's claim-time refusal names its floor and free space", () => {
+  // The worker refuses to claim in worker.log, in GB; the launcher refuses to
+  // start in run_core.log, in MB. Criterion 7 of Issue #736 is about the
+  // claim, so a run that reads only the launcher would report this as "claimed
+  // nothing" with neither figure.
+  const verdict = analyseDiskChain(
+    "",
+    "",
+    "[HOST_DISK_LOW] 3.2 GB free (4.1%) of 78.0 GB, floor 8.0 GB — below the " +
+      "floor — draining the issue pool before claiming further work (Issue #226).",
+  );
+  assertEquals(verdict.refused, true);
+  assertEquals(verdict.findings.length, 1);
+  assertEquals(verdict.findings[0]!.kind, "expected");
+  assertStringIncludes(verdict.findings[0]!.summary, "named both");
+});
+
+Deno.test("analyseDiskChain - a claim refusal that names neither figure is the Issue #732 defect", () => {
+  const verdict = analyseDiskChain("", "", "[HOST_DISK_LOW] draining the pool");
+  assertEquals(verdict.findings.length, 1);
+  assertEquals(verdict.findings[0]!.kind, "defect");
+  assertStringIncludes(verdict.findings[0]!.summary, "Issue #732");
+});
+
+Deno.test("renderReport - a secret quoted from a stage log never reaches the issue", () => {
+  const report = renderReport({
+    host: "Linux",
+    checkout: "/home/ubuntu/vibe-coder-runtime",
+    commit: "abc1234",
+    transcript: "/tmp/t",
+    stages: [{
+      name: "setup",
+      status: "PASS",
+      detail: "exit 0",
+      log: "03.log",
+    }],
+    freshState: { violations: [], notes: [] },
+    findings: [{
+      kind: "defect",
+      summary:
+        "setup demanded the Claude CLI on a Codex-only host (Issue #730)",
+      evidence: "token=sk-ant-api03-" + "A".repeat(80) + "AA",
+    }],
+  });
+  assertEquals(report.includes("sk-ant-api03-AAAA"), false);
 });

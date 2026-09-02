@@ -7,12 +7,13 @@
  * stage printed. Every judgement it reports is made here, so the standard the
  * repository sets holds: shell orchestrates, Deno decides.
  *
- * Five modes, one per judgement the run makes:
+ * Six modes, one per judgement the run makes:
  *
  *   --mode config-path --base-dir <dir>  which file is this host's config?
  *   --mode preflight …                   is the host fresh enough to verify?
  *   --mode config --config <path>        did setup write the Codex-only file?
  *   --mode image --inspect <f> --cli <f> is the built image the Codex one?
+ *   --mode claim --worker-log <file>     did the worker finish one issue?
  *   --mode report --stages <tsv> …       what did the run prove?
  *
  * Every mode fails loud: a missing input, unreadable JSON or an absent file is
@@ -26,6 +27,7 @@ import type { Command, CommandResult } from "../types.ts";
 import {
   analyseDiskChain,
   classifyOutput,
+  evaluateClaim,
   evaluateCodexOnlyConfig,
   evaluateFreshState,
   evaluateImage,
@@ -54,13 +56,26 @@ async function readOrThrow(path: string, what: string): Promise<string> {
   }
 }
 
-/** Read a file that may legitimately be absent. */
+/**
+ * Read a file that may legitimately not exist yet.
+ *
+ * Only `NotFound` is absence: a log a stage never wrote is a real state the
+ * report describes. Every other error — a permission fault, an I/O error, a
+ * directory where a file was named — is a fault that would otherwise
+ * contribute zero findings and let the report say "no workaround was
+ * required", so it is thrown naming the path.
+ */
 async function readIfPresent(path: string | undefined): Promise<string> {
   if (!path) return "";
   try {
     return await Deno.readTextFile(path);
-  } catch {
-    return "";
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return "";
+    throw new Error(
+      `cannot read ${path}, so its evidence would be silently missing: ${
+        (error as Error).message
+      }`,
+    );
   }
 }
 
@@ -141,6 +156,9 @@ async function preflight(
     configFile,
     configFileExists: await exists(configFile),
     claudeOnPath: requireBoolean(args, "claude-on-path"),
+    declaredProvider: typeof args["declared-provider"] === "string"
+      ? args["declared-provider"] as string
+      : undefined,
     localImages: (await readOrThrow(
       requireString(args, "images"),
       "local image list",
@@ -184,6 +202,17 @@ async function config(args: Record<string, unknown>): Promise<CommandResult> {
   };
 }
 
+/** Claim: the worker took one issue and finished it. */
+async function claim(args: Record<string, unknown>): Promise<CommandResult> {
+  const path = requireString(args, "worker-log");
+  const verdict = evaluateClaim(await readIfPresent(path));
+  return {
+    success: verdict.completed,
+    message: `${path}: ${verdict.detail}`,
+    data: verdict,
+  };
+}
+
 /** Image: the build stamped codex and installed it, not Claude. */
 async function image(args: Record<string, unknown>): Promise<CommandResult> {
   const verdict = evaluateImage(
@@ -209,10 +238,18 @@ async function report(args: Record<string, unknown>): Promise<CommandResult> {
     await readOrThrow(stagesPath, "stage record"),
     stagesPath,
   );
-  const freshState = await readJson<FreshStateVerdict>(
-    requireString(args, "fresh-state"),
-    "fresh-state verdict",
-  );
+  // A preflight that wrote no verdict is a host never confirmed fresh, which
+  // is a refusal rather than a blank — decided here so the shell never has to
+  // hand-write a verdict of its own.
+  const freshStatePath = requireString(args, "fresh-state");
+  const freshState: FreshStateVerdict = await exists(freshStatePath)
+    ? await readJson<FreshStateVerdict>(freshStatePath, "fresh-state verdict")
+    : {
+      violations: [
+        "the preflight wrote no verdict, so the host was never confirmed fresh",
+      ],
+      notes: [],
+    };
 
   const findings: Finding[] = [];
   for (const stage of stageInput) {
@@ -235,6 +272,11 @@ async function report(args: Record<string, unknown>): Promise<CommandResult> {
         : undefined,
     ),
     await readIfPresent(runCoreLog),
+    await readIfPresent(
+      typeof args["worker-log"] === "string"
+        ? args["worker-log"] as string
+        : undefined,
+    ),
   );
   findings.push(...chain.findings);
 
@@ -343,6 +385,8 @@ export const firstRunVerifyCommand: Command = {
           return await config(args);
         case "image":
           return await image(args);
+        case "claim":
+          return await claim(args);
         case "report":
           return await report(args);
         default:
@@ -350,7 +394,7 @@ export const firstRunVerifyCommand: Command = {
             success: false,
             message:
               `--mode must be one of config-path, preflight, config, image, ` +
-              `report (got ${JSON.stringify(mode)})`,
+              `claim, report (got ${JSON.stringify(mode)})`,
           };
       }
     } catch (error) {

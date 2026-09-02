@@ -146,16 +146,27 @@ flowchart LR
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-Two properties are worth knowing before you read a report:
+Four properties are worth knowing before you read a report:
 
 - **It verifies; it never repairs.** A host already carrying one of the
   workarounds — `VIBE_SKIP_PREREQ_CHECK`, a moved disk floor, an `[aliases]`
   block or `unqualified-search-registries` in your own `registries.conf`, a
-  hand-written `.config.json`, a patched checkout, a pre-built image — is
-  refused at stage 1, before `setup.sh` is touched. A run that starts from a
-  patched host proves nothing.
+  hand-written `.config.json`, a patched checkout, **any** image already in the
+  container store — is refused at stage 1, before `setup.sh` is touched. A run
+  that starts from a patched host proves nothing, and a host that already holds
+  the base layers resolved those names before the run began.
 - **A stage that did not run is `SKIPPED`, never a pass**, and the exit status
   is non-zero whenever anything was refused, failed or skipped short.
+- **It tells `setup.sh` which agent this host runs.** A bare host has no
+  `.config.json` for setup to read the selection from — writing that file is
+  what stage 3 is for — so the run exports `VIBE_AGENT_PROVIDER=codex`, the
+  first-run selection [SETUP.md](SETUP.md) documents. It is recorded as a note
+  in the report, so you can see the declaration rather than find it in a log.
+- **It leaves no worker behind.** The worker runs in the foreground under
+  `run.sh`, so the script stops the launcher and any `vibe-coder` container
+  before it exits. The built image is deliberately left for you: re-provision
+  the host (or remove the image) before running the verification a second time,
+  or stage 1 will refuse it — correctly.
 
 The script only sequences the run — it gathers facts, starts `setup.sh` and
 `run.sh`, waits on the container and the worker, and captures what each stage
@@ -168,10 +179,27 @@ already mounted, `--claim-timeout SECONDS` for how long the worker gets to take
 an issue to completion, and `--launch-timeout` / `--poll-interval` for the wait
 on the container. `--help` prints them.
 
+If you need to drive a stage by hand — to reproduce one fault, or when the
+script itself is what you are debugging — the same sequence is these commands,
+in this order:
+
+```bash
+deno run --allow-run --allow-env worker/deno/mod.ts container-runtime-detect
+VIBE_AGENT_PROVIDER=codex ./setup.sh   # on a terminal: the prompts are TTY-gated
+./run.sh
+podman ps && tail -n 200 ~/logs/worker.log
+```
+
+Doing so leaves the host non-fresh, so it is a debugging path, not a
+verification: only the scripted run produces a `report.md` to attach.
+
 The scripted run is the only detection there is for the behaviour no unit test
 covers — a real `podman run`, a real Podman volume, a real image build. Its
 `report.md` is therefore the evidence: attach it to the issue rather than
-paraphrasing it.
+paraphrasing it. Every line it quotes is passed through the repository's secret
+redaction first; the raw stage transcripts beside it are **not**, and stage 3
+captures your whole `setup.sh` terminal session, so keep the transcript
+directory off public issues.
 
 ## Faults to expect, not to patch
 

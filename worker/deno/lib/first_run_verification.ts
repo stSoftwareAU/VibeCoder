@@ -22,6 +22,8 @@
  * Australian English spelling used throughout (behaviour, colour).
  */
 
+import { redactSecrets } from "./secret_redaction.ts";
+
 /** Environment variables whose mere presence means the host is not fresh. */
 export const WORKAROUND_ENV_VARS: ReadonlyArray<
   { readonly name: string; readonly reason: string }
@@ -50,13 +52,24 @@ export const WORKAROUND_ENV_VARS: ReadonlyArray<
     reason:
       "the host must claim work at its resolved floor, not a moved one (Issue #732)",
   },
+  {
+    name: "VIBE_HOST_DISK_AVAIL_BYTES",
+    reason:
+      "the disk reading must come from the host, not from a handed-in figure (Issue #226)",
+  },
+  {
+    name: "VIBE_HOST_DISK_TOTAL_BYTES",
+    reason:
+      "the disk reading must come from the host, not from a handed-in figure (Issue #226)",
+  },
+  {
+    name: "VIBE_SKIP_CHECKOUT_UPDATE",
+    reason: "the launcher's checkout update must run unaided (Issue #735)",
+  },
 ];
 
 /** Short-name settings a fresh host must not need (Issue #728). */
 const SHORT_NAME_SETTINGS = ["[aliases]", "unqualified-search-registries"];
-
-/** What the launcher would name a locally built worker image. */
-const WORKER_IMAGE = /(^|\/)vibe-coder$/;
 
 /** The host state the fresh-state decision is made from. */
 export interface FreshStateFacts {
@@ -66,12 +79,19 @@ export interface FreshStateFacts {
   readonly configFile: string;
   /** Whether that configuration file already exists. */
   readonly configFileExists: boolean;
-  /** Whether `CONFIG_FILE` and `CONFIG_PATH` name different files. */
-  readonly configFileSplit?: string;
   /** Whether a Claude CLI is on the host's PATH. */
   readonly claudeOnPath: boolean;
   /** Repository names the container runtime already holds locally. */
   readonly localImages: readonly string[];
+  /**
+   * Provider the run declares to `setup.sh` through `VIBE_AGENT_PROVIDER`.
+   *
+   * A bare host has no `.config.json` for setup to read the selection from —
+   * criterion 2 requires setup to write it — so the run must say which agent
+   * the host is being configured for (`docs/SETUP.md`). It is a declaration,
+   * not a workaround, so it is recorded as a note and the reader judges it.
+   */
+  readonly declaredProvider?: string;
   /** `git status --porcelain` over the checkout under test. */
   readonly checkoutStatus: string;
   /** The operator's own `registries.conf`, or null when absent. */
@@ -114,8 +134,6 @@ export function evaluateFreshState(facts: FreshStateFacts): FreshStateVerdict {
     }
   }
 
-  if (facts.configFileSplit) violations.push(facts.configFileSplit);
-
   if (facts.configFileExists) {
     violations.push(
       `${facts.configFile} already exists — setup.sh must write it, not a ` +
@@ -130,13 +148,20 @@ export function evaluateFreshState(facts: FreshStateFacts): FreshStateVerdict {
     );
   }
 
-  for (const image of facts.localImages) {
-    if (WORKER_IMAGE.test(image.trim())) {
-      violations.push(
-        `a worker image (${image.trim()}) is already present — the build ` +
-          `must run from nothing on a fresh host`,
-      );
-    }
+  // "No pre-pulled or manually tagged images" is the issue's own wording, and
+  // it is the base layers that matter as much as the worker image: a host that
+  // already holds docker.io/library/… resolved those names before this run
+  // started, so a build that depended on a search registry would never be seen
+  // to (Issue #728).
+  const present = facts.localImages.map((image) => image.trim()).filter((
+    image,
+  ) => image !== "" && image !== "<none>");
+  if (present.length > 0) {
+    violations.push(
+      `the container runtime already holds ${present.length} image(s) ` +
+        `(${present.join(", ")}) — the build must resolve and pull every ` +
+        `layer itself on a fresh host`,
+    );
   }
 
   if (facts.checkoutStatus.trim() !== "") {
@@ -160,15 +185,26 @@ export function evaluateFreshState(facts: FreshStateFacts): FreshStateVerdict {
 
   // The distribution's own file is host baseline, not an operator workaround.
   // Both base images name docker.io outright (Issue #728), so the build must
-  // not depend on it — which is worth recording, not refusing.
-  if (
-    facts.systemRegistriesConf !== null &&
-    setsUncommented(facts.systemRegistriesConf, "unqualified-search-registries")
-  ) {
+  // not depend on either setting — which is worth recording, not refusing.
+  for (const setting of SHORT_NAME_SETTINGS) {
+    if (
+      facts.systemRegistriesConf !== null &&
+      setsUncommented(facts.systemRegistriesConf, setting)
+    ) {
+      notes.push(
+        `/etc/containers/registries.conf sets ${setting} (distribution ` +
+          `default) — both base images name docker.io, so the build must not ` +
+          `depend on it`,
+      );
+    }
+  }
+
+  if (facts.declaredProvider) {
     notes.push(
-      "/etc/containers/registries.conf sets unqualified-search-registries " +
-        "(distribution default) — both base images name docker.io, so the " +
-        "build must not depend on it",
+      `the run declares VIBE_AGENT_PROVIDER=${facts.declaredProvider} to ` +
+        `setup.sh — a bare host has no .config.json for setup to read the ` +
+        `selection from, and docs/SETUP.md names this as the first-run way ` +
+        `to say which agent the host runs (Issue #730)`,
     );
   }
 
@@ -381,10 +417,20 @@ export function classifyOutput(text: string): Finding[] {
   return findings;
 }
 
-/** A launcher refusal that names both the floor it used and the free space. */
-const EXPLAINED_REFUSAL = /below the .*floor/;
-const FREE_SPACE = /\d+\s*MB free/;
-const REFUSAL = /refus(ing|ed) (to launch|launch)/;
+/**
+ * A refusal that names both the floor it used and the free space behind it.
+ *
+ * Two subsystems can refuse, and criterion 7 of Issue #736 is about both. The
+ * **launcher** refuses to start at all (`run.sh`: "refusing to launch: N MB
+ * free, below the N GB hard floor"); the **worker** starts and then refuses to
+ * claim (`[HOST_DISK_LOW] … GB free (…%) of …, floor … — below the floor`,
+ * `run_core.ts`). The launcher speaks in MB and the worker in GB, so both
+ * units are matched — a refusal read from the wrong unit would be reported as
+ * unexplained, which is the Issue #732 defect.
+ */
+const EXPLAINED_REFUSAL = /below the .*floor|floor \d/;
+const FREE_SPACE = /\d+(\.\d+)?\s*[MG]B free/;
+const REFUSAL = /refus(ing|ed) (to launch|launch)|\[HOST_DISK_LOW\]/;
 
 /** What the disk and volume evidence of one launch says. */
 export interface DiskChainVerdict {
@@ -399,20 +445,26 @@ export interface DiskChainVerdict {
 /**
  * Read the volume and disk evidence of one launch.
  *
- * The two sources are both needed and neither is optional: `volume-init`
- * speaks on the launcher's stderr, while `run.sh` writes the trim refusal and
- * every disk decision to `run_core.log`. Reading only one of them would miss
- * exactly the chain Issue #734 reported.
+ * All three sources are needed and none is optional: `volume-init` speaks on
+ * the launcher's stderr, `run.sh` writes the trim refusal and every launch-time
+ * disk decision to `run_core.log`, and the **worker** writes its claim-time
+ * refusal to `worker.log` — which is the refusal criterion 7 of Issue #736 is
+ * actually about. Reading only the launcher would miss the chain Issue #734
+ * reported; reading only the launcher and `run_core.log` would report a worker
+ * that started and then refused to claim as "claimed nothing", with neither
+ * the floor nor the free space behind it.
  *
  * @param launchOutput - Everything `run.sh` printed
- * @param runCoreLog - The `run_core.log` written during the launch
+ * @param runCoreLog - The `run_core.log` written during this launch
+ * @param workerLog - The `worker.log` written during this run
  * @returns What was seen, and how it is classified
  */
 export function analyseDiskChain(
   launchOutput: string,
   runCoreLog: string,
+  workerLog = "",
 ): DiskChainVerdict {
-  const combined = `${launchOutput}\n${runCoreLog}`;
+  const combined = `${launchOutput}\n${runCoreLog}\n${workerLog}`;
   const lines = combined.split("\n");
   const volumeInitSeen = lines.some((line) => line.includes("volume-init:"));
   const trimRefused = lines.some((line) =>
@@ -453,22 +505,67 @@ export function analyseDiskChain(
       findings.push({
         kind: "expected",
         summary:
-          "the launcher refused work and named both the resolved floor and " +
-          "the free space behind it (Issue #732)",
+          "work was refused, and the refusal named both the resolved floor " +
+          "and the free space behind it (Issue #732)",
         evidence: refusalLine.trim(),
       });
     } else {
       findings.push({
         kind: "defect",
         summary:
-          "the launcher refused work without naming the resolved floor and " +
-          "the free space behind it (Issue #732)",
+          "work was refused without naming the resolved floor and the free " +
+          "space behind it (Issue #732)",
         evidence: refusalLine.trim(),
       });
     }
   }
 
   return { volumeInitSeen, refused: refusalLine !== undefined, findings };
+}
+
+/**
+ * Markers the worker prints when it takes an issue.
+ *
+ * Both are the worker's own, read from `run_core.ts`: `Processing issue …#N`
+ * when a cycle picks one up, `Successfully processed` when it finishes. They
+ * live here rather than in the harness's shell so a rename is caught by this
+ * module's tests, alongside every other signature the run reads.
+ */
+const CLAIMED = /Processing issue[^\n]*#\d+/;
+const COMPLETED = /Successfully processed/;
+
+/** What the worker log says the worker did with the issue it was given. */
+export interface ClaimVerdict {
+  /** Whether the worker was seen to take an issue. */
+  readonly claimed: boolean;
+  /** Whether it was seen to finish one. */
+  readonly completed: boolean;
+  /** One line on what was seen, for the stage record. */
+  readonly detail: string;
+}
+
+/**
+ * Decide whether the worker claimed one issue and took it to completion.
+ *
+ * A log that shows neither marker is "nothing was seen", never a pass: absence
+ * of a failure is not success.
+ *
+ * @param workerLog - Everything the worker printed
+ * @returns What the log shows, and the line the report records
+ */
+export function evaluateClaim(workerLog: string): ClaimVerdict {
+  const claimed = CLAIMED.test(workerLog);
+  const completed = COMPLETED.test(workerLog);
+  if (completed) {
+    return { claimed: true, completed: true, detail: "one issue completed" };
+  }
+  return {
+    claimed,
+    completed: false,
+    detail: claimed
+      ? "the worker claimed an issue but did not complete one"
+      : "the worker claimed no issue",
+  };
 }
 
 /** How a stage ended. `SKIPPED` is never a pass. */
@@ -529,10 +626,19 @@ function bullets(items: readonly string[], empty: string): string {
 /**
  * Render the report: the artefact pasted onto the issue being verified.
  *
+ * Every line it quotes came from a stage's captured output, and its documented
+ * destination is a public issue, so the whole rendered report goes through
+ * {@link redactSecrets} before it is returned — the same treatment every other
+ * outbound sink in this repository gets.
+ *
  * @param run - The assembled run
- * @returns Markdown
+ * @returns Markdown, with any secret shape masked
  */
 export function renderReport(run: RunSummary): string {
+  return redactSecrets(renderReportUnredacted(run));
+}
+
+function renderReportUnredacted(run: RunSummary): string {
   const verdict = verdictFor(run);
   const expected = run.findings.filter((f) => f.kind === "expected");
   const defects = run.findings.filter((f) => f.kind === "defect");

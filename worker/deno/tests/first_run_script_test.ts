@@ -64,6 +64,12 @@ interface StubOptions {
   imageClis?: string[];
   /** Lines the stub `run.sh` appends to `~/logs/worker.log`. */
   workerLog?: string;
+  /** What the launcher's runtime detection answers (default `podman`). */
+  runtimeDetect?: string;
+  /** Exit status of that detection (non-zero means it could not answer). */
+  runtimeDetectExit?: number;
+  /** `run_core.log` content written before the run, as a previous launch would. */
+  staleRunCoreLog?: string;
 }
 
 async function writeExecutable(path: string, body: string): Promise<void> {
@@ -86,6 +92,13 @@ async function sandbox(options: StubOptions = {}): Promise<Sandbox> {
     await Deno.mkdir(path, { recursive: true });
   }
 
+  if (options.staleRunCoreLog) {
+    await Deno.writeTextFile(
+      `${home}/logs/run_core.log`,
+      `${options.staleRunCoreLog}\n`,
+    );
+  }
+
   for (const tool of BORROWED) {
     const resolved = await which(tool);
     if (resolved) await Deno.symlink(resolved, `${bin}/${tool}`);
@@ -105,7 +118,9 @@ async function sandbox(options: StubOptions = {}): Promise<Sandbox> {
     [
       "#!/bin/bash",
       `printf '%s\\n' ${shellQuote(options.setupOutput ?? "Setup complete")}`,
-      'printf "ran\\n" > "${HOME}/setup-ran"',
+      // Records the provider the run declared, so a test can assert setup was
+      // told which agent this host runs.
+      'printf "%s\\n" "${VIBE_AGENT_PROVIDER:-unset}" > "${HOME}/setup-ran"',
       configWrite,
       "",
     ].join("\n"),
@@ -166,7 +181,9 @@ async function sandbox(options: StubOptions = {}): Promise<Sandbox> {
       'for arg in "$@"; do',
       '  case "$arg" in',
       '    container-image-hash) printf "vibe-coder:abc123\\n"; exit 0 ;;',
-      '    container-runtime-detect) printf "podman\\n"; exit 0 ;;',
+      `    container-runtime-detect) printf "${
+        options.runtimeDetect ?? "podman"
+      }\\n"; exit ${options.runtimeDetectExit ?? 0} ;;`,
       "  esac",
       "done",
       "args=()",
@@ -414,5 +431,103 @@ Deno.test("first-run.sh - --help names every option and exits 0", async () => {
     ]
   ) {
     assertStringIncludes(help, flag);
+  }
+});
+
+Deno.test("first-run.sh - setup is told which agent this bare host runs", async () => {
+  // A bare host has no .config.json for setup to read the selection from, so
+  // the run declares it (docs/SETUP.md) and the report records the declaration
+  // as a note rather than leaving a reader to find it in a log.
+  const box = await sandbox({
+    launchOutput: "[run.sh] built\nvolume-init: trimmed /work",
+    workerLog: "Processing issue o/r#1\nSuccessfully processed o/r#1",
+  });
+  try {
+    const outcome = await verify(box);
+    assertEquals(outcome.code, 0, outcome.stdout);
+    assertEquals(
+      (await Deno.readTextFile(`${box.home}/setup-ran`)).trim(),
+      "codex",
+    );
+    assertStringIncludes(outcome.report, "VIBE_AGENT_PROVIDER=codex");
+  } finally {
+    await box.cleanup();
+  }
+});
+
+Deno.test("first-run.sh - a runtime that is not podman fails the stage that claims it is", async () => {
+  const box = await sandbox({ runtimeDetect: "docker" });
+  try {
+    const outcome = await verify(box);
+    assertEquals(outcome.code, 1);
+    assertStringIncludes(outcome.report, "| prerequisites | FAIL |");
+    assertStringIncludes(outcome.report, "| setup | SKIPPED |");
+  } finally {
+    await box.cleanup();
+  }
+});
+
+Deno.test("first-run.sh - a detection that could not answer is not read as podman", async () => {
+  const box = await sandbox({ runtimeDetect: "podman", runtimeDetectExit: 1 });
+  try {
+    const outcome = await verify(box);
+    assertEquals(outcome.code, 1);
+    assertStringIncludes(outcome.report, "| prerequisites | FAIL |");
+  } finally {
+    await box.cleanup();
+  }
+});
+
+Deno.test("first-run.sh - a previous launch's refused trim is not attributed to this run", async () => {
+  // run_core.log is appended to and never truncated, so without a run window
+  // every attempt on a host inherits the last one's findings and the runs stop
+  // being comparable — which is the whole point of scripting this.
+  const box = await sandbox({
+    staleRunCoreLog:
+      "volume-init: /work - this runtime does not support discard",
+    launchOutput: "[run.sh] built\nvolume-init: trimmed /work",
+    workerLog: "Processing issue o/r#1\nSuccessfully processed o/r#1",
+  });
+  try {
+    const outcome = await verify(box);
+    assertEquals(outcome.code, 0, outcome.stdout);
+    assertStringIncludes(outcome.report, "None observed.");
+  } finally {
+    await box.cleanup();
+  }
+});
+
+Deno.test("first-run.sh - the worker's claim-time refusal is read from worker.log", async () => {
+  // Criterion 7 of Issue #736 is about the *claim*, which the worker refuses in
+  // worker.log — not the launcher, which refuses in run_core.log.
+  const box = await sandbox({
+    launchOutput: "[run.sh] built\nvolume-init: trimmed /work",
+    workerLog: "[HOST_DISK_LOW] 3.2 GB free (4.1%) of 78.0 GB, floor 8.0 GB " +
+      "- below the floor - draining the issue pool before claiming further work",
+  });
+  try {
+    const outcome = await verify(box);
+    assertEquals(outcome.code, 1);
+    assertStringIncludes(outcome.report, "named both the resolved floor");
+    assertStringIncludes(outcome.report, "| claim | FAIL |");
+  } finally {
+    await box.cleanup();
+  }
+});
+
+Deno.test("first-run.sh - the run leaves no worker behind", async () => {
+  // The worker runs in the foreground under run.sh. A verification that exits
+  // without stopping it leaves the host in the state its own stage 1 refuses,
+  // so the next run on that host could never start.
+  const box = await sandbox({
+    launchOutput: "[run.sh] built\nvolume-init: trimmed /work",
+    workerLog: "Processing issue o/r#1\nSuccessfully processed o/r#1",
+  });
+  try {
+    const outcome = await verify(box);
+    assertEquals(outcome.code, 0, outcome.stdout);
+    assertStringIncludes(outcome.stdout, "stopping container vibe-coder-1");
+  } finally {
+    await box.cleanup();
   }
 });
