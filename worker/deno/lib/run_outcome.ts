@@ -21,6 +21,7 @@ import {
   type FailureCategory,
 } from "./failure_diagnosis.ts";
 import type { ClaimStaleReason, StaleClaim } from "./claim_freshness.ts";
+import type { PreservedWip } from "./preserved_wip_branch.ts";
 
 /**
  * Short facts a run wants stated on the release comment alongside whatever it
@@ -46,6 +47,12 @@ export type RunOutcome =
       elapsedSeconds: number;
       /** Raw failure message, for downstream classification/filing. */
       message: string;
+      /**
+       * Where the run's work in progress was preserved (Issue #770). Present
+       * only when preservation put it on a pushed branch, so the release
+       * comment can name that branch instead of a generic "WIP preserved".
+       */
+      preservedWip?: PreservedWip;
     }
     | { kind: "no_pr_expected"; phase: string; summary: string }
     /**
@@ -115,6 +122,12 @@ export interface RunOutcomeSource {
   prNumber?: number;
   /** Wall-clock seconds for the run; defaults to the sum of `timings`. */
   elapsedSeconds?: number;
+  /**
+   * Branch the run's work in progress was pushed to (Issue #770), from
+   * `PhaseState.preservedWip`. Carried onto a `no_pr` outcome so the release
+   * comment names it; ignored when the run raised a PR.
+   */
+  preservedWip?: PreservedWip;
 }
 
 /** PR number parsed from a GitHub PR URL, or 0. */
@@ -158,6 +171,9 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
     phase: source.phase,
     elapsedSeconds: Math.max(0, Math.round(elapsedSeconds)),
     message: source.reason,
+    // Only when the work reached a pushed branch (Issue #770) — the source
+    // field is set by preservation itself, never guessed from the title.
+    ...(source.preservedWip ? { preservedWip: source.preservedWip } : {}),
   };
 }
 

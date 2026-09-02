@@ -20,6 +20,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import { sweepHeartbeatComments } from "./heartbeat_sweep.ts";
+import { describePreservedBranch } from "./preserved_wip_branch.ts";
 
 /**
  * Generate the heartbeat file path for a given repo and issue.
@@ -440,10 +441,22 @@ export function formatDuration(seconds: number): string {
   return `${Math.floor(s / 86400)} d`;
 }
 
-/** Longest rendered outcome block (Issue #4326): a brief line, not a log dump. */
-export const OUTCOME_BLOCK_MAX_LENGTH = 600;
+/**
+ * Longest rendered outcome block (Issue #4326): a brief line, not a log dump.
+ *
+ * Raised from 600 for the preserved-branch line (Issue #770): the branch name
+ * and its handover link must fit whole beside the diagnosis, because half a
+ * ref or half a URL is worse than none.
+ */
+export const OUTCOME_BLOCK_MAX_LENGTH = 900;
 /** Longest raw-message excerpt inside the outcome block. */
 export const OUTCOME_DETAIL_MAX_LENGTH = 200;
+/**
+ * Longest preserved-branch line (Issue #770). Wider than a detail excerpt
+ * because it carries a branch name and a handover link, and truncating it
+ * would point a reader at half a ref.
+ */
+export const OUTCOME_WIP_MAX_LENGTH = 320;
 
 /**
  * Flatten and bound free text spliced into the release body (Issue #4326).
@@ -543,10 +556,21 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
         outcome.message,
         OUTCOME_DETAIL_MAX_LENGTH,
       );
+      // Where the work is (Issue #770), on its own line and BEFORE the raw
+      // detail: a reader must be able to find the preserved branch even when
+      // the message tail is trimmed to keep the block bounded.
+      const wip = outcome.preservedWip
+        ? `\n**Work in progress:** ${
+          boundOutcomeText(
+            describePreservedBranch(outcome.preservedWip),
+            OUTCOME_WIP_MAX_LENGTH,
+          )
+        }`
+        : "";
       const block = `\n**Outcome:** no PR raised — \`${display}\`.\n` +
         `**Diagnosis:** died in phase \`${phase}\` after ${
           formatDuration(outcome.elapsedSeconds)
-        }. ${oneliner}` +
+        }. ${oneliner}` + wip +
         (detail ? `\n**Detail:** ${detail}` : "");
       return block.length <= OUTCOME_BLOCK_MAX_LENGTH
         ? block

@@ -1607,6 +1607,11 @@ release**, not as the issue defeating the agent:
 - The preserved work lands in a `wip:` commit whose subject names the real
   cause (`wip: execute was released on schedule (cycle ended or run hard cap
   reached) after …`), so the next claimant reads what actually happened.
+- The release comment carries a **Work in progress** line naming the branch
+  that work is on, and links the handover file when one exists (Issue #770).
+  The branch named is the one the push targeted, so a retitled issue cannot
+  point a reader at a ref nothing wrote, and a run that preserved nothing names
+  no branch.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
