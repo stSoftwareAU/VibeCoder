@@ -69,6 +69,19 @@ Parameters:
     Description: >-
       HTTPS clone URL of the checkout the bootstrap clones for verification.
 
+  HostAgentCli:
+    Type: String
+    Default: none
+    AllowedValues:
+      - none
+      - claude
+    Description: >-
+      Coding-agent CLI to install on the host. Container mode runs the agent
+      inside the image, so the host needs a CLI only for Claude, whose setup
+      mints the worker's OAuth token with `claude setup-token`. A Codex-only
+      verification must have no Claude CLI present at all (Issue #736), which
+      is why the default installs none.
+
   UbuntuAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
@@ -299,7 +312,15 @@ Resources:
             # failed download exits 0 through the interpreter and the bootstrap
             # would carry on as though the install had worked.
             runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://deno.land/install.sh | sh'
-            runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
+
+            # The agent runs inside the image, so the host takes a CLI only
+            # when it is asked for one. The Codex-only verification of Issue
+            # #736 requires a host with no Claude CLI present, so installing
+            # one unconditionally would refuse the very run this host exists
+            # for (HostAgentCli defaults to none).
+            if [ "${HostAgentCli}" = "claude" ]; then
+              runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
+            fi
 
             cat > /etc/profile.d/vibe-verification.sh <<'PROFILE'
             # Deno and the coding-agent CLI install under the user's home.
@@ -321,7 +342,9 @@ Resources:
             runuser -l ubuntu -c 'git --version'
             runuser -l ubuntu -c 'gh --version'
             runuser -l ubuntu -c 'deno --version'
-            runuser -l ubuntu -c 'claude --version'
+            if [ "${HostAgentCli}" = "claude" ]; then
+              runuser -l ubuntu -c 'claude --version'
+            fi
             test -d "$RUNTIME/.git"
 
             # Auto-stop. Not re-armed by a later boot: cloud-init runs the
