@@ -202,10 +202,23 @@ export function extractSubIssueReferences(
 /**
  * Check if an issue body contains a back-reference to a parent issue.
  *
- * Detects patterns like "Part of #123" or "Child of #123" that confirm the
- * issue is a genuine sub-issue of the parent. Without this, a task list item
+ * Detects the parent-link vocabulary the fleet actually writes — `Part of #N`,
+ * `Child of #N`, `Parent: #N` and `Parent #N` — confirming the issue is a
+ * genuine sub-issue of the parent. Without this confirmation, a task list item
  * like `- [ ] #747 body updated` would be wrongly treated as a blocking
  * sub-issue (see FLEET#1472).
+ *
+ * Issue #809: the pattern previously accepted only `part of` / `child of`.
+ * Every child of #796 wrote `Parent: #796`, so the parent gate found no
+ * children at all and the epic was claimed with four children still open. The
+ * vocabulary now matches the one `listSubIssuesViaIssueList` already applies in
+ * `planning_processor.ts`.
+ *
+ * The match stays anchored: `parent` must be followed directly by the
+ * reference, so a passing mention such as "the parent of #100 is unclear" is
+ * not a back-reference, and a word boundary on the number keeps `#100` from
+ * matching `#1001`. Code spans are stripped first (Issue #3218) so a
+ * `Parent: #N` quoted in a documentation snippet creates no child edge.
  *
  * @param body - The child issue body text
  * @param parentNumber - The parent issue number to look for
@@ -213,11 +226,15 @@ export function extractSubIssueReferences(
  */
 export function hasBackReference(body: string, parentNumber: number): boolean {
   if (!body) return false;
-  const pattern = new RegExp(
-    `(?:part\\s+of|child\\s+of)\\s+#${parentNumber}\\b`,
-    "i",
-  );
-  return pattern.test(body);
+  const scan = stripCodeSpans(body);
+  // A static pattern capturing the number, compared numerically — no dynamic
+  // RegExp built from a caller-supplied value (ReDoS/injection risk).
+  const parentLinkPattern =
+    /\b(?:part\s+of|child\s+of|parent\s*:?)\s*#(\d+)\b/gi;
+  for (const match of scan.matchAll(parentLinkPattern)) {
+    if (parseInt(match[1]!, 10) === parentNumber) return true;
+  }
+  return false;
 }
 
 /** One forward dependency reference, with the repo it names (Issue #222). */
