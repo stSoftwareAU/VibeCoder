@@ -11,11 +11,12 @@
  * `degraded-model` label **only when the round was degraded**.
  *
  * Since Issue #3756 the `## <Phase> run model stats` comment is no longer
- * degraded-only: a healthy round posts it too, but **at most once per issue**
- * (see {@link ./issue_run_stats_comment.ts}). Every issue the Vibe Coder wraps
- * up therefore carries one cost indication, without per-round comment flooding.
- * A degraded round still posts unconditionally — the label must never appear
- * without the figures that justify it.
+ * degraded-only: a healthy round posts it too, at most once **per run** since
+ * Issue #797 (see {@link ./issue_run_stats_comment.ts}). Every run the Vibe
+ * Coder completes therefore reports what it cost — an earlier, cheaper round no
+ * longer swallows the wrap-up run's figures — and each comment carries the
+ * cumulative issue total. A degraded round still posts unconditionally: the
+ * label must never appear without the figures that justify it.
  *
  * A run is degraded when any of the following holds for the phase's invocation
  * (all judged by the shared {@link ./planning_run_stats.ts} helpers — no forked
@@ -121,12 +122,12 @@ export function buildPhaseInvocations(
  *   block is posted unconditionally as the label's visible explanation. A
  *   degradation must always be paired with the figures that justify it, so
  *   this post deliberately ignores the duplicate guard.
- * - *Healthy round* — the stats block is posted **at most once per issue**
- *   (Issue #3756). Before this, healthy reactive rounds reported nothing, so
- *   most issues the Vibe Coder wrapped up carried no cost indication at all.
- *   {@link postIssueRunStatsComment} skips when the issue already carries a
- *   run-stats comment (including the planning-path one), so cost visibility
- *   never turns into comment flooding.
+ * - *Healthy round* — the stats block is posted **at most once per run**
+ *   (Issues #3756, #797). Before #3756, healthy reactive rounds reported
+ *   nothing; under #3756's issue-scoped guard, only the first wrap-up on an
+ *   issue did. {@link postIssueRunStatsComment} now skips only when *this* run
+ *   already posted, so a repeat post inside one run is still suppressed while
+ *   every completed run's cost is visible.
  *
  * Every GitHub call remains non-fatal — a label or comment failure is logged
  * and never aborts the phase.
@@ -151,9 +152,10 @@ export async function reportPhaseDegradation(args: {
   /** Optional label-cache directory (injected for testability). */
   cacheDir?: string;
   /**
-   * Lists the issue's existing comment bodies for the one-per-issue duplicate
-   * guard. Defaults to a `gh issue view --json comments` lookup built from
-   * {@link args.runGhCommand} (Issue #3756).
+   * Lists the issue's existing comment bodies for the one-per-run duplicate
+   * guard and the cumulative issue total. Defaults to a
+   * `gh issue view --json comments` lookup built from
+   * {@link args.runGhCommand} (Issues #3756, #797).
    */
   listIssueComments?: (
     repo: string,
@@ -186,8 +188,8 @@ export async function reportPhaseDegradation(args: {
   // ("grill-me", "refinement", …) and stay stable for existing assertions.
   const label = phaseDisplayName(phase).toLowerCase();
 
-  // Healthy round — post the issue's single cost/model stats comment, if it
-  // does not already have one (Issue #3756).
+  // Healthy round — post this run's cost/model stats comment, unless this run
+  // already posted one (Issues #3756, #797).
   if (!verdict.degraded) {
     await postIssueRunStatsComment({
       repo,
