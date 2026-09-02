@@ -166,7 +166,10 @@ unfixed code and passes after the fix, and state that linkage in the PR summary.
   (`assertLinearGrowth`), which times the same work at size N and 4N and fails
   only when the cost grew faster than the input. A slower fleet host inflates
   both readings and stays green; an absolute millisecond budget does not
-  (Issue #530).
+  (Issue #530). The rule in one line: **compare two readings of the same work,
+  never a reading against a constant.** A ratio assertion is permitted and is
+  not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
+  is one (Issue #786).
 
 ## Quality Gates
 
