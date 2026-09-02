@@ -21,8 +21,8 @@
  * Unlike the warn-and-default `idle_task_cadence` parser, a malformed
  * `callbacks` block **stops the worker**. A hook an operator believes is
  * wired, but that silently never runs, is the precise failure this contract
- * exists to make impossible: the fleet's health and archival reporting hangs
- * off it, so "no explicit failure" must never pass for "the hook ran".
+ * exists to make impossible: "no explicit failure" must never pass for
+ * "the hook ran".
  *
  * ## Path rules — absolute, on the worker's own filesystem
  *
