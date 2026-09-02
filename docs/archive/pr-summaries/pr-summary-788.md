@@ -107,6 +107,13 @@ reviewer sub-agents.
   with no sign that the map is shared. Three siblings already carry that
   sentence; copying it makes orphan-deps the fourth to say the map is an
   invariant rather than a local style choice
+- **unrequested** — the pairing pattern uses `\u{…}` escapes with the `u` flag
+  — evidence: `severity_emoji_scale_test.ts` `PAIRING` — reason: found by CI,
+  not locally. The first draft alternated the raw emoji, which this Deno
+  version accepts and CI's rejects as an invalid RegExp literal — without the
+  `u` flag each emoji is a surrogate pair rather than a code point. Verified
+  after the change by running the escaped pattern directly over `v6.md`: it
+  still extracts `🔴=high`, `🟠=medium`, `🟡=low`
 - **unrequested** — `::orphan_deps still has no critical band to justify a red
   (Issue #788)` — reason: the mis-mapping was *unambiguous* only because this
   scan has no critical band. If it ever gained one the fix would need
