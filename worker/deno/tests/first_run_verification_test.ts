@@ -547,3 +547,25 @@ Deno.test("renderReport - a secret quoted from a stage log never reaches the iss
   });
   assertEquals(report.includes("sk-ant-api03-AAAA"), false);
 });
+
+Deno.test("analyseDiskChain - a claim refusal does not implicate the volume", () => {
+  // The volume-init row and the disk refusal have different owners: reporting
+  // a claim-time refusal against volume initialisation sends a reader to the
+  // wrong subsystem.
+  const verdict = analyseDiskChain(
+    "volume-init: trimmed /work",
+    "",
+    "[HOST_DISK_LOW] 3.2 GB free (4.1%) of 78.0 GB, floor 8.0 GB — below the floor",
+  );
+  assertEquals(verdict.volumeInitSeen, true);
+  assertEquals(verdict.volumeImplicated, false);
+});
+
+Deno.test("analyseDiskChain - a refused trim followed by a refused launch implicates the volume", () => {
+  const verdict = analyseDiskChain(
+    "volume-init: /work - this runtime does not support discard",
+    "[run.sh] refusing to launch: / has 900 MB free, below the 8 GB hard floor",
+    "",
+  );
+  assertEquals(verdict.volumeImplicated, true);
+});

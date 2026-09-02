@@ -51,7 +51,7 @@ The report separates the two things a reader would otherwise re-derive by hand:
 ## Evidence
 
 Backend and shell change with no web interface to screenshot. The evidence is
-the test suite: **71 tests** over the harness — 45 unit tests on the decisions,
+the test suite: **73 tests** over the harness — 47 unit tests on the decisions,
 14 on the command seam, and 12 end-to-end tests that run the real script
 against stub `setup.sh` / `run.sh` / `podman` executables and the **real** Deno
 command, asserting on exit status and the report written. `./quality.sh`
@@ -291,7 +291,7 @@ by a test:
 
 ## Test Plan
 
-- `worker/deno/tests/first_run_verification_test.ts` — 45 unit tests on the
+- `worker/deno/tests/first_run_verification_test.ts` — 47 unit tests on the
   decisions: fresh state (each workaround variable, any image present, both
   `registries.conf` files, a commented-out setting, a patched checkout, the
   declared provider), the Codex-only configuration, the image stamp and CLI

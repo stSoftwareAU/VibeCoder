@@ -436,7 +436,16 @@ const REFUSAL = /refus(ing|ed) (to launch|launch)|\[HOST_DISK_LOW\]/;
 export interface DiskChainVerdict {
   /** Whether volume initialisation was seen to run at all. */
   readonly volumeInitSeen: boolean;
-  /** Whether the launcher refused to launch. */
+  /**
+   * Whether the volume itself is implicated — a refused trim followed by a
+   * refused launch, the chain Issue #734 reported.
+   *
+   * A refusal on its own is a disk decision, not a volume fault, so it must
+   * not be reported against the volume-init row: the two have different
+   * owners and a reader chasing the wrong one wastes the run.
+   */
+  readonly volumeImplicated: boolean;
+  /** Whether work was refused, by the launcher or by the worker. */
   readonly refused: boolean;
   /** Expected warnings and defects read from the evidence. */
   readonly findings: Finding[];
@@ -520,7 +529,12 @@ export function analyseDiskChain(
     }
   }
 
-  return { volumeInitSeen, refused: refusalLine !== undefined, findings };
+  return {
+    volumeInitSeen,
+    volumeImplicated: trimRefused && refusalLine !== undefined,
+    refused: refusalLine !== undefined,
+    findings,
+  };
 }
 
 /**

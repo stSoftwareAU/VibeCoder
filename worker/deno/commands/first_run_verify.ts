@@ -259,9 +259,10 @@ async function report(args: Record<string, unknown>): Promise<CommandResult> {
     );
   }
 
-  // The two sources are both needed: volume-init speaks on the launcher's
-  // stderr, run.sh writes the trim refusal and every disk decision to
-  // run_core.log (Issue #734).
+  // All three sources are needed: volume-init speaks on the launcher's stderr,
+  // run.sh writes the trim refusal and every launch-time disk decision to
+  // run_core.log (Issue #734), and the worker writes its claim-time refusal to
+  // worker.log (Issue #732).
   const runCoreLog = typeof args["run-core-log"] === "string"
     ? args["run-core-log"] as string
     : undefined;
@@ -280,9 +281,12 @@ async function report(args: Record<string, unknown>): Promise<CommandResult> {
   );
   findings.push(...chain.findings);
 
+  // FAIL only when the volume itself is implicated. A claim-time disk refusal
+  // is a defect of its own and fails the verdict on its own; reporting it
+  // against volume-init would send a reader to the wrong subsystem.
   const volumeStage: StageRecord = {
     name: "volume-init",
-    status: chain.findings.some((f) => f.kind === "defect")
+    status: chain.volumeImplicated
       ? "FAIL"
       : chain.volumeInitSeen
       ? "PASS"
