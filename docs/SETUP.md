@@ -135,6 +135,13 @@ background service is offered, where files land — is covered in
      says so and asks nothing when there is no default-branch gate to mirror
      (nothing could be created), and warns with the read error — never
      "missing" — when the repository's rulesets cannot be read at all.
+     Every ruleset failure is non-fatal and named: a **private repository on
+     a free plan** cannot take a ruleset at all — GitHub answers HTTP 403,
+     because rulesets there need GitHub Pro — and setup says exactly that,
+     naming the repository, rather than printing the same line a missing token
+     scope or an organisation policy would (Issue #733). Any other failure
+     names the repository and the HTTP status. Setup finishes either way; the
+     branch is simply left unprotected.
    - `backfill-idle-task-labels` — adds the `idle-task` label to existing
      security-scan wrapper issues that lack it; already-labelled wrappers are
      not touched again.
