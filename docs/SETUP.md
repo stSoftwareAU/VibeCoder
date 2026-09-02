@@ -418,7 +418,12 @@ same set, stated as the state your host must reach:
   On the **very first** run there is no `.config.json` to read yet, so the
   probe falls back to the default provider (Claude). Say which agent that host
   runs on the command line instead — `VIBE_AGENT_PROVIDER=codex ./setup.sh` —
-  and the same gate applies from the first probe.
+  and the same gate applies from the first probe. Setup **writes that
+  selection into `.config.json`** (Issue #799), so the declaration is needed
+  exactly once: every later command — `./run.sh` included, which builds the
+  image from the same set — reads it from the file. Before that fix a
+  Codex-only host got a Claude image on its first launch, because the file
+  setup wrote said nothing about Codex.
 - [ ] **A container runtime** installed *and answering its probe* —
   host-fatal. The **worker image** must be present or buildable from the
   committed definition; a missing image is fine (the launcher builds it on

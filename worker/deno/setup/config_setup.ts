@@ -15,6 +15,11 @@ import {
   LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
 } from "../lib/config_defaults.ts";
+import {
+  AGENT_PROVIDER_ENV,
+  ENABLED_AGENT_PROVIDERS_ENV,
+  resolveAgentProvider,
+} from "../lib/agent_provider.ts";
 
 /**
  * Configuration values that can be set during setup.
@@ -25,6 +30,15 @@ export interface SetupConfig {
   pr_reviewer?: string;
   pr_reviewers?: string[];
   repos?: string[];
+  /**
+   * The coding agent this host runs (Issue #799). Setup persists the
+   * selection it was given, so a host declares it once — on its first
+   * `./setup.sh` — instead of exporting `VIBE_AGENT_PROVIDER` for every later
+   * command, `./run.sh` included.
+   */
+  agent_provider?: string;
+  /** Every coding agent this host's image installs (Issue #799). */
+  agent_providers?: string[];
   authorized_commenters?: string[];
   /** `"github"` | `"config"` — default `"config"` (Issue #252). */
   author_source?: string;
@@ -505,6 +519,33 @@ export function mergeNonInteractive(
     const existingRepos = result.repos ?? [];
     const merged = [...new Set([...existingRepos, ...addRepos])];
     result.repos = merged;
+  }
+
+  // The coding-agent selection (Issue #799). Setup *read* it and never wrote
+  // it, so a fresh host that ran `VIBE_AGENT_PROVIDER=codex ./setup.sh` got a
+  // `.config.json` saying nothing about Codex: the next `./run.sh`, in a
+  // shell without the override, resolved the default and built a Claude
+  // image. What the operator declared is now persisted, so every later
+  // command reads it from the file — which is where
+  // `docs/CONFIGURATION.md` has always said the selection lives.
+  //
+  // Only what was declared is written: `agent_provider` alone already
+  // resolves to a one-provider set (`resolveEnabledAgentProviderIds`), so
+  // inventing an `agent_providers` beside it would be this function guessing
+  // at a selection the operator did not make.
+  const vibeAgentProvider = env(AGENT_PROVIDER_ENV)?.trim();
+  const vibeAgentProviders = env(ENABLED_AGENT_PROVIDERS_ENV)?.trim();
+  if (vibeAgentProviders) {
+    // Fail loud rather than persisting an id nothing can run: a `.config.json`
+    // naming an unregistered provider breaks every later command, and the
+    // operator is standing right here.
+    const ids = parseCsv(vibeAgentProviders);
+    for (const id of ids) resolveAgentProvider(id);
+    result.agent_providers = ids;
+  }
+  if (vibeAgentProvider) {
+    resolveAgentProvider(vibeAgentProvider);
+    result.agent_provider = vibeAgentProvider;
   }
 
   // Issue #1834: VIBE_ISSUE_LABELS no longer applied — issue_labels is
