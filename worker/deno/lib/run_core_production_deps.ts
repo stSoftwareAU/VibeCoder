@@ -237,8 +237,16 @@ import {
 } from "./stuck_issue_detector.ts";
 import {
   deleteResumeState,
+  loadResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
+import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { hasAnyCallback } from "./run_callbacks_config.ts";
+import {
+  agentTranscriptEnabled,
+  agentTranscriptPath,
+} from "./agent_transcript.ts";
+import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
   resolveFleetPrAuthorSet,
@@ -572,6 +580,13 @@ export async function createProductionRunCoreDeps(
 
   // Stable machine identifier used by GitHub heartbeat markers (Issue #1454)
   const machineId = await getMachineId(workDir);
+  /**
+   * CLI session id per released claim, keyed `owner/repo#number` (Issue
+   * #806). Captured at release — before the resume state that holds it is
+   * deleted — and consumed by that claim's callbacks, so concurrent slots
+   * never read each other's session.
+   */
+  const releasedSessionIds = new Map<string, string>();
   // Issue #253: trusted-author sets are a per-cycle snapshot, not values
   // captured once at start-up. The production refresh still copies the
   // static config arrays, so observable behaviour is unchanged; the
@@ -2846,6 +2861,11 @@ export async function createProductionRunCoreDeps(
           ...(result.outcome && !isExpectedSkip
             ? { outcome: result.outcome }
             : {}),
+          // Token and cost telemetry for the post-run callbacks (Issue
+          // #806); a skip never ran an agent, so it reports none.
+          ...(result.telemetry && !isExpectedSkip
+            ? { telemetry: result.telemetry }
+            : {}),
         },
       };
     },
@@ -3017,6 +3037,20 @@ export async function createProductionRunCoreDeps(
       issueNumber: number,
       outcome?: RunOutcome,
     ) {
+      // Issue #806: the run's CLI session id is read *before* the resume
+      // state is deleted below, so the post-run callbacks can identify the
+      // session even on the ordinary path that clears it.
+      if (hasAnyCallback(config.callbacks)) {
+        try {
+          const resume = await loadResumeState(workDir, repo, issueNumber);
+          if (resume?.sessionId) {
+            releasedSessionIds.set(
+              `${repo}#${issueNumber}`,
+              resume.sessionId,
+            );
+          }
+        } catch { /* best-effort — a hook simply sees no session id */ }
+      }
       try {
         await libReleaseClaim(workDir, repo, issueNumber, {
           githubUser,
@@ -3071,6 +3105,53 @@ export async function createProductionRunCoreDeps(
       } else {
         await deleteResumeState(workDir, repo, issueNumber);
       }
+    },
+
+    /**
+     * Post-run callbacks for one terminal issue run (Issue #806, parent
+     * #796).
+     *
+     * Builds the versioned context from what this host can state truthfully —
+     * absent facts are omitted, never guessed — and hands it to
+     * `invokeRunCallbacks`, which bounds, captures and reports each hook
+     * without ever altering the run's own outcome.
+     */
+    async runIssueCallbacks(run) {
+      if (!hasAnyCallback(config.callbacks)) return;
+      const key = `${run.repo}#${run.issueNumber}`;
+      const sessionId = releasedSessionIds.get(key);
+      releasedSessionIds.delete(key);
+      const transcriptPath = agentTranscriptEnabled()
+        ? agentTranscriptPath(
+          `${Deno.env.get("HOME") ?? ""}/logs`,
+          getRunId(),
+          run.issueNumber,
+        )
+        : undefined;
+      await invokeRunCallbacks({
+        callbacks: config.callbacks,
+        context: {
+          runId: getRunId(),
+          result: run.result,
+          repository: run.repo,
+          issueNumber: run.issueNumber,
+          host: Deno.hostname(),
+          ...(config.workerName ? { workerName: config.workerName } : {}),
+          ...(config.agentProvider ? { provider: config.agentProvider } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(transcriptPath ? { sessionLogPath: transcriptPath } : {}),
+          startedAt: new Date(run.startedAtEpochMs).toISOString(),
+          finishedAt: new Date(run.finishedAtEpochMs).toISOString(),
+          durationSeconds: Math.max(
+            0,
+            Math.round((run.finishedAtEpochMs - run.startedAtEpochMs) / 1000),
+          ),
+          exitCode: run.result === "success" ? 0 : 1,
+          ...(run.telemetry ? { telemetry: run.telemetry } : {}),
+        },
+        log: (message) => logger.info(message),
+        logError: (message) => logger.error(message),
+      });
     },
     async cleanupInProgressIssue() {
       try {

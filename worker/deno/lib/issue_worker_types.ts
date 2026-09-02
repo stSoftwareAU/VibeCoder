@@ -17,6 +17,7 @@ import type { GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
+import type { CallbackRunTelemetry } from "./run_callbacks.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -217,6 +218,12 @@ export interface WorkOnIssueResult {
    * `WORKER_SUMMARY` — so one unresolvable issue cannot livelock the pool.
    */
   expectedSkip?: boolean;
+  /**
+   * Token and cost telemetry summed across the run's agent invocations
+   * (Issue #806), for the post-run callback context. Absent when no
+   * invocation reported usage the worker could parse.
+   */
+  telemetry?: CallbackRunTelemetry;
 }
 
 /**

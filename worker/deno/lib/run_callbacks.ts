@@ -117,6 +117,29 @@ export interface IssueRunCallbackContext {
   telemetry?: CallbackRunTelemetry;
 }
 
+/**
+ * One terminal issue run, as the scan loop reports it to the callback layer
+ * (Issue #806).
+ *
+ * The loop knows the claim, the result and the wall-clock bounds; the
+ * production wiring turns those into an {@link IssueRunCallbackContext} by
+ * adding the host, provider, session and telemetry facts it can resolve.
+ */
+export interface TerminalIssueRun {
+  /** `owner/repo` the run worked. */
+  repo: string;
+  /** Issue number the run worked. */
+  issueNumber: number;
+  /** The original VibeCoder result. A hook never changes it. */
+  result: "success" | "failure";
+  /** Epoch ms the claim was taken. */
+  startedAtEpochMs: number;
+  /** Epoch ms the run terminated. */
+  finishedAtEpochMs: number;
+  /** Token and cost telemetry, when the run's invocations reported it. */
+  telemetry?: CallbackRunTelemetry;
+}
+
 /** What became of one hook invocation. */
 export type CallbackStatus =
   /** Exited 0. */

@@ -59,6 +59,10 @@ import {
   describeRunOutcome,
   type RunOutcome,
 } from "./run_outcome.ts";
+import type {
+  CallbackRunTelemetry,
+  TerminalIssueRun,
+} from "./run_callbacks.ts";
 import {
   formatSlotPrefix,
   renderSlotStatus,
@@ -553,6 +557,12 @@ export interface RunCoreDeps {
        * claim-release comment. Absent on skip (the run never ran).
        */
       outcome?: RunOutcome;
+      /**
+       * Token and cost telemetry for the post-run callback context
+       * (Issue #806). Absent when no agent invocation reported parseable
+       * usage.
+       */
+      telemetry?: CallbackRunTelemetry;
     }>
   >;
 
@@ -751,6 +761,21 @@ export interface RunCoreDeps {
     issueNumber: number,
     outcome?: RunOutcome,
   ) => Promise<void>;
+
+  /**
+   * Run the operator's post-run callbacks for one terminal issue run
+   * (Issue #806, parent #796).
+   *
+   * Called once per claim that actually ran, after the claim is released:
+   * `success` or `failure`, then `always`. Never called for a skip (the run
+   * never ran). Must never throw and must never alter the run's outcome —
+   * the production wiring hands this to `invokeRunCallbacks`, which reports
+   * a hook fault rather than propagating it.
+   *
+   * Optional: absent — or configured with no hooks — means no callbacks,
+   * which is the behaviour of every configuration that predates the contract.
+   */
+  runIssueCallbacks?: (run: TerminalIssueRun) => Promise<void>;
 
   // Status
   setStatusIdle: () => Promise<void>;
@@ -1521,6 +1546,7 @@ async function releaseIssueClaim(
   repo: string,
   issueNumber: number,
   outcome?: RunOutcome,
+  ran?: TerminalRun,
 ): Promise<void> {
   // Log the resolved outcome kind (Issue #4325) so a worker-log grep tells
   // "outcome never computed" from "computed but not rendered".
@@ -1533,6 +1559,53 @@ async function releaseIssueClaim(
     await deps.releaseClaim(repo, issueNumber, outcome);
   } else {
     await deps.clearHeartbeat();
+  }
+  // The callbacks run after the release, on every path where a claim
+  // actually ran (Issue #806). A skip passes no `ran`, so an unclaimed or
+  // rejected candidate never triggers a hook.
+  if (ran) await dispatchIssueCallbacks(deps, repo, issueNumber, ran);
+}
+
+/**
+ * What a terminal run reports to the callback layer: the original result and
+ * when the claim started (Issue #806).
+ */
+interface TerminalRun {
+  result: "success" | "failure";
+  startedAtEpochMs: number;
+  /** Token and cost telemetry the run reported, when it reported any. */
+  telemetry?: CallbackRunTelemetry;
+}
+
+/**
+ * Fire the operator's post-run callbacks for one terminal issue run
+ * (Issue #806, parent #796).
+ *
+ * Never throws and never alters the run's outcome: a hook that fails is one
+ * more thing to report, not a reason to rewrite what VibeCoder achieved.
+ */
+async function dispatchIssueCallbacks(
+  deps: RunCoreDeps,
+  repo: string,
+  issueNumber: number,
+  ran: TerminalRun,
+): Promise<void> {
+  if (!deps.runIssueCallbacks) return;
+  try {
+    await deps.runIssueCallbacks({
+      repo,
+      issueNumber,
+      result: ran.result,
+      startedAtEpochMs: ran.startedAtEpochMs,
+      finishedAtEpochMs: deps.now(),
+      ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
+    });
+  } catch (error) {
+    deps.logError(
+      `Post-run callbacks for ${repo}#${issueNumber} faulted: ${
+        error instanceof Error ? error.message : String(error)
+      }. The original VibeCoder result (${ran.result}) is unchanged.`,
+    );
   }
 }
 
@@ -1836,13 +1909,33 @@ async function runIssueScanLoop(
     // Issue #460: record the claim before the run, not after it. The
     // outcome does not change the fact that this repo was served.
     tracker.recordClaim(issue.repo);
-    // Process the issue
-    const processResult = await deps.processIssue(issue, endTime);
+    // Process the issue. The claim time bounds the post-run callback
+    // context (Issue #806); a throw takes the failure/always path exactly
+    // once and then propagates as before.
+    const claimedAtEpochMs = deps.now();
+    let processResult: Awaited<ReturnType<typeof deps.processIssue>>;
+    try {
+      processResult = await deps.processIssue(issue, endTime);
+    } catch (thrown) {
+      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
+        result: "failure",
+        startedAtEpochMs: claimedAtEpochMs,
+      });
+      throw thrown;
+    }
     // The run outcome (Issue #4325) rides the claim release so the comment
     // states what happened; absent when the run never ran (skip).
     const runOutcome = processResult.ok
       ? processResult.value.outcome
       : undefined;
+    /** What this run reports to the post-run callbacks (Issue #806). */
+    const ran = (result: "success" | "failure"): TerminalRun => ({
+      result,
+      startedAtEpochMs: claimedAtEpochMs,
+      ...(processResult.ok && processResult.value.telemetry
+        ? { telemetry: processResult.value.telemetry }
+        : {}),
+    });
 
     if (processResult.ok && processResult.value.success) {
       // Success path
@@ -1872,6 +1965,7 @@ async function runIssueScanLoop(
         issue.repo,
         issue.issueNumber,
         runOutcome,
+        ran("success"),
       );
       deps.log(`Successfully processed ${issue.repo}#${issue.issueNumber}`);
       break; // Exit inner loop, earn normal sleep
@@ -1907,6 +2001,14 @@ async function runIssueScanLoop(
     // Check exit threshold
     const shouldExit = await deps.shouldExitOnFailures();
     if (shouldExit) {
+      // The run still terminated in failure, so its callbacks fire before
+      // the loop unwinds (Issue #806).
+      await dispatchIssueCallbacks(
+        deps,
+        issue.repo,
+        issue.issueNumber,
+        ran("failure"),
+      );
       return { exitOuterLoop: true, eligibilityScanCompleted };
     }
 
@@ -1919,6 +2021,7 @@ async function runIssueScanLoop(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("failure"),
     );
 
     // Scan continuation (Issue #3648): the failure path used to `continue`
@@ -2551,6 +2654,10 @@ async function drainSlots(
           }s) elapsed while the slot was still running`,
           elapsedSeconds: (Date.now() - hold.sinceMs) / 1000,
         }),
+        // A shutdown after a claim is a terminal failure for that run, so it
+        // takes the failure/always path exactly once (Issue #806). The slot
+        // itself is abandoned mid-run and never reaches its own release.
+        { result: "failure", startedAtEpochMs: hold.sinceMs },
       );
     }
   }
@@ -2727,6 +2834,12 @@ async function runSlot(
 
     /** Set by a successful claim so the settle sleep runs holding no repo. */
     let claimSucceeded = false;
+    /**
+     * Whether `runSlotIssue` reached its own terminal path — and therefore
+     * already fired this run's callbacks (Issue #806). A throw from anything
+     * *after* it must not fire them a second time.
+     */
+    let issueSettled = false;
     try {
       // Every claim gets its OWN write-repo allowlist (Issue #183). The
       // per-slot context exists (#4175) but nothing wired it up here, so
@@ -2760,8 +2873,8 @@ async function runSlot(
                 pool.registry.noteRunDeadline(issue.repo, deadline);
               },
             },
-            () =>
-              runSlotIssue(
+            async () => {
+              const settled = await runSlotIssue(
                 slotId,
                 issue,
                 config,
@@ -2769,7 +2882,10 @@ async function runSlot(
                 tracker,
                 endTime,
                 pool,
-              ),
+              );
+              issueSettled = true;
+              return settled;
+            },
           ),
       );
       if (outcome === "exit") {
@@ -2812,6 +2928,12 @@ async function runSlot(
           reason: message,
           elapsedSeconds: since === undefined ? 0 : (Date.now() - since) / 1000,
         }),
+        // An exception after a claim takes the failure/always path exactly
+        // once (Issue #806): only when the run had not already reached its
+        // own terminal path and fired them.
+        issueSettled
+          ? undefined
+          : { result: "failure", startedAtEpochMs: since ?? deps.now() },
       );
       // A primary rate limit is pool-wide (Issue #4180): stop every slot
       // from claiming and let the pool re-throw once drained so the cycle
@@ -3070,8 +3192,19 @@ async function runSlotIssue(
 
   // Issue #460: see the sibling call site — the claim, not the outcome.
   tracker.recordClaim(issue.repo);
+  // Each slot bounds its own callback context (Issue #806), so concurrent
+  // slots never share a start time or a result.
+  const claimedAtEpochMs = deps.now();
   const processResult = await deps.processIssue(issue, endTime);
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
+  /** What this slot's run reports to the post-run callbacks (Issue #806). */
+  const ran = (result: "success" | "failure"): TerminalRun => ({
+    result,
+    startedAtEpochMs: claimedAtEpochMs,
+    ...(processResult.ok && processResult.value.telemetry
+      ? { telemetry: processResult.value.telemetry }
+      : {}),
+  });
 
   if (processResult.ok && processResult.value.success) {
     noteIssueProcessed(deps, issue, "success");
@@ -3096,6 +3229,7 @@ async function runSlotIssue(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("success"),
     );
     log(`Successfully processed ${issue.repo}#${issue.issueNumber}`);
     return "success";
@@ -3130,6 +3264,7 @@ async function runSlotIssue(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("failure"),
     );
     return "exit";
   }
@@ -3138,6 +3273,7 @@ async function runSlotIssue(
     issue.repo,
     issue.issueNumber,
     runOutcome,
+    ran("failure"),
   );
 
   // Pool-wide consecutive-failure policy (Issue #4180 keeps thresholds
