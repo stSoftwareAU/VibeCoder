@@ -54,8 +54,19 @@ Backend and shell change with no web interface to screenshot. The evidence is
 the test suite: **73 tests** over the harness — 47 unit tests on the decisions,
 14 on the command seam, and 12 end-to-end tests that run the real script
 against stub `setup.sh` / `run.sh` / `podman` executables and the **real** Deno
-command, asserting on exit status and the report written. `./quality.sh`
-passes.
+command, asserting on exit status and the report written.
+
+`./quality.sh` reports every check green except `deno tests`, which fails
+**identically on the base branch** — 35 failures across
+`run_core_test.ts` / `run_core_rate_limit_resume_test.ts` (a real
+`gh` GraphQL rate limit), `service_account_env_test.ts`,
+`setup_credential_provisioning_test.ts`, `setup_lockfile_test.ts`,
+`setup_prerequisites_test.ts`, `setup_provider_credential_flow_test.ts` and
+`setup_workdir_reminder_test.ts`. Each was reproduced from a clean worktree of
+`milestone/764-timeouts-should-be-soft-extend-progressing-run` with the same
+counts, so none is introduced here; they are host-environment failures of the
+`setup.sh` shell-sourcing tests inside a worker container. Every test this PR
+adds or touches passes.
 
 ```mermaid
 flowchart LR
@@ -317,4 +328,9 @@ by a test:
 - `worker/deno/tests/linux_verification_host_template_test.ts` — the
   verification host installs no coding-agent CLI by default, proved by
   executing the template's own rendered guard.
-- `./quality.sh` — passes.
+- `./quality.sh` — every check passes except `deno tests`, whose 35 failures
+  reproduce unchanged on the base branch (see Evidence). One of them **was**
+  mine and is fixed: the preflight test set `VIBE_SKIP_PREREQ_CHECK` and Deno
+  runs a file's tests in one process, so the variable leaked and turned 30
+  unrelated prerequisite checks into skips. The helper now clears the whole set
+  before restoring what it saved.
