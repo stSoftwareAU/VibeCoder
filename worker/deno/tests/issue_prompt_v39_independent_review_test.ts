@@ -38,11 +38,20 @@ Deno.test("issue v39 - is the version the worker resolves", async () => {
   const latest = await getLatestVersion("issue", PROMPTS_DIR);
   assertEquals(latest.ok, true);
   if (!latest.ok) return;
-  assertEquals(latest.value, "v39");
+  // Issue #780 minted v40, so v39 is no longer what the worker resolves.
+  // What this file pins is the contract v39 introduced, and that contract
+  // must survive every later version — so the resolution check is "v39 or
+  // newer" and the comparison is against whatever is latest.
+  const version = parseInt(latest.value.replace("v", ""), 10);
+  assertEquals(
+    version >= 39,
+    true,
+    `Expected issue >= v39, got ${latest.value}`,
+  );
 
   const [byName, byVersion] = await Promise.all([
     loadPrompt("issue", undefined, PROMPTS_DIR),
-    loadPrompt("issue", "v39", PROMPTS_DIR),
+    loadPrompt("issue", latest.value, PROMPTS_DIR),
   ]);
   assertEquals(byName.ok, true);
   assertEquals(byVersion.ok, true);
