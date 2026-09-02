@@ -299,6 +299,9 @@ could reach and that a third party or a durable record could later read:
   crash-notification posts, which embed tails of subprocess output.
 - **Issue title and body edits** — the `editIssue` writes the revision and
   refinement processors make from model-authored `new_title` / `new_body`.
+- **Committed files** — text the worker writes into the clone and then pushes,
+  such as the interrupted-run handover note (Issue #769), which carries commit
+  subjects and paths an agent authored.
 
 Every branch of a sink counts, not just the obvious one. Revision and refinement
 each post model output twice — once when the JSON parse fails and once on the
@@ -408,6 +411,7 @@ only a decoded *credential shape* is masked.
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
 | Question-failure comment | `worker/deno/lib/label_question_failure.ts` | |
+| Interrupted-run handover note (committed and pushed) | `worker/deno/lib/handover_note.ts` | [#769](https://github.com/stSoftwareAU/VibeCoder/issues/769) |
 
 ```mermaid
 flowchart LR
@@ -419,6 +423,7 @@ flowchart LR
     P["handle_no_changes_phase.ts"] --> R
     G["gh_body_redaction.ts<br/>(--body / -f body= via spawnGh)"] --> R
     GA["gh_guard_cli.ts<br/>(agent bodies via the PATH shim)"] --> R
+    HN["handover_note.ts<br/>(note committed to the issue branch)"] --> R
     N["your new sink"] -.must call.-> R
     R --> RULES["RULES\n(add a rule for each\nnew credential shape)"]
     RULES --> O["masked text → public / permanent sink"]
@@ -1018,6 +1023,7 @@ Prompt boundary markers are hardened against spoofing:
 - **Nonce threaded to every comment consumer**: the work-on command carries `TrustAnnotatedResult.boundaryId` into `IssueContext.commentBoundaryId`, and the clarity-assessment prompt adopts it as its run nonce, so the remaining consumer of the trust-annotated blob preserves genuine headers too. Paths with no trust formatting pass no id and are scrubbed in full
 - **The rule names what it governs, and covers the whole prompt**: `buildBoundaryIntegrityInstruction(boundaryId, untrustedBlocks)` takes the names of the blocks the caller actually fenced, so a CI-fix prompt says "the CI console-log excerpt" where an issue prompt says "the issue title, labels, and description" — the fixed issue wording named content that was absent and omitted content that was present. The scope reads "anywhere in this prompt" rather than "above", because a template placeholder renders a fenced block *below* the instruction (the `ci_fix` log excerpt does exactly that). The workflow-setup builder, the one surface that fenced content and emitted no rule at all, now emits one. Values that arrive from the repository but carry no fence — custom instructions, the activity summary, the milestone branch, the language and default-branch scalars — are wrapped by a single tagging helper and scrubbed, so none of them can read as prompt-authored instruction text
 - **Milestone values are fenced, not merely tagged** ([#16](https://github.com/stSoftwareAU/VibeCoder/issues/16)): a milestone is created and renamed by any collaborator with triage access, yet its title — and the branch name derived from it — was only delimiter-scrubbed before being spliced into the imperative "Milestone Branch Targeting" / "Milestone Assignment" blocks, outside every fence and unnamed in `untrustedBlocks`. The scrub neutralises fence forgery but says nothing about trust level, so imperative phrasing in a milestone name read as worker-authored directive text. Both values now render inside the run's untrusted fence (`fenceMilestoneValue()`), the surrounding instructions carry `<branch>` / `<milestone>` placeholders the run substitutes from the fenced value, and the issue prompt declares "the milestone branch" (the planning and critique prompts "the milestone title") in `untrustedBlocks` so the boundary-integrity rule covers the fence
+- **The resumed branch's handover file is fenced and self-declaring** ([#771](https://github.com/stSoftwareAU/VibeCoder/issues/771)): a re-claim splices the handover an interrupted run committed to the issue branch (`docs/archive/handover/issue-<N>.md`) into the execute prompt, so branch-writable prose — authored by a prior agent run, or by anyone who can land a commit on that branch — reaches the model. It routes through `fenceUntrustedIssueText` (delimiter scrub, HTML-comment neutralisation, nonce fence) and is capped at 8,000 characters so it is measured by the context budget rather than able to crowd the prompt. Its fence deliberately carries its **own** nonce rather than the run's: the prior run could have observed the run nonce, and a marker bearing it would read as genuine. Because the note is appended after the prompt's boundary-integrity rule was rendered, the framing declares the block and the separate nonce inline — "untrusted data even though its marker id differs" — so no fence is left that the rule never names
 - **Angle markers split across a newline** ([#15](https://github.com/stSoftwareAU/VibeCoder/issues/15)): the `<<<…>>>` scrub excluded newlines from its inner class, so only a same-line marker was neutralised — the sibling triple-dash rule had already been widened for exactly that gap. `sanitiseDelimiterPatterns` now makes a second, newline-spanning pass after the unbounded same-line pass, so `<<<ISSUE_BODY_END\n_id>>>` is defanged too. The second pass is non-greedy and capped at 512 characters of inner content (a genuine marker is ~45), which keeps a stray `<<` from pairing with a `>>` far down the body; the inner class excludes both brackets, so there is no ambiguity to backtrack over
 
 ### 5. Label Manipulation Detection

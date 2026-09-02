@@ -174,6 +174,7 @@ import { notifyAuditFailureCommand } from "./commands/notify_audit_failure.ts";
 import { purgeStaleWorkflowIssuesCommand } from "./commands/purge_stale_workflow_issues.ts";
 import { sweepHeartbeatCommentsCommand } from "./commands/sweep_heartbeat_comments.ts";
 import { containerImageHashCommand } from "./commands/container_image_hash.ts";
+import { firstRunVerifyCommand } from "./commands/first_run_verify.ts";
 import { containerRuntimeDetectCommand } from "./commands/container_runtime_detect.ts";
 import { containerLaunchPlanCommand } from "./commands/container_launch_plan.ts";
 import { containerRestartBackoffCommand } from "./commands/container_restart_backoff.ts";
@@ -369,6 +370,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(purgeStaleWorkflowIssuesCommand);
   registry.register(sweepHeartbeatCommentsCommand);
   registry.register(containerImageHashCommand);
+  registry.register(firstRunVerifyCommand);
   registry.register(containerRuntimeDetectCommand);
   registry.register(containerLaunchPlanCommand);
   registry.register(containerRestartBackoffCommand);
@@ -600,6 +602,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "green-gate-report",
       "strip-containerfile",
       "repo-settings-harden",
+      // The verification harness runs before any config exists (Issue #736).
+      "first-run-verify",
       // Launchers call these before any config exists (Issues #4062, #4065).
       "container-image-hash",
       "container-launch-plan",
@@ -713,6 +717,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "green-gate-report",
       "strip-containerfile",
       "repo-settings-harden",
+      // The verification harness runs before any config exists (Issue #736).
+      "first-run-verify",
       // Launchers call these before any config exists (Issues #4062, #4065).
       "container-image-hash",
       "container-launch-plan",

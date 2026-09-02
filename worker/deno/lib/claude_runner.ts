@@ -1477,6 +1477,10 @@ export async function runClaudeWithTimeout(
         ...(snapshot.lastToolCallAtMs !== undefined
           ? { lastToolCallAtMs: snapshot.lastToolCallAtMs }
           : {}),
+        // The stream clock too (Issue #767): an agent waiting inside one long
+        // tool call issues no new `tool_use`, and judging it on the tool clock
+        // alone killed a live run on #732.
+        lastChunkAtMs: snapshot.lastChunkAtMs,
         treeState: combinedTreeState,
         ...(combinedExternalState !== undefined
           ? { externalState: combinedExternalState }
@@ -1498,7 +1502,15 @@ export async function runClaudeWithTimeout(
         if (decision.cause === "hard-cap") scheduledRelease = "hard-cap";
         logger?.info(
           `[progress-extension] not extending after ${elapsedSeconds}s ` +
-            `(extensions granted ${extensionsGranted}): ${decision.reason}`,
+            // Name every signal the decision saw (Issue #767): the #732
+            // refusal reported only the stalled one, so the log could not say
+            // whether the other two agreed.
+            `(extensions granted ${extensionsGranted}, tree ` +
+            `${combinedTreeState}` +
+            (combinedExternalState === undefined
+              ? ""
+              : `, external ${combinedExternalState}`) +
+            `): ${decision.reason}`,
         );
         fireHardTimeout(trigger);
         return;
