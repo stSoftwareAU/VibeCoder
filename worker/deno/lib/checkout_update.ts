@@ -28,7 +28,7 @@
  * An update that actually changed the checkout — moved the commit, or
  * discarded uncommitted work — names {@link SKIP_CHECKOUT_UPDATE_ENV} in
  * {@link checkoutOverwriteNotice} (Issue #735). The opt-out has existed since
- * Issue #512 and is documented in five places, and an operator debugging
+ * Issue #512 and is documented across the guides, and an operator debugging
  * launcher defects on a new platform still burned a cycle re-applying a patch
  * the next launch discarded: the moment that discards the work is the moment
  * that names the way to prevent it. An update that changed nothing is silent.
@@ -364,28 +364,20 @@ export interface CheckoutSnapshot {
 }
 
 /**
- * Describe the checkout as it is now (Issue #735). Best-effort on both halves:
- * an unreadable state is `null`, never a guess — the notice below only speaks
- * about what it actually observed.
+ * Describe the checkout as it is now (Issue #735).
+ *
+ * Both dependencies are documented as best-effort — they report an unreadable
+ * checkout as `null` rather than throwing — so this reads them exactly as the
+ * frozen path does, and an unreadable state stays `null` all the way into
+ * {@link checkoutOverwriteNotice}, which then says nothing rather than guessing.
  */
 async function snapshotCheckout(
   deps: CheckoutUpdateDeps,
   repoDir: string,
 ): Promise<CheckoutSnapshot> {
-  let head: string | null = null;
-  try {
-    head = await deps.readHeadCommit(repoDir);
-  } catch {
-    head = null;
-  }
-  let dirtyFiles: number | null = null;
-  try {
-    dirtyFiles = (await deps.describeCheckoutState(repoDir))?.dirtyFiles ??
-      null;
-  } catch {
-    dirtyFiles = null;
-  }
-  return { head, dirtyFiles };
+  const head = await deps.readHeadCommit(repoDir);
+  const state = await deps.describeCheckoutState(repoDir);
+  return { head, dirtyFiles: state?.dirtyFiles ?? null };
 }
 
 /** Enough of a commit to recognise it in a log line. */
@@ -396,7 +388,7 @@ function shortSha(sha: string): string {
 /**
  * The line an update prints when it changed the checkout (Issue #735).
  *
- * The opt-out has existed since Issue #512 and is documented in five places,
+ * The opt-out has existed since Issue #512 and is documented across the guides,
  * but an operator hitting launcher defects on a new platform never found it —
  * they re-applied a local patch that the next launch discarded again. So the
  * moment that discards the work is the moment that names the way to prevent
@@ -417,25 +409,21 @@ export function checkoutOverwriteNotice(
   before: CheckoutSnapshot,
   after: CheckoutSnapshot,
 ): string {
-  const moved = before.head !== null && after.head !== null &&
-    before.head !== after.head;
-  const discarded = before.dirtyFiles !== null && after.dirtyFiles !== null &&
-      before.dirtyFiles > after.dirtyFiles
-    ? before.dirtyFiles - after.dirtyFiles
-    : 0;
-  if (!moved && discarded === 0) return "";
-
   const changes: string[] = [];
-  if (moved) {
+  if (
+    before.head !== null && after.head !== null && before.head !== after.head
+  ) {
+    changes.push(`HEAD ${shortSha(before.head)} → ${shortSha(after.head)}`);
+  }
+  if (
+    before.dirtyFiles !== null && after.dirtyFiles !== null &&
+    after.dirtyFiles < before.dirtyFiles
+  ) {
     changes.push(
-      `HEAD ${shortSha(before.head as string)} → ${
-        shortSha(after.head as string)
-      }`,
+      `${before.dirtyFiles - after.dirtyFiles} uncommitted change(s) discarded`,
     );
   }
-  if (discarded > 0) {
-    changes.push(`${discarded} uncommitted change(s) discarded`);
-  }
+  if (changes.length === 0) return "";
 
   return `The checkout update changed ${repoDir} (${changes.join("; ")}). ` +
     `Local edits in this checkout do not survive a launch — set ` +
