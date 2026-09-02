@@ -152,6 +152,12 @@ Two properties are worth knowing before you read a report:
 - **A stage that did not run is `SKIPPED`, never a pass**, and the exit status
   is non-zero whenever anything was refused, failed or skipped short.
 
+The script only sequences the run — it gathers facts, starts `setup.sh` and
+`run.sh`, waits on the container and the worker, and captures what each stage
+printed. Every judgement in the report is made by the `first-run-verify` Deno
+command, so each one is unit-tested without a host
+(`worker/deno/tests/first_run_verification_test.ts`).
+
 Useful flags: `--transcript-dir DIR` to put the transcript somewhere you have
 already mounted, `--claim-timeout SECONDS` for how long the worker gets to take
 an issue to completion, and `--launch-timeout` / `--poll-interval` for the wait

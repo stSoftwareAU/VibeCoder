@@ -1,503 +1,450 @@
 /**
- * Tests for the scripted fresh first-run verification (Issue #736).
+ * Unit tests for the fresh first-run verification decisions (Issue #736).
  *
- * Issue #722's definition of done is an end-to-end run on a fresh Ubuntu +
- * Podman host: `setup.sh` then `run.sh` complete and the worker takes one
- * issue end to end with **no** manual workarounds. `infra/verify/first-run.sh`
- * is that run, scripted so its output is comparable between attempts.
+ * `infra/verify/first-run.sh` sequences the run on a real host; every
+ * judgement it reports is made in `lib/first_run_verification.ts`, which is
+ * what these tests exercise — with no host, no Podman and no image build.
  *
- * The real run needs a real host, a real Podman and a real image build, so it
- * cannot be executed here. What these tests hold is the harness's own
- * behaviour, which is what a later reader trusts when they read its report:
- *
- *   - a host carrying any of the reporter's workarounds is refused **before**
- *     `setup.sh` is touched, so a patched host can never be reported as a
- *     clean first run;
- *   - the two known-benign messages (a private-repository ruleset 403, a
- *     refused `FITRIM`) are recorded as expected warnings and do not fail the
- *     run;
- *   - each fault the sibling issues fixed is recognised by name if it comes
- *     back, and reported as a defect to file against #722;
- *   - a stage that did not run is `SKIPPED`, never a pass, and the exit status
- *     is non-zero whenever anything was refused, failed or skipped short.
- *
- * Each case runs the real script against stub `setup.sh` / `run.sh` / `podman`
- * / `deno` executables and asserts on the exit status and the report it
- * wrote — no source-text inspection.
+ * The distinctions under test are the ones a reader of the report depends on:
+ * a workaround present versus a fresh host, a Codex-only configuration versus
+ * any other, an expected warning versus a new defect, and a chain (a refused
+ * trim, then a refused launch) versus either message alone.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  analyseDiskChain,
+  classifyOutput,
+  evaluateCodexOnlyConfig,
+  evaluateFreshState,
+  evaluateImage,
+  type FreshStateFacts,
+  renderReport,
+  type RunSummary,
+  verdictFor,
+  WORKAROUND_ENV_VARS,
+} from "../lib/first_run_verification.ts";
+import { parseStages } from "../commands/first_run_verify.ts";
 
-/** tests/ → worker/deno/ → worker/ → repository root. */
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
-  /\/$/,
-  "",
-);
-const SCRIPT = `${REPO_ROOT}/infra/verify/first-run.sh`;
-
-/** Executables the stub PATH borrows from the host, by absolute path. */
-const BORROWED = ["git", "jq", "sed", "grep", "date", "uname", "df", "tail"];
-
-interface Sandbox {
-  /** Temporary root holding the fake HOME and the fake checkout. */
-  readonly dir: string;
-  /** The fake checkout the script verifies. */
-  readonly repo: string;
-  /** The fake HOME, holding `logs/worker.log` and the transcript. */
-  readonly home: string;
-  /** Where the stub executables live — the only PATH entry that matters. */
-  readonly bin: string;
-  /** Transcript directory the run writes into. */
-  readonly transcript: string;
-  cleanup(): Promise<void>;
-}
-
-interface StubOptions {
-  /** Lines `setup.sh` prints; it also writes the configuration. */
-  setupOutput?: string;
-  /** Exit status of the stub `setup.sh`. */
-  setupExit?: number;
-  /** `agent_providers` the stub `setup.sh` writes, or null to write nothing. */
-  configProviders?: string[] | null;
-  /** Lines the stub `run.sh` prints before it settles. */
-  launchOutput?: string;
-  /** Exit status of the stub `run.sh` (non-zero exits immediately). */
-  launchExit?: number;
-  /** What the stub `podman image inspect` reports for the provider stamp. */
-  imageProviders?: string;
-  /** CLIs the stub image reports as installed. */
-  imageClis?: string[];
-  /** Lines the stub `run.sh` appends to `~/logs/worker.log`. */
-  workerLog?: string;
-}
-
-async function writeExecutable(path: string, body: string): Promise<void> {
-  await Deno.writeTextFile(path, body);
-  await Deno.chmod(path, 0o755);
-}
-
-/**
- * Build a sandbox: a fake, committed checkout carrying stub `setup.sh` and
- * `run.sh`, a fake HOME, and a stub PATH with `podman` and `deno` on it and
- * no `claude`.
- */
-async function sandbox(options: StubOptions = {}): Promise<Sandbox> {
-  const dir = await Deno.makeTempDir({ prefix: "first-run-verify-" });
-  const repo = `${dir}/checkout`;
-  const home = `${dir}/home`;
-  const bin = `${dir}/bin`;
-  const transcript = `${dir}/transcript`;
-  for (const path of [repo, home, bin, `${home}/logs`]) {
-    await Deno.mkdir(path, { recursive: true });
-  }
-
-  for (const tool of BORROWED) {
-    const resolved = await which(tool);
-    if (resolved) await Deno.symlink(resolved, `${bin}/${tool}`);
-  }
-
-  const providers = options.configProviders === undefined
-    ? ["codex"]
-    : options.configProviders;
-  const configWrite = providers === null
-    ? ""
-    : `printf '%s\\n' '${
-      JSON.stringify({ agent_providers: providers, repositories: ["o/r"] })
-    }' > "$(dirname "$0")/.config.json"`;
-
-  await writeExecutable(
-    `${repo}/setup.sh`,
-    [
-      "#!/bin/bash",
-      `printf '%s\\n' ${shellQuote(options.setupOutput ?? "Setup complete")}`,
-      'printf "ran\\n" > "${HOME}/setup-ran"',
-      configWrite,
-      `exit ${options.setupExit ?? 0}`,
-      "",
-    ].join("\n"),
-  );
-
-  await writeExecutable(
-    `${repo}/run.sh`,
-    [
-      "#!/bin/bash",
-      `printf '%s\\n' ${shellQuote(options.launchOutput ?? "[run.sh] built")}`,
-      'printf "ran\\n" > "${HOME}/run-ran"',
-      options.workerLog
-        ? `printf '%s\\n' ${
-          shellQuote(options.workerLog)
-        } >> "\${HOME}/logs/worker.log"`
-        : ":",
-      `if [[ ${options.launchExit ?? 0} -ne 0 ]]; then exit ${
-        options.launchExit ?? 0
-      }; fi`,
-      // Stand in for the worker running in the foreground.
-      "sleep 5",
-      "",
-    ].join("\n"),
-  );
-
-  await writeExecutable(
-    `${bin}/podman`,
-    [
-      "#!/bin/bash",
-      'case "$1" in',
-      // A fresh host carries no image, so `image ls` prints nothing.
-      '  image) [[ "$2" != "inspect" ]] || printf ' +
-      `"VIBE_IMAGE_AGENT_PROVIDERS=%s\\n" "${
-        options.imageProviders ?? "codex"
-      }" ;;`,
-      '  ps) printf "vibe-coder-1\\n" ;;',
-      // `podman run` reports which CLIs the built image carries.
-      "  run)",
-      ...cliReport(options.imageClis ?? ["codex"]),
-      "  ;;",
-      "esac",
-      "exit 0",
-      "",
-    ].join("\n"),
-  );
-
-  await writeExecutable(
-    `${bin}/deno`,
-    [
-      "#!/bin/bash",
-      // Only ever asked for the content-derived image reference.
-      'printf "vibe-coder:abc123\\n"',
-      "",
-    ].join("\n"),
-  );
-
-  await writeExecutable(`${bin}/codex`, "#!/bin/bash\necho codex 1.0\n");
-  await writeExecutable(`${bin}/gh`, "#!/bin/bash\necho gh 2.0\n");
-
-  // A committed checkout: `git status --porcelain` must be empty, or the run
-  // is refused as patched.
-  await run(["git", "init", "-q", "-b", "main", repo], dir);
-  await run(["git", "-C", repo, "config", "user.email", "t@example.com"], dir);
-  await run(["git", "-C", repo, "config", "user.name", "Test"], dir);
-  await run(["git", "-C", repo, "add", "-A"], dir);
-  await run(["git", "-C", repo, "commit", "-qm", "stubs"], dir);
-
+/** A host with nothing on it that would refuse a run. */
+function freshFacts(overrides: Partial<FreshStateFacts> = {}): FreshStateFacts {
   return {
-    dir,
-    repo,
-    home,
-    bin,
-    transcript,
-    cleanup: () => Deno.remove(dir, { recursive: true }),
+    env: {},
+    configFile: "/home/ubuntu/vibe-coder-runtime/.config.json",
+    configFileExists: false,
+    claudeOnPath: false,
+    localImages: ["localhost/ubuntu", "docker.io/library/node"],
+    checkoutStatus: "",
+    userRegistriesConf: null,
+    systemRegistriesConf: null,
+    ...overrides,
   };
 }
 
-/** Lines that make the stub image report the CLIs it carries. */
-function cliReport(clis: string[]): string[] {
-  return [
-    clis.includes("codex")
-      ? '  printf "/usr/local/bin/codex\\n"'
-      : '  printf "NO_CODEX\\n"',
-    clis.includes("claude")
-      ? '  printf "/usr/local/bin/claude\\n"'
-      : '  printf "NO_CLAUDE\\n"',
-  ];
-}
+Deno.test("evaluateFreshState - a genuinely fresh host is not refused", () => {
+  const verdict = evaluateFreshState(freshFacts());
+  assertEquals(verdict.violations, []);
+  assertEquals(verdict.notes, []);
+});
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
-async function which(tool: string): Promise<string | null> {
-  for (const prefix of ["/usr/bin", "/bin", "/usr/local/bin"]) {
-    try {
-      await Deno.stat(`${prefix}/${tool}`);
-      return `${prefix}/${tool}`;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
-async function run(cmd: [string, ...string[]], cwd: string): Promise<void> {
-  const [executable, ...args] = cmd;
-  const { code, stderr } = await new Deno.Command(executable, {
-    args,
-    cwd,
-    stdout: "null",
-    stderr: "piped",
-  }).output();
-  assertEquals(code, 0, new TextDecoder().decode(stderr));
-}
-
-interface Outcome {
-  readonly code: number;
-  readonly stdout: string;
-  readonly report: string;
-}
-
-/** Run the verification script against a sandbox. */
-async function verify(
-  box: Sandbox,
-  env: Record<string, string> = {},
-): Promise<Outcome> {
-  const { code, stdout, stderr } = await new Deno.Command("bash", {
-    args: [
-      SCRIPT,
-      "--repo-root",
-      box.repo,
-      "--transcript-dir",
-      box.transcript,
-      "--poll-interval",
-      "1",
-      "--claim-timeout",
-      "2",
-      "--launch-timeout",
-      "4",
-    ],
-    cwd: box.dir,
-    clearEnv: true,
-    env: { HOME: box.home, PATH: `${box.bin}:/usr/bin:/bin`, ...env },
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  const decoder = new TextDecoder();
-  let report = "";
-  try {
-    report = await Deno.readTextFile(`${box.transcript}/report.md`);
-  } catch {
-    report = "";
-  }
-  return {
-    code,
-    stdout: decoder.decode(stdout) + decoder.decode(stderr),
-    report,
-  };
-}
-
-Deno.test("first-run.sh - a clean host passes every stage with no workaround", async () => {
-  const box = await sandbox({
-    workerLog: "Claimed by `worker-1`\nSuccessfully processed o/r#1",
-  });
-  try {
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 0, outcome.stdout);
-    assertStringIncludes(outcome.report, "verdict: **PASS**");
-    assertStringIncludes(outcome.report, "None — no workaround was required.");
+Deno.test("evaluateFreshState - every workaround-shaped variable refuses the run", () => {
+  for (const { name } of WORKAROUND_ENV_VARS) {
+    const verdict = evaluateFreshState(freshFacts({ env: { [name]: "true" } }));
     assertEquals(
-      outcome.report.includes("| SKIPPED |") ||
-        outcome.report.includes("| FAIL |"),
-      false,
-      outcome.report,
+      verdict.violations.length,
+      1,
+      `${name} should refuse the run on its own`,
     );
-    for (
-      const stage of [
-        "fresh-state",
-        "prerequisites",
-        "setup",
-        "config",
-        "launch",
-        "volume-init",
-        "image",
-        "claim",
-      ]
-    ) {
-      assertStringIncludes(outcome.report, `| ${stage} | PASS |`);
-    }
-  } finally {
-    await box.cleanup();
+    assertStringIncludes(verdict.violations[0]!, name);
   }
 });
 
-Deno.test("first-run.sh - refuses a host that skips the prerequisite probe, before setup runs", async () => {
-  const box = await sandbox();
-  try {
-    const outcome = await verify(box, { VIBE_SKIP_PREREQ_CHECK: "true" });
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "verdict: **FAIL**");
-    assertStringIncludes(outcome.report, "VIBE_SKIP_PREREQ_CHECK is set");
-    assertStringIncludes(outcome.report, "| fresh-state | FAIL |");
-    assertStringIncludes(outcome.report, "| setup | SKIPPED |");
-    // The workaround was refused rather than run around.
-    await assertAbsent(`${box.home}/setup-ran`);
-  } finally {
-    await box.cleanup();
-  }
+Deno.test("evaluateFreshState - an empty variable is not a workaround", () => {
+  const verdict = evaluateFreshState(
+    freshFacts({ env: { VIBE_SKIP_PREREQ_CHECK: "" } }),
+  );
+  assertEquals(verdict.violations, []);
 });
 
-Deno.test("first-run.sh - refuses a moved claiming floor", async () => {
-  const box = await sandbox();
-  try {
-    const outcome = await verify(box, { VIBE_HOST_DISK_LOW_FLOOR_GB: "1" });
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(
-      outcome.report,
-      "VIBE_HOST_DISK_LOW_FLOOR_GB is set",
-    );
-    assertStringIncludes(outcome.report, "Issue #732");
-  } finally {
-    await box.cleanup();
-  }
+Deno.test("evaluateFreshState - a configuration setup did not write refuses the run", () => {
+  const verdict = evaluateFreshState(freshFacts({ configFileExists: true }));
+  assertEquals(verdict.violations.length, 1);
+  assertStringIncludes(verdict.violations[0]!, "already exists");
 });
 
-Deno.test("first-run.sh - refuses a configuration setup did not write", async () => {
-  const box = await sandbox();
-  try {
-    await Deno.writeTextFile(`${box.repo}/.config.json`, "{}");
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "already exists");
-    await assertAbsent(`${box.home}/setup-ran`);
-  } finally {
-    await box.cleanup();
-  }
+Deno.test("evaluateFreshState - a Claude CLI on PATH refuses a Codex-only run", () => {
+  const verdict = evaluateFreshState(freshFacts({ claudeOnPath: true }));
+  assertEquals(verdict.violations.length, 1);
+  assertStringIncludes(verdict.violations[0]!, "Issue #730");
 });
 
-Deno.test("first-run.sh - refuses the short-name registry workaround", async () => {
-  const box = await sandbox();
-  try {
-    await Deno.mkdir(`${box.home}/.config/containers`, { recursive: true });
-    await Deno.writeTextFile(
-      `${box.home}/.config/containers/registries.conf`,
+Deno.test("evaluateFreshState - a worker image already built refuses the run, however Podman spells it", () => {
+  // Podman lists a locally built image as `localhost/vibe-coder`, Docker as
+  // the bare name: both are an image the build did not have to produce.
+  for (const image of ["vibe-coder", "localhost/vibe-coder"]) {
+    const verdict = evaluateFreshState(freshFacts({ localImages: [image] }));
+    assertEquals(verdict.violations.length, 1, `${image} should be refused`);
+    assertStringIncludes(verdict.violations[0]!, "already present");
+  }
+  // An image whose name merely contains the worker's is a different image.
+  assertEquals(
+    evaluateFreshState(freshFacts({ localImages: ["vibe-coder-tools"] }))
+      .violations,
+    [],
+  );
+});
+
+Deno.test("evaluateFreshState - a patched checkout refuses the run", () => {
+  const verdict = evaluateFreshState(
+    freshFacts({ checkoutStatus: " M run.sh\n" }),
+  );
+  assertEquals(verdict.violations.length, 1);
+  assertStringIncludes(verdict.violations[0]!, "uncommitted changes");
+});
+
+Deno.test("evaluateFreshState - the operator's short-name workarounds refuse the run", () => {
+  for (
+    const conf of [
       '[aliases]\n"node" = "docker.io/library/node"\n',
+      'unqualified-search-registries = ["docker.io"]\n',
+    ]
+  ) {
+    const verdict = evaluateFreshState(
+      freshFacts({ userRegistriesConf: conf }),
     );
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "Issue #728");
-    assertStringIncludes(outcome.report, "registries.conf sets [aliases]");
-  } finally {
-    await box.cleanup();
+    assertEquals(verdict.violations.length, 1, conf);
+    assertStringIncludes(verdict.violations[0]!, "Issue #728");
   }
 });
 
-Deno.test("first-run.sh - refuses a patched checkout", async () => {
-  const box = await sandbox();
-  try {
-    await Deno.writeTextFile(`${box.repo}/run.sh`, "#!/bin/bash\nexit 0\n");
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "uncommitted changes");
-  } finally {
-    await box.cleanup();
-  }
+Deno.test("evaluateFreshState - a commented-out setting is not a workaround", () => {
+  const verdict = evaluateFreshState(freshFacts({
+    userRegistriesConf: '# unqualified-search-registries = ["docker.io"]\n',
+  }));
+  assertEquals(verdict.violations, []);
 });
 
-Deno.test("first-run.sh - records the ruleset 403 and the refused trim as expected warnings", async () => {
-  const box = await sandbox({
-    setupOutput:
-      "Ruleset sync for o/r: repository rulesets need GitHub Pro on a private repository (non-fatal)",
-    launchOutput: "volume-init: vibe-work - discard unsupported\n" +
-      "VOLUME_TRIM_REFUSED vibe-work",
-    workerLog: "Claimed by `worker-1`\nSuccessfully processed o/r#1",
-  });
-  try {
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 0, outcome.stdout);
-    assertStringIncludes(outcome.report, "verdict: **PASS**");
-    assertStringIncludes(outcome.report, "Issue #733");
-    assertStringIncludes(outcome.report, "Issue #734");
-    assertStringIncludes(outcome.report, "None — no workaround was required.");
-  } finally {
-    await box.cleanup();
-  }
+Deno.test("evaluateFreshState - the distribution's own search registry is recorded, not refused", () => {
+  const verdict = evaluateFreshState(freshFacts({
+    systemRegistriesConf: 'unqualified-search-registries = ["docker.io"]\n',
+  }));
+  assertEquals(verdict.violations, []);
+  assertEquals(verdict.notes.length, 1);
+  assertStringIncludes(verdict.notes[0]!, "distribution default");
 });
 
-Deno.test("first-run.sh - a refused mount option is reported as a defect to file", async () => {
-  const box = await sandbox({
-    launchOutput: 'Error: unknown mount option "uid=1000"',
-    launchExit: 1,
-  });
-  try {
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "Issue #727");
-    assertStringIncludes(
-      outcome.report,
-      "file as a further sub-issue of #722",
-    );
-    assertStringIncludes(outcome.report, "| launch | FAIL |");
-  } finally {
-    await box.cleanup();
-  }
+Deno.test("evaluateFreshState - every workaround present is reported at once", () => {
+  const verdict = evaluateFreshState(freshFacts({
+    env: { VIBE_SKIP_PREREQ_CHECK: "true", VIBE_HOST_DISK_LOW_FLOOR_GB: "1" },
+    claudeOnPath: true,
+    configFileExists: true,
+  }));
+  assertEquals(verdict.violations.length, 4);
 });
 
-Deno.test("first-run.sh - a refused trim followed by a refused launch is a defect, not an expected warning", async () => {
-  const box = await sandbox({
-    launchOutput: "VOLUME_TRIM_REFUSED vibe-work\n" +
-      "[run.sh] refusing to launch: 900 MB free on /var/lib/containers",
-    launchExit: 1,
-  });
-  try {
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    // The reading still runs after the launch failed — that chain is the
-    // finding, and skipping the analysis would drop it.
-    assertStringIncludes(outcome.report, "| volume-init | FAIL |");
-    assertStringIncludes(
-      outcome.report,
-      "a refused trim was followed by a refused launch (Issue #734)",
-    );
-  } finally {
-    await box.cleanup();
-  }
+Deno.test("evaluateFreshState - a split configuration is refused", () => {
+  const verdict = evaluateFreshState(freshFacts({
+    configFileSplit: "CONFIG_FILE and CONFIG_PATH name different files",
+  }));
+  assertEquals(verdict.violations.length, 1);
+  assertStringIncludes(verdict.violations[0]!, "different files");
 });
 
-Deno.test("first-run.sh - fails a configuration that is not Codex-only", async () => {
-  const box = await sandbox({ configProviders: ["claude"] });
-  try {
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "| config | FAIL |");
-  } finally {
-    await box.cleanup();
-  }
-});
-
-Deno.test("first-run.sh - fails an image that reports the wrong provider", async () => {
-  const box = await sandbox({
-    imageProviders: "claude",
-    imageClis: ["claude"],
-    workerLog: "Successfully processed o/r#1",
-  });
-  try {
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "| image | FAIL |");
-  } finally {
-    await box.cleanup();
-  }
-});
-
-Deno.test("first-run.sh - fails when the worker claims but completes nothing", async () => {
-  const box = await sandbox({ workerLog: "Claimed by `worker-1`" });
-  try {
-    const outcome = await verify(box);
-    assertEquals(outcome.code, 1);
-    assertStringIncludes(outcome.report, "| claim | FAIL |");
-    assertStringIncludes(outcome.report, "verdict: **FAIL**");
-  } finally {
-    await box.cleanup();
-  }
-});
-
-Deno.test("first-run.sh - the documented run is the scripted one", async () => {
-  const doc = await Deno.readTextFile(
-    `${REPO_ROOT}/docs/EC2-LINUX-VERIFICATION.md`,
+Deno.test("evaluateCodexOnlyConfig - a Codex-only configuration passes", () => {
+  const verdict = evaluateCodexOnlyConfig(
+    JSON.stringify({ agent_providers: ["codex"], repositories: ["o/r"] }),
   );
-  assertStringIncludes(doc, "infra/verify/first-run.sh");
-  assert(
-    (await Deno.stat(SCRIPT)).mode! & 0o111,
-    "the verification script must be executable",
+  assertEquals(verdict.ok, true);
+  assertStringIncludes(verdict.findings[0]!, "codex");
+});
+
+Deno.test("evaluateCodexOnlyConfig - unreadable JSON fails loud, naming the fault", () => {
+  const verdict = evaluateCodexOnlyConfig("{not json");
+  assertEquals(verdict.ok, false);
+  assertStringIncludes(verdict.findings[0]!, "not readable JSON");
+});
+
+Deno.test("evaluateCodexOnlyConfig - an absent selection is not silently 'not codex'", () => {
+  const verdict = evaluateCodexOnlyConfig(JSON.stringify({ repositories: [] }));
+  assertEquals(verdict.ok, false);
+  assertStringIncludes(verdict.findings[0]!, "states no agent_providers");
+});
+
+Deno.test("evaluateCodexOnlyConfig - another provider fails the Codex-only run", () => {
+  assertEquals(
+    evaluateCodexOnlyConfig(JSON.stringify({ agent_providers: ["claude"] })).ok,
+    false,
+  );
+  const both = evaluateCodexOnlyConfig(
+    JSON.stringify({ agent_providers: ["codex", "claude"] }),
+  );
+  assertEquals(both.ok, false);
+  assertStringIncludes(both.findings.join(" "), "also selects claude");
+});
+
+Deno.test("evaluateImage - the Codex image passes", () => {
+  const verdict = evaluateImage(
+    "PATH=/usr/bin\nVIBE_IMAGE_AGENT_PROVIDERS=codex\n",
+    "CODEX_PRESENT\nCLAUDE_ABSENT\n",
+  );
+  assertEquals(verdict.ok, true);
+});
+
+Deno.test("evaluateImage - an unstamped image fails", () => {
+  const verdict = evaluateImage(
+    "PATH=/usr/bin\n",
+    "CODEX_PRESENT\nCLAUDE_ABSENT",
+  );
+  assertEquals(verdict.ok, false);
+  assertStringIncludes(verdict.findings[0]!, "no VIBE_IMAGE_AGENT_PROVIDERS");
+});
+
+Deno.test("evaluateImage - the Claude image built from a Codex configuration fails", () => {
+  const verdict = evaluateImage(
+    "VIBE_IMAGE_AGENT_PROVIDERS=claude\n",
+    "CODEX_ABSENT\nCLAUDE_PRESENT\n",
+  );
+  assertEquals(verdict.ok, false);
+  assertStringIncludes(verdict.findings.join(" "), "Issue #729");
+});
+
+Deno.test("evaluateImage - a probe that did not run is never read as an answer", () => {
+  // The dangerous reading: no CLAUDE_PRESENT marker taken as "Claude absent",
+  // or worse, a failed probe reported as a defect it never observed.
+  const verdict = evaluateImage("VIBE_IMAGE_AGENT_PROVIDERS=codex\n", "");
+  assertEquals(verdict.ok, false);
+  assertStringIncludes(verdict.findings.join(" "), "did not run");
+});
+
+Deno.test("classifyOutput - the ruleset 403 is an expected warning, not a defect", () => {
+  const findings = classifyOutput(
+    "Ruleset sync for o/r: repository rulesets need GitHub Pro on a private " +
+      "repository (non-fatal)",
+  );
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]!.kind, "expected");
+  assertStringIncludes(findings[0]!.summary, "Issue #733");
+});
+
+Deno.test("classifyOutput - each fault a sibling issue removed is named if it returns", () => {
+  const cases: Array<[string, string]> = [
+    ['Error: unknown mount option "uid=1000"', "Issue #727"],
+    ["Error: short-name resolution enforced but cannot prompt", "Issue #728"],
+    ["✗ claude CLI is not installed", "Issue #730"],
+    ["Error: unrecognized command `podman volume delete`", "Issue #731"],
+    ["[run.sh] [WORK_VOLUME_UNRECOVERED] vibe-work", "Issue #731"],
+  ];
+  for (const [line, issue] of cases) {
+    const findings = classifyOutput(line);
+    assertEquals(findings.length, 1, line);
+    assertEquals(findings[0]!.kind, "defect", line);
+    assertStringIncludes(findings[0]!.summary, issue);
+  }
+});
+
+Deno.test("classifyOutput - ordinary output carries no finding", () => {
+  assertEquals(
+    classifyOutput("[run.sh] building image vibe-coder:abc\nSTEP 1/12"),
+    [],
   );
 });
 
-/** Assert a path was never created. */
-async function assertAbsent(path: string): Promise<void> {
-  let exists = true;
-  try {
-    await Deno.stat(path);
-  } catch {
-    exists = false;
-  }
-  assertEquals(exists, false, `${path} should not exist`);
+Deno.test("classifyOutput - the same fault printed twice is one finding", () => {
+  const findings = classifyOutput(
+    'unknown mount option "uid=1000"\nunknown mount option "gid=1000"',
+  );
+  assertEquals(findings.length, 1);
+});
+
+Deno.test("analyseDiskChain - a refused trim alone is expected and starts nothing", () => {
+  const verdict = analyseDiskChain(
+    "volume-init: /work - this runtime does not support discard",
+    "2026-09-02T00:00:00Z host-disk: 38400 MB free on /var/lib/containers",
+  );
+  assertEquals(verdict.volumeInitSeen, true);
+  assertEquals(verdict.refused, false);
+  assertEquals(verdict.findings.length, 1);
+  assertEquals(verdict.findings[0]!.kind, "expected");
+});
+
+Deno.test("analyseDiskChain - the refusal is read from run_core.log as well as the launcher", () => {
+  // run.sh captures volume-init's stdout, so the refusal reaches the operator
+  // through run_core.log — reading only the launcher output would miss it.
+  const verdict = analyseDiskChain(
+    "[run.sh] built",
+    "host-disk: this runtime refused to trim vibe-work on this launch",
+  );
+  assertEquals(verdict.findings.length, 1);
+  assertEquals(verdict.findings[0]!.kind, "expected");
+  assertStringIncludes(verdict.findings[0]!.summary, "Issue #734");
+});
+
+Deno.test("analyseDiskChain - a refused trim followed by a refused launch is the reported chain", () => {
+  const verdict = analyseDiskChain(
+    "volume-init: /work - this runtime does not support discard\n" +
+      "[run.sh] refusing to launch: 900 MB free, below the 5 GB hard floor",
+    "",
+  );
+  assertEquals(verdict.refused, true);
+  const defects = verdict.findings.filter((f) => f.kind === "defect");
+  assertEquals(defects.length, 1);
+  assertStringIncludes(defects[0]!.summary, "Issue #734");
+});
+
+Deno.test("analyseDiskChain - a refusal that names its floor and free space explains itself", () => {
+  const verdict = analyseDiskChain(
+    "[run.sh] refusing to launch: 900 MB free on /var/lib/containers, below " +
+      "the 5 GB hard floor (VIBE_HOST_DISK_HARD_FLOOR_GB)",
+    "",
+  );
+  assertEquals(verdict.findings.length, 1);
+  assertEquals(verdict.findings[0]!.kind, "expected");
+  assertStringIncludes(verdict.findings[0]!.summary, "Issue #732");
+});
+
+Deno.test("analyseDiskChain - an unexplained refusal is the defect Issue #732 removed", () => {
+  const verdict = analyseDiskChain("[run.sh] refusing to launch", "");
+  assertEquals(verdict.findings.length, 1);
+  assertEquals(verdict.findings[0]!.kind, "defect");
+});
+
+Deno.test("analyseDiskChain - no volume-init output means nothing was confirmed", () => {
+  const verdict = analyseDiskChain("[run.sh] built", "");
+  assertEquals(verdict.volumeInitSeen, false);
+  assertEquals(verdict.findings, []);
+});
+
+/** A run in which everything held. */
+function passingRun(overrides: Partial<RunSummary> = {}): RunSummary {
+  return {
+    host: "Linux 6.8.0 x86_64",
+    checkout: "/home/ubuntu/vibe-coder-runtime",
+    commit: "abc1234",
+    transcript: "/home/ubuntu/vibe-first-run-verification/run",
+    stages: [
+      { name: "setup", status: "PASS", detail: "exit 0", log: "03-setup.log" },
+      { name: "claim", status: "PASS", detail: "exit 0", log: "07-claim.log" },
+    ],
+    freshState: { violations: [], notes: [] },
+    findings: [],
+    ...overrides,
+  };
 }
+
+Deno.test("verdictFor - PASS needs every stage passed, no workaround and no defect", () => {
+  assertEquals(verdictFor(passingRun()), "PASS");
+  assertEquals(
+    verdictFor(passingRun({
+      freshState: { violations: ["VIBE_SKIP_PREREQ_CHECK is set"], notes: [] },
+    })),
+    "FAIL",
+  );
+  assertEquals(
+    verdictFor(passingRun({
+      findings: [{
+        kind: "defect",
+        summary: "Podman refused a tmpfs mount option (Issue #727)",
+        evidence: "unknown mount option",
+      }],
+    })),
+    "FAIL",
+  );
+});
+
+Deno.test("verdictFor - a skipped stage is not a pass", () => {
+  assertEquals(
+    verdictFor(passingRun({
+      stages: [
+        { name: "setup", status: "PASS", detail: "exit 0", log: "s.log" },
+        { name: "claim", status: "SKIPPED", detail: "not run", log: "c.log" },
+      ],
+    })),
+    "FAIL",
+  );
+});
+
+Deno.test("verdictFor - an expected warning does not fail the run", () => {
+  assertEquals(
+    verdictFor(passingRun({
+      findings: [{
+        kind: "expected",
+        summary: "private-repository ruleset 403, non-fatal (Issue #733)",
+        evidence: "repository rulesets need GitHub Pro",
+      }],
+    })),
+    "PASS",
+  );
+});
+
+Deno.test("renderReport - separates expected warnings from defects to file", () => {
+  const markdown = renderReport(passingRun({
+    stages: [
+      {
+        name: "launch",
+        status: "FAIL",
+        detail: "exit 1",
+        log: "05-launch.log",
+      },
+    ],
+    freshState: { violations: [], notes: ["a distribution default"] },
+    findings: [
+      {
+        kind: "expected",
+        summary: "private-repository ruleset 403, non-fatal (Issue #733)",
+        evidence: "repository rulesets need GitHub Pro",
+      },
+      {
+        kind: "defect",
+        summary: "Podman refused a tmpfs mount option (Issue #727)",
+        evidence: 'unknown mount option "uid=1000"',
+      },
+    ],
+  }));
+  assertStringIncludes(markdown, "verdict: **FAIL**");
+  assertStringIncludes(markdown, "| 1 | launch | FAIL |");
+  assertStringIncludes(markdown, "Issue #733");
+  assertStringIncludes(markdown, "file as a further sub-issue of #722");
+  assertStringIncludes(markdown, "a distribution default");
+  assert(
+    markdown.indexOf("## Expected warnings") <
+      markdown.indexOf("## New defects"),
+    "the two lists must stay separate and ordered",
+  );
+});
+
+Deno.test("renderReport - a clean run says so in both lists", () => {
+  const markdown = renderReport(passingRun());
+  assertStringIncludes(markdown, "verdict: **PASS**");
+  assertStringIncludes(markdown, "None — the host carried no workaround.");
+  assertStringIncludes(markdown, "None — no workaround was required.");
+});
+
+Deno.test("parseStages - reads the stage record the shell writes", () => {
+  const stages = parseStages(
+    "fresh-state\tPASS\texit 0\t01-fresh-state.log\n" +
+      "setup\tSKIPPED\tan earlier stage failed\t03-setup.log\n",
+    "stages.tsv",
+  );
+  assertEquals(stages.length, 2);
+  assertEquals(stages[1]!.status, "SKIPPED");
+});
+
+Deno.test("parseStages - a malformed record fails loud rather than dropping a stage", () => {
+  for (
+    const [text, expected] of [
+      ["setup\tPASS\texit 0\n", "not name/status/detail/log"],
+      ["setup\tOK\texit 0\ts.log\n", "which is not"],
+      ["\n", "records no stages"],
+    ] as Array<[string, string]>
+  ) {
+    let message = "";
+    try {
+      parseStages(text, "stages.tsv");
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    assertStringIncludes(message, expected);
+  }
+});
