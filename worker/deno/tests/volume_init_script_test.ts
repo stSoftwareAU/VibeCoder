@@ -406,3 +406,26 @@ Deno.test("volume-init - an unrepairable device is never trimmed", async () => {
     await Deno.remove(f.dir, { recursive: true });
   }
 });
+
+Deno.test("volume-init - the Podman FITRIM refusal completes the init and names the volume (Issue #734)", async () => {
+  // Report item 9 of #722: Podman refuses FITRIM on a named volume, exactly
+  // as Apple `container` does. The init must still finish — a virtual disk
+  // that cannot discard is not a reason to block a launch — and must name the
+  // refusal on stdout, which is the only thing `run.sh` acts on.
+  const f = await fixture({
+    device: "/dev/vdc",
+    e2fsckExit: 0,
+    errorsCount: 0,
+    fstrimExit: 1,
+    fstrimStderr: "fstrim: /work: FITRIM ioctl failed: Operation not permitted",
+  });
+  try {
+    const r = await run(f, ["/work"]);
+    assertEquals(r.code, 0, `the init must complete: ${r.stderr}`);
+    assertStringIncludes(r.stdout, "VOLUME_TRIM_REFUSED /work");
+    // The chown still happened, so the volume is usable by the worker.
+    assertStringIncludes(await Deno.readTextFile(f.log), "chown");
+  } finally {
+    await Deno.remove(f.dir, { recursive: true });
+  }
+});

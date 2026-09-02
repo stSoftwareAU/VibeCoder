@@ -745,7 +745,14 @@ takes it:
 1. **The refusal is a fact, not a warning.** `volume-init.sh` prints
    `VOLUME_TRIM_REFUSED <target>` on stdout; `run.sh` maps each target back to
    its named volume and records the refusal in `run_core.log`. A launch where
-   FITRIM was refused is never recorded as a successful trim.
+   FITRIM was refused is never recorded as a successful trim. The refusal
+   never *causes* a disk decision — the heal below needs the host to be below
+   its claiming floor as well, and the hard floor is a measurement of the host
+   — but because a runtime that cannot discard never returns the guest's freed
+   blocks, it is usually the reason the reading is what it is. So every disk
+   decision taken after a refusal names it (Issue #734): an operator reading
+   `refusing to launch: 900 MB free` with no mention of the refused trim is
+   left with an unexplained work refusal.
 2. **A host below its claiming floor is healed.** When the refusal coincides
    with less free space than the floor the worker stops claiming at — the
    larger of `VIBE_HOST_DISK_LOW_FLOOR_GB` (20) and

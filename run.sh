@@ -1009,14 +1009,27 @@ heal_untrimmable_volumes
 # (Issue #478), so this reading is taken after both have had their chance.
 disk_avail_kb="$(host_disk_field_kb 2)"
 disk_hard_floor_gb="${VIBE_HOST_DISK_HARD_FLOOR_GB:-5}"
+
+# A disk decision taken after a refused trim must say so (Issue #734). The
+# refusal never triggers a decision by itself — the heal above requires the
+# host to be below its claiming floor as well, and this floor is a measurement
+# of the host — but where a runtime cannot discard, the space the guest freed
+# never comes back, so the refusal is the reason the reading is what it is. An
+# operator reading "refusing to launch: 900 MB free" with no mention of it is
+# left with an unexplained work refusal.
+trim_refusal_note=""
+if ((${#trim_refused_volumes[@]})); then
+  trim_refusal_note=" - this runtime refused to trim ${trim_refused_volumes[*]} on this launch, so the volume image keeps every block it holds and the guest's own reclaim cannot return host disk (Issues #384, #734)"
+fi
+
 if [[ "${disk_avail_kb}" =~ ^[0-9]+$ && "${disk_hard_floor_gb}" =~ ^[0-9]+$ ]]; then
   if ((disk_avail_kb < disk_hard_floor_gb * 1024 * 1024)); then
     echo "[run.sh] refusing to launch: ${disk_gate_path} has $((disk_avail_kb / 1024)) MB free," \
-      "below the ${disk_hard_floor_gb} GB hard floor (VIBE_HOST_DISK_HARD_FLOOR_GB) (Issue #226)" >&2
-    log_run_core "host-disk: refused launch - $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} is below the ${disk_hard_floor_gb} GB hard floor (Issue #226)"
+      "below the ${disk_hard_floor_gb} GB hard floor (VIBE_HOST_DISK_HARD_FLOOR_GB) (Issue #226)${trim_refusal_note}" >&2
+    log_run_core "host-disk: refused launch - $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} is below the ${disk_hard_floor_gb} GB hard floor (Issue #226)${trim_refusal_note}"
     exit 1
   fi
-  log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}"
+  log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}${trim_refusal_note}"
 fi
 
 # Exit status this launcher reports after reaping a wedged container - a named
