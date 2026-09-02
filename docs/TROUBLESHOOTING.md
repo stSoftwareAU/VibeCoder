@@ -735,7 +735,9 @@ kept making progress. Reconstruct what happened from three places:
    ```
 
    Each names the reason, the elapsed time, the extension count and the new
-   deadline. `not extending after …` is the check that finally refused.
+   deadline. `not extending after …` is the check that finally refused, and it
+   names **every** signal the decision saw — `tree advanced, external idle` —
+   not only the one that stalled (Issue #767).
 
 2. **The kill line** — states the truth rather than the configured budget:
 
@@ -745,8 +747,11 @@ kept making progress. Reconstruct what happened from three places:
    despite tool activity 31s ago — killing process tree (PID 1234)
    ```
 
-   The clause after the semicolon is the signal that stalled: stale tool
-   activity, an unchanged working tree *with no descendant process doing work*
+   The clause after the semicolon is the signal that stalled: a silent agent
+   (`tool activity stale (last tool call 483s ago, last agent output 400s ago,
+   window 300s)` — **both** clocks must be stale before the run is judged
+   dead, Issue #767), an unchanged working tree *with no descendant process
+   doing work*
    (`working tree unchanged and no descendant process doing work (external
    idle) despite tool activity 31s ago`, Issue #508), or a working-tree probe
    that could not answer (`unknown` is never treated as progress). A trailing
@@ -804,9 +809,10 @@ order they appear:
    itself:
 
    ```text
-   [progress-extension] not extending after 10650s (extensions granted 5):
-   run hard cap reached — no runway left before the supervisor terminates this
-   run, so stopping now to preserve work in progress
+   [progress-extension] not extending after 10650s (extensions granted 5,
+   tree advanced, external idle): run hard cap reached — no runway left before
+   the supervisor terminates this run, so stopping now to preserve work in
+   progress
    ```
 
 Before that refusal the agent is handed its remaining budget so it can stop
