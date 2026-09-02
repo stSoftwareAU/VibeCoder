@@ -1175,7 +1175,7 @@ unless explicitly overridden.
 | Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
 | Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
-| Progress extension stall window | `progress_extension_stall_seconds` | `300` | A tool call older than this is no longer evidence of activity. Must be at least `progress_extension_check_seconds`. |
+| Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
@@ -1493,9 +1493,14 @@ deadline for **issue work only** is re-armable: when it expires the worker asks
 whether the agent is alive and whether anything is actually progressing, and
 only kills if either answer is no:
 
-- **Is the agent still calling tools?** The stream-json progress tracker
-  reports the last tool call; older than `progress_extension_stall_seconds`
-  counts as stalled. This must always hold.
+- **Is the agent still producing anything?** The stream-json progress tracker
+  reports both the last tool call and the last stdout chunk, and the **fresher
+  of the two** answers this question; only when *both* are older than
+  `progress_extension_stall_seconds` is the agent judged stalled. This must
+  always hold. Reading the tool clock alone killed an agent that was waiting
+  *inside* one long tool call — `TaskOutput` polling a background job, a
+  multi-minute build — because no new `tool_use` event appears for as long as
+  that call runs (Issue #767).
 - **Is anything progressing?** Two independent signals, and *either* one is
   enough:
   - **The checkout is changing.** A read-only `git status` / `rev-parse` /

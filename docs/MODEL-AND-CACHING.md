@@ -2468,7 +2468,7 @@ Model selection and caching behaviour can be customised in `.config.json`:
 |-----|------|---------|-------------|
 | `claude_model` | string | `"opus"` | Global default model |
 | `phase_model_overrides` | object | `{}` | Per-phase model overrides |
-| `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while the agent is calling tools and something is progressing — the working tree, or a descendant process doing work (Issue #508) — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
+| `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while the agent is still producing output — a tool call or a stdout chunk inside the stall window (Issue #767) — and something is progressing — the working tree, or a descendant process doing work (Issue #508) — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
 | `claude_kill_after` | number | `30` | Grace period (seconds) before SIGKILL |
 | `enable_model_fallback` | boolean | `true` | Auto-downgrade model on rate limit |
 | `enable_session_resume` | boolean | `false` | Enable CLI-level session continuity |
