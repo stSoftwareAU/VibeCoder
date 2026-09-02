@@ -1017,6 +1017,12 @@ below default to `standard`.
 | `planning`      | `verbose`         | Architecture decisions need full reasoning |
 | `question`      | `verbose`         | Architecture decisions need full reasoning |
 
+> **📝 Note:** `grill_me` is deliberately absent from that table — it takes the
+> `standard` fallback, so every round is told "no running commentary while you
+> work". Nobody watches an unattended round in real time, so its template stops
+> asking for narration from `prompts/grill-me/v15.md` onwards (Issue #759); a
+> round's output is the comment it posts.
+
 **Resolution priority** (highest to lowest):
 
 1. Per-repo override in `repo_config` (see
