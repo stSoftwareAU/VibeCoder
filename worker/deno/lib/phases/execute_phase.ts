@@ -33,10 +33,8 @@ import {
 } from "../session_resume.ts";
 import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
-import {
-  PRIOR_PROGRESS_PROMPT_NOTE,
-  saveResumeState,
-} from "../resume_state_store.ts";
+import { saveResumeState } from "../resume_state_store.ts";
+import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
   startWipCheckpoints,
@@ -337,8 +335,15 @@ async function executeClaudeBody(
   // Prior progress exists (Issue #4170): setup resumed a checkpointed
   // branch, so tell the agent to review and continue instead of starting
   // again. Appended after the cached prefix so prompt caching is intact.
+  //
+  // When that branch carries the interrupted run's handover file (Issue #771),
+  // its content is spliced in here — fenced and framed as prior-run status —
+  // instead of the generic "review `git log`" paragraph alone. It rides the
+  // user prompt, so the budget check below measures it like any other prompt
+  // input. Independent of `enable_session_resume` and of the provider: the
+  // committed file is the contract, a `--resume` transcript is the bonus.
   const userPrompt = state.resumedFromCheckpoint
-    ? basePrompt + PRIOR_PROGRESS_PROMPT_NOTE
+    ? basePrompt + buildPriorProgressNote(issueNumber, state.handoverNote)
     : basePrompt;
 
   // --- Context budget hard ceiling (Issue #3713) ---

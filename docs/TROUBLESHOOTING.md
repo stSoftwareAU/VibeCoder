@@ -894,6 +894,16 @@ handover link appears only when that file is committed on the branch
 (Issue #769); without it the line still names the branch. A run that preserved
 nothing names no branch at all.
 
+The **next** claim reads that same file out of the resumed working tree and
+splices it into its execute prompt (Issue #771), so a resume on a different
+host — or under a non-Claude provider — is briefed with what the interrupted
+run actually did rather than a generic "review `git log`" paragraph. The log
+line to look for is `Handover file read from the resumed branch (Issue #771)`,
+or its counterpart naming the path when no file was there. The content is
+fenced as untrusted prior-run **status**, capped at 8,000 characters, and
+measured by the context budget — so an oversized handover shows up as
+truncated, never as a silently larger prompt.
+
 ## 🎞️ Capturing a full agent transcript
 
 The default observability for a long agent phase is the periodic

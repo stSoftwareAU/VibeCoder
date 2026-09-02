@@ -97,6 +97,13 @@ export interface PhaseState {
    */
   resumedFromCheckpoint?: boolean;
   /**
+   * Handover the interrupted run committed to the resumed branch (Issue #771),
+   * as read from the checked-out tree by the setup phase. The execute phase
+   * splices it into the prompt; absent when the branch carries no handover
+   * file, which is every branch preserved before #769 shipped.
+   */
+  handoverNote?: string;
+  /**
    * HEAD SHA captured immediately before the agent ran (Issue #148).
    *
    * The completion phase compares it with the branch tip to answer "did this
