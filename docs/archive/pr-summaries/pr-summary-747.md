@@ -22,9 +22,11 @@ Backend/CLI change with no web interface, so no screenshot applies. The
 evidence is the test suite plus the published rates each row was checked
 against.
 
-**Rates verified against Anthropic's published pricing** (fetched during this
-run: `platform.claude.com/docs/en/about-claude/pricing` and the
-[Fable 5.1 overview](https://platform.claude.com/docs/en/models/fable-5-1/overview)):
+**Rates verified against Anthropic's published pricing**
+([`platform.claude.com/docs/en/about-claude/pricing`](https://platform.claude.com/docs/en/about-claude/pricing),
+re-fetched and re-checked row by row on the resumed attempt — every row below
+matches the published table, including the footnote that Fable 5.1 cache hits
+are priced at 0.025× base input rather than the standard 0.1×):
 
 | Model | Input | Output | Cache write | Cache read | Change |
 |---|---:|---:|---:|---:|---|
@@ -36,12 +38,27 @@ run: `platform.claude.com/docs/en/about-claude/pricing` and the
 | Haiku 4.5 | $1 | $5 | $1.25 | $0.10 | unchanged |
 | Opus 4.0/4.1, Haiku 3.5 | — | — | — | — | unchanged, still correct |
 
-**Live alias probe.** `claude --model fable --print --output-format stream-json`
-on the container's CLI (2.1.223) reports `"model":"claude-fable-5"` at init, and
-the call itself returned `Not logged in · Please run /login` from a nested
-invocation, so no served model could be observed here. The alias flip is the
-CLI's to make; both pricing rows are carried so neither side of the flip needs
-a config change. This is why the live-run criterion below is `missing`.
+**Why the live-run check cannot pass in this container — measured, not assumed.**
+The installed Claude CLI is 2.1.223, and its binary contains no
+`claude-fable-5-1` string at all:
+
+```console
+$ claude --version
+2.1.223 (Claude Code)
+$ strings -a /usr/local/bin/claude | grep -oE 'claude-fable-[0-9][a-z0-9-]*' | sort -u
+claude-fable-5
+claude-fable-5-mythos-5
+```
+
+So this CLI resolves `--model fable` to `claude-fable-5`; there is no
+configuration by which a run here could be served 5.1. The alias flip is the
+CLI's to make and it needs no worker change: containers auto-update to the
+latest CLI, and the `software_min_versions` floor (`claude`, 2.1.170) is a
+minimum rather than a pin, so the fleet picks 5.1 up the moment a CLI shipping
+that alias table lands. Both pricing rows are carried so neither side of the
+flip needs a config change. This is why the live-run criterion below is
+`missing`, and it is the whole answer to the issue's "do we need to do anything
+to take advantage of 5.1?" on the routing side: no.
 
 ```mermaid
 flowchart LR
@@ -61,20 +78,29 @@ Reviewed the eight Fable-preferring phases' surfaces (`prompts/planning/v23.md`,
 `prompts/question/v9.md`, `prompts/quorum/v1.md`, `prompts/quorum_judge/v1.md`)
 against [Prompting Claude Fable 5.1](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1)
 and the [migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migration-guide).
-Outcome per guidance item:
+**Every heading on the 5.1 prompting page gets a row**, so a reader can see the
+review was exhaustive rather than a sample:
 
-| 5.1 guidance | Outcome |
+| 5.1 guidance heading | Outcome |
 |---|---|
-| Three breaking API changes (forced `tool_choice` 400s; thinking blocks bound to model and to an unedited prefix) | **No change needed** — the worker drives the Claude Code CLI, which owns request construction and history; the worker sends only CLI flags. Recorded in `docs/MODEL-AND-CACHING.md` |
-| Audit for narration-suppressing lines | **Changed, as a filed gap** — `grill_me` renders both "Narrate briefly as you go" (`prompts/grill-me/v14.md:6`) and "no running commentary while you work" (`worker/deno/lib/verbosity.ts:38`, via `standard`). One prompt asks for and forbids narration. Which side wins is a product call, and committed `vN.md` files are immutable, so it is filed as stSoftwareAU/VibeCoder#759 per the checklist's gap-issue policy |
-| Remove anti-formatting rules written for older models | **No change needed** — no Fable-phase template carries one (grepped the latest version of every template) |
-| "Finish the whole task" / don't ask permission mid-task | **No change needed** — every Fable-phase template already opens with the unattended-autonomy framing (`prompts/planning/v23.md:10`, `prompts/grill-me/v14.md:6`, `prompts/quorum/v1.md:6`, `prompts/quorum_judge/v1.md:6`) |
-| Keep changes and tests to what the task asks | **No change needed** — covered by the shared coding-guidelines scope rules and checklist row 20 |
+| Migration guide: breaking API changes (forced `tool_choice` 400s; thinking blocks bound to model and to an unedited prefix) | **No change needed** — the worker drives the Claude Code CLI, which owns request construction and history; the worker sends only CLI flags. Recorded in `docs/MODEL-AND-CACHING.md` |
+| Consider all effort levels | **No change made, deliberately** — the guide says to re-run an effort sweep for 5.1 because level names do not map across models, and that `medium` may match Fable 5's `high` at lower cost. All eight Fable phases sit at `high` (`DEFAULT_CLAUDE_EFFORT_PLANNING`/`_GRILL_ME`/`_QUORUM`/`_QUESTION`/`_REFINEMENT`/`_REVISION`/`_CLARIFICATION`, `worker/deno/lib/config_defaults.ts:640-712`), which is the guide's recommended starting point. Stepping down needs measured eval evidence this run cannot produce, and changing effort defaults is not what the issue asked for |
+| Ask for user-facing progress updates | **Changed, as a filed gap** — the guide's first instruction is to audit for narration-suppressing lines. `grill_me` renders both "Narrate briefly as you go" (`prompts/grill-me/v14.md:6`) and "no running commentary while you work" (`worker/deno/lib/verbosity.ts:37`, via `standard`), so one rendered prompt asks for and forbids narration. `planning` and `question` render `verbose` and `pr_feedback` renders `concise` — neither text carries the clause — so `grill_me` is the only affected surface. Which side wins is a product call, and committed `vN.md` files are immutable, so it is filed as stSoftwareAU/VibeCoder#759 per the checklist's gap-issue policy |
 | Batch independent tool calls in agent loops | **No change needed** — the guidance targets a caller that owns the tool loop; the CLI owns ours, and the shared guidelines already carry parallel-tool-call guidance (checklist row 11) |
-| Fewer search calls at **low** effort | **Not applicable** — all eight Fable phases run at `high` (`PHASE_EFFORT_DEFAULTS`) |
+| Keep the conversation history append-only | **No change needed** — the worker never constructs a `messages` array; the CLI owns history, compaction and thinking-block replay |
+| Writing density | **No change needed** — the anti-mannered-prose block is a chat-writing fix. The Fable phases emit structured artefacts (issue bodies, verdict blocks, plan text) whose shape is already pinned by each template's output contract |
+| Formatting in chat | **No change needed** — the guidance is to *remove* anti-formatting rules written for older models. No Fable-phase template carries one (grepped the latest version of every template for bullet/header/bold prohibitions) |
+| Quoting retrieved sources | **No change needed** — no Fable phase summarises retrieved documents; `grill_me` and `question` read issue text, which they are meant to restate in the user's own terms |
+| Finish the whole task | **No change needed** — the guide's key sentence is "the user is not watching in real time". Every Fable-phase template already opens with exactly that framing (`prompts/planning/v23.md:10`, `prompts/grill-me/v14.md:6`, `prompts/quorum/v1.md:6`, `prompts/quorum_judge/v1.md:6`), and the shared guidelines carry the finish-the-whole-task and no-mid-task-permission rules |
+| Tell the model what to preserve in compaction summaries | **No change needed** — the worker does not compact on the client; the CLI does |
+| Keep changes and tests to what the task asks for | **No change needed** — covered by the shared coding-guidelines scope rules and checklist row 20; and the Fable phases are read-only by construction (they may not edit code at all) |
+| Search triggering at low effort | **Not applicable** — the behaviour is specific to `low` effort; all eight Fable phases run at `high` |
+| Reduce safeguard false positives | **No change needed** — no Fable-phase prompt uses compile-check phrasing, targets a lesser-known language, or feeds base64 tool output into context (the only "compiles" lines live in the execute/`ci_fix` templates, and they instruct running the quality gate rather than asking the model to judge compilation) |
+| Prefer targeted edits over whole-file rewrites | **Not applicable** — no Fable phase edits files; the execute phase, which does, runs on the Opus tier |
 | Leave room for long outputs at `xhigh`/`max` | **Not applicable** — the Fable phases run at `high`; `max` is where the Opus fallback is spent |
-| Writing density, quoting retrieved sources, targeted edits over whole-file rewrites | **No change needed** — speculative without a measured run, and House row H2 requires a line to change behaviour against the model's default before it earns its context cost |
-| The guide's model-specific section restructured into one **Model-specific guidance** table | **Changed** — `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` names that section (with Fable 5.1 among the pages it links) in place of four now-nonexistent per-model headings, keeping the doc's "every guide heading is accounted for" invariant true; the guard test's heading list moves with it |
+| Let the lead agent keep working while subagents run | **No change needed** — the CLI owns subagent dispatch and blocking; the worker cannot make its `Agent` tool return early |
+| Give vision work tools to crop and zoom | **Not applicable** — no Fable phase takes an image as task input |
+| The best-practices guide's model-specific section restructured into one **Model-specific guidance** table | **Changed** — `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` names that section (with Fable 5.1 among the pages it links) in place of four now-nonexistent per-model headings, keeping the doc's "every guide heading is accounted for" invariant true; the guard test's heading list moves with it |
 
 ## Acceptance Criteria
 
@@ -82,9 +108,9 @@ Outcome per guidance item:
 
 - **met** — separate `claude-fable-5-1` row at $10 / $50 / $12.50 / $0.25 with `claude-fable-5` kept at $1.00 — evidence: `worker/deno/lib/token_usage.ts:65-82`, `worker/deno/tests/token_usage_test.ts::prices Fable 5.1 cache reads at a quarter of Fable 5` — reviewer: met
 - **met** — other current-model rows checked against Anthropic's published pricing, stale rates corrected — evidence: `worker/deno/lib/token_usage.ts:104-117` (Sonnet 5), `docs/MODEL-AND-CACHING.md` Model Pricing table — reviewer: met
-- **partial** — prompt review of the phase templates, adjustments applied, each finding's outcome recorded — evidence: the Prompt review table above; `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`; stSoftwareAU/VibeCoder#759 — reviewer: partial — reason: no `prompts/` template changed. One genuine gap was found and filed rather than edited (committed `vN.md` files are immutable and the winning side is a product call); every other item is recorded above as no-change-needed or not-applicable with its reason
+- **partial** — prompt review of the phase templates, adjustments applied, each finding's outcome recorded — evidence: the Prompt review table above (one row per heading on the 5.1 prompting page); `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`; stSoftwareAU/VibeCoder#759 — reviewer: partial — reason: no `prompts/` template changed. One genuine gap was found and filed rather than edited (committed `vN.md` files are immutable and the winning side is a product call); every other heading is recorded above as no-change-needed or not-applicable with its reason
 - **met** — `docs/MODEL-AND-CACHING.md` updated where it names Fable 5 as the top tier, with the alias resolution and the $0.25/MTok cache-read rate — evidence: `docs/MODEL-AND-CACHING.md` "Fable 5.1 — the current top tier" and the Model Selection alias paragraph — reviewer: met
-- **missing** — verify on a real run that the CLI serves `claude-fable-5-1` with `Degraded: no` — reviewer: missing — reason: no Fable-phase run happens in this container, and the alias probe run here reports `claude-fable-5` on CLI 2.1.223 and could not authenticate. What is proven instead is that the detector accepts 5.1 (`worker/deno/tests/planning_run_stats_test.ts::modelsMatch - Fable 5.1 satisfies a Fable-preferring phase`), so the first real Fable-phase run on a 5.1-capable CLI reports `Degraded: no` without further change
+- **missing** — verify on a real run that the CLI serves `claude-fable-5-1` with `Degraded: no` — reviewer: missing — reason: not verifiable in this container and not because of the change: CLI 2.1.223 has no `claude-fable-5-1` in its binary at all (evidence above), so `--model fable` here can only resolve to `claude-fable-5`. What is proven instead is that the detector accepts 5.1 (`worker/deno/tests/planning_run_stats_test.ts::modelsMatch - Fable 5.1 satisfies a Fable-preferring phase`), so the first Fable-phase run on a 5.1-capable CLI reports `Degraded: no` and prices cache reads at $0.25/MTok without any further change
 - **unrequested** — the historical "Opus↔Sonnet gap shrank to ~1.7×" decision note gained a parenthetical saying Sonnet 5 reopened it to ~2.5× — reviewer: unrequested — reason: the line reads as a current rate in the same document the issue asked to refresh; the original figure is kept and marked as the rate at the time rather than rewritten
 
 ## Standards Review
