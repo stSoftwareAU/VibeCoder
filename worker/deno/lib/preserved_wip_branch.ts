@@ -28,11 +28,16 @@
  * hidden path, so the enforced `.gitignore` (`.*`) never stages it and
  * `classifyStagedPath` rejects it outright — a handover written there could
  * never reach the branch, and force-adding it would fail the pre-commit gate
- * and take the WIP commit down with it. `preserved_wip_branch_test.ts` pins
- * that this path stays committable.
+ * and take the WIP commit down with it.
+ *
+ * `docs/archive/` rather than `docs/` because a handover carries free agent
+ * prose: `_config.yml` excludes the archive from the Jekyll build for exactly
+ * that reason (a stray `{%` in a PR summary breaks the Pages build), and a
+ * branch that later merges must not take the site down with it.
+ * `preserved_wip_branch_test.ts` pins both properties.
  */
 export function handoverFilePath(issueNumber: number): string {
-  return `docs/handover/issue-${issueNumber}.md`;
+  return `docs/archive/handover/issue-${issueNumber}.md`;
 }
 
 /** Where an interrupted run's work actually is. */

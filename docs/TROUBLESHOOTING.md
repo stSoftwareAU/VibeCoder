@@ -884,7 +884,7 @@ When the run preserved work, the comment also names **where** (Issue #770):
 ```text
 **Work in progress:** branch `issue-770-name-the-preserved-branch` holds the
 work in progress; the next claim resumes from it. Handover:
-[docs/handover/issue-770.md](https://github.com/…).
+[docs/archive/handover/issue-770.md](https://github.com/…).
 ```
 
 The branch named is always the branch the push targeted — the resumed branch
