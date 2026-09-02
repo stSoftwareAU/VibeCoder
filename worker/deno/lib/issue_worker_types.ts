@@ -17,6 +17,7 @@ import type { GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
+import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -120,6 +121,14 @@ export interface PhaseState {
    * same memory. Cleared at the start of each attempt.
    */
   lastKillMemoryPressure?: MemoryPressureReading;
+  /**
+   * What the re-armable deadline did to the execute run (Issue #768). Set by
+   * the timeout branch of the execute phase, and carried onto the run outcome
+   * so the claim-release comment names the extensions granted and why the
+   * last check was refused. Absent when the progress extension was not
+   * active for the run.
+   */
+  extensionTelemetry?: ExtensionTelemetry;
   /**
    * Completed Claude invocations from the execute phase (Issue #3756).
    *

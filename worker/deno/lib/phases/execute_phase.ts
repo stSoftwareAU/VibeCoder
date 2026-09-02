@@ -585,6 +585,12 @@ async function executeClaudeBody(
       });
     }
 
+    // What the re-armable deadline did to this run (Issue #768), kept for the
+    // claim-release comment: how many extensions were granted and why the
+    // last check was refused. Absent when the progress extension was off, and
+    // the comment then reads exactly as it did before.
+    state.extensionTelemetry = claudeResult.value.extensions;
+
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );

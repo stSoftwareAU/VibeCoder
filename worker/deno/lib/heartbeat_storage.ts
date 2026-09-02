@@ -537,7 +537,15 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
     }
     case "no_pr": {
       const display = getFailureCategoryDisplay(outcome.category);
-      const oneliner = getFailureDiagnosisOneliner(outcome.category);
+      // A timeout kill explains itself here (Issue #768): the one-liner
+      // states the extension telemetry the run carried, so an operator reads
+      // the grants and the last refusal off the release comment.
+      const oneliner = getFailureDiagnosisOneliner(
+        outcome.category,
+        "not_assessed",
+        "",
+        outcome.extensions,
+      );
       const phase = boundOutcomeText(outcome.phase, 60);
       const detail = boundOutcomeText(
         outcome.message,

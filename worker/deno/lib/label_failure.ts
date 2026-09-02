@@ -135,9 +135,13 @@ export async function markIssueAsFailedOnce(
   // Context-aware failure diagnosis (Issue #398, #400)
   const failureCategory = detectFailureCategory(options.failureMessage);
   const categoryDisplay = getFailureCategoryDisplay(failureCategory);
+  // The diagnostic context carries the extension telemetry of a timed-out run
+  // (Issue #768), so the first-attempt comment names the grants and the last
+  // refusal rather than a bare "ran out of time".
   const diagnosisOneliner = getFailureDiagnosisOneliner(
     failureCategory,
     clarityStatus,
+    diagnosticContext,
   );
 
   // Issue #533: For zero_output, include diagnostic context
