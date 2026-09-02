@@ -39,6 +39,22 @@ const TIMED_OUT = {
 /** The supervisor's hard cap stopped a still-progressing run. */
 const HARD_CAP_WIND_DOWN = { ...TIMED_OUT, scheduledRelease: "hard-cap" };
 
+/** SIGKILLed with no watchdog firing — typically the VM's OOM killer. */
+const KILLED = {
+  output: "editing the parser, running deno test",
+  exitCode: 137,
+  rawExitCode: 137,
+  killed: true,
+};
+
+/** A SIGTERM the worker never requested. */
+const EXTERNAL_SIGTERM = {
+  output: "editing the parser, running deno test",
+  exitCode: 143,
+  rawExitCode: 143,
+  externalSigterm: true,
+};
+
 /** The worker's own shutdown ended the run: the cycle is over. */
 const WORKER_SHUTDOWN = {
   output: "editing the parser, running deno test",
@@ -107,8 +123,8 @@ async function runInterrupted(options: {
     await Deno.mkdir(`${repoPath}/.git`);
     if (options.blockHandover) {
       // A file where the handover directory must go: the write fails.
-      await Deno.mkdir(`${repoPath}/docs`);
-      await Deno.writeTextFile(`${repoPath}/docs/handover`, "in the way");
+      await Deno.mkdir(`${repoPath}/.github`);
+      await Deno.writeTextFile(`${repoPath}/.github/handover`, "in the way");
     }
     const dirty = options.dirty ?? ["worker/deno/lib/parser.ts"];
     const deps = createMockDeps({
@@ -212,6 +228,20 @@ Deno.test("execute_phase #769 - a hard-cap wind-down commits the handover note",
   const run = await runInterrupted({ runnerValue: HARD_CAP_WIND_DOWN });
   assert(run.noteAtCommit, "the hard-cap path must write the note too");
   assertStringIncludes(run.noteAtCommit, "released on schedule");
+  assertStringIncludes(run.reason, NOTE);
+});
+
+Deno.test("execute_phase #769 - a SIGKILL commits the handover note", async () => {
+  const run = await runInterrupted({ runnerValue: KILLED });
+  assert(run.noteAtCommit, "an OOM kill must write the note too");
+  assertStringIncludes(run.noteAtCommit, "was killed");
+  assertStringIncludes(run.reason, NOTE);
+});
+
+Deno.test("execute_phase #769 - an external SIGTERM commits the handover note", async () => {
+  const run = await runInterrupted({ runnerValue: EXTERNAL_SIGTERM });
+  assert(run.noteAtCommit, "an external SIGTERM must write the note too");
+  assertStringIncludes(run.noteAtCommit, "external SIGTERM");
   assertStringIncludes(run.reason, NOTE);
 });
 

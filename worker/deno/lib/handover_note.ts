@@ -17,11 +17,15 @@
  * whether a wind-down notice was delivered — so it costs no agent call and
  * does not need the agent to still be alive. On the timeout path it is not.
  *
- * The path is deliberately NOT hidden. `gitignore_enforcer.ts` ignores every
- * hidden path in a monitored repo and `pre_commit_safety.ts` refuses to
- * commit one, so a `.vibe/…` note would have been silently dropped by
- * `git add -A` — preserved nowhere, reported as written. `docs/handover/`
- * is tracked, committable, and discoverable by a human or any provider.
+ * The path is `.github/handover/`. A `.vibe/…` note could never have been
+ * committed: `gitignore_enforcer.ts` ignores every hidden path in a
+ * monitored repo and `pre_commit_safety.ts` refuses to commit one, so
+ * `git add -A` would have dropped it silently — preserved nowhere, reported
+ * as written. `.github/` is the one hidden directory both of those layers
+ * already re-allow, and it is repo tooling metadata rather than source or
+ * published documentation, so a note left on a WIP branch cannot trip a
+ * repo's docs gates (markdownlint globs, a Pages build, a page-title
+ * manifest) and strand the very branch it exists to rescue.
  *
  * Every failure here is non-fatal and logged, exactly as a failed WIP
  * checkpoint is: losing the note must never cost the code.
@@ -37,7 +41,7 @@ import { WIND_DOWN_NOTICE_FILENAME } from "./wind_down_notice.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /** Directory holding one handover note per issue, relative to the clone. */
-export const HANDOVER_DIR = "docs/handover";
+export const HANDOVER_DIR = ".github/handover";
 
 /** Machine-readable marker identifying a note and its structure version. */
 export const HANDOVER_MARKER = '<!-- vibe-handover version="1" -->';
@@ -101,6 +105,23 @@ function isPortablePath(path: string): boolean {
     !path.startsWith("~") &&
     !/^[A-Za-z]:[\\/]/.test(path) &&
     !path.includes("\\");
+}
+
+/**
+ * Replace anything that looks like an absolute host path with a marker.
+ *
+ * Applied to free text the worker copies verbatim — commit subjects the
+ * agent wrote — because a host path there is just as useless to a worker on
+ * another machine as one in the file list, and just as invisible to a
+ * "file exists" check.
+ */
+function stripHostPaths(text: string): string {
+  return text
+    .replace(/[A-Za-z]:\\[^\s"'`]*/g, "<path>")
+    .replace(
+      /(^|[\s"'`(])~?\/[^\s"'`]+/g,
+      (_m, lead: string) => `${lead}<path>`,
+    );
 }
 
 /**
@@ -175,7 +196,9 @@ export function buildHandoverNote(facts: HandoverFacts): string {
 
   if (commits.length > 0) {
     lines.push("Commits this run added to the branch, newest first:", "");
-    for (const subject of commits) lines.push(`- ${defuseLiquid(subject)}`);
+    for (const subject of commits) {
+      lines.push(`- ${defuseLiquid(stripHostPaths(subject))}`);
+    }
     lines.push("");
   } else {
     lines.push(
@@ -211,10 +234,14 @@ export function buildHandoverNote(facts: HandoverFacts): string {
   lines.push(
     "## What remains",
     "",
-    "The run was interrupted, so it never reported completion: whatever the",
-    "issue still asks for beyond the changes above is outstanding. Review the",
-    "diff against the base branch, continue from it, and do not revert it",
-    "unless it is wrong.",
+    `The run was interrupted after ${facts.elapsedSeconds}s, so it never ` +
+      "reported completion: whatever the issue still asks for beyond the " +
+      "changes above is outstanding.",
+    "",
+    `Diff \`${defuseLiquid(facts.branch)}\` against its base branch to see ` +
+      `the ${commits.length} commit(s) and ${files.length} preserved ` +
+      "file(s) named above, continue from them, and do not revert them " +
+      "unless they are wrong.",
     "",
     "## Known blockers",
     "",

@@ -36,11 +36,16 @@ const FACTS = {
 };
 
 Deno.test("handoverNotePath #769 - a fixed, discoverable, committable path", () => {
-  assertEquals(handoverNotePath(769), "docs/handover/issue-769.md");
-  // The path must survive the pre-commit safety gate (#1758) and git's
-  // hidden-file ignore rules — a hidden path could never be committed.
+  assertEquals(handoverNotePath(769), ".github/handover/issue-769.md");
+  // Load-bearing: the note is worthless unless it can actually be committed.
+  // `.github/` is the one hidden directory the pre-commit safety gate
+  // (#1758) allows and the repo `.gitignore` re-allows, so `git add -A`
+  // stages it; an unlisted hidden path would be dropped in silence.
   assertEquals(classifyStagedPath(handoverNotePath(769)), "safe");
-  assert(!handoverNotePath(769).startsWith("."));
+  assertEquals(classifyStagedPath(".vibe/handover/issue-769.md"), "violation");
+  // It also sits outside the documentation tree, so it can never trip a
+  // repo's docs gates and strand the branch it exists to rescue.
+  assert(!handoverNotePath(769).startsWith("docs/"));
 });
 
 Deno.test("buildHandoverNote #769 - names the cause, branch, what was done and what remains", () => {
@@ -149,6 +154,19 @@ Deno.test("buildHandoverNote #769 - Liquid tags in interpolated content are defu
   assertStringIncludes(note, "{ % raw %} and { { site.url }}");
 });
 
+Deno.test("buildHandoverNote #769 - a host path inside a commit subject is stripped", () => {
+  const note = buildHandoverNote({
+    ...FACTS,
+    wipCommitSubjects: [
+      "fix: read /home/vibe/auto-issue-work/VibeCoder/worker/deno/x.ts",
+      "chore: tidy C:\\Users\\vibe\\repo\\y.ts",
+    ],
+  });
+  assertEquals(note.includes("/home/"), false, note);
+  assertEquals(note.includes("C:\\"), false, note);
+  assertStringIncludes(note, "<path>");
+});
+
 Deno.test("extractAttemptLines #769 - reads back the attempts a note records", () => {
   const first = buildHandoverNote(FACTS);
   const lines = extractAttemptLines(first);
@@ -178,9 +196,9 @@ Deno.test("writeHandoverNote #769 - writes the note into the clone", async () =>
       facts: FACTS,
     });
     assertEquals(outcome.kind, "written");
-    assertEquals(outcome.path, "docs/handover/issue-769.md");
+    assertEquals(outcome.path, ".github/handover/issue-769.md");
     const written = await Deno.readTextFile(
-      `${repoPath}/docs/handover/issue-769.md`,
+      `${repoPath}/.github/handover/issue-769.md`,
     );
     assertStringIncludes(written, "# Handover — issue #769");
   } finally {
@@ -203,7 +221,7 @@ Deno.test("writeHandoverNote #769 - a second interruption rewrites the note and 
       },
     });
     const written = await Deno.readTextFile(
-      `${repoPath}/docs/handover/issue-769.md`,
+      `${repoPath}/.github/handover/issue-769.md`,
     );
     // Rewritten, not appended: one note, one "this attempt" heading.
     assertEquals(written.split("## This attempt").length - 1, 1);
@@ -230,7 +248,7 @@ Deno.test("writeHandoverNote #769 - the prior-attempts tail is bounded", async (
       });
     }
     const written = await Deno.readTextFile(
-      `${repoPath}/docs/handover/issue-769.md`,
+      `${repoPath}/.github/handover/issue-769.md`,
     );
     assertEquals(extractAttemptLines(written).length, MAX_PRIOR_ATTEMPTS + 1);
   } finally {
@@ -244,8 +262,8 @@ Deno.test("writeHandoverNote #769 - a write failure is reported and logged, neve
   try {
     await Deno.mkdir(`${repoPath}/.git`);
     // A file where the handover directory must go: the write cannot succeed.
-    await Deno.mkdir(`${repoPath}/docs`);
-    await Deno.writeTextFile(`${repoPath}/docs/handover`, "in the way");
+    await Deno.mkdir(`${repoPath}/.github`);
+    await Deno.writeTextFile(`${repoPath}/.github/handover`, "in the way");
     const outcome = await writeHandoverNote({
       repoPath,
       facts: FACTS,
@@ -287,7 +305,7 @@ Deno.test("writeHandoverNote #769 - records the wind-down notice the run was han
       facts: { ...FACTS, windDownNoticeDelivered: undefined },
     });
     const written = await Deno.readTextFile(
-      `${repoPath}/docs/handover/issue-769.md`,
+      `${repoPath}/.github/handover/issue-769.md`,
     );
     assertStringIncludes(written, "Wind-down notice: delivered");
   } finally {
