@@ -98,6 +98,15 @@ Deno.test("modelsMatch - Opus 5 dated variant passes via prefix (Issue #3564)", 
   assertEquals(modelsMatch("claude-opus-5", "claude-opus-5-1-20260901"), true);
 });
 
+Deno.test("modelsMatch - Fable 5.1 satisfies a Fable-preferring phase (Issue #747)", () => {
+  // The worker requests the `fable` alias and the CLI now serves Fable 5.1, so
+  // a healthy run must not be flagged degraded for the version bump.
+  assertEquals(modelsMatch("fable", "claude-fable-5-1"), true);
+  assertEquals(modelsMatch("fable", "claude-fable-5-1-20260901"), true);
+  assertEquals(modelsMatch("claude-fable-5", "claude-fable-5-1"), true);
+  assertEquals(modelsMatch("claude-fable-5-1", "claude-opus-5"), false);
+});
+
 Deno.test("modelsMatch - Opus 5 never matches a different tier (Issue #3564)", () => {
   assertEquals(modelsMatch("claude-opus-5", "claude-fable-5"), false);
   assertEquals(modelsMatch("sonnet", "claude-opus-5"), false);
