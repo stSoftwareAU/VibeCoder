@@ -890,8 +890,8 @@ work in progress; the next claim resumes from it. Handover:
 The branch named is always the branch the push targeted — the resumed branch
 when a re-claim adopted one, never a name derived from the current title, so
 retitling an issue mid-flight cannot send you to a ref that does not exist. The
-handover link appears only when that file is committed on the branch (Issue
-#769); without it the line still names the branch. A run that preserved
+handover link appears only when that file is committed on the branch
+(Issue #769); without it the line still names the branch. A run that preserved
 nothing names no branch at all.
 
 ## 🎞️ Capturing a full agent transcript

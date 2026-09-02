@@ -26,10 +26,10 @@ import {
 import { classifyStagedPath } from "../lib/pre_commit_safety.ts";
 import {
   OUTCOME_WIP_MAX_LENGTH,
+  renderHeartbeatBody,
   renderRunOutcomeClause,
 } from "../lib/heartbeat_storage.ts";
 import { isHeartbeatOnlyBody } from "../lib/heartbeat_sweep.ts";
-import { renderHeartbeatBody } from "../lib/heartbeat_storage.ts";
 import type { RunOutcome } from "../lib/run_outcome.ts";
 
 Deno.test("preserved wip #770 - the handover path is one the commit gate will stage", () => {

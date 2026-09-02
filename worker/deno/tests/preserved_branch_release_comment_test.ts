@@ -286,6 +286,77 @@ Deno.test("release comment #770 - no handover file: the comment still names the 
   );
 });
 
+Deno.test("release comment #770 - a failed handover lookup is logged, and the branch is still named", async () => {
+  // A git fault is not the same answer as "no handover file": the comment
+  // degrades to the branch alone, but the fault is stated rather than passed
+  // off as a clean absence.
+  const warnings: string[] = [];
+  const commits: Array<{ branch: string }> = [];
+  const deps = createMockDeps({
+    logger: { warn: (message: string) => warnings.push(message) },
+    claude: {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            output: "wiring the production side; tests next",
+            exitCode: 124,
+            rawExitCode: 143,
+            timedOut: true,
+            timeoutReason: "hard-timeout",
+          },
+        })) as never,
+    },
+    pr: {
+      findExistingPrForIssue: (() =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("No PR found"),
+        })) as never,
+    },
+    git: {
+      runGitCommand: ((args: string[]) => {
+        const ok = (stdout: string, code = 0, stderr = "") =>
+          Promise.resolve({ ok: true, value: { code, stdout, stderr } });
+        if (args[0] === "status") {
+          return ok(" M worker/deno/lib/a.ts\n?? b.ts\n");
+        }
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
+          return ok(RESUMED_BRANCH);
+        }
+        if (args[0] === "ls-tree") return ok("", 128, "fatal: not a tree");
+        return ok("");
+      }) as never,
+      commitAndPushPending: ((branch: string) => {
+        commits.push({ branch });
+        return Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        });
+      }) as never,
+    },
+  });
+  const config: WorkerConfig = {
+    ...buildDefaultWorkerConfig(),
+    infraRetryBackoffMs: 10,
+  };
+  const state = makeState();
+  await workOnIssueExecuteClaude(makeContext(config), state, deps);
+
+  assertEquals(state.preservedWip?.branch, RESUMED_BRANCH);
+  assertEquals(state.preservedWip?.handoverPath, undefined);
+  assert(
+    warnings.some((w) => w.includes("Could not look up the handover file")),
+    `the failed lookup must be reported, not swallowed: ${
+      warnings.join(" | ")
+    }`,
+  );
+});
+
 Deno.test("release comment #770 - a run that preserved nothing names no branch at all", async () => {
   // The default git mock reports a clean tree and no commits since the
   // execute start, so nothing was pushed. Naming a branch here would be the

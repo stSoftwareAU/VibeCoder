@@ -123,9 +123,25 @@ async function resolvePreservedWip(
     ["ls-tree", "--name-only", "HEAD", "--", path],
     { cwd: state.repoPath },
   );
-  const present = listed.ok && listed.value.code === 0 &&
-    listed.value.stdout.trim() === path;
-  if (!present) return { branch };
+  if (!listed.ok || listed.value.code !== 0) {
+    // Degrading to "no handover file" is right — a broken link is worse than
+    // none — but the lookup failing is not the same as the file being absent,
+    // so say so rather than letting a git fault pass for a clean answer.
+    deps.logger.warn(
+      "Could not look up the handover file on the preserved branch — the " +
+        "release comment names the branch alone (Issue #770)",
+      {
+        branch,
+        path,
+        error: listed.ok
+          ? `git ls-tree exited ${listed.value.code}: ` +
+            (listed.value.stderr.trim() || "(no output)")
+          : listed.error.message,
+      },
+    );
+    return { branch };
+  }
+  if (listed.value.stdout.trim() !== path) return { branch };
   return {
     branch,
     handoverPath: path,
