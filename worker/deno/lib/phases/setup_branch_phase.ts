@@ -32,6 +32,8 @@ import {
 import { runPreSetupCommand } from "../repo_config.ts";
 import { escalateToHuman } from "../needs_human_escalation.ts";
 import { loadResumeState } from "../resume_state_store.ts";
+import { readHandoverNote } from "../handover_prompt_note.ts";
+import { handoverFilePath } from "../preserved_wip_branch.ts";
 import {
   describeResumeOutcome,
   resumeIssueBranch,
@@ -312,6 +314,7 @@ export async function workOnIssueSetupBranch(
   // gates the CLI `--resume` conversation replay below, never whether pushed
   // work is used. Discarding a pushed commit is data loss, not an opt-in.
   state.resumedFromCheckpoint = false;
+  state.handoverNote = undefined;
   const persisted = await loadResumeState(config.workDir, repo, issueNumber);
   const resumeOutcome = await resumeIssueBranch(
     {
@@ -346,6 +349,26 @@ export async function workOnIssueSetupBranch(
     // commits, pushes and opens its PR from.
     state.branchName = resumeOutcome.branch;
     state.resumedFromCheckpoint = true;
+    // The portable half of the briefing (Issue #771): the interrupted run's
+    // handover file is committed on this branch, so it is readable from the
+    // tree just checked out — on any host, under any provider, and without a
+    // session id. Read here; the execute phase splices it into the prompt.
+    // Absent on every branch preserved before #769, which resumes on the
+    // generic note instead.
+    const handover = await readHandoverNote(repoPath, issueNumber);
+    if (handover) state.handoverNote = handover;
+    logger.info(
+      handover
+        ? "Handover file read from the resumed branch (Issue #771)"
+        : "No handover file on the resumed branch — resuming with the " +
+          "generic prior-progress note (Issue #771)",
+      {
+        repo,
+        issueNumber,
+        path: handoverFilePath(issueNumber),
+        ...(handover ? { chars: handover.length } : {}),
+      },
+    );
     // Where the resumed branch started is recorded by the execute phase as
     // `executeStartHeadSha` (Issue #148) — the completion phase reads that to
     // tell "this run advanced the checkpoint" from "this run added nothing to

@@ -2016,9 +2016,19 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   retitle: renaming an issue mid-flight used to orphan its WIP branch, because
   the next claim derived a different slug and started from scratch (#220).
 - Every claim logs which branch it resumed, or that no prior branch existed.
+- When a branch was resumed, the worker reads the handover file the
+  interrupted run committed to it (`docs/archive/handover/issue-<N>.md`,
+  Issue #769) and splices that content into the execute prompt, framed as a
+  prior-run **status report** — untrusted repository prose, fenced, capped at
+  8,000 characters and counted against the context budget, never a directive
+  that can redirect the run (Issue #771). This works on any fleet host and
+  under any provider, so it does **not** depend on `enable_session_resume`;
+  a branch with no handover file falls back to the generic "prior progress
+  exists, review `git log`" note and still resumes.
 - When session resume is enabled and a branch was resumed, the worker also
-  passes `--resume` so the durable transcript replays the prior conversation,
-  and tells the agent prior progress exists on the branch.
+  passes `--resume` so the durable transcript replays the prior conversation.
+  That replay is a same-host optimisation layered on top: the committed
+  handover is the portable contract and is spliced either way.
 - The resume file is deleted on successful PR creation and on claim release,
   so deliberate outcomes always start the next attempt clean. The one
   exception is a release whose run **preserved WIP** on the issue branch
