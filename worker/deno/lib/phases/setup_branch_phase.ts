@@ -356,19 +356,33 @@ export async function workOnIssueSetupBranch(
     // Absent on every branch preserved before #769, which resumes on the
     // generic note instead.
     const handover = await readHandoverNote(repoPath, issueNumber);
-    if (handover) state.handoverNote = handover;
-    logger.info(
-      handover
-        ? "Handover file read from the resumed branch (Issue #771)"
-        : "No handover file on the resumed branch — resuming with the " +
+    const handoverLog = {
+      repo,
+      issueNumber,
+      path: handoverFilePath(issueNumber),
+    };
+    if (handover.status === "found") {
+      state.handoverNote = handover.content;
+      logger.info("Handover file read from the resumed branch (Issue #771)", {
+        ...handoverLog,
+        chars: handover.content.length,
+      });
+    } else if (handover.status === "unreadable") {
+      // A present-but-unreadable file is a fault, not an absence: say so
+      // rather than reporting "no handover" and resuming on the generic note
+      // as though the branch had never carried one.
+      logger.warn(
+        "Handover file on the resumed branch could not be read — resuming " +
+          "with the generic prior-progress note (Issue #771)",
+        { ...handoverLog, error: handover.error.message },
+      );
+    } else {
+      logger.info(
+        "No handover file on the resumed branch — resuming with the " +
           "generic prior-progress note (Issue #771)",
-      {
-        repo,
-        issueNumber,
-        path: handoverFilePath(issueNumber),
-        ...(handover ? { chars: handover.length } : {}),
-      },
-    );
+        handoverLog,
+      );
+    }
     // Where the resumed branch started is recorded by the execute phase as
     // `executeStartHeadSha` (Issue #148) — the completion phase reads that to
     // tell "this run advanced the checkpoint" from "this run added nothing to
