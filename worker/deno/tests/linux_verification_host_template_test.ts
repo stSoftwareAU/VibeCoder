@@ -519,12 +519,44 @@ Deno.test("the UserData script installs the launcher prerequisites and clones th
   assertStringIncludes(script, "git clone ${VibeCoderRepositoryUrl}");
 });
 
+Deno.test("the host installs no coding-agent CLI by default (Issue #736)", () => {
+  const parameter = asRecord(section("Parameters").HostAgentCli, "HostAgentCli");
+  assertEquals(
+    parameter.Default,
+    "none",
+    "a Codex-only verification requires a host with no Claude CLI present",
+  );
+  assertEquals(asArray(parameter.AllowedValues, "AllowedValues"), [
+    "none",
+    "claude",
+  ]);
+
+  // Rendered with the defaults, the Claude installer and its version proof sit
+  // behind a condition that cannot be true — so the default host carries no
+  // agent CLI, and a Claude verification still gets one by passing the
+  // parameter.
+  const script = renderedUserData();
+  assertStringIncludes(script, 'if [ "none" = "claude" ]; then');
+  for (const guarded of ["https://claude.ai/install.sh", "claude --version"]) {
+    const index = script.indexOf(guarded);
+    assert(index > 0, `${guarded} should still be reachable via the parameter`);
+    const opener = script.lastIndexOf('if [ "none" = "claude" ]', index);
+    const closer = script.lastIndexOf("\nfi", index);
+    assert(
+      opener > closer,
+      `${guarded} must sit inside the HostAgentCli guard, not run unconditionally`,
+    );
+  }
+});
+
 Deno.test("the bootstrap proves each prerequisite runs before it reports OK", () => {
   const lines = renderedUserData().split("\n").map((line) => line.trim());
   const okIndex = lines.findIndex((line) => line.startsWith('echo "OK"'));
   assert(okIndex > 0, "the bootstrap should record a final OK status");
   const beforeOk = lines.slice(0, okIndex).join("\n");
-  for (const tool of ["podman", "git", "gh", "deno", "claude"]) {
+  // The agent CLI is not on this list: it is installed only when asked for,
+  // and its own proof rides the same guard (Issue #736).
+  for (const tool of ["podman", "git", "gh", "deno"]) {
     assertStringIncludes(
       beforeOk,
       `${tool} --version`,
