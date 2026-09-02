@@ -63,6 +63,7 @@ import type {
   CallbackRunTelemetry,
   TerminalIssueRun,
 } from "./run_callbacks.ts";
+import { IssueCallbackGuard } from "./issue_callback_guard.ts";
 import {
   formatSlotPrefix,
   renderSlotStatus,
@@ -1575,6 +1576,12 @@ interface TerminalRun {
   startedAtEpochMs: number;
   /** Token and cost telemetry the run reported, when it reported any. */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * The cycle's exactly-once guard. Every dispatch site for a claim shares
+   * one, so a run reported by its own release is not reported again by the
+   * slot catch or the shutdown drain.
+   */
+  guard: IssueCallbackGuard;
 }
 
 /**
@@ -1591,6 +1598,15 @@ async function dispatchIssueCallbacks(
   ran: TerminalRun,
 ): Promise<void> {
   if (!deps.runIssueCallbacks) return;
+  if (!ran.guard.tryClaim(repo, issueNumber)) {
+    // Said out loud: "already reported" is a very different fact from
+    // "never ran", and only the log can tell them apart afterwards.
+    deps.log(
+      `Post-run callbacks for ${repo}#${issueNumber} already ran for this ` +
+        `claim — not repeating them (Issue #806).`,
+    );
+    return;
+  }
   try {
     await deps.runIssueCallbacks({
       repo,
@@ -1775,6 +1791,14 @@ async function runIssueScanLoop(
     eligibilityScanCompleted?: boolean;
   }
 > {
+  /**
+   * One exactly-once post-run callback guard per scan (Issue #806). The
+   * serial loop dispatches from three places — the success release, the
+   * failure release, and the pre-release exit-threshold branch — and each
+   * claim must reach the callback layer once.
+   */
+  const callbackGuard = new IssueCallbackGuard();
+
   // Concurrent slots (Issue #4177, part of #4168): above one slot the pool
   // takes over. At the default of 1 the serial loop below runs unchanged —
   // exactly today's call sequence, including its shutdown timing (Issue
@@ -1920,6 +1944,7 @@ async function runIssueScanLoop(
       await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
         result: "failure",
         startedAtEpochMs: claimedAtEpochMs,
+        guard: callbackGuard,
       });
       throw thrown;
     }
@@ -1932,6 +1957,7 @@ async function runIssueScanLoop(
     const ran = (result: "success" | "failure"): TerminalRun => ({
       result,
       startedAtEpochMs: claimedAtEpochMs,
+      guard: callbackGuard,
       ...(processResult.ok && processResult.value.telemetry
         ? { telemetry: processResult.value.telemetry }
         : {}),
@@ -2461,6 +2487,11 @@ interface SlotPoolState {
    * idle-inversion escalation has no evidence to escalate.
    */
   eligibilityScanCompleted: boolean;
+  /**
+   * The cycle's exactly-once post-run callback guard (Issue #806), shared by
+   * every slot, the slot-level catch and the shutdown drain.
+   */
+  callbackGuard: IssueCallbackGuard;
 }
 
 /**
@@ -2536,6 +2567,7 @@ async function runIssueScanPool(
     claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
     eligibilityScanCompleted: false,
+    callbackGuard: new IssueCallbackGuard(),
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
   // #4179): under pressure the pool STARTS fewer slots; it never cancels
@@ -2655,9 +2687,14 @@ async function drainSlots(
           elapsedSeconds: (Date.now() - hold.sinceMs) / 1000,
         }),
         // A shutdown after a claim is a terminal failure for that run, so it
-        // takes the failure/always path exactly once (Issue #806). The slot
-        // itself is abandoned mid-run and never reaches its own release.
-        { result: "failure", startedAtEpochMs: hold.sinceMs },
+        // takes the failure/always path exactly once (Issue #806). The
+        // abandoned slot keeps running and may still reach its own release,
+        // so the shared guard — not the ordering — is what makes it once.
+        {
+          result: "failure",
+          startedAtEpochMs: hold.sinceMs,
+          guard: pool.callbackGuard,
+        },
       );
     }
   }
@@ -2835,11 +2872,12 @@ async function runSlot(
     /** Set by a successful claim so the settle sleep runs holding no repo. */
     let claimSucceeded = false;
     /**
-     * Whether `runSlotIssue` reached its own terminal path — and therefore
-     * already fired this run's callbacks (Issue #806). A throw from anything
-     * *after* it must not fire them a second time.
+     * Whether the claim actually started running (Issue #806) — set the
+     * moment `processIssue` is entered. A throw *before* that point is an
+     * unclaimed cycle and reports no callbacks; the shared guard handles a
+     * throw after the run already reported.
      */
-    let issueSettled = false;
+    const runStarted = { value: false };
     try {
       // Every claim gets its OWN write-repo allowlist (Issue #183). The
       // per-slot context exists (#4175) but nothing wired it up here, so
@@ -2873,8 +2911,8 @@ async function runSlot(
                 pool.registry.noteRunDeadline(issue.repo, deadline);
               },
             },
-            async () => {
-              const settled = await runSlotIssue(
+            () =>
+              runSlotIssue(
                 slotId,
                 issue,
                 config,
@@ -2882,10 +2920,8 @@ async function runSlot(
                 tracker,
                 endTime,
                 pool,
-              );
-              issueSettled = true;
-              return settled;
-            },
+                runStarted,
+              ),
           ),
       );
       if (outcome === "exit") {
@@ -2929,11 +2965,16 @@ async function runSlot(
           elapsedSeconds: since === undefined ? 0 : (Date.now() - since) / 1000,
         }),
         // An exception after a claim takes the failure/always path exactly
-        // once (Issue #806): only when the run had not already reached its
-        // own terminal path and fired them.
-        issueSettled
-          ? undefined
-          : { result: "failure", startedAtEpochMs: since ?? deps.now() },
+        // once (Issue #806). Reported only when the run actually started —
+        // a throw before `processIssue` is an unclaimed cycle, not a run —
+        // and the shared guard refuses a repeat if the run already reported.
+        runStarted.value
+          ? {
+            result: "failure" as const,
+            startedAtEpochMs: since ?? deps.now(),
+            guard: pool.callbackGuard,
+          }
+          : undefined,
       );
       // A primary rate limit is pool-wide (Issue #4180): stop every slot
       // from claiming and let the pool re-throw once drained so the cycle
@@ -3145,6 +3186,8 @@ async function runSlotIssue(
   tracker: WorkProgressTracker,
   endTime: number,
   pool: SlotPoolState,
+  /** Set when the claim starts running, so a pre-claim throw reports nothing. */
+  started: { value: boolean } = { value: false },
 ): Promise<"success" | "skip" | "failure" | "exit"> {
   const prefix = formatSlotPrefix({
     slotId,
@@ -3195,12 +3238,14 @@ async function runSlotIssue(
   // Each slot bounds its own callback context (Issue #806), so concurrent
   // slots never share a start time or a result.
   const claimedAtEpochMs = deps.now();
+  started.value = true;
   const processResult = await deps.processIssue(issue, endTime);
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
   /** What this slot's run reports to the post-run callbacks (Issue #806). */
   const ran = (result: "success" | "failure"): TerminalRun => ({
     result,
     startedAtEpochMs: claimedAtEpochMs,
+    guard: pool.callbackGuard,
     ...(processResult.ok && processResult.value.telemetry
       ? { telemetry: processResult.value.telemetry }
       : {}),

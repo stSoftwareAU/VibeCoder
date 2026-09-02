@@ -58,6 +58,16 @@ export async function runWithTimeout(
     env?: Record<string, string>;
     /** Start from an empty environment rather than inheriting the worker's. */
     clearEnv?: boolean;
+    /**
+     * Return whatever the child printed before it was killed on timeout,
+     * instead of empty streams (Issue #806).
+     *
+     * Off by default so every existing caller keeps the terse "Timed out
+     * after Nms" stderr it already handles. The callback contract turns it
+     * on because a hook's diagnostic output is exactly what an operator
+     * needs when the hook is the thing that hung.
+     */
+    captureOutputOnTimeout?: boolean;
   },
 ): Promise<Result<SubprocessResult>> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_SUBPROCESS_TIMEOUT_MS;
@@ -108,13 +118,19 @@ export async function runWithTimeout(
         "timeout",
         `Subprocess timed out after ${timeoutMs}ms: ${cmdStr}`,
       );
+      const decode = (bytes: Uint8Array | null) =>
+        bytes ? new TextDecoder().decode(bytes).trim() : "";
+      const timedOutStderr = `Timed out after ${timeoutMs}ms`;
+      const captured = options?.captureOutputOnTimeout
+        ? decode(output.stderr)
+        : "";
       return {
         ok: true,
         value: {
           success: false,
           code: 124,
-          stdout: "",
-          stderr: `Timed out after ${timeoutMs}ms`,
+          stdout: options?.captureOutputOnTimeout ? decode(output.stdout) : "",
+          stderr: captured ? `${timedOutStderr}\n${captured}` : timedOutStderr,
           timedOut: true,
         },
       };

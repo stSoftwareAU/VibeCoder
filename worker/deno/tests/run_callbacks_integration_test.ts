@@ -185,7 +185,8 @@ Deno.test({
           "success.sh",
           // `exec` so the timeout's SIGTERM lands on the sleeping process
           // itself; a forked child would outlive the shell holding the pipes.
-          `echo "success" >> "${dir}/evidence.txt"\nexec sleep 30`,
+          `echo "success" >> "${dir}/evidence.txt"\n` +
+            `printf "still working"\nexec sleep 30`,
         ),
         always: await writeHook(
           dir,
@@ -200,6 +201,10 @@ Deno.test({
       assertEquals(await evidence(dir), ["success", "always"]);
       assertEquals(invocations[0]?.status, "timed_out");
       assertEquals(invocations[0]?.exitCode, 124);
+      // What the hook printed before the kill survives, alongside the
+      // timeout marker — the hung hook is the one whose output matters.
+      assert(invocations[0]!.stderr.includes("Timed out after"));
+      assertEquals(invocations[0]?.stdout, "still working");
       assertEquals(invocations[1]?.status, "ok");
     });
   },

@@ -408,6 +408,7 @@ only a decoded *credential shape* is masked.
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
 | Question-failure comment | `worker/deno/lib/label_question_failure.ts` | |
+| Post-run callback stdout/stderr capture | `worker/deno/lib/run_callbacks.ts` | [#806](https://github.com/stSoftwareAU/VibeCoder/issues/806) |
 
 ```mermaid
 flowchart LR

@@ -1996,13 +1996,20 @@ flowchart LR
 
 - The configured path is executed **directly** — no shell, no `sh -c`, no
   arguments — so no issue or repository text can be parsed as a command.
-- Paths must be **absolute**. A relative path is rejected at config load, in
-  both native and container modes, because the worker's working directory
-  changes between runs.
+- Paths must be **absolute** and POSIX. A relative path is rejected at config
+  load, because the worker's working directory changes between runs.
+- The path is resolved on the filesystem the **worker process** sees. The
+  worker runs inside the container ([Run Mode](#-run-mode) has one member), so
+  the hook must exist at that absolute path **inside the container** — a host
+  path that is not mounted in is not visible to it.
 - Every hook is bounded by `timeout_seconds` (default `60`, maximum `3600`);
-  a hook that exceeds it is terminated and recorded as `timed_out`.
+  a hook that exceeds it is terminated with `SIGTERM` and recorded as
+  `timed_out` with exit code `124`. A hook that ignores `SIGTERM`, or that
+  forks a child holding its output pipes, can outlive that signal — write
+  hooks that terminate on it.
 - stdout, stderr, the exit code and the duration are captured, redacted and
-  logged. Streams are truncated to 4000 characters each.
+  logged — including whatever a timed-out hook printed before it was killed.
+  Streams are truncated to 4000 characters each.
 - **A callback failure never rewrites the run's own result.** It is reported
   loudly and the VibeCoder outcome stands.
 - A malformed `callbacks` block fails the config load rather than leaving a

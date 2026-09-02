@@ -242,10 +242,7 @@ import {
 } from "./resume_state_store.ts";
 import { invokeRunCallbacks } from "./run_callbacks.ts";
 import { hasAnyCallback } from "./run_callbacks_config.ts";
-import {
-  agentTranscriptEnabled,
-  agentTranscriptPath,
-} from "./agent_transcript.ts";
+import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
@@ -336,6 +333,11 @@ import {
   fleetHealthCheckoutDirName,
   runFleetHealthReporting,
 } from "./fleet_health.ts";
+
+/** Home directory, in the order `agent_transcript.ts` resolves it. */
+function homeDirectory(): string | undefined {
+  return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -3043,13 +3045,25 @@ export async function createProductionRunCoreDeps(
       if (hasAnyCallback(config.callbacks)) {
         try {
           const resume = await loadResumeState(workDir, repo, issueNumber);
+          const key = `${repo}#${issueNumber}`;
+          // Set OR clear: a later claim on the same issue with no session of
+          // its own must never be handed the previous run's id, and a skip
+          // (which fires no callbacks) must not leave an entry behind.
           if (resume?.sessionId) {
-            releasedSessionIds.set(
-              `${repo}#${issueNumber}`,
-              resume.sessionId,
-            );
+            releasedSessionIds.set(key, resume.sessionId);
+          } else {
+            releasedSessionIds.delete(key);
           }
-        } catch { /* best-effort — a hook simply sees no session id */ }
+        } catch (error) {
+          // Never silent: the hook simply sees no session id, and the log
+          // says why rather than leaving an unexplained gap in the context.
+          logger.warn(
+            `Could not read the session id for ${repo}#${issueNumber}'s ` +
+              `post-run callbacks: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+          );
+        }
       }
       try {
         await libReleaseClaim(workDir, repo, issueNumber, {
@@ -3121,34 +3135,17 @@ export async function createProductionRunCoreDeps(
       const key = `${run.repo}#${run.issueNumber}`;
       const sessionId = releasedSessionIds.get(key);
       releasedSessionIds.delete(key);
-      const transcriptPath = agentTranscriptEnabled()
-        ? agentTranscriptPath(
-          `${Deno.env.get("HOME") ?? ""}/logs`,
-          getRunId(),
-          run.issueNumber,
-        )
-        : undefined;
       await invokeRunCallbacks({
         callbacks: config.callbacks,
-        context: {
+        context: buildIssueRunCallbackContext(run, {
           runId: getRunId(),
-          result: run.result,
-          repository: run.repo,
-          issueNumber: run.issueNumber,
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
           ...(config.agentProvider ? { provider: config.agentProvider } : {}),
           ...(sessionId ? { sessionId } : {}),
-          ...(transcriptPath ? { sessionLogPath: transcriptPath } : {}),
-          startedAt: new Date(run.startedAtEpochMs).toISOString(),
-          finishedAt: new Date(run.finishedAtEpochMs).toISOString(),
-          durationSeconds: Math.max(
-            0,
-            Math.round((run.finishedAtEpochMs - run.startedAtEpochMs) / 1000),
-          ),
-          exitCode: run.result === "success" ? 0 : 1,
-          ...(run.telemetry ? { telemetry: run.telemetry } : {}),
-        },
+          // Same fallback order the transcript writer itself uses.
+          ...(homeDirectory() ? { home: homeDirectory()! } : {}),
+        }),
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
       });

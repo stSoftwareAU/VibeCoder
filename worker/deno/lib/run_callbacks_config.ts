@@ -24,13 +24,17 @@
  * exists to make impossible: the fleet's health and archival reporting hangs
  * off it, so "no explicit failure" must never pass for "the hook ran".
  *
- * ## Path rules — absolute only, in every mode
+ * ## Path rules — absolute, on the worker's own filesystem
  *
  * A hook is an **executable path**, never a shell command string, and it must
  * be **absolute**. Relative paths are rejected rather than resolved: the
- * worker's working directory differs between the native and container modes
- * (and moves again per repository checkout), so a relative hook would resolve
- * differently run to run. One rule, identical in both modes.
+ * worker's working directory moves per repository checkout, so a relative
+ * hook would resolve differently run to run.
+ *
+ * The path is resolved on the filesystem the **worker process** sees. The
+ * worker runs inside the container (`run_mode` has one member), so a hook
+ * must be present at that absolute path inside the container — a host path
+ * that is not mounted in is not visible to it.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -86,13 +90,9 @@ function show(value: unknown): string {
   return String(value);
 }
 
-/**
- * Absolute-path test covering both POSIX (`/opt/hooks/x.sh`) and Windows
- * drive-absolute (`C:\hooks\x.cmd`) forms, so a Windows operator is not
- * forced into a path shape their platform cannot express.
- */
+/** POSIX absolute path — the only shape the container's filesystem uses. */
 function isAbsolutePath(path: string): boolean {
-  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+  return path.startsWith("/");
 }
 
 /** Validate one hook path, returning the trimmed value or an error message. */
@@ -123,10 +123,10 @@ function parseHookPath(
     return {
       ok: false,
       error:
-        `${field} must be an absolute path (got ${
+        `${field} must be an absolute path on the worker's filesystem (got ${
           show(path)
-        }); relative paths are rejected in both native and container modes ` +
-        `because the worker's working directory changes between runs`,
+        }); a relative path is rejected because the worker's working ` +
+        `directory changes between runs`,
     };
   }
   return { ok: true, value: path };

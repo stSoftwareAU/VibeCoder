@@ -9,8 +9,10 @@ import { loadConfig } from "../lib/config.ts";
 import {
   DEFAULT_CALLBACK_TIMEOUT_SECONDS,
 } from "../lib/run_callbacks_config.ts";
-import { KNOWN_CONFIG_KEYS } from "../lib/config_unknown_keys.ts";
-import { detectUnknownConfigKeys } from "../lib/config_unknown_keys.ts";
+import {
+  detectUnknownConfigKeys,
+  KNOWN_CONFIG_KEYS,
+} from "../lib/config_unknown_keys.ts";
 
 async function withConfig(
   body: (

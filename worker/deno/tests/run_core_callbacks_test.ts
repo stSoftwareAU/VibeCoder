@@ -383,3 +383,54 @@ Deno.test("run_core callbacks - a deps wiring without the hook still runs the lo
 
   assertEquals(processed, 1);
 });
+
+Deno.test("run_core callbacks - a throw after the run reported does not repeat the callbacks", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  let firstFailure = true;
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: { success: false } });
+    },
+    // Thrown *after* runSlotIssue released and reported the failed run, so
+    // the slot catch reaches the dispatch a second time for the same claim.
+    sleep: (ms?: number) => {
+      if (firstFailure) {
+        firstFailure = false;
+        throw new Error("settle sleep exploded after the release");
+      }
+      return time.sleep(ms);
+    },
+  });
+
+  await runCycle(deps, 2);
+
+  assertEquals(runs.map(key), ["o/a#1:failure"]);
+});
+
+Deno.test("run_core callbacks - a throw before the run starts reports nothing", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    // Thrown inside runSlotIssue *before* processIssue is entered: the
+    // claim never ran, so it is an unclaimed cycle, not a failed run.
+    setStatusWorking: () => {
+      throw new Error("status write exploded before the run started");
+    },
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runCycle(deps, 2);
+
+  assertEquals(runs, []);
+});

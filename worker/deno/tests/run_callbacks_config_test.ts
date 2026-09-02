@@ -82,11 +82,9 @@ Deno.test("run_callbacks_config - a home-relative path is rejected", () => {
   assert(error({ always: "~/hooks/always.sh" }).includes("absolute"));
 });
 
-Deno.test("run_callbacks_config - a Windows drive-absolute path is accepted", () => {
-  assertEquals(
-    parsed({ success: "C:\\hooks\\success.cmd" }).success,
-    "C:\\hooks\\success.cmd",
-  );
+Deno.test("run_callbacks_config - a non-POSIX absolute path is rejected", () => {
+  // The worker runs inside the container, whose filesystem is POSIX.
+  assert(error({ success: "C:\\hooks\\success.cmd" }).includes("absolute"));
 });
 
 Deno.test("run_callbacks_config - an empty or blank path is rejected", () => {

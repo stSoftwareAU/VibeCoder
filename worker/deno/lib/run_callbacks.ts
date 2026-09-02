@@ -185,8 +185,11 @@ export interface InvokeRunCallbacksOptions {
    */
   writeContextFile?: (
     document: Record<string, unknown>,
-  ) => Promise<{ path: string; cleanup: () => Promise<void> }>;
+  ) => Promise<{ path: string; cleanup: (warn: Warn) => Promise<void> }>;
 }
+
+/** Sink for a fault that is worth saying out loud but must not stop a hook. */
+type Warn = (message: string) => void;
 
 /** Read an environment variable, tolerating a denied `--allow-env`. */
 function readEnvSafe(name: string): string | undefined {
@@ -298,7 +301,7 @@ function captureStream(raw: string): string {
 /** Default context-file writer: a 0600 temp file, removed after the hook. */
 async function writeTempContextFile(
   document: Record<string, unknown>,
-): Promise<{ path: string; cleanup: () => Promise<void> }> {
+): Promise<{ path: string; cleanup: (warn: Warn) => Promise<void> }> {
   const path = await Deno.makeTempFile({
     prefix: "vibecoder-callback-",
     suffix: ".json",
@@ -306,11 +309,19 @@ async function writeTempContextFile(
   await Deno.writeTextFile(path, `${JSON.stringify(document, null, 2)}\n`);
   return {
     path,
-    cleanup: async () => {
+    cleanup: async (warn: Warn) => {
       try {
         await Deno.remove(path);
-      } catch {
-        // The hook may have moved or removed it; nothing to reconcile.
+      } catch (error) {
+        // A hook that moved the file leaves nothing to remove; anything else
+        // leaks a context file per invocation, so say so rather than let it
+        // accumulate unremarked.
+        if (error instanceof Deno.errors.NotFound) return;
+        warn(
+          `Callback context file ${path} could not be removed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
     },
   };
@@ -334,7 +345,7 @@ async function invokeOne(
   const writeContextFile = options.writeContextFile ?? writeTempContextFile;
   const startedMs = now();
 
-  let cleanup: (() => Promise<void>) | undefined;
+  let cleanup: ((warn: Warn) => Promise<void>) | undefined;
   try {
     const file = await writeContextFile(
       buildCallbackContextDocument(options.context, event),
@@ -344,6 +355,9 @@ async function invokeOne(
     // untrusted issue or repository text can be parsed as a command.
     const result = await run(path, [], {
       timeoutMs: options.callbacks.timeoutSeconds * 1000,
+      // A hook that hung is exactly the one whose output matters, so what it
+      // printed before the kill is captured rather than discarded.
+      captureOutputOnTimeout: true,
       env: buildCallbackEnv(
         options.context,
         event,
@@ -390,7 +404,7 @@ async function invokeOne(
       durationMs: now() - startedMs,
     };
   } finally {
-    if (cleanup) await cleanup();
+    if (cleanup) await cleanup(options.logError);
   }
 }
 
