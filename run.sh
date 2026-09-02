@@ -445,6 +445,9 @@ ensure_dirs=()
 volume_names=()
 init_args=()
 volume_remove_args=()
+claim_floor_gb=""
+claim_floor_percent=""
+claim_floor_origin=""
 exists_args=()
 build_args=()
 builder_stop_args=()
@@ -463,6 +466,9 @@ while IFS= read -r -d '' token; do
     volume) volume_names+=("${value}") ;;
     init) init_args+=("${value}") ;;
     volume-remove) volume_remove_args+=("${value}") ;;
+    claim-floor-gb) claim_floor_gb="${value}" ;;
+    claim-floor-percent) claim_floor_percent="${value}" ;;
+    claim-floor-origin) claim_floor_origin="${value}" ;;
     exists) exists_args+=("${value}") ;;
     build) build_args+=("${value}") ;;
     builder-stop) builder_stop_args+=("${value}") ;;
@@ -478,7 +484,8 @@ done <"${PLAN_FILE}"
 if [[ -z "${RUNTIME}" || -z "${IMAGE}" ]] || [[ ${#run_args[@]} -eq 0 ]] ||
   [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
   [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]] ||
-  [[ ${#volume_remove_args[@]} -eq 0 ]]; then
+  [[ ${#volume_remove_args[@]} -eq 0 ]] ||
+  [[ -z "${claim_floor_gb}" ]] || [[ -z "${claim_floor_percent}" ]]; then
   echo "Error: incomplete container launch plan - refusing to launch" >&2
   exit 1
 fi
@@ -896,19 +903,32 @@ host_disk_field_kb() {
     awk -v f="$1" 'NR>1 {v=$(NF-f)} END {print v}'
 }
 
-# The floor the worker stops claiming at, in kilobytes: the larger of
-# VIBE_HOST_DISK_LOW_FLOOR_GB and VIBE_HOST_DISK_LOW_FLOOR_PERCENT of the
-# filesystem. Kept in step with DEFAULT_LOW_FLOOR_GB / DEFAULT_LOW_FLOOR_PERCENT
-# in worker/deno/lib/host_disk.ts — healing at a different floor than the
-# worker claims at would either wipe the clones early or never fire at all.
+# The floor the worker stops claiming at, in kilobytes: the larger of the two
+# terms the plan carries. The terms are resolved by `resolveDiskFloors` in
+# worker/deno/lib/host_disk.ts — `.config.json` first, then
+# VIBE_HOST_DISK_LOW_FLOOR_GB / VIBE_HOST_DISK_LOW_FLOOR_PERCENT, then the
+# defaults (Issues #289, #732) — so the launcher heals at exactly the floor
+# the worker claims at, and a floor stated in the configuration is not
+# silently ignored by the launcher because it only ever read the environment.
 claim_floor_kb() {
-  local total_kb="$1" gb="${VIBE_HOST_DISK_LOW_FLOOR_GB:-20}"
-  local pct="${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-10}" by_gb by_pct
+  local total_kb="$1" gb="${claim_floor_gb}" pct="${claim_floor_percent}"
+  local by_gb by_pct
   [[ "${gb}" =~ ^[0-9]+$ ]] || gb=20
   [[ "${pct}" =~ ^[0-9]+$ && "${pct}" -le 100 ]] || pct=10
   by_gb=$((gb * 1024 * 1024))
   by_pct=$((total_kb * pct / 100))
   if ((by_gb > by_pct)); then printf '%s' "${by_gb}"; else printf '%s' "${by_pct}"; fi
+}
+
+# The floor, and where it came from, for a message an operator can act on.
+# A refused claim that names only a number leaves the reader to guess which
+# knob would move it (Issue #732).
+claim_floor_detail() {
+  local total_kb="$1" floor_kb
+  floor_kb="$(claim_floor_kb "${total_kb}")"
+  printf 'floor %s MB (larger of %s GB and %s%% of %s MB; %s)' \
+    "$((floor_kb / 1024))" "${claim_floor_gb}" "${claim_floor_percent}" \
+    "$((total_kb / 1024))" "${claim_floor_origin:-unknown}"
 }
 
 # Kilobytes the runtime's store holds for a named volume; non-zero when the
@@ -937,10 +957,13 @@ heal_untrimmable_volumes() {
     return 0
   fi
   floor_kb="$(claim_floor_kb "${total_kb}")"
+  local floor_detail
+  floor_detail="$(claim_floor_detail "${total_kb}")"
   if ((avail_kb >= floor_kb)); then
-    log_run_core "work-volume: trim refused for ${trim_refused_volumes[*]}; $((avail_kb / 1024)) MB free is above the $((floor_kb / 1024)) MB claiming floor - the image is ratcheting but the host is not short (Issue #478)"
+    log_run_core "work-volume: trim refused for ${trim_refused_volumes[*]}; $((avail_kb / 1024)) MB free is above the claiming ${floor_detail} - the image is ratcheting but the host is not short (Issue #478)"
     return 0
   fi
+  log_run_core "host-disk: $((avail_kb / 1024)) MB free on ${disk_gate_path} is below the claiming ${floor_detail} (Issues #226, #732)"
 
   local now last interval_hours
   now="$(date +%s)"
@@ -1029,7 +1052,12 @@ if [[ "${disk_avail_kb}" =~ ^[0-9]+$ && "${disk_hard_floor_gb}" =~ ^[0-9]+$ ]]; 
     log_run_core "host-disk: refused launch - $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} is below the ${disk_hard_floor_gb} GB hard floor (Issue #226)${trim_refusal_note}"
     exit 1
   fi
-  log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}${trim_refusal_note}"
+  disk_total_kb="$(host_disk_field_kb 4)"
+  if [[ "${disk_total_kb}" =~ ^[1-9][0-9]*$ ]]; then
+    log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}; claiming $(claim_floor_detail "${disk_total_kb}")${trim_refusal_note}"
+  else
+    log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}${trim_refusal_note}"
+  fi
 fi
 
 # Exit status this launcher reports after reaping a wedged container - a named

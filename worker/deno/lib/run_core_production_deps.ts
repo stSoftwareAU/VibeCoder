@@ -497,6 +497,17 @@ export async function createProductionRunCoreDeps(
   const hostDisk = new HostDiskMonitor({
     workDir,
     log: (message: string) => logger.info(message),
+    // Issue #732: the floor this deployment states, so the worker claims at
+    // the floor the launcher heals at — `.config.json` first, then the
+    // environment override, then the default.
+    floors: {
+      ...(config.hostDiskLowFloorGb === undefined
+        ? {}
+        : { hostDiskLowFloorGb: config.hostDiskLowFloorGb }),
+      ...(config.hostDiskLowFloorPercent === undefined
+        ? {}
+        : { hostDiskLowFloorPercent: config.hostDiskLowFloorPercent }),
+    },
   });
   // Work-volume standing totals (Issues #244, #345): one shared reading feeds
   // the log line, the feature report and the fleet-health payload, so a probe

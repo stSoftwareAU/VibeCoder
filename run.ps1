@@ -350,6 +350,12 @@ $EnsureDirs = [System.Collections.Generic.List[string]]::new()
 $VolumeNames = [System.Collections.Generic.List[string]]::new()
 $InitArgs = [System.Collections.Generic.List[string]]::new()
 $VolumeRemoveArgs = [System.Collections.Generic.List[string]]::new()
+# Issue #732: the claiming floor rides the plan so both launchers and the
+# worker agree on it. Windows has no counterpart to the low-disk heal, so
+# these are parsed and carried rather than acted on here.
+$ClaimFloorGb = ""
+$ClaimFloorPercent = ""
+$ClaimFloorOrigin = ""
 $ExistsArgs = [System.Collections.Generic.List[string]]::new()
 $BuildArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderStopArgs = [System.Collections.Generic.List[string]]::new()
@@ -407,6 +413,9 @@ try {
             "volume" { $VolumeNames.Add($value) }
             "init" { $InitArgs.Add($value) }
             "volume-remove" { $VolumeRemoveArgs.Add($value) }
+            "claim-floor-gb" { $ClaimFloorGb = $value }
+            "claim-floor-percent" { $ClaimFloorPercent = $value }
+            "claim-floor-origin" { $ClaimFloorOrigin = $value }
             "exists" { $ExistsArgs.Add($value) }
             "build" { $BuildArgs.Add($value) }
             "builder-stop" { $BuilderStopArgs.Add($value) }

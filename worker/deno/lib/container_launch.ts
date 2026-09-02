@@ -170,6 +170,12 @@ export interface ContainerLaunchInputs {
   /** Resolved host paths. */
   hostPaths: ContainerLaunchHostPaths;
   /**
+   * The claiming floor this deployment states (Issue #732). Omitted → the
+   * environment overrides and then the defaults, which is what every host had
+   * before the floor was configurable.
+   */
+  claimFloors?: DiskFloors;
+  /**
    * Path of the Containerfile the build reads (Issue #4393). The launcher
    * passes a comment-stripped copy it wrote beside the plan file, so the
    * committed `container/Containerfile` can carry its comments past Apple
@@ -366,6 +372,20 @@ export interface ContainerLaunchPlan {
    * was still taken.
    */
   volumeRemoveArgs: string[];
+  /**
+   * The claiming floor the launcher's own disk decisions use (Issue #732):
+   * the gigabyte term, the percentage term, and where each came from.
+   *
+   * Resolved here — where the deployment's `.config.json` can be read —
+   * rather than in `run.sh`, which had the two environment variables and
+   * nothing else. On a 1.875 TB filesystem the 10 % default term is ≈ 187 GB,
+   * so a host with 37.5 GB free was judged low and refused work; the default
+   * formula is unchanged, but a deployment can now state its own.
+   */
+  claimFloorGb: number;
+  claimFloorPercent: number;
+  /** Where each floor term came from, e.g. `gb=env,percent=config`. */
+  claimFloorOrigin: string;
   /** Arguments that report whether the image is already present. */
   imageInspectArgs: string[];
   /** Arguments that build the image. */
@@ -551,6 +571,11 @@ import {
   pathStyleFor,
 } from "./host_path_style.ts";
 import { resolveHostConfigPath } from "./host_config_path.ts";
+import {
+  diskFloorOrigin,
+  type DiskFloors,
+  resolveDiskFloors,
+} from "./host_disk.ts";
 
 export { type LauncherPathStyle, pathStyleFor };
 
@@ -1071,6 +1096,12 @@ export function buildContainerLaunchPlan(
   }
   buildArgs.push(joinPath(base, "container", style));
 
+  // The floor the launcher's own disk decisions compare against, and where
+  // each term came from, so `run.sh` names the number that refused a launch
+  // instead of recomputing it from two environment variables (Issue #732).
+  const floors = inputs.claimFloors ??
+    resolveDiskFloors((name) => Deno.env.get(name));
+
   return {
     runtime: descriptor.executable,
     image,
@@ -1089,6 +1120,9 @@ export function buildContainerLaunchPlan(
     volumes: volumeMounts.map((mount) => mount.source),
     initArgs,
     volumeRemoveArgs: [...dialect.volumeRemoveArgs],
+    claimFloorGb: floors.lowFloorGb,
+    claimFloorPercent: floors.lowFloorPercent,
+    claimFloorOrigin: diskFloorOrigin(floors),
     imageInspectArgs: [...dialect.imageInspectArgs, image],
     buildArgs,
     builderStopArgs: [...dialect.builderStopArgs],
@@ -1124,6 +1158,10 @@ export interface ParsedContainerLaunchPlan {
   init: string[];
   /** The runtime's own "remove one volume" verb (Issue #731). */
   volumeRemove: string[];
+  /** The claiming floor's terms and their origin (Issue #732). */
+  claimFloorGb: string;
+  claimFloorPercent: string;
+  claimFloorOrigin: string;
   exists: string[];
   build: string[];
   run: string[];
@@ -1150,6 +1188,9 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.volumes.map((name) => `volume=${name}`),
     ...plan.initArgs.map((arg) => `init=${arg}`),
     ...plan.volumeRemoveArgs.map((arg) => `volume-remove=${arg}`),
+    `claim-floor-gb=${plan.claimFloorGb}`,
+    `claim-floor-percent=${plan.claimFloorPercent}`,
+    `claim-floor-origin=${plan.claimFloorOrigin}`,
     ...plan.imageInspectArgs.map((arg) => `exists=${arg}`),
     ...plan.buildArgs.map((arg) => `build=${arg}`),
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
@@ -1191,6 +1232,9 @@ export function parseContainerLaunchPlanText(
     volume: [],
     init: [],
     volumeRemove: [],
+    claimFloorGb: "",
+    claimFloorPercent: "",
+    claimFloorOrigin: "",
     exists: [],
     build: [],
     run: [],
@@ -1228,6 +1272,15 @@ export function parseContainerLaunchPlanText(
         break;
       case "volume-remove":
         parsed.volumeRemove.push(value);
+        break;
+      case "claim-floor-gb":
+        parsed.claimFloorGb = value;
+        break;
+      case "claim-floor-percent":
+        parsed.claimFloorPercent = value;
+        break;
+      case "claim-floor-origin":
+        parsed.claimFloorOrigin = value;
         break;
       case "exists":
         parsed.exists.push(value);

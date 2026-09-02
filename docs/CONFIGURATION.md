@@ -1808,11 +1808,54 @@ operational purposes:
 | ------------------------------- | -------------- | ------------------------------------------------------------- |
 | `CONFIG_FILE`                   | `<checkout>/.config.json` | Path to the configuration file, for setup and the launcher alike. `CONFIG_PATH` is accepted as an alias (the launcher's older spelling); a relative value resolves against the checkout, and setting both to different files is refused rather than silently resolved two ways — see [One config file, one name](#one-config-file-one-name-issue-750) |
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
+| `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
+| `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
 | `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
 | `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
 | `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
 | `WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES` | `2147483648` (2 GiB) | Cap on a side/data clone's `.git`; over it the clone is dropped even while warm, because each blobless refresh leaves a tree of blobs git will not prune (`0` disables) — see [A warm clone's object store is capped too](CONTAINER.md#a-warm-clones-object-store-is-capped-too-issue-387) |
+
+### The claiming floor (Issue #732)
+
+The worker stops claiming new work when the filesystem holding the container
+store falls below a floor. The floor is the **larger** of two terms:
+
+| Term | `.config.json` key | Environment variable | Default |
+| --- | --- | --- | --- |
+| Gigabytes | `host_disk_low_floor_gb` | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` |
+| Percentage of the filesystem | `host_disk_low_floor_percent` | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` |
+
+**Precedence, per term:** the `.config.json` key wins, then the environment
+variable, then the default — the rule Issue #289 set for every other knob. The
+terms resolve independently, so a deployment may pin the percentage in its
+configuration and still raise the gigabyte term for one launch from the
+environment. A value that is negative, not a number, or (for the percentage)
+over 100 is ignored and the next source applies.
+
+The default formula is unchanged, and it is worth knowing what it does on a
+large disk: 10 % of a 1.875 TB filesystem is ≈ 187 GB, so such a host is
+"low" with 37.5 GB free and refuses work. That is the reported case, and the
+answer is to state the floor the host actually wants:
+
+```json
+{
+  "host_disk_low_floor_gb": 20,
+  "host_disk_low_floor_percent": 1
+}
+```
+
+The launcher names the resolved floor and its origin on every launch, so a
+refused claim says which number refused it and which knob would move it:
+
+```
+host-disk: 38400 MB free on /var/lib/containers; claiming floor 20480 MB
+(larger of 20 GB and 1% of 1966080 MB; gb=config,percent=config)
+```
+
+The same resolution feeds the launcher's low-disk self-heal and the worker's
+own claim gate — they ride the launch plan together — so the two can never
+heal at one floor and claim at another.
 
 ### One config file, one name (Issue #750)
 

@@ -1186,3 +1186,29 @@ Deno.test("renderContainerLaunchPlan - the launchers receive the removal verb (I
   const parsed = parseContainerLaunchPlanText(renderContainerLaunchPlan(plan));
   assertEquals(parsed.volumeRemove, ["volume", "rm"]);
 });
+
+// --- The claiming floor rides the plan (Issue #732) ------------------------
+
+Deno.test("buildContainerLaunchPlan - carries the claiming floor and its origin (Issue #732)", () => {
+  // `run.sh` resolved the floor from two environment variables and nothing
+  // else, so a floor stated in `.config.json` was honoured by the worker and
+  // ignored by the launcher's own disk decisions.
+  const plan = buildContainerLaunchPlan(
+    inputs({
+      claimFloors: {
+        lowFloorGb: 20,
+        lowFloorPercent: 1,
+        lowFloorGbSource: "config",
+        lowFloorPercentSource: "env",
+      },
+    }),
+  );
+  assertEquals(plan.claimFloorGb, 20);
+  assertEquals(plan.claimFloorPercent, 1);
+  assertEquals(plan.claimFloorOrigin, "gb=config,percent=env");
+
+  const parsed = parseContainerLaunchPlanText(renderContainerLaunchPlan(plan));
+  assertEquals(parsed.claimFloorGb, "20");
+  assertEquals(parsed.claimFloorPercent, "1");
+  assertEquals(parsed.claimFloorOrigin, "gb=config,percent=env");
+});
