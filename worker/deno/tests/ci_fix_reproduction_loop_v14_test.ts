@@ -37,15 +37,25 @@ function lower(text: string): string {
 
 // --- Version resolution ---
 
-Deno.test("ci_fix v14 - is the version the worker resolves", async () => {
+Deno.test("ci_fix v14 - is the version this contract entered at", async () => {
+  // Issue #778 minted v15 (the narration clause), so v14 is no longer what
+  // the worker resolves. What this file pins is the contract v14 introduced,
+  // and that contract must survive every later version — so the resolution
+  // check is now "v14 or newer", and the contract assertions below run
+  // against v14 (immutable) with `ci_fix_narration_test` holding the latest.
   const latest = await getLatestVersion("ci_fix", PROMPTS_DIR);
   assertEquals(latest.ok, true);
   if (!latest.ok) return;
-  assertEquals(latest.value, "v14");
+  const version = parseInt(latest.value.replace("v", ""), 10);
+  assertEquals(
+    version >= 14,
+    true,
+    `Expected ci_fix >= v14, got ${latest.value}`,
+  );
 
   const [byName, byVersion] = await Promise.all([
     loadPrompt("ci_fix", undefined, PROMPTS_DIR),
-    loadPrompt("ci_fix", "v14", PROMPTS_DIR),
+    loadPrompt("ci_fix", latest.value, PROMPTS_DIR),
   ]);
   assertEquals(byName.ok, true);
   assertEquals(byVersion.ok, true);

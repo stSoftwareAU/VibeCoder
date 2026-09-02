@@ -136,7 +136,7 @@ Candidates that survived the sweep but not verification. Recorded so the next
 audit does not re-derive them, with what would settle each.
 
 - **`ci_fix` may raise a timeout "with justification"; the guidelines say "do
-  not raise the timeout"** — `prompts/ci_fix/v14.md:15` vs
+  not raise the timeout"** — `prompts/ci_fix/v14.md:15` vs <!-- pinned: this audit records what the versions read at the time it was taken; v15 landed with Issue #778 -->
   `prompts/coding_guidelines/v42.md:453`. Not filed because the two plausibly
   name different knobs: `v42`'s rule is about the unit-test speed budget,
   `ci_fix`'s `timing` category can mean a job-level `timeout-minutes`. Neither
