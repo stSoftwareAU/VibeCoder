@@ -587,7 +587,8 @@ export function buildPlanningSummaryComment(
  * model could ignore because it carried no rationale. This mirrors the strong
  * wording in `prompts/coding_guidelines/`: it names that the worker account is
  * not on the trusted-author allowlist, that a reserved label it adds to an
- * existing issue is stripped by the `label_security` check (Issue #1344), the
+ * existing issue is silently stripped by the `label_security` check
+ * (Issue #1344), the
  * canonical pickup-priority order, and that `idle-task` is the only
  * self-appliable label.
  *
@@ -603,7 +604,8 @@ export const RESERVED_LABEL_PROHIBITION =
   "`planning`, `question`, `best-model`, " +
   "`needs-failure-detection-repair`): the worker account is not on the " +
   "trusted-author allowlist, so any reserved label it adds to an existing " +
-  "issue is stripped by the `label_security` check (Issue #1344). Do not add " +
+  "issue is silently stripped by the `label_security` check (Issue #1344). " +
+  "Do not add " +
   "`needs-human` to a sub-issue either: every reserved label on an issue the " +
   "planner files is removed after creation (Issue #780), so it would not " +
   "survive — say it in the plan instead. " +

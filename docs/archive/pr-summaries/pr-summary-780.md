@@ -147,6 +147,18 @@ reviewer sub-agents.
   label-policy bullet names `needs-human` and `label_security` stripping in one
   breath, which is the exact ambiguity being removed — and Step 5b's whole
   hand-off depends on the carve-out. The drift test found it
+- **unrequested** — three test files were adjusted, all found by CI rather
+  than by the affected-subset run here — evidence:
+  `issue_prompt_v39_independent_review_test.ts` (an exact `latest === "v39"`
+  pin that `issue/v40` makes false; relaxed to "v39 or newer" exactly as #778
+  did for `ci_fix`, with every contract assertion untouched), and
+  `reserved_label_warning_v2826_test.ts`'s two `states reserved labels are
+  silently stripped` cases — reason: the second pair was **my** wording error,
+  not a stale test. The reword had dropped "silently", which is accurate for
+  the nine labels; it is restored, and only what was wrong — `needs-human`'s
+  membership and its reason — is changed. The full suite was then run
+  (16,736 passed; the 17 failures are the known pwsh-and-container-runtime
+  environment cases, unrelated)
 - **unrequested** — two documentation references — evidence:
   `docs/SPEC-KIT-COMPARISON.md:56` (now the directory-only form the standard
   prescribes) and the #762 audit's citation of `coding_guidelines/v42.md:453`
