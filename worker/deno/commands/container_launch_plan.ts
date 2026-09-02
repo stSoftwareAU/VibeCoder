@@ -46,6 +46,10 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
+import {
+  readConfiguredDiskFloors,
+  resolveDiskFloors,
+} from "../lib/host_disk.ts";
 
 /** What the command reports alongside the rendered plan. */
 export interface ContainerLaunchPlanResult {
@@ -138,6 +142,17 @@ export async function buildLaunchPlanForCommand(
   // was written.
   const { tools, specJson: containerToolsSpecJson } =
     await readContainerToolsSelection(hostPaths.configFile);
+
+  // The claiming floor, resolved where the deployment's configuration can be
+  // read (Issue #732): `.config.json` wins over the environment override,
+  // which wins over the default — the same precedence every other knob keeps
+  // (Issue #289). `run.sh` had the environment and nothing else, so a floor
+  // stated in the file would have been ignored by the launcher's own disk
+  // decisions while the worker honoured it.
+  const claimFloors = resolveDiskFloors(
+    (name) => Deno.env.get(name),
+    await readConfiguredDiskFloors(hostPaths.configFile),
+  );
 
   // The selected tools and providers are baked into the image, so they are part
   // of its identity (Issues #73, #729) — the plan must name the tag the build
@@ -244,6 +259,7 @@ export async function buildLaunchPlanForCommand(
   }
 
   const plan = buildContainerLaunchPlan({
+    claimFloors,
     descriptor,
     manifest,
     image,

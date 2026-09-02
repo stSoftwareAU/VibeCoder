@@ -1915,3 +1915,41 @@ Deno.test("run.sh - a disk reading with no refused trim says nothing about one (
     await harness.cleanup();
   }
 });
+
+// --- The launcher names the floor that refused a claim (Issue #732) --------
+
+Deno.test("run.sh - the disk reading names the claiming floor and where it came from (Issue #732)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    // A floor stated for this launch, so the origin is not "default".
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "1",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "claiming floor");
+    // The two terms, the filesystem they were taken against, and the knob
+    // that set them — so a refused claim is self-explanatory.
+    assertStringIncludes(log, "larger of 1 GB and 1% of");
+    assertStringIncludes(log, "gb=env,percent=env");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - an unconfigured host reports the default floor as default (Issue #732)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "larger of 20 GB and 10% of");
+    assertStringIncludes(log, "gb=default,percent=default");
+  } finally {
+    await harness.cleanup();
+  }
+});
