@@ -78,6 +78,15 @@ const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
 };
 
 /**
+ * How an interruption is described in prose — the same vocabulary the
+ * `wip:` commit subject uses, so the commit and the handover note
+ * (Issue #769) cannot drift into naming the same cause differently.
+ */
+export function describeWipCause(cause: WipPreservationCause): string {
+  return WIP_CAUSE_PHRASE[cause];
+}
+
+/**
  * Commit message for the one-shot preservation of an interrupted execute
  * (Issue #47). Built here rather than inline at the call site so the
  * completion phase's WIP-only gate (Issue #148) recognises the same
