@@ -625,11 +625,13 @@ still counts: the census exists precisely to refute the "a `degraded-model`
 filter is hiding the work" hypothesis.
 
 Work streams are milestones, plus `""` for the default-branch stream. A stream
-is **occupied** once it hosts an open issue assigned to this worker, and the
-Priority 2 scan then refuses every sibling in it (`isMilestoneOccupied` → the
-`milestone-occupied` skip). The census applies the same gate and reports the
-excluded siblings as `stream_occupied=<n>`, alongside `pr_blocked=<n>`, so both
-deferrals stay observable without inflating the inversion signal ():
+is **occupied** once it hosts an open issue assigned to any account the scan
+honours — this worker or an `allowed_authors` entry — and the Priority 2 scan
+then refuses every sibling in it (`isMilestoneOccupied` → the
+`milestone-occupied` skip). The census applies the same gate **over the same
+account set** and reports the excluded siblings as `stream_occupied=<n>`,
+alongside `pr_blocked=<n>`, so both deferrals stay observable without inflating
+the inversion signal:
 
 ```mermaid
 flowchart LR
@@ -658,6 +660,18 @@ in-flight claim counted as claimable. `stSoftwareAU/NEAT-AI` logged
 `milestone-occupied=4` and the audit logged `claimable=0 reason=stream_occupied`
 — the scan was right, and the false signal both suppressed the idle-task filer
 and escalated to a filed issue.
+
+The account set was narrower here than in the scan until Issue #753: the census
+counted only *this worker's* assignments, so a stream held by a human read as
+claimable here and as `milestone-occupied` there. On `stSoftwareAU/VibeCoder` a
+human took two unmilestoned issues, which occupied the default-branch stream for
+the scan, and the census then reported `work_on=3 inversion_signal=true` for
+three consecutive cycles and filed an issue whose "one of them is wrong" was
+answered by "neither". The narrow set had been justified as keeping a sibling
+host's claim from silencing this host's signal; it does not survive the rule
+this instrument applies — `milestone-occupied` is declared `self`-clearing in
+`skip_reason_clearing.ts`, and the streak escalation exists for gates that never
+clear. Work in flight, whoever holds it, is not a contradiction to report.
 
 The **merged-PR** gate closes the same hole for the one deferral that never
 clears by itself. Since Issue #3151 a merged fleet PR naming issue `#N` makes
