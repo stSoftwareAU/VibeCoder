@@ -17,6 +17,7 @@ import type { GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
+import type { PreservedWip } from "./preserved_wip_branch.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -136,6 +137,13 @@ export interface PhaseState {
    */
   prUrl?: string;
   prNumber?: number;
+  /**
+   * Where an interrupted run's work was preserved (Issue #770). Set by
+   * `preserveRunWip` only when the work is genuinely on the pushed branch, and
+   * read at claim release so the comment names that branch (and the handover
+   * file on it) instead of a generic "WIP preserved".
+   */
+  preservedWip?: PreservedWip;
   /**
    * Short facts to state on the claim-release comment (Issue #210) —
    * currently a follow-up reference the agent named that does not exist.

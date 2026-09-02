@@ -879,6 +879,21 @@ claim resumes the branch. If you see "Claude ran out of time" instead, the run
 really did exhaust its own `claude_timeout` — that is the case worth
 re-scoping.
 
+When the run preserved work, the comment also names **where** (Issue #770):
+
+```text
+**Work in progress:** branch `issue-770-name-the-preserved-branch` holds the
+work in progress; the next claim resumes from it. Handover:
+[docs/archive/handover/issue-770.md](https://github.com/…).
+```
+
+The branch named is always the branch the push targeted — the resumed branch
+when a re-claim adopted one, never a name derived from the current title, so
+retitling an issue mid-flight cannot send you to a ref that does not exist. The
+handover link appears only when that file is committed on the branch
+(Issue #769); without it the line still names the branch. A run that preserved
+nothing names no branch at all.
+
 ## 🎞️ Capturing a full agent transcript
 
 The default observability for a long agent phase is the periodic
