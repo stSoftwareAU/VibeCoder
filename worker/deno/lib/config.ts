@@ -31,6 +31,10 @@ import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
+import {
+  assertCallbacksConfig,
+  parseCallbacksConfig,
+} from "./run_callbacks_config.ts";
 import { validateUpdateModeSettings } from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
@@ -291,6 +295,14 @@ async function loadConfigFile(configPath: string): Promise<ConfigFile> {
   // naming the offending field — rather than checking out the wrong thing or
   // installing a version nobody asked for.
   const file = validated.value as ConfigFile;
+  // Issue #806 (parent #796): a malformed `callbacks` block stops the worker
+  // here. A hook the operator believes is wired, but that silently never
+  // runs, is the exact failure the contract exists to prevent.
+  const callbacks = parseCallbacksConfig(file.callbacks);
+  if (!callbacks.ok) {
+    throw new Error(`Config file ${configPath} is invalid: ${callbacks.error}`);
+  }
+
   const updateModeErrors = validateUpdateModeSettings({
     updateMode: file.update_mode,
     pinnedRef: file.pinned_ref,
@@ -897,6 +909,9 @@ export async function loadConfig(
     idleTaskTemplateWeights,
     idleTaskCadence,
     softwareMinVersions,
+    // Already validated by `loadConfigFile`; this is the trusted producer of
+    // the typed block (Issue #806).
+    callbacks: assertCallbacksConfig(file.callbacks),
     repoConfig: normaliseRepoConfigs(file.repo_config),
   };
 

@@ -40,9 +40,11 @@ export interface SubprocessResult {
  *
  * @param executable - The command to run (e.g., "gh", "git", "df").
  * @param args - Command-line arguments.
- * @param options - Optional settings: cwd, timeout, quiet mode. `quiet`
- *   suppresses stdout only — stderr is always piped and captured so
- *   failure diagnostics survive (Issue #1979).
+ * @param options - Optional settings: cwd, timeout, quiet mode, environment.
+ *   `quiet` suppresses stdout only — stderr is always piped and captured so
+ *   failure diagnostics survive (Issue #1979). `clearEnv` starts the child
+ *   from an empty environment so only `env` reaches it — the callback
+ *   contract's credential boundary (Issue #806).
  * @returns Result containing the subprocess output or an error.
  */
 export async function runWithTimeout(
@@ -52,6 +54,10 @@ export async function runWithTimeout(
     cwd?: string;
     timeoutMs?: number;
     quiet?: boolean;
+    /** Environment entries to set on the child. */
+    env?: Record<string, string>;
+    /** Start from an empty environment rather than inheriting the worker's. */
+    clearEnv?: boolean;
   },
 ): Promise<Result<SubprocessResult>> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_SUBPROCESS_TIMEOUT_MS;
@@ -72,6 +78,8 @@ export async function runWithTimeout(
     const command = new Deno.Command(executable, {
       args,
       cwd: options?.cwd,
+      ...(options?.env ? { env: options.env } : {}),
+      ...(options?.clearEnv ? { clearEnv: true } : {}),
       stdin: "null",
       stdout: options?.quiet ? "null" : "piped",
       // stderr is always piped + captured. Muting stderr at the OS

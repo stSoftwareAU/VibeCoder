@@ -195,6 +195,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Deployer-supplied container build-time tools (Issue #69, parent #5)
   "container_tools",
+
+  // Post-run callback hooks (Issue #806, parent #796)
+  "callbacks",
 ]);
 
 /**

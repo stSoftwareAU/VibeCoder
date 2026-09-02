@@ -7,6 +7,7 @@
 
 import type { CadencePolicy } from "./lib/idle_task_cadence.ts";
 import type { RunMode } from "./lib/run_mode.ts";
+import type { CallbacksConfig } from "./lib/run_callbacks_config.ts";
 
 /**
  * Verbosity levels for configurable response output (Issue #1330).
@@ -489,6 +490,16 @@ export interface WorkerConfig {
    * immediately, bypassing the interval gate. Default: `{ claude: "2.1.170" }`.
    */
   softwareMinVersions: Record<string, string>;
+  /**
+   * Post-run callbacks — the public extension contract (Issue #806).
+   *
+   * Optional absolute executable paths run after a terminal issue run:
+   * `success` or `failure`, then `always`. Validated by
+   * `parseCallbacksConfig()` in `lib/run_callbacks_config.ts`, which fails the
+   * config load on any fault so a hook an operator believes is wired can never
+   * silently never run.
+   */
+  callbacks: CallbacksConfig;
   /** Per-repo configuration overrides (Issue #1187) */
   repoConfig?: Record<string, RepoConfig>;
 }
@@ -1239,6 +1250,16 @@ export interface ConfigFile {
    * they fail loud on any fault rather than repairing it.
    */
   container_tools?: ContainerToolSpec[];
+  /**
+   * Post-run callback hooks (Issue #806, parent #796).
+   *
+   * Deliberately untyped here: the block arrives untrusted from the
+   * operator's file, and only `parseCallbacksConfig()` /
+   * `assertCallbacksConfig()` in `lib/run_callbacks_config.ts` may be trusted
+   * to produce a {@link CallbacksConfig}. They fail loud on any fault rather
+   * than repairing it.
+   */
+  callbacks?: unknown;
 }
 
 /**
