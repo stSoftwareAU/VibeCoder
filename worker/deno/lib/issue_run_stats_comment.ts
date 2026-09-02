@@ -52,7 +52,7 @@ import { getRunId } from "./run_id.ts";
  * so the duplicate guard suppresses a repeat post *within one run* without
  * suppressing the next run's costs (Issue #797).
  */
-export const ISSUE_RUN_STATS_MARKER_PREFIX = "<!-- vibe-issue-run-stats";
+export const ISSUE_RUN_STATS_MARKER = "<!-- vibe-issue-run-stats";
 
 /**
  * Heading every run-stats comment shares — `## <Phase> run model stats`.
@@ -81,9 +81,7 @@ export function sanitiseStatsRunId(runId: string): string {
 
 /** Build the run-scoped hidden marker for `runId`. */
 export function buildIssueRunStatsMarker(runId: string): string {
-  return `${ISSUE_RUN_STATS_MARKER_PREFIX} run="${
-    sanitiseStatsRunId(runId)
-  }" -->`;
+  return `${ISSUE_RUN_STATS_MARKER} run="${sanitiseStatsRunId(runId)}" -->`;
 }
 
 /**
@@ -212,7 +210,7 @@ export function buildIssueRunStatsComment(args: {
 /**
  * Report whether a body is a run-stats comment.
  *
- * True when any body carries the {@link ISSUE_RUN_STATS_MARKER_PREFIX} or a
+ * True when any body carries the {@link ISSUE_RUN_STATS_MARKER} or a
  * `## <Phase> run model stats` heading — the latter covers the planning-path
  * and degraded-round comments written before this module existed.
  *
@@ -221,7 +219,7 @@ export function buildIssueRunStatsComment(args: {
 export function hasIssueRunStatsComment(bodies: readonly string[]): boolean {
   return bodies.some((body) =>
     typeof body === "string" &&
-    (body.includes(ISSUE_RUN_STATS_MARKER_PREFIX) ||
+    (body.includes(ISSUE_RUN_STATS_MARKER) ||
       STATS_HEADING_PATTERN.test(body))
   );
 }

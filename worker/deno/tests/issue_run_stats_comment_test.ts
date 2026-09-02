@@ -14,7 +14,7 @@ import {
   hasIssueRunStatsComment,
   hasRunStatsCommentForRun,
   ISSUE_RUN_STATS_DISCLAIMER,
-  ISSUE_RUN_STATS_MARKER_PREFIX,
+  ISSUE_RUN_STATS_MARKER,
   postIssueRunStatsComment,
   sanitiseStatsRunId,
   tallyIssueCost,
@@ -102,7 +102,7 @@ Deno.test("buildIssueRunStatsComment - carries marker and disclaimer", () => {
     runId: "vibe-abc-123456",
   });
 
-  assertStringIncludes(body, ISSUE_RUN_STATS_MARKER_PREFIX);
+  assertStringIncludes(body, ISSUE_RUN_STATS_MARKER);
   assertStringIncludes(body, buildIssueRunStatsMarker("vibe-abc-123456"));
   assertStringIncludes(body, ISSUE_RUN_STATS_DISCLAIMER);
   assertStringIncludes(body, "not included");

@@ -18,7 +18,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
-import { ISSUE_RUN_STATS_MARKER_PREFIX } from "../lib/issue_run_stats_comment.ts";
+import { ISSUE_RUN_STATS_MARKER } from "../lib/issue_run_stats_comment.ts";
 
 // Side-effect import: register the security-scan template so its
 // title and body fingerprint are visible to the suppression check.
@@ -555,7 +555,7 @@ Deno.test(
     assertEquals((result as { reason: string }).reason, "already_complete");
     assertEquals(calls.closeIssue.length, 1);
     const stats = calls.postComment.find((c) =>
-      c.body.includes(ISSUE_RUN_STATS_MARKER_PREFIX)
+      c.body.includes(ISSUE_RUN_STATS_MARKER)
     );
     assert(stats, "expected a run-stats comment on the closed issue");
     assert(stats.body.includes("## Issue run model stats"));
@@ -580,9 +580,7 @@ Deno.test(
 
     assertEquals(calls.closeIssue.length, 1);
     assertEquals(
-      calls.postComment.filter((c) =>
-        c.body.includes(ISSUE_RUN_STATS_MARKER_PREFIX)
-      )
+      calls.postComment.filter((c) => c.body.includes(ISSUE_RUN_STATS_MARKER))
         .length,
       0,
     );

@@ -18,7 +18,7 @@ import type { GitHubClient, GitHubComment } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   buildIssueRunStatsMarker,
-  ISSUE_RUN_STATS_MARKER_PREFIX,
+  ISSUE_RUN_STATS_MARKER,
 } from "../lib/issue_run_stats_comment.ts";
 import { getRunId } from "../lib/run_id.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
@@ -126,7 +126,7 @@ function statsCommentOn(
 ): RecordedComment | undefined {
   return comments.find((c) =>
     c.issueNumber === issueNumber &&
-    c.body.includes(ISSUE_RUN_STATS_MARKER_PREFIX)
+    c.body.includes(ISSUE_RUN_STATS_MARKER)
   );
 }
 
