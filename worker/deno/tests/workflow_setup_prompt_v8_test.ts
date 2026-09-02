@@ -105,14 +105,19 @@ function pullRequestBranches(workflow: string): unknown {
 
 // --- Loading contract ---
 
-Deno.test("workflow_setup v8 - is the version the loader selects", async () => {
+Deno.test("workflow_setup v8 - is the version this contract entered at", async () => {
+  // Issue #787 minted v9 (the SHA-pinning rule loses its owner exception), so
+  // v8 is no longer the highest on disk. What this file pins is the contract
+  // v8 introduced, which every later version must keep — so the check is
+  // "v8 or newer" and the loader still takes whatever is latest.
   const latest = await getLatestVersion("workflow_setup", PROMPTS_DIR);
   assert(latest.ok, "getLatestVersion(workflow_setup) failed");
   if (!latest.ok) return;
+  const version = parseInt(latest.value.replace("v", ""), 10);
   assertEquals(
-    latest.value,
-    "v8",
-    "v8 must be the highest version on disk — the loader takes the latest",
+    version >= 8,
+    true,
+    `Expected workflow_setup >= v8, got ${latest.value}`,
   );
 });
 
