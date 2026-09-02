@@ -30,19 +30,30 @@ const loadV12 = () => loadTestAudit("v12");
 
 // --- Version resolution ---
 
-Deno.test("test_audit v12 - is the version the worker resolves", async () => {
+Deno.test("test_audit v12 - is the version this contract entered at", async () => {
+  // Issue #786 minted v13 (the ratio-assertion carve-out in check 3), so v12
+  // is no longer what the worker resolves. What this file pins is the
+  // contract v12 introduced — check 11 — and that contract must survive every
+  // later version, so the resolution check is "v12 or newer" and the
+  // comparison is against whatever is latest.
   const latest = await getLatestVersion("test_audit", PROMPTS_DIR);
   assertEquals(latest.ok, true);
   if (!latest.ok) return;
-  assertEquals(latest.value, "v12");
+  const version = parseInt(latest.value.replace("v", ""), 10);
+  assertEquals(
+    version >= 12,
+    true,
+    `Expected test_audit >= v12, got ${latest.value}`,
+  );
 
   const [byName, byVersion] = await Promise.all([
     loadPrompt("test_audit", undefined, PROMPTS_DIR),
-    loadV12(),
+    loadPrompt("test_audit", latest.value, PROMPTS_DIR),
   ]);
   assertEquals(byName.ok, true);
-  if (!byName.ok) return;
-  assertEquals(byName.value, byVersion);
+  assertEquals(byVersion.ok, true);
+  if (!byName.ok || !byVersion.ok) return;
+  assertEquals(byName.value, byVersion.value);
 });
 
 Deno.test("test_audit v12 - keeps the dedup and attribution placeholders", async () => {
