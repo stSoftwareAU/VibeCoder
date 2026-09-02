@@ -64,6 +64,31 @@ Security note: the run id is interpolated into an HTML comment, so it is
 sanitised to `[A-Za-z0-9._-]` (capped at 64 chars) before use — a malformed or
 hostile `VIBE_RUN_ID` cannot close the marker early or inject markup.
 
+### Quality gate
+
+`./quality.sh` passes every check except `deno tests`, which fails on eight test
+files unrelated to this change:
+`run_core_test.ts`, `run_core_rate_limit_resume_test.ts`,
+`service_account_env_test.ts`, `setup_credential_provisioning_test.ts`,
+`setup_lockfile_test.ts`, `setup_prerequisites_test.ts`,
+`setup_provider_credential_flow_test.ts`, `setup_workdir_reminder_test.ts`.
+They fail **identically on the base commit** `2dd5eea` in a clean worktree
+(105 passed / 67 failed there as well) — the causes are environmental in this
+container: `run_core_test.ts` dies on
+`GraphQL: API rate limit already exceeded for user ID 23146043`, and the
+`setup_*` / credential suites depend on container credential state and an
+image build. Every test file this change touches passes:
+`issue_run_stats_comment_test.ts`, `phase_run_stats_test.ts`,
+`completion_phase_run_stats_test.ts`, `grill_me_run_stats_test.ts`,
+`handle_no_changes_phase_test.ts`, `quorum_run_stats_test.ts` — 100 passed / 0
+failed.
+
+Semgrep passes. It initially failed because renaming the exported marker
+constant pulled `handle_no_changes_phase_test.ts` — whose pre-existing
+fake-credential fixtures trip `detected-github-token` — into the changed-file
+set. Keeping the constant's name (its value is now the marker prefix) leaves
+that file untouched, so no unrelated finding rides along.
+
 ## Test Plan
 
 Added to `worker/deno/tests/issue_run_stats_comment_test.ts`:
