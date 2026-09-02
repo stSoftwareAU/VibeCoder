@@ -402,9 +402,10 @@ function shortSha(sha: string): string {
  * moment that discards the work is the moment that names the way to prevent
  * it, on stderr and in `run_core.log`.
  *
- * Only an observed change speaks: a checkout that came out where it went in —
- * or whose state could not be read — returns "", so a healthy fleet does not
- * carry this line on every launch.
+ * Only an observed change speaks: a checkout that came out exactly where it
+ * went in — or whose state could not be read — returns "". A host already on
+ * the tip therefore says nothing; one that moved onto new commits says what
+ * moved, which is the same event that would have taken a local patch with it.
  *
  * @param repoDir - The checkout the update ran against
  * @param before - Its state before the update

@@ -286,7 +286,7 @@ do not survive a launch — set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly
 as it is.
 ```
 
-Set the variable for the launcher the run inherits it from:
+Set it on the launcher, which is the process that runs the update:
 
 ```bash
 VIBE_SKIP_CHECKOUT_UPDATE=1 ./run.sh     # macOS / Linux
@@ -295,9 +295,9 @@ $env:VIBE_SKIP_CHECKOUT_UPDATE = "1"; .\run.ps1    # Windows (PowerShell)
 
 The checkout is then left exactly as it is — commit, branch, uncommitted work
 and untracked files alike — and the launch says so instead of updating:
-`VIBE_SKIP_CHECKOUT_UPDATE is set: leaving <path> exactly as it is`. Any value
-other than `0`, `false`, `no` or `off` turns the update off; `VIBE_SKIP_CHECKOUT_UPDATE=0`
-leaves it running.
+`VIBE_SKIP_CHECKOUT_UPDATE is set: leaving <path> exactly as it is`. Any
+non-empty value other than `0`, `false`, `no` or `off` turns the update off;
+`VIBE_SKIP_CHECKOUT_UPDATE=0` — and an empty value — leaves it running.
 
 This is the debugging escape hatch, not a deployment setting. Once the fix is
 committed and pushed, drop the variable so the host tracks the default branch
