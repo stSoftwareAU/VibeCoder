@@ -19,13 +19,13 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { handoverNotePath } from "../lib/handover_note.ts";
+import { handoverFilePath } from "../lib/preserved_wip_branch.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const ISSUE = 732;
 const BRANCH = "issue-732-preserve-the-intent-too";
-const NOTE = handoverNotePath(ISSUE);
+const NOTE = handoverFilePath(ISSUE);
 
 /** A hard timeout: the agent's own budget expired. */
 const TIMED_OUT = {
@@ -123,8 +123,11 @@ async function runInterrupted(options: {
     await Deno.mkdir(`${repoPath}/.git`);
     if (options.blockHandover) {
       // A file where the handover directory must go: the write fails.
-      await Deno.mkdir(`${repoPath}/.github`);
-      await Deno.writeTextFile(`${repoPath}/.github/handover`, "in the way");
+      await Deno.mkdir(`${repoPath}/docs/archive`, { recursive: true });
+      await Deno.writeTextFile(
+        `${repoPath}/docs/archive/handover`,
+        "in the way",
+      );
     }
     const dirty = options.dirty ?? ["worker/deno/lib/parser.ts"];
     const deps = createMockDeps({
@@ -160,6 +163,12 @@ async function runInterrupted(options: {
           }
           if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
             return ok(`${BRANCH}\n`);
+          }
+          if (args[0] === "ls-tree") {
+            // What is in HEAD's tree: the note only if the preserving commit
+            // actually carried it (Issue #770 reads this to advertise it).
+            const path = args[args.length - 1];
+            return ok(noteAtCommit === undefined ? "" : `${path}\n`);
           }
           return ok("");
         }) as never,

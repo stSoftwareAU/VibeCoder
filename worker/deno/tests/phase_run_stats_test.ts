@@ -6,8 +6,9 @@
  *
  * These tests assert real behaviour via the shared recorder:
  *   - a `fable`-served round (expected fable) is NOT degraded → no label, and
- *     one cost/model stats comment per issue (Issue #3756 — healthy rounds used
- *     to post nothing at all);
+ *     one cost/model stats comment per run (Issue #3756 — healthy rounds used
+ *     to post nothing at all; Issue #797 — the guard is run-scoped, so an
+ *     earlier run's comment no longer hides this run's cost);
  *   - an `opus`-served round when fable is expected IS degraded → labels + posts;
  *   - the explicit pre-flight `preflightDegraded` flag IS degraded even when the
  *     served model matches the expected (fable) model;
@@ -26,6 +27,8 @@ import {
   reportPhaseDegradation,
 } from "../lib/phase_run_stats.ts";
 import { DEGRADED_MODEL_LABEL } from "../lib/planning_degraded_label.ts";
+import { buildIssueRunStatsMarker } from "../lib/issue_run_stats_comment.ts";
+import { getRunId } from "../lib/run_id.ts";
 import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
@@ -171,13 +174,15 @@ Deno.test("buildPhaseInvocations - carries the explicit pre-flight flag + reason
 });
 
 // ---------------------------------------------------------------------------
-// Healthy path — no label, but one cost/model stats comment per issue
+// Healthy path — no label, but one cost/model stats comment per run
 //
 // Behaviour change (Issue #3756): a healthy round used to report NOTHING, so
 // most issues the Vibe Coder wrapped up carried no cost indication. It now
-// posts the stats block once per issue. The `no label` half of the original
-// assertion is unchanged; the `no comment` half is deliberately replaced by
-// the one-comment-per-issue assertions below.
+// posts the stats block once per run (Issue #797 narrowed the guard from
+// per-issue to per-run, so an earlier run's comment no longer suppresses this
+// one). The `no label` half of the original assertion is unchanged; the `no
+// comment` half is deliberately replaced by the one-comment-per-run assertions
+// below.
 // ---------------------------------------------------------------------------
 
 for (const { phase, heading } of PROMOTED_PHASES) {
@@ -207,7 +212,7 @@ for (const { phase, heading } of PROMOTED_PHASES) {
     assertStringIncludes(comments[0]!.body, "Estimate only");
   });
 
-  Deno.test(`reportPhaseDegradation - ${phase}: healthy round skips a second stats comment`, async () => {
+  Deno.test(`reportPhaseDegradation - ${phase}: healthy round skips a second stats comment for the same run`, async () => {
     pinPhasesToFable();
     const { ghCommandFn, addLabelCalls } = fakeGh();
     const { postComment, comments } = fakePost();
@@ -222,15 +227,46 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       runGhCommand: ghCommandFn,
       logger,
       cacheDir: Deno.makeTempDirSync(),
-      // The issue already carries the planning-path stats comment.
+      // This run already posted its stats comment.
       listIssueComments: () =>
-        Promise.resolve([{ body: "## Planning run model stats\n\n- x" }]),
+        Promise.resolve([{
+          body: `${buildIssueRunStatsMarker(getRunId())}\n## Run model stats`,
+        }]),
     });
 
     resetModelResolution();
     assertEquals(verdict.degraded, false);
     assertEquals(addLabelCalls.length, 0);
     assertEquals(comments.length, 0);
+  });
+
+  Deno.test(`reportPhaseDegradation - ${phase}: an earlier run's stats comment does not suppress this run (Issue #797)`, async () => {
+    pinPhasesToFable();
+    const { ghCommandFn } = fakeGh();
+    const { postComment, comments } = fakePost();
+    const { logger } = recordingLogger();
+
+    await reportPhaseDegradation({
+      phase,
+      repo: "owner/repo",
+      issueNumber: 5,
+      claudeResult: { runStats: runStats(["claude-fable-5-20250101"]) },
+      postComment,
+      runGhCommand: ghCommandFn,
+      logger,
+      cacheDir: Deno.makeTempDirSync(),
+      // The planning path reported an earlier, different run.
+      listIssueComments: () =>
+        Promise.resolve([{
+          body:
+            "## Planning run model stats\n\n- **Estimated cost (USD, estimate only):** ~$0.50",
+        }]),
+    });
+
+    resetModelResolution();
+    assertEquals(comments.length, 1);
+    assertStringIncludes(comments[0]!.body, heading);
+    assertStringIncludes(comments[0]!.body, "Issue total across 2 run-stats");
   });
 }
 

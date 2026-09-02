@@ -17,15 +17,17 @@
  * whether a wind-down notice was delivered — so it costs no agent call and
  * does not need the agent to still be alive. On the timeout path it is not.
  *
- * The path is `.github/handover/`. A `.vibe/…` note could never have been
- * committed: `gitignore_enforcer.ts` ignores every hidden path in a
- * monitored repo and `pre_commit_safety.ts` refuses to commit one, so
- * `git add -A` would have dropped it silently — preserved nowhere, reported
- * as written. `.github/` is the one hidden directory both of those layers
- * already re-allow, and it is repo tooling metadata rather than source or
- * published documentation, so a note left on a WIP branch cannot trip a
- * repo's docs gates (markdownlint globs, a Pages build, a page-title
- * manifest) and strand the very branch it exists to rescue.
+ * The path is {@link handoverFilePath} — `docs/archive/handover/issue-<N>.md`
+ * — defined once in `preserved_wip_branch.ts` so the writer here, the release
+ * comment that advertises it (#770) and the resuming prompt that reads it
+ * (#771) can never point at different files. A `.vibe/…` note as the issue
+ * sketched could never have been committed: `gitignore_enforcer.ts` ignores
+ * every hidden path in a monitored repo and `pre_commit_safety.ts` refuses to
+ * commit one, so `git add -A` would have dropped it silently — preserved
+ * nowhere, reported as written. `docs/archive/` is excluded from the Jekyll
+ * build, the markdownlint globs and the page-title manifest, so a note left
+ * on a WIP branch cannot trip a docs gate and strand the very branch it
+ * exists to rescue.
  *
  * Every failure here is non-fatal and logged, exactly as a failed WIP
  * checkpoint is: losing the note must never cost the code.
@@ -39,9 +41,7 @@ import {
 } from "./wip_checkpoint.ts";
 import { WIND_DOWN_NOTICE_FILENAME } from "./wind_down_notice.ts";
 import { redactSecrets } from "./secret_redaction.ts";
-
-/** Directory holding one handover note per issue, relative to the clone. */
-export const HANDOVER_DIR = ".github/handover";
+import { handoverFilePath } from "./preserved_wip_branch.ts";
 
 /** Machine-readable marker identifying a note and its structure version. */
 export const HANDOVER_MARKER = '<!-- vibe-handover version="1" -->';
@@ -51,11 +51,6 @@ export const MAX_PRIOR_ATTEMPTS = 3;
 
 /** Most uncommitted files listed before the note summarises the rest. */
 const MAX_LISTED_FILES = 20;
-
-/** Repo-relative path of one issue's handover note. */
-export function handoverNotePath(issueNumber: number): string {
-  return `${HANDOVER_DIR}/issue-${issueNumber}.md`;
-}
 
 /** What the worker knows about the interruption, with no billed call. */
 export interface HandoverFacts {
@@ -331,8 +326,9 @@ export async function writeHandoverNote(
   options: WriteHandoverNoteOptions,
 ): Promise<HandoverNoteOutcome> {
   const { repoPath, facts, logger } = options;
-  const relativePath = handoverNotePath(facts.issueNumber);
+  const relativePath = handoverFilePath(facts.issueNumber);
   const absolutePath = `${repoPath}/${relativePath}`;
+  const directory = absolutePath.slice(0, absolutePath.lastIndexOf("/"));
   try {
     // Only ever write into a real clone. Anywhere else the note could not be
     // committed, and creating the directory tree would invent a repo.
@@ -353,7 +349,7 @@ export async function writeHandoverNote(
       priorAttempts: existing ? extractAttemptLines(existing) : [],
     });
 
-    await Deno.mkdir(`${repoPath}/${HANDOVER_DIR}`, { recursive: true });
+    await Deno.mkdir(directory, { recursive: true });
     await Deno.writeTextFile(absolutePath, note);
     logger?.info(
       `Handover note written to '${relativePath}' for the next claim ` +

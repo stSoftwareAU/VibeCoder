@@ -1607,6 +1607,11 @@ release**, not as the issue defeating the agent:
 - The preserved work lands in a `wip:` commit whose subject names the real
   cause (`wip: execute was released on schedule (cycle ended or run hard cap
   reached) after …`), so the next claimant reads what actually happened.
+- The release comment carries a **Work in progress** line naming the branch
+  that work is on, and links the handover file when one exists (Issue #770).
+  The branch named is the one the push targeted, so a retitled issue cannot
+  point a reader at a ref nothing wrote, and a run that preserved nothing names
+  no branch.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
@@ -1622,6 +1627,29 @@ Everything else is unchanged: the no-output watchdog
 extensions were granted, and only issue work (the execute phase) reads the
 extendable deadline at all — PR feedback, CI fix, planning,
 grill-me and the health checks keep their unconditional caps.
+
+#### The kill explains itself (Issue #768)
+
+A run killed at its deadline states what the extension did, in both artefacts
+an operator reads — so diagnosing a kill never needs a dig through
+`claude_runner.ts`:
+
+- the **worker log** line at the hard timeout — `Claude timed out after 5645s:
+  base budget 3600s extended 4× by 2040s (final deadline 5640s); last extension
+  refused: working tree unchanged despite tool activity 31s ago — killing
+  process tree (PID …)`; and
+- the **release comment** on the issue, whose timeout diagnosis carries
+  `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
+  elapsed 5645s, 4 extensions granted (+2040s); last check refused because …`.
+  The elapsed figure is labelled `agent elapsed` because the same line already
+  states the whole run's wall clock — the agent's own run is the shorter of
+  the two.
+
+Zero grants is itself a finding and reads differently — `no extensions granted
+— last check refused because no tool activity recorded` — so a run refused at
+its first check is never mistaken for one that was extended and still ran out.
+With `progress_extension_enabled` set to `false` no telemetry is produced and
+both surfaces keep their pre-extension wording.
 
 ```mermaid
 flowchart TD
@@ -2011,9 +2039,19 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   retitle: renaming an issue mid-flight used to orphan its WIP branch, because
   the next claim derived a different slug and started from scratch (#220).
 - Every claim logs which branch it resumed, or that no prior branch existed.
+- When a branch was resumed, the worker reads the handover file the
+  interrupted run committed to it (`docs/archive/handover/issue-<N>.md`,
+  Issue #769) and splices that content into the execute prompt, framed as a
+  prior-run **status report** — untrusted repository prose, fenced, capped at
+  8,000 characters and counted against the context budget, never a directive
+  that can redirect the run (Issue #771). This works on any fleet host and
+  under any provider, so it does **not** depend on `enable_session_resume`;
+  a branch with no handover file falls back to the generic "prior progress
+  exists, review `git log`" note and still resumes.
 - When session resume is enabled and a branch was resumed, the worker also
-  passes `--resume` so the durable transcript replays the prior conversation,
-  and tells the agent prior progress exists on the branch.
+  passes `--resume` so the durable transcript replays the prior conversation.
+  That replay is a same-host optimisation layered on top: the committed
+  handover is the portable contract and is spliced either way.
 - The resume file is deleted on successful PR creation and on claim release,
   so deliberate outcomes always start the next attempt clean. The one
   exception is a release whose run **preserved WIP** on the issue branch

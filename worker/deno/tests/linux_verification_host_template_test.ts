@@ -519,12 +519,78 @@ Deno.test("the UserData script installs the launcher prerequisites and clones th
   assertStringIncludes(script, "git clone ${VibeCoderRepositoryUrl}");
 });
 
+/**
+ * Run the rendered bootstrap's agent-CLI decision and report what it would
+ * install.
+ *
+ * The conditions are the template's own, rendered exactly as CloudFormation
+ * would render them; only the commands inside are replaced, so what is
+ * executed is the decision and not a paraphrase of it.
+ */
+async function installedAgentCli(hostAgentCli: string): Promise<string[]> {
+  const lines = renderedUserData({ HostAgentCli: hostAgentCli }).split("\n");
+  const snippet: string[] = [];
+  let depth = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (depth === 0 && /^if \[ ".*" = "claude" \]; then$/.test(trimmed)) {
+      depth = 1;
+      snippet.push(trimmed);
+      continue;
+    }
+    if (depth === 0) continue;
+    if (trimmed === "fi") {
+      depth = 0;
+      snippet.push("fi");
+      continue;
+    }
+    // Whatever the guard runs is reported rather than run: the assertion is
+    // about which branch is taken, not about installing anything.
+    snippet.push(`echo ${JSON.stringify(trimmed)}`);
+  }
+  assert(snippet.length > 0, "the template should guard its agent-CLI install");
+  const { code, stdout, stderr } = await new Deno.Command("bash", {
+    args: ["-c", snippet.join("\n")],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assertEquals(code, 0, new TextDecoder().decode(stderr));
+  return new TextDecoder().decode(stdout).split("\n").filter((l) => l !== "");
+}
+
+Deno.test("the host installs no coding-agent CLI by default (Issue #736)", async () => {
+  const parameter = asRecord(
+    section("Parameters").HostAgentCli,
+    "HostAgentCli",
+  );
+  assertEquals(
+    parameter.Default,
+    "none",
+    "a Codex-only verification requires a host with no Claude CLI present",
+  );
+  assertEquals(asArray(parameter.AllowedValues, "AllowedValues"), [
+    "none",
+    "claude",
+  ]);
+
+  // The default host runs neither the installer nor its version proof, so a
+  // Codex-only verification finds no Claude CLI on PATH.
+  assertEquals(await installedAgentCli("none"), []);
+
+  // A Claude verification still gets one by passing the parameter.
+  const claudeRun = (await installedAgentCli("claude")).join("\n");
+  assertStringIncludes(claudeRun, "https://claude.ai/install.sh");
+  assertStringIncludes(claudeRun, "claude --version");
+});
+
 Deno.test("the bootstrap proves each prerequisite runs before it reports OK", () => {
   const lines = renderedUserData().split("\n").map((line) => line.trim());
   const okIndex = lines.findIndex((line) => line.startsWith('echo "OK"'));
   assert(okIndex > 0, "the bootstrap should record a final OK status");
   const beforeOk = lines.slice(0, okIndex).join("\n");
-  for (const tool of ["podman", "git", "gh", "deno", "claude"]) {
+  // The agent CLI is not on this list: it is installed only when asked for,
+  // and its own proof rides the same guard (Issue #736).
+  for (const tool of ["podman", "git", "gh", "deno"]) {
     assertStringIncludes(
       beforeOk,
       `${tool} --version`,
