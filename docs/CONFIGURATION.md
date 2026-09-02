@@ -981,8 +981,8 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 3. `CLAUDE_MODEL` environment variable (base model for all phases)
 4. Built-in phase defaults (table above)
 
-**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable 5 (model id
-`claude-fable-5`, alias `fable`) is the top tier above Opus, with a 1M-token
+**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable (alias `fable`,
+served as `claude-fable-5-1` since 2026-09-01) is the top tier above Opus, with a 1M-token
 context window and a rate-limit fallback of `fable → opus → sonnet → haiku`
 . It is the default for the eight planning-shaped phases
 (`planning`, `grill_me`, `refinement`, `revision`, `question`, `clarification`,
@@ -1025,6 +1025,12 @@ below default to `standard`.
 | `issue`         | `standard`        | General implementation — balanced detail   |
 | `planning`      | `verbose`         | Architecture decisions need full reasoning |
 | `question`      | `verbose`         | Architecture decisions need full reasoning |
+
+> **📝 Note:** `grill_me` is deliberately absent from that table — it takes the
+> `standard` fallback, so every round is told "no running commentary while you
+> work". Nobody watches an unattended round in real time, so its template stops
+> asking for narration from `prompts/grill-me/v15.md` onwards (Issue #759); a
+> round's output is the comment it posts.
 
 **Resolution priority** (highest to lowest):
 

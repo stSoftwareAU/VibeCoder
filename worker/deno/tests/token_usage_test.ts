@@ -93,6 +93,8 @@ Deno.test("token_usage - extractTokenUsage handles zero token counts", () => {
 // =============================================================================
 
 Deno.test("token_usage - lookupModelPricing returns pricing for Fable 5 full id (Issue #2619)", () => {
+  // Fable 5 keeps its $1/MTok cache-read rate so a historical run-stats
+  // comment stays accurate after Fable 5.1 landed (Issue #747).
   const pricing = lookupModelPricing("claude-fable-5");
   assertEquals(pricing?.inputPerMillion, 10);
   assertEquals(pricing?.outputPerMillion, 50);
@@ -100,12 +102,34 @@ Deno.test("token_usage - lookupModelPricing returns pricing for Fable 5 full id 
   assertEquals(pricing?.cacheReadPerMillion, 1);
 });
 
-Deno.test("token_usage - lookupModelPricing returns pricing for bare fable alias (Issue #2619)", () => {
+Deno.test("token_usage - lookupModelPricing returns pricing for a dated Fable 5 id (Issue #747)", () => {
+  // A dated 5.0 snapshot must not be captured by the `claude-fable-5-1` row.
+  const pricing = lookupModelPricing("claude-fable-5-20260115");
+  assertEquals(pricing?.cacheReadPerMillion, 1);
+});
+
+Deno.test("token_usage - lookupModelPricing prices Fable 5.1 cache reads at a quarter of Fable 5 (Issue #747)", () => {
+  const pricing = lookupModelPricing("claude-fable-5-1");
+  assertEquals(pricing?.inputPerMillion, 10);
+  assertEquals(pricing?.outputPerMillion, 50);
+  assertEquals(pricing?.cacheWritePerMillion, 12.50);
+  assertEquals(pricing?.cacheReadPerMillion, 0.25);
+});
+
+Deno.test("token_usage - lookupModelPricing prices a dated Fable 5.1 id at the 5.1 rate (Issue #747)", () => {
+  const pricing = lookupModelPricing("claude-fable-5-1-20260901");
+  assertEquals(pricing?.inputPerMillion, 10);
+  assertEquals(pricing?.cacheReadPerMillion, 0.25);
+});
+
+Deno.test("token_usage - lookupModelPricing returns pricing for bare fable alias (Issue #2619, #747)", () => {
+  // The worker requests the `fable` alias, which the CLI resolves to the
+  // latest Fable — Fable 5.1 since 2026-09-01, hence the 5.1 cache-read rate.
   const pricing = lookupModelPricing("fable");
   assertEquals(pricing?.inputPerMillion, 10);
   assertEquals(pricing?.outputPerMillion, 50);
   assertEquals(pricing?.cacheWritePerMillion, 12.50);
-  assertEquals(pricing?.cacheReadPerMillion, 1);
+  assertEquals(pricing?.cacheReadPerMillion, 0.25);
 });
 
 Deno.test("token_usage - lookupModelPricing returns pricing for Opus 5 (Issue #3559)", () => {
@@ -168,9 +192,18 @@ Deno.test("token_usage - lookupModelPricing returns pricing for Sonnet 4.6 (Issu
   assertEquals(pricing?.cacheReadPerMillion, 0.30);
 });
 
-Deno.test("token_usage - lookupModelPricing tier fallback gives current Sonnet pricing for unknown minor (Issue #2407)", () => {
-  // An unknown-but-tiered Sonnet id must inherit the current Sonnet rate via
-  // the tier-aware fallback rather than returning null.
+Deno.test("token_usage - lookupModelPricing returns pricing for Sonnet 5 (Issue #747)", () => {
+  const pricing = lookupModelPricing("claude-sonnet-5");
+  assertEquals(pricing?.inputPerMillion, 2);
+  assertEquals(pricing?.outputPerMillion, 10);
+  assertEquals(pricing?.cacheWritePerMillion, 2.50);
+  assertEquals(pricing?.cacheReadPerMillion, 0.20);
+});
+
+Deno.test("token_usage - lookupModelPricing tier fallback gives Sonnet 4.x pricing for unknown 4-family minor (Issue #2407)", () => {
+  // An unknown-but-tiered Sonnet 4 id must inherit the 4.x rate via the
+  // tier-aware fallback rather than returning null. Sonnet 5 is cheaper and
+  // has its own branch (Issue #747), so the 4-family keeps $3/$15 here.
   const pricing = lookupModelPricing("claude-sonnet-4-9");
   assertEquals(pricing?.inputPerMillion, 3);
   assertEquals(pricing?.outputPerMillion, 15);
@@ -212,10 +245,11 @@ Deno.test("token_usage - lookupModelPricing resolves bare 'opus' alias to curren
   assertEquals(pricing?.cacheReadPerMillion, 0.50);
 });
 
-Deno.test("token_usage - lookupModelPricing resolves bare 'sonnet'/'haiku' aliases (Issue #2389)", () => {
+Deno.test("token_usage - lookupModelPricing resolves bare 'sonnet'/'haiku' aliases (Issue #2389, #747)", () => {
+  // The `sonnet` alias resolves to the latest Sonnet — Sonnet 5, at $2/$10.
   const sonnet = lookupModelPricing("sonnet");
-  assertEquals(sonnet?.inputPerMillion, 3);
-  assertEquals(sonnet?.outputPerMillion, 15);
+  assertEquals(sonnet?.inputPerMillion, 2);
+  assertEquals(sonnet?.outputPerMillion, 10);
 
   const haiku = lookupModelPricing("haiku");
   assertEquals(haiku?.inputPerMillion, 1);
@@ -289,6 +323,22 @@ Deno.test("token_usage - estimateCost calculates correct costs for fable (Issue 
   assertEquals(cost?.cacheWriteCost, 12.50);
   assertEquals(cost?.cacheReadCost, 1);
   assertAlmostEquals(cost!.totalCost, 73.50, 0.001);
+});
+
+Deno.test("token_usage - estimateCost prices Fable 5.1 cache reads at $0.25/MTok (Issue #747)", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  const cost = estimateCost(usage, "claude-fable-5-1");
+  assertEquals(cost?.inputCost, 10);
+  assertEquals(cost?.outputCost, 50);
+  assertEquals(cost?.cacheWriteCost, 12.50);
+  assertEquals(cost?.cacheReadCost, 0.25);
+  assertAlmostEquals(cost!.totalCost, 72.75, 0.001);
 });
 
 Deno.test("token_usage - estimateCost returns null for unknown model", () => {
