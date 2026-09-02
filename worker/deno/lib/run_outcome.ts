@@ -21,6 +21,7 @@ import {
   type FailureCategory,
 } from "./failure_diagnosis.ts";
 import type { ClaimStaleReason, StaleClaim } from "./claim_freshness.ts";
+import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
 
 /**
@@ -47,6 +48,12 @@ export type RunOutcome =
       elapsedSeconds: number;
       /** Raw failure message, for downstream classification/filing. */
       message: string;
+      /**
+       * What the re-armable deadline did to the run (Issue #768), so the
+       * release comment states the grants and the last refusal rather than
+       * leaving a timeout kill unexplained.
+       */
+      extensions?: ExtensionTelemetry;
       /**
        * Where the run's work in progress was preserved (Issue #770). Present
        * only when preservation put it on a pushed branch, so the release
@@ -123,6 +130,12 @@ export interface RunOutcomeSource {
   /** Wall-clock seconds for the run; defaults to the sum of `timings`. */
   elapsedSeconds?: number;
   /**
+   * Extension telemetry from a timed-out run (Issue #768), recorded by the
+   * execute phase. Travels onto a `no_pr` outcome so the release comment can
+   * name the grants and the last refusal.
+   */
+  extensions?: ExtensionTelemetry;
+  /**
    * Branch the run's work in progress was pushed to (Issue #770), from
    * `PhaseState.preservedWip`. Carried onto a `no_pr` outcome so the release
    * comment names it; ignored when the run raised a PR.
@@ -171,6 +184,7 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
     phase: source.phase,
     elapsedSeconds: Math.max(0, Math.round(elapsedSeconds)),
     message: source.reason,
+    ...(source.extensions ? { extensions: source.extensions } : {}),
     // Only when the work reached a pushed branch (Issue #770) — the source
     // field is set by preservation itself, never guessed from the title.
     ...(source.preservedWip ? { preservedWip: source.preservedWip } : {}),

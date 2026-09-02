@@ -237,6 +237,10 @@ async function executeClaudeBody(
   const logger = deps.logger;
   state.executeStartTime = Date.now();
   state.lastKillMemoryPressure = undefined;
+  // Cleared per attempt (Issue #768) for the same reason as the memory
+  // reading above: a later attempt that also ends classed `timeout` must not
+  // put an earlier run's grants and refusal on the release comment.
+  state.extensionTelemetry = undefined;
 
   // The cheap half of the claim-freshness re-check (Issue #344). A cycle that
   // spent forty minutes rate-limited holds a claim that may already be
@@ -589,6 +593,11 @@ async function executeClaudeBody(
         exitCode: claudeResult.value.exitCode,
       });
     }
+
+    // What the re-armable deadline did to this run (Issue #768), kept for the
+    // claim-release comment: how many extensions were granted and why the
+    // last check was refused.
+    state.extensionTelemetry = claudeResult.value.extensions;
 
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,

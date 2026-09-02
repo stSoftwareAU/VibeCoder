@@ -10,6 +10,10 @@
  */
 
 import { assertNever } from "./assert_never.ts";
+import {
+  type ExtensionTelemetry,
+  formatTimeoutExtensionSummary,
+} from "./timeout_extension_telemetry.ts";
 
 /** Failure category string — returned by detectFailureCategory(). */
 export type FailureCategory =
@@ -484,6 +488,53 @@ function formatExtensionHistory(ctx: DiagnosticContext): string {
     : history;
 }
 
+/**
+ * Decode the extension telemetry a timeout diagnosis should state (Issue
+ * #768) from the `key=value` diagnostic context, which is the only form the
+ * multi-line diagnosis' callers hold.
+ *
+ * Every figure must parse. `buildDiagnosticContext` writes them as one set,
+ * so a partial or unreadable set is not a run without extensions — and
+ * rendering a missing figure as `0s` would put a measured-looking lie in an
+ * operator artefact. Such a context yields `undefined`, which states nothing
+ * about extensions rather than stating something false.
+ *
+ * `undefined` therefore covers both "the feature was not active" and "the
+ * context did not carry a readable snapshot", and in each case the wording
+ * stays the pre-#764 text byte for byte.
+ */
+function resolveExtensionTelemetry(
+  diagnosticContext: string,
+): ExtensionTelemetry | undefined {
+  if (!diagnosticContext) return undefined;
+  const ctx = parseDiagnosticContext(diagnosticContext);
+  const seconds = (value: string | undefined): number | undefined => {
+    if (value === undefined || value.trim() === "") return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+  const granted = seconds(ctx.extensionsGranted);
+  const extendedSeconds = seconds(ctx.extendedSeconds);
+  const baseTimeoutSeconds = seconds(ctx.claudeTimeout);
+  const finalDeadlineSeconds = seconds(ctx.finalDeadlineSeconds);
+  const elapsedSeconds = seconds(ctx.elapsedSeconds);
+  if (
+    granted === undefined || extendedSeconds === undefined ||
+    baseTimeoutSeconds === undefined || finalDeadlineSeconds === undefined ||
+    elapsedSeconds === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    granted,
+    extendedSeconds,
+    baseTimeoutSeconds,
+    finalDeadlineSeconds,
+    elapsedSeconds,
+    ...(ctx.extensionRefused ? { refusalReason: ctx.extensionRefused } : {}),
+  };
+}
+
 export function formatZeroOutputDiagnostics(diagnosticContext: string): string {
   if (!diagnosticContext) return "";
 
@@ -553,6 +604,10 @@ export function formatZeroOutputDiagnostics(diagnosticContext: string): string {
  *
  * For zero_output failures, if diagnosticContext is provided, it is formatted
  * into actionable diagnostic lines instead of generic advice (Issue #533).
+ *
+ * For timeout failures the extension telemetry the diagnostic context carries
+ * adds the line that makes the kill readable (Issue #768). Absent, the
+ * wording is the pre-#764 text byte for byte.
  */
 export function getFailureDiagnosis(
   category: FailureCategory,
@@ -560,10 +615,15 @@ export function getFailureDiagnosis(
   diagnosticContext: string = "",
 ): string {
   switch (category) {
-    case "timeout":
+    case "timeout": {
+      const telemetry = resolveExtensionTelemetry(diagnosticContext);
+      const summary = telemetry
+        ? `\n- ${formatTimeoutExtensionSummary(telemetry)}`
+        : "";
       return `- Claude ran out of time before completing the task
 - The task may need to be broken into smaller pieces
-- Consider simplifying the issue scope or splitting it into sub-issues`;
+- Consider simplifying the issue scope or splitting it into sub-issues${summary}`;
+    }
 
     case "scheduled_release":
       return `- The run was released on schedule — the cycle ended, or the supervisor's run hard cap was reached — while the agent was still progressing
@@ -655,15 +715,30 @@ export function getFailureDiagnosis(
  * Return a brief one-line cause summary.
  *
  * Used by mark_issue_as_failed_once() to add a brief indication of the
- * likely cause without the full multi-line diagnosis.
+ * likely cause without the full multi-line diagnosis, and by the claim-release
+ * comment (`renderRunOutcomeClause`).
+ *
+ * A timeout states the extension telemetry the caller holds (Issue #768) —
+ * how many grants the deadline made and why the last check was refused — so
+ * the release comment explains the kill instead of leaving it to a code
+ * archaeology dig. Without telemetry the wording is unchanged.
+ *
+ * @param extensions - The kill's snapshot, when the caller has one. The
+ * release comment does; `markIssueAsFailedOnce` does not, and its comment
+ * already carries the same history inside the raw failure message.
  */
 export function getFailureDiagnosisOneliner(
   category: FailureCategory,
   clarityStatus: ClarityStatus = "not_assessed",
+  extensions?: ExtensionTelemetry,
 ): string {
   switch (category) {
     case "timeout":
-      return "Likely cause: Claude ran out of time.";
+      return extensions
+        ? `Likely cause: Claude ran out of time. ${
+          formatTimeoutExtensionSummary(extensions)
+        }.`
+        : "Likely cause: Claude ran out of time.";
     // Deliberately not "Likely cause": nothing was diagnosed. The cycle
     // ended or the hard cap was reached and the work was parked (Issue #424).
     case "scheduled_release":

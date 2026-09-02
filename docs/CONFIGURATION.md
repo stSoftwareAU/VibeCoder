@@ -1628,6 +1628,29 @@ extensions were granted, and only issue work (the execute phase) reads the
 extendable deadline at all — PR feedback, CI fix, planning,
 grill-me and the health checks keep their unconditional caps.
 
+#### The kill explains itself (Issue #768)
+
+A run killed at its deadline states what the extension did, in both artefacts
+an operator reads — so diagnosing a kill never needs a dig through
+`claude_runner.ts`:
+
+- the **worker log** line at the hard timeout — `Claude timed out after 5645s:
+  base budget 3600s extended 4× by 2040s (final deadline 5640s); last extension
+  refused: working tree unchanged despite tool activity 31s ago — killing
+  process tree (PID …)`; and
+- the **release comment** on the issue, whose timeout diagnosis carries
+  `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
+  elapsed 5645s, 4 extensions granted (+2040s); last check refused because …`.
+  The elapsed figure is labelled `agent elapsed` because the same line already
+  states the whole run's wall clock — the agent's own run is the shorter of
+  the two.
+
+Zero grants is itself a finding and reads differently — `no extensions granted
+— last check refused because no tool activity recorded` — so a run refused at
+its first check is never mistaken for one that was extended and still ran out.
+With `progress_extension_enabled` set to `false` no telemetry is produced and
+both surfaces keep their pre-extension wording.
+
 ```mermaid
 flowchart TD
     W[Watchdog wakes] --> I{Deadline reached?}
