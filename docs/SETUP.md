@@ -1047,6 +1047,22 @@ such as `credential-dir-missing`, a run-mode or runtime-detection failure,
 or an image build failure. Every one of them is covered in the
 [Troubleshooting Guide](TROUBLESHOOTING.md).
 
+**Patching the launcher while you debug?** Every launch updates this checkout
+to its default branch first (Issue #512), so a fix applied by hand — the sort a
+new platform tends to need, next to the runtime the host actually has (Podman
+as well as Docker on Linux) and the providers `.config.json` names — is
+discarded by the next run. The update says so when it discards work, naming the
+opt-out; set it for the launcher and the checkout is left exactly as it is:
+
+```bash
+VIBE_SKIP_CHECKOUT_UPDATE=1 ./run.sh     # macOS / Linux
+$env:VIBE_SKIP_CHECKOUT_UPDATE = "1"; .\run.ps1    # Windows (PowerShell)
+```
+
+Drop the variable once the fix is committed and pushed — a host that keeps it
+set never picks up new code. See
+[The launcher keeps overwriting my local fix](TROUBLESHOOTING.md#-the-launcher-keeps-overwriting-my-local-fix).
+
 ### Hand-off
 
 Once a foreground run is clean, setup is done. Making it run unattended —

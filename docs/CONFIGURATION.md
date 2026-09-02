@@ -848,6 +848,15 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   default branch mid-run. The skip is reported, never silent. Give the worker
   its own dedicated clone rather than relying on the skip
   (see [Deployment](DEPLOYMENT.md)).
+- **An update that actually changed the checkout names the variable**
+  (Issue #735). Moving the commit or discarding uncommitted work adds one line
+  to stderr and `run_core.log` —
+  `The checkout update changed <path> (HEAD <before> → <after>; 2 uncommitted
+  change(s) discarded). Local edits in this checkout do not survive a launch —
+  set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly as it is.` — so an
+  operator debugging a launcher fault learns about the opt-out at the moment it
+  discards their patch, rather than from this page. An update that changed
+  nothing says nothing.
 - **Three consecutive failures raise one GitHub issue** titled
   `Worker checkout update failing on <host>` against the checkout's own origin
   repository, carrying the "active development tree" diagnosis (Issue #4204).

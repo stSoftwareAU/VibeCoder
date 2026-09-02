@@ -25,6 +25,14 @@
  * already resolves to that ref. The skip is logged, never silent, and a ref
  * that does not resolve is a fail-loud failure counted in the same streak.
  *
+ * An update that actually changed the checkout — moved the commit, or
+ * discarded uncommitted work — names {@link SKIP_CHECKOUT_UPDATE_ENV} in
+ * {@link checkoutOverwriteNotice} (Issue #735). The opt-out has existed since
+ * Issue #512 and is documented in five places, and an operator debugging
+ * launcher defects on a new platform still burned a cycle re-applying a patch
+ * the next launch discarded: the moment that discards the work is the moment
+ * that names the way to prevent it. An update that changed nothing is silent.
+ *
  * Every side effect flows through {@link CheckoutUpdateDeps} so the behaviour
  * can be unit-tested without touching git, the filesystem, or GitHub.
  *
@@ -58,6 +66,15 @@ export { parseOriginRepo };
  * occupied by interactive development work.
  */
 export const CHECKOUT_UPDATE_ESCALATION_THRESHOLD = 3;
+
+/**
+ * Environment variable that turns the checkout update off (Issue #735).
+ *
+ * The single source of truth: the command re-exports this name, and the
+ * operator-facing notice below is built from it, so the variable an update
+ * advertises can never drift from the one it reads.
+ */
+export const SKIP_CHECKOUT_UPDATE_ENV = "VIBE_SKIP_CHECKOUT_UPDATE";
 
 /** File under the log directory persisting the consecutive-failure count. */
 export const CHECKOUT_UPDATE_FAILURE_STREAK_FILE =
@@ -117,6 +134,11 @@ export interface CheckoutUpdateOutcome {
   ref: string;
   /** Enriched failure detail when {@link ok} is false. */
   error?: string;
+  /**
+   * The operator-facing line naming the opt-out, emitted when this update
+   * actually changed the checkout (Issue #735); "" when it changed nothing.
+   */
+  overwriteNotice: string;
   /** Consecutive failures including this one; 0 after a success. */
   streak: number;
   /** Whether this failure raised the control-plane escalation. */
@@ -333,6 +355,92 @@ export async function describeCheckoutState(
   }
 }
 
+/** What a checkout looked like at one moment (Issue #735). */
+export interface CheckoutSnapshot {
+  /** The commit `HEAD` named, or `null` when it could not be read. */
+  head: string | null;
+  /** Uncommitted paths, or `null` when the state could not be read. */
+  dirtyFiles: number | null;
+}
+
+/**
+ * Describe the checkout as it is now (Issue #735). Best-effort on both halves:
+ * an unreadable state is `null`, never a guess — the notice below only speaks
+ * about what it actually observed.
+ */
+async function snapshotCheckout(
+  deps: CheckoutUpdateDeps,
+  repoDir: string,
+): Promise<CheckoutSnapshot> {
+  let head: string | null = null;
+  try {
+    head = await deps.readHeadCommit(repoDir);
+  } catch {
+    head = null;
+  }
+  let dirtyFiles: number | null = null;
+  try {
+    dirtyFiles = (await deps.describeCheckoutState(repoDir))?.dirtyFiles ??
+      null;
+  } catch {
+    dirtyFiles = null;
+  }
+  return { head, dirtyFiles };
+}
+
+/** Enough of a commit to recognise it in a log line. */
+function shortSha(sha: string): string {
+  return sha.slice(0, 12);
+}
+
+/**
+ * The line an update prints when it changed the checkout (Issue #735).
+ *
+ * The opt-out has existed since Issue #512 and is documented in five places,
+ * but an operator hitting launcher defects on a new platform never found it —
+ * they re-applied a local patch that the next launch discarded again. So the
+ * moment that discards the work is the moment that names the way to prevent
+ * it, on stderr and in `run_core.log`.
+ *
+ * Only an observed change speaks: a checkout that came out where it went in —
+ * or whose state could not be read — returns "", so a healthy fleet does not
+ * carry this line on every launch.
+ *
+ * @param repoDir - The checkout the update ran against
+ * @param before - Its state before the update
+ * @param after - Its state after the update
+ * @returns The operator-facing line, or "" when nothing was overwritten
+ */
+export function checkoutOverwriteNotice(
+  repoDir: string,
+  before: CheckoutSnapshot,
+  after: CheckoutSnapshot,
+): string {
+  const moved = before.head !== null && after.head !== null &&
+    before.head !== after.head;
+  const discarded = before.dirtyFiles !== null && after.dirtyFiles !== null &&
+      before.dirtyFiles > after.dirtyFiles
+    ? before.dirtyFiles - after.dirtyFiles
+    : 0;
+  if (!moved && discarded === 0) return "";
+
+  const changes: string[] = [];
+  if (moved) {
+    changes.push(
+      `HEAD ${shortSha(before.head as string)} → ${
+        shortSha(after.head as string)
+      }`,
+    );
+  }
+  if (discarded > 0) {
+    changes.push(`${discarded} uncommitted change(s) discarded`);
+  }
+
+  return `The checkout update changed ${repoDir} (${changes.join("; ")}). ` +
+    `Local edits in this checkout do not survive a launch — set ` +
+    `${SKIP_CHECKOUT_UPDATE_ENV}=1 to leave it exactly as it is.`;
+}
+
 /** Path of the persisted consecutive-failure count. */
 function streakFilePath(logDir: string): string {
   return `${logDir}/${CHECKOUT_UPDATE_FAILURE_STREAK_FILE}`;
@@ -513,6 +621,9 @@ export async function updateCheckout(
   };
   const { repoDir, logDir } = options;
   const mode = options.updateMode ?? DEFAULT_UPDATE_MODE;
+  // Where the checkout stood before anything touched it, so the update can
+  // say whether it overwrote local work (Issue #735).
+  const before = await snapshotCheckout(deps, repoDir);
 
   let branch = "";
   let ref = "";
@@ -555,13 +666,32 @@ export async function updateCheckout(
   }
 
   if (failure === undefined) {
+    // An update that changed the checkout names the opt-out that would have
+    // preserved the overwritten work (Issue #735).
+    const overwriteNotice = checkoutOverwriteNotice(
+      repoDir,
+      before,
+      await snapshotCheckout(deps, repoDir),
+    );
+    if (overwriteNotice !== "") {
+      await deps.log(logDir, overwriteNotice);
+    }
+
     // A successful update ends any failure streak (Issue #4204).
     try {
       await deps.writeFailureStreak(logDir, 0);
     } catch {
       // Best-effort persistence.
     }
-    return { ok: true, branch, mode, ref, streak: 0, escalated: false };
+    return {
+      ok: true,
+      branch,
+      mode,
+      ref,
+      streak: 0,
+      escalated: false,
+      overwriteNotice,
+    };
   }
 
   let checkout: CheckoutState | null = null;
@@ -612,5 +742,17 @@ export async function updateCheckout(
     }
   }
 
-  return { ok: false, branch, mode, ref, error: detail, streak, escalated };
+  // A failed update reports the failure, which already carries the
+  // development-tree diagnosis; the overwrite hint belongs to updates that
+  // completed (Issue #735).
+  return {
+    ok: false,
+    branch,
+    mode,
+    ref,
+    error: detail,
+    streak,
+    escalated,
+    overwriteNotice: "",
+  };
 }
