@@ -22,6 +22,8 @@ import {
   reportGrillMeDegradation,
 } from "../lib/grill_me_run_stats.ts";
 import { DEGRADED_MODEL_LABEL } from "../lib/planning_degraded_label.ts";
+import { buildIssueRunStatsMarker } from "../lib/issue_run_stats_comment.ts";
+import { getRunId } from "../lib/run_id.ts";
 import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
@@ -165,11 +167,15 @@ Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no lab
   assertStringIncludes(comments[0]!.body, "Estimate only");
 });
 
-Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comment per issue", async () => {
+Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comment per run", async () => {
   resetModelResolution();
   const { ghCommandFn } = fakeGh();
   const { ghClient, comments } = fakeClient({
-    existingComments: ["## Grill-me run model stats\n\n- **Degraded:** no"],
+    existingComments: [
+      `${
+        buildIssueRunStatsMarker(getRunId())
+      }\n## Grill-me run model stats\n\n- **Degraded:** no`,
+    ],
   });
   const { logger } = recordingLogger();
 
@@ -184,6 +190,31 @@ Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comm
   });
 
   assertEquals(comments.length, 0);
+});
+
+Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not hide this round's cost (Issue #797)", async () => {
+  resetModelResolution();
+  const { ghCommandFn } = fakeGh();
+  const { ghClient, comments } = fakeClient({
+    existingComments: [
+      "## Grill-me run model stats\n\n- **Estimated cost (USD, estimate only):** ~$1.34",
+    ],
+  });
+  const { logger } = recordingLogger();
+
+  await reportGrillMeDegradation({
+    repo: "owner/repo",
+    issueNumber: 5,
+    claudeResult: { runStats: runStats(["claude-fable-5-20250101"]) },
+    ghClient,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+  });
+
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!.body, "## Grill-me run model stats");
+  assertStringIncludes(comments[0]!.body, "Issue total across 2 run-stats");
 });
 
 // ---------------------------------------------------------------------------

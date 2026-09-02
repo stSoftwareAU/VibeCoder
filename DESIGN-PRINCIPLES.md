@@ -628,14 +628,15 @@ Planning runs produce a stronger plan and surface silent model degradation.
   Fable 5 top tier as planning, so the stats/verdict helpers are phase-parametric
   and grill-me reuses them — but applies `degraded-model` **on a degraded round**
   only (a healthy interactive round is never labelled).
-- **One stats comment per issue.** Every issue the worker wraps up
-  gets exactly one cost/model stats comment — at PR-raise time for `work-on`
-  (the merged PR closes the issue with no worker attached), and at the end of
-  the round for the reactive planning-shaped phases. A hidden marker plus a
-  heading match keep it to one per issue, so cost visibility never becomes
-  comment flooding, and the block carries an estimate disclaimer stating it
-  covers only the posting worker's run(s). See
-  [One cost/model stats comment per issue](docs/MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-issue).
+- **One stats comment per run.** Every run the worker completes on an issue
+  reports what it cost — at PR-raise time for `work-on` (the merged PR closes
+  the issue with no worker attached), and at the end of the round for the
+  reactive planning-shaped phases. The hidden marker is **run-scoped**, so the
+  guard suppresses a repeat post inside one run without letting an earlier,
+  cheaper round hide the cost of the run that actually completed the issue; from
+  the second comment onward the block also carries the cumulative issue total.
+  See
+  [One cost/model stats comment per run](docs/MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run).
 - **Fable-unavailable auto-fallback + self-heal.** When Fable 5 is
   globally unavailable (export-disabled / suspended / `403` / silently
   substituted), the top-tier phases fall back to **Opus 4.8** for that run —
