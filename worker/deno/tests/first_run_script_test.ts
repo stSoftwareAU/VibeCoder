@@ -312,7 +312,7 @@ async function verify(
 Deno.test("first-run.sh - a clean host passes every stage with no workaround", async () => {
   const box = await sandbox({
     launchOutput: "[run.sh] built\nvolume-init: trimmed /work (Issue #384)",
-    workerLog: "Claimed by `worker-1`\nSuccessfully processed o/r#1",
+    workerLog: "Processing issue o/r#1: a title\nSuccessfully processed o/r#1",
   });
   try {
     const outcome = await verify(box);
@@ -385,7 +385,7 @@ Deno.test("first-run.sh - reads the refused trim from run_core.log, where run.sh
     runCoreLog:
       "2026-09-02T00:00:00Z host-disk: 38400 MB free on /var/lib/containers - " +
       "this runtime refused to trim vibe-work on this launch (Issues #384, #734)",
-    workerLog: "Claimed by `worker-1`\nSuccessfully processed o/r#1",
+    workerLog: "Processing issue o/r#1: a title\nSuccessfully processed o/r#1",
   });
   try {
     const outcome = await verify(box);
@@ -401,7 +401,8 @@ Deno.test("first-run.sh - reads the refused trim from run_core.log, where run.sh
 Deno.test("first-run.sh - fails when the worker claims but completes nothing", async () => {
   const box = await sandbox({
     launchOutput: "volume-init: trimmed /work",
-    workerLog: "Claimed by `worker-1`",
+    // The worker's own claim marker, with no completion after it.
+    workerLog: "Processing issue o/r#1: a title",
   });
   try {
     const outcome = await verify(box);
