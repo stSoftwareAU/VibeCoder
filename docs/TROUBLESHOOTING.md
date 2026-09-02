@@ -272,6 +272,41 @@ working says so on every launch:
 `Checkout update skipped: update_mode=frozen, pinned to <ref>` in
 `run_core.log`.
 
+## 🩹 The launcher keeps overwriting my local fix
+
+Every launch updates the worker checkout before the container starts, so a
+patch applied by hand — a launcher fix while bringing a new platform up, for
+instance — is discarded by the next run. The update says so when it happens, on
+stderr and in `~/logs/run_core.log`:
+
+```text
+The checkout update changed /home/vibe/VibeCoder (HEAD 8b0f2c1a4d33 →
+1f9a77b0c512; 2 uncommitted change(s) discarded). Local edits in this checkout
+do not survive a launch — set VIBE_SKIP_CHECKOUT_UPDATE=1 to leave it exactly
+as it is.
+```
+
+Set it on the launcher, which is the process that runs the update:
+
+```bash
+VIBE_SKIP_CHECKOUT_UPDATE=1 ./run.sh     # macOS / Linux
+$env:VIBE_SKIP_CHECKOUT_UPDATE = "1"; .\run.ps1    # Windows (PowerShell)
+```
+
+The checkout is then left exactly as it is — commit, branch, uncommitted work
+and untracked files alike — and the launch says so instead of updating:
+`VIBE_SKIP_CHECKOUT_UPDATE is set: leaving <path> exactly as it is`. Any
+non-empty value other than `0`, `false`, `no` or `off` turns the update off;
+`VIBE_SKIP_CHECKOUT_UPDATE=0` — and an empty value — leaves it running.
+
+This is the debugging escape hatch, not a deployment setting. Once the fix is
+committed and pushed, drop the variable so the host tracks the default branch
+again — a host that keeps it set runs whatever that checkout holds, forever.
+A host that must reproduce a known release wants
+[`update_mode: "frozen"`](CONFIGURATION.md#-host-side-checkout-update)
+instead, and a checkout that doubles as a development tree wants its own
+[dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone).
+
 ## 🔔 "A new release of Vibe Coder is available"
 
 A frozen host pinned behind the newest release says so once per launch, on

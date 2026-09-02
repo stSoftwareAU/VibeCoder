@@ -3,10 +3,10 @@
  *
  * The pure checks are driven over in-memory text and over fixture trees
  * built in temp directories: a clean tree, an unpinned `uses:`, an unfrozen
- * `deno` invocation, a tag-referenced container base image, a permissive
- * Renovate policy and a stale dependency inventory. Each must fail with its
- * own rule naming the file and line. The last test runs the gate over the
- * real repository tree, which must pass with no findings.
+ * `deno` invocation, a tag-referenced or short-named container base image, a
+ * permissive Renovate policy and a stale dependency inventory. Each must fail
+ * with its own rule naming the file and line. The last test runs the gate
+ * over the real repository tree, which must pass with no findings.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -19,6 +19,7 @@ import {
   findTagOnlyBaseImages,
   findUnfrozenDenoInvocations,
   findUnpinnedUses,
+  findUnqualifiedBaseImages,
   formatGateReport,
   type GateFinding,
   runSupplyChainGate,
@@ -75,8 +76,8 @@ deno lint
 `;
 
 const CLEAN_CONTAINERFILE = `# fixture image
-ARG DENO_IMAGE="denoland/deno:bin-2.9.5@${DIGEST_B}"
-ARG BASE_IMAGE="ruby:3.4-trixie@${DIGEST_A}"
+ARG DENO_IMAGE="docker.io/denoland/deno:bin-2.9.5@${DIGEST_B}"
+ARG BASE_IMAGE="docker.io/library/ruby:3.4-trixie@${DIGEST_A}"
 
 FROM \${DENO_IMAGE} AS deno
 
@@ -132,7 +133,7 @@ const CLEAN_TOOLS_JSON = JSON.stringify(
   {
     images: [
       {
-        name: "ruby",
+        name: "docker.io/library/ruby",
         tag: "3.4-trixie",
         digest: DIGEST_A,
         arg: "BASE_IMAGE",
@@ -406,6 +407,37 @@ Deno.test("supply-chain-gate: findTagOnlyBaseImages resolves ARG defaults and ex
   assertStringIncludes(findings[0]!.message, "BASE_IMAGE");
 });
 
+Deno.test("supply-chain-gate: findUnqualifiedBaseImages flags a short base-image name (Issue #728)", () => {
+  const text = `FROM ruby:3.4-trixie@${DIGEST_A}\nRUN true\n`;
+  const findings = findUnqualifiedBaseImages("container/Containerfile", text);
+  assertEquals(rules(findings), ["container-base-registry"]);
+  assertEquals(findings[0]!.line, 1);
+  assertStringIncludes(findings[0]!.message, "ruby:3.4-trixie");
+  assertStringIncludes(findings[0]!.message, "docker.io/");
+});
+
+Deno.test("supply-chain-gate: findUnqualifiedBaseImages flags a short name behind an ARG (Issue #728)", () => {
+  const short = CLEAN_CONTAINERFILE.replace(
+    "docker.io/library/ruby:3.4-trixie",
+    "ruby:3.4-trixie",
+  );
+  const findings = findUnqualifiedBaseImages("container/Containerfile", short);
+  assertEquals(findings.length, 1);
+  assertStringIncludes(findings[0]!.message, "BASE_IMAGE");
+});
+
+Deno.test("supply-chain-gate: findUnqualifiedBaseImages accepts qualified registries (Issue #728)", () => {
+  assertEquals(
+    findUnqualifiedBaseImages("container/Containerfile", CLEAN_CONTAINERFILE),
+    [],
+  );
+  // A private registry with a port, and Podman's special `localhost`, are
+  // both qualified — the rule is "names a registry", not "names Docker Hub".
+  const other = `FROM registry.example.com:5000/team/base@${DIGEST_A}\n` +
+    `FROM localhost/built-here@${DIGEST_B}\n`;
+  assertEquals(findUnqualifiedBaseImages("container/Containerfile", other), []);
+});
+
 Deno.test("supply-chain-gate: findTagOnlyBaseImages rejects a malformed digest", () => {
   const text = "FROM ruby:3.4@sha256:abc\n";
   assertEquals(rules(findTagOnlyBaseImages("Containerfile", text)), [
@@ -560,6 +592,20 @@ Deno.test("supply-chain-gate: a tag-referenced container base fails", async () =
   // The inventory records the digest too, so it goes stale as well.
   assertEquals(rules(report.findings), [
     "container-base-digest",
+    "inventory-stale",
+  ]);
+});
+
+Deno.test("supply-chain-gate: a short-named container base fails (Issue #728)", async () => {
+  const root = await makeCleanTreeWithInventory();
+  await Deno.writeTextFile(
+    `${root}/container/Containerfile`,
+    CLEAN_CONTAINERFILE.replace("docker.io/library/ruby", "ruby"),
+  );
+  const report = await runSupplyChainGate({ repoDir: root });
+  // The inventory records the qualified name too, so it goes stale as well.
+  assertEquals(rules(report.findings), [
+    "container-base-registry",
     "inventory-stale",
   ]);
 });

@@ -26,6 +26,7 @@ import {
   DEFAULT_LOW_FLOOR_GB,
   DEFAULT_LOW_FLOOR_PERCENT,
   type DiskFloors,
+  resolveDiskFloors,
 } from "../lib/host_disk.ts";
 
 /**
@@ -38,6 +39,9 @@ const GB = 1_073_741_824;
 const WORKER_FLOORS: DiskFloors = {
   lowFloorGb: DEFAULT_LOW_FLOOR_GB,
   lowFloorPercent: DEFAULT_LOW_FLOOR_PERCENT,
+  // Issue #732: each term now says where it came from.
+  lowFloorGbSource: "default",
+  lowFloorPercentSource: "default",
 };
 
 const APPLE = CONTAINER_RUNTIMES["apple-container"].dialect;
@@ -175,7 +179,12 @@ Deno.test("builderDeleteReason - names the floor it measured against, in the wor
 });
 
 Deno.test("builderDeleteReason - an explicit percent override still deletes earlier (Issue #493)", () => {
-  const eager: DiskFloors = { lowFloorGb: 0, lowFloorPercent: 20 };
+  const eager: DiskFloors = {
+    lowFloorGb: 0,
+    lowFloorPercent: 20,
+    lowFloorGbSource: "config",
+    lowFloorPercentSource: "config",
+  };
   assertStringIncludes(
     builderDeleteReason(
       { availableBytes: 56.3 * GB, totalBytes: 460.4 * GB },
@@ -314,19 +323,22 @@ Deno.test("pruneContainerStore - a builder delete that recovered nothing says so
   assertStringIncludes(builder.detail!, "reclaimed nothing");
 });
 
-Deno.test("run.sh's work-volume heal floor does not drift from the worker's (Issue #493)", async () => {
-  // One host disk, one floor. `run.sh` cannot import the constants, so this
-  // is what keeps its fallbacks honest — the same guard
-  // `work_volume_ratchet_test.ts` puts on the volume name.
+Deno.test("run.sh's work-volume heal floor does not drift from the worker's (Issues #493, #732)", async () => {
+  // One host disk, one floor. `run.sh` used to resolve it from two
+  // environment variables of its own, and this guard read its source to keep
+  // those fallbacks in step with the constants. Since Issue #732 the floor is
+  // resolved once, by `resolveDiskFloors`, and carried in the launch plan —
+  // so the property is now checked on the real path rather than by reading
+  // the script.
+  const floors = resolveDiskFloors(() => undefined);
+  assertEquals(floors.lowFloorGb, DEFAULT_LOW_FLOOR_GB);
+  assertEquals(floors.lowFloorPercent, DEFAULT_LOW_FLOOR_PERCENT);
+
+  // What `run.sh` keeps of its own is a defensive fallback for a plan value
+  // it cannot parse; that must not drift from the constants either.
   const runSh = await Deno.readTextFile(
     new URL("../../../run.sh", import.meta.url),
   );
-  assertStringIncludes(
-    runSh,
-    `local total_kb="$1" gb="\${VIBE_HOST_DISK_LOW_FLOOR_GB:-${DEFAULT_LOW_FLOOR_GB}}"`,
-  );
-  assertStringIncludes(
-    runSh,
-    `local pct="\${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-${DEFAULT_LOW_FLOOR_PERCENT}}"`,
-  );
+  assertStringIncludes(runSh, `|| gb=${DEFAULT_LOW_FLOOR_GB}`);
+  assertStringIncludes(runSh, `|| pct=${DEFAULT_LOW_FLOOR_PERCENT}`);
 });

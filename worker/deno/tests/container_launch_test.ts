@@ -27,6 +27,7 @@ import {
   resolveContainerLaunchHostPaths,
   resolveContainerResources,
   scratchTmpfsMounts,
+  tmpfsArgument,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
@@ -419,7 +420,20 @@ Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with 
   // The standing gate against a silent revert: an immutable root filesystem
   // means a compromise inside the container can persist nothing beyond the
   // per-launch tmpfs and the volumes it is meant to write.
+  // The credentials mount is the one that differs per runtime (Issue #727):
+  // Docker takes the kernel's uid=/gid=, Podman refuses them and takes `U`.
+  const secretsMount: Record<"docker" | "podman", string> = {
+    // OWNED by the worker — a mode=0700 tmpfs mounted root-owned is unusable
+    // by an unprivileged process, which the live containment probe caught in
+    // CI.
+    docker:
+      `/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700,uid=${MANIFEST.user.uid},gid=${MANIFEST.user.gid}`,
+    // `podman run` exits with `unknown mount option "uid=1000"` when given
+    // the Docker spelling, so the same request is made Podman's way.
+    podman: "/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700,U",
+  };
   for (const kind of ["docker", "podman"] as const) {
+    const dialect = descriptorFor(kind).dialect;
     const plan = buildContainerLaunchPlan(
       inputs({ descriptor: descriptorFor(kind) }),
     );
@@ -431,19 +445,18 @@ Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with 
     // The flag and its scratch are one decision: every declared mount is
     // present, in order, and nothing else is.
     // The secrets mount carries the container user, so the declared list is
-    // compared after substitution (Issue #570).
+    // compared after substitution (Issue #570) and after the dialect's own
+    // ownership spelling (Issue #727).
     assertEquals(
       tmpfsValues(plan.runArgs),
-      scratchTmpfsMounts(MANIFEST.user),
+      scratchTmpfsMounts(MANIFEST.user).map((mount) =>
+        tmpfsArgument(dialect, mount)
+      ),
     );
     assertEquals(tmpfsValues(plan.runArgs), [
       "/tmp:rw,nosuid,nodev,exec,mode=1777",
       "/var/tmp:rw,nosuid,nodev,noexec,mode=1777",
-      // The credentials, on their own mount away from the agents' scratch,
-      // OWNED by the worker — a mode=0700 tmpfs mounted root-owned is
-      // unusable by an unprivileged process, which the live containment
-      // probe caught in CI.
-      `/run/vibe-secrets:rw,nosuid,nodev,noexec,mode=0700,uid=${MANIFEST.user.uid},gid=${MANIFEST.user.gid}`,
+      secretsMount[kind],
     ]);
     // Hardened the same way as the /tmp entry that predates this issue, and
     // `exec` only where the agent genuinely runs what it writes.
@@ -457,8 +470,36 @@ Deno.test("buildContainerLaunchPlan - mounts the root filesystem read-only with 
     );
     assertEquals(parsed.run.includes("--read-only"), true);
     // Substituted, since that is what the rendered plan carries.
-    assertEquals(tmpfsValues(parsed.run), scratchTmpfsMounts(MANIFEST.user));
+    assertEquals(tmpfsValues(parsed.run), tmpfsValues(plan.runArgs));
   }
+});
+
+Deno.test("buildContainerLaunchPlan - Podman is never given the uid=/gid= it refuses (Issue #727)", () => {
+  // `podman run --tmpfs /run/vibe-secrets:...,uid=1000,gid=1000` exits with
+  //   Error: unknown mount option "uid=1000"
+  // and refuses the whole launch, which is what blocked every worker start on
+  // a fresh Ubuntu + Podman host.
+  const podman = tmpfsValues(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("podman") }))
+      .runArgs,
+  );
+  const secrets = podman.find((value) => value.startsWith("/run/vibe-secrets"));
+  assert(secrets, "the credentials tmpfs must still be mounted");
+  assertEquals(/(^|,)uid=/.test(secrets), false, secrets);
+  assertEquals(/(^|,)gid=/.test(secrets), false, secrets);
+  // Not by dropping the option list: `mode=0700` and `noexec` are what keep
+  // the credential out of the agents' reach (Issue #564), and `U` is how
+  // Podman is asked for the owner it does understand.
+  assertStringIncludes(secrets, "rw,nosuid,nodev,noexec,mode=0700");
+  assertStringIncludes(secrets, ",U");
+
+  // Docker is byte-for-byte unchanged: it takes the kernel options directly.
+  const docker = tmpfsValues(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("docker") }))
+      .runArgs,
+  );
+  assertEquals(docker, scratchTmpfsMounts(MANIFEST.user));
+  assertEquals(docker.includes("U"), false);
 });
 
 Deno.test("buildContainerLaunchPlan - a runtime with no tmpfs gets neither --read-only nor scratch (Issue #516)", () => {
@@ -1109,4 +1150,65 @@ Deno.test("buildContainerLaunchPlan - passes the supervisor run cap into the con
     bare.runArgs.some((arg) => arg.startsWith("VIBE_RUN_")),
     false,
   );
+});
+
+// --- The runtime's own volume-removal verb (Issue #731) --------------------
+
+Deno.test("buildContainerLaunchPlan - carries the runtime's own volume-removal verb (Issue #731)", () => {
+  // `run.sh` hardcoded `volume delete`, which Podman does not have: the error
+  // was swallowed, the volume survived, and the `volume create` after it
+  // failed with "already exists". The verb belongs to the runtime, so the
+  // plan carries it.
+  assertEquals(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("podman") }))
+      .volumeRemoveArgs,
+    ["volume", "rm"],
+  );
+  assertEquals(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("docker") }))
+      .volumeRemoveArgs,
+    ["volume", "rm"],
+  );
+  // Apple `container` really does spell it `delete`, which is where the
+  // hardcoded verb came from — so "just use rm everywhere" would break it.
+  assertEquals(
+    buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor("apple-container") }),
+    ).volumeRemoveArgs,
+    ["volume", "delete"],
+  );
+});
+
+Deno.test("renderContainerLaunchPlan - the launchers receive the removal verb (Issue #731)", () => {
+  const plan = buildContainerLaunchPlan(
+    inputs({ descriptor: descriptorFor("podman") }),
+  );
+  const parsed = parseContainerLaunchPlanText(renderContainerLaunchPlan(plan));
+  assertEquals(parsed.volumeRemove, ["volume", "rm"]);
+});
+
+// --- The claiming floor rides the plan (Issue #732) ------------------------
+
+Deno.test("buildContainerLaunchPlan - carries the claiming floor and its origin (Issue #732)", () => {
+  // `run.sh` resolved the floor from two environment variables and nothing
+  // else, so a floor stated in `.config.json` was honoured by the worker and
+  // ignored by the launcher's own disk decisions.
+  const plan = buildContainerLaunchPlan(
+    inputs({
+      claimFloors: {
+        lowFloorGb: 20,
+        lowFloorPercent: 1,
+        lowFloorGbSource: "config",
+        lowFloorPercentSource: "env",
+      },
+    }),
+  );
+  assertEquals(plan.claimFloorGb, 20);
+  assertEquals(plan.claimFloorPercent, 1);
+  assertEquals(plan.claimFloorOrigin, "gb=config,percent=env");
+
+  const parsed = parseContainerLaunchPlanText(renderContainerLaunchPlan(plan));
+  assertEquals(parsed.claimFloorGb, "20");
+  assertEquals(parsed.claimFloorPercent, "1");
+  assertEquals(parsed.claimFloorOrigin, "gb=config,percent=env");
 });

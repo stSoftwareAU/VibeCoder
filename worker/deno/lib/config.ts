@@ -649,6 +649,13 @@ export async function loadConfig(
   const minDiskSpaceMb = file.min_disk_space_mb ??
     OPERATIONAL_DEFAULTS.minDiskSpaceMb;
 
+  // The claiming floor's two terms (Issue #732). Deliberately *not* defaulted
+  // here: `resolveDiskFloors` applies the defaults, so an unset key falls
+  // through to the environment override and then to DEFAULT_LOW_FLOOR_*,
+  // rather than this file restating a number that would then drift.
+  const hostDiskLowFloorGb = file.host_disk_low_floor_gb;
+  const hostDiskLowFloorPercent = file.host_disk_low_floor_percent;
+
   // Periodic milestone branch sync (Issue #1238)
   const syncMilestoneBranches = file.sync_milestone_branches ??
     OPERATIONAL_DEFAULTS.syncMilestoneBranches;
@@ -851,6 +858,10 @@ export async function loadConfig(
     workerName,
     enableModelFallback,
     minDiskSpaceMb,
+    ...(hostDiskLowFloorGb === undefined ? {} : { hostDiskLowFloorGb }),
+    ...(hostDiskLowFloorPercent === undefined
+      ? {}
+      : { hostDiskLowFloorPercent }),
     syncMilestoneBranches,
     milestoneSyncCooldownSeconds,
     staleFailedDiagnosticDays,

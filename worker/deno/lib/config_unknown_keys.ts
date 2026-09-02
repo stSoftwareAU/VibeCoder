@@ -141,6 +141,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "stuck_issue_timeout",
   "issue_retry_cooldown",
   "min_disk_space_mb",
+  // Issue #732: the claiming floor, stated where the rest of the host is.
+  "host_disk_low_floor_gb",
+  "host_disk_low_floor_percent",
   "milestone_sync_cooldown_seconds",
   "stale_failed_diagnostic_days",
   "stale_planning_warning_days",

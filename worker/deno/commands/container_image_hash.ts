@@ -5,12 +5,13 @@
  * `run.sh` and `run.ps1` can decide whether the required image already exists
  * without duplicating the hashing rule in shell and PowerShell.
  *
- * The reference covers the deployment's `container_tools` selection as well as
- * the committed definition (Issue #73), so the decision this command drives is
- * made against the tools the image actually bakes in. The selection is read
- * from `--config`, else `CONFIG_PATH`, else `<base-dir>/.config.json`; a
- * checkout with no configuration selects no tools and gets the same reference
- * it did before.
+ * The reference covers the deployment's `container_tools` selection (Issue #73)
+ * and its `agent_providers` set (Issue #729) as well as the committed
+ * definition, so the decision this command drives is made against what the
+ * image actually bakes in — a Codex host is told to rebuild rather than handed
+ * the tag of the Claude image it already has. Both are read from `--config`,
+ * else `CONFIG_PATH`, else `<base-dir>/.config.json`; a checkout with no
+ * configuration selects neither and gets the same reference it did before.
  *
  * Usage:
  *   deno run --allow-env --allow-read mod.ts container-image-hash \
@@ -24,12 +25,13 @@
 
 import type { Command, CommandResult } from "../types.ts";
 import {
+  AGENT_PROVIDERS_HASH_INPUT,
   computeContainerImageHash,
   CONTAINER_IMAGE_INPUTS,
   CONTAINER_TOOLS_HASH_INPUT,
   resolveContainerImageReference,
 } from "../lib/container_image_hash.ts";
-import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
+import { readDeploymentImageSelection } from "../lib/container_image_selection.ts";
 
 /** What the command reports alongside the printed reference. */
 export interface ContainerImageHashResult {
@@ -46,6 +48,11 @@ export interface ContainerImageHashResult {
   configFile: string;
   /** The selected tool ids, in the order they are installed. */
   containerTools: string[];
+  /**
+   * The `AGENT_PROVIDERS` value the build passes (Issue #729), or `""` when
+   * the deployment takes the image's default provider set.
+   */
+  agentProviders: string;
 }
 
 /** Whether a path is absolute on either host style. */
@@ -90,10 +97,15 @@ export const containerImageHashCommand: Command = {
     );
 
     try {
-      // The selected tools are part of the image's identity: a host that
-      // rebuilds off this reference alone must rebuild when they change.
-      const { tools } = await readContainerToolsSelection(configFile);
-      const options = { containerTools: tools };
+      // The selected tools and the enabled providers are both part of the
+      // image's identity: a host that rebuilds off this reference alone must
+      // rebuild when either changes. Read through the one reader setup's check
+      // and the tabletop runner also use, so the three cannot disagree (#743).
+      const { options, tools, agentProviders } =
+        await readDeploymentImageSelection({
+          repoRoot: baseDir,
+          configFile,
+        });
       const hash = await computeContainerImageHash(baseDir, options);
       const image = await resolveContainerImageReference(baseDir, options);
 
@@ -106,9 +118,11 @@ export const containerImageHashCommand: Command = {
           inputs: [
             ...CONTAINER_IMAGE_INPUTS,
             ...(tools.length > 0 ? [CONTAINER_TOOLS_HASH_INPUT] : []),
+            ...(agentProviders ? [AGENT_PROVIDERS_HASH_INPUT] : []),
           ],
           configFile,
           containerTools: tools.map((tool) => tool.id),
+          agentProviders: agentProviders ?? "",
         },
       };
     } catch (error) {

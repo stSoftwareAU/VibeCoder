@@ -82,8 +82,10 @@ An id that is set but not registered fails loudly at startup with the supported
 ids named — the worker never silently falls back to the default and runs an
 agent you did not choose.
 
-The default container image installs Claude Code alone, so choosing another
-provider also means building the image with it in the `AGENT_PROVIDERS` set.
+The default container image installs Claude Code alone, and the launcher builds
+the image with whatever `agent_providers` lists — it passes the set as
+`--build-arg AGENT_PROVIDERS` and mixes it into the image tag, so a Codex-only
+host builds and runs a Codex image rather than reusing the default one.
 
 - [Container Image — the coding-agent provider layer](docs/CONTAINER.md#the-coding-agent-provider-layer)
   — how the seam works, what the image installs, and how to add the next
@@ -442,7 +444,7 @@ flowchart LR
 | **[Supply-Chain Triage](docs/SUPPLY-CHAIN-TRIAGE.md)**                         | Bulk triage and dispatch order for supply-chain findings across the scan templates                                                                     |
 | **[Security Remediation Batching](docs/SECURITY-REMEDIATION-BATCHING.md)**     | How security findings are batched into remediation work for worker throughput                                                                          |
 | **[Full-history Secret Scan](docs/FULL-HISTORY-SECRET-SCAN.md)**               | Operator manual for the gitleaks + trufflehog sweep across every branch and tag: the single command, the baseline, and the rotation log that blocks on unrotated leaks |
-| **[Supply-chain Gate](docs/SUPPLY-CHAIN-GATE.md)**                             | Operator manual for the CI gate that fails on unpinned actions, unfrozen `deno` invocations, tag-referenced container bases, permissive Renovate auto-merge or a stale dependency inventory |
+| **[Supply-chain Gate](docs/SUPPLY-CHAIN-GATE.md)**                             | Operator manual for the CI gate that fails on unpinned actions, unfrozen `deno` invocations, tag-referenced or short-named container bases, permissive Renovate auto-merge or a stale dependency inventory |
 | **[Whole-tree Security Sweep](docs/SECURITY-TREE-SWEEP.md)**                   | Operator manual for the one-shot worker-scan + semgrep + CodeQL sweep over the entire checkout: sources and coverage, cross-tool dedup, the baseline, triage and filing |
 | **Public Export**                                     | Operator manual for `export-public.sh`: the versioned allowlist manifest, the hard-deny gate, the staged brand-new history, and why it never configures a remote or pushes |
 | **Public Repository Readiness** | Operator checklist for the public VibeCoder repository: the CI the export ships, every repository setting with its `gh api` command, branding assets, and the licence confirmation. The public README/SECURITY/CONTRIBUTING are authored under [`docs/public/`](docs/public/) |

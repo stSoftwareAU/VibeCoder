@@ -117,10 +117,29 @@ export async function probeDiskReading(
   return parseDfKP(result.value.stdout);
 }
 
-/** The floors, from env overrides or the defaults. */
+/** Where one floor term's value came from (Issue #732). */
+export type DiskFloorSource = "config" | "env" | "default";
+
+/** The floors, and where each term came from. */
 export interface DiskFloors {
   lowFloorGb: number;
   lowFloorPercent: number;
+  /** Where `lowFloorGb` came from. */
+  lowFloorGbSource: DiskFloorSource;
+  /** Where `lowFloorPercent` came from. */
+  lowFloorPercentSource: DiskFloorSource;
+}
+
+/**
+ * The floor terms a deployment states in `.config.json` (Issue #732).
+ *
+ * Both optional: an unset term takes the environment override, and failing
+ * that the default, so a host that configures neither behaves exactly as it
+ * did before this was configurable.
+ */
+export interface ConfiguredDiskFloors {
+  hostDiskLowFloorGb?: number;
+  hostDiskLowFloorPercent?: number;
 }
 
 /** A finite number from an env value, or null when unset/blank/garbage. */
@@ -131,17 +150,151 @@ function envNumber(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** A finite, in-range number, or null when the value cannot be used. */
+function usableNumber(
+  value: number | null | undefined,
+  max?: number,
+): number | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isFinite(value) || value < 0) return null;
+  if (max !== undefined && value > max) return null;
+  return value;
+}
+
+/**
+ * Resolve the claiming floor's two terms, and say where each came from.
+ *
+ * Precedence, per the rule Issue #289 set for every other knob: **the
+ * `.config.json` key always wins over the environment variable**, and the
+ * default applies only when neither states a usable value. The terms resolve
+ * independently, so a deployment may pin the percentage in its configuration
+ * and still raise the gigabyte term for one launch from the environment.
+ *
+ * The floor is the *larger* of the two ({@link lowFloorBytes}), which on a
+ * 1.875 TB filesystem makes the 10 % term ≈ 187 GB — the reading that refused
+ * work on a host with 37.5 GB free (Issue #732). The default formula is
+ * unchanged; what changed is that a deployment can now state its own, in the
+ * file the rest of its configuration lives in.
+ *
+ * @param env - Environment reader (injectable for tests)
+ * @param configured - The deployment's `.config.json` floor terms, if any
+ * @returns Both terms and the origin of each
+ */
 export function resolveDiskFloors(
   env: (name: string) => string | undefined,
+  configured: ConfiguredDiskFloors = {},
 ): DiskFloors {
-  const gb = envNumber(env(HOST_DISK_LOW_FLOOR_GB_ENV)) ?? NaN;
-  const percent = envNumber(env(HOST_DISK_LOW_FLOOR_PERCENT_ENV)) ?? NaN;
+  const configGb = usableNumber(configured.hostDiskLowFloorGb);
+  const envGb = usableNumber(envNumber(env(HOST_DISK_LOW_FLOOR_GB_ENV)));
+  const configPercent = usableNumber(configured.hostDiskLowFloorPercent, 100);
+  const envPercent = usableNumber(
+    envNumber(env(HOST_DISK_LOW_FLOOR_PERCENT_ENV)),
+    100,
+  );
+
   return {
-    lowFloorGb: Number.isFinite(gb) && gb >= 0 ? gb : DEFAULT_LOW_FLOOR_GB,
-    lowFloorPercent: Number.isFinite(percent) && percent >= 0 && percent <= 100
-      ? percent
-      : DEFAULT_LOW_FLOOR_PERCENT,
+    lowFloorGb: configGb ?? envGb ?? DEFAULT_LOW_FLOOR_GB,
+    lowFloorGbSource: configGb !== null
+      ? "config"
+      : envGb !== null
+      ? "env"
+      : "default",
+    lowFloorPercent: configPercent ?? envPercent ?? DEFAULT_LOW_FLOOR_PERCENT,
+    lowFloorPercentSource: configPercent !== null
+      ? "config"
+      : envPercent !== null
+      ? "env"
+      : "default",
   };
+}
+
+/**
+ * Read the deployment's floor terms out of its `.config.json` (Issue #732).
+ *
+ * Used by the launcher, which resolves the floor before any worker has loaded
+ * a configuration. Absent file → no terms stated, which is what an
+ * unconfigured host has always had. A file that exists but cannot be read or
+ * parsed is **not** silently treated as unconfigured: it throws, because
+ * quietly claiming at a different floor than the operator wrote is the class
+ * of fault this issue is about.
+ *
+ * @param configFile - Host path of the worker configuration file
+ * @returns The stated terms; empty when the file states none
+ * @throws When the file exists but is unreadable or is not a JSON object
+ */
+export async function readConfiguredDiskFloors(
+  configFile: string,
+): Promise<ConfiguredDiskFloors> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(configFile);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return {};
+    throw new Error(
+      `Cannot read the host disk floor: ${configFile} is unreadable ` +
+        `(${(error as Error).message}).`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `Cannot read the host disk floor: ${configFile} is not valid JSON ` +
+        `(${(error as Error).message}).`,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `Cannot read the host disk floor: ${configFile} is not a JSON object.`,
+    );
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const gb = record["host_disk_low_floor_gb"];
+  const percent = record["host_disk_low_floor_percent"];
+  return {
+    ...(typeof gb === "number" ? { hostDiskLowFloorGb: gb } : {}),
+    ...(typeof percent === "number"
+      ? { hostDiskLowFloorPercent: percent }
+      : {}),
+  };
+}
+
+/**
+ * The origin of each term, in the compact form the launch plan carries.
+ *
+ * The launcher prints it beside the free-space reading, so a refused claim
+ * says which knob would move it (Issue #732).
+ *
+ * @param floors - The resolved floors
+ * @returns e.g. `gb=env,percent=config`
+ */
+export function diskFloorOrigin(floors: DiskFloors): string {
+  return `gb=${floors.lowFloorGbSource},percent=${floors.lowFloorPercentSource}`;
+}
+
+/**
+ * One line naming the resolved floor and where each term came from.
+ *
+ * @param floors - The resolved floors
+ * @param totalBytes - Size of the filesystem the floor is taken against
+ * @returns A human-readable description
+ */
+export function describeDiskFloors(
+  floors: DiskFloors,
+  totalBytes: number,
+): string {
+  const byGb = floors.lowFloorGb * GIB;
+  const byPercent = (floors.lowFloorPercent / 100) * totalBytes;
+  const winner = byGb >= byPercent ? "the GB term" : "the percent term";
+  return `${
+    Math.round(lowFloorBytes(totalBytes, floors) / GIB * 10) / 10
+  } GB ` +
+    `(${winner}: ${floors.lowFloorGb} GB [${floors.lowFloorGbSource}] vs ` +
+    `${floors.lowFloorPercent}% [${floors.lowFloorPercentSource}] of ` +
+    `${Math.round(totalBytes / GIB)} GB)`;
 }
 
 /** The larger of the two floors, in bytes, for a filesystem of `totalBytes`. */
@@ -228,6 +381,11 @@ export interface HostDiskMonitorOptions {
   /** Minimum milliseconds between probes. */
   sampleIntervalMs?: number;
   log?: (message: string) => void;
+  /**
+   * The deployment's `.config.json` floor terms (Issue #732). Omitted → the
+   * environment and the defaults decide, exactly as before.
+   */
+  floors?: ConfiguredDiskFloors;
 }
 
 /**
@@ -263,7 +421,7 @@ export class HostDiskMonitor {
     this.now = options.now ?? Date.now;
     this.sampleIntervalMs = options.sampleIntervalMs ?? 60_000;
     this.log = options.log ?? (() => {});
-    this.floors = resolveDiskFloors(this.env);
+    this.floors = resolveDiskFloors(this.env, options.floors ?? {});
     this.baseline = readHostDiskBaseline(this.env);
   }
 

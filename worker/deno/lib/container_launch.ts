@@ -86,6 +86,7 @@ import {
   buildMountArguments,
   type ContainerMount,
   type ContainerRuntimeDescriptor,
+  type TmpfsOwnershipStyle,
 } from "./container_runtime.ts";
 import type { ContainerManifest } from "./container_manifest.ts";
 import {
@@ -93,7 +94,9 @@ import {
   GH_CREDENTIAL_SUBDIR,
 } from "./credential_preflight.ts";
 import {
+  AGENT_PROVIDERS_BUILD_ARG,
   type AgentProviderDescriptor,
+  agentProvidersBuildValue,
   enabledAgentProviders,
 } from "./agent_provider.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
@@ -166,6 +169,12 @@ export interface ContainerLaunchInputs {
   watchdogSeconds: number;
   /** Resolved host paths. */
   hostPaths: ContainerLaunchHostPaths;
+  /**
+   * The claiming floor this deployment states (Issue #732). Omitted → the
+   * environment overrides and then the defaults, which is what every host had
+   * before the floor was configurable.
+   */
+  claimFloors?: DiskFloors;
   /**
    * Path of the Containerfile the build reads (Issue #4393). The launcher
    * passes a comment-stripped copy it wrote beside the plan file, so the
@@ -353,6 +362,30 @@ export interface ContainerLaunchPlan {
    * itself rather than wedging the volume unowned forever.
    */
   initArgs: string[];
+  /**
+   * Arguments that remove one named volume, before its name (Issue #731).
+   *
+   * The verb is the runtime's, not the launcher's guess: Docker and Podman
+   * spell it `volume rm`, Apple `container` spells it `volume delete`, and
+   * `run.sh` hardcoded the latter — which Podman does not have, so recovery
+   * removed nothing and the `volume create` after it failed on a name that
+   * was still taken.
+   */
+  volumeRemoveArgs: string[];
+  /**
+   * The claiming floor the launcher's own disk decisions use (Issue #732):
+   * the gigabyte term, the percentage term, and where each came from.
+   *
+   * Resolved here — where the deployment's `.config.json` can be read —
+   * rather than in `run.sh`, which had the two environment variables and
+   * nothing else. On a 1.875 TB filesystem the 10 % default term is ≈ 187 GB,
+   * so a host with 37.5 GB free was judged low and refused work; the default
+   * formula is unchanged, but a deployment can now state its own.
+   */
+  claimFloorGb: number;
+  claimFloorPercent: number;
+  /** Where each floor term came from, e.g. `gb=env,percent=config`. */
+  claimFloorOrigin: string;
   /** Arguments that report whether the image is already present. */
   imageInspectArgs: string[];
   /** Arguments that build the image. */
@@ -441,7 +474,9 @@ export const SCRATCH_TMPFS_MOUNTS: readonly string[] = [
   // Docker honours `uid=`/`gid=`, so the mount arrives owned by the worker
   // and 0700 means what it says. Apple container ignores the options
   // entirely and mounts 1777 root-owned; there the entrypoint's own 0700
-  // subdirectory is the protection instead.
+  // subdirectory is the protection instead. Podman refuses the pair outright
+  // and spells the same request `U`, which `tmpfsArgument` substitutes per
+  // dialect (Issue #727).
   `${SECRETS_MOUNT_PATH}:rw,nosuid,nodev,noexec,mode=0700,uid=\${uid},gid=\${gid}`,
 ];
 
@@ -461,21 +496,53 @@ export function scratchTmpfsMounts(
   );
 }
 
+/** The kernel tmpfs options that name an owner (Issue #727). */
+const TMPFS_OWNER_OPTION = /^(uid|gid)=/;
+
 /**
- * The `--tmpfs` value this dialect will actually honour (Issue #570).
+ * The `--tmpfs` value this dialect will actually honour (Issue #570, #727).
  *
  * A dialect that ignores the `path:options` form gets the bare path: passing
  * options it does not parse mounts a directory *named* for the whole string
  * and leaves the intended path absent — a failure that looks like success.
  * The entrypoint applies the permissions there instead.
+ *
+ * Ownership is a second, narrower question (Issue #727). Podman parses the
+ * option list but hands it to the OCI runtime rather than the kernel's tmpfs
+ * parser, so `uid=`/`gid=` are refused — `unknown mount option "uid=1000"` —
+ * and the refusal kills the launch. Its own spelling is `U`, which Podman
+ * rewrites into the exec user's `uid=`/`gid=` before the runtime sees the
+ * mount. Only the ownership pair is rewritten: `mode=0700` and `noexec` are
+ * honoured by Podman as they are by Docker, and dropping them would hand back
+ * the world-readable credential directory Issue #564 closed.
+ *
+ * @param dialect - The runtime's tmpfs capabilities.
+ * @param mount - A declared `path:options` scratch mount, already substituted.
+ * @returns The value to pass after `--tmpfs`.
  */
 export function tmpfsArgument(
-  dialect: { tmpfsHonoursOptions: boolean },
+  dialect: {
+    tmpfsHonoursOptions: boolean;
+    tmpfsOwnership: TmpfsOwnershipStyle;
+  },
   mount: string,
 ): string {
-  if (dialect.tmpfsHonoursOptions) return mount;
   const separator = mount.indexOf(":");
-  return separator === -1 ? mount : mount.slice(0, separator);
+  if (!dialect.tmpfsHonoursOptions) {
+    return separator === -1 ? mount : mount.slice(0, separator);
+  }
+  if (separator === -1 || dialect.tmpfsOwnership === "mount-options") {
+    return mount;
+  }
+  const path = mount.slice(0, separator);
+  const options = mount.slice(separator + 1).split(",");
+  const kept = options.filter((option) => !TMPFS_OWNER_OPTION.test(option));
+  // A mount that never asked for an owner is passed through untouched: only
+  // the credentials mount carries `uid=`/`gid=`, and adding `U` to the
+  // agents' shared 1777 scratch would change a mount this issue is not about.
+  if (kept.length === options.length) return mount;
+  if (dialect.tmpfsOwnership === "chown-flag") kept.push("U");
+  return `${path}:${kept.join(",")}`;
 }
 
 /** Path fragments that identify a container-runtime control socket. */
@@ -504,6 +571,11 @@ import {
   pathStyleFor,
 } from "./host_path_style.ts";
 import { resolveHostConfigPath } from "./host_config_path.ts";
+import {
+  diskFloorOrigin,
+  type DiskFloors,
+  resolveDiskFloors,
+} from "./host_disk.ts";
 
 export { type LauncherPathStyle, pathStyleFor };
 
@@ -610,11 +682,12 @@ function assertRunArgumentsContained(
   args: string[],
   expectReadOnlyRoot = false,
   /**
-   * The container user, when the caller emitted user-owned tmpfs mounts. The
-   * scratch check compares against the SUBSTITUTED mounts, since that is what
-   * the arguments carry (Issue #570).
+   * The `--tmpfs` values the caller emitted, when it emitted any. The scratch
+   * check compares against exactly those: they carry the substituted
+   * container user (Issue #570) and the ownership spelling this dialect
+   * accepts (Issue #727), which is what the arguments themselves hold.
    */
-  user?: { uid: number; gid: number },
+  expectedTmpfsArguments?: readonly string[],
 ): void {
   for (const arg of args) {
     const lower = arg.toLowerCase();
@@ -643,9 +716,7 @@ function assertRunArgumentsContained(
   // write is a container that cannot run, so the pairing is checked here as
   // well as gated at the point it is emitted.
   if (readOnly) {
-    const expected = user
-      ? scratchTmpfsMounts(user)
-      : [...SCRATCH_TMPFS_MOUNTS];
+    const expected = expectedTmpfsArguments ?? SCRATCH_TMPFS_MOUNTS;
     const missing = expected.filter((mount) => !args.includes(mount));
     if (missing.length > 0) {
       throw new Error(
@@ -902,9 +973,12 @@ export function buildContainerLaunchPlan(
   // precondition of read-only support, so `--read-only` can never be emitted
   // without these mounts; a runtime that took a tmpfs but no `--read-only`
   // still gets a disposable root, exactly as before.
+  const tmpfsArguments: string[] = [];
   if (dialect.supportsTmpfs) {
     for (const mount of scratchTmpfsMounts(manifest.user)) {
-      runArgs.push("--tmpfs", tmpfsArgument(dialect, mount));
+      const value = tmpfsArgument(dialect, mount);
+      tmpfsArguments.push(value);
+      runArgs.push("--tmpfs", value);
     }
   }
 
@@ -955,7 +1029,7 @@ export function buildContainerLaunchPlan(
   // Last, so the launcher can append the worker's own arguments after it.
   runArgs.push(image);
 
-  assertRunArgumentsContained(runArgs, readOnlyRoot, manifest.user);
+  assertRunArgumentsContained(runArgs, readOnlyRoot, tmpfsArguments);
 
   // The volume init (Issues #4186, #229): a fresh named volume is
   // root-owned and the worker runs as the manifest's unprivileged account,
@@ -1005,7 +1079,28 @@ export function buildContainerLaunchPlan(
       `VIBE_CONTAINER_TOOLS=${inputs.containerToolsSpecJson}`,
     );
   }
+  // Issue #729: the deployment's enabled providers decide which agent CLIs the
+  // image installs, so the *same* set that decides the credential mounts above
+  // is carried into the build. Nothing appended when it is already what the
+  // image installs by default, so the default fleet build — and its tag — are
+  // byte-for-byte unchanged.
+  const providersBuildValue = agentProvidersBuildValue(
+    providers.map((provider) => provider.id),
+    manifest.installedProviders,
+  );
+  if (providersBuildValue) {
+    buildArgs.push(
+      "--build-arg",
+      `${AGENT_PROVIDERS_BUILD_ARG}=${providersBuildValue}`,
+    );
+  }
   buildArgs.push(joinPath(base, "container", style));
+
+  // The floor the launcher's own disk decisions compare against, and where
+  // each term came from, so `run.sh` names the number that refused a launch
+  // instead of recomputing it from two environment variables (Issue #732).
+  const floors = inputs.claimFloors ??
+    resolveDiskFloors((name) => Deno.env.get(name));
 
   return {
     runtime: descriptor.executable,
@@ -1024,6 +1119,10 @@ export function buildContainerLaunchPlan(
       .map((mount) => mount.source),
     volumes: volumeMounts.map((mount) => mount.source),
     initArgs,
+    volumeRemoveArgs: [...dialect.volumeRemoveArgs],
+    claimFloorGb: floors.lowFloorGb,
+    claimFloorPercent: floors.lowFloorPercent,
+    claimFloorOrigin: diskFloorOrigin(floors),
     imageInspectArgs: [...dialect.imageInspectArgs, image],
     buildArgs,
     builderStopArgs: [...dialect.builderStopArgs],
@@ -1057,6 +1156,12 @@ export interface ParsedContainerLaunchPlan {
   ensure: string[];
   volume: string[];
   init: string[];
+  /** The runtime's own "remove one volume" verb (Issue #731). */
+  volumeRemove: string[];
+  /** The claiming floor's terms and their origin (Issue #732). */
+  claimFloorGb: string;
+  claimFloorPercent: string;
+  claimFloorOrigin: string;
   exists: string[];
   build: string[];
   run: string[];
@@ -1082,6 +1187,10 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.ensureDirectories.map((dir) => `ensure=${dir}`),
     ...plan.volumes.map((name) => `volume=${name}`),
     ...plan.initArgs.map((arg) => `init=${arg}`),
+    ...plan.volumeRemoveArgs.map((arg) => `volume-remove=${arg}`),
+    `claim-floor-gb=${plan.claimFloorGb}`,
+    `claim-floor-percent=${plan.claimFloorPercent}`,
+    `claim-floor-origin=${plan.claimFloorOrigin}`,
     ...plan.imageInspectArgs.map((arg) => `exists=${arg}`),
     ...plan.buildArgs.map((arg) => `build=${arg}`),
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
@@ -1122,6 +1231,10 @@ export function parseContainerLaunchPlanText(
     ensure: [],
     volume: [],
     init: [],
+    volumeRemove: [],
+    claimFloorGb: "",
+    claimFloorPercent: "",
+    claimFloorOrigin: "",
     exists: [],
     build: [],
     run: [],
@@ -1156,6 +1269,18 @@ export function parseContainerLaunchPlanText(
         break;
       case "init":
         parsed.init.push(value);
+        break;
+      case "volume-remove":
+        parsed.volumeRemove.push(value);
+        break;
+      case "claim-floor-gb":
+        parsed.claimFloorGb = value;
+        break;
+      case "claim-floor-percent":
+        parsed.claimFloorPercent = value;
+        break;
+      case "claim-floor-origin":
+        parsed.claimFloorOrigin = value;
         break;
       case "exists":
         parsed.exists.push(value);

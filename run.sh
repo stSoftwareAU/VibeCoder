@@ -444,6 +444,10 @@ WATCHDOG_SECONDS=""
 ensure_dirs=()
 volume_names=()
 init_args=()
+volume_remove_args=()
+claim_floor_gb=""
+claim_floor_percent=""
+claim_floor_origin=""
 exists_args=()
 build_args=()
 builder_stop_args=()
@@ -461,6 +465,10 @@ while IFS= read -r -d '' token; do
     ensure) ensure_dirs+=("${value}") ;;
     volume) volume_names+=("${value}") ;;
     init) init_args+=("${value}") ;;
+    volume-remove) volume_remove_args+=("${value}") ;;
+    claim-floor-gb) claim_floor_gb="${value}" ;;
+    claim-floor-percent) claim_floor_percent="${value}" ;;
+    claim-floor-origin) claim_floor_origin="${value}" ;;
     exists) exists_args+=("${value}") ;;
     build) build_args+=("${value}") ;;
     builder-stop) builder_stop_args+=("${value}") ;;
@@ -475,7 +483,9 @@ done <"${PLAN_FILE}"
 
 if [[ -z "${RUNTIME}" || -z "${IMAGE}" ]] || [[ ${#run_args[@]} -eq 0 ]] ||
   [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
-  [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]]; then
+  [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]] ||
+  [[ ${#volume_remove_args[@]} -eq 0 ]] ||
+  [[ -z "${claim_floor_gb}" ]] || [[ -z "${claim_floor_percent}" ]]; then
   echo "Error: incomplete container launch plan - refusing to launch" >&2
   exit 1
 fi
@@ -715,9 +725,12 @@ fi
 record_phase volume_init
 
 # Named volumes (Issue #4186): the work dir and its approval-state sibling
-# live on runtime-managed volumes, not host directories. `volume inspect` /
-# `volume create` are spelled identically on every supported runtime; the
-# plan supplies the names. The ownership init runs on every launch — it is
+# live on runtime-managed volumes, not host directories. `volume inspect` and
+# `volume create` are spelled identically on every supported runtime, so they
+# are written out here; *removal* is not — Docker and Podman say `volume rm`,
+# Apple `container` says `volume delete` — so the plan carries that verb and
+# `recreate_volume` below uses it (Issue #731). The ownership init runs on
+# every launch — it is
 # an idempotent root chown of the mount roots, so a first launch that dies
 # between create and chown heals on the next one.
 for volume in ${volume_names[@]+"${volume_names[@]}"}; do
@@ -726,6 +739,59 @@ for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
   fi
 done
+# One line of a captured stderr file, for a message an operator reads.
+#
+# Empty output becomes an explicit "no explanation given" rather than a
+# message that trails off — a failure with no words is still a failure.
+runtime_error_detail() {
+  local text
+  text="$(tr '\n' ' ' <"$1" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')"
+  printf '%s' "${text:-no explanation given}"
+}
+
+# Recreate one named volume, loudly (Issues #229, #478, #731).
+#
+# The removal verb comes from the plan — Docker and Podman spell it
+# `volume rm`, Apple `container` spells it `volume delete` — because this
+# script used to hardcode one of them and swallow the result. On Podman that
+# meant `volume delete` was not a command at all: the error went to
+# /dev/null, the volume survived, and the very next line failed with
+# `volume with name vibe-work already exists`, which describes neither the
+# fault nor its cause.
+#
+# A failed removal is judged by the volume, not by the exit code: one that is
+# gone was nothing to remove and the create proceeds; one that is still there
+# is reported in the runtime's own words, and the create that would certainly
+# fail is not attempted.
+#
+# Arguments: the volume name. Returns non-zero when it could not be recreated.
+recreate_volume() {
+  local volume="$1" err detail
+  err="$(mktemp)"
+
+  if ! "${RUNTIME}" "${volume_remove_args[@]}" "${volume}" \
+    </dev/null >/dev/null 2>"${err}"; then
+    if "${RUNTIME}" volume inspect "${volume}" >/dev/null 2>&1; then
+      detail="$(runtime_error_detail "${err}")"
+      rm -f "${err}"
+      echo "[run.sh] could not remove volume ${volume}: ${detail}" >&2
+      log_run_core "volume: removing ${volume} failed: ${detail}"
+      return 1
+    fi
+  fi
+
+  if ! "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null 2>"${err}"; then
+    detail="$(runtime_error_detail "${err}")"
+    rm -f "${err}"
+    echo "[run.sh] could not create volume ${volume}: ${detail}" >&2
+    log_run_core "volume: creating ${volume} failed: ${detail}"
+    return 1
+  fi
+
+  rm -f "${err}"
+  return 0
+}
+
 # The named volume mounted at an init target, on stdout; non-zero when no
 # volume maps to that target.
 volume_for_target() {
@@ -784,9 +850,11 @@ run_volume_init() {
       fi
       echo "[run.sh] recreating volume ${volume}: its filesystem could not be repaired (Issue #229)" >&2
       log_run_core "volume-init: recreating ${volume} (${target}) - filesystem unrepairable (Issue #229)"
-      "${RUNTIME}" volume delete "${volume}" </dev/null >/dev/null 2>&1 || true
-      "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
-      recreated=1
+      # A recreate that fails leaves the init's own exit 3 to be reported:
+      # better the unrepairable filesystem than a misleading "already exists".
+      if recreate_volume "${volume}"; then
+        recreated=1
+      fi
     done <<<"${out}"
     if ((recreated)); then
       status=0
@@ -812,7 +880,8 @@ fi
 # advertises discard — so it has never returned a byte on this fleet and the
 # thin-provisioned image only grows. GRQ-23 held ~14 GB of dead space, sat
 # below its floor for three days claiming nothing, and the only remedy on
-# offer (`container volume delete vibe-work`) was addressed to a human who
+# offer (a hand-run `volume rm vibe-work`, or `volume delete` on Apple
+# `container`) was addressed to a human who
 # was not there. An unattended host has no human, so the launcher takes it.
 #
 # When the init reports the trim refused AND the host is below the floor the
@@ -834,19 +903,32 @@ host_disk_field_kb() {
     awk -v f="$1" 'NR>1 {v=$(NF-f)} END {print v}'
 }
 
-# The floor the worker stops claiming at, in kilobytes: the larger of
-# VIBE_HOST_DISK_LOW_FLOOR_GB and VIBE_HOST_DISK_LOW_FLOOR_PERCENT of the
-# filesystem. Kept in step with DEFAULT_LOW_FLOOR_GB / DEFAULT_LOW_FLOOR_PERCENT
-# in worker/deno/lib/host_disk.ts — healing at a different floor than the
-# worker claims at would either wipe the clones early or never fire at all.
+# The floor the worker stops claiming at, in kilobytes: the larger of the two
+# terms the plan carries. The terms are resolved by `resolveDiskFloors` in
+# worker/deno/lib/host_disk.ts — `.config.json` first, then
+# VIBE_HOST_DISK_LOW_FLOOR_GB / VIBE_HOST_DISK_LOW_FLOOR_PERCENT, then the
+# defaults (Issues #289, #732) — so the launcher heals at exactly the floor
+# the worker claims at, and a floor stated in the configuration is not
+# silently ignored by the launcher because it only ever read the environment.
 claim_floor_kb() {
-  local total_kb="$1" gb="${VIBE_HOST_DISK_LOW_FLOOR_GB:-20}"
-  local pct="${VIBE_HOST_DISK_LOW_FLOOR_PERCENT:-10}" by_gb by_pct
+  local total_kb="$1" gb="${claim_floor_gb}" pct="${claim_floor_percent}"
+  local by_gb by_pct
   [[ "${gb}" =~ ^[0-9]+$ ]] || gb=20
   [[ "${pct}" =~ ^[0-9]+$ && "${pct}" -le 100 ]] || pct=10
   by_gb=$((gb * 1024 * 1024))
   by_pct=$((total_kb * pct / 100))
   if ((by_gb > by_pct)); then printf '%s' "${by_gb}"; else printf '%s' "${by_pct}"; fi
+}
+
+# The floor, and where it came from, for a message an operator can act on.
+# A refused claim that names only a number leaves the reader to guess which
+# knob would move it (Issue #732).
+claim_floor_detail() {
+  local total_kb="$1" floor_kb
+  floor_kb="$(claim_floor_kb "${total_kb}")"
+  printf 'floor %s MB (larger of %s GB and %s%% of %s MB; %s)' \
+    "$((floor_kb / 1024))" "${claim_floor_gb}" "${claim_floor_percent}" \
+    "$((total_kb / 1024))" "${claim_floor_origin:-unknown}"
 }
 
 # Kilobytes the runtime's store holds for a named volume; non-zero when the
@@ -875,10 +957,13 @@ heal_untrimmable_volumes() {
     return 0
   fi
   floor_kb="$(claim_floor_kb "${total_kb}")"
+  local floor_detail
+  floor_detail="$(claim_floor_detail "${total_kb}")"
   if ((avail_kb >= floor_kb)); then
-    log_run_core "work-volume: trim refused for ${trim_refused_volumes[*]}; $((avail_kb / 1024)) MB free is above the $((floor_kb / 1024)) MB claiming floor - the image is ratcheting but the host is not short (Issue #478)"
+    log_run_core "work-volume: trim refused for ${trim_refused_volumes[*]}; $((avail_kb / 1024)) MB free is above the claiming ${floor_detail} - the image is ratcheting but the host is not short (Issue #478)"
     return 0
   fi
+  log_run_core "host-disk: $((avail_kb / 1024)) MB free on ${disk_gate_path} is below the claiming ${floor_detail} (Issues #226, #732)"
 
   local now last interval_hours
   now="$(date +%s)"
@@ -909,8 +994,10 @@ heal_untrimmable_volumes() {
   for volume in "${trim_refused_volumes[@]}"; do
     echo "[run.sh] recreating volume ${volume}: the runtime refuses to trim it and the host is below its claiming floor (Issue #478)" >&2
     log_run_core "work-volume: recreating ${volume} - trim refused and $((avail_kb / 1024)) MB free is below the $((floor_kb / 1024)) MB claiming floor (Issue #478)"
-    "${RUNTIME}" volume delete "${volume}" </dev/null >/dev/null 2>&1 || true
-    "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
+    if ! recreate_volume "${volume}"; then
+      report_unrecovered "${volume} could not be recreated - see the runtime error above; the host is still below its claiming floor"
+      return 0
+    fi
   done
   mkdir -p "$(dirname "${HEAL_STATE_FILE}")" 2>/dev/null || true
   printf '%s\n' "${now}" >"${HEAL_STATE_FILE}" 2>/dev/null || true
@@ -945,14 +1032,32 @@ heal_untrimmable_volumes
 # (Issue #478), so this reading is taken after both have had their chance.
 disk_avail_kb="$(host_disk_field_kb 2)"
 disk_hard_floor_gb="${VIBE_HOST_DISK_HARD_FLOOR_GB:-5}"
+
+# A disk decision taken after a refused trim must say so (Issue #734). The
+# refusal never triggers a decision by itself — the heal above requires the
+# host to be below its claiming floor as well, and this floor is a measurement
+# of the host — but where a runtime cannot discard, the space the guest freed
+# never comes back, so the refusal is the reason the reading is what it is. An
+# operator reading "refusing to launch: 900 MB free" with no mention of it is
+# left with an unexplained work refusal.
+trim_refusal_note=""
+if ((${#trim_refused_volumes[@]})); then
+  trim_refusal_note=" - this runtime refused to trim ${trim_refused_volumes[*]} on this launch, so the volume image keeps every block it holds and the guest's own reclaim cannot return host disk (Issues #384, #734)"
+fi
+
 if [[ "${disk_avail_kb}" =~ ^[0-9]+$ && "${disk_hard_floor_gb}" =~ ^[0-9]+$ ]]; then
   if ((disk_avail_kb < disk_hard_floor_gb * 1024 * 1024)); then
     echo "[run.sh] refusing to launch: ${disk_gate_path} has $((disk_avail_kb / 1024)) MB free," \
-      "below the ${disk_hard_floor_gb} GB hard floor (VIBE_HOST_DISK_HARD_FLOOR_GB) (Issue #226)" >&2
-    log_run_core "host-disk: refused launch - $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} is below the ${disk_hard_floor_gb} GB hard floor (Issue #226)"
+      "below the ${disk_hard_floor_gb} GB hard floor (VIBE_HOST_DISK_HARD_FLOOR_GB) (Issue #226)${trim_refusal_note}" >&2
+    log_run_core "host-disk: refused launch - $((disk_avail_kb / 1024)) MB free on ${disk_gate_path} is below the ${disk_hard_floor_gb} GB hard floor (Issue #226)${trim_refusal_note}"
     exit 1
   fi
-  log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}"
+  disk_total_kb="$(host_disk_field_kb 4)"
+  if [[ "${disk_total_kb}" =~ ^[1-9][0-9]*$ ]]; then
+    log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}; claiming $(claim_floor_detail "${disk_total_kb}")${trim_refusal_note}"
+  else
+    log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}${trim_refusal_note}"
+  fi
 fi
 
 # Exit status this launcher reports after reaping a wedged container - a named

@@ -37,6 +37,12 @@ function plan(): ContainerLaunchPlan {
     initArgs: ["run", "--rm", "vibe-coder:abc123"],
     imageInspectArgs: ["image", "inspect", "vibe-coder:abc123"],
     buildArgs: ["build"],
+    // The runtime's own removal verb rides in the plan (Issue #731).
+    volumeRemoveArgs: ["volume", "rm"],
+    // The claiming floor rides the plan too (Issue #732).
+    claimFloorGb: 20,
+    claimFloorPercent: 10,
+    claimFloorOrigin: "gb=default,percent=default",
     builderStopArgs: [],
     builderAbsentPatterns: [],
     runArgs: [

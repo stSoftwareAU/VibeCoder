@@ -210,6 +210,13 @@ GH_CRED_DIR="${HOME:-/home/vibe}/.vibe-coder/credentials/gh"
 # applied here. And a tmpfs the runtime silently failed to mount leaves an
 # ordinary directory on the read-only root, which is not writable — so the
 # mount is probed, not trusted.
+#
+# Who owns the mount differs by runtime (Issue #727): Docker is given
+# `uid=`/`gid=` and Podman its own `U`, both of which arrive owned by this
+# account, while Apple container mounts root-owned 1777. The per-credential
+# directory created below is the protection that holds either way — it is
+# created by this account and set 0700, so the mount's own mode is never the
+# only thing standing between a credential and the agents.
 VIBE_SECRETS_DIR="/run/vibe-secrets"
 if [[ ! -d "${VIBE_SECRETS_DIR}" ]]; then
   # The runtime offered no such mount — a dialect that takes no tmpfs at all
