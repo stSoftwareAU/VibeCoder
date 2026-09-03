@@ -487,7 +487,17 @@ export class HostDiskMonitor {
     }
 
     let status: HostDiskStatus;
-    if (this.baseline !== null) {
+    // Issue #852: a launch baseline is an estimate that can only ever fall —
+    // `estimateHostFree` subtracts volume growth from a figure captured once,
+    // so space freed on the host mid-run is structurally invisible and the
+    // fleet stays gated until the next launch. When the probe reports the
+    // same total size as the baseline, the work dir is on the very filesystem
+    // the launcher measured: `df` there *is* the host, and a live reading is
+    // strictly better information than an estimate derived from it.
+    const probeIsHostFilesystem = this.baseline !== null &&
+      reading !== null &&
+      reading.totalBytes === this.baseline.totalBytes;
+    if (this.baseline !== null && !probeIsHostFilesystem) {
       if (!this.baselined) {
         this.volumeUsedAtLaunch = reading?.usedBytes ?? null;
         this.baselined = true;
@@ -533,7 +543,9 @@ export class HostDiskMonitor {
         availableBytes: reading.availableBytes,
         totalBytes: reading.totalBytes,
         source: "native-df",
-        detail: `work dir filesystem ${cls.detail}`,
+        detail: probeIsHostFilesystem
+          ? `host filesystem (measured, same volume as the launch baseline) ${cls.detail}`
+          : `work dir filesystem ${cls.detail}`,
       };
     } else {
       status = {
