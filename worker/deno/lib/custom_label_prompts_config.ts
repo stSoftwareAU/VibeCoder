@@ -186,6 +186,24 @@ export function assertCustomLabelPrompts(
 }
 
 /**
+ * The label names of every configured mapping (Issue #847, part of #843).
+ *
+ * The trust gate (`operationalDispatchLabels`), the operational-label
+ * verification in `label_security.ts`, and the reserved-label filters in
+ * `github.ts` all need the label names without the prompt paths. Reading them
+ * from this one helper keeps those guards in step with the validated config
+ * rather than each rebuilding the list.
+ *
+ * @param config - Worker configuration (or any object carrying the resolved list)
+ * @returns The configured labels, in configuration order and original case
+ */
+export function customLabelPromptLabels(
+  config: { customLabelPrompts: CustomLabelPromptMapping[] },
+): string[] {
+  return config.customLabelPrompts.map((mapping) => mapping.label);
+}
+
+/**
  * Resolve the configured prompt file for a GitHub label, if any (Issue #846,
  * part of #843).
  *

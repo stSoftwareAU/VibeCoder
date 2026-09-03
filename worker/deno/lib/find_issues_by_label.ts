@@ -6,11 +6,12 @@
  * Returns candidates sorted oldest-first.
  *
  * Authorship gate (Issue #3083): for operational dispatch labels
- * (planning/question/refine-issue/grill-me/needs-revision) the label
- * *adder* must always be on the allowlist — these labels drive
- * privileged automation phases, so a trusted issue author alone is not
- * enough (AND semantics). For any other label the original OR semantics
- * apply: the issue author or the label adder must be in the allowlist.
+ * (planning/question/refine-issue/grill-me/needs-revision, plus the operator's
+ * `custom_label_prompts` labels — Issue #847) the label *adder* must always be
+ * on the allowlist — these labels drive privileged automation phases, so a
+ * trusted issue author alone is not enough (AND semantics). For any other label
+ * the original OR semantics apply: the issue author or the label adder must be
+ * in the allowlist.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */

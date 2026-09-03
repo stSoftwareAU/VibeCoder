@@ -118,9 +118,25 @@ const OPERATIONAL_LABEL_NAMES_LOWER: ReadonlySet<string> = new Set(
 /**
  * Return true if `label` is an operational label, comparing case-insensitively
  * (Issue #3088).
+ *
+ * `extraOperationalLabels` carries the operator's `custom_label_prompts` labels
+ * (Issue #847, part of #843). Those are config-driven, so they cannot live in
+ * the static {@link OPERATIONAL_LABEL_NAMES} constant — but each one dispatches
+ * a privileged automation phase with an operator-supplied prompt, so it must be
+ * trust-verified exactly like `planning`. Defaults to `[]`, so a caller with no
+ * custom mappings keeps today's behaviour precisely.
+ *
+ * @param label - The label name to test
+ * @param extraOperationalLabels - Config-driven operational labels (custom label prompts)
+ * @returns True if the label is operational
  */
-export function isOperationalLabel(label: string): boolean {
-  return OPERATIONAL_LABEL_NAMES_LOWER.has(label.toLowerCase());
+export function isOperationalLabel(
+  label: string,
+  extraOperationalLabels: readonly string[] = [],
+): boolean {
+  const lower = label.toLowerCase();
+  return OPERATIONAL_LABEL_NAMES_LOWER.has(lower) ||
+    extraOperationalLabels.some((extra) => extra.toLowerCase() === lower);
 }
 
 /**
@@ -173,6 +189,11 @@ export interface OperationalLabelResult {
  * @param ghCommandFn - Optional gh command function for testing
  * @param workerUser - Optional worker GitHub username; trusts `needs-human` when applied by this user
  * @param fleetWorkerLogins - Fleet worker logins (own host + siblings) excluded from operational-label trust (Issue #3225)
+ * @param extraOperationalLabels - Config-driven operational labels — the operator's
+ *   `custom_label_prompts` labels (Issue #847). Each dispatches a privileged
+ *   phase, so it is verified, and stripped when untrusted, exactly like
+ *   `planning`. None of them is blocking-only, so an unverifiable adder fails
+ *   closed.
  * @returns Verification result with trusted and untrusted labels
  */
 export async function verifyOperationalLabels(
@@ -183,6 +204,7 @@ export async function verifyOperationalLabels(
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   workerUser?: string,
   fleetWorkerLogins: string[] = [],
+  extraOperationalLabels: readonly string[] = [],
 ): Promise<OperationalLabelResult> {
   const result: OperationalLabelResult = {
     trustedLabels: [],
@@ -191,7 +213,7 @@ export async function verifyOperationalLabels(
 
   // Find which operational labels are present on this issue
   const operationalPresent = issueLabels.filter((label) =>
-    isOperationalLabel(label)
+    isOperationalLabel(label, extraOperationalLabels)
   );
 
   if (operationalPresent.length === 0) {

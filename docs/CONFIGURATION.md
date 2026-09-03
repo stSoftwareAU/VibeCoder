@@ -513,6 +513,15 @@ Semantics:
   dispatched.
 - **Default = off.** The default empty list changes no existing behaviour —
   an operator opts in by adding entries.
+- **Trust-gated like `planning` (Issue #847).** A configured label joins the
+  operational dispatch set, so the label **adder** must be on the
+  `allowed_authors` allowlist — a trusted issue *author* is not sufficient. An
+  add by an untrusted account is stripped, not honoured as a plain descriptive
+  label, and an add that cannot be attributed from the issue timeline fails
+  closed (the issue is skipped). The worker itself never self-applies a custom
+  label: the creation-time reserved-label filters treat the configured labels as
+  reserved. See
+  [INTERNALS.md — Issue discovery](INTERNALS.md#-issue-discovery-modular-issue-finder).
 
 ### 🧭 Run Mode
 

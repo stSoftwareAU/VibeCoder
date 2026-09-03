@@ -373,6 +373,25 @@ export function isLabelNotFoundError(errorMessage: string): boolean {
 }
 
 /**
+ * Whether `label` is reserved, treating the operator's configured
+ * `custom_label_prompts` labels as reserved too (Issue #847, part of #843).
+ *
+ * A custom label dispatches a privileged automation phase, so the worker must
+ * never self-apply one — the same rule `RESERVED_LABELS` encodes for `planning`
+ * and friends. The custom set is config-driven, so it is passed in rather than
+ * baked into the static constant. Comparison is case-insensitive, matching
+ * `isReservedLabel`.
+ */
+function isReservedOrCustomLabel(
+  label: string,
+  extraReserved: readonly string[],
+): boolean {
+  if (isReservedLabel(label)) return true;
+  const lower = label.toLowerCase();
+  return extraReserved.some((extra) => extra.toLowerCase() === lower);
+}
+
+/**
  * Filter out reserved labels that must not be applied when creating issues.
  *
  * Reserved labels are used by the worker for operational purposes (issue
@@ -383,12 +402,20 @@ export function isLabelNotFoundError(errorMessage: string): boolean {
  * special operational labels.
  *
  * @param labels - Labels to filter
+ * @param extraReserved - Configured `custom_label_prompts` labels, reserved for
+ *   the same reason (Issue #847). Defaults to `[]` — no configured mappings,
+ *   no behaviour change.
  * @returns Labels with reserved labels removed
  */
-export function filterReservedLabels(labels: string[]): string[] {
+export function filterReservedLabels(
+  labels: string[],
+  extraReserved: readonly string[] = [],
+): string[] {
   // Issue #3088: compare case-insensitively so a non-lower-case canonical
   // label (e.g. `Planning`) is still stripped.
-  return labels.filter((label) => !isReservedLabel(label));
+  return labels.filter((label) =>
+    !isReservedOrCustomLabel(label, extraReserved)
+  );
 }
 
 /**
@@ -407,17 +434,20 @@ export function filterReservedLabels(labels: string[]): string[] {
  * @param labels - Labels to filter
  * @param context - Caller context for the warning (e.g. "owner/repo idle-task filer")
  * @param logger - Logger used to emit one WARNING per stripped label
+ * @param extraReserved - Configured `custom_label_prompts` labels, reserved for
+ *   the same reason (Issue #847)
  * @returns Labels with reserved labels removed
  */
 export function filterReservedLabelsWithWarning(
   labels: string[],
   context: string,
   logger: Logger,
+  extraReserved: readonly string[] = [],
 ): string[] {
   const kept: string[] = [];
   for (const label of labels) {
     // Issue #3088: case-insensitive match (see isReservedLabel).
-    if (isReservedLabel(label)) {
+    if (isReservedOrCustomLabel(label, extraReserved)) {
       logger.warn("Stripped reserved label from worker-created issue", {
         label,
         context,
@@ -449,6 +479,8 @@ export interface CreateIssuesResult {
  * @param repo - Target repository in "owner/repo" format
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  * @param logger - Logger used to warn on stripped reserved labels (Issue #2825)
+ * @param extraReservedLabels - Configured `custom_label_prompts` labels, which
+ *   the worker must never self-apply (Issue #847)
  * @returns Created issue numbers and any failures
  */
 export async function createGitHubIssuesWithPartialFailures(
@@ -456,6 +488,7 @@ export async function createGitHubIssuesWithPartialFailures(
   repo: string,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   logger: Logger = defaultLogger,
+  extraReservedLabels: readonly string[] = [],
 ): Promise<CreateIssuesResult> {
   const createdIssues: number[] = [];
   const failures: Array<{ title: string; error: string }> = [];
@@ -468,6 +501,7 @@ export async function createGitHubIssuesWithPartialFailures(
         improvement.labels,
         `${repo} suggest-improvements`,
         logger,
+        extraReservedLabels,
       );
       const labelArgs = safeLabels.flatMap((l) => ["--label", l]);
 

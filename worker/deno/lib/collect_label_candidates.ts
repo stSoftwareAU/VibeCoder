@@ -36,6 +36,7 @@ import {
   filterTrustedLabels,
   verifyOperationalLabels,
 } from "./label_security.ts";
+import { customLabelPromptLabels } from "./custom_label_prompts_config.ts";
 import {
   resolveFleetAuthors,
   resolveFleetMaintenanceAuthorSet,
@@ -174,6 +175,10 @@ export async function collectLabelCandidates(
         batchedGh,
         options.githubUser,
         fleetWorkerLogins,
+        // Issue #847: a `custom_label_prompts` label dispatches a privileged
+        // phase, so an untrusted actor's add is stripped here rather than
+        // falling through as a plain descriptive label.
+        customLabelPromptLabels(config),
       );
       if (verification.untrustedLabels.length > 0) {
         diag?.logIssueSkipped(
