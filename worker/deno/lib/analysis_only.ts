@@ -43,6 +43,12 @@ export function hasAnalysisOnlyMarker(issueBody: string): boolean {
 }
 
 /** Marker prefix embedded in the hand-off comment posted by the worker. */
+/**
+ * Issue #842: colon-delimited payload rather than `key="value"`, and frozen
+ * for the same reason as `BLOCKED_DEFERRAL_MARKER_PREFIX` — a later run reads
+ * it back to tell a first handoff from a repeat one, so renaming it would
+ * re-handoff every issue already marked.
+ */
 export const ANALYSIS_ONLY_HANDOFF_MARKER_PREFIX =
   "<!-- vibe-analysis-only-handoff:";
 

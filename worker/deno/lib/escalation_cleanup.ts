@@ -38,13 +38,15 @@ export interface EscalationConfig {
  * @param issueNumber - Issue number
  * @param config - Label configuration (see EscalationConfig)
  * @param ghCommandFn - Optional gh command function for testing
+ * @returns The discovery labels actually removed, so the caller can say what
+ *   must be restored (Issue #854).
  */
 export async function stripDiscoveryLabelsOnEscalation(
   repo: string,
   issueNumber: number,
   config: EscalationConfig,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
-): Promise<void> {
+): Promise<string[]> {
   let currentLabels: string[];
   try {
     const output = await ghCommandFn([
@@ -59,14 +61,15 @@ export async function stripDiscoveryLabelsOnEscalation(
     const parsed = JSON.parse(output) as { labels?: Array<{ name: string }> };
     currentLabels = (parsed.labels ?? []).map((l) => l.name);
   } catch {
-    return;
+    return [];
   }
 
   if (!currentLabels.includes(config.needsHumanLabel)) {
-    return;
+    return [];
   }
 
   const toRemove = new Set<string>([config.workOnLabel, ...config.issueLabels]);
+  const removed: string[] = [];
   for (const label of currentLabels) {
     if (!toRemove.has(label)) continue;
     try {
@@ -79,8 +82,44 @@ export async function stripDiscoveryLabelsOnEscalation(
         "--remove-label",
         label,
       ]);
+      removed.push(label);
     } catch {
       // Non-fatal — continue with remaining labels.
     }
   }
+
+  // Issue #854: recovery needs BOTH labels restored, and until now nothing
+  // said so. The escalation comment tells the reader to clear the block; the
+  // discovery label is stripped silently afterwards, so an operator who does
+  // exactly what they were told leaves the issue invisible rather than
+  // claimable — no longer parked, simply never picked up again.
+  //
+  // Posted only when labels were actually removed. A second escalation finds
+  // them already gone and removes nothing, so this does not repeat.
+  if (removed.length > 0) {
+    const list = removed.map((l) => `\`${l}\``).join(", ");
+    const body = `## Discovery labels removed\n\n` +
+      `**Why:** \`${config.needsHumanLabel}\` is on this issue, so the ` +
+      `worker removed ${list} to stop label-based discovery re-surfacing it ` +
+      `(Issue #1487).\n\n` +
+      `**To resume:** remove \`${config.needsHumanLabel}\` **and** re-add ` +
+      `${list}. Clearing \`${config.needsHumanLabel}\` alone leaves this ` +
+      `issue with no discovery label, so nothing will claim it.`;
+    try {
+      await ghCommandFn([
+        "issue",
+        "comment",
+        String(issueNumber),
+        "--repo",
+        repo,
+        "--body",
+        body,
+      ]);
+    } catch {
+      // Best-effort: the labels are already correct, and a failed comment
+      // must not mask the escalation outcome.
+    }
+  }
+
+  return removed;
 }
