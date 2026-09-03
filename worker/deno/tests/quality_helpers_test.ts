@@ -228,6 +228,18 @@ Deno.test("runningDenoPath - answers with the running deno binary", () => {
   assertEquals(runningDenoPath(), Deno.execPath());
 });
 
+/**
+ * The module cache the child should use. Reading env is safe under
+ * `--parallel`; only writing it races (Issue #880). The child's HOME is a
+ * dead path, so DENO_DIR must be resolved here rather than left to default.
+ */
+function denoDirForChild(): string {
+  const explicit = Deno.env.get("DENO_DIR");
+  if (explicit) return explicit;
+  const home = Deno.env.get("HOME") ?? "";
+  return `${home}/.cache/deno`;
+}
+
 Deno.test(
   "detectTool - deno resolves with an empty PATH and no fallback dir (PR #888 CI)",
   async () => {
@@ -237,16 +249,40 @@ Deno.test(
     // deno, so its own path must answer regardless of PATH or HOME. On a host
     // where deno happens to sit on one of those fallbacks this passes either
     // way; on the CI runner, where it does not, only the fix keeps it green.
-    const originalPath = Deno.env.get("PATH");
-    Deno.env.set("PATH", "");
-    try {
-      const result = await detectTool("deno", "/nonexistent-home-xyzzy");
-      assertEquals(result.ok, true);
-      if (result.ok) assertEquals(result.value, Deno.execPath());
-    } finally {
-      if (originalPath === undefined) Deno.env.delete("PATH");
-      else Deno.env.set("PATH", originalPath);
-    }
+    //
+    // The empty PATH lives in a child process, never in this one: mutating
+    // `Deno.env` races every other test under `deno test --parallel`
+    // (Issue #880), so the seam is a subprocess rather than a global write.
+    const moduleUrl = new URL("../lib/quality_helpers.ts", import.meta.url)
+      .href;
+    const child = new Deno.Command(Deno.execPath(), {
+      args: [
+        "eval",
+        "--allow-all",
+        `const { detectTool } = await import(${JSON.stringify(moduleUrl)});\n` +
+        `const r = await detectTool("deno", "/nonexistent-home-xyzzy");\n` +
+        `console.log(JSON.stringify(r));`,
+      ],
+      // An empty PATH and an absent HOME are the CI runner's shape; DENO_DIR
+      // is carried over so the child reuses the module cache instead of
+      // re-fetching it.
+      clearEnv: true,
+      env: {
+        PATH: "",
+        HOME: "/nonexistent-home-xyzzy",
+        DENO_DIR: denoDirForChild(),
+      },
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const output = await child.output();
+    const stderr = new TextDecoder().decode(output.stderr);
+    assertEquals(output.success, true, `child failed: ${stderr}`);
+    const result = JSON.parse(
+      new TextDecoder().decode(output.stdout).trim(),
+    ) as { ok: boolean; value?: string };
+    assertEquals(result.ok, true);
+    assertEquals(result.value, Deno.execPath());
   },
 );
 

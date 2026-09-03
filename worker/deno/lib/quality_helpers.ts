@@ -373,6 +373,29 @@ export function formatBaselineQualityNote(baselineOutput: string): string {
 }
 
 /**
+ * Word-delimited tokens in a shell script, the shape a tool name appears in:
+ * preceded by start-of-line, whitespace, `/` or `"`, and followed by
+ * whitespace, a quote or end-of-line — so `.npmrc` and `deno.lock` are single
+ * tokens rather than references to `npm` and `deno`.
+ *
+ * One literal pattern for every tool, rather than `new RegExp(tool)` per name:
+ * a regex built from an interpolated value is a semgrep
+ * `detect-non-literal-regexp` finding, and the same rule blocks the PR in
+ * `.github/workflows/semgrep.yml`.
+ */
+const TOOL_WORD_PATTERN = /(?:^|[\s/"])([\w.-]+)(?=[\s"']|$)/gm;
+
+/** The set of word-delimited tokens a quality script mentions. */
+function referencedToolWords(scriptContent: string): Set<string> {
+  const words = new Set<string>();
+  for (const match of scriptContent.matchAll(TOOL_WORD_PATTERN)) {
+    const word = match[1];
+    if (word) words.add(word);
+  }
+  return words;
+}
+
+/**
  * Detect missing quality tools by scanning a quality script.
  *
  * Scans the quality script for references to common tools (npm, node, yarn,
@@ -401,11 +424,10 @@ export async function detectMissingQualityTools(
   }
 
   const missingTools: string[] = [];
-  const toolPattern = (tool: string) =>
-    new RegExp(`(^|[\\s/"])(${tool})([\\s"']|$)`, "m");
+  const referenced = referencedToolWords(scriptContent);
 
   for (const tool of toolsToCheck) {
-    if (toolPattern(tool).test(scriptContent)) {
+    if (referenced.has(tool)) {
       const found = await detectTool(tool);
       if (!found.ok) {
         missingTools.push(tool);
