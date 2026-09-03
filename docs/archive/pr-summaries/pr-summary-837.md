@@ -94,12 +94,18 @@ test run and the diff:
 
 `./quality.sh` was run to completion on the final tree. `semgrep`,
 `markdownlint`, `mermaid`, `deno lint`, `deno type check`, `deno fmt` and every
-chokepoint check pass. `deno tests` is red, and the failures are environmental,
-not caused by this change: this worker host exports `CONFIG_PATH`, which the
-setup script refuses alongside the tests' own `CONFIG_FILE`, taking out the
-`setup_credential_provisioning_test.ts` suite plus `run_setup_cli` and
-`host_work_dir`. `env -u CONFIG_PATH -u CONFIG_FILE` runs them green, and they
-fail identically on an unmodified worktree of the milestone base.
+chokepoint check pass. `deno tests` is red — 16972 passed, 35 failed — and the
+35 are environmental, not caused by this change. This worker host exports
+`CONFIG_PATH`, which the setup script refuses alongside the tests' own
+`CONFIG_FILE` ("CONFIG_FILE and CONFIG_PATH are both set and name different
+files"), taking out six setup/credential suites:
+`setup_credential_provisioning_test.ts` (18),
+`setup_provider_credential_flow_test.ts` (10), `setup_lockfile_test.ts` (3),
+`setup_workdir_reminder_test.ts` (2), `setup_prerequisites_test.ts` (1) and
+`service_account_env_test.ts` (1). Isolated two ways: those files run green
+under `env -u CONFIG_PATH -u CONFIG_FILE`, and a clean worktree of the
+milestone base at `cde58bf` — this diff absent — fails the same 35 on this
+host. No failing test touches `prompts/`, `docs/` or the new suite.
 
 The one failure this change did cause — `cross-repo prompt bodies carry no
 VibeCoder-internal source paths`, because the suppression rewrite had named
@@ -164,10 +170,10 @@ flowchart LR
 - **partial** — `./quality.sh` passes — evidence: full gate run after the final
   edit; every stage green except `deno tests` — reviewer: partial — reason: the
   reviewer ran the gate independently and reached the same verdict. `deno
-  tests` is red only from this host's `CONFIG_PATH` leak, which fails
-  identically on an unmodified base worktree and passes under
-  `env -u CONFIG_PATH -u CONFIG_FILE`; the criterion still says passes, and on
-  this host it does not
+  tests` is red only from this host's `CONFIG_PATH` leak: the same 35 setup and
+  credential tests fail on a clean worktree of the base at `cde58bf` with this
+  diff absent, and pass under `env -u CONFIG_PATH -u CONFIG_FILE`. The
+  criterion still says passes, and on this host it does not
 - **met** — the scan-family heading table's issue-body rationale slot —
   evidence: `security_scan_house_vocabulary_test.ts::files its rationale under
   the family slot`, `prompt.md:1705` and `:1726` — reviewer: partial — reason:
