@@ -18,7 +18,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import {
   findSuppressions,
@@ -73,16 +73,26 @@ function prose(text: string): { flat: string; lineAt: (at: number) => number } {
 
 /**
  * Every prose match for `pattern` in `text`, rendered as `line N: <phrase>`.
- * Newlines are matched as ordinary whitespace, so `the\nexecutor` is caught
- * the same as `the executor` — a wrapped variant is drift, not an exemption.
+ *
+ * The prose is flattened across the template's ~70-column hard wrap, so a
+ * banned phrase can straddle a newline. Patterns must therefore spell inner
+ * whitespace `\s+` rather than a literal space — `/idle\s+task/` catches
+ * `idle\ntask`, `/idle task/` would not, and a wrapped variant is drift, not
+ * an exemption. Both rules are enforced here rather than by rewriting the
+ * pattern at runtime, which keeps every regex in this file a literal.
  */
 function hitsIn(text: string, pattern: RegExp): string[] {
-  const { flat, lineAt } = prose(text);
-  const wrapAware = new RegExp(
-    pattern.source.replaceAll(" ", "\\s+"),
-    pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g",
+  assert(
+    pattern.global,
+    `prose pattern ${pattern} must be global, or only the first hit is found`,
   );
-  return [...flat.matchAll(wrapAware)].map((m) =>
+  assert(
+    !pattern.source.includes(" "),
+    `prose pattern ${pattern} has a literal space; use \\s+ so it still ` +
+      "matches when the hard wrap splits the phrase",
+  );
+  const { flat, lineAt } = prose(text);
+  return [...flat.matchAll(pattern)].map((m) =>
     `line ${lineAt(m.index ?? 0)}: ${m[0].replace(/\s+/g, " ").trim()}`
   );
 }
@@ -101,11 +111,10 @@ function languageFor(marker: string): SupportedLanguage {
 /**
  * Positive control for the five prose bans below. Each of them asserts an
  * *empty* hit list, so a `prose()` that returned nothing — an odd fence count,
- * an unbalanced backtick, a stale regex rewrite — would turn all five green
- * while checking nothing. This test fails in that case: it pins that the
- * projection keeps the bulk of the template, that a banned phrase is found
- * even when the hard wrap splits it, and that a code span or fenced block is
- * still exempt.
+ * an unbalanced backtick — would turn all five green while checking nothing.
+ * This test fails in that case: it pins that the projection keeps the bulk of
+ * the template, that a banned phrase is found even when the hard wrap splits
+ * it, and that a code span or fenced block is still exempt.
  */
 Deno.test("security_scan - the prose matcher is not vacuous (Issue #837)", async () => {
   const template = await securityScanPrompt();
@@ -128,23 +137,31 @@ Deno.test("security_scan - the prose matcher is not vacuous (Issue #837)", async
     "```",
   ].join("\n");
   assertEquals(
-    hitsIn(wrapped, /\b(?:the|The)\s+executors?\b/),
+    hitsIn(wrapped, /\b(?:the|The)\s+executors?\b/g),
     ["line 1: the executor"],
     "the matcher must catch a wrapped phrase and exempt code spans and fences",
   );
 
-  // A pattern written with a literal space must match across the wrap too —
-  // that rewrite is what stops `idle\ntask` slipping past the bans below.
+  // A two-word phrase must still be caught when the wrap falls between the
+  // words — the case a pattern written with a literal space would miss.
   assertEquals(
-    hitsIn("A scheduled idle\ntask runs nightly.", /\bidle task\b/i),
+    hitsIn("A scheduled idle\ntask runs nightly.", /\bidle\s+task\b/gi),
     ["line 1: idle task"],
-    "a literal space in the pattern must match a newline",
+    "`\\s+` between the words must match a newline",
+  );
+
+  // And a pattern that spells that space literally is rejected outright,
+  // rather than silently under-matching the bans below.
+  assertThrows(
+    () => hitsIn("idle task", /\bidle task\b/g),
+    Error,
+    "literal space",
   );
 });
 
 Deno.test("security_scan - spells the product name Vibe Coder in prose (Issue #837)", async () => {
   // Repo slugs and URLs keep the one-word form; only prose is governed.
-  const hits = await proseHits(/(?<![\w/])VibeCoder(?![\w/])/);
+  const hits = await proseHits(/(?<![\w/])VibeCoder(?![\w/])/g);
   assertEquals(
     hits,
     [],
@@ -160,7 +177,7 @@ Deno.test("security_scan - spells the product name Vibe Coder in prose (Issue #8
 Deno.test("security_scan - calls the Deno harness the worker (Issue #837)", async () => {
   // Scoped to the harness noun: "executor" is a legitimate finding-class
   // word (thread-pool executor, statement executor) in a security prompt.
-  const hits = await proseHits(/\b(?:the|The)\s+executors?\b/);
+  const hits = await proseHits(/\b(?:the|The)\s+executors?\b/g);
   assertEquals(
     hits,
     [],
@@ -178,21 +195,21 @@ Deno.test("security_scan - calls the Deno harness the worker (Issue #837)", asyn
 });
 
 Deno.test("security_scan - uses ./quality.sh, hyphenated idle-task and capital Markdown (Issue #837)", async () => {
-  const bareQuality = await proseHits(/(?<![./\w])quality\.sh/);
+  const bareQuality = await proseHits(/(?<![./\w])quality\.sh/g);
   assertEquals(
     bareQuality,
     [],
     "the house form is `./quality.sh`:\n" + bareQuality.join("\n"),
   );
 
-  const idleTask = await proseHits(/\bidle task\b/i);
+  const idleTask = await proseHits(/\bidle\s+task\b/gi);
   assertEquals(
     idleTask,
     [],
     "the house form is `idle-task`:\n" + idleTask.join("\n"),
   );
 
-  const lowerMarkdown = await proseHits(/(?<![\w-])markdown\b/);
+  const lowerMarkdown = await proseHits(/(?<![\w-])markdown\b/g);
   assertEquals(
     lowerMarkdown,
     [],
