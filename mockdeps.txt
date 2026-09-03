@@ -1,0 +1,106 @@
+function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
+  return {
+    log: () => {},
+    logError: () => {},
+    logTiming: () => {},
+    logWorkerSummary: () => {},
+
+    checkPidFile: () => Promise.resolve({ canProceed: true, message: "OK" }),
+    claimPidFile: () => Promise.resolve(),
+    releasePidFile: () => Promise.resolve(),
+
+    gitResetToOrigin: () => Promise.resolve({ ok: true, value: undefined }),
+    setupLogging: () => Promise.resolve(),
+    loadAndValidateConfig: () =>
+      Promise.resolve({ ok: true, value: createDefaultRunCoreConfig() }),
+    checkDependencies: () => Promise.resolve({ ok: true, value: undefined }),
+    checkSoftwareUpdates: () => Promise.resolve(),
+    checkDiskSpace: () => Promise.resolve({ ok: true, value: undefined }),
+    rotateLogFiles: () => Promise.resolve(),
+    cleanupStaleTempFiles: () => Promise.resolve(),
+    recoverStuckIssues: () => Promise.resolve(),
+    cleanupStaleBranches: () => Promise.resolve(),
+    checkFeatureAvailability: () => Promise.resolve(),
+
+    checkClaudeHealth: () =>
+      Promise.resolve({ ok: true, value: { healthy: true } }),
+    checkGhAuth: () => Promise.resolve({ ok: true, value: { valid: true } }),
+
+    findAndProcessPrFeedback: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessSpellingFailure: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessCiFailure: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    updateOpenPrBranches: () => Promise.resolve({ ok: true, value: undefined }),
+    nudgeStalledCi: () => Promise.resolve({ ok: true, value: undefined }),
+    ensureAutoMerge: () => Promise.resolve({ ok: true, value: undefined }),
+    cleanupMergedBranches: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    closeIssuesForMergedPrs: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    recoverAssignedWithClosedPr: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    syncMilestoneBranches: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    checkMilestoneCompletions: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+    findAndProcessRefinement: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessGrillMe: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessQuestion: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    findAndProcessPlanning: () =>
+      Promise.resolve({ ok: true, value: { processed: false } }),
+    scanStaleWorkflowIssues: () =>
+      Promise.resolve({ ok: true, value: undefined }),
+
+    findNextIssue: () => Promise.resolve({ ok: true, value: null }),
+    processIssue: () => Promise.resolve({ ok: true, value: { success: true } }),
+
+    trackFailure: () => Promise.resolve(),
+    resetFailures: () => Promise.resolve(),
+    shouldExitOnFailures: () => Promise.resolve(false),
+    recordIssueCooldown: () => Promise.resolve(),
+
+    circuitBreakerReset: () => Promise.resolve(),
+    circuitBreakerRecordZeroProgress: () => Promise.resolve(),
+    circuitBreakerGetSleepInterval: () => Promise.resolve(30),
+    isRateLimitActive: () => Promise.resolve(false),
+    getRateLimitRemainingSeconds: () => Promise.resolve(0),
+    getRateLimitReset: () =>
+      Promise.resolve(Math.floor(Date.now() / 1000) + 3600),
+    preflightGitHubRateLimit: () =>
+      Promise.resolve({
+        rateLimited: false,
+        remainingSeconds: 0,
+        message: "ok",
+      }),
+
+    resetRepoFailures: () => Promise.resolve(),
+    recordRepoFailure: () => Promise.resolve(),
+    recordRepoSuccess: () => Promise.resolve(),
+
+    sendCrashNotification: () => Promise.resolve(),
+    clearHeartbeat: () => Promise.resolve(),
+    cleanupInProgressIssue: () => Promise.resolve(),
+
+    setStatusIdle: () => Promise.resolve(),
+    setStatusWorking: () => Promise.resolve(),
+    setStatusSuccess: () => Promise.resolve(),
+    setStatusFailure: () => Promise.resolve(),
+    resetWindowTitle: () => {},
+
+    addSignalListener: () => {},
+    removeSignalListener: () => {},
+
+    writeFaultToleranceSummary: () => Promise.resolve(),
+
+    touchPidFile: () => Promise.resolve(),
+    sleep: () => Promise.resolve(),
+    now: () => 0,
+
+    ...overrides,
+  };
+}

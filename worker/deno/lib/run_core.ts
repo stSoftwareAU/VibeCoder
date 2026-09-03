@@ -4049,6 +4049,15 @@ export async function runCoreLoop(
               recordStepDuration("Issue Scanning", deps.now() - scanStartMs);
             }
           })();
+          // Issue #867: the `allSettled` below is the real await, but two
+          // `await`s (the lane rotation read and advance) sit between here and
+          // there. A rejection landing in that window has no handler attached
+          // yet, so the runtime reports an unhandled rejection — which aborts
+          // the whole module under `deno test` and made `quality.sh` red
+          // whenever a scan failed fast enough. Attaching a no-op handler now
+          // marks the rejection handled; `allSettled` still observes it and
+          // the rethrow below is unchanged.
+          scanTask.catch(() => {});
           // Issue #213: the deferred agent-backed passes run here, beside the
           // pool, each leasing its repository from the pool's own registry.
           // Issue #608: rotate which pass leads. The four share one slot and
