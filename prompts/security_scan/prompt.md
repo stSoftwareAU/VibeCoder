@@ -1666,9 +1666,9 @@ reconcile pass has nothing to repaint.
    waived it, until when, and why. When the file at
    `<file>:<first-line>` carries a matching marker — this scan's own
    `security-scan-ignore` keyword in a `#`, `//` or `/* */` comment, or
-   the `# noqa: SEC-…` and `// eslint-disable-next-line SEC-…` forms
-   `worker/deno/lib/suppression_comments.ts` also recognises for `SEC-`
-   ids — check all three governance fields before honouring it:
+   the `# noqa: SEC-…` and `// eslint-disable-next-line SEC-…` forms the
+   suppression checker also recognises for `SEC-` ids — check all three
+   governance fields before honouring it:
    - `author=<github-login>` — present and non-empty;
    - `expires=<YYYY-MM-DD>` — a real calendar date, today or later;
    - reason text after those fields — present and non-empty.
