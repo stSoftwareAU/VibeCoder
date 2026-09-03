@@ -2,8 +2,8 @@
 
 One house form per term and per shared section heading across the prompt set.
 Thirty-three templates under [`prompts/`](../prompts/) each named the same
-concept independently, so the product picked up three names, the harness two,
-and "Worked Examples" five — the drift catalogued in the cross-prompt audit
+concept independently, so the product picked up two names in prose, the harness
+two, and "Worked Examples" five — the drift catalogued in the cross-prompt audit
 (Issue #794).
 
 This page is the canon the sweeps apply, and the source of truth the drift test
@@ -99,11 +99,20 @@ Applies to the twelve interactive directories in [Families](#families).
 ## Literals
 
 - **Attribution footer.** `{{ATTRIBUTION_FOOTER}}` is cited exactly one way:
-  **"from the Inputs section"**, which is where the worker substitutes it. The
+  **"from the Inputs section"**, and the placeholder is placed there. The
+  worker substitutes the placeholder wherever it sits, so the citation is only
+  true if the placement matches it — a sweep moves the two together. The
   "from the end of this prompt" phrasing (`prompts/deprecated_api/` and
-  `prompts/dead_code/`) and the
-  Phase 4 marker phrasing (`prompts/doc_coverage/`) point a run at places the
-  value is not, and are banned.
+  `prompts/dead_code/`) and the Phase 4 marker phrasing
+  (`prompts/doc_coverage/`) are banned: they describe today's placement rather
+  than the house one, and each sweep that leaves them standing keeps a second
+  place a maintainer must look. At the baseline eleven of the seventeen
+  templates carrying the placeholder already held it under `## Inputs`. Four —
+  `prompts/alert_feed/`, `prompts/bash_script_refs/`,
+  `prompts/bash_syntax_audit/` and `prompts/workflow_annotation_scan/` — have no
+  `## Inputs` section at all; adding one to a lightweight audit is a presence
+  gap, not a naming variant, so it belongs to Issue #841 and those four are
+  outside this row.
 - **Finding-id placeholder.** The placeholder body uses the filing family's own
   prefix and the ellipsis form — `` `<!-- finding-id: BP-… -->` `` in the
   best-practices family, `` `<!-- finding-id: SEC-… -->` `` in the security-scan
@@ -148,17 +157,17 @@ keyword their scan honours.
   variant of a section, and the decision is one question, not eight (Issue #841).
 - **Worker-emitted marker shapes.** The `vibe-*` markers the worker emits from
   `stale_workflow_detector.ts`, `blocked_deferral.ts` and `analysis_only.ts` use
-  shapes no prompt documents. They are code, not prompt vocabulary (Issue #842).
+  shapes no prompt documents. They are code, not prompt vocabulary, and Issue
+  #842 settled them separately as a closed set of declared deviations.
 
 ## Changing the canon
 
 A row here is changed the same way it was set: with the evidence. State the count
 on the latest template of every directory, name the form that wins and why, and
 change this page **first** — the sweeps read it, and the drift test will once
-#840 lands, so a template bumped ahead of the canon reads as drift. Because the
-change
-is a name, it lands as a version bump of each affected directory's latest
-template; committed versions stay immutable.
+Issue #840 lands, so a template bumped ahead of the canon reads as drift.
+Because the change is a name, it lands as a version bump of each affected
+directory's latest template; committed versions stay immutable.
 
 ## Related
 

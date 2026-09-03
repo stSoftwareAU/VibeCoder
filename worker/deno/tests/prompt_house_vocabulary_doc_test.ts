@@ -33,10 +33,15 @@ import { assert, assertEquals } from "@std/assert";
 import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
 import { findSuppressions } from "../lib/suppression_comments.ts";
 
-/** Resolve the repository root (three levels up from worker/deno/tests/). */
+/**
+ * Repository root, resolved from this file's location (three levels up from
+ * `worker/deno/tests/`) rather than the process's working directory.
+ * `URL.pathname` is percent-encoded, so it is decoded — a checkout under a
+ * path containing a space would otherwise resolve to a directory that does
+ * not exist, and the failure would name the wrong cause.
+ */
 function repoRoot(): string {
-  const thisDir = new URL(".", import.meta.url).pathname;
-  return thisDir.replace(/worker\/deno\/tests\/$/, "");
+  return decodeURIComponent(new URL("../../../", import.meta.url).pathname);
 }
 
 const VOCABULARY_PATH = "docs/PROMPT-HOUSE-VOCABULARY.md";
@@ -299,11 +304,25 @@ Deno.test("the scan-family rule selects the membership the document records", as
   const recorded = /scan family is currently \*\*(\d+)\*\*/.exec(body)?.[1];
   assert(recorded, "the document records no scan-family size");
 
+  const scanRow = tableRows(body).find((cells) => /\bScan\b/.test(cells[0]!));
+  assert(scanRow, "the Families table has no Scan row");
+  const listed = citedDirectories(scanRow[2]!);
+
   const templates = await latestTemplates();
   const onDisk = [...templates.entries()]
     .filter(([, template]) => template.includes("Stable finding ID recipe"))
-    .map(([name]) => name);
+    .map(([name]) => name)
+    .sort();
 
+  // Compare the names, not just the count: one directory gaining the
+  // section while another loses it keeps the count and leaves the table
+  // wrong, which is the drift this row exists to catch.
+  assertEquals(
+    listed,
+    onDisk,
+    "the Scan row of docs/PROMPT-HOUSE-VOCABULARY.md must list exactly the " +
+      "directories whose latest template carries a `Stable finding ID recipe`",
+  );
   assertEquals(
     onDisk.length,
     Number(recorded),
