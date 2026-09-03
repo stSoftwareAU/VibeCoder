@@ -15,8 +15,8 @@ changes no template on its own.
 
 ```mermaid
 flowchart LR
-    A["📐 This canon<br/>docs/PROMPT-HOUSE-VOCABULARY.md"] --> B["🧹 Sweeps<br/>one version bump per directory"]
-    B --> C["📄 Latest templates<br/>prompts/&lt;type&gt;/"]
+    A["📐 This canon<br/>docs/PROMPT-HOUSE-VOCABULARY.md"] --> B["🧹 Sweeps<br/>one edit per directory"]
+    B --> C["📄 Templates<br/>prompts/&lt;type&gt;/prompt.md"]
     A --> D["🧪 Drift test<br/>Issue #840, not yet landed"]
     D -. "will fail on a banned variant" .-> C
     style A fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -25,10 +25,10 @@ flowchart LR
 
 ## Scope
 
-- The canon governs the **latest version** of every prompt directory. Committed
-  `vN.md` files are immutable, so a fix is always a version bump — historical
-  versions keep whatever they were written with and are never rewritten to match
-  this page.
+- The canon governs the **`prompt.md`** of every prompt directory. Issue #844
+  removed the `vN.md` scheme, so a fix is an edit to that one file and git
+  history is the record of how the template got there — a sweep never adds a new
+  version file.
 - It governs **names and casing only**. Presence gaps — a scan with no persona
   line, a scan with no `### Verification before exit` — and the marker shapes the
   worker emits are separate work, not variants of anything recorded here.
@@ -163,16 +163,16 @@ keyword their scan honours.
 ## Changing the canon
 
 A row here is changed the same way it was set: with the evidence. State the count
-on the latest template of every directory, name the form that wins and why, and
+on the `prompt.md` of every directory, name the form that wins and why, and
 change this page **first** — the sweeps read it, and the drift test will once
-Issue #840 lands, so a template bumped ahead of the canon reads as drift.
-Because the change is a name, it lands as a version bump of each affected
-directory's latest template; committed versions stay immutable.
+Issue #840 lands, so a template edited ahead of the canon reads as drift.
+Because the change is a name, it lands as an edit to each affected directory's
+`prompt.md`, with git history as the record of what changed.
 
 ## Related
 
 - [Prompt goals (summary)](PROMPTS.md) — what each prompt type is for.
 - [Prompt best-practices checklist](PROMPT-BEST-PRACTICES-CHECKLIST.md) — the
   rubric a prompt surface is scored against.
-- [Extending the Worker](EXTENDING.md#prompt-versioning-and-templates) — prompt
-  versioning rules, including why committed versions are immutable.
+- [Extending the Worker](EXTENDING.md#prompt-templates) — how prompt templates
+  are laid out and edited.

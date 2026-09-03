@@ -13,8 +13,8 @@
  *   - every recorded row carries a house form, its banned variants and a
  *     rationale, so nothing is asserted without a reason;
  *   - the family memberships it declares partition the prompt directories
- *     that actually exist on disk, resolved through `getLatestVersion()`
- *     and `loadPrompt()` — never a hard-coded `vN`;
+ *     that actually exist on disk, resolved through `loadPrompt()` — never
+ *     a hard-coded template path;
  *   - the scan-family membership rule it states really selects the set it
  *     claims, so the recorded count cannot go stale silently;
  *   - the suppression keywords it records match what
@@ -30,7 +30,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt, PROMPT_FILENAME } from "../lib/prompt_manager.ts";
 import { findSuppressions } from "../lib/suppression_comments.ts";
 
 /**
@@ -135,15 +135,13 @@ function citedDirectories(body: string): string[] {
   return [...cited].sort();
 }
 
-/** The latest template of every prompt directory, keyed by directory. */
+/** The template of every prompt directory, keyed by directory. */
 async function latestTemplates(): Promise<Map<string, string>> {
   const templates = new Map<string, string>();
   for (const name of promptDirectories()) {
-    const latest = await getLatestVersion(name, PROMPTS_DIR);
-    if (!latest.ok) throw new Error(`no version found for prompts/${name}/`);
-    const template = await loadPrompt(name, latest.value, PROMPTS_DIR);
+    const template = await loadPrompt(name, PROMPTS_DIR);
     if (!template.ok) {
-      throw new Error(`could not load prompts/${name}/${latest.value}.md`);
+      throw new Error(`could not load prompts/${name}/${PROMPT_FILENAME}`);
     }
     templates.set(name, template.value);
   }
