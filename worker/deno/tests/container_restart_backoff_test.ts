@@ -961,23 +961,32 @@ Deno.test({
       );
       await Deno.chmod(join(binDir, "deno"), 0o755);
 
+      // Issue #906: the loop's output goes to a file, not a pipe. `SIGKILL`
+      // reaches `loop.sh` but not the descendants it spawned, and `loop.sh`
+      // backs off with a `sleep` that inherits stdout — so awaiting
+      // `child.output()` on a pipe waited for an EOF only that orphan could
+      // give, turning a 2.5-second assertion into a 2m2s test. A file has no
+      // reader to block, so the survivors are harmless.
+      const logPath = join(tmpDir, "loop-output.log");
       const child = new Deno.Command("bash", {
-        args: [join(tmpDir, "loop.sh")],
+        args: ["-c", `exec "${join(tmpDir, "loop.sh")}" > "${logPath}" 2>&1`],
         cwd: tmpDir,
         env: {
           LOOP_SLEEP_SECONDS: "1",
           PATH: `${binDir}:${Deno.env.get("PATH") ?? ""}`,
           HOME: tmpDir,
         },
-        stdout: "piped",
-        stderr: "piped",
+        stdout: "null",
+        stderr: "null",
       }).spawn();
 
       try {
         await new Promise((resolve) => setTimeout(resolve, 2500));
         child.kill("SIGKILL");
-        const output = await child.output();
-        const stdout = new TextDecoder().decode(output.stdout);
+        // Reap the leader so the process is not left a zombie; its exit
+        // status is irrelevant, and no pipe is being drained.
+        await child.status;
+        const stdout = await Deno.readTextFile(logPath).catch(() => "");
 
         assertStringIncludes(stdout, "out of quota");
         assert(
