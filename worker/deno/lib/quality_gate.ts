@@ -2,7 +2,7 @@
  * Quality gate orchestration (Issue #917).
  *
  * Orchestrates running quality checks (deno test/lint/check, mermaid,
- * markdownlint, docs prompt-version) in parallel or sequential mode. This
+ * markdownlint) in parallel or sequential mode. This
  * replaces the orchestration logic from quality.sh with a Deno TypeScript
  * implementation. Bash linting is delegated to each target repo's own CI
  * (Issue #3129), so the worker no longer runs shellcheck here.
@@ -39,7 +39,6 @@ import { runPagesLiquidCheck } from "./pages_liquid_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
 import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
-import { runDocsPromptVersionCheck } from "./docs_prompt_version_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
 
@@ -154,93 +153,6 @@ async function runCommand(
   const output = stdout + (stderr ? "\n" + stderr : "");
 
   return { exitCode: result.code, output: output.trim() };
-}
-
-/**
- * Run the prompt immutability check.
- *
- * Uses deno run to invoke the prompt-manager command with
- * validate-immutability operation.
- */
-async function runPromptImmutabilityCheck(
-  config: QualityGateConfig,
-  denoCmd: string,
-): Promise<CheckExecutionResult> {
-  const name = "prompt immutability";
-
-  // Detect base branch from the remote's HEAD rather than a hardcoded list
-  let baseBranch = "";
-  try {
-    const currentResult = await runCommand(
-      ["git", "-C", config.scriptDir, "rev-parse", "--abbrev-ref", "HEAD"],
-    );
-    const currentBranch = currentResult.output.trim();
-
-    // Resolve the remote's default branch via symbolic-ref
-    const remoteHeadResult = await runCommand(
-      [
-        "git",
-        "-C",
-        config.scriptDir,
-        "rev-parse",
-        "--abbrev-ref",
-        "refs/remotes/origin/HEAD",
-      ],
-    );
-    if (remoteHeadResult.exitCode === 0) {
-      const remoteBranch = remoteHeadResult.output.trim().replace(
-        /^origin\//,
-        "",
-      );
-      if (remoteBranch && remoteBranch !== currentBranch) {
-        baseBranch = remoteBranch;
-      }
-    }
-  } catch (err) {
-    console.warn(
-      `[quality-gate] Could not detect git branch: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-
-  // Check if we're inside a git work tree
-  const gitCheckResult = await runCommand(
-    ["git", "-C", config.scriptDir, "rev-parse", "--is-inside-work-tree"],
-  );
-  if (gitCheckResult.exitCode !== 0) {
-    return { name, status: "SKIPPED", output: "Not a git repository" };
-  }
-
-  const args = [
-    "run",
-    "--allow-env",
-    "--allow-read",
-    "--allow-run",
-    `${config.denoDir}/mod.ts`,
-    "prompt-manager",
-    "--operation",
-    "validate-immutability",
-    "--repo-dir",
-    config.scriptDir,
-    "--prompts-dir",
-    `${config.scriptDir}/prompts`,
-  ];
-
-  if (baseBranch) {
-    args.push("--base-branch", baseBranch);
-  }
-
-  const result = await runCommand([denoCmd, ...args]);
-  if (result.exitCode === 0) {
-    return { name, status: "PASSED", output: "prompt immutability: PASSED" };
-  }
-  return {
-    name,
-    status: "FAILED",
-    output:
-      "prompt immutability: FAILED\nExisting prompt versions are immutable. Create a new version (e.g., v2.md) instead.",
-  };
 }
 
 /**
@@ -941,26 +853,6 @@ async function runMarkdownlintQualityCheck(
 }
 
 /**
- * Run the docs prompt-version freshness check (Issue #2286).
- *
- * Walks `CLAUDE.md`, `AGENTS.md`, and `docs/**\/*.md` (excluding the
- * historical `docs/archive/pr-summaries/` tree) and fails when any line
- * references `prompts/<type>/vN[.md]` for a version below the current
- * latest, unless the line carries an explicit "from vN onward" wording
- * or a `<!-- pinned: ... -->` marker.
- */
-async function runDocsPromptVersionQualityCheck(
-  config: QualityGateConfig,
-): Promise<CheckExecutionResult> {
-  const result = await runDocsPromptVersionCheck(config.scriptDir);
-  return {
-    name: "docs prompt versions",
-    status: result.status,
-    output: result.output,
-  };
-}
-
-/**
  * Run the semgrep SAST check over the branch's changed files (Issue #559).
  *
  * `semgrep ci --config p/default` blocks the PR, but nothing ran it locally,
@@ -1251,30 +1143,6 @@ export async function runQualityGate(
 
   // --- Pre-checks (sequential) ---
 
-  // Prompt immutability — skip if prompts directory doesn't exist (non-VibeCoder repos)
-  let hasPromptsDir = false;
-  try {
-    const stat = await Deno.stat(`${config.scriptDir}/prompts`);
-    hasPromptsDir = stat.isDirectory;
-  } catch { /* directory doesn't exist */ }
-
-  if (hasPromptsDir && config.denoDir) {
-    const immutabilityResult = await runPromptImmutabilityCheck(
-      config,
-      denoCmd,
-    );
-    note(immutabilityResult);
-    if (immutabilityResult.status === "FAILED") {
-      const summary = formatSummary(checks, config.options.strict);
-      return {
-        ok: true,
-        value: { checks, summary, passed: false, output: allOutput.join("\n") },
-      };
-    }
-  } else {
-    recordCheck(checks, "prompt immutability", "SKIPPED");
-  }
-
   // Prompt placeholders (only with --validate-prompts)
   if (config.options.validatePrompts && config.denoDir) {
     const placeholderResult = await runPromptPlaceholderCheck(config, denoCmd);
@@ -1365,12 +1233,6 @@ export async function runQualityGate(
   // pages-liquid and mermaid checks miss. Skipped when the linter
   // binary is not available locally.
   mainChecks.push(() => runMarkdownlintQualityCheck(config));
-
-  // Docs prompt versions (Issue #2286) — fails when CLAUDE.md, AGENTS.md,
-  // or anything under docs/ (except docs/archive/pr-summaries/) references
-  // a non-latest `prompts/<type>/vN[.md]` without "from vN onward" wording
-  // or a `<!-- pinned: --> ` marker.
-  mainChecks.push(() => runDocsPromptVersionQualityCheck(config));
 
   // Semgrep (Issue #559) — the same `p/default` ruleset the blocking
   // `semgrep.yml` PR check runs, over the branch's changed files only, so a

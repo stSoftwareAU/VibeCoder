@@ -3,7 +3,7 @@
  *
  * The merge-conflict pass (`pr_merge_conflict_processor.ts`) runs a real
  * `git merge` and, on conflict, hands the tree to an AI agent whose contract
- * (`prompts/merge_conflict/v1.md`) forbids side-picking and treats "the same
+ * (`prompts/merge_conflict/prompt.md`) forbids side-picking and treats "the same
  * value set to two different values" as a human decision. A dependency-version
  * bump on both sides is exactly that shape, so it fails by design.
  *

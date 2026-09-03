@@ -2,7 +2,7 @@
  * Tests for the generic baseline-aware quality-gate bypass (Issue #2604).
  *
  * Covers:
- *   - Per-check key extraction (mermaid/markdownlint/docs).
+ *   - Per-check key extraction (mermaid/markdownlint).
  *   - `collectDiffableGateFindings` flattening of injected runners.
  *   - `decideGateBypass` cases:
  *       * pure carryover → bypass,
@@ -14,7 +14,8 @@
  *   - `formatCarryoverFindings` output.
  *
  * (Shellcheck was removed as a diffable check with worker-side shellcheck —
- * Issue #3129.)
+ * Issue #3129; the docs prompt-version check went with prompt versioning
+ * itself — Issue #844.)
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -23,7 +24,6 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   collectDiffableGateFindings,
   decideGateBypass,
-  docsFinding,
   formatCarryoverFindings,
   type GenericFinding,
   markdownlintFinding,
@@ -64,23 +64,11 @@ Deno.test("markdownlintFinding - key is markdownlint|file|rule|message", () => {
   assertStringIncludes(v.display, "x.md:5 MD056");
 });
 
-Deno.test("docsFinding - key is docs|file|promptType|referencedVersion", () => {
-  const v = docsFinding({
-    file: "AGENTS.md",
-    line: 7,
-    promptType: "issue",
-    referencedVersion: "v3",
-  });
-  assertEquals(v.key, "docs|AGENTS.md|issue|v3");
-  assertEquals(v.check, "docs");
-  assertStringIncludes(v.display, "prompts/issue/v3");
-});
-
 // ---------------------------------------------------------------------------
 // collectDiffableGateFindings — flattens all injected runners
 // ---------------------------------------------------------------------------
 
-Deno.test("collectDiffableGateFindings - flattens mermaid/markdownlint/docs", async () => {
+Deno.test("collectDiffableGateFindings - flattens mermaid/markdownlint", async () => {
   const findings = await collectDiffableGateFindings("/repo", {
     mermaid: () =>
       Promise.resolve({
@@ -102,25 +90,9 @@ Deno.test("collectDiffableGateFindings - flattens mermaid/markdownlint/docs", as
         violations: [{ file: "x.md", line: 5, rule: "MD056", message: "tbl" }],
         filesChecked: 1,
       }),
-    docs: () =>
-      Promise.resolve({
-        status: "FAILED",
-        output: "",
-        violations: [{
-          file: "AGENTS.md",
-          line: 7,
-          promptType: "issue",
-          referencedVersion: "v3",
-          latestVersion: "v4",
-          content: "x",
-        }],
-        filesScanned: 1,
-        referencesScanned: 1,
-      }),
   });
-  assertEquals(findings.length, 3);
+  assertEquals(findings.length, 2);
   assertEquals(findings.map((f) => f.check).sort(), [
-    "docs",
     "markdownlint",
     "mermaid",
   ]);
@@ -142,14 +114,6 @@ Deno.test("collectDiffableGateFindings - all checks clean contributes no finding
         output: "",
         violations: [],
         filesChecked: 0,
-      }),
-    docs: () =>
-      Promise.resolve({
-        status: "PASSED",
-        output: "",
-        violations: [],
-        filesScanned: 0,
-        referencesScanned: 0,
       }),
   });
   assertEquals(findings.length, 0);

@@ -3,10 +3,10 @@
  *
  * A grill-me round renders the level the global `.config.json` `verbosity`
  * carries, which defaults to `standard` — "no running commentary while you
- * work" — into `{{VERBOSITY_INSTRUCTIONS}}`. Up to v14 the template asked the
- * agent to "Narrate briefly as you go", so one rendered prompt both asked
- * for and forbade narration. v15 drops the narration clause, keeping the ban
- * as the single instruction on the subject.
+ * work" — into `{{VERBOSITY_INSTRUCTIONS}}`. The template used to also ask the
+ * agent to "Narrate briefly as you go", so one rendered prompt both asked for
+ * and forbade narration. Issue #759 dropped the narration clause, keeping the
+ * ban as the single instruction on the subject.
  *
  * The tests build a real round through `buildGrillMePrompt()` with the block
  * `buildVerbosityBlock()` actually produces for the resolved level, so they
@@ -17,7 +17,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 import { buildGrillMePrompt } from "../lib/grill_me_processor.ts";
 import { buildVerbosityBlock } from "../lib/prompt_builder.ts";
 import { DEFAULT_VERBOSITY } from "../lib/config_defaults.ts";
@@ -25,7 +25,7 @@ import type { VerbosityLevel } from "../types.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
-/** The clause v14 carried and v15 drops. */
+/** The clause the template used to carry and no longer may. */
 const NARRATION_CLAUSE = "Narrate briefly as you go";
 
 /** The clause the `standard` verbosity block injects. */
@@ -50,38 +50,20 @@ async function buildRound(level?: VerbosityLevel): Promise<string> {
   return result.value;
 }
 
-Deno.test("grill-me - the latest version is v15 or newer", async () => {
-  const result = await getLatestVersion("grill-me", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (!result.ok) return;
-  const version = parseInt(result.value.replace("v", ""), 10);
-  assertEquals(
-    version >= 15,
-    true,
-    `Expected grill-me >= v15, got ${result.value}`,
-  );
-});
-
-Deno.test("grill-me - the latest version never asks for narration", async () => {
-  const latest = await getLatestVersion("grill-me", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) return;
-  const result = await loadPrompt("grill-me", latest.value, PROMPTS_DIR);
+Deno.test("grill-me - the template never asks for narration", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertEquals(
     result.value.includes(NARRATION_CLAUSE),
     false,
-    `${latest.value} must not ask for narration while the rendered ` +
+    "grill-me must not ask for narration while the rendered " +
       "verbosity block forbids it",
   );
 });
 
-Deno.test("grill-me - the latest version keeps the unattended framing", async () => {
-  const latest = await getLatestVersion("grill-me", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) return;
-  const result = await loadPrompt("grill-me", latest.value, PROMPTS_DIR);
+Deno.test("grill-me - the template keeps the unattended framing", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   // Only the narration clause goes: the round still has to know that no
@@ -135,12 +117,4 @@ Deno.test("buildGrillMePrompt - no verbosity level asks the round to narrate", a
       `A ${level ?? "default"} round must not ask for narration`,
     );
   }
-});
-
-Deno.test("grill-me v14 - stays immutable", async () => {
-  const result = await loadPrompt("grill-me", "v14", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (!result.ok) return;
-  // Committed versions never change: v14 keeps the clause v15 drops.
-  assertStringIncludes(result.value, NARRATION_CLAUSE);
 });

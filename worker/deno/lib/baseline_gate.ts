@@ -3,20 +3,19 @@
  *
  * The whole-gate "treat as passed when every current finding was already
  * present at baseline" decision reasons over every diffable check at once:
- * mermaid, markdownlint, and the docs prompt-version check. (Shellcheck is
- * no longer run by the worker — Issue #3129 delegated bash linting to each
- * target repo's own CI.)
+ * mermaid and markdownlint. (Shellcheck is no longer run by the worker —
+ * Issue #3129 delegated bash linting to each target repo's own CI, and Issue
+ * #844 removed the docs prompt-version check with prompt versioning itself.)
  *
- * A pre-existing failure in an untouched mermaid/markdownlint/docs artefact
+ * A pre-existing failure in an untouched mermaid/markdownlint artefact
  * no longer fails the post-Claude gate (the production symptom — a Mermaid
  * reserved-keyword collision in an unrelated doc pushing the worker into a
  * remediation loop). The decision sees ALL failing checks, so a
  * genuinely-new failure is never waved through just because another check
  * had carryover.
  *
- * A check that is NOT diffable (deno test/lint/type-check, prompt
- * immutability, etc.) failing means the PR likely touched code — never
- * bypass in that case.
+ * A check that is NOT diffable (deno test/lint/type-check, etc.) failing
+ * means the PR likely touched code — never bypass in that case.
  *
  * Uses Australian English throughout (behaviour, colour, organisation,
  * favour, centre).
@@ -27,17 +26,12 @@ import {
   type MarkdownlintCheckResult,
   runMarkdownlintCheck,
 } from "./markdownlint_check.ts";
-import {
-  type DocsPromptVersionResult,
-  runDocsPromptVersionCheck,
-} from "./docs_prompt_version_check.ts";
-
 /**
  * The diffable check kinds the generic bypass can reason over. Each maps
  * one-to-one to a `GenericFinding.check` value and to a quality-gate
  * check name (see `CHECK_NAME_TO_KIND`).
  */
-export type DiffableCheck = "mermaid" | "markdownlint" | "docs";
+export type DiffableCheck = "mermaid" | "markdownlint";
 
 /**
  * Quality-gate check NAMES (as reported in `CheckResult.name`) that are
@@ -47,14 +41,12 @@ export type DiffableCheck = "mermaid" | "markdownlint" | "docs";
 export const DIFFABLE_CHECK_NAMES: ReadonlySet<string> = new Set([
   "mermaid",
   "markdownlint",
-  "docs prompt versions",
 ]);
 
 /** Map a failing quality-gate check name to its diffable kind. */
 const CHECK_NAME_TO_KIND: Readonly<Record<string, DiffableCheck>> = {
   "mermaid": "mermaid",
   "markdownlint": "markdownlint",
-  "docs prompt versions": "docs",
 };
 
 /**
@@ -99,7 +91,6 @@ export type GateBypassReason =
 export interface DiffableGateDeps {
   mermaid?: (cwd: string) => Promise<MermaidCheckResult>;
   markdownlint?: (cwd: string) => Promise<MarkdownlintCheckResult>;
-  docs?: (cwd: string) => Promise<DocsPromptVersionResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,23 +121,6 @@ export function markdownlintFinding(
   };
 }
 
-/** GenericFinding for a docs prompt-version violation. */
-export function docsFinding(
-  v: {
-    file: string;
-    line: number;
-    promptType: string;
-    referencedVersion: string;
-  },
-): GenericFinding {
-  return {
-    check: "docs",
-    key: `docs|${v.file}|${v.promptType}|${v.referencedVersion}`,
-    display:
-      `${v.file}:${v.line} references prompts/${v.promptType}/${v.referencedVersion}`,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Collection
 // ---------------------------------------------------------------------------
@@ -161,7 +135,6 @@ export async function collectDiffableGateFindings(
 ): Promise<GenericFinding[]> {
   const mermaidRun = deps.mermaid ?? runMermaidCheck;
   const markdownlintRun = deps.markdownlint ?? runMarkdownlintCheck;
-  const docsRun = deps.docs ?? runDocsPromptVersionCheck;
 
   const findings: GenericFinding[] = [];
 
@@ -172,9 +145,6 @@ export async function collectDiffableGateFindings(
   for (const v of markdownlint.violations) {
     findings.push(markdownlintFinding(v));
   }
-
-  const docs = await docsRun(repoPath);
-  for (const v of docs.violations) findings.push(docsFinding(v));
 
   return findings;
 }

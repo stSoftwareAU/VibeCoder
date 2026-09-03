@@ -246,6 +246,6 @@ rotate it.
 ## Related
 
 - [Configuration Reference](CONFIGURATION.md#per-repository-configuration) — wider `repo_config` schema.
-- [Extending the Worker](EXTENDING.md#prompt-versioning-and-templates) — `ci_fix` prompt versioning (the `{{PR_FAILURE_ACTIONS}}` placeholder lives in `prompts/ci_fix/`).
+- [Extending the Worker](EXTENDING.md#prompt-templates) — the `ci_fix` prompt template (the `{{PR_FAILURE_ACTIONS}}` placeholder lives in `prompts/ci_fix/prompt.md`).
 - Implementation: `worker/deno/lib/repo_config.ts` (parser), `worker/deno/lib/pr_failure_actions.ts` (dispatcher + Markdown formatter), `worker/deno/lib/jenkins_log_fetcher.ts` (HTTP client), `worker/deno/lib/jenkins_access_check.ts` (credentials preflight,), `worker/deno/lib/github_actions_log_fetcher.ts` (built-in default provider,).
 - Schema issue, fetcher, dispatcher, prompt wiring, this rollout — all under parent.

@@ -69,33 +69,24 @@ function exampleSummaryComment(prompt: string): string {
   return example;
 }
 
-Deno.test("planning_critique v7 - the publish turn is told to mark one MVP slice", async () => {
+Deno.test("planning_critique - the publish turn is told to mark one MVP slice", async () => {
   const prompt = await buildCritique();
   assertStringIncludes(prompt, "**MVP slice**");
   assertStringIncludes(prompt, "No independently valuable slice");
-
-  const v6 = await Deno.readTextFile(`${PROMPTS_DIR}/planning_critique/v6.md`);
-  assertEquals(v6.includes("MVP slice"), false);
 });
 
-Deno.test("planning_critique v7 - value ordering is bounded by the dependency edges", async () => {
+Deno.test("planning_critique - value ordering is bounded by the dependency edges", async () => {
   const prompt = await buildCritique();
   assertStringIncludes(prompt, "must not be listed before one it `Depends on");
-
-  const v6 = await Deno.readTextFile(`${PROMPTS_DIR}/planning_critique/v6.md`);
-  assertEquals(v6.includes("MVP-first"), false);
 });
 
-Deno.test("planning v23 - the draft turn names the MVP slice or says none exists", async () => {
+Deno.test("planning - the draft turn names the MVP slice or says none exists", async () => {
   const prompt = await buildDraft();
   assertStringIncludes(prompt, "MVP slice");
   assertStringIncludes(prompt, "No independently valuable slice");
-
-  const v22 = await Deno.readTextFile(`${PROMPTS_DIR}/planning/v22.md`);
-  assertEquals(v22.includes("MVP slice"), false);
 });
 
-Deno.test("planning_critique v7 - the example summary it teaches passes the real gate", async () => {
+Deno.test("planning_critique - the example summary it teaches passes the real gate", async () => {
   const example = exampleSummaryComment(await buildCritique());
   const verdict = judgeMvpSlice(example);
   assert(

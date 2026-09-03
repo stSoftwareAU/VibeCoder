@@ -41,14 +41,14 @@ resourcing or isolation decision should follow it:
 or I/O stalls the whole fleet silently (the overnight stall), which
 costs far more than any runaway cycle a timeout will reap anyway.
 
-### Prompt-version references
+### Prompt template references
 
-The worker always loads the latest version of each prompt template at runtime.
-Documentation should refer to prompts by directory (e.g.
-`prompts/coding_guidelines/`) rather than by version number, unless naming a
-specific historical version is required — in which case use textual "from vN
-onward" wording alongside the directory reference, never a literal
-`prompts/<type>/vN.md` filename.
+Each prompt type has one editable template, `prompts/<type>/prompt.md`, which
+the worker loads at runtime. Versioned `vN.md` files were removed once the repo
+went public: git history is the record of how a template evolved, and the
+checkout's commit hash — logged by the execute phase — is what ties a run to the
+text it used. Documentation refers to prompts by directory (e.g.
+`prompts/coding_guidelines/`) or by that path, never by a version number.
 
 ### Repository isolation — no cross-repo coupling
 
@@ -748,9 +748,8 @@ worker defer internal-dependency fixes by filing follow-up issues.
   "Too big for one run" is almost never a valid reason to *fully* defer.
 
 The behaviour lives in the `prompts/issue/` and `prompts/coding_guidelines/`
-escape-hatch sections (latest versions; the worker always loads the latest at
-runtime). The actual cross-repo PR plumbing, the one-follow-up dedup cap
-, and the release-gating boundary are sibling issues under parent.
+escape-hatch sections. The actual cross-repo PR plumbing, the one-follow-up
+dedup cap, and the release-gating boundary are sibling issues under parent.
 
 ### Escape hatch for out-of-scope work
 
@@ -2111,7 +2110,7 @@ actually used.
 Detection is now a structured marker the agent emits —
 `<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`, parsed
 deterministically like `vibe-cross-repo-pr` — with the broadened keyword list
-kept as a fallback for older prompt versions.
+kept as a fallback for agents that phrase it in prose.
 
 **Closing requires cited evidence.** A commit and/or PR reference, plus (on the
 marker path) how the fix was verified. Without it the run falls back to the

@@ -19,6 +19,13 @@ import { assert, assertEquals } from "@std/assert";
 import { raiseBoyScoutIdleTasksCommand } from "../commands/raise_boy_scout_idle_tasks.ts";
 import type { RaiseBoyScoutIdleTasksResult } from "../lib/boy_scout_idle_tasks.ts";
 import type { Result, WorkerConfig } from "../types.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 function dataOf(
   result: { data?: unknown },
@@ -32,18 +39,6 @@ const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
 
 const stableNow = () => new Date("2026-06-18T00:00:00.000Z");
-
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-
-async function withRepoRootCwd<T>(fn: () => Promise<T>): Promise<T> {
-  const original = Deno.cwd();
-  Deno.chdir(REPO_ROOT);
-  try {
-    return await fn();
-  } finally {
-    Deno.chdir(original);
-  }
-}
 
 function makeMockGh() {
   const created: { repo: string; title: string }[] = [];

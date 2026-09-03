@@ -26,7 +26,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { REQUIRED_GITIGNORE_PATTERNS } from "../lib/gitignore_enforcer.ts";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
@@ -54,19 +54,12 @@ const KEY_MATERIAL = [
   "service-account*.json",
 ] as const;
 
-/** The latest `coding_guidelines` text, and the version it came from. */
-async function latestGuidelines(): Promise<{ version: string; text: string }> {
-  const latest = await getLatestVersion("coding_guidelines", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) throw new Error(latest.error.message);
-  const loaded = await loadPrompt(
-    "coding_guidelines",
-    latest.value,
-    PROMPTS_DIR,
-  );
+/** The `coding_guidelines` text the worker injects. */
+async function latestGuidelines(): Promise<{ text: string }> {
+  const loaded = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(loaded.ok, true);
   if (!loaded.ok) throw new Error(loaded.error.message);
-  return { version: latest.value, text: loaded.value };
+  return { text: loaded.value };
 }
 
 /** `CODING-STANDARDS.md`, as one collapsed line so wrapping cannot hide a term. */
@@ -88,13 +81,13 @@ Deno.test("hidden allowlist - the enforcer re-allows exactly the five documented
 });
 
 Deno.test("hidden allowlist - the guidelines state every entry the enforcer re-allows (Issue #784)", async () => {
-  const { version, text } = await latestGuidelines();
+  const { text } = await latestGuidelines();
   const collapsed = text.replace(/\s+/g, " ");
   for (const entry of reAllowedEntries()) {
     assert(
       collapsed.includes(`\`${entry}\``) ||
         collapsed.includes(`\`${entry}/\``),
-      `coding_guidelines ${version} omits \`${entry}\`, which the enforcer ` +
+      `coding_guidelines omits \`${entry}\`, which the enforcer ` +
         `re-allows — an agent reading it would treat a tracked-and-allowed ` +
         `path as always forbidden`,
     );
@@ -115,14 +108,14 @@ Deno.test("hidden allowlist - CODING-STANDARDS states every entry the enforcer r
 Deno.test("hidden allowlist - both surfaces state the private-key class (Issue #784)", async () => {
   // The guidelines had no counterpart for this at all, so an agent running on
   // the injected block alone had no rule against staging a `.pem`.
-  const { version, text } = await latestGuidelines();
+  const { text } = await latestGuidelines();
   const guidelines = text.replace(/\s+/g, " ");
   const standards = await standardsText();
   for (const pattern of KEY_MATERIAL) {
     assertStringIncludes(
       guidelines,
       `\`${pattern}\``,
-      `coding_guidelines ${version} omits ${pattern}`,
+      `coding_guidelines omits ${pattern}`,
     );
     assertStringIncludes(standards, `\`${pattern}\``);
     // …and the enforcer ignores it, which is why the documents say so.
@@ -139,15 +132,4 @@ Deno.test("hidden allowlist - both surfaces name the enforcer as the source (Iss
   const { text } = await latestGuidelines();
   assertStringIncludes(text, "REQUIRED_GITIGNORE_PATTERNS");
   assertStringIncludes(await standardsText(), "REQUIRED_GITIGNORE_PATTERNS");
-});
-
-Deno.test("hidden allowlist - the retired guidelines version stays immutable (Issue #784)", async () => {
-  const result = await loadPrompt("coding_guidelines", "v44", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (!result.ok) return;
-  assertEquals(
-    result.value.includes("REQUIRED_GITIGNORE_PATTERNS"),
-    false,
-    "v44 predates the alignment and must keep reading as it did",
-  );
 });

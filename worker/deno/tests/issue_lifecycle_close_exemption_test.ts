@@ -27,7 +27,7 @@ import {
   buildIssuePrompt,
   buildPlanningCritiquePrompt,
 } from "../lib/prompt_builder.ts";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 import {
   DEFAULT_CLAIMED_ISSUE_ALLOWED_VERBS,
   seedClaimedIssueGuard,
@@ -83,24 +83,14 @@ Deno.test("issue lifecycle - the exemption is stated after the refusal it qualif
 });
 
 Deno.test("issue lifecycle - the guidelines defer, and the implementation prompt says the guard is armed (Issue #781)", async () => {
-  const guidelines = await getLatestVersion("coding_guidelines", PROMPTS_DIR);
-  assertEquals(guidelines.ok, true);
-  if (!guidelines.ok) return;
-  const guidelinesText = await loadPrompt(
-    "coding_guidelines",
-    guidelines.value,
-    PROMPTS_DIR,
-  );
+  const guidelinesText = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(guidelinesText.ok, true);
   if (!guidelinesText.ok) return;
   assertStringIncludes(guidelinesText.value, DEFERRAL);
 
   // The `issue` route is the one that *does* arm the guard, so its own prompt
   // says so rather than deferring to a phase prompt that is itself.
-  const issue = await getLatestVersion("issue", PROMPTS_DIR);
-  assertEquals(issue.ok, true);
-  if (!issue.ok) return;
-  const issueText = await loadPrompt("issue", issue.value, PROMPTS_DIR);
+  const issueText = await loadPrompt("issue", PROMPTS_DIR);
   assertEquals(issueText.ok, true);
   if (!issueText.ok) return;
   // The prompt wraps its prose, so the fragment must not cross a line break.
@@ -109,35 +99,10 @@ Deno.test("issue lifecycle - the guidelines defer, and the implementation prompt
 
 Deno.test("issue lifecycle - the planning-critique template still orders the close (Issue #781)", async () => {
   // The exemption is only worth having while the order it protects exists.
-  const latest = await getLatestVersion("planning_critique", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) return;
-  const result = await loadPrompt(
-    "planning_critique",
-    latest.value,
-    PROMPTS_DIR,
-  );
+  const result = await loadPrompt("planning_critique", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertStringIncludes(result.value, CLOSE_ORDER);
-});
-
-Deno.test("issue lifecycle - the retired versions stay immutable (Issue #781)", async () => {
-  for (
-    const [prompt, version] of [
-      ["coding_guidelines", "v43"],
-      ["issue", "v40"],
-    ] as const
-  ) {
-    const result = await loadPrompt(prompt, version, PROMPTS_DIR);
-    assertEquals(result.ok, true);
-    if (!result.ok) continue;
-    assertEquals(
-      result.value.includes(DEFERRAL),
-      false,
-      `${prompt} ${version} predates the exemption and must read as it did`,
-    );
-  }
 });
 
 Deno.test("issue lifecycle - the guard the prompts describe refuses close only when seeded (Issue #781)", () => {

@@ -14,7 +14,7 @@ auditing against it never edits a prompt — gaps are filed as issues (see
 
 ```mermaid
 flowchart LR
-    S["📄 Prompt surface<br/>vN.md or prompt_builder.ts"] --> R["📐 This rubric<br/>22 guide rows + 3 house rows"]
+    S["📄 Prompt surface<br/>prompt.md or prompt_builder.ts"] --> R["📐 This rubric<br/>22 guide rows + 3 house rows"]
     R --> V["🗒️ Verdict table<br/>✅ / ❌ / ➖ + file:line"]
     V --> A["📚 docs/audits/<br/>prompt-audit-&lt;scope&gt;-NNNN.md"]
     V --> G["🐛 One gap issue<br/>per surface"]
@@ -24,8 +24,8 @@ flowchart LR
 
 ## How to use this rubric
 
-1. Score **one surface at a time**, and only the latest version of it —
-   committed `vN.md` files are immutable, so historical versions are archive.
+1. Score **one surface at a time**, as it stands on the commit you audited —
+   record that commit, because the template is edited in place.
 2. Give every one of the 22 guide rows and the 3
    [house rows](#house-additions) a verdict: ✅ pass, ❌ gap, or ➖ n/a. Silence
    is not a verdict; a row you did not check is a gap in the audit, not a pass.
@@ -43,7 +43,7 @@ them, so state the kind before scoring.
 
 | Surface kind | What it is | Evidence looks like | Rows it owns |
 | --- | --- | --- | --- |
-| **Static template** — `prompts/<name>/vN.md` | The prompt text itself: either a whole workflow prompt (`issue`, `security_scan`) or a fragment substituted into one (`coding_guidelines`) | `prompts/dead_code/v4.md:210` <!-- pinned: worked citation example --> | Everything the words say: rows 1–5, 8, 10–22, and the house rows H1–H3 |
+| **Static template** — `prompts/<name>/prompt.md` | The prompt text itself: either a whole workflow prompt (`issue`, `security_scan`) or a fragment substituted into one (`coding_guidelines`) | `prompts/dead_code/prompt.md:210` | Everything the words say: rows 1–5, 8, 10–22, and the house rows H1–H3 |
 | **Code-assembled string** — `worker/deno/lib/prompt_builder.ts` | The builder functions that load a template, substitute placeholders, split system versus user turn, and fence untrusted content | `worker/deno/lib/prompt_builder.ts:148` | Everything the assembly decides: rows 4, 6, 7, 9, and the wrapper around any injected value |
 
 Two consequences worth stating once, so audits do not re-litigate them:
@@ -54,7 +54,7 @@ Two consequences worth stating once, so audits do not re-litigate them:
   A gap in a fragment is inherited by every host, which is what makes it high
   priority.
 - **A template cannot set message roles.** Row 9 (prefilled responses) is
-  therefore ➖ for every `vN.md` surface and is only ever scored in
+  therefore ➖ for every `prompt.md` surface and is only ever scored in
   `prompt_builder.ts`.
 
 ## Checklist
@@ -81,7 +81,7 @@ separately, as [House additions](#house-additions).
 | --- | --- | --- | --- | --- |
 | 7 | Communication style and verbosity | States how much visible output it wants, for example a summary after tool use, or explicit conciseness for a comment posted to a human | Silent on verbosity even though the run's output is published to an issue, a PR comment, or a log a human reads | The caller injects the verbosity block, with `buildVerbosityBlock()` and its call site cited |
 | 8 | Control the format of responses | The output shape is stated positively and shown as a skeleton or an output tag the response can mirror | Shape given only as prohibitions ("no JSON, no summary") or as prose bullets with no skeleton, leaving the model to invent a layout | The surface produces no model output of its own; its host template owns the output contract, cited by line |
-| 9 | Migrating away from prefilled responses | The builder passes no assistant prefill; format-forcing is done with instructions or structured outputs, confirmed at the call site | The builder constructs an assistant-turn prefill or depends on continuation-by-prefill, which errors on current models | The surface is a static `vN.md` template and cannot set message roles at all |
+| 9 | Migrating away from prefilled responses | The builder passes no assistant prefill; format-forcing is done with instructions or structured outputs, confirmed at the call site | The builder constructs an assistant-turn prefill or depends on continuation-by-prefill, which errors on current models | The surface is a static `prompt.md` template and cannot set message roles at all |
 
 ### Tool use
 
@@ -190,29 +190,25 @@ together. Before filing, search for an existing open issue on the same surface
 and comment there instead of duplicating.
 
 - **Title:** `prompt(<surface>): N Claude best-practice gaps` — for example
-  `prompt(dead_code/v4): 6 Claude best-practice gaps`.
+  `prompt(dead_code): 6 Claude best-practice gaps`.
 - **Labels:** `enhancement` and `best-practices`. No reserved workflow label.
 - **Milestone:** ` Align Vibe Coder prompts with Claude prompting best
   practices`.
 
 ```markdown
-Audit of `prompts/<name>/vN.md` against the [prompt best-practices
+Audit of `prompts/<name>/prompt.md` against the [prompt best-practices
 checklist](../docs/PROMPT-BEST-PRACTICES-CHECKLIST.md) found N gaps.
 Parent:. Audit record: docs/audits/<audit-file>.md
 
 ### Gap 1 — item <checklist number>: <checklist item name>
 
-- **Evidence (file:line):** `prompts/<name>/vN.md:<line>` — what the line does
-  today. Every gap needs one; a gap with no cited line is not filed.
+- **Evidence (file:line):** `prompts/<name>/prompt.md:<line>` — what the line
+  does today. Every gap needs one; a gap with no cited line is not filed.
 - **Why it is a gap:** the checklist gap definition, applied to this surface.
-- **Suggested change:** the concrete edit, in a new version file `vN+1.md`.
+- **Suggested change:** the concrete edit to `prompt.md`.
 
 ### Gap 2 — item <checklist number>: <checklist item name>
 ...
-
-### Out of scope
-
-Committed `vN.md` files are immutable, so every fix lands in a new version.
 ```
 
 ## Guide coverage — headings out of scope
@@ -236,12 +232,8 @@ reason. Re-check this table when the guide changes.
 ## Related
 
 - [Prompt goals (summary)](PROMPTS.md) — what each prompt type is for.
-- [Prompt house vocabulary](PROMPT-HOUSE-VOCABULARY.md) — the house form of
-  every shared term and section heading. This rubric never prescribes wording;
-  that page records the wording already agreed, including why the `Optimize` and
-  `Minimizing` spellings in this document are a deliberate exception.
-- [Extending the Worker](EXTENDING.md#prompt-versioning-and-templates) — prompt
-  versioning rules, including why committed versions are immutable.
+- [Extending the Worker](EXTENDING.md#prompt-templates) — how prompt templates
+  are laid out and edited.
 - Prompt audit — code-health scan prompts
   and
   Prompt audit — shared guidance prompts
