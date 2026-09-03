@@ -236,6 +236,10 @@ reason. Re-check this table when the guide changes.
 ## Related
 
 - [Prompt goals (summary)](PROMPTS.md) — what each prompt type is for.
+- [Prompt house vocabulary](PROMPT-HOUSE-VOCABULARY.md) — the house form of
+  every shared term and section heading. This rubric never prescribes wording;
+  that page records the wording already agreed, including why the `Optimize` and
+  `Minimizing` spellings in this document are a deliberate exception.
 - [Extending the Worker](EXTENDING.md#prompt-versioning-and-templates) — prompt
   versioning rules, including why committed versions are immutable.
 - Prompt audit — code-health scan prompts
