@@ -56,7 +56,7 @@ compute it, never hard-code it. The terminology and literal rules below apply to
 
 | Concept | House form | Banned variants | Why |
 | --- | --- | --- | --- |
-| The product's name in prose | `Vibe Coder` | `VibeCoder` as one word in prose | Two dozen prose uses are spaced, against two one-word uses in `prompts/security_scan/`. The repo slug `stSoftwareAU/VibeCoder`, and `VibeCoder` inside URLs and filesystem paths, are exempt — they are identifiers, not prose |
+| The product's name in prose | `Vibe Coder` | `VibeCoder` as one word in prose | Twenty-one prose uses are spaced, against two one-word uses in `prompts/security_scan/`. The repo slug `stSoftwareAU/VibeCoder`, and `VibeCoder` inside URLs and filesystem paths, are exempt — they are identifiers, not prose |
 | The Deno harness that builds the prompt, substitutes placeholders and post-processes the output | `the worker` | `the executor` | Twelve latest templates say `the worker` and ten say `the executor`, two of them saying both in one file. `worker/` is also the directory the harness lives in, so the majority form is the one the code already answers to |
 | The command that runs the quality gate | `./quality.sh` | bare `quality.sh` as the command to run | Eight templates already write the runnable form. The bare form reads as a filename and is not a command a shell will find. Naming the script *as a file* — `quality.sh:41`, "the repo has no `quality.sh`" — is a filename reference, not an invocation, and stays |
 | The scheduled-scan concept in prose | `idle-task` | `idle task` unhyphenated | Thirty-five hyphenated uses against three unhyphenated. `idle-task` is also the literal label name the worker reads, so the prose and the label match |
@@ -71,7 +71,7 @@ column names the section; the house form is the exact heading text.
 | Section | House form | Banned variants | Why |
 | --- | --- | --- | --- |
 | Hard constraints | `## Hard Constraints (apply to every phase)` | `## Hard constraints (apply to every phase)`, `## Hard Constraints (apply throughout)` | Ten templates carry it exactly; two differ only in casing and three in the parenthetical. "Every phase" says which phases are bound, where "throughout" leaves it to inference |
-| Finding ID recipe | `## Stable finding ID recipe` | the same heading at H3 | H2 in ten templates against H3 in five. The recipe is a peer of the phase sections, not a subsection of whichever phase happens to precede it |
+| Finding ID recipe | `## Stable finding ID recipe` | the same heading at H3 | H2 in nine templates against H3 in six. The recipe is a peer of the phase sections, not a subsection of whichever phase happens to precede it |
 | Per-finding filing sub-heading | `### For each surviving finding (skip silently if its id is in the suppressed or known-open list)` | bare `### For each surviving finding`, `### Filing the finding` | Seven templates carry the parenthetical, four the bare form and one `### Filing the finding`. The parenthetical is the suppression contract: without it the heading does not say that a suppressed finding is dropped without comment |
 | Issue-body fix slot | `## Suggested fix` | `## Suggested action`, `## Suggested replacement` | Nine against three and two. Every scan files a fix suggestion into the same slot, and a reader scanning filed issues across scans should not have to know which scan wrote the body |
 | Issue-body rationale slot | `## Why this matters` | `## Why this is a candidate`, `## Why this is flagged`, `## Why it is safe to remove` | Nine against one each. The slot answers the reader's question — why should I care — not the scanner's |
@@ -87,7 +87,7 @@ Applies to the twelve interactive directories in [Families](#families).
 
 | Section | House form | Banned variants | Why |
 | --- | --- | --- | --- |
-| Opening mode heading | `## <X> Mode`, optionally with a ` — <subtitle>` tail | no mode heading at all on an interactive prompt | Six templates open this way. The opening H2 is what tells a run in one line which workflow it is in; a template that opens with prose makes the run infer it |
+| Opening mode heading | `## <X> Mode`, optionally with a ` — <subtitle>` tail | no mode heading at all on an interactive prompt | Seven templates open this way. The opening H2 is what tells a run in one line which workflow it is in; a template that opens with prose makes the run infer it |
 | Repo-standards section | `## Project Guidelines` | `## Coding Guidelines`, `## Guidelines`, `### Guidelines` | It is the section that points at the repository's own standards, and two templates already name it so. `### Planning Guidelines` is a **different** section — guidance on how to plan, not on repo standards — and stays |
 | Worked examples | `### Worked Examples` | `## Worked Examples`, `### Worked examples`, `### Worked cases`, `### Examples` | Four templates against two, one, two and one. The examples illustrate the section above them, so H3 is the right depth, and "Worked" is what distinguishes a resolved case from an illustration |
 
@@ -95,7 +95,8 @@ Applies to the twelve interactive directories in [Families](#families).
 
 - **Attribution footer.** `{{ATTRIBUTION_FOOTER}}` is cited exactly one way:
   **"from the Inputs section"**, which is where the worker substitutes it. The
-  "from the end of this prompt" phrasing (`prompts/deprecated_api/`) and the
+  "from the end of this prompt" phrasing (`prompts/deprecated_api/` and
+  `prompts/dead_code/`) and the
   Phase 4 marker phrasing (`prompts/doc_coverage/`) point a run at places the
   value is not, and are banned.
 - **Finding-id placeholder.** The placeholder body uses the filing family's own

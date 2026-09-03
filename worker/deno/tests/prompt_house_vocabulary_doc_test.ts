@@ -92,7 +92,7 @@ function canonRows(body: string): CanonRow[] {
 /** Find the row whose house-form cell contains `houseForm`. */
 function rowFor(rows: CanonRow[], houseForm: string): CanonRow {
   const row = rows.find((candidate) => candidate.houseForm.includes(houseForm));
-  assert(row, `no canon row records the house form ${houseForm}`);
+  if (!row) throw new Error(`no canon row records the house form ${houseForm}`);
   return row;
 }
 
@@ -122,9 +122,11 @@ async function latestTemplates(): Promise<Map<string, string>> {
   const templates = new Map<string, string>();
   for (const name of promptDirectories()) {
     const latest = await getLatestVersion(name, PROMPTS_DIR);
-    assert(latest.ok, `no version found for prompts/${name}/`);
+    if (!latest.ok) throw new Error(`no version found for prompts/${name}/`);
     const template = await loadPrompt(name, latest.value, PROMPTS_DIR);
-    assert(template.ok, `could not load prompts/${name}/${latest.value}.md`);
+    if (!template.ok) {
+      throw new Error(`could not load prompts/${name}/${latest.value}.md`);
+    }
     templates.set(name, template.value);
   }
   return templates;
