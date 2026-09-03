@@ -2610,6 +2610,7 @@ export async function runClaudeWithRetry(
             signalDir,
             waitSeconds,
             resetMs ?? undefined,
+            "usage",
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
@@ -2727,6 +2728,8 @@ export async function runClaudeWithRetry(
           const signalResult = await writeRateLimitSignal(
             rateSignalDir,
             actualWait,
+            undefined,
+            "usage",
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(

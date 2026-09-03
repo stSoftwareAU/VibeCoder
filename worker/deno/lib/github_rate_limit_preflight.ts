@@ -260,7 +260,12 @@ export async function preflightGitHubRateLimit(
   // Rate-limited: record signal for siblings/respawns.
   const now = deps.nowSeconds();
   const waitSeconds = computeWaitSeconds(reset, now);
-  const writeResult = await writeRateLimitSignal(deps.workDir, waitSeconds);
+  const writeResult = await writeRateLimitSignal(
+    deps.workDir,
+    waitSeconds,
+    undefined,
+    "github",
+  );
   if (!writeResult.ok) {
     deps.log(
       `Pre-flight detected rate limit but signal write failed: ${writeResult.error.message}`,

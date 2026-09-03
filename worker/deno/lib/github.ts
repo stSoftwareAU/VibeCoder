@@ -278,7 +278,7 @@ async function notePrimaryQuotaExhaustion(): Promise<void> {
     const waitSeconds = Math.max(0, resetEpoch - now);
     const workDir = Deno.env.get("WORK_DIR");
     if (workDir) {
-      await writeRateLimitSignal(workDir, waitSeconds);
+      await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
     }
     defaultLogger.warn(
       `Primary GraphQL quota exhausted — latching all GraphQL-backed gh ` +
