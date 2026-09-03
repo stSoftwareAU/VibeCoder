@@ -21,7 +21,7 @@ positives. Flag conservatively — when in doubt, leave it out. Every
 candidate you file must carry an explicit justification of *why it is
 safe to remove*.
 
-## Hard constraints (apply to every phase)
+## Hard Constraints (apply to every phase)
 
 - **Native toolchain only, no network.** Use each repo's own tooling.
   Never install packages, never call a remote service, never regress a
@@ -60,7 +60,7 @@ safe to remove*.
 
 ## Inputs
 
-The executor substitutes the values below at file time. The `(none)`
+The worker substitutes the values below at file time. The `(none)`
 sentinel means the list is empty for this run.
 
 - **Suppressed finding IDs** (skip if a candidate's stable id matches):
@@ -91,6 +91,13 @@ sentinel means the list is empty for this run.
 <open_issue_titles>
 {{OPEN_ISSUE_TITLES}}
 </open_issue_titles>
+
+**Attribution footer** — the literal Markdown line every filed issue body
+MUST end with, reproduced verbatim (see Phase 4):
+
+<attribution_footer>
+{{ATTRIBUTION_FOOTER}}
+</attribution_footer>
 
 <instructions>
 
@@ -272,8 +279,8 @@ yields the same id across runs.
 
 In-source suppression markers use the governed
 `best-practice-ignore: BP-… — author=<github-login> expires=<YYYY-MM-DD> <reason>`
-grammar — the same marker shape the other scans honour, with the same
-three mandatory fields. Honour a marker **only** when `author=` is
+grammar — this scan's own `best-practice-ignore` keyword, with three
+mandatory fields. Honour a marker **only** when `author=` is
 present and non-empty, `expires=` is a real `YYYY-MM-DD` calendar date
 that is today or later, and non-empty reason text follows. A marker
 failing any of those checks **does not suppress**: keep the finding, file
@@ -287,7 +294,7 @@ triage paths cannot drift.
 
 Your only output for this phase is the `gh` calls themselves — the label
 creations, the dedup lookups, and one `gh issue create` per surviving
-candidate. End the run immediately after the last call. The executor
+candidate. End the run immediately after the last call. The worker
 verifies success by diffing the repo's open `dead-code`-labelled issues
 before and after the run, so anything you print instead of filing is
 invisible to it.
@@ -308,7 +315,7 @@ gh label create severity:low    --description "Low severity"                    
 
 The `|| true` swallows the "already exists" error so re-runs are safe.
 
-### For each surviving finding
+### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
 1. **Re-check the dedup lists** declared in the **Inputs** section. Skip
    the finding silently if its stable id appears in either the suppressed
@@ -339,24 +346,23 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 
 Unused export `formatLegacyDate` at `worker/lib/date_utils.ts:120`.
 
-## Why this is a candidate
+## Why this matters
 
 `deno info` reports no in-repo module importing `formatLegacyDate`, and
 it is not re-exported from `worker/lib/mod.ts`.
 
-## Why it is safe to remove
+**Safe to remove:** no importer in any `.ts` file, no string-keyed or
+reflective reference, and it is not part of a documented public
+interface. Caveat: confirm no downstream repo imports it directly from
+this file path.
 
-No importer in any `.ts` file, no string-keyed or reflective reference,
-and it is not part of a documented public interface. Caveat: confirm no
-downstream repo imports it directly from this file path.
-
-## Suggested action
+## Suggested fix
 
 Delete `formatLegacyDate` from `worker/lib/date_utils.ts`, along with any
 import it alone kept alive. Confirm no dynamic or reflective use before
 removing.
 
-<the attribution footer line from the end of this prompt, verbatim>
+<the attribution footer line from the Inputs section, verbatim>
 ```
 
 4. **Cap at 6 issues.** Never file more than 6 issues from a single run.
@@ -389,7 +395,7 @@ Before exiting Phase 4, verify your own work:
   the **Inputs** section) was filed.
 - Every filed issue's body contains the `<!-- finding-id: BP-… -->`
   marker on its own line at the top, and ends with the attribution
-  footer line below.
+  footer line from the **Inputs** section verbatim.
 - Every filed candidate is one you opened and read.
 - No pull request was opened and no file was written — tracked,
   untracked, or scratch.
@@ -398,7 +404,3 @@ If any of these checks fail, fix the offending issue with
 `gh issue edit` before exiting.
 
 </instructions>
-
----
-
-{{ATTRIBUTION_FOOTER}}
