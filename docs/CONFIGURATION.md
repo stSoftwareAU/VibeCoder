@@ -1979,6 +1979,13 @@ Jenkins `post { success / failure / always }` and Azure Pipelines
 extension point for fleet-specific reporting — health records, session-log
 archival, spend accounting — so none of that policy has to live in VibeCoder.
 
+> **📚 The full contract is [Post-Run Callbacks](CALLBACKS.md)** — ordering and
+> exactly-once scope, the versioned context schema, container filesystem
+> visibility, session-log sensitivity, portable hook examples, the conformance
+> fixture an extension runs against its own hooks, and the migration from
+> `fleet_health_dir` / `fleet_health_repo`. This section is the configuration
+> surface only.
+
 ```json
 {
   "callbacks": {
