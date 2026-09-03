@@ -158,6 +158,12 @@ export function applyRename(
   rule: RenameRule,
 ): { text: string; count: number } {
   let count = 0;
+  // `rule.from` is an operator-authored rename key from the private
+  // redactions file, and it is metacharacter-escaped before compilation,
+  // so the compiled pattern is a literal alternation-free string that
+  // cannot backtrack. Same reasoning as `compileRepoName` in
+  // export_scrub_gate.ts.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   const re = new RegExp(escapeRegExp(rule.from), "gi");
   const out = text.replace(re, (match) => {
     count++;
