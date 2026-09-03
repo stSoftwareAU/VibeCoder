@@ -31,6 +31,10 @@ docs/CONFIGURATION.md:
   title: "Vibe Coder: Configuration Reference"
   page_icon: "⚙️"
 
+docs/CALLBACKS.md:
+  title: "Vibe Coder: Post-Run Callbacks"
+  page_icon: "🪝"
+
 docs/SECURITY-SCAN.md:
   title: "Vibe Coder: Security Scans"
   page_icon: "🛡️"

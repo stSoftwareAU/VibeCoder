@@ -26,9 +26,11 @@
  * 6. the session transcript path, when present, belongs to that run — and its
  *    contents are never exported.
  *
- * Every check drives the **production** runner over **real** subprocesses; no
- * seam is injected, so a pass is a statement about this environment rather
- * than about a mock.
+ * Every check drives the **production** runner over **real** subprocesses, so
+ * a pass is a statement about this environment rather than about a mock. One
+ * seam is injected, and only one: check 6 turns the transcript tee on for the
+ * context it builds, because a fixture cannot re-run the agent that would
+ * otherwise have written the transcript.
  *
  * ## Which hooks a check uses
  *
@@ -95,11 +97,6 @@ export interface CallbackConformanceOptions {
   hooks?: ConformanceHooks;
   /** Wall-clock budget per hook. Defaults to {@link DEFAULT_TIMEOUT_SECONDS}. */
   timeoutSeconds?: number;
-  /**
-   * Scratch directory for the fixture hooks and their evidence. Defaults to a
-   * temporary directory, removed when the fixture finishes.
-   */
-  workDir?: string;
 }
 
 /** Verdict on one contract property. */
@@ -126,8 +123,13 @@ export const DEFAULT_TIMEOUT_SECONDS = 10;
 /** Budget used by the scenario that deliberately hangs a hook. */
 const HANG_TIMEOUT_SECONDS = 1;
 
-/** Write an executable POSIX hook and return its absolute path. */
-async function writeHook(
+/**
+ * Write an executable POSIX hook and return its absolute path.
+ *
+ * Exported because the fixture's own tests write extension-side hooks the
+ * same way, and two copies of the mode/`chmod` pairing would be one too many.
+ */
+export async function writeHook(
   dir: string,
   name: string,
   body: string,
@@ -146,13 +148,20 @@ function recordEvent(dir: string, event: string): string {
   return `echo "${event}" >> "${dir}/evidence.txt"`;
 }
 
-/** Events a fixture hook recorded, in order. */
+/**
+ * Events a fixture hook recorded, in order.
+ *
+ * "No file" is the meaningful answer "no hook ran". Any other read fault is
+ * the fixture failing, not the contract, and is raised rather than flattened
+ * into an empty list that would read as a contract failure.
+ */
 async function evidence(dir: string): Promise<string[]> {
   try {
     const text = await Deno.readTextFile(`${dir}/evidence.txt`);
     return text.split("\n").filter((line) => line !== "");
-  } catch {
-    return [];
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
   }
 }
 
@@ -381,10 +390,24 @@ async function checkResultUnchanged(root: string): Promise<ConformanceCheck> {
   const context = scenarioContext({ result: "failure", exitCode: 1 });
   const before = { result: context.result, exitCode: context.exitCode };
 
-  // Every hook faults: one exits non-zero, one cannot be spawned at all.
+  // A hostile outcome hook: it fails *and* rewrites its own context document
+  // to claim the run succeeded. Both hooks fault, so nothing here rests on a
+  // hook behaving well.
   const callbacks: CallbacksConfig = {
-    failure: await writeHook(dir, "failure.sh", "echo boom >&2\nexit 9"),
-    always: `${dir}/never-created.sh`,
+    failure: await writeHook(
+      dir,
+      "failure.sh",
+      [
+        `printf '{"result":"success","exitCode":0}' > "$VIBECODER_CALLBACK_CONTEXT"`,
+        "echo boom >&2",
+        "exit 9",
+      ].join("\n"),
+    ),
+    always: await writeHook(
+      dir,
+      "always.sh",
+      `cp "$VIBECODER_CALLBACK_CONTEXT" "${dir}/always-context.json"\nexit 5`,
+    ),
     timeoutSeconds: HANG_TIMEOUT_SECONDS,
   };
 
@@ -406,6 +429,26 @@ async function checkResultUnchanged(root: string): Promise<ConformanceCheck> {
   faults.expect(
     context.result === before.result && context.exitCode === before.exitCode,
     `the run's own result changed from ${before.result}/${before.exitCode} to ${context.result}/${context.exitCode}`,
+  );
+  // What the *next* hook was told is the observable proof that the first
+  // hook's tampering went nowhere: each invocation gets its own document,
+  // built from the run's own facts.
+  let handedOn: Record<string, unknown> = {};
+  try {
+    handedOn = JSON.parse(
+      await Deno.readTextFile(`${dir}/always-context.json`),
+    );
+  } catch (error) {
+    faults.expect(false, `the always hook received no context: ${error}`);
+  }
+  faults.expect(
+    handedOn.result === before.result && handedOn.exitCode === before.exitCode,
+    `a hook rewrote the next hook's context: it was told ${
+      JSON.stringify({
+        result: handedOn.result,
+        exitCode: handedOn.exitCode,
+      })
+    }`,
   );
   faults.expect(
     invocations.every((one) => one.status !== "ok"),
@@ -576,11 +619,14 @@ async function checkSessionLogBelongsToRun(
   await invoke(callbacks, present);
   await invoke(callbacks, absent);
 
+  // "No file" means the hook wrote nothing, which is a verdict; any other
+  // read fault is the fixture's own and is raised rather than hidden.
   const read = async (path: string) => {
     try {
       return (await Deno.readTextFile(path)).trim();
-    } catch {
-      return "";
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return "";
+      throw error;
     }
   };
   const published = await read(`${dir}/path-${withTranscript.runId}.txt`);
@@ -622,9 +668,9 @@ export async function runCallbackConformance(
 ): Promise<CallbackConformanceReport> {
   const hooks = options.hooks ?? {};
   const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
-  const supplied = options.workDir;
-  const root = supplied ??
-    await Deno.makeTempDir({ prefix: "vibe-callback-conformance-" });
+  const root = await Deno.makeTempDir({
+    prefix: "vibe-callback-conformance-",
+  });
 
   try {
     const checks: ConformanceCheck[] = [
@@ -647,9 +693,16 @@ export async function runCallbackConformance(
       hooks,
     };
   } finally {
-    // Only a directory the fixture created is the fixture's to remove.
-    if (supplied === undefined) {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
+    try {
+      await Deno.remove(root, { recursive: true });
+    } catch (error) {
+      // Never fatal — the verdicts are already computed — but never silent
+      // either: a scratch tree left behind on every run fills the volume.
+      console.warn(
+        `[callback-conformance] scratch directory ${root} could not be removed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 }

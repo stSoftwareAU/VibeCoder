@@ -16,6 +16,7 @@ import {
   type ConformanceCheckId,
   formatConformanceReport,
   runCallbackConformance,
+  writeHook,
 } from "../lib/callback_conformance.ts";
 import { callbackConformanceCommand } from "../commands/callback_conformance.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -30,18 +31,6 @@ async function withDir(body: (dir: string) => Promise<void>): Promise<void> {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
-}
-
-/** Write an executable POSIX hook and return its absolute path. */
-async function writeHook(
-  dir: string,
-  name: string,
-  body: string,
-): Promise<string> {
-  const path = `${dir}/${name}`;
-  await Deno.writeTextFile(path, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
-  await Deno.chmod(path, 0o700);
-  return path;
 }
 
 /** The check with this id, or a failed assertion naming what was returned. */
@@ -230,4 +219,44 @@ Deno.test("callback_conformance command - a non-string hook path is refused", as
 
   assertEquals(result.success, false);
   assert(result.message.includes("--success"), result.message);
+});
+
+Deno.test("callback_conformance command - argument paths are judged by the production parser", async () => {
+  // Each of these is rejected by `.config.json` validation, so the fixture
+  // must refuse it too rather than passing for an unloadable configuration.
+  const cases: [Record<string, unknown>, string][] = [
+    [{ success: "hooks/success.sh" }, "absolute"],
+    [{ failure: "~/hooks/failure.sh" }, "absolute"],
+    [{ always: "/opt/hooks/a\u0000.sh" }, "NUL"],
+    [{ success: "   " }, "--success"],
+    [{ always: true }, "--always"],
+  ];
+
+  for (const [args, expected] of cases) {
+    const result = await callbackConformanceCommand.execute(
+      args,
+      buildDefaultWorkerConfig(),
+    );
+    assertEquals(result.success, false, JSON.stringify(args));
+    assert(
+      result.message.includes(expected),
+      `${JSON.stringify(args)} → ${result.message}`,
+    );
+    // The operator typed flags, so the message must name flags.
+    assert(!result.message.includes("callbacks."), result.message);
+  }
+});
+
+Deno.test("callback_conformance command - an out-of-range timeout is refused", async () => {
+  for (const value of [0, -1, 1.5, 3601, "soon"]) {
+    const result = await callbackConformanceCommand.execute(
+      { "timeout-seconds": value },
+      buildDefaultWorkerConfig(),
+    );
+    assertEquals(result.success, false, String(value));
+    assert(
+      result.message.includes("--timeout-seconds"),
+      `${value} → ${result.message}`,
+    );
+  }
 });

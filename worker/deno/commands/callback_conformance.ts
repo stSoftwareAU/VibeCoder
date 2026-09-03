@@ -29,53 +29,37 @@ import {
 } from "../lib/callback_conformance.ts";
 import {
   CALLBACK_EVENTS,
-  type CallbackEvent,
-  MAX_CALLBACK_TIMEOUT_SECONDS,
+  type CallbacksConfig,
+  parseCallbacksConfig,
 } from "../lib/run_callbacks_config.ts";
 
-/** An argument that was not supplied at all. */
-const ABSENT = Symbol("absent");
-
-/** Read one optional hook path argument, applying the contract's path rules. */
-function readHookPath(
+/**
+ * Validate the arguments through the **production** `callbacks` parser.
+ *
+ * The command must not invent its own, weaker path rules: a `--success` the
+ * fixture accepts but `.config.json` would reject is a fixture that passes
+ * for a configuration the worker refuses to load. The argument names map
+ * one-to-one onto the block's keys, so the real parser judges them.
+ */
+function parseArguments(
   args: Record<string, unknown>,
-  event: CallbackEvent,
-): Result<string | typeof ABSENT, string> {
-  const value = args[event];
-  if (value === undefined) return { ok: true, value: ABSENT };
-  if (typeof value !== "string" || value.trim() === "") {
-    return {
-      ok: false,
-      error: `--${event} must be a path to an executable`,
-    };
+): Result<CallbacksConfig, string> {
+  const block: Record<string, unknown> = {};
+  for (const event of CALLBACK_EVENTS) {
+    if (args[event] !== undefined) block[event] = args[event];
   }
-  if (!value.startsWith("/")) {
-    return {
-      ok: false,
-      error: `--${event} must be an absolute path, as the contract requires`,
-    };
+  if (args["timeout-seconds"] !== undefined) {
+    block.timeout_seconds = args["timeout-seconds"];
   }
-  return { ok: true, value };
-}
-
-/** Read `--timeout-seconds`, or say what was wrong with it. */
-function readTimeout(
-  args: Record<string, unknown>,
-): Result<number | typeof ABSENT, string> {
-  const raw = args["timeout-seconds"];
-  if (raw === undefined) return { ok: true, value: ABSENT };
-  const value = typeof raw === "number" ? raw : Number(raw);
-  if (
-    !Number.isInteger(value) || value <= 0 ||
-    value > MAX_CALLBACK_TIMEOUT_SECONDS
-  ) {
-    return {
-      ok: false,
-      error:
-        `--timeout-seconds must be a whole number of seconds between 1 and ${MAX_CALLBACK_TIMEOUT_SECONDS}`,
-    };
-  }
-  return { ok: true, value };
+  const parsed = parseCallbacksConfig(block);
+  if (parsed.ok) return parsed;
+  // The parser speaks in config keys; the operator typed flags.
+  return {
+    ok: false,
+    error: parsed.error
+      .replace(/callbacks\.timeout_seconds/g, "--timeout-seconds")
+      .replace(/callbacks\.(success|failure|always)/g, "--$1"),
+  };
 }
 
 export const callbackConformanceCommand: Command = {
@@ -96,23 +80,21 @@ export const callbackConformanceCommand: Command = {
       };
     }
 
+    const parsed = parseArguments(args);
+    if (!parsed.ok) return { success: false, message: parsed.error };
+
     const hooks: ConformanceHooks = {};
-    const faults: string[] = [];
     for (const event of CALLBACK_EVENTS) {
-      const parsed = readHookPath(args, event);
-      if (!parsed.ok) faults.push(parsed.error);
-      else if (parsed.value !== ABSENT) hooks[event] = parsed.value;
-    }
-    const timeout = readTimeout(args);
-    if (!timeout.ok) faults.push(timeout.error);
-    if (faults.length > 0) {
-      return { success: false, message: faults.join("\n") };
+      const path = parsed.value[event];
+      if (path !== undefined) hooks[event] = path;
     }
 
     const report = await runCallbackConformance({
       hooks,
-      ...(timeout.ok && timeout.value !== ABSENT
-        ? { timeoutSeconds: timeout.value }
+      // Only an explicit --timeout-seconds overrides the fixture's own
+      // budget; the parser's default is the contract's, not the fixture's.
+      ...(args["timeout-seconds"] !== undefined
+        ? { timeoutSeconds: parsed.value.timeoutSeconds }
         : {}),
     });
 
