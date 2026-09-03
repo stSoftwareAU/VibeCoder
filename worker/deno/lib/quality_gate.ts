@@ -41,6 +41,7 @@ import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
+import { integrationTestIgnoreArg } from "./integration_test_manifest.ts";
 
 /** Result of a single check execution. */
 export interface CheckExecutionResult {
@@ -938,6 +939,13 @@ async function runDenoTests(
       "--allow-run",
       "--allow-write",
       "--allow-sys=hostname",
+      // Issue #907: the suites that copy the repository's own `.sh`/`.ps1`
+      // into a temp tree, stub a PATH and spawn them are integration tests.
+      // They cost ~12 of the gate's ~36 minutes and run on every change,
+      // including changes that cannot reach them — #891 was found exactly
+      // that way, by a diff touching only `prompts/**`. CI runs them, where
+      // sharding absorbs the cost; the worker's gate does not.
+      `--ignore=${integrationTestIgnoreArg()}`,
     ],
     { cwd: config.denoDir, env: testStageEnv(Deno.env.toObject()) },
   );
