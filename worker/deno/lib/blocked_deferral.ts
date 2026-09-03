@@ -33,7 +33,21 @@ import type { GitHubClient, Logger, Result } from "../types.ts";
 /** Label applied when the dependency line cannot be written to the body. */
 export const BLOCKED_LABEL = "blocked";
 
-/** Marker prefix embedded in the deferral comment — the loop guard's signal. */
+/**
+ * Marker prefix embedded in the deferral comment — the loop guard's signal.
+ *
+ * Issue #842: this deviates from the documented `vibe-*` grammar, carrying a
+ * colon-delimited payload rather than `key="value"` attributes. The shape is
+ * **frozen**, not an oversight. A later run reads it back out of comments
+ * already posted to decide whether it has been here before, so changing the
+ * literal would make every marker in the wild invisible to the guard and the
+ * worker would defer the same dependency again on every scan — spinning an
+ * expensive agent run each time. The compatibility cost falls on live data;
+ * the consistency benefit is cosmetic.
+ *
+ * `marker_grammar_test.ts` pins this as one of a closed set of accepted
+ * deviations, so a new marker cannot quietly add a third convention.
+ */
 export const BLOCKED_DEFERRAL_MARKER_PREFIX = "<!-- vibe-blocked-deferral:";
 
 /**
