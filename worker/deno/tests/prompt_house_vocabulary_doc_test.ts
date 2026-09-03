@@ -14,7 +14,7 @@
  *     rationale, so nothing is asserted without a reason;
  *   - the family memberships it declares partition the prompt directories
  *     that actually exist on disk, resolved through `loadPrompt()` — never
- *     a hard-coded path;
+ *     a hard-coded template path;
  *   - the scan-family membership rule it states really selects the set it
  *     claims, so the recorded count cannot go stale silently;
  *   - the suppression keywords it records match what
@@ -30,7 +30,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt, PROMPT_FILENAME } from "../lib/prompt_manager.ts";
 import { findSuppressions } from "../lib/suppression_comments.ts";
 
 /**
@@ -136,12 +136,12 @@ function citedDirectories(body: string): string[] {
 }
 
 /** The template of every prompt directory, keyed by directory. */
-async function promptTemplates(): Promise<Map<string, string>> {
+async function latestTemplates(): Promise<Map<string, string>> {
   const templates = new Map<string, string>();
   for (const name of promptDirectories()) {
     const template = await loadPrompt(name, PROMPTS_DIR);
     if (!template.ok) {
-      throw new Error(`could not load prompts/${name}/prompt.md`);
+      throw new Error(`could not load prompts/${name}/${PROMPT_FILENAME}`);
     }
     templates.set(name, template.value);
   }
@@ -306,7 +306,7 @@ Deno.test("the scan-family rule selects the membership the document records", as
   assert(scanRow, "the Families table has no Scan row");
   const listed = citedDirectories(scanRow[2]!);
 
-  const templates = await promptTemplates();
+  const templates = await latestTemplates();
   const onDisk = [...templates.entries()]
     .filter(([, template]) => template.includes("Stable finding ID recipe"))
     .map(([name]) => name)
@@ -319,7 +319,7 @@ Deno.test("the scan-family rule selects the membership the document records", as
     listed,
     onDisk,
     "the Scan row of docs/PROMPT-HOUSE-VOCABULARY.md must list exactly the " +
-      "directories whose template carries a `Stable finding ID recipe`",
+      "directories whose latest template carries a `Stable finding ID recipe`",
   );
   assertEquals(
     onDisk.length,

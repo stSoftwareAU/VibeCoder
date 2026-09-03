@@ -136,13 +136,45 @@ export interface QualityGateConfig {
  *
  * Returns the exit code and combined stdout/stderr.
  */
+/**
+ * Ambient variables the container sets that the Deno suite must not inherit
+ * (Issue #891).
+ *
+ * The container exports
+ * `CONFIG_PATH=/home/vibe/.vibe-coder/run-config/.config.json`. Thirty-three
+ * tests set their own `CONFIG_FILE` in a temp directory and then die on
+ * `setup.sh`'s guard:
+ *
+ * ```text
+ * ERROR: CONFIG_FILE and CONFIG_PATH are both set and name different files
+ * ```
+ *
+ * The guard is right — two different config files named at once is a real
+ * misconfiguration — and the tests are right to point at their own fixture.
+ * What is wrong is the gate handing the suite an ambient variable that has
+ * nothing to do with the change under test, so `deno tests FAILED` reported
+ * the container rather than the code. A gate that fails on its own
+ * environment teaches everyone to ignore it, which is the real cost.
+ */
+const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH"];
+
+/** The environment the `deno test` stage runs with. */
+export function testStageEnv(
+  base: Record<string, string>,
+): Record<string, string> {
+  const env = { ...base };
+  for (const name of SCRUBBED_TEST_VARS) delete env[name];
+  return env;
+}
+
 async function runCommand(
   cmd: string[],
-  options?: { cwd?: string },
+  options?: { cwd?: string; env?: Record<string, string> },
 ): Promise<{ exitCode: number; output: string }> {
   const command = new Deno.Command(cmd[0]!, {
     args: cmd.slice(1),
     cwd: options?.cwd,
+    ...(options?.env === undefined ? {} : { env: options.env }),
     stdout: "piped",
     stderr: "piped",
   });
@@ -907,7 +939,7 @@ async function runDenoTests(
       "--allow-write",
       "--allow-sys=hostname",
     ],
-    { cwd: config.denoDir },
+    { cwd: config.denoDir, env: testStageEnv(Deno.env.toObject()) },
   );
 
   if (result.exitCode === 0) {

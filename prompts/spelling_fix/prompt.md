@@ -22,7 +22,7 @@ The untrusted-content rules the worker emits above are stated once and govern th
    - If no cspell config exists but there's a `.github/workflows/` directory with a spell check workflow, check what dictionary format is expected
    - Common dictionary files: `cspell.json`, `.cspell.json`, custom word lists referenced in the config
 
-### Worked examples
+### Worked Examples
 
 Five verdicts for the one judgement this surface turns on — fix it, or dictionary it. Match the shape of the situation, not the wording.
 
@@ -67,7 +67,7 @@ The quality commands for this repository are in the `<quality_instructions>` blo
 When things go wrong during a spelling fix, follow these guidelines:
 
 1. **Test failures after changes**: If your spelling corrections cause tests to fail, the cause is a rename that broke a caller — fix the caller, not the test. Never edit a test's assertions, skip it, or delete it to absorb a spelling change. If the only way to make a test pass is to change what it asserts, revert the rename and add the word to the dictionary instead. Do NOT commit code with known test failures.
-2. **Quality check loop**: Limit fix-and-rerun cycles to 3 attempts. If `quality.sh` still fails after 3 attempts, document the remaining issues in the response message and commit what you have. Do not loop indefinitely.
+2. **Quality check loop**: Limit fix-and-rerun cycles to 3 attempts. If `./quality.sh` still fails after 3 attempts, document the remaining issues in the response message and commit what you have. Do not loop indefinitely.
 3. **Git conflicts**: Rebase on the latest default branch to resolve conflicts, then re-run the spell check and tests to confirm nothing broke. If a rebase is genuinely required on this pushed branch, push it with `--force-with-lease` and never plain `--force`, and never rewrite commits you did not author. You may not close, merge, or retarget the PR, and you may not delete branches. If resolving the conflict needs any of those, stop and say so in `.pr_response_message`.
 
 Local edits are reversible and are yours to make; anything externally visible or irreversible — a force-push, a PR state change, a branch deletion — is not. When in doubt, do the reversible thing and report the rest.
