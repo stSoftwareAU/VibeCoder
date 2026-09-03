@@ -19,8 +19,16 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
+import {
+  findSuppressions,
+  type SupportedLanguage,
+} from "../lib/suppression_comments.ts";
 
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+// decodeURIComponent so a checkout under a path containing a space still
+// resolves — otherwise the load fails naming the wrong cause.
+const PROMPTS_DIR = decodeURIComponent(
+  new URL("../../../prompts", import.meta.url).pathname,
+);
 
 async function latestSecurityScan(): Promise<string> {
   const result = await loadPrompt("security_scan", undefined, PROMPTS_DIR);
@@ -29,26 +37,52 @@ async function latestSecurityScan(): Promise<string> {
 }
 
 /**
- * Numbered lines with fenced blocks and inline code spans blanked out, so a
- * prose rule never fires on a shell snippet, a marker literal or a filename.
+ * The template's prose with fenced blocks and inline code spans blanked out,
+ * so a prose rule never fires on a shell snippet, a marker literal or a
+ * filename, joined into one string so a banned phrase cannot hide across the
+ * ~70-column hard wrap. `lines[i]` is the source line each character came
+ * from, so a hit still reports where it lives.
  */
-function proseLines(text: string): Array<{ line: number; content: string }> {
+function prose(text: string): { flat: string; lineAt: (at: number) => number } {
   let inFence = false;
-  return text.split("\n").map((raw, index) => {
+  const parts: string[] = [];
+  const lines: number[] = [];
+  text.split("\n").forEach((raw, index) => {
     if (/^\s*```/.test(raw)) {
       inFence = !inFence;
-      return { line: index + 1, content: "" };
+      return;
     }
-    if (inFence) return { line: index + 1, content: "" };
-    return { line: index + 1, content: raw.replace(/`[^`]*`/g, "``") };
+    if (inFence) return;
+    const content = raw.replace(/`[^`]*`/g, "``") + "\n";
+    parts.push(content);
+    for (let i = 0; i < content.length; i++) lines.push(index + 1);
   });
+  return {
+    flat: parts.join(""),
+    lineAt: (at: number) => lines[at] ?? 0,
+  };
 }
 
-/** Every prose line matching `pattern`, rendered as `line N: <content>`. */
+/**
+ * Every prose match for `pattern`, rendered as `line N: <phrase>`. Newlines
+ * are matched as ordinary whitespace, so `the\nexecutor` is caught the same
+ * as `the executor` — a wrapped variant is drift, not an exemption.
+ */
 async function proseHits(pattern: RegExp): Promise<string[]> {
-  return proseLines(await latestSecurityScan())
-    .filter((l) => pattern.test(l.content))
-    .map((l) => `line ${l.line}: ${l.content.trim()}`);
+  const { flat, lineAt } = prose(await latestSecurityScan());
+  const wrapAware = new RegExp(
+    pattern.source.replaceAll(" ", "\\s+"),
+    pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g",
+  );
+  return [...flat.matchAll(wrapAware)].map((m) =>
+    `line ${lineAt(m.index ?? 0)}: ${m[0].replace(/\s+/g, " ").trim()}`
+  );
+}
+
+/** A marker line in the comment syntax its leading token implies. */
+function languageFor(marker: string): SupportedLanguage {
+  if (marker.startsWith("#")) return "py";
+  return "ts";
 }
 
 Deno.test("security_scan - spells the product name Vibe Coder in prose (Issue #837)", async () => {
@@ -160,6 +194,83 @@ Deno.test("security_scan - names its own suppression keyword rather than a share
   assert(
     text.includes("`security-scan-ignore` keyword"),
     "the template must name its own keyword, `security-scan-ignore`",
+  );
+});
+
+/**
+ * Candidate SEC- markers spanning every comment syntax a monitored repo
+ * writes, each paired with the keyword a reader would have to write. Which
+ * of them count is decided by the real parser below, never by this list —
+ * drop a form from `suppression_comments.ts` and the template stops being
+ * required to name its keyword.
+ */
+const CANDIDATE_MARKERS: ReadonlyArray<{ marker: string; keyword: string }> = [
+  {
+    marker: "# security-scan-ignore: SEC-0123456789ab",
+    keyword: "security-scan-ignore",
+  },
+  {
+    marker: "// security-scan-ignore: SEC-0123456789ab",
+    keyword: "security-scan-ignore",
+  },
+  {
+    marker: "/* security-scan-ignore: SEC-0123456789ab */",
+    keyword: "security-scan-ignore",
+  },
+  { marker: "# noqa: SEC-0123456789ab", keyword: "noqa" },
+  {
+    marker: "// eslint-disable-next-line SEC-0123456789ab",
+    keyword: "eslint-disable-next-line",
+  },
+] as const;
+
+/** True when `worker/deno/lib/suppression_comments.ts` parses the marker. */
+function parserRecognises(marker: string): boolean {
+  const line = `${marker} author=someone expires=2999-01-01 because`;
+  return findSuppressions(line, languageFor(marker))
+    .some((record) => record.family === "security-scan");
+}
+
+/** Every marker literal the template spells out in a code span. */
+function markerLiteralsIn(text: string): string[] {
+  return [...text.matchAll(/`([^`]*SEC-…[^`]*)`/g)]
+    .map((m) => m[1] ?? "")
+    .filter((span) => /^\s*(#|\/\/|\/\*)/.test(span))
+    .map((span) => span.replace("SEC-…", "SEC-0123456789ab").trim());
+}
+
+Deno.test("security_scan - the suppression markers it names match the parser (Issue #837)", async () => {
+  const text = await latestSecurityScan();
+
+  // Naming its own keyword must not narrow the honoured set: a keyword the
+  // parser accepts but the template never names is a governed waiver the
+  // run silently re-files.
+  const omitted = [
+    ...new Set(
+      CANDIDATE_MARKERS
+        .filter(({ marker }) => parserRecognises(marker))
+        .map(({ keyword }) => keyword)
+        .filter((keyword) => !text.includes(keyword)),
+    ),
+  ];
+  assertEquals(
+    omitted,
+    [],
+    "the parser honours these SEC- suppression keywords, so the template " +
+      "must name them or a waived finding is re-filed:\n" + omitted.join("\n"),
+  );
+
+  // And the reverse: a literal the template spells out but the parser cannot
+  // see makes the run skip a finding the deterministic check still flags —
+  // the divergence the step's own "cannot drift" promise rules out.
+  const literals = markerLiteralsIn(text);
+  assert(literals.length > 0, "no SEC- marker literal found — matcher stale");
+  const unrecognised = literals.filter((m) => !parserRecognises(m));
+  assertEquals(
+    unrecognised,
+    [],
+    "the template spells out marker forms the parser does not recognise:\n" +
+      unrecognised.join("\n"),
   );
 });
 
