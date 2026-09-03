@@ -3,12 +3,13 @@
  * (Issue #189).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   detectPromptLeakage,
   PROMPT_LEAK_PLACEHOLDER,
   redactPromptLeakage,
 } from "../lib/prompt_leak_redaction.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 // ---------------------------------------------------------------------------
 // Detection
@@ -97,6 +98,30 @@ Deno.test("prompt leak - masks the whole coding_guidelines block", () => {
 
   assertEquals(out.includes("Token Economy"), false);
   assertEquals(out.includes("<coding_guidelines>"), false);
+  assertStringIncludes(out, "Hope that helps.");
+});
+
+Deno.test("prompt leak - masks the injected guidelines' own opening line (Issue #839)", async () => {
+  // The phrase list quotes the first sentence of the injected guidelines
+  // block. Renaming the persona there without updating the list would leave
+  // an echo of that line unredacted whenever the model omits the tags — the
+  // fallback the tag detector cannot cover. Read the sentence from the
+  // template so the two cannot drift apart silently.
+  const template = await loadPrompt(
+    "coding_guidelines",
+    new URL("../../../prompts", import.meta.url).pathname,
+  );
+  assert(template.ok, "coding_guidelines prompt failed to load");
+  const opening = template.value.split(/\n\s*\n/)[0]!;
+
+  const text = `Here are my instructions:\n\n${opening}\n\nHope that helps.`;
+  const out = redactPromptLeakage(text);
+
+  assert(
+    detectPromptLeakage(text).length > 0,
+    "an echo of the guidelines' opening line is not detected as leakage",
+  );
+  assertEquals(out.includes(opening.split("\n")[0]!), false);
   assertStringIncludes(out, "Hope that helps.");
 });
 

@@ -49,7 +49,7 @@ normal `work-on` pipeline after a human confirms intent.
   under a `test/` or `tests/` directory) so the rules can stabilise before
   the exclusion is relaxed.
 
-## Worked examples — the reported / not-reported boundary
+## Worked Examples — the reported / not-reported boundary
 
 The whole value of the scan sits in one boundary: which references resolve,
 which are reported, and which are skipped as dynamic. These examples show that
