@@ -136,7 +136,7 @@ function citedDirectories(body: string): string[] {
 }
 
 /** The template of every prompt directory, keyed by directory. */
-async function latestTemplates(): Promise<Map<string, string>> {
+async function promptTemplates(): Promise<Map<string, string>> {
   const templates = new Map<string, string>();
   for (const name of promptDirectories()) {
     const template = await loadPrompt(name, PROMPTS_DIR);
@@ -306,7 +306,7 @@ Deno.test("the scan-family rule selects the membership the document records", as
   assert(scanRow, "the Families table has no Scan row");
   const listed = citedDirectories(scanRow[2]!);
 
-  const templates = await latestTemplates();
+  const templates = await promptTemplates();
   const onDisk = [...templates.entries()]
     .filter(([, template]) => template.includes("Stable finding ID recipe"))
     .map(([name]) => name)
@@ -319,7 +319,7 @@ Deno.test("the scan-family rule selects the membership the document records", as
     listed,
     onDisk,
     "the Scan row of docs/PROMPT-HOUSE-VOCABULARY.md must list exactly the " +
-      "directories whose latest template carries a `Stable finding ID recipe`",
+      "directories whose template carries a `Stable finding ID recipe`",
   );
   assertEquals(
     onDisk.length,

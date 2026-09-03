@@ -24,12 +24,11 @@ import {
   findSuppressions,
   type SupportedLanguage,
 } from "../lib/suppression_comments.ts";
+// Importing this pins prompt resolution to *this* checkout (Issue #844), so a
+// worker host's PROMPTS_DIR cannot point the gate at another tree.
+import { REPO_ROOT } from "./support/repo_prompts.ts";
 
-// decodeURIComponent so a checkout under a path containing a space still
-// resolves — otherwise the load fails naming the wrong cause.
-const PROMPTS_DIR = decodeURIComponent(
-  new URL("../../../prompts", import.meta.url).pathname,
-);
+const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 
 async function securityScanPrompt(): Promise<string> {
   const result = await loadPrompt("security_scan", PROMPTS_DIR);
@@ -60,17 +59,25 @@ function prose(text: string): { flat: string; lineAt: (at: number) => number } {
   });
   return {
     flat: parts.join(""),
-    lineAt: (at: number) => lines[at] ?? 0,
+    // An index off the end means the flattened text and its line map have
+    // diverged, which would silently mislabel every hit. Fail loudly instead.
+    lineAt: (at: number) => {
+      const line = lines[at];
+      if (line === undefined) {
+        throw new Error(`prose line map has no entry for offset ${at}`);
+      }
+      return line;
+    },
   };
 }
 
 /**
- * Every prose match for `pattern`, rendered as `line N: <phrase>`. Newlines
- * are matched as ordinary whitespace, so `the\nexecutor` is caught the same
- * as `the executor` — a wrapped variant is drift, not an exemption.
+ * Every prose match for `pattern` in `text`, rendered as `line N: <phrase>`.
+ * Newlines are matched as ordinary whitespace, so `the\nexecutor` is caught
+ * the same as `the executor` — a wrapped variant is drift, not an exemption.
  */
-async function proseHits(pattern: RegExp): Promise<string[]> {
-  const { flat, lineAt } = prose(await securityScanPrompt());
+function hitsIn(text: string, pattern: RegExp): string[] {
+  const { flat, lineAt } = prose(text);
   const wrapAware = new RegExp(
     pattern.source.replaceAll(" ", "\\s+"),
     pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g",
@@ -80,11 +87,60 @@ async function proseHits(pattern: RegExp): Promise<string[]> {
   );
 }
 
+/** {@link hitsIn} over the live template. */
+async function proseHits(pattern: RegExp): Promise<string[]> {
+  return hitsIn(await securityScanPrompt(), pattern);
+}
+
 /** A marker line in the comment syntax its leading token implies. */
 function languageFor(marker: string): SupportedLanguage {
   if (marker.startsWith("#")) return "py";
   return "ts";
 }
+
+/**
+ * Positive control for the five prose bans below. Each of them asserts an
+ * *empty* hit list, so a `prose()` that returned nothing — an odd fence count,
+ * an unbalanced backtick, a stale regex rewrite — would turn all five green
+ * while checking nothing. This test fails in that case: it pins that the
+ * projection keeps the bulk of the template, that a banned phrase is found
+ * even when the hard wrap splits it, and that a code span or fenced block is
+ * still exempt.
+ */
+Deno.test("security_scan - the prose matcher is not vacuous (Issue #837)", async () => {
+  const template = await securityScanPrompt();
+  const { flat } = prose(template);
+  assert(
+    flat.length > template.length / 2,
+    `prose projection kept only ${flat.length} of ${template.length} chars — ` +
+      "the fence or code-span blanking has run away and the bans below would " +
+      "pass vacuously",
+  );
+
+  const wrapped = [
+    "A sentence naming the",
+    "executor across the wrap.",
+    "",
+    "Prose citing `the executor` in a code span.",
+    "",
+    "```sh",
+    "the executor",
+    "```",
+  ].join("\n");
+  assertEquals(
+    hitsIn(wrapped, /\b(?:the|The)\s+executors?\b/),
+    ["line 1: the executor"],
+    "the matcher must catch a wrapped phrase and exempt code spans and fences",
+  );
+
+  // A pattern written with a literal space must match across the wrap too —
+  // that rewrite is what stops `idle\ntask` slipping past the bans below.
+  assertEquals(
+    hitsIn("A scheduled idle\ntask runs nightly.", /\bidle task\b/i),
+    ["line 1: idle task"],
+    "a literal space in the pattern must match a newline",
+  );
+});
 
 Deno.test("security_scan - spells the product name Vibe Coder in prose (Issue #837)", async () => {
   // Repo slugs and URLs keep the one-word form; only prose is governed.
