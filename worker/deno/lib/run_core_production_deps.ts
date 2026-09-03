@@ -1008,7 +1008,19 @@ export async function createProductionRunCoreDeps(
     };
 
     const processResult = await processFn(ctx, processorDeps);
-    return { processed: processResult?.ok ?? false };
+    const processed = processResult?.ok ?? false;
+    // Issue #859: every "Processing ..." line needs a matching outcome.
+    // A declined pickup logged nothing at all, so a processor that looked at
+    // an issue and correctly walked away was indistinguishable from one that
+    // hung — the shape `agent_progress.ts` already calls out. Observed with
+    // four consecutive pickups of one issue and no round started, which took
+    // a label inspection to explain.
+    logger.info(
+      `Processed ${label} issue: ${repo}#${issueNumber} outcome=${
+        processed ? "handled" : "declined"
+      }`,
+    );
+    return { processed };
   }
 
   const deps: RunCoreDeps = {

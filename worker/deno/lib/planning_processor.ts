@@ -77,6 +77,7 @@ import {
   FAILURE_DETECTION_REPAIR_LABEL,
   recordPartialFailureDetectionRepair,
 } from "./failure_detection_repair_label.ts";
+import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1873,7 +1874,9 @@ async function closePlanningIssue(
       );
     } else {
       logger.warn(
-        "Plan-coverage gate: the published plan does not account for every ask — escalating to a human (Issue #520)",
+        `Plan-coverage gate: ${
+          summariseCoverageGateFailure(coverageVerdict)
+        } — escalating to a human (Issue #520)`,
         {
           repo,
           issueNumber,
