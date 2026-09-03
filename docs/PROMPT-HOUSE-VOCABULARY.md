@@ -8,9 +8,10 @@ two, and "Worked Examples" five — the drift catalogued in the cross-prompt aud
 
 This page is the canon the sweeps apply, and the source of truth the drift test
 reads. That test is Issue #840 and has **not** landed yet, so a banned variant
-fails nothing except in `prompts/security_scan/`, whose own sweep pinned its
-forms in `worker/deno/tests/security_scan_house_vocabulary_test.ts` (Issue
-#837). Everywhere else this page is the agreement, not the gate.
+fails nothing except in `prompts/security_scan/`, whose own sweep (Issue #837)
+pinned its forms in
+`worker/deno/tests/security_scan_house_vocabulary_test.ts`.
+Everywhere else this page is the agreement, not the gate.
 It records **why** each form won and which exceptions are deliberate, so the next
 person bumping a template picks the agreed form instead of re-litigating it. It
 changes no template on its own.
