@@ -10,9 +10,10 @@
  * grammar "shared" when three sibling keywords exist and only
  * `security-scan-ignore` fires here.
  *
- * These tests read whatever version resolves, so a later bump that
- * reintroduces a banned variant fails here rather than surfacing downstream
- * when a security_scan idle-task run misbehaves.
+ * These tests read `prompts/security_scan/prompt.md` through the real
+ * `loadPrompt`, so a later edit that reintroduces a banned variant fails here
+ * rather than surfacing downstream when a security_scan idle-task run
+ * misbehaves.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -30,8 +31,8 @@ const PROMPTS_DIR = decodeURIComponent(
   new URL("../../../prompts", import.meta.url).pathname,
 );
 
-async function latestSecurityScan(): Promise<string> {
-  const result = await loadPrompt("security_scan", undefined, PROMPTS_DIR);
+async function securityScanPrompt(): Promise<string> {
+  const result = await loadPrompt("security_scan", PROMPTS_DIR);
   assert(result.ok, "security_scan prompt failed to load");
   return result.value;
 }
@@ -69,7 +70,7 @@ function prose(text: string): { flat: string; lineAt: (at: number) => number } {
  * as `the executor` — a wrapped variant is drift, not an exemption.
  */
 async function proseHits(pattern: RegExp): Promise<string[]> {
-  const { flat, lineAt } = prose(await latestSecurityScan());
+  const { flat, lineAt } = prose(await securityScanPrompt());
   const wrapAware = new RegExp(
     pattern.source.replaceAll(" ", "\\s+"),
     pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g",
@@ -95,7 +96,7 @@ Deno.test("security_scan - spells the product name Vibe Coder in prose (Issue #8
   );
   // Absence alone would also pass if the sentences were simply deleted.
   assert(
-    (await latestSecurityScan()).includes("Vibe Coder"),
+    (await securityScanPrompt()).includes("Vibe Coder"),
     "the two renamed sentences must survive, not be deleted",
   );
 });
@@ -109,7 +110,7 @@ Deno.test("security_scan - calls the Deno harness the worker (Issue #837)", asyn
     [],
     "the house noun for the harness is `the worker`:\n" + hits.join("\n"),
   );
-  const text = await latestSecurityScan();
+  const text = await securityScanPrompt();
   assert(
     text.includes("The worker substitutes the values below"),
     "the Inputs preamble must name the worker, not be deleted",
@@ -144,7 +145,7 @@ Deno.test("security_scan - uses ./quality.sh, hyphenated idle-task and capital M
 });
 
 Deno.test("security_scan - carries the family's shared headings (Issue #837)", async () => {
-  const text = await latestSecurityScan();
+  const text = await securityScanPrompt();
   const expected = [
     "## Hard Constraints (apply to every phase)",
     // H2 in nine siblings; security_scan had it at H3.
@@ -169,7 +170,7 @@ Deno.test("security_scan - carries the family's shared headings (Issue #837)", a
 });
 
 Deno.test("security_scan - uses the SEC-prefixed finding-id placeholder (Issue #837)", async () => {
-  const text = await latestSecurityScan();
+  const text = await securityScanPrompt();
   assert(
     !text.includes("<!-- finding-id: <id> -->"),
     "the generic placeholder hides which family prefix this scan emits",
@@ -185,7 +186,7 @@ Deno.test("security_scan - uses the SEC-prefixed finding-id placeholder (Issue #
 });
 
 Deno.test("security_scan - names its own suppression keyword rather than a shared grammar (Issue #837)", async () => {
-  const text = await latestSecurityScan();
+  const text = await securityScanPrompt();
   assert(
     !/shared suppression-comment grammar/.test(text),
     'a maintainer reading "the shared suppression-comment grammar" cannot ' +
@@ -240,7 +241,7 @@ function markerLiteralsIn(text: string): string[] {
 }
 
 Deno.test("security_scan - the suppression markers it names match the parser (Issue #837)", async () => {
-  const text = await latestSecurityScan();
+  const text = await securityScanPrompt();
 
   // Naming its own keyword must not narrow the honoured set: a keyword the
   // parser accepts but the template never names is a governed waiver the
@@ -275,7 +276,7 @@ Deno.test("security_scan - the suppression markers it names match the parser (Is
 });
 
 Deno.test("security_scan - cites the attribution footer one way (Issue #837)", async () => {
-  const text = await latestSecurityScan();
+  const text = await securityScanPrompt();
   assert(
     text.includes("attribution footer** line from the Inputs section"),
     "the issue body's footer citation must read `from the Inputs section`",
