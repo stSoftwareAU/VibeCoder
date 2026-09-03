@@ -324,12 +324,19 @@ wait_for_child() {
 # One line per launcher decision in the worker's own host log, so a fleet host
 # that keeps failing a step is visible without reading stderr. Best-effort: an
 # unwritable log must never fail a launch.
+# Issue #872: `LOG_DIR` was honoured by loop.sh and ignored here, so setting
+# it split the logs across two directories with no warning. Same precedence as
+# `loop.sh:56` and `resolveLogDir` in container_launch.ts. A blank value is
+# treated as unset, so an exported-but-empty variable does not write to `/`.
+RUN_CORE_LOG_DIR="${LAUNCH_LOG_DIR:-${LOG_DIR:-${HOME}/logs}}"
+[[ -z "${RUN_CORE_LOG_DIR// }" ]] && RUN_CORE_LOG_DIR="${HOME}/logs"
+
 log_run_core() {
   # The log directory is created by the launch plan later in the run, so it
   # may not exist yet at the first line written (Issue #512).
-  mkdir -p "${HOME}/logs" 2>/dev/null || true
+  mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || true
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
-    >>"${HOME}/logs/run_core.log" 2>/dev/null || true
+    >>"${RUN_CORE_LOG_DIR}/run_core.log" 2>/dev/null || true
 }
 
 # The run mode - container, the only one (Issue #4). Still resolved by Deno
@@ -642,7 +649,7 @@ if [[ -d "${container_store}" ]] && command -v du >/dev/null 2>&1; then
   store_line="$(cd "${container_store}" 2>/dev/null && du -sh -- * 2>/dev/null | awk '{printf "%s=%s ", $2, $1}')"
   store_total="$(du -sh "${container_store}" 2>/dev/null | cut -f1)"
   printf '%s container-store: total=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${store_total:-?}" "${store_line}" \
-    >>"${HOME}/logs/run_core.log" 2>/dev/null || true
+    >>"${RUN_CORE_LOG_DIR}/run_core.log" 2>/dev/null || true
 fi
 
 # Reclaim the host container store (Issue #227). Host GRQ-23 crashed out of
