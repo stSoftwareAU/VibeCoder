@@ -825,13 +825,16 @@ splits the inverted repos in two:
 
 ```mermaid
 flowchart TD
-    S["Inversion signal on repo"] --> C{"Claim scan completed<br/>an eligibility pass?"}
+    S["Inversion signal on repo"] --> B{"Did a slot on this host<br/>hold this repo?"}
+    B -- yes --> G["heldInversionRepos<br/>→ NOTE inversion_repo_held"]
+    B -- no --> C{"Claim scan completed<br/>an eligibility pass?"}
     C -- no --> D["deferredInversionRepos<br/>→ NOTE inversion_not_escalated"]
     C -- yes --> V{"Did the scan claim<br/>from this repo?"}
     V -- yes --> W["servedInversionRepos<br/>→ NOTE inversion_not_escalated_served"]
     V -- no --> E["escalationRepos<br/>→ Issue #321 streak +1"]
     E --> F["3 consecutive cycles → file an issue in VibeCoder"]
     D --> H["streak held: neither counted nor cleared"]
+    G --> H
     W --> H2["streak cleared: the repo was served"]
     S --> I["inversionDetected → idle-task filer suppressed<br/>(unchanged: the work is real either way)"]
 ```
@@ -862,6 +865,44 @@ scan had simply run out of cycle. The deferral is now logged instead:
 claim scan did not complete an eligibility pass this cycle, so nothing refused
 this work
 ```
+
+#### A repo the scan was never shown (Issue #898)
+
+`claimScanCompleted` is one **cycle-wide** boolean, and the census applied it to
+every repo. The claim scan does not work that way: `findOldestIssue` drops every
+repository in its `excludeRepos` set — the repos held by an issue slot
+(Issue #4176) **or** by the maintenance lane (Issue #213) — before any collector
+runs, logging `logRepoClassification(repo, "in-flight")` and nothing else. No
+gate refused those issues; none was ever consulted.
+
+That is how `stSoftwareAU/VibeCoder` escalated on three consecutive cycles with
+nine claimable `work-on` issues and an **empty** "what the claim scan did with
+them" section: the lane was servicing one of the repo's own PRs, so the pool's
+scan could not see the repository, found nothing anywhere else, and set
+`eligibilityScanCompleted` — which the census read as "the scan looked at
+VibeCoder and refused it". A repo whose PRs the fleet is busy maintaining is
+exactly the repo most likely to be held, which is why the fleet's own repo hit
+it repeatedly.
+
+The pool now keeps the exclusion set of the pass that came up empty and hands it
+to both readers as `scanExcludedRepos`. The census records such a repo as
+`scanned=false skip_reason=repo_held_in_flight` and reports it in its own bucket
+— Issue #437's rule applied per repo instead of per cycle — with a note that
+names the hold rather than repeating "nothing refused this work", which is true
+and still sends a reader to look at cycle duration (the Issue #479 lesson):
+
+```text
+[idle-census] … NOTE inversion_repo_held repos=stSoftwareAU/VibeCoder — a slot
+on this host held these repositories, so the claim scan skipped them before any
+eligibility check ran; this work was never evaluated, and returns when the hold
+clears
+```
+
+The idle-detect audit takes the same set as `heldRepos` and drops those repos
+from its `mis_classification` ALERT, for the same reason the claim gate silences
+it (Issue #479): the scan and the audit cannot disagree about a repository the
+scan was not allowed to see. Both readers keep the claimable counts, so the
+idle-task filer stays suppressed while the work waits (Issue #2813).
 
 #### The escalation is filed in VibeCoder
 
