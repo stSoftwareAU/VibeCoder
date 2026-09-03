@@ -13,7 +13,7 @@ The scan runs in four phases, each producing the input to the next:
 
 ## Inputs
 
-The executor substitutes the values below at file time. Each is wrapped in
+The worker substitutes the values below at file time. Each is wrapped in
 its own XML tag naming its role, so you can tell worker-supplied fact from
 prompt-authored prose by the delimiter alone. The `(none)` sentinel means
 the list is empty for this run.
@@ -219,7 +219,7 @@ Inventory the codebase and record:
   the gate says `LLM-using = NO`, skip the LLM section entirely (skip on
   absence) — do not re-derive a different answer from the source. The two
   tiers above are documented so you can cite the same matched signals the
-  gate reports; they do not override the gate verdict. VibeCoder is
+  gate reports; they do not override the gate verdict. Vibe Coder is
   always `LLM-using = YES` via the always-on allowlist floor, so its scan
   always includes the LLM chunk.
 
@@ -862,7 +862,7 @@ sweeps apply everywhere — every repo has files and comments.)
   secret before filing (an empty `.env.example` template or a public
   certificate is not a leak). This is the committed-file literal sweep;
   file it under A04 and only **cross-reference** the A04 hard-coded-secret
-  line — do not duplicate it. (If a dedicated secret-scanning idle task
+  line — do not duplicate it. (If a dedicated secret-scanning idle-task
   owns committed-secret detection, cross-reference that task instead of
   double-filing.)
 - **Test / example / seed credentials reachable in production (A07:2025 —
@@ -1152,7 +1152,7 @@ relevant to the LLM/agent chunk and leave ranking to Phase 3 and the
 6-issue cap to Phase 4. This is **detect-and-file only** — report the
 finding; do not harden the guardrail.
 
-**VibeCoder's four priority surfaces** (audit these first when present —
+**Vibe Coder's four priority surfaces** (audit these first when present —
 they are this repo's highest-value LLM attack surface):
 
 1. **Untrusted issue / comment ingestion → prompt (LLM01).** Issue and
@@ -1606,7 +1606,7 @@ Apply these rules in order to every candidate from Phase 2:
    composed exploit-chain finding sorts by its composed severity like any
    other.
 
-### Stable finding ID recipe
+## Stable finding ID recipe
 
 Compute each finding's stable id as `SEC-<12 hex>` from the inputs
 `{ repo, class, primary file, normalised snippet }`. Treat whitespace
@@ -1619,11 +1619,11 @@ same recipe with `class = "exploit-chain"`, its entry-hop file as the
 primary file, and the ordered constituent-id list as the normalised
 snippet.
 
-## Phase 4 — File one issue per finding
+## Phase 4 — File one issue per finding (outcome-only)
 
 Phase 4 is **outcome-only**: the deliverable is the set of GitHub issues
 filed against the current repository — one per surviving finding. Your
-printed reply is irrelevant; the executor measures success by diffing the
+printed reply is irrelevant; the worker measures success by diffing the
 repo's open `security`-labelled issues before and after the run. File the
 issues and exit — no JSON block, no Markdown report, no executive summary.
 
@@ -1654,8 +1654,7 @@ The `|| true` swallows the "already exists" error, so re-runs are safe.
 The colours and descriptions are the canonical ones, so the colour
 reconcile pass has nothing to repaint.
 
-For each surviving finding (skip silently if its id is in the suppressed
-or known-open list):
+### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
 1. **Re-check the live open-issue list.** Call
    `gh issue list --state open --label security --search "SEC- in:body"
@@ -1665,10 +1664,12 @@ or known-open list):
 2. **Honour only governed in-source suppression markers.** A marker
    waives a real security finding, so it counts only when it records who
    waived it, until when, and why. When the file at
-   `<file>:<first-line>` carries a matching marker — `# noqa: SEC-…`,
-   `// noqa: SEC-…`, `// security-scan-ignore: SEC-…`, or any other form
-   recognised by the shared suppression-comment grammar — check all
-   three governance fields before honouring it:
+   `<file>:<first-line>` carries a matching marker — this scan's own
+   `security-scan-ignore` keyword in whichever comment syntax the file's
+   language uses (`#`, `//` or `/* */`), or the `# noqa: SEC-…` and
+   `// eslint-disable-next-line SEC-…` forms the suppression checker also
+   recognises for `SEC-` ids — check all three governance fields before
+   honouring it:
    - `author=<github-login>` — present and non-empty;
    - `expires=<YYYY-MM-DD>` — a real calendar date, today or later;
    - reason text after those fields — present and non-empty.
@@ -1691,7 +1692,7 @@ or known-open list):
    emoji (`🔴` critical, `🟠` high, `🟡` medium, `🟢` low) — e.g.
    `🟠 SQL injection in src/api/orders.ts:47`.
 
-   Body: the hidden HTML marker `<!-- finding-id: <id> -->` on its own
+   Body: the hidden HTML marker `<!-- finding-id: SEC-… -->` on its own
    line at the top, immediately followed — when the finding was assigned
    a CWE in Phase 3 step 8 — by the hidden marker
    `<!-- cwe: CWE-<n> -->` on its own line, reproduced in exactly that
@@ -1701,15 +1702,14 @@ or known-open list):
    reworded, renamed, or prose-only CWE mention is silently dropped.
    Emit **at most one** cwe marker per issue, and none at all when
    Phase 3 assigned no confident id. Then a prose lead naming the file,
-   lines, severity, and class, then `## Why it is a bug`, `## Attacker model`,
+   lines, severity, and class, then `## Why this matters`, `## Attacker model`,
    `## Trigger`, `## Exploit sketch`, and `## Suggested fix` — only the
    sections you have evidence for. For a Deno repo (Phase 1), prefer the
    Deno-native tool (`deno test`, `deno lint`, `deno fmt`, `deno run`)
    over the Node equivalent in fix suggestions. The body MUST end with
-   the literal **attribution footer** line from the `<attribution_footer>`
-   input (`{{ATTRIBUTION_FOOTER}}`), separated by a blank line and
-   reproduced verbatim — backticks and emoji intact. Example rendered
-   footer:
+   the literal **attribution footer** line from the Inputs section,
+   separated by a blank line and reproduced verbatim — backticks and
+   emoji intact. Example rendered footer:
    `🏷️ Filed by idle-task template: \`security-scan\` · Run id: \`vibe-abc123\``.
 
    The body takes exactly this shape — markers first, each on its own
@@ -1723,7 +1723,7 @@ or known-open list):
    Unparameterised SQL built from request input in
    `src/api/orders.ts:47-52` — severity high, class SQL injection.
 
-   ## Why it is a bug
+   ## Why this matters
 
    <what the cited lines do wrong>
 
@@ -1779,7 +1779,7 @@ or known-open list):
    cap was not exceeded but chunks were left unswept, file the tracker for
    that reason alone, titled
    `security-scan-overflow: N chunks not reached`. The tracker body also
-   ends with the `{{ATTRIBUTION_FOOTER}}` line.
+   ends with the attribution footer line from the Inputs section.
 
 5. **Zero surviving findings = file nothing.** Do not file an "all clear"
    issue or post a comment; simply exit.

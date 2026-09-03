@@ -7,8 +7,11 @@ two, and "Worked Examples" five — the drift catalogued in the cross-prompt aud
 (Issue #794).
 
 This page is the canon the sweeps apply, and the source of truth the drift test
-reads. That test is Issue #840 and has **not** landed yet, so today a banned
-variant in a template fails nothing — this page is the agreement, not the gate.
+reads. That test is Issue #840 and has **not** landed yet, so a banned variant
+fails nothing except in `prompts/security_scan/`, whose own sweep (Issue #837)
+pinned its forms in
+`worker/deno/tests/security_scan_house_vocabulary_test.ts`.
+Everywhere else this page is the agreement, not the gate.
 It records **why** each form won and which exceptions are deliberate, so the next
 person bumping a template picks the agreed form instead of re-litigating it. It
 changes no template on its own.
@@ -79,7 +82,7 @@ column names the section; the house form is the exact heading text.
 | Finding ID recipe | `## Stable finding ID recipe` | the same heading at H3 | H2 in nine templates against H3 in six. The recipe is a peer of the phase sections, not a subsection of whichever phase happens to precede it |
 | Per-finding filing sub-heading | `### For each surviving finding (skip silently if its id is in the suppressed or known-open list)` | bare `### For each surviving finding`, `### Filing the finding` | Seven templates carry the parenthetical, four the bare form and one `### Filing the finding`. The parenthetical is the suppression contract: without it the heading does not say that a suppressed finding is dropped without comment |
 | Issue-body fix slot | `## Suggested fix` | `## Suggested action`, `## Suggested replacement` | Nine against three and two. Every scan files a fix suggestion into the same slot, and a reader scanning filed issues across scans should not have to know which scan wrote the body |
-| Issue-body rationale slot | `## Why this matters` | `## Why this is a candidate`, `## Why this is flagged`, `## Why it is safe to remove` | Nine against one each. The slot answers the reader's question — why should I care — not the scanner's |
+| Issue-body rationale slot | `## Why this matters` | `## Why this is a candidate`, `## Why this is flagged`, `## Why it is safe to remove`, `## Why it is a bug` | Nine against one each, the fourth being `prompts/security_scan/` (Issue #837). The slot answers the reader's question — why should I care — not the scanner's, and "why it is a bug" names the verdict rather than the stake |
 | Phase 4 heading | keep the `(outcome-only)` suffix, e.g. `## Phase 4 — File one issue per finding (outcome-only)` | the unsuffixed form | The minority form wins this one row deliberately: the suffix is the verbosity contract for the phase, telling the run to emit outcomes rather than narrate the filing. Four templates carry it and ten dropped it; the fifteenth, `prompts/retro/`, has no filing phase at Phase 4 and is not counted either way. The unsuffixed majority is drift towards the less informative heading |
 
 `## Why this scan exists` is a **prompt-level** section — it tells the run what
