@@ -3482,7 +3482,12 @@ Deno.test("processIssuePlanning - auto-creates a milestone and assigns 2+ sub-is
   assertEquals(result.ok, true);
 
   // A milestone POST must have been issued.
-  const postCall = ghCalls.find((c) => c.includes("POST"));
+  // Issue #906: name the call this test means. Label operations now go
+  // through the same injected `gh` as everything else, so `ghCalls` carries
+  // them too and "the first POST" is no longer unambiguously the milestone.
+  const postCall = ghCalls.find((c) =>
+    c.includes("POST") && c.some((a) => a.includes("milestones"))
+  );
   assertEquals(postCall !== undefined, true, "should POST a new milestone");
   assertEquals(
     (postCall ?? []).join(" ").includes("title=#2863 Big feature"),
@@ -3555,7 +3560,13 @@ Deno.test("processIssuePlanning - does NOT auto-create a milestone for a single 
   });
   assertEquals(result.ok, true);
   // No milestone POST and no milestone assignment for a single sub-issue.
-  assertEquals(ghCalls.some((c) => c.includes("POST")), false);
+  assertEquals(
+    ghCalls.some((c) =>
+      c.includes("POST") && c.some((a) => a.includes("milestones"))
+    ),
+    false,
+    "no milestone should be created for a single sub-issue",
+  );
   assertEquals(ghCalls.some((c) => c.includes("--milestone")), false);
 });
 

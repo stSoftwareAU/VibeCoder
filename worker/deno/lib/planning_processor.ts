@@ -78,6 +78,8 @@ import {
   recordPartialFailureDetectionRepair,
 } from "./failure_detection_repair_label.ts";
 import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
+import { ensureLabelExists } from "./label_operations.ts";
+import type { EscalateToHumanDeps } from "./needs_human_escalation.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -884,6 +886,39 @@ export function buildCritiqueFallbackPublishPrompt(opts: {
  * @param processorDeps - Processor dependencies
  * @returns Result containing the planning outcome
  */
+/**
+ * Route the plan gates' label work through the injected `gh` (Issue #906).
+ *
+ * `escalateToHuman` falls back to the production `ensureLabelExists`, which
+ * falls back to the real `runGhCommand`. The planning tests stub
+ * `deps.github.runGhCommand` and believed they had isolated the processor —
+ * but the escalation path went around that seam and made real GitHub calls
+ * against the fixture repo. Roughly ten seconds per test, across 27 of the
+ * file's 117, for calls whose results are discarded:
+ *
+ * ```text
+ * gh label list   --repo org/repo --limit 500 …
+ * gh label create needs-human --repo org/repo …
+ * gh api -X POST  repos/org/repo/labels …
+ * ```
+ *
+ * Passing the seam through costs nothing in production — it is the same
+ * function the fallback would have reached — and removes a hidden dependency
+ * from a path the tests thought they controlled.
+ */
+function labelDepsFor(
+  runGhCommand: (args: string[]) => Promise<string>,
+): EscalateToHumanDeps {
+  return {
+    github: {
+      ensureLabelExists: (repo, labelName, colour, description) =>
+        ensureLabelExists(repo, labelName, colour, description, {
+          ghCommandFn: runGhCommand,
+        }),
+    },
+  };
+}
+
 export async function processIssuePlanning(
   ctx: IssueContext,
   processorDeps: PlanningProcessorDeps,
@@ -1896,6 +1931,7 @@ async function closePlanningIssue(
         verdict: coverageVerdict,
         githubUser,
         logger,
+        deps: labelDepsFor(deps.github.runGhCommand),
       });
     }
   }
@@ -1950,6 +1986,7 @@ async function closePlanningIssue(
         verdict: mvpVerdict,
         githubUser,
         logger,
+        deps: labelDepsFor(deps.github.runGhCommand),
       });
     }
   }

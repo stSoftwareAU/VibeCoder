@@ -25,6 +25,7 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -317,6 +318,118 @@ Deno.test(
       calls.every((c) => c === false),
       `every census call must report an incomplete scan, got: ${calls}`,
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #898: a repo the scan was never shown is not a repo it refused
+// ---------------------------------------------------------------------------
+// `findOldestIssue` skips every repository in `excludeRepos` — the set an
+// issue slot (Issue #4176) or the maintenance lane (Issue #213) holds —
+// before any collector runs, so it records no per-issue skip reason for it.
+// The census must be told which repos those were, or it reads the pool's
+// pool-wide `eligibilityScanCompleted` as "the scan looked and refused".
+
+Deno.test(
+  "run_core - the census is told which repos the scan was never shown (Issue #898)",
+  async () => {
+    let cycleCount = 0;
+    let nowValue = 0;
+    const calls: Array<{ completed: boolean; excluded: readonly string[] }> =
+      [];
+    // The maintenance lane holds a repository while it services one of its
+    // PRs — exactly the hold that made VibeCoder invisible for three cycles.
+    const registry = new InFlightRepoRegistry();
+    registry.tryAcquire("org/held", 899, "maintenance", { maintenance: true });
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      inFlightRepos: registry,
+      findNextIssue: () => Promise.resolve({ ok: true as const, value: null }),
+      runIdleDecisionCensus: ({ claimScanCompleted, scanExcludedRepos }) => {
+        calls.push({
+          completed: claimScanCompleted,
+          excluded: [...scanExcludedRepos],
+        });
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    config.maxConcurrentIssues = 2;
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(calls.length, 1);
+    // The pass did complete — for every repo it was allowed to see.
+    assertEquals(calls[0]!.completed, true);
+    assertEquals(calls[0]!.excluded, ["org/held"]);
+  },
+);
+
+Deno.test(
+  "run_core - an unheld pool reports no exclusions (Issue #898)",
+  async () => {
+    let cycleCount = 0;
+    let nowValue = 0;
+    const calls: Array<readonly string[]> = [];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      inFlightRepos: new InFlightRepoRegistry(),
+      findNextIssue: () => Promise.resolve({ ok: true as const, value: null }),
+      runIdleDecisionCensus: ({ scanExcludedRepos }) => {
+        calls.push([...scanExcludedRepos]);
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    config.maxConcurrentIssues = 2;
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(calls, [[]]);
+  },
+);
+
+Deno.test(
+  "run_core - the serial loop reports no exclusions (Issue #898)",
+  async () => {
+    let cycleCount = 0;
+    let nowValue = 0;
+    const calls: Array<readonly string[]> = [];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      findNextIssue: () => Promise.resolve({ ok: true as const, value: null }),
+      runIdleDecisionCensus: ({ scanExcludedRepos }) => {
+        calls.push([...scanExcludedRepos]);
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    // A single slot excludes nothing: it never shares a clone with a sibling.
+    assertEquals(calls, [[]]);
   },
 );
 

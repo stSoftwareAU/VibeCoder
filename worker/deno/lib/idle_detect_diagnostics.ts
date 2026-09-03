@@ -671,6 +671,19 @@ export interface AuditClaimableStateOptions {
    * evidence that work was waiting. Omitted → historical behaviour.
    */
   claimGateActive?: boolean;
+  /**
+   * Repositories the claim scan was never shown this cycle (Issue #898) —
+   * every repo an issue slot (Issue #4176) or the maintenance lane
+   * (Issue #213) held, which `findOldestIssue` skips before any eligibility
+   * check runs.
+   *
+   * The scan cannot disagree with the audit about a repository it was not
+   * allowed to see, so such a repo raises no ALERT. Its per-repo line and its
+   * contribution to {@link ClaimableAuditResult.claimableTotal} are
+   * unaffected: the work is real, and the idle-task filer must stay
+   * suppressed while it waits (Issue #2813). Omitted → historical behaviour.
+   */
+  heldRepos?: readonly string[];
   /** Per-repo issue cap passed to `gh issue list --limit`. Default 200. */
   perRepoLimit?: number;
   /** Injectable gh runner — defaults to the production retry wrapper. */
@@ -888,12 +901,16 @@ export async function auditClaimableState(
   }
 
   const claimableTotal = perRepo.reduce((sum, r) => sum + r.claimable, 0);
+  // Issue #898: a repo a slot held was skipped before any eligibility check
+  // ran, so the scan claiming nothing from it is not a disagreement.
+  const heldRepos = new Set(opts.heldRepos ?? []);
   const misClassificationRepos = perRepo
-    .filter((r) => r.claimable > 0)
+    .filter((r) => r.claimable > 0 && !heldRepos.has(r.repo))
     .map((r) => r.repo);
   // Issue #479: a gated cycle never ran the scan, so a disagreement with it
   // is not evidence of anything.
-  const misClassification = !opts.scanFoundClaimable && claimableTotal > 0 &&
+  const misClassification = !opts.scanFoundClaimable &&
+    misClassificationRepos.length > 0 &&
     opts.claimGateActive !== true;
 
   log(
