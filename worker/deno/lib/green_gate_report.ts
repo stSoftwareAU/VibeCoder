@@ -241,7 +241,6 @@ export async function gatherGreenGateEvidence(
       continue;
     }
     workerLogsRead++;
-    let lastHealthMs: number | undefined;
     for (const line of text.split("\n")) {
       const ts = parseWorkerTimestamp(line);
       if (ts === undefined || !inWindow(ts)) continue;

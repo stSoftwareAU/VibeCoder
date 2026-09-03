@@ -282,7 +282,8 @@ Deno.test("registerBuiltinFeatures - registers imgbb and github-status", () => {
   assertEquals(registry.getStatus("github-status"), "unknown");
 
   // Issue #805: FLEET health tracking was removed — it is not a feature.
-  assertEquals(registry.getStatus("health-tracking"), "unknown");
+  // `getStatus` returns "unknown" for any unregistered name, so `checkAll()`
+  // is what actually proves the registration is gone.
   assertEquals(
     registry.checkAll().some((r) => r.name === "health-tracking"),
     false,

@@ -455,7 +455,7 @@ export DISABLE_AUTOUPDATER=1
 cd "${BASE_DIR}"
 
 # --frozen + --lock fail closed on dependency drift (Issue #2896). The driver
-# needs env/read/write/run plus --allow-net (GitHub API, webhooks, FLEET health)
+# needs env/read/write/run plus --allow-net (GitHub API, webhooks, callbacks)
 # and --allow-sys=hostname (worker identity); the container boundary, not this
 # permission set, is what keeps the worker off the host.
 #

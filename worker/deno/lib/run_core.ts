@@ -266,8 +266,9 @@ export interface RunCoreResult {
   quotaResetEpochMs?: number;
   /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
-   * passed. Reported to the caller so a health-reporting callback can gate
-   * on it — a worker that could not authenticate must not report healthy.
+   * passed. Reported on the loop result so the caller can tell a healthy
+   * exit from an unhealthy one — a worker that could not authenticate must
+   * not be recorded as healthy.
    */
   lastHealthCheckPassed: boolean;
   /**
@@ -3830,9 +3831,9 @@ export async function runCoreLoop(
           }
 
           // --- Health checks ---
-          // Issue #2602: a failed check marks the worker unhealthy so neither
-          // the per-iteration heartbeat below nor the end-of-run report
-          // (gated on `lastHealthCheckPassed`) reports the host as healthy.
+          // Issue #2602: a failed check marks the worker unhealthy, so the
+          // loop result carries `lastHealthCheckPassed: false` and the host
+          // is never recorded as healthy for this run.
           const claudeHealth = await deps.checkClaudeHealth();
           if (!claudeHealth.ok || !claudeHealth.value.healthy) {
             lastHealthCheckPassed = false;

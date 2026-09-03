@@ -2,7 +2,7 @@
  * Per-repo access state for monitored repos (Issue #4036).
  *
  * Probe outcomes used to be logged per tick and discarded, so nothing in
- * the worker could answer the question the fleet health gate needs to
+ * the worker could answer the question the health gate needs to
  * ask: *are all monitored repos reachable right now?* During the host-3
  * incident (#4028) two repos 404'd for days while the worker stayed
  * green.

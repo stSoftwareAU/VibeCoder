@@ -502,7 +502,7 @@ export async function createProductionRunCoreDeps(
     },
   });
   // Work-volume standing totals (Issues #244, #345): one shared reading feeds
-  // the log line, the feature report and the fleet-health payload, so a probe
+  // the log line and the feature report, so a probe
   // that cannot produce a value can never be advertised as `available`.
   const workVolume = new WorkVolumeMonitor({
     workDir,

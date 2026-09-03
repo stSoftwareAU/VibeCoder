@@ -544,11 +544,10 @@ the repos are named on two surfaces:
   grep '\[repo-access\]' ~/logs/worker.log | tail -n 5
   ```
 
-- **Health-reporting callback** — the run reports
-  `lastHealthCheckPassed: false`, so a
-  [post-run callback](CONFIGURATION.md#-post-run-callbacks) publishing host
-  health can withhold the green signal and carry
-  `repos inaccessible: TitlePage/bar, TitlePage/foo` as the reason.
+- **Loop result** — the iteration sets `lastHealthCheckPassed` to `false`,
+  so the host is recorded as unhealthy rather than green. Built-in fleet
+  health reporting was removed in Issue #805: nothing in the worker
+  publishes this to a dashboard.
 
 **What it means.** The worker authenticated fine — this condition sits *after*
 the Claude and `gh auth` checks — but the account it authenticated as cannot see

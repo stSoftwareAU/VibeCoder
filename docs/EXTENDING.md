@@ -523,15 +523,9 @@ regression). Never hand-roll a per-variable save/restore; use
 ```typescript
 import { withCleanEnv } from "./support/env.ts";
 
-Deno.test("resolveWorkDir - container mode resolves under the work volume", async () => {
-  await withCleanEnv({
-    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
-    WORK_DIR: "/home/vibe/auto-issue-work",
-  }, () => {
-    assertEquals(
-      resolveWorkDir("/workspace"),
-      "/home/vibe/auto-issue-work",
-    );
+Deno.test("checkImgbbAvailable - an unset key is unavailable, whatever the host exports", async () => {
+  await withCleanEnv({ VIBE_IMGBB_API_KEY: undefined }, () => {
+    assertEquals(checkImgbbAvailable(), false);
   });
 });
 ```

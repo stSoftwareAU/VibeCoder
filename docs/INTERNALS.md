@@ -693,9 +693,9 @@ does not.
 
 The access condition reads the per-repo access store, which only reports a repo
 inaccessible after two consecutive access-denied probes, so a transient blip
-cannot flip the fleet. An unhealthy iteration reports
-`lastHealthCheckPassed: false`, so a health-reporting callback can withhold the
-green signal instead of publishing it while its repos 404 (the signature).
+cannot flip the fleet. An unhealthy iteration sets `lastHealthCheckPassed`
+to `false` on the loop result, so the host is recorded as unhealthy rather
+than green while its repos 404 (the signature).
 Recovery is automatic: one successful probe
 clears the store and the next iteration reports healthy again — no operator
 action, no restart.
@@ -720,12 +720,13 @@ them:
   boundary (`resetIterationCaches`) re-arms it. A changed repo set is new
   information and logs immediately.
 
-- **Health-reporting callback** — `formatInaccessibleReposReason()` in
+- **Reason string** — `formatInaccessibleReposReason()` in
   `worker/deno/lib/monitored_repo_access.ts` renders the same set as
-  `repos inaccessible: TitlePage/bar, TitlePage/foo`, so a
-  [post-run callback](CONFIGURATION.md#-post-run-callbacks) reporting host
-  health can carry the reason verbatim. Repos are listed in the store's stable
-  lexicographic order, so the string cannot churn between ticks.
+  `repos inaccessible: TitlePage/bar, TitlePage/foo`. Repos are listed in the
+  store's stable lexicographic order, so the string cannot churn between
+  ticks. Built-in fleet health reporting was removed in Issue #805, so the
+  worker itself publishes this nowhere — it is the helper an out-of-tree
+  health reporter reads.
 
 Healthy hosts stay silent — no log line, no reason string. The operator
 runbook for this condition — what it means, what the worker keeps doing, and the

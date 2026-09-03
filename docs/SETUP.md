@@ -81,7 +81,7 @@ background service is offered, where files land — is covered in
 4. **Interactive configuration prompts** — also terminal-only. Collects the
    key configuration answers (repositories to monitor, allowed authors,
    service accounts, SSH key path, `gh` config directory, screenshot-upload
-   key, fleet-health repository), showing any existing value as the default.
+   key), showing any existing value as the default.
    Nothing is written yet — the answers are held for the next phase. What
    each key means is the [Configuration Reference](CONFIGURATION.md)'s job.
 
