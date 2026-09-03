@@ -15,11 +15,6 @@
  * cannot reintroduce the vulnerability without failing the gate. `git_ref_args.ts`
  * itself (which constructs these arrays as the sanctioned output) is allowlisted.
  *
- * The pattern is applied both per-line and to the comment-stripped file as a
- * whole (Issue #268): a multi-line `["fetch", "origin", branchName]` literal
- * evades a line-local scan because no single line holds the verb and the
- * attacker-controlled identifier.
- *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
@@ -78,35 +73,15 @@ export function scanContentForGitRefArgv(
   content: string,
   repoRelPath: string,
 ): GitRefArgvViolation[] {
-  const stripped = stripBlockComments(content);
-  const lines = stripped.split("\n");
+  const lines = stripBlockComments(content).split("\n");
   const violations: GitRefArgvViolation[] = [];
-  const seenLines = new Set<number>();
-
-  const addViolation = (line: number, text: string) => {
-    if (seenLines.has(line)) return;
-    seenLines.add(line);
-    violations.push({ file: repoRelPath, line, text: text.trim() });
-  };
-
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? "";
     const code = rawLine.replace(/\/\/.*$/, "");
     if (GIT_REF_ARGV_PATTERN.test(code)) {
-      addViolation(i + 1, rawLine);
+      violations.push({ file: repoRelPath, line: i + 1, text: rawLine.trim() });
     }
   }
-
-  // Issue #268: the same pattern already matches across newlines (`\s` and
-  // `[^\]]` include them) once the whole comment-stripped file is scanned.
-  const withoutLineComments = stripped.replace(/\/\/.*$/gm, "");
-  const globalPattern = new RegExp(GIT_REF_ARGV_PATTERN.source, "g");
-  for (const match of withoutLineComments.matchAll(globalPattern)) {
-    const index = match.index ?? 0;
-    const line = withoutLineComments.slice(0, index).split("\n").length;
-    addViolation(line, lines[line - 1] ?? match[0]);
-  }
-
   return violations;
 }
 

@@ -9,12 +9,10 @@
 
 import {
   _resetSuppressionAuthorAllowlist as _clearSuppressionAllowlist,
-  _resetSuppressionCommitAuthors as _clearSuppressionCommitAuthors,
   recordedSuppressions,
   renderSuppressionSummary,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist as _setSuppressionAllowlist,
-  setSuppressionCommitAuthors as _setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
@@ -407,7 +405,6 @@ Deno.test("scanOrphanDeps - in-source best-practice-ignore suppresses the findin
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
-  _setSuppressionCommitAuthors(["nigel"]);
   try {
     // Pre-compute the id so we can place a matching marker in a deno.jsonc.
     const repo = "org/repo";
@@ -437,7 +434,6 @@ Deno.test("scanOrphanDeps - in-source best-practice-ignore suppresses the findin
     assertEquals(result.findings, []);
   } finally {
     _clearSuppressionAllowlist();
-    _clearSuppressionCommitAuthors();
   }
 });
 

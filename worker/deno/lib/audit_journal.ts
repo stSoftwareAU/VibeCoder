@@ -27,9 +27,6 @@
  * audit directory (`${dir}.roster.jsonl`, Issue #3949). The sweep treats a
  * rostered journal with neither file nor anchor on disk — and a missing
  * directory with a non-empty roster — as broken, not as an empty sweep.
- * A last-known-non-empty marker beside the roster (Issue #270) also
- * treats complete erasure of the journal directory **and** the roster as
- * a broken chain.
  *
  * Concurrency: appends to a given file are serialised through an
  * in-process async mutex so the hash chain stays consistent even when many
@@ -48,7 +45,6 @@ import {
   journalNameForAnchor,
   readAnchor,
   readRoster,
-  rosterWasSeen,
   writeAnchor,
 } from "./audit_anchor.ts";
 
@@ -668,24 +664,6 @@ export async function adoptAnchor(path: string): Promise<Result<ChainAnchor>> {
   return written;
 }
 
-/** Sweep verdict for complete erasure of the journal directory and roster. */
-function completeErasureSweep(dir: string): Result<ChainSweep> {
-  return {
-    ok: true,
-    value: {
-      baseDir: dir,
-      checked: 1,
-      broken: [{
-        path: dir,
-        valid: false,
-        count: 0,
-        reason:
-          "audit directory and roster are both missing but a last-known-non-empty marker records that journals existed — complete erasure",
-      }],
-    },
-  };
-}
-
 /**
  * Verify every audit chain under `baseDir` — the scheduled sweep.
  *
@@ -694,13 +672,11 @@ function completeErasureSweep(dir: string): Result<ChainSweep> {
  * from the sweep. The expected-journal roster (Issue #3949) — persisted as
  * a sibling of the audit directory — is folded in as well, so a journal
  * deleted **together with** its anchor, or an `rm -rf` of the whole audit
- * directory, is a broken chain rather than an empty sweep. A last-known-
- * non-empty marker (Issue #270) covers the remaining hole: deleting the
- * directory **and** the roster together.
+ * directory, is a broken chain rather than an empty sweep.
  *
  * @param baseDir - Audit directory (default: resolved from the environment)
  * @returns Result carrying the sweep verdict; an absent directory is a
- *   clean, empty sweep only when nothing was ever observed
+ *   clean, empty sweep only when the roster expects nothing
  */
 export async function verifyAllChains(
   baseDir?: string,
@@ -710,12 +686,10 @@ export async function verifyAllChains(
   const anchorsOnDisk = new Set<string>();
 
   let rostered: string[];
-  let seen: boolean;
   try {
     rostered = await readRoster(dir);
-    seen = await rosterWasSeen(dir);
   } catch (error: unknown) {
-    // A corrupted roster or seen-marker is a tamper signal in its own right.
+    // A corrupted roster is a tamper signal in its own right.
     return {
       ok: false,
       error: error instanceof Error ? error : new Error(String(error)),
@@ -739,10 +713,7 @@ export async function verifyAllChains(
     // Issue #3949: an absent directory is a clean, empty sweep only when
     // nothing was ever journalled. When the roster expects journals, the
     // directory's removal is the tampering, not a fresh start.
-    // Issue #270: a missing roster after a previously observed non-empty
-    // one is the same erasure, not a first-ever start.
     if (rostered.length === 0) {
-      if (seen) return completeErasureSweep(dir);
       return { ok: true, value: { baseDir: dir, checked: 0, broken: [] } };
     }
     dirMissing = true;
@@ -770,10 +741,6 @@ export async function verifyAllChains(
     ...anchorsOnDisk,
     ...rostered,
   ]);
-
-  // Issue #270: directory present but empty of journals/anchors, roster
-  // gone, marker still there — the same complete erasure as a missing dir.
-  if (names.size === 0 && seen) return completeErasureSweep(dir);
 
   const broken: ChainSweepEntry[] = [];
   for (const name of [...names].sort()) {

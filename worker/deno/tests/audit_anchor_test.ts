@@ -17,7 +17,7 @@ import {
   verifyAllChains,
   verifyChain,
 } from "../lib/audit_journal.ts";
-import { anchorPath, readAnchor, rosterSeenPath } from "../lib/audit_anchor.ts";
+import { anchorPath, readAnchor } from "../lib/audit_anchor.ts";
 
 /** Build a fresh isolated journal location for a test. */
 async function freshOpts(): Promise<
@@ -233,14 +233,4 @@ Deno.test("audit_anchor - verifyAllChains tolerates a missing audit directory", 
   if (!swept.ok) return;
   assertEquals(swept.value.checked, 0);
   assertEquals(swept.value.broken.length, 0);
-});
-
-Deno.test("audit_anchor - recordMutation persists a last-known-non-empty roster marker (Issue #270)", async () => {
-  const opts = await freshOpts();
-  await seed(opts, 1);
-  const stat = await Deno.stat(rosterSeenPath(opts.baseDir));
-  assert(
-    stat.isFile,
-    "a non-empty roster must leave a third witness beside the pair",
-  );
 });

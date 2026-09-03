@@ -23,11 +23,9 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   _resetSuppressionAuthorAllowlist,
-  _resetSuppressionCommitAuthors,
   findSuppressions,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
-  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import { redactSecrets } from "../lib/secret_redaction.ts";
 import {
@@ -76,9 +74,7 @@ Deno.test("findSuppressions - unterminated SEC block marker with a long tail doe
 Deno.test("findSuppressions - terminated block marker with a long reason does not stall", () => {
   resetSuppressionRegistry();
   _resetSuppressionAuthorAllowlist();
-  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
-  setSuppressionCommitAuthors(["nigel"]);
   try {
     // Long, but inside MAX_SUPPRESSION_LINE_CHARS — a longer line is skipped
     // unparsed by the per-line cap, which its own tests cover.
@@ -99,7 +95,6 @@ Deno.test("findSuppressions - terminated block marker with a long reason does no
     );
   } finally {
     _resetSuppressionAuthorAllowlist();
-    _resetSuppressionCommitAuthors();
     resetSuppressionRegistry();
   }
 });

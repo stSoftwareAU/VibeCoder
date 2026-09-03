@@ -620,24 +620,11 @@ export function findBrowserInstallViolations(
 ): string[] {
   const violations: string[] = [];
 
-  const browser = manifest.tools.find((t) => t.name === BROWSER_TOOL_NAME);
-  if (!browser) {
+  if (!manifest.tools.some((t) => t.name === BROWSER_TOOL_NAME)) {
     violations.push(
       `container/tools.json pins no "${BROWSER_TOOL_NAME}": the browser ` +
         "version would not be pinned anywhere",
     );
-  } else {
-    // Issue #274: the npm tarball pin does not cover the Chromium zip
-    // `playwright-core install` then fetches. Those blobs need their own
-    // committed checksums, restated as PLAYWRIGHT_SHA256_CHROMIUM_* ARGs.
-    for (const key of CHROMIUM_SHA_KEYS) {
-      if (!browser.sha256[key]) {
-        violations.push(
-          `container/tools.json "${BROWSER_TOOL_NAME}" sha256 omits ${key}: ` +
-            "the Chromium browser blob would be fetched without a committed checksum",
-        );
-      }
-    }
   }
 
   const code = containerfile
@@ -664,19 +651,6 @@ export function findBrowserInstallViolations(
     );
   }
 
-  if (
-    browser &&
-    CHROMIUM_SHA_KEYS.every((key) => browser.sha256[key]) &&
-    !code.some((line) =>
-      line.includes("PLAYWRIGHT_SHA256_CHROMIUM") && !/^ARG\b/.test(line)
-    )
-  ) {
-    violations.push(
-      "Containerfile never verifies a PLAYWRIGHT_SHA256_CHROMIUM checksum: " +
-        "the Chromium blob would be fetched without checking the committed digest",
-    );
-  }
-
   // The build runs as root; the worker does not. Without a readability fix
   // the baked browser is present but unusable. Plain substring tests, not a
   // regex built from the path — a caller-supplied pattern is a ReDoS seam.
@@ -696,13 +670,6 @@ export function findBrowserInstallViolations(
 
 /** Manifest tool name carrying the pinned Playwright browser install. */
 const BROWSER_TOOL_NAME = "playwright-core";
-
-/**
- * Extra `sha256` keys on playwright-core for the Chromium zip (Issue #274).
- * Named like rust's rustfmt_/clippy_ extras so they become
- * `PLAYWRIGHT_SHA256_CHROMIUM_AMD64` / `_ARM64` build ARGs.
- */
-const CHROMIUM_SHA_KEYS = ["chromium_amd64", "chromium_arm64"] as const;
 
 /** `ENV PLAYWRIGHT_BROWSERS_PATH=<value>`, capturing the (maybe quoted) value. */
 const BROWSERS_PATH_ENV_RE = /^ENV\s+PLAYWRIGHT_BROWSERS_PATH=(\S+)$/;

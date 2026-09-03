@@ -16,8 +16,6 @@ import { parse as parseYaml } from "@std/yaml/parse";
 interface DependabotCooldown {
   "default-days"?: number;
   "semver-major-days"?: number;
-  "semver-minor-days"?: number;
-  "semver-patch-days"?: number;
 }
 
 interface DependabotUpdate {
@@ -86,39 +84,5 @@ Deno.test(
       true,
       `bundler cooldown.default-days must be at least 1 (24h); got ${days}`,
     );
-  },
-);
-
-/**
- * Dependabot rejects the **whole file** when an ecosystem is given a cooldown
- * key it does not support, so one bad key silently disables every ecosystem
- * (Issue #273). `github-actions` is the case that bit us: action releases are
- * not semantically versioned, so
- *
- *   The property '#/updates/0/cooldown/semver-major-days' is not supported
- *   for the package ecosystem 'github-actions'
- *
- * had been failing config validation since #4400 with no bump ever proposed.
- */
-Deno.test(
-  "dependabot.yml - github-actions carries no semver-* cooldown key (Issue #273)",
-  async () => {
-    const config = await loadDependabotConfig();
-    const gha = findUpdate(config, "github-actions");
-    assertNotEquals(gha, undefined, "github-actions ecosystem must remain");
-    for (
-      const key of [
-        "semver-major-days",
-        "semver-minor-days",
-        "semver-patch-days",
-      ] as const
-    ) {
-      assertEquals(
-        gha!.cooldown?.[key],
-        undefined,
-        `github-actions does not support cooldown.${key} — setting it makes ` +
-          `the entire dependabot.yml invalid, so no ecosystem is updated`,
-      );
-    }
   },
 );

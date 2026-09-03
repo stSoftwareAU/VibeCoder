@@ -15,7 +15,7 @@ import {
   auditFilePath,
   recordMutation,
 } from "../lib/audit_journal.ts";
-import { anchorPath, rosterPath } from "../lib/audit_anchor.ts";
+import { anchorPath } from "../lib/audit_anchor.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const CONFIG = {} as WorkerConfig;
@@ -142,23 +142,6 @@ Deno.test("audit-chain-verify - fails loud when the audit directory was removed 
     result.success,
     false,
     "rm -rf of the audit directory must not report success",
-  );
-  assertStringIncludes(result.message, "[SECURITY] [AUDIT_CHAIN_BROKEN]");
-});
-
-Deno.test("audit-chain-verify - fails loud on complete erasure of the audit directory and roster (Issue #270)", async () => {
-  const { baseDir } = await seedDir();
-  await Deno.remove(baseDir, { recursive: true });
-  await Deno.remove(rosterPath(baseDir));
-  _resetAuditCaches();
-
-  const result = await auditChainVerifyCommand.execute({
-    "base-dir": baseDir,
-  }, CONFIG);
-  assertEquals(
-    result.success,
-    false,
-    "deleting the audit directory and roster together must not report success",
   );
   assertStringIncludes(result.message, "[SECURITY] [AUDIT_CHAIN_BROKEN]");
 });

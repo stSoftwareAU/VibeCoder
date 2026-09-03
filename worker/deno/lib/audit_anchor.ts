@@ -169,8 +169,6 @@ interface RosterEntry {
  * expectation both erase: an append-only JSONL index of every journal name
  * ever anchored, stored as a **sibling of the audit directory** (not inside
  * it) precisely so removing the directory cannot remove the expectation.
- * Deleting the roster together with the directory is closed by a
- * last-known-non-empty marker beside the roster (Issue #270).
  *
  * @param baseDir - Audit directory the roster covers
  * @returns Path of the roster file, beside (not under) `baseDir`
@@ -178,22 +176,6 @@ interface RosterEntry {
 export function rosterPath(baseDir: string): string {
   const trimmed = baseDir.endsWith("/") ? baseDir.slice(0, -1) : baseDir;
   return `${trimmed}.roster.jsonl`;
-}
-
-/**
- * Path of the last-known-non-empty roster marker (Issue #270).
- *
- * Sibling of the roster — not the roster itself, and not under the audit
- * directory — so deleting `${dir}` and `${dir}.roster.jsonl` together
- * cannot also remove this witness unless the principal knows to look for
- * it.
- *
- * @param baseDir - Audit directory the roster covers
- * @returns Path of the seen-marker file, beside (not under) `baseDir`
- */
-export function rosterSeenPath(baseDir: string): string {
-  const trimmed = baseDir.endsWith("/") ? baseDir.slice(0, -1) : baseDir;
-  return `${trimmed}.roster.seen`;
 }
 
 /** Is `value` a structurally valid roster entry? */
@@ -264,94 +246,23 @@ export async function addToRoster(
 ): Promise<Result<void>> {
   try {
     const existing = await readRoster(baseDir);
-    if (!existing.includes(journalName)) {
-      const entry: RosterEntry = {
-        journal: journalName,
-        addedAt: now ?? new Date().toISOString(),
-      };
-      await Deno.writeTextFile(
-        rosterPath(baseDir),
-        `${JSON.stringify(entry)}\n`,
-        { append: true },
-      );
+    if (existing.includes(journalName)) {
+      return { ok: true, value: undefined };
     }
-    // Issue #270: persist a third witness the first time the roster is
-    // known to be non-empty, including the idempotent already-present
-    // path so an upgrade writes the marker on the next append.
-    const marked = await markRosterSeen(baseDir, now);
-    if (!marked.ok) return marked;
+    const entry: RosterEntry = {
+      journal: journalName,
+      addedAt: now ?? new Date().toISOString(),
+    };
+    await Deno.writeTextFile(
+      rosterPath(baseDir),
+      `${JSON.stringify(entry)}\n`,
+      { append: true },
+    );
     return { ok: true, value: undefined };
   } catch (error: unknown) {
     return {
       ok: false,
       error: error instanceof Error ? error : new Error(String(error)),
     };
-  }
-}
-
-/**
- * Persist the last-known-non-empty roster marker (idempotent).
- *
- * @param baseDir - Audit directory the roster covers
- * @param now - ISO timestamp override (tests)
- * @returns Result; ok when the marker is on disk (already or newly)
- */
-export async function markRosterSeen(
-  baseDir: string,
-  now?: string,
-): Promise<Result<void>> {
-  const path = rosterSeenPath(baseDir);
-  try {
-    const stat = await Deno.stat(path);
-    if (stat.isFile) return { ok: true, value: undefined };
-    return {
-      ok: false,
-      error: new Error(`audit roster-seen marker is not a file: ${path}`),
-    };
-  } catch (error: unknown) {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      return {
-        ok: false,
-        error: new Error(
-          `audit roster-seen marker unreadable: ${path}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        ),
-      };
-    }
-  }
-  const marker = {
-    nonEmpty: true,
-    updatedAt: now ?? new Date().toISOString(),
-  };
-  const written = await atomicWrite({
-    targetFile: path,
-    content: `${JSON.stringify(marker)}\n`,
-  });
-  if (!written.ok) return { ok: false, error: written.error };
-  return { ok: true, value: undefined };
-}
-
-/**
- * Has this audit directory ever been observed with a non-empty roster?
- *
- * @param baseDir - Audit directory the roster covers
- * @returns True when the seen-marker file exists
- * @throws When the marker path exists but is unreadable or not a file —
- *   a corrupted witness is a tamper signal, never a silent "never seen".
- */
-export async function rosterWasSeen(baseDir: string): Promise<boolean> {
-  const path = rosterSeenPath(baseDir);
-  try {
-    const stat = await Deno.stat(path);
-    if (!stat.isFile) {
-      throw new Error(`audit roster-seen marker is not a file: ${path}`);
-    }
-    return true;
-  } catch (error: unknown) {
-    if (error instanceof Deno.errors.NotFound) return false;
-    throw error instanceof Error ? error : new Error(
-      `audit roster-seen marker unreadable: ${path}: ${String(error)}`,
-    );
   }
 }

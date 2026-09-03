@@ -8,9 +8,7 @@
 
 import {
   _resetSuppressionAuthorAllowlist as _clearSuppressionAllowlist,
-  _resetSuppressionCommitAuthors as _clearSuppressionCommitAuthors,
   setSuppressionAuthorAllowlist as _setSuppressionAllowlist,
-  setSuppressionCommitAuthors as _setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import { assert, assertEquals } from "@std/assert";
 import {
@@ -168,7 +166,6 @@ Deno.test("scanActionPins - in-source best-practice-ignore suppresses the findin
   // Issue #3941: the suppression author allowlist fails closed,
   // so authorise the marker author these fixtures use.
   _setSuppressionAllowlist(["nigel"]);
-  _setSuppressionCommitAuthors(["nigel"]);
   try {
     const findingId = "BP-SHA-PIN-actions-checkout";
     const files = [
@@ -180,7 +177,6 @@ Deno.test("scanActionPins - in-source best-practice-ignore suppresses the findin
     assertEquals(scanActionPins(files), []);
   } finally {
     _clearSuppressionAllowlist();
-    _clearSuppressionCommitAuthors();
   }
 });
 

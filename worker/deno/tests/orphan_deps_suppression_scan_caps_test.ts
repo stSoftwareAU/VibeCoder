@@ -23,10 +23,8 @@ import {
 } from "../lib/orphan_deps_suppression_scan.ts";
 import {
   _resetSuppressionAuthorAllowlist,
-  _resetSuppressionCommitAuthors,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
-  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 
 const TRAILER = "author=nigel expires=2099-12-31 vendored on purpose";
@@ -44,15 +42,12 @@ function reader(
 
 async function withAllowlist(fn: () => Promise<void>): Promise<void> {
   _resetSuppressionAuthorAllowlist();
-  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
-  setSuppressionCommitAuthors(["nigel"]);
   resetSuppressionRegistry();
   try {
     await fn();
   } finally {
     _resetSuppressionAuthorAllowlist();
-    _resetSuppressionCommitAuthors();
     resetSuppressionRegistry();
   }
 }

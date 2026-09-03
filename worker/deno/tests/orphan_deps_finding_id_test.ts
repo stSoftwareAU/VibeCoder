@@ -19,11 +19,9 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   _resetSuppressionAuthorAllowlist,
-  _resetSuppressionCommitAuthors,
   recordedSuppressions,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
-  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import {
   collectOrphanDepsSuppressedIds,
@@ -242,10 +240,7 @@ Deno.test("pruneAndCapOrphanDepsFindings - honours a custom cap", () => {
 
 // Issue #3941: collection honours governance, so these tests use fully
 // governed markers and an explicit author allowlist.
-const GOVERNED_POLICY = {
-  allowedAuthors: ["nigel"],
-  commitAuthors: ["nigel"],
-} as const;
+const GOVERNED_POLICY = { allowedAuthors: ["nigel"] } as const;
 const TRAILER = "author=nigel expires=2099-12-31 reviewed";
 
 Deno.test("collectOrphanDepsSuppressedIds - parses both marker keywords", () => {
@@ -380,9 +375,7 @@ Deno.test("collectOrphanDepsSuppressions - a slash marker inside a JSON string i
 Deno.test("collectOrphanDepsSuppressions - records carry file, line and validity", () => {
   // Issue #3941: validity now also requires an allowlisted author.
   _resetSuppressionAuthorAllowlist();
-  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
-  setSuppressionCommitAuthors(["nigel"]);
   try {
     const records = collectOrphanDepsSuppressions([
       {
@@ -408,15 +401,12 @@ Deno.test("collectOrphanDepsSuppressions - records carry file, line and validity
     assertEquals(records[1]?.valid, false);
   } finally {
     _resetSuppressionAuthorAllowlist();
-    _resetSuppressionCommitAuthors();
   }
 });
 
 Deno.test("isOrphanDepsSuppressed - honours only the declaring file and adjacent line", () => {
   _resetSuppressionAuthorAllowlist();
-  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
-  setSuppressionCommitAuthors(["nigel"]);
   try {
     const suppressions = collectOrphanDepsSuppressions([
       {
@@ -459,7 +449,6 @@ Deno.test("isOrphanDepsSuppressed - honours only the declaring file and adjacent
     );
   } finally {
     _resetSuppressionAuthorAllowlist();
-    _resetSuppressionCommitAuthors();
   }
 });
 

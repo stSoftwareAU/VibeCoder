@@ -27,12 +27,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   _resetSuppressionAuthorAllowlist,
-  _resetSuppressionCommitAuthors,
   findSuppressions,
   MAX_SUPPRESSION_LINE_CHARS,
   resetSuppressionRegistry,
   setSuppressionAuthorAllowlist,
-  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import {
   REDACTION_PLACEHOLDER,
@@ -135,9 +133,7 @@ Deno.test("collectInSourceSuppressedIds - oversized manifest is capped", async (
 
   // Only a governed marker reaches the id list (Issue #3941).
   _resetSuppressionAuthorAllowlist();
-  _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["alice"]);
-  setSuppressionCommitAuthors(["alice"]);
   resetSuppressionRegistry();
   try {
     const took = await elapsedMsAsync(async () => {
@@ -153,7 +149,6 @@ Deno.test("collectInSourceSuppressedIds - oversized manifest is capped", async (
     );
   } finally {
     _resetSuppressionAuthorAllowlist();
-    _resetSuppressionCommitAuthors();
     resetSuppressionRegistry();
   }
 });

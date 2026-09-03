@@ -312,7 +312,6 @@ function commentTail(
  */
 export function collectOrphanDepsSuppressions(
   manifests: Iterable<OrphanDepsManifestText>,
-  policy: Omit<SuppressionPolicy, "file"> = {},
 ): OrphanDepsSuppression[] {
   const collected: OrphanDepsSuppression[] = [];
   const seen = new Set<string>();
@@ -330,7 +329,6 @@ export function collectOrphanDepsSuppressions(
     for (
       const record of filterByFamily(
         findSuppressions(commentsOnly, GRAMMAR_LANGUAGE[grammar], {
-          ...policy,
           file: manifest.file,
         }),
         "best-practices",

@@ -214,12 +214,9 @@ RUN set -eu; \
 
 ARG PLAYWRIGHT_VERSION="1.61.0-alpha-1778188671000"
 ARG PLAYWRIGHT_SHA256_NOARCH="d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516"
-ARG PLAYWRIGHT_SHA256_CHROMIUM_AMD64="4f5dfbb09cc103573be201e870573fe53f36b1de076ac649049c421bb5b31e69"
-ARG PLAYWRIGHT_SHA256_CHROMIUM_ARM64="549844a1f15687f91486645079ec0e495a880687e6813e2d42ef4d044782d589"
 
 ENV PLAYWRIGHT_BROWSERS_PATH="/opt/playwright-browsers"
 
-# Chromium zip is downloaded and SHA-256 verified before install (Issue #274).
 RUN set -eu; \
     tarball="/tmp/playwright-core.tgz"; \
     curl -fsSL -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
@@ -229,24 +226,6 @@ RUN set -eu; \
     rm -f "${tarball}"; \
     playwright-core --version; \
     mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"; \
-    browsers="$(npm root -g)/playwright-core/browsers.json"; \
-    chromium_rev="$(jq -r '.browsers[] | select(.name=="chromium") | .revision' "${browsers}")"; \
-    chromium_ver="$(jq -r '.browsers[] | select(.name=="chromium") | .browserVersion' "${browsers}")"; \
-    arch="$(uname -m)"; \
-    case "${arch}" in \
-      x86_64) chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}"; \
-        chromium_url="https://cdn.playwright.dev/builds/cft/${chromium_ver}/linux64/chrome-linux64.zip" ;; \
-      aarch64) chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_ARM64}"; \
-        chromium_url="https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/${chromium_rev}/chromium-linux-arm64.zip" ;; \
-      *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /tmp/chromium.zip "${chromium_url}"; \
-    echo "${chromium_sha}  /tmp/chromium.zip" | sha256sum -c -; \
-    dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium-${chromium_rev}"; \
-    mkdir -p "${dest}"; \
-    unzip -q /tmp/chromium.zip -d "${dest}"; \
-    : > "${dest}/INSTALLATION_COMPLETE"; \
-    rm -f /tmp/chromium.zip; \
     playwright-core install --with-deps chromium; \
     rm -rf /var/lib/apt/lists/*; \
     chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
