@@ -143,8 +143,10 @@ host builds and runs a Codex image rather than reusing the default one.
 - **Post-run callbacks** — Optional `success` / `failure` / `always`
   executables run after a terminal issue run, following Jenkins and Azure
   Pipelines outcome semantics. The public extension point for fleet-specific
-  reporting; a hook failure never rewrites the run's own result. See
-  [Post-Run Callbacks](docs/CONFIGURATION.md#-post-run-callbacks).
+  reporting; a hook failure never rewrites the run's own result. The contract —
+  ordering, the versioned context, the security boundary, portable examples and
+  a conformance fixture an extension can run against its own hooks — is
+  [Post-Run Callbacks](docs/CALLBACKS.md).
 - **Per-repo configuration** — Operator-side `repo_config` in `.config.json`
   customises worker behaviour per repository (e.g., skip screenshots for
   CLI-only projects). Configuration is operator-side only — target repos carry
@@ -416,6 +418,7 @@ flowchart LR
 | — [Resilience & Concurrency](docs/workflows/resilience-and-concurrency.md)     | Self-healing behaviour, restart model, issue claiming, multi-worker coexistence                                                                        |
 | **[Quorum](docs/QUORUM.md)**                                                   | Operator manual for the `quorum` plan-off: the trigger, the two-draft/one-judge sequence, the result comment, every degradation path, the per-run cost, and the config keys |
 | **[Configuration Reference](docs/CONFIGURATION.md)**                           | Config file (`.config.json`), per-repo settings, authorised commenters                                                                                 |
+| **[Post-Run Callbacks](docs/CALLBACKS.md)**                                    | The extension contract: `success`/`failure`/`always` ordering, the versioned context and every `VIBECODER_*` variable, path and container-visibility rules, session-log sensitivity, portable hook examples, the conformance fixture, and the health-tracking migration |
 | **[Setup Guide](docs/SETUP.md)**                                               | Setup manual: what the automated setup script does, and the from-scratch manual path for macOS, Linux and Windows                                      |
 | **[Deployment Guide](docs/DEPLOYMENT.md)**                                     | Installation, cron/systemd/launchd setup, logs, screenshot support                                                                                     |
 | **[Linux Verification Host](docs/EC2-LINUX-VERIFICATION.md)**                  | The CloudFormation stack that confirms the Linux/podman launch path: an SSM-only Ubuntu EC2 host, the launch/verify/tear-down commands, and the faults it deliberately reproduces |
