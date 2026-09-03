@@ -82,7 +82,11 @@ What is rejected, and where:
 | missing, non-executable or un-spawnable path  | invocation    | recorded `spawn_failed`, reported loudly, `always` still runs |
 
 A non-executable path is **never** retried through a shell: there is no
-fallback path in which a hook's text could be interpreted as a command.
+fallback path in which a hook's text could be interpreted as a command. The
+execute bit and the file's presence are properties of the filesystem the
+worker sees at invocation time, not of the config file, so check them where
+the worker runs — [the conformance fixture](#the-conformance-fixture) spawns
+the hooks you name and fails on a path that cannot run.
 
 ## Filesystem visibility
 
@@ -111,9 +115,9 @@ flowchart LR
   read-only at `/workspace` (a hook committed to the repository you deploy) or
   the work volume under `/home/vibe/auto-issue-work` (a hook your own
   provisioning writes there).
-- The child environment is **cleared** (see below), so a hook that needs
-  `gh` must point `GH_CONFIG_DIR` at the mounted credential directory itself
-  rather than inheriting the worker's — an explicit opt-in, not an accident.
+- The child environment is **cleared** (see below), so a hook inherits none of
+  the worker's credential plumbing. A hook that talks to a remote must
+  establish its own credentials explicitly — an opt-in, never an accident.
 
 ## Timeout, output capture and failure policy
 
@@ -362,8 +366,7 @@ Two differences to plan for:
   needs something else for that — a callback is not a heartbeat.
 - **Credentials.** The report script inherits the worker's environment; a hook
   does not. A hook that pushes to a git remote must establish its own
-  credentials (for example by pointing `GH_CONFIG_DIR` at the mounted `gh`
-  credential directory) rather than expecting the worker's.
+  credentials rather than expecting the worker's to be there.
 
 ## Reference
 
