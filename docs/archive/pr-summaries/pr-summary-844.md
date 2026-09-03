@@ -69,8 +69,13 @@ flowchart LR
     end
 ```
 
-- `./quality.sh < /dev/null` passes — deno fmt, lint, check, the full test
-  suite, mermaid, markdownlint, Pages/Liquid and semgrep.
+- `deno test` — **16,797 passed**. The only failures left are 35 in six
+  `setup_*` / `service_account_env` files that spawn a bash harness; the same
+  six files fail with the identical 35 count on a `main` worktree in this
+  container (`FAILED | 76 passed | 35 failed`), so they are pre-existing and
+  environmental, not caused by this change.
+- `deno fmt`, `deno lint`, `deno check '**/*.ts'`, `check-mermaid` (346 files,
+  465 blocks) and `markdownlint-cli2` all pass.
 - 324 `vN.md` files deleted, 33 renamed to `prompt.md`; `find prompts -name
   'v[0-9]*.md'` returns nothing.
 
