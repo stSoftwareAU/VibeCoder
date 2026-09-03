@@ -334,6 +334,34 @@ export async function runPlanCoverageGate(opts: {
 }
 
 /**
+ * A short label for **which** coverage failure occurred (Issue #859).
+ *
+ * The escalation comment has always been accurate — `buildCoverageGateReason`
+ * branches on the four outcomes. The operator-facing log line did not: it
+ * asserted "the published plan does not account for every ask" for all of
+ * them, including the case where no table was posted at all. The
+ * accompanying fields then contradicted it (`tableFound=false asks=0
+ * uncovered=`), which reads as a false positive and costs the reader a code
+ * dive to disprove.
+ */
+export function summariseCoverageGateFailure(
+  verdict: PlanCoverageVerdict,
+): string {
+  if (verdict.readFailed) {
+    return "the planning parent could not be read, so coverage is unverified";
+  }
+  if (!verdict.tableFound) {
+    return "no `## Plan Coverage` table was posted";
+  }
+  if (verdict.rowCount === 0) {
+    return "the `## Plan Coverage` table carries no ask rows";
+  }
+  const n = verdict.offenders.length;
+  return `${n} ask${n === 1 ? "" : "s"} name neither a covering sub-issue ` +
+    "nor an out-of-scope reason";
+}
+
+/**
  * Build the `**Why:**` line for the escalation comment — the rule, then every
  * offending ask and why it fails.
  */
