@@ -19,7 +19,13 @@ import { assert, assertEquals } from "@std/assert";
 import { raiseBoyScoutIdleTasksCommand } from "../commands/raise_boy_scout_idle_tasks.ts";
 import type { RaiseBoyScoutIdleTasksResult } from "../lib/boy_scout_idle_tasks.ts";
 import type { Result, WorkerConfig } from "../types.ts";
-import { withRepoRootCwd } from "./support/repo_prompts.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 function dataOf(
   result: { data?: unknown },

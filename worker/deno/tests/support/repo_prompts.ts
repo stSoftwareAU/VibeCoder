@@ -1,22 +1,25 @@
 /**
- * Run a test body against *this* checkout's `prompts/` tree (Issue #844).
+ * Pin prompt-template resolution to *this* checkout (Issue #844).
  *
- * The idle-task body builders load their templates through the real
- * `loadPrompt`, which resolves the directory in this order: `PROMPTS_DIR`,
- * then `VIBE_BASE_DIR`, then a path relative to `worker/deno/lib/`. A worker
- * host exports the first two pointing at the *worker's own* checkout, so a
- * test that leaves them set reads that tree's templates instead of the ones
- * under test — green or red depending on what the other checkout happens to
- * hold, which is no gate at all.
+ * `getPromptsDir` resolves in this order: `PROMPTS_DIR`, then `VIBE_BASE_DIR`,
+ * then a path relative to `worker/deno/lib/`. A worker host exports the first
+ * two pointing at the *worker's own* checkout, so any test that reaches the
+ * real `loadPrompt` without naming a directory reads that tree's `prompts/`
+ * instead of the one under test — green or red depending on what some other
+ * clone happens to hold, which is no gate at all. It is the same hazard
+ * `tests/support/env.ts` was written for.
  *
- * {@link withRepoRootCwd} clears both for the duration (pinning resolution to
- * this repo) and runs with cwd at the repo root, which the builders' own
- * cwd-relative reads need.
+ * {@link pinPromptsToThisCheckout} removes both overrides so resolution falls
+ * through to the module-relative path, which always names this checkout.
+ * `deno test` imports every test module before running any test, so calling it
+ * at module scope pins the whole process deterministically, whatever order the
+ * files run in.
+ *
+ * {@link withRepoRootCwd} adds the cwd the idle-task body builders need for
+ * their own cwd-relative reads.
  *
  * Australian English throughout (behaviour, colour, organisation).
  */
-
-import { withEnv } from "./env.ts";
 
 /** Repo root — `worker/deno/tests/support/` is four levels down. */
 export const REPO_ROOT = new URL("../../../../", import.meta.url).pathname;
@@ -25,23 +28,33 @@ export const REPO_ROOT = new URL("../../../../", import.meta.url).pathname;
 const PROMPT_DIR_ENV_VARS = ["PROMPTS_DIR", "VIBE_BASE_DIR"] as const;
 
 /**
+ * Drop the prompt-directory overrides for this process, so prompts resolve
+ * against this checkout. Idempotent — safe to call from every test file that
+ * touches a real template.
+ */
+export function pinPromptsToThisCheckout(): void {
+  for (const name of PROMPT_DIR_ENV_VARS) Deno.env.delete(name);
+}
+
+// Importing this module is itself the pin: a test process must never read
+// another checkout's prompts/.
+pinPromptsToThisCheckout();
+
+/**
  * Run `body` with cwd at the repo root and the prompt-directory overrides
- * cleared, restoring both afterwards.
+ * cleared, restoring the original cwd afterwards.
  *
  * @param body - The test body to run
  * @returns Whatever `body` returns
  */
 export async function withRepoRootCwd<T>(body: () => Promise<T>): Promise<T> {
-  const cleared: Record<string, string | undefined> = {};
-  for (const name of PROMPT_DIR_ENV_VARS) cleared[name] = undefined;
-
-  return await withEnv(cleared, async () => {
-    const original = Deno.cwd();
-    Deno.chdir(REPO_ROOT);
-    try {
-      return await body();
-    } finally {
-      Deno.chdir(original);
-    }
-  });
+  // Re-pin: a test that set an override of its own must not leak it here.
+  pinPromptsToThisCheckout();
+  const original = Deno.cwd();
+  Deno.chdir(REPO_ROOT);
+  try {
+    return await body();
+  } finally {
+    Deno.chdir(original);
+  }
 }

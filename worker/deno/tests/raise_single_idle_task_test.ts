@@ -34,7 +34,13 @@ import {
   seedWriteRepoAllowlist,
 } from "../lib/write_repo_allowlist.ts";
 import type { Result } from "../types.ts";
-import { withRepoRootCwd } from "./support/repo_prompts.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });

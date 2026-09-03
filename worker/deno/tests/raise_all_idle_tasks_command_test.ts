@@ -20,7 +20,13 @@ import { raiseAllIdleTasksCommand } from "../commands/raise_all_idle_tasks.ts";
 import type { RaiseAllIdleTasksResult } from "../lib/raise_all_idle_tasks.ts";
 import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
 import type { Result, WorkerConfig } from "../types.ts";
-import { withRepoRootCwd } from "./support/repo_prompts.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 const TEN = IDLE_TASK_WRAPPER_TITLES.length;
 

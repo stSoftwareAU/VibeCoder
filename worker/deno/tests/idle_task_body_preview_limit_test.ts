@@ -60,7 +60,13 @@ import "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 import "../lib/idle_task_templates/private_repo_reference_template.ts";
 import "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import "../lib/idle_task_templates/retro_template.ts";
-import { withRepoRootCwd } from "./support/repo_prompts.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 /** A 40-character commit SHA, as GitHub permalinks carry. */
 const SHA_40 = /\b[0-9a-f]{40}\b/;

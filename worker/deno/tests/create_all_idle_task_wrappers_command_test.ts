@@ -22,7 +22,13 @@ import { createAllIdleTaskWrappersCommand } from "../commands/create_all_idle_ta
 import type { CreateAllIdleTaskWrappersResult } from "../lib/create_all_idle_task_wrappers.ts";
 import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
 import type { Result, WorkerConfig } from "../types.ts";
-import { withRepoRootCwd } from "./support/repo_prompts.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 /** Narrow the non-generic CommandResult.data to the helper's result shape. */
 function dataOf(

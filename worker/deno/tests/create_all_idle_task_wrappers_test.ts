@@ -42,7 +42,13 @@ import {
   classifyGhMutation,
   type MutationInfo,
 } from "../lib/audit_mutation_classifier.ts";
-import { withRepoRootCwd } from "./support/repo_prompts.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Helpers
