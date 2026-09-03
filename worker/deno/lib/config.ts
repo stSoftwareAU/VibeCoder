@@ -31,6 +31,7 @@ import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
+import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
 import { validateUpdateModeSettings } from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
@@ -759,6 +760,14 @@ export async function loadConfig(
     file.software_min_versions ??
       { ...OPERATIONAL_DEFAULTS.softwareMinVersions };
 
+  // Custom label → non-public prompt file mappings (Issue #846, part of
+  // #843). Fail loud: assertCustomLabelPrompts throws naming the offending
+  // entry rather than silently dropping a mapping — a silently ignored
+  // mapping is exactly the failure #843 rules out.
+  const customLabelPrompts = assertCustomLabelPrompts(
+    file.custom_label_prompts,
+  );
+
   // Recent activity settings (Issue #1326)
   const includeRecentActivity = file.include_recent_activity ??
     OPERATIONAL_DEFAULTS.includeRecentActivity;
@@ -897,6 +906,7 @@ export async function loadConfig(
     idleTaskTemplateWeights,
     idleTaskCadence,
     softwareMinVersions,
+    customLabelPrompts,
     repoConfig: normaliseRepoConfigs(file.repo_config),
   };
 
