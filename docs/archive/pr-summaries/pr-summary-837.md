@@ -72,7 +72,31 @@ test run and the diff:
 - `git diff` of `prompts/security_scan/prompt.md` against the base is 11 hunks,
   none touching severity bands, the four priority surfaces, or the
   gate-verdict rules.
-- `./quality.sh` passes.
+- `./quality.sh`: every stage passes except `deno tests`, which is red on the
+  **base** for reasons this change does not touch — see below.
+
+### Gate status
+
+`./quality.sh` was run to completion. `semgrep`, `markdownlint`, `mermaid`,
+`deno lint`, `deno type check`, `deno fmt` and every chokepoint check pass.
+`deno tests` fails, and both causes were isolated against a clean worktree of
+the milestone base:
+
+- `prompt manager - no versioned prompt files remain in the tree` — **fails on
+  the base**. The #844 merge left 14 `prompts/*/vN.md` files whose sibling
+  `prompt.md` still holds pre-sweep text, silently reverting #835/#836. Filed
+  as #900; it blocks every PR into this milestone branch.
+- 18 `setup_credential_provisioning_test.ts` tests, plus `run_setup_cli` and
+  `host_work_dir` — **environmental**, not code. The worker host exports
+  `CONFIG_PATH`, which the setup script refuses alongside the test's own
+  `CONFIG_FILE`. `env -u CONFIG_PATH -u CONFIG_FILE deno test
+  tests/setup_credential_provisioning_test.ts` gives 18 passed / 0 failed, and
+  they fail identically on the unmodified base.
+
+The one test failure this change did cause — `cross-repo prompt bodies carry no
+VibeCoder-internal source paths`, because the suppression rewrite named
+`worker/deno/lib/suppression_comments.ts` in a body filed into other repos —
+is fixed in `af11b8a`; that suite passes.
 
 ```mermaid
 flowchart LR
@@ -127,10 +151,14 @@ flowchart LR
   priority surfaces or gate-verdict rules — evidence: the only two touches
   inside those regions are the product-name renames at `prompt.md:222` and
   `:1155` — reviewer: met
-- **met** — `./quality.sh` passes — evidence: full gate run after the final
-  edit — reviewer: met — reason: the reviewer was told not to run the gate and
-  verified `deno check`, `deno lint` and the changed suites instead; the full
-  gate was run here, including the semgrep SAST stage
+- **partial** — `./quality.sh` passes — evidence: full gate run after the final
+  edit; every stage green except `deno tests` — reviewer: met — reason: the
+  reviewer was told not to run the gate and judged it met from `deno check`,
+  `deno lint` and the changed suites. Departing from that verdict: the gate was
+  run here and `deno tests` is red on the **base** (leftover versioned
+  templates, filed as #900) plus a host `CONFIG_PATH` leak. Neither is caused
+  by this change, and the one failure that was is fixed in `af11b8a` — but the
+  criterion says passes, and it does not yet
 - **partial** — the scan-family heading table's issue-body rationale slot —
   evidence: `prompt.md:1704`, `:1725` still read `## Why it is a bug` — reason:
   the issue and the canon both enumerate the banned variants
