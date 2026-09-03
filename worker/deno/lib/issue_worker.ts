@@ -155,6 +155,14 @@ export async function workOnIssue(
         prUrl: state.prUrl,
         prNumber: state.prNumber,
         elapsedSeconds: (Date.now() - startedAtMs) / 1000,
+        // A timeout kill states its extension history on the release comment
+        // (Issue #768) rather than needing a dig through the runner.
+        ...(state.extensionTelemetry
+          ? { extensions: state.extensionTelemetry }
+          : {}),
+        // Where the work in progress ended up (Issue #770), when a stopped
+        // run preserved it on a pushed branch.
+        ...(state.preservedWip ? { preservedWip: state.preservedWip } : {}),
       }),
       // Facts the run wants stated whatever it achieved (Issue #210).
       state.releaseNotes ?? [],

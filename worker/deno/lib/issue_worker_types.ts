@@ -17,7 +17,8 @@ import type { GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
-import type { CallbackRunTelemetry } from "./run_callbacks.ts";
+import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
+import type { PreservedWip } from "./preserved_wip_branch.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -97,6 +98,13 @@ export interface PhaseState {
    */
   resumedFromCheckpoint?: boolean;
   /**
+   * Handover the interrupted run committed to the resumed branch (Issue #771),
+   * as read from the checked-out tree by the setup phase. The execute phase
+   * splices it into the prompt; absent when the branch carries no handover
+   * file, which is every branch preserved before #769 shipped.
+   */
+  handoverNote?: string;
+  /**
    * HEAD SHA captured immediately before the agent ran (Issue #148).
    *
    * The completion phase compares it with the branch tip to answer "did this
@@ -122,6 +130,14 @@ export interface PhaseState {
    */
   lastKillMemoryPressure?: MemoryPressureReading;
   /**
+   * What the re-armable deadline did to the execute run (Issue #768). Set by
+   * the timeout branch of the execute phase, and carried onto the run outcome
+   * so the claim-release comment names the extensions granted and why the
+   * last check was refused. Absent when the progress extension was not
+   * active for the run.
+   */
+  extensionTelemetry?: ExtensionTelemetry;
+  /**
    * Completed Claude invocations from the execute phase (Issue #3756).
    *
    * A `work-on` issue is auto-closed by its merged PR with no worker attached,
@@ -137,6 +153,13 @@ export interface PhaseState {
    */
   prUrl?: string;
   prNumber?: number;
+  /**
+   * Where an interrupted run's work was preserved (Issue #770). Set by
+   * `preserveRunWip` only when the work is genuinely on the pushed branch, and
+   * read at claim release so the comment names that branch (and the handover
+   * file on it) instead of a generic "WIP preserved".
+   */
+  preservedWip?: PreservedWip;
   /**
    * Short facts to state on the claim-release comment (Issue #210) —
    * currently a follow-up reference the agent named that does not exist.

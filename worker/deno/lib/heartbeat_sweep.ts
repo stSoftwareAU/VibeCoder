@@ -113,7 +113,12 @@ export function isHeartbeatOnlyBody(body: string): boolean {
       /^\s*⚠️\s*\*\*Vibe Coder released this claim with no PR\*\*.*$/gm,
       " ",
     )
-    .replace(/^\s*\*\*(?:Outcome|Diagnosis|Detail):\*\*.*$/gm, " ")
+    // `Work in progress:` names the preserved branch (Issue #770) — the
+    // heartbeat layer's own text, like the three lines beside it.
+    .replace(
+      /^\s*\*\*(?:Outcome|Diagnosis|Detail|Work in progress):\*\*.*$/gm,
+      " ",
+    )
     // The collapsed attempt tally (Issue #4327): heading and "+N earlier";
     // the per-attempt lines share the progress log's `- HH:MM …` shape.
     .replace(/^\s*\*\*Attempts on this issue:\*\*.*$/gm, " ")

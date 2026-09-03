@@ -1190,7 +1190,7 @@ unless explicitly overridden.
 | Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
 | Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
-| Progress extension stall window | `progress_extension_stall_seconds` | `300` | A tool call older than this is no longer evidence of activity. Must be at least `progress_extension_check_seconds`. |
+| Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
@@ -1508,9 +1508,14 @@ deadline for **issue work only** is re-armable: when it expires the worker asks
 whether the agent is alive and whether anything is actually progressing, and
 only kills if either answer is no:
 
-- **Is the agent still calling tools?** The stream-json progress tracker
-  reports the last tool call; older than `progress_extension_stall_seconds`
-  counts as stalled. This must always hold.
+- **Is the agent still producing anything?** The stream-json progress tracker
+  reports both the last tool call and the last stdout chunk, and the **fresher
+  of the two** answers this question; only when *both* are older than
+  `progress_extension_stall_seconds` is the agent judged stalled. This must
+  always hold. Reading the tool clock alone killed an agent that was waiting
+  *inside* one long tool call — `TaskOutput` polling a background job, a
+  multi-minute build — because no new `tool_use` event appears for as long as
+  that call runs (Issue #767).
 - **Is anything progressing?** Two independent signals, and *either* one is
   enough:
   - **The checkout is changing.** A read-only `git status` / `rev-parse` /
@@ -1602,6 +1607,11 @@ release**, not as the issue defeating the agent:
 - The preserved work lands in a `wip:` commit whose subject names the real
   cause (`wip: execute was released on schedule (cycle ended or run hard cap
   reached) after …`), so the next claimant reads what actually happened.
+- The release comment carries a **Work in progress** line naming the branch
+  that work is on, and links the handover file when one exists (Issue #770).
+  The branch named is the one the push targeted, so a retitled issue cannot
+  point a reader at a ref nothing wrote, and a run that preserved nothing names
+  no branch.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
@@ -1617,6 +1627,29 @@ Everything else is unchanged: the no-output watchdog
 extensions were granted, and only issue work (the execute phase) reads the
 extendable deadline at all — PR feedback, CI fix, planning,
 grill-me and the health checks keep their unconditional caps.
+
+#### The kill explains itself (Issue #768)
+
+A run killed at its deadline states what the extension did, in both artefacts
+an operator reads — so diagnosing a kill never needs a dig through
+`claude_runner.ts`:
+
+- the **worker log** line at the hard timeout — `Claude timed out after 5645s:
+  base budget 3600s extended 4× by 2040s (final deadline 5640s); last extension
+  refused: working tree unchanged despite tool activity 31s ago — killing
+  process tree (PID …)`; and
+- the **release comment** on the issue, whose timeout diagnosis carries
+  `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent
+  elapsed 5645s, 4 extensions granted (+2040s); last check refused because …`.
+  The elapsed figure is labelled `agent elapsed` because the same line already
+  states the whole run's wall clock — the agent's own run is the shorter of
+  the two.
+
+Zero grants is itself a finding and reads differently — `no extensions granted
+— last check refused because no tool activity recorded` — so a run refused at
+its first check is never mistaken for one that was extended and still ran out.
+With `progress_extension_enabled` set to `false` no telemetry is produced and
+both surfaces keep their pre-extension wording.
 
 ```mermaid
 flowchart TD
@@ -2127,9 +2160,19 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   retitle: renaming an issue mid-flight used to orphan its WIP branch, because
   the next claim derived a different slug and started from scratch (#220).
 - Every claim logs which branch it resumed, or that no prior branch existed.
+- When a branch was resumed, the worker reads the handover file the
+  interrupted run committed to it (`docs/archive/handover/issue-<N>.md`,
+  Issue #769) and splices that content into the execute prompt, framed as a
+  prior-run **status report** — untrusted repository prose, fenced, capped at
+  8,000 characters and counted against the context budget, never a directive
+  that can redirect the run (Issue #771). This works on any fleet host and
+  under any provider, so it does **not** depend on `enable_session_resume`;
+  a branch with no handover file falls back to the generic "prior progress
+  exists, review `git log`" note and still resumes.
 - When session resume is enabled and a branch was resumed, the worker also
-  passes `--resume` so the durable transcript replays the prior conversation,
-  and tells the agent prior progress exists on the branch.
+  passes `--resume` so the durable transcript replays the prior conversation.
+  That replay is a same-host optimisation layered on top: the committed
+  handover is the portable contract and is spliced either way.
 - The resume file is deleted on successful PR creation and on claim release,
   so deliberate outcomes always start the next attempt clean. The one
   exception is a release whose run **preserved WIP** on the issue branch

@@ -25,6 +25,7 @@
 import type { Result } from "../types.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import type { BlockingPRInfo } from "./issue_query.ts";
+import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { runGhCommand } from "./github.ts";
@@ -127,6 +128,18 @@ export interface ClaimOptions {
    * ranking a cached issue list written before the close.
    */
   wasClosedThisRun?: (repo: string, issueNumber: number) => boolean;
+  /**
+   * Labels that refuse a claim when found on the issue at claim time
+   * (Issue #831). Defaults to `needs-human` alone.
+   *
+   * Deliberately **not** the whole discovery blocking set: the specialist
+   * processors claim exactly the labels that set excludes — `question`,
+   * `planning`, `refine-issue`, `needs-revision`, `grill-me`, `quorum` are
+   * each some processor's pickup signal, and blocking them here would stop
+   * every one of those phases. `needs-human` is the one label no processor
+   * ever claims on; all eight only ever *apply* it.
+   */
+  blockingLabels?: readonly string[];
 }
 
 /** Claim comment parsed from the GitHub API. */
@@ -163,6 +176,17 @@ export type ClaimFailureReason =
   | "heartbeat_active"
   /** The issue is closed. */
   | "already_closed"
+  /**
+   * A live, cache-bypassing label re-check (Issue #831) found a blocking
+   * label — `needs-human` by default — applied in the window between this
+   * host's discovery and its claim. Discovery already excludes those labels
+   * (`filterAndSort`), but it ranks a snapshot: on VibeCoder#793 the worker
+   * itself applied `needs-human` at 21:47:16 finishing a grill-me round, and
+   * a scan holding the earlier snapshot claimed the issue at 21:53:31 — six
+   * minutes after it had been parked for a person. Refused before the
+   * assignment and the claim comment, so a parked issue collects neither.
+   */
+  | "blocking_label"
   /** Another worker won the claim race (their CLAIM_LOCK comment is earlier). */
   | "race_lost"
   /**
@@ -825,6 +849,59 @@ async function seedMarkerStateForOwnComment(
  * @returns The blocking PR if one already targets this work stream, else
  *   `null`.
  */
+/**
+ * Read the issue's labels now, bypassing every cache (Issue #831).
+ *
+ * Discovery excludes the blocking labels, but it ranks a snapshot of the
+ * issue list; a label applied between that snapshot and this claim is
+ * invisible to it. This is the label counterpart of the `wasClosedThisRun`
+ * refusal (Issue #181) and of {@link liveFleetPrRecheck} (Issue #3150), and
+ * it runs *before* the assignment so a parked issue collects neither an
+ * assignee nor a claim comment.
+ *
+ * Fails open: any read failure returns `null` and the claim proceeds — a
+ * `gh` hiccup must never withhold a legitimate claim. The reason is logged.
+ *
+ * @returns The first blocking label found on the issue, or `null`.
+ */
+async function liveBlockingLabelRecheck(
+  repo: string,
+  issueNumber: number,
+  blockingLabels: readonly string[],
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<string | null> {
+  if (blockingLabels.length === 0) return null;
+  try {
+    const raw = await ghCommandFn([
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "labels",
+    ]);
+    const parsed = JSON.parse(raw) as { labels?: { name?: string }[] };
+    const present = new Set(
+      (parsed.labels ?? [])
+        .map((label) => label?.name)
+        .filter((name): name is string => typeof name === "string")
+        .map((name) => name.toLowerCase()),
+    );
+    for (const label of blockingLabels) {
+      if (present.has(label.toLowerCase())) return label;
+    }
+    return null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[claim_issue] blocking_label_recheck_failed repo=${repo} ` +
+        `issue=#${issueNumber} — proceeding with the claim: ${message}`,
+    );
+    return null;
+  }
+}
+
 async function liveFleetPrRecheck(
   repo: string,
   issueNumber: number,
@@ -1000,6 +1077,7 @@ export async function claimIssue(
     milestoneTitle,
     cache,
     wasClosedThisRun = defaultWasClosedThisRun,
+    blockingLabels = [LABEL_DEFAULTS.needsHumanLabel],
   } = options;
 
   // Issue #181: the worker closed this issue earlier in this run, so no
@@ -1018,6 +1096,36 @@ export async function claimIssue(
         claimed: false,
         reason: "already_closed",
         reasonDetail: "this worker closed the issue earlier in this run",
+      },
+    };
+  }
+
+  // Issue #831: a blocking label applied since the scan's snapshot. The
+  // worker itself is a common source — a grill-me round ends by adding
+  // `needs-human` — so an issue parked seconds ago can still be top of a
+  // ranked list written before it. Checked live, before the assignment and
+  // the claim comment, so a parked issue collects neither.
+  const blockingLabel = await liveBlockingLabelRecheck(
+    repo,
+    issueNumber,
+    blockingLabels,
+    ghCommandFn,
+  );
+  if (blockingLabel) {
+    incrementCounter("claimConflicts");
+    console.warn(
+      `[claim_issue] claim_refused repo=${repo} issue=#${issueNumber} ` +
+        `reason=blocking_label label=${blockingLabel} — applied between the ` +
+        `scan's snapshot and this claim (Issue #831)`,
+    );
+    return {
+      ok: true,
+      value: {
+        claimed: false,
+        reason: "blocking_label",
+        reasonDetail:
+          `the issue carries \`${blockingLabel}\`, applied after the scan ` +
+          `ranked it`,
       },
     };
   }

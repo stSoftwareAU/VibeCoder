@@ -193,7 +193,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #690 added `release-notice` (count 143 → 144).
   // Issue #691 added `upgrade` (count 144 → 145).
   // Issue #665 added `references-refresh` (count 145 → 146).
-  assertEquals(commands.length, 146);
+  // Issue #736 added `first-run-verify` (count 146 → 147).
+  assertEquals(commands.length, 147);
+  assertEquals(commands.includes("first-run-verify"), true);
   assertEquals(commands.includes("references-refresh"), true);
   assertEquals(commands.includes("upgrade"), true);
   assertEquals(commands.includes("release-manifest"), true);
