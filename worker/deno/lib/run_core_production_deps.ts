@@ -207,8 +207,11 @@ import {
 } from "./repo_failure_tracker.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
+  readRateLimitBlockKind,
   writeRateLimitSignal,
 } from "./rate_limit_signal.ts";
+import { deriveIdleReason } from "./fleet_telemetry.ts";
+import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
 import { runGhCommandRaw } from "./github.ts";
 
@@ -1197,6 +1200,8 @@ export async function createProductionRunCoreDeps(
           const signal = await writeRateLimitSignal(
             workDir,
             result.pauseSeconds,
+            undefined,
+            "usage",
           );
           if (!signal.ok) {
             logger.warn(
@@ -2853,6 +2858,11 @@ export async function createProductionRunCoreDeps(
           success: result.success,
           skipped: isExpectedSkip,
           ...(failureKind ? { failureKind } : {}),
+          // Issue #855: the phase a real failure died at, so the fleet
+          // success rate can say *where* the 13 failures happened.
+          ...(!result.success && !isExpectedSkip && result.phase
+            ? { failurePhase: result.phase }
+            : {}),
           // The run outcome travels to the claim release (Issue #4325);
           // a skip is not an outcome of a run that never ran.
           ...(result.outcome && !isExpectedSkip
@@ -2948,6 +2958,26 @@ export async function createProductionRunCoreDeps(
         return signalResult.value.remainingSeconds;
       }
       return 0;
+    },
+
+    // Issue #855: which limit the signal is reporting, so the pause is
+    // booked as GitHub rate-limited or model token-blocked, not both.
+    async getRateLimitBlockKind() {
+      return await readRateLimitBlockKind(workDir);
+    },
+
+    // Issue #855: persist the fleet totals beside the other worker state.
+    // Fails loud in the log — a telemetry write that quietly does nothing
+    // is exactly the silent failure this telemetry exists to surface.
+    async writeFleetTelemetrySummary() {
+      const written = await writeFleetTelemetryFile(workDir, {
+        warn: (message) => logger.warn(message),
+      });
+      if (!written.ok) {
+        logger.warn(
+          `Could not write the fleet telemetry sidecar: ${written.error.message}`,
+        );
+      }
     },
 
     async getRateLimitReset() {
@@ -3564,7 +3594,14 @@ export async function createProductionRunCoreDeps(
         // cycle by nice/rotation/cooldown. Cache-backed: this reuses the
         // issues already read through `fetchAllIssues`/`IssueCache` above,
         // so no extra issue-list call is made.
-        return { inversionDetected: census.inversionDetected };
+        // Issue #855: the same rows also name the one reason the fleet was
+        // idle this cycle, so the loop can book its idle seconds against
+        // it instead of leaving "how long was the fleet idle, and why"
+        // to a `grep` over rotated logs.
+        return {
+          inversionDetected: census.inversionDetected,
+          idleReason: deriveIdleReason(census.perRepo),
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn("Idle-decision census failed (continuing)", {

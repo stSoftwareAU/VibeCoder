@@ -156,15 +156,45 @@ export function formatSummary(
 }
 
 /**
+ * The running Deno executable, when it is one.
+ *
+ * This process IS deno, so its own path is the authoritative answer for the
+ * `deno` tool — no PATH lookup can be more accurate, and none can fail.
+ * `Deno.execPath()` throws without read permission, and a `deno compile`d
+ * binary's path is not a deno CLI, so both cases fall through to the probes.
+ */
+export function runningDenoPath(): string | null {
+  try {
+    const path = Deno.execPath();
+    const name = path.split(/[/\\]/).pop() ?? "";
+    return name === "deno" || name === "deno.exe" ? path : null;
+  } catch {
+    return null; // no read permission — fall through to the probes
+  }
+}
+
+/**
  * Detect whether a tool is available on the system.
  *
- * Checks the PATH first via `which`, then common install locations.
+ * For `deno`, the running executable answers first (PR #888 CI): `which` is
+ * an unnecessary subprocess whose failure — a PATH a test left rewritten, a
+ * spawn that lost a fork, an image without `which` — silently demoted every
+ * Deno check in the gate. CI installs Deno into the runner tool cache, which
+ * none of the hardcoded fallbacks below cover, so that lookup was the only
+ * thing standing between the gate and four unexplained FAILED checks.
+ *
+ * Otherwise checks the PATH via `which`, then common install locations.
  * Returns the path to the tool if found, or an error result if not.
  */
 export async function detectTool(
   toolName: string,
   homeDir?: string,
 ): Promise<Result<string>> {
+  if (toolName === "deno") {
+    const running = runningDenoPath();
+    if (running) return { ok: true, value: running };
+  }
+
   // Check PATH via which
   try {
     const cmd = new Deno.Command("which", {
@@ -343,6 +373,29 @@ export function formatBaselineQualityNote(baselineOutput: string): string {
 }
 
 /**
+ * Word-delimited tokens in a shell script, the shape a tool name appears in:
+ * preceded by start-of-line, whitespace, `/` or `"`, and followed by
+ * whitespace, a quote or end-of-line — so `.npmrc` and `deno.lock` are single
+ * tokens rather than references to `npm` and `deno`.
+ *
+ * One literal pattern for every tool, rather than `new RegExp(tool)` per name:
+ * a regex built from an interpolated value is a semgrep
+ * `detect-non-literal-regexp` finding, and the same rule blocks the PR in
+ * `.github/workflows/semgrep.yml`.
+ */
+const TOOL_WORD_PATTERN = /(?:^|[\s/"])([\w.-]+)(?=[\s"']|$)/gm;
+
+/** The set of word-delimited tokens a quality script mentions. */
+function referencedToolWords(scriptContent: string): Set<string> {
+  const words = new Set<string>();
+  for (const match of scriptContent.matchAll(TOOL_WORD_PATTERN)) {
+    const word = match[1];
+    if (word) words.add(word);
+  }
+  return words;
+}
+
+/**
  * Detect missing quality tools by scanning a quality script.
  *
  * Scans the quality script for references to common tools (npm, node, yarn,
@@ -371,11 +424,10 @@ export async function detectMissingQualityTools(
   }
 
   const missingTools: string[] = [];
-  const toolPattern = (tool: string) =>
-    new RegExp(`(^|[\\s/"])(${tool})([\\s"']|$)`, "m");
+  const referenced = referencedToolWords(scriptContent);
 
   for (const tool of toolsToCheck) {
-    if (toolPattern(tool).test(scriptContent)) {
+    if (referenced.has(tool)) {
       const found = await detectTool(tool);
       if (!found.ok) {
         missingTools.push(tool);

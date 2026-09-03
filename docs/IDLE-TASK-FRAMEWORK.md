@@ -800,6 +800,14 @@ excluded by design (it _is_ the idle work). The formatter emits a header line,
 one `[idle-census] … repo=<owner/repo> …` line per repo, and — when the signal
 fired — a single greppable `[idle-census] … ALERT inversion repos=<csv>` line.
 
+The same per-repo rows also reduce to the **one** reason the fleet was idle this
+cycle, which the loop books its idle seconds against in the `fleet-summary:`
+line — see
+[Fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855).
+The most frequent skip reason wins; a fleet that was genuinely scanned is split
+into `nothing_claimable_backlog` (repos still hold open issues) and
+`nothing_claimable_empty` (there was nothing to claim).
+
 #### Only a refusal escalates
 
 The inversion signal answers "is there claimable work right now?". Escalating it
