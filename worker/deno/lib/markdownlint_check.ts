@@ -159,15 +159,36 @@ function makeBinaryRunner(binaryPath: string): MarkdownlintRunner {
   };
 }
 
-async function canRunBinary(binaryPath: string): Promise<boolean> {
+/**
+ * Whether `binaryPath` can be executed at all (Issue #894).
+ *
+ * The question is "does this binary exist and start", not "does it exit
+ * zero". Those were conflated: the probe ran the binary with `--version` and
+ * treated a non-zero exit as absent. `markdownlint-cli2` has no `--version`
+ * flag — it treats the argument as a **glob**, lints the repository against
+ * `.markdownlint-cli2.jsonc`, and exits 1 when it finds a violation.
+ *
+ * So the probe failed precisely when the repository had a Markdown violation:
+ * the stage reported SKIPPED and the gate went green over the very thing the
+ * stage exists to catch — absence of a failure marker reported as success.
+ *
+ * Spawning is the only signal that answers the actual question. A missing or
+ * unexecutable binary throws; one that runs has proved it exists, whatever it
+ * then decides about the repository.
+ */
+export async function canRunBinary(binaryPath: string): Promise<boolean> {
   try {
     const command = new Deno.Command(binaryPath, {
-      args: ["--version"],
+      // `--help` is a no-op for the runners considered here and — unlike
+      // `--version` — cannot be mistaken for a glob and lint the tree.
+      args: ["--help"],
       stdout: "null",
       stderr: "null",
     });
-    const result = await command.output();
-    return result.success;
+    await command.output();
+    // Exit code deliberately ignored: it reports what the binary thought of
+    // its arguments, not whether the binary is there.
+    return true;
   } catch {
     return false;
   }
