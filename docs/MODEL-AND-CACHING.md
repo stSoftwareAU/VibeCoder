@@ -2409,14 +2409,13 @@ subsequent restores are faster and avoid wasting tokens on stale context.
 
 > **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — verbosity is injected into the prompt template, so every agent receives the same instruction.
 
-Output verbosity is configurable per phase, reducing output tokens for
-phases that don't require detailed explanations (e.g., health checks,
-spelling fixes). Inspired by the
+Output verbosity is configurable, reducing output tokens where detailed
+explanations add nothing. Inspired by the
 [Caveman](https://github.com/JuliusBrussee/caveman) approach to
-controlling LLM output verbosity, VibeCoder applies task-appropriate
-verbosity levels automatically — a spelling fix gets a one-line "done"
-response, while a planning task receives detailed architectural
-reasoning.
+controlling LLM output verbosity, VibeCoder injects the configured level
+into the prompt template. The level comes from configuration only — there
+are no automatic per-phase levels (Issue #798), so an unconfigured worker
+renders `standard` everywhere.
 
 **Four verbosity levels:**
 
@@ -2427,40 +2426,29 @@ reasoning.
 | `standard` | Balanced detail — the default. End-of-run summary, no running commentary. |
 | `verbose` | Standard summary plus a short section per genuinely close decision — the option taken, the alternative rejected, and the fact that settled it. |
 
-**Phase-specific defaults:**
+**Which override reaches which surface:**
 
-Each phase maps to a sensible default verbosity level. Phases not listed
-below fall back to `standard`:
+The two overrides are read by different code paths, so neither applies
+everywhere:
 
-| Phase | Default | Rationale |
-|-------|---------|-----------|
-| `spelling_fix` | `minimal` | Trivial, mechanical task — output adds no value |
-| `summarise` | `minimal` | Trivial, mechanical task — output adds no value |
-| `ci_fix` | `concise` | Reactive task with structured input |
-| `pr_feedback` | `concise` | Reactive task with structured input |
-| `quality_fix` | `concise` | Reactive task with structured input |
-| `refinement` | `concise` | Reactive task with structured input |
-| `revision` | `concise` | Reactive task with structured input |
-| `clarification` | `concise` | Reactive task with structured input |
-| `issue` | `standard` | General implementation — balanced detail |
-| `planning` | `verbose` | Architecture decisions need full reasoning |
-| `question` | `verbose` | Detailed explanations needed |
+| Surface | Level used |
+|---------|------------|
+| `issue` phase | Per-repo `verbosity` override in `repo_config`, else `standard` |
+| `grill_me` and `quorum` rounds | Global `verbosity` in `.config.json`, else `standard` |
+| Every other phase | `standard` |
 
-**How it works:** When the resolved verbosity is not `standard`, a
-verbosity instruction is injected into the prompt template via the
-`{{VERBOSITY_INSTRUCTIONS}}` placeholder. For example, a `minimal`
-phase receives: *"Respond with a single sentence confirming what you did.
-Do not explain your reasoning or list alternatives."* The `standard`
-level injects nothing, preserving backward-compatible behaviour.
+**How it works:** the resolved level's instruction is injected into the
+prompt template via the `{{VERBOSITY_INSTRUCTIONS}}` placeholder. Every
+level gets a block, including `standard` (Issue #3813) — a `minimal` run
+receives *"Produce a single sentence naming what you changed. That
+sentence is the whole response."*
 
-**Resolution priority** (highest to lowest):
+**Resolution priority** for the `issue` phase (highest to lowest):
 
 1. Per-repo override in `repo_config` — allows different verbosity per
    repository (e.g., `minimal` for a docs site, `verbose` for a
    platform repo)
-2. Phase-specific default (table above)
-3. Global `verbosity` setting in `.config.json`
-4. Hard-coded default (`standard`)
+2. Hard-coded default (`standard`)
 
 **Approximate token savings** compared to `standard`:
 
@@ -2471,8 +2459,9 @@ level injects nothing, preserving backward-compatible behaviour.
 | `standard` | Baseline |
 | `verbose` | ~20–40% more output tokens |
 
-**Saving:** ~30–80% fewer output tokens on routine phases, depending on
-level. See [Verbosity Configuration](CONFIGURATION.md#-verbosity-configuration)
+**Saving:** ~30–80% fewer output tokens where a lower level is configured;
+nothing is saved by default, since the default level is `standard`. See
+[Verbosity Configuration](CONFIGURATION.md#-verbosity-configuration)
 for full configuration options.
 
 Implementation:

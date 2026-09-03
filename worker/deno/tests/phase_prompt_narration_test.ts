@@ -10,10 +10,9 @@
  *   - `pr_feedback/v13.md:8` — "Narrate briefly as you go (a short line …)"
  *   - `planning/v23.md:10`  — "Narrate briefly as you go."
  *
- * All three render the `standard` block whatever `PHASE_VERBOSITY_DEFAULTS`
- * declares, because `resolveVerbosity` has one non-test call site
- * (`execute_claude_phase.ts`, for `issue`) — the dead plumbing is #798's.
- * So one rendered prompt both asked for and forbade narration.
+ * All three render the `standard` block, because no prompt builder but the
+ * `issue` phase is ever passed a level (#798). So one rendered prompt both
+ * asked for and forbade narration.
  *
  * These are the equivalent of `grill_me_narration_test.ts` for those three:
  * the latest version never asks for narration, the retired version keeps the
