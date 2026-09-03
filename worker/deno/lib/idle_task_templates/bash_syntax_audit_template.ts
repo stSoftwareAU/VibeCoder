@@ -12,7 +12,7 @@
  *   2. the native language-validity detector (`language_validity_gate.ts` —
  *      sibling sub-issue #3237) for each other main language.
  *
- * The prompt at `prompts/bash_syntax_audit/v1.md` is used only as the
+ * The prompt at `prompts/bash_syntax_audit/prompt.md` is used only as the
  * human-style wrapper body (Issue #2077). Modelled on
  * `bash_script_refs_template.ts` (native, issue-only) and
  * `github_actions_audit_template.ts` (single-scope, weekly cadence,

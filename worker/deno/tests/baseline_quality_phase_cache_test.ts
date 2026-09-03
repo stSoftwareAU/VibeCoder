@@ -210,7 +210,7 @@ Deno.test("baselineQuality cache - reuses cached diffable findings when the base
 Deno.test("baselineQuality cache - re-runs when the entry lacks findings the baseline-aware gate needs", async () => {
   const { deps, recorder } = makeDeps({
     cached: cachedEntry(),
-    findings: [{ check: "docs", key: "docs/x.md", display: "x" }],
+    findings: [{ check: "markdownlint", key: "docs/x.md", display: "x" }],
   });
   const state = makeState();
 

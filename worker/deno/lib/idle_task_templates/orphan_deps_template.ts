@@ -12,7 +12,7 @@
  * contract:
  *
  *   - **Outcome-only Claude contract.** The orchestrating prompt at
- *     `prompts/orphan_deps/v1.md` instructs Claude to file findings
+ *     `prompts/orphan_deps/prompt.md` instructs Claude to file findings
  *     directly via `gh issue create`. `runTask` verifies the outcome by
  *     snapshotting the repo's open `orphan-deps`-labelled issues before
  *     and after the scan and diffing them — no JSON parsing.
@@ -162,7 +162,7 @@ export interface ScanError {
 // ---------------------------------------------------------------------------
 
 /**
- * Substitute the placeholders defined by `prompts/orphan_deps/v1.md`.
+ * Substitute the placeholders defined by `prompts/orphan_deps/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleSupplyChainReadinessPrompt` so wrappers read naturally both
@@ -281,7 +281,7 @@ export function renderOrphanDepsSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/orphan_deps/v1.md`, substitutes
+ * Default Claude runner. Loads `prompts/orphan_deps/prompt.md`, substitutes
  * placeholders, and invokes Claude with the same write-tool blocklist as
  * `supply_chain_readiness_template.defaultRunScan`.
  *

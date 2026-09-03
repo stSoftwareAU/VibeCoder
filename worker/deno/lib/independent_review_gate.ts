@@ -17,7 +17,7 @@
  * `<coding_guidelines>` block, applied while writing rather than checked against
  * the finished diff, and the two were never reported side by side.
  *
- * `prompts/issue/v39.md` dispatches a Spec reviewer sub-agent (diff + issue body
+ * `prompts/issue/prompt.md` dispatches a Spec reviewer sub-agent (diff + issue body
  * only, never the implementation transcript) and a Standards reviewer sub-agent
  * (diff + `CODING-STANDARDS.md`), and this module is the deterministic check
  * behind that prose:

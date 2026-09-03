@@ -1,26 +1,20 @@
 /**
- * Tests for the Fable 5 simplification of the remaining working prompts
- * , following on from the core-prompt rewrite in.
+ * Tests for the Fable 5 simplification of the remaining working prompts,
+ * following on from the core-prompt rewrite.
  *
- * New latest versions: pr_feedback/v9, ci_fix/v8, planning/v17,
- * question/v7, grill-me/v10. Each was rewritten to state every policy
- * once in plain language and is materially shorter than its predecessor.
+ * `pr_feedback`, `ci_fix`, `planning`, `question` and `grill-me` were each
+ * rewritten to state every policy once in plain language.
  *
  * These tests pin the policy strings and worker wording-contracts the
- * simplified versions must keep, confirm the required placeholders
- * survive the rewrite, and prove the escape-hatch detection contract the
- * pr_feedback / ci_fix replies depend on still fires. Earlier versions
- * stay immutable, so they are not touched here.
+ * simplified templates must keep, confirm the required placeholders survive
+ * the rewrite, and prove the escape-hatch detection contract the pr_feedback /
+ * ci_fix replies depend on still fires.
  *
  * Australian English throughout (behaviour, colour, organisation).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import {
-  getLatestVersion,
-  loadPrompt,
-  validatePromptTemplate,
-} from "../lib/prompt_manager.ts";
+import { loadPrompt, validatePromptTemplate } from "../lib/prompt_manager.ts";
 import { detectEscapeHatch } from "../lib/escape_hatch.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -28,21 +22,15 @@ const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 interface PromptCase {
   /** Prompt directory name, e.g. `pr_feedback`. */
   name: string;
-  /** New latest version, e.g. `v9`. */
-  version: string;
-  /** Immediate predecessor, used for the "materially shorter" check. */
-  previous: string;
   /** Template type key for placeholder validation (omit if not registered). */
   validateAs?: string;
-  /** Substrings that must appear in the new version. */
+  /** Substrings that must appear in the template. */
   requires: string[];
 }
 
 const CASES: PromptCase[] = [
   {
     name: "pr_feedback",
-    version: "v9",
-    previous: "v8",
     validateAs: "pr_feedback",
     requires: [
       "{{PR_NUMBER}}",
@@ -56,8 +44,6 @@ const CASES: PromptCase[] = [
   },
   {
     name: "ci_fix",
-    version: "v8",
-    previous: "v7",
     validateAs: "ci_fix",
     requires: [
       "{{PR_NUMBER}}",
@@ -70,8 +56,6 @@ const CASES: PromptCase[] = [
   },
   {
     name: "planning",
-    version: "v17",
-    previous: "v16",
     validateAs: "planning",
     requires: [
       "{{REPO}}",
@@ -86,8 +70,6 @@ const CASES: PromptCase[] = [
   },
   {
     name: "question",
-    version: "v7",
-    previous: "v6",
     validateAs: "question",
     requires: [
       "{{REPO}}",
@@ -99,8 +81,6 @@ const CASES: PromptCase[] = [
   },
   {
     name: "grill-me",
-    version: "v10",
-    previous: "v9",
     requires: [
       "{{ROUND_NUMBER}}",
       "{{MAX_ROUNDS}}",
@@ -116,28 +96,14 @@ const CASES: PromptCase[] = [
 ];
 
 for (const c of CASES) {
-  Deno.test(`${c.name} ${c.version} - exists and loads`, async () => {
-    const result = await loadPrompt(c.name, c.version, PROMPTS_DIR);
+  Deno.test(`${c.name} - exists and loads`, async () => {
+    const result = await loadPrompt(c.name, PROMPTS_DIR);
     assertEquals(result.ok, true);
     if (result.ok) assertEquals(result.value.length > 0, true);
   });
 
-  Deno.test(`${c.name} - latest resolves to ${c.version} or newer`, async () => {
-    const result = await getLatestVersion(c.name, PROMPTS_DIR);
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      const num = parseInt(result.value.replace("v", ""), 10);
-      const want = parseInt(c.version.replace("v", ""), 10);
-      assertEquals(
-        num >= want,
-        true,
-        `Expected ${c.name} >= ${c.version}, got ${result.value}`,
-      );
-    }
-  });
-
-  Deno.test(`${c.name} ${c.version} - keeps the required policy strings`, async () => {
-    const result = await loadPrompt(c.name, c.version, PROMPTS_DIR);
+  Deno.test(`${c.name} - keeps the required policy strings`, async () => {
+    const result = await loadPrompt(c.name, PROMPTS_DIR);
     assertEquals(result.ok, true);
     if (result.ok) {
       for (const needle of c.requires) {
@@ -147,8 +113,8 @@ for (const c of CASES) {
   });
 
   if (c.validateAs) {
-    Deno.test(`${c.name} ${c.version} - retains required placeholders`, async () => {
-      const result = await loadPrompt(c.name, c.version, PROMPTS_DIR);
+    Deno.test(`${c.name} - retains required placeholders`, async () => {
+      const result = await loadPrompt(c.name, PROMPTS_DIR);
       assertEquals(result.ok, true);
       if (result.ok) {
         const validation = validatePromptTemplate(c.validateAs!, result.value);
@@ -156,28 +122,13 @@ for (const c of CASES) {
       }
     });
   }
-
-  Deno.test(`${c.name} ${c.version} - is materially shorter than ${c.previous}`, async () => {
-    const next = await loadPrompt(c.name, c.version, PROMPTS_DIR);
-    const prev = await loadPrompt(c.name, c.previous, PROMPTS_DIR);
-    assertEquals(next.ok, true);
-    assertEquals(prev.ok, true);
-    if (next.ok && prev.ok) {
-      assertEquals(
-        next.value.length < prev.value.length,
-        true,
-        `Expected ${c.name} ${c.version} (${next.value.length} chars) ` +
-          `to be shorter than ${c.previous} (${prev.value.length} chars)`,
-      );
-    }
-  });
 }
 
 // --- Escape-hatch detection contract ---------------------------
 //
-// pr_feedback/v9 and ci_fix/v8 instruct Claude to write an escape-hatch
-// `.pr_response_message` using the "out of scope" / "follow-up issue"
-// wording plus a same-repo issue link. detectEscapeHatch() is what the
+// The pr_feedback and ci_fix templates instruct the agent to write an
+// escape-hatch `.pr_response_message` using the "out of scope" / "follow-up
+// issue" wording plus a same-repo issue link. detectEscapeHatch() is what the
 // worker uses to recognise that shape, so verify a message written to the
 // prompt's instructions is detected.
 

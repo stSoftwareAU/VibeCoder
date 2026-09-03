@@ -612,9 +612,9 @@ the issue already resolved **and cites the evidence** — a commit and/or PR, pl
 how it checked — the worker closes the issue with that evidence in the comment.
 The agent declares it with
 `<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`
-(from `prompts/issue/v35.md` onwards); a broadened keyword list remains as a
-fallback for older prompt versions. A claim with no commit or PR behind it is
-*not* enough to close a live issue — that falls through to the analysis-only
+(`prompts/issue/prompt.md`); a broadened keyword list remains as a
+fallback for output that carries no marker. A claim with no commit or PR behind
+it is *not* enough to close a live issue — that falls through to the analysis-only
 hand-off below. See
 [already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 

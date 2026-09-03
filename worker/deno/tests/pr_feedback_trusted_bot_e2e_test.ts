@@ -40,6 +40,10 @@ import type {
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Fixtures matching the private-repo-14 #2524 finding shape

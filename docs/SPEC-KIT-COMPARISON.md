@@ -74,7 +74,7 @@ Five, each filed as its own issue. Each is a native adaptation, not a port.
 
 The planner writes a `## Acceptance Criteria` checklist into every sub-issue
 (`prompts/planning/`) and, before #518, **nothing ever read it
-again**: searching `worker/deno/lib` and `prompts/issue/v35.md` <!-- pinned: the state that prompted #518 -->
+again**: searching `worker/deno/lib` and `prompts/issue/prompt.md`
 for "Acceptance Criteria" returned no matches. The implementing run never saw the
 criteria as a target and the PR summary never said which were met.
 
@@ -142,7 +142,7 @@ that was not actually performed is reported as `partial` or `not-run`, not
 `verified`."
 
 All work tiers share one pipeline here (`docs/workflows/label-flows.md:226-234`),
-and `bug` is descriptive only. `prompts/issue/v36.md` <!-- pinned: the state that prompted #521 -->
+and `bug` is descriptive only. `prompts/issue/prompt.md`
 asks for a regression test, but a PR claiming one reads identically whether the
 test was watched to fail before the fix or written afterwards — precisely the
 over-claim the fail-loud standard exists to prevent. Adopted as a conditional

@@ -117,12 +117,12 @@ const REPOINTED: Array<{
     target: "CODING-STANDARDS.md",
     fragment: "test-driven-development-tdd",
   },
-  // #prompt-template-versioning-issue-235 → CODING-STANDARDS.md.
+  // #prompt-templates → CODING-STANDARDS.md (Issue #844 retired versioning).
   {
     source: "docs/PROMPTS.md",
-    link: "../CODING-STANDARDS.md#prompt-template-versioning",
+    link: "../CODING-STANDARDS.md#prompt-templates",
     target: "CODING-STANDARDS.md",
-    fragment: "prompt-template-versioning",
+    fragment: "prompt-templates",
   },
   // #idle-task-framework → DESIGN-PRINCIPLES.md.
   {

@@ -12,10 +12,6 @@ import { buildWorkflowSetupPrompt } from "../lib/prompt_builder.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
-// --- prompt_manager: workflow_setup registration tests ---
-
-// --- prompt template loading tests ---
-
 // --- prompt builder: buildWorkflowSetupPrompt tests ---
 
 Deno.test("prompt builder - workflow setup prompt includes repo and languages", async () => {
@@ -122,18 +118,3 @@ Deno.test("prompt builder - workflow setup prompt supports verbosity level", asy
     assertStringIncludes(result.value.prompt, "Verbosity");
   }
 });
-
-// --- v2 template tests (Issue #1581) ---
-//
-// v2 folds in CI hardening lessons learnt from private-repo-22 issues #18–#24.
-// v1 is frozen (per Issue #235 prompt immutability) and must remain unchanged.
-
-// --- v3 template tests (Issue #1756) ---
-//
-// v3 codifies the canonical private-repo-14 gitleaks pattern in two ways:
-//   1. SHA-pinned third-party actions and a wired-through GITLEAKS_LICENSE
-//      secret (avoids ErrLicense and supply-chain tag hijack).
-//   2. An explicit "Fetch base branch" step before gitleaks-action runs so
-//      the action's computed `<base_sha>^..<head_sha>` rev-range resolves
-//      on the PR runner (avoids "fatal: Invalid revision range").
-// v1 and v2 are frozen (per Issue #235 prompt immutability).

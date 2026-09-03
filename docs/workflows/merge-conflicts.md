@@ -105,8 +105,8 @@ progress and stopped on conflicts. Its contract is absolute:
 - **Stop rather than guess.** Two changes that genuinely contradict each other
   (the same constant set to different values) are a human's decision. The agent
   aborts the merge and explains; the worker escalates.
-- **Dependency versions are the one bounded carve-out.** From
-  `prompts/merge_conflict/v2.md` onwards the prompt says so itself: the worker
+- **Dependency versions are the one bounded carve-out.** The prompt says so
+  itself: the worker
   settles dependency-version hunks in known manifests before the agent runs, and
   those files are absent from the agent's conflicted-file list. The carve-out
   stops there — a conflicting constant in source code is still a human's call,

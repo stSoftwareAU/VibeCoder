@@ -2,7 +2,7 @@
  * GitHub Actions audit idle-task template (Issue #2256, parent #2243,
  * template #4).
  *
- * Runs the `prompts/github_actions_audit/v1.md` audit against the target
+ * Runs the `prompts/github_actions_audit/prompt.md` audit against the target
  * repository's GitHub Actions material, pre-files an actionlint-in-CI
  * finding (when actionlint is not invoked from CI), pre-files runner
  * deprecation findings surfaced by `runner_deprecation_scanner.ts`,
@@ -451,7 +451,7 @@ export interface ScanError {
 
 /**
  * Substitute the four placeholders defined by
- * `prompts/github_actions_audit/v1.md`.
+ * `prompts/github_actions_audit/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleTestAuditPrompt` so wrappers read naturally standalone and
@@ -658,7 +658,7 @@ export function renderGitHubActionsAuditSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/github_actions_audit/v1.md`,
+ * Default Claude runner. Loads `prompts/github_actions_audit/prompt.md`,
  * substitutes placeholders, and invokes Claude with the same write-tool
  * blocklist as `best_practices_template.defaultRunScan`.
  *

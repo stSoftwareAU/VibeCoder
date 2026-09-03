@@ -1,5 +1,11 @@
 # 🧭 Cross-prompt contradiction audit (Issue #762)
 
+> **📌 Archival record.** The `vN.md` files cited below were removed in Issue
+> #844 and now exist only in git history (`git log -p prompts/<type>/prompt.md`).
+> Each prompt type is a single editable `prompts/<type>/prompt.md` today. The
+> citations are left as taken so the record stays faithful to what the prompts
+> read at the time.
+
 A one-off audit of the **latest** version of every prompt surface for
 contradictions **between** prompts — one surface mandating what another forbids,
 conflicting numbers or policies for the same thing, and terminology drift. It is

@@ -42,6 +42,13 @@ import {
   classifyGhMutation,
   type MutationInfo,
 } from "../lib/audit_mutation_classifier.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,25 +135,6 @@ const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
 
 const stableNow = () => new Date("2026-06-07T00:00:00.000Z");
-
-/**
- * Repo root, so the real template body builders can resolve their
- * cwd-relative prompt/bucket-guide paths (e.g.
- * `prompts/best_practices/buckets/general.md`) — exactly as the worker does
- * in production. Resolved from this test file's location.
- */
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-
-/** Run `fn` with cwd at the repo root, restoring the original cwd after. */
-async function withRepoRootCwd<T>(fn: () => Promise<T>): Promise<T> {
-  const original = Deno.cwd();
-  Deno.chdir(REPO_ROOT);
-  try {
-    return await fn();
-  } finally {
-    Deno.chdir(original);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // all-on-clean
