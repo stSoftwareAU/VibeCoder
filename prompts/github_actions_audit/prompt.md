@@ -1344,8 +1344,8 @@ expression.
      quoted catalogue / EOL-table row the verdict rests on.
    - Any `Rejected suppression: <file>:<line> <id> — <failed check>` line
      from Phase 3 goes at the end of `## Suggested fix`.
-   - The final line is the literal **attribution footer** from
-     `<attribution_footer>`, separated by a blank line and reproduced
+   - The final line is the literal **attribution footer** line from
+     the Inputs section, separated by a blank line and reproduced
      verbatim — backticks and emoji intact.
 
 4. **Cap at 6 issues.** Never file more than 6 from a single run — the
