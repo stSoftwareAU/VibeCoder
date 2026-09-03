@@ -20,7 +20,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
 import { buildGrillMePrompt } from "../lib/grill_me_processor.ts";
 import { buildVerbosityBlock } from "../lib/prompt_builder.ts";
-import { resolveVerbosity } from "../lib/verbosity.ts";
+import { DEFAULT_VERBOSITY } from "../lib/config_defaults.ts";
 import type { VerbosityLevel } from "../types.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -96,11 +96,15 @@ Deno.test("grill-me - the latest version keeps the unattended framing", async ()
   );
 });
 
-Deno.test("resolveVerbosity - grill-me still renders the standard block that bans commentary", () => {
-  // The contradiction only exists because an unconfigured repo falls back to
-  // `standard`. Pin that fallback so the rendered-round test below stays the
-  // real case.
-  assertEquals(resolveVerbosity(), "standard");
+Deno.test("buildVerbosityBlock - an unconfigured worker renders the block that bans commentary", () => {
+  // grill-me renders `buildVerbosityBlock(config.verbosity)`, which defaults to
+  // DEFAULT_VERBOSITY. Pin that default's block so the rendered-round tests
+  // below stay the real case.
+  assertEquals(DEFAULT_VERBOSITY, "standard");
+  assertStringIncludes(
+    buildVerbosityBlock(DEFAULT_VERBOSITY),
+    NO_COMMENTARY_CLAUSE,
+  );
 });
 
 Deno.test("buildGrillMePrompt - a standard round forbids narration and never asks for it", async () => {

@@ -50,11 +50,9 @@ Deno.test("verbosity - DEFAULT_VERBOSITY is standard", () => {
   assertEquals(DEFAULT_VERBOSITY, "standard");
 });
 
-// Issue #798: the per-phase default map that used to be pinned here is gone.
-// It was dead configuration — no prompt builder but the `issue` phase was ever
-// passed a resolved level — so verbosity now comes from the per-repo override
-// or the global default only. `verbosity_test.ts` covers that two-tier chain
-// and asserts the map is no longer exported.
+// Issue #798: the per-phase default map that used to be pinned here is gone
+// (see `resolveVerbosity()` in verbosity.ts). `verbosity_test.ts` covers the
+// two-tier chain that replaced it.
 
 // =============================================================================
 // buildDefaultWorkerConfig includes verbosity

@@ -1027,7 +1027,8 @@ everywhere:
 
 1. Per-repo override in `repo_config` (see
    [Per-Repository Configuration](#per-repository-configuration))
-2. Global default (`standard`)
+2. Hard-coded default (`standard`) — this tier does not read the global
+   `.config.json` `verbosity`
 
 **Global verbosity override:**
 

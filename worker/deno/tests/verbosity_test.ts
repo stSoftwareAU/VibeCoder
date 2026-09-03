@@ -86,11 +86,9 @@ Deno.test("verbosity instructions - verbose mentions alternatives", () => {
 // resolveVerbosity — priority chain tests
 // =============================================================================
 
-// Issue #798: the phase-default tier is gone. It never reached a rendered
-// prompt — `resolveVerbosity()` had one non-test call site (the `issue` phase)
-// and no other prompt builder was ever passed a level — so the chain is now
-// two tiers: per-repo override, then the global default. The per-phase tests
-// that pinned the deleted tier are replaced by these.
+// Issue #798: the chain is two tiers — per-repo override, then the hard-coded
+// default. The per-phase tests that pinned the deleted tier are replaced by
+// these; `verbosity.ts` records why that tier went.
 
 Deno.test("resolveVerbosity - returns the global default when no repo config is given", () => {
   const result = resolveVerbosity();
@@ -124,17 +122,6 @@ Deno.test("resolveVerbosity - repo config without verbosity falls back to the gl
   const repoConfig: RepoConfig = { skipQualityCheck: true };
   const result = resolveVerbosity(repoConfig);
   assertEquals(result, "standard");
-});
-
-// Issue #798: the deleted map is no longer an export anyone can resolve
-// against — check the module namespace rather than the source text.
-Deno.test("config_defaults - no longer exports a phase verbosity map", async () => {
-  const defaults = await import("../lib/config_defaults.ts");
-  assertEquals(
-    Object.hasOwn(defaults, "PHASE_VERBOSITY_DEFAULTS"),
-    false,
-    "PHASE_VERBOSITY_DEFAULTS was dead configuration and must stay deleted",
-  );
 });
 
 // =============================================================================

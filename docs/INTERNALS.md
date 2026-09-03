@@ -2735,7 +2735,8 @@ through.
 
 1. **Per-repo override** — set via the `verbosity` field in `.config.json`
    `repo_config` (highest priority).
-2. **Global default** — `DEFAULT_VERBOSITY` (`"standard"`).
+2. **Hard-coded default** — `DEFAULT_VERBOSITY` (`"standard"`). Note this tier
+   does not read the global `.config.json` `verbosity`.
 
 The `grill_me` and `quorum` rounds bypass that chain and render the global
 `.config.json` `verbosity` directly via `buildVerbosityBlock()`. Every other

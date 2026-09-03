@@ -556,8 +556,9 @@ export const DEFAULT_REPO_NICE = 0 as const;
 /**
  * Verbosity levels for configurable response output (Issue #1330).
  *
- * Part of #1329 (caveman mode). Different task types and repositories
- * benefit from different levels of output detail:
+ * Part of #1329 (caveman mode). Different repositories benefit from different
+ * levels of output detail — the level is configured, never derived from the
+ * phase (Issue #798):
  * - minimal: bare minimum output (e.g. "done", one-line summary)
  * - concise: brief but informative — key decisions and outcomes only
  * - standard: current default behaviour — balanced detail
@@ -576,13 +577,10 @@ export const VERBOSITY_LEVELS = {
  */
 export const DEFAULT_VERBOSITY = "standard" as const;
 
-// Issue #798: a per-phase verbosity default map used to live here. It was dead
-// configuration — `resolveVerbosity()` has one non-test call site (the `issue`
-// phase) and no other prompt builder is ever passed a level, so every other
-// phase rendered the `standard` block whatever the map declared. Verbosity is
-// set by the per-repo `verbosity` override or the global `.config.json`
-// `verbosity`, never by the phase. Do not reintroduce it without threading a
-// resolved level through every prompt builder.
+// Issue #798: a per-phase verbosity default map used to live here and was
+// deleted as dead configuration — see `resolveVerbosity()` in verbosity.ts for
+// why, and do not reintroduce it without threading a resolved level through
+// every prompt builder.
 
 /**
  * Effort levels for the Claude CLI `--effort` flag (Issue #1402, #2620).

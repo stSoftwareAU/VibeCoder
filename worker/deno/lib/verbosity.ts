@@ -59,7 +59,9 @@ export function getVerbosityInstructions(level: VerbosityLevel): string {
  * Resolves the effective verbosity level using the priority chain:
  *
  * 1. Per-repo override (highest priority)
- * 2. Global default ("standard")
+ * 2. Hard-coded default (DEFAULT_VERBOSITY, "standard") — this tier does not
+ *    read the global `.config.json` `verbosity`, which only the grill-me and
+ *    quorum rounds render.
  *
  * Verbosity is not phase-dependent (Issue #798). A per-phase default tier used
  * to sit between the two, but it never reached a rendered prompt: this
