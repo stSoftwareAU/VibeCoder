@@ -19,7 +19,7 @@ import {
   recordClaudeRunStats,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
-import { getLatestVersion } from "../prompt_manager.ts";
+import { getPromptsCommit } from "../prompt_manager.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import { detectScreenshotRequired } from "../execute_claude_phase.ts";
 import {
@@ -395,17 +395,17 @@ async function executeClaudeBody(
     return { status: "early_exit", reason: "context_budget_exceeded" };
   }
 
-  // Record prompt versions for traceability (Issue #1190)
-  const issueVersion = await getLatestVersion("issue").then(
-    (r) => r.ok ? r.value : "unknown",
-  );
-  const guidelinesVersion = await getLatestVersion("coding_guidelines").then(
-    (r) => r.ok ? r.value : "unknown",
-  );
-  logger.info("Using prompt versions", {
-    issue: issueVersion,
-    coding_guidelines: guidelinesVersion,
-  });
+  // Record the prompt revision for traceability (Issue #1190, #844).
+  // Templates carry no version number since #844 — the checkout's commit is
+  // what pins the text. A failure is surfaced, never logged as "unknown".
+  const promptsCommit = await getPromptsCommit();
+  if (promptsCommit.ok) {
+    logger.info("Using prompts from commit", { commit: promptsCommit.value });
+  } else {
+    logger.warn("Could not resolve the prompts commit", {
+      error: promptsCommit.error.message,
+    });
+  }
 
   // Initialise session resume state if enabled (Issue #1324)
   if (config.enableSessionResume && !state.sessionResumeState) {

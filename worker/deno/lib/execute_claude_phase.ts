@@ -39,7 +39,7 @@ import {
   type CachedPromptParts,
 } from "./prompt_builder_cache.ts";
 import { PromptCache } from "./prompt_cache.ts";
-import { getLatestVersion } from "./prompt_manager.ts";
+import { getPromptsCommit } from "./prompt_manager.ts";
 import {
   type ClaudeRunResult,
   type RetryOptions,
@@ -308,8 +308,11 @@ export interface ExecuteClaudePhaseDeps {
   recordHeartbeat: RecordFn;
   /** Clear a heartbeat. */
   clearHeartbeat: ClearFn;
-  /** Get latest prompt version. */
-  getLatestVersion: (templateName: string) => Promise<Result<string>>;
+  /**
+   * Short commit hash of the checkout the prompt templates came from
+   * (Issue #844) — the traceability record that replaced version numbers.
+   */
+  getPromptsCommit: () => Promise<Result<string>>;
   /**
    * Hand the issue to a human when the context-budget ceiling blocks the
    * phase (Issue #3713). Optional so existing test doubles need no change —
@@ -667,8 +670,7 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
       ok: true,
       value: undefined,
     }),
-    getLatestVersion: async (templateName) =>
-      await getLatestVersion(templateName),
+    getPromptsCommit: async () => await getPromptsCommit(),
     log: (message: string) => console.log(`[execute-claude-phase] ${message}`),
   };
 }
@@ -999,14 +1001,18 @@ export async function runExecuteClaudePhase(
     }
   }
 
-  // --- Record prompt versions for traceability (Issue #197) ---
-  const issueVersion = await deps.getLatestVersion("issue")
-    .then((r) => r.ok ? r.value : "unknown");
-  const guidelinesVersion = await deps.getLatestVersion("coding_guidelines")
-    .then((r) => r.ok ? r.value : "unknown");
-  deps.log(
-    `Using prompt versions: issue=${issueVersion}, coding_guidelines=${guidelinesVersion}`,
-  );
+  // --- Record the prompt revision for traceability (Issue #197, #844) ---
+  // Templates are no longer versioned by filename, so the checkout's commit
+  // is what identifies the text this run used. A failure is logged loudly
+  // rather than recorded as an unknown-but-fine revision.
+  const promptsCommit = await deps.getPromptsCommit();
+  if (promptsCommit.ok) {
+    deps.log(`Using prompts from commit ${promptsCommit.value}`);
+  } else {
+    deps.log(
+      `WARNING: could not resolve the prompts commit — ${promptsCommit.error.message}`,
+    );
+  }
 
   // --- Validate repository state (Issue #621) ---
   deps.log("Validating repository state before Claude invocation...");

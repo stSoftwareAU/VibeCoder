@@ -4,8 +4,8 @@
  *
  * An idle-task wrapper body is a *preview* of the scan prompt: it is filed so a
  * human reading the issue sees the fully-substituted prompt, while the scan
- * re-loads the canonical prompt from `prompts/<scan>/vN.md` at run time
- * (`template.runTask`). Prompts outgrew that: `security_scan` v30 builds a
+ * re-loads the canonical prompt from `prompts/<scan>/prompt.md` at run time
+ * (`template.runTask`). Prompts outgrew that: `security_scan` builds a
  * 100,961-character body against GitHub's 65,536-character ceiling, so the
  * clamp added by Issue #3634 dropped 35,946 characters out of the middle of
  * every seeded wrapper — the reader got a truncated copy and the only signal
@@ -18,21 +18,21 @@
  *   - the prompt's own first heading, verbatim, so each template's body
  *     fingerprint still dispatches (`idle_task_claim_handler.ts`);
  *   - a visible notice naming the full prompt's size;
- *   - a **permalink to `prompts/<name>/vN.md` pinned to the seeding commit
- *     SHA**, so the reader can open the exact prompt text that ran;
+ *   - a **permalink to `prompts/<name>/prompt.md` pinned to the seeding
+ *     commit SHA**, so the reader can open the exact prompt text that ran;
  *   - the template's scope, an outline of the prompt's sections, and the dedup
  *     rules that decide what gets filed.
  *
  * {@link clampIdleTaskBody} stays in place as the backstop, and
  * `idle_task_body_preview_limit_test.ts` is the gate that fails the build when
- * a future prompt bump pushes a preview over the budget.
+ * a future prompt edit pushes a preview over the budget.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
 import type { Result } from "../types.ts";
 import { GITHUB_ISSUE_BODY_MAX_CHARS } from "./idle_task_body_limit.ts";
-import { getLatestVersion } from "./prompt_manager.ts";
+import { PROMPT_FILENAME } from "./prompt_manager.ts";
 import { runGitCommand as defaultRunGitCommand } from "./git_timeout.ts";
 
 /** Repository that hosts the canonical `prompts/` tree. */
@@ -91,8 +91,6 @@ const REPO_ROOT = (() => {
 export interface PromptPreviewSource {
   /** Prompt directory under `prompts/`, e.g. `security_scan`. */
   promptName: string;
-  /** Resolved prompt version, e.g. `v30`. */
-  promptVersion: string;
   /** Seeding commit SHA to pin the permalink to, or null when unreadable. */
   commitSha: string | null;
   /** One-line scope summary — normally the template's `description`. */
@@ -101,8 +99,6 @@ export interface PromptPreviewSource {
 
 /** Injectable lookups for {@link buildPromptPreviewBody}. */
 export interface PromptPreviewDeps {
-  /** Resolve the latest prompt version. Defaults to `getLatestVersion`. */
-  latestVersionFn?: (promptName: string) => Promise<Result<string>>;
   /** Read the seeding commit SHA. Defaults to {@link headCommitSha}. */
   headCommitShaFn?: () => Promise<string | null>;
 }
@@ -146,7 +142,7 @@ function groupDigits(value: number): string {
 
 /** Build the permalink line naming the exact prompt file that will run. */
 function buildPromptLink(source: PromptPreviewSource): string {
-  const path = `prompts/${source.promptName}/${source.promptVersion}.md`;
+  const path = `prompts/${source.promptName}/${PROMPT_FILENAME}`;
   const ref = source.commitSha ?? "main";
   const url = `https://github.com/${PROMPT_SOURCE_REPO}/blob/${ref}/${path}`;
   const pin = source.commitSha === null
@@ -173,8 +169,8 @@ function buildOutline(fullBody: string): string[] {
 }
 
 /**
- * Condense a prompt body to a summary plus a permalink to the exact prompt
- * version, keeping the first heading verbatim so the template's body
+ * Condense a prompt body to a summary plus a commit-pinned permalink to the
+ * exact prompt text, keeping the first heading verbatim so the template's body
  * fingerprint still dispatches.
  *
  * Throws when the body carries no Markdown heading — without one the condensed
@@ -188,8 +184,8 @@ export function condensePromptPreview(
   const heading = fullBody.match(FIRST_HEADING)?.[0];
   if (heading === undefined) {
     throw new Error(
-      `condensePromptPreview: prompt ${source.promptName}/${source.promptVersion} ` +
-        `has no Markdown heading to carry the wrapper body fingerprint`,
+      `condensePromptPreview: prompt ${source.promptName} has no Markdown ` +
+        `heading to carry the wrapper body fingerprint`,
     );
   }
 
@@ -200,7 +196,7 @@ export function condensePromptPreview(
       groupDigits(GITHUB_ISSUE_BODY_MAX_CHARS)
     }-character`,
     "> issue-body limit, so this wrapper summarises it and links the exact",
-    "> version rather than inlining a truncated copy. The scan is unaffected —",
+    "> prompt rather than inlining a truncated copy. The scan is unaffected —",
     "> it loads the full prompt from `prompts/` at run time, not from this",
     "> issue body.",
   ].join("\n");
@@ -236,9 +232,6 @@ export function condensePromptPreview(
  * Return `fullBody` when it fits the preview budget, otherwise the condensed
  * summary-plus-permalink form.
  *
- * A failed prompt-version lookup throws: the caller has already loaded that
- * prompt, so a lookup failure is a real fault and must not be papered over with
- * a link to an unknown version.
  */
 export async function buildPromptPreviewBody(
   fullBody: string,
@@ -248,21 +241,10 @@ export async function buildPromptPreviewBody(
   const maxChars = opts.maxChars ?? IDLE_TASK_PREVIEW_MAX_CHARS;
   if (fullBody.length <= maxChars) return fullBody;
 
-  const latestVersionFn = deps.latestVersionFn ??
-    ((name: string) => getLatestVersion(name));
   const headCommitShaFn = deps.headCommitShaFn ?? (() => headCommitSha());
-
-  const version = await latestVersionFn(opts.promptName);
-  if (!version.ok) {
-    throw new Error(
-      `buildPromptPreviewBody: cannot resolve the latest version of prompt ` +
-        `${opts.promptName}: ${version.error.message}`,
-    );
-  }
 
   return condensePromptPreview(fullBody, {
     promptName: opts.promptName,
-    promptVersion: version.value,
     commitSha: await headCommitShaFn(),
     scope: opts.scope,
   });

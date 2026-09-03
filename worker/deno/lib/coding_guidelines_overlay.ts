@@ -139,7 +139,7 @@ export async function loadCodingGuidelinesOverlay(
     }
     if (!exists) continue;
 
-    const loaded = await loadPrompt(name, undefined, dir);
+    const loaded = await loadPrompt(name, dir);
     if (!loaded.ok) {
       // The directory was authored deliberately, so an unloadable overlay is
       // a fault — reporting "no overlay" here would mask it.
