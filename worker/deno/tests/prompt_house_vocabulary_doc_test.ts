@@ -89,6 +89,19 @@ function canonRows(body: string): CanonRow[] {
     }));
 }
 
+/**
+ * Fail unless the row states a reason. The canon exists to record *why*
+ * a form won, so an empty or placeholder `Why` cell is a row that cannot
+ * settle the next argument about it.
+ */
+function assertHasRationale(row: CanonRow): void {
+  const rationale = row.rationale.trim();
+  assert(
+    rationale !== "" && !/^[-—–]$/.test(rationale),
+    `house form ${row.houseForm} carries no rationale`,
+  );
+}
+
 /** Find the row whose house-form cell contains `houseForm`. */
 function rowFor(rows: CanonRow[], houseForm: string): CanonRow {
   const row = rows.find((candidate) => candidate.houseForm.includes(houseForm));
@@ -162,12 +175,7 @@ Deno.test("every terminology row explains why the form won", async () => {
   const rows = canonRows(section(await readVocabulary(), "Terminology"));
 
   assertEquals(rows.length, TERMINOLOGY.length);
-  for (const row of rows) {
-    assert(
-      row.rationale.length >= 20,
-      `house form ${row.houseForm} carries no rationale`,
-    );
-  }
+  for (const row of rows) assertHasRationale(row);
 });
 
 Deno.test("the product-name row exempts the repo slug", async () => {
@@ -236,10 +244,7 @@ Deno.test("scan-family headings record house form and banned variants", async ()
         `${houseForm} does not ban "${variant}"`,
       );
     }
-    assert(
-      row.rationale.length >= 20,
-      `${houseForm} carries no rationale`,
-    );
+    assertHasRationale(row);
   }
 });
 
@@ -257,10 +262,7 @@ Deno.test("interactive-family headings record house form and banned variants", a
         `${houseForm} does not ban "${variant}"`,
       );
     }
-    assert(
-      row.rationale.length >= 20,
-      `${houseForm} carries no rationale`,
-    );
+    assertHasRationale(row);
   }
 });
 

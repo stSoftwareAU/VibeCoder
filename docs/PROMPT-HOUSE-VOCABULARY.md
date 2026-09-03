@@ -6,17 +6,19 @@ concept independently, so the product picked up three names, the harness two,
 and "Worked Examples" five — the drift catalogued in the cross-prompt audit
 (Issue #794).
 
-This page is the canon the sweeps apply and the drift test enforces. It records
-**why** each form won and which exceptions are deliberate, so the next person
-bumping a template picks the agreed form instead of re-litigating it. It changes
-no template on its own.
+This page is the canon the sweeps apply, and the source of truth the drift test
+reads. That test is Issue #840 and has **not** landed yet, so today a banned
+variant in a template fails nothing — this page is the agreement, not the gate.
+It records **why** each form won and which exceptions are deliberate, so the next
+person bumping a template picks the agreed form instead of re-litigating it. It
+changes no template on its own.
 
 ```mermaid
 flowchart LR
     A["📐 This canon<br/>docs/PROMPT-HOUSE-VOCABULARY.md"] --> B["🧹 Sweeps<br/>one version bump per directory"]
     B --> C["📄 Latest templates<br/>prompts/&lt;type&gt;/"]
-    A --> D["🧪 Drift test<br/>worker/deno/tests/"]
-    D -- "fails on a banned variant" --> C
+    A --> D["🧪 Drift test<br/>Issue #840, not yet landed"]
+    D -. "will fail on a banned variant" .-> C
     style A fill:#2d6a4f,stroke:#1b4332,color:#fff
     style D fill:#5319e7,stroke:#3d13ad,color:#fff
 ```
@@ -75,7 +77,7 @@ column names the section; the house form is the exact heading text.
 | Per-finding filing sub-heading | `### For each surviving finding (skip silently if its id is in the suppressed or known-open list)` | bare `### For each surviving finding`, `### Filing the finding` | Seven templates carry the parenthetical, four the bare form and one `### Filing the finding`. The parenthetical is the suppression contract: without it the heading does not say that a suppressed finding is dropped without comment |
 | Issue-body fix slot | `## Suggested fix` | `## Suggested action`, `## Suggested replacement` | Nine against three and two. Every scan files a fix suggestion into the same slot, and a reader scanning filed issues across scans should not have to know which scan wrote the body |
 | Issue-body rationale slot | `## Why this matters` | `## Why this is a candidate`, `## Why this is flagged`, `## Why it is safe to remove` | Nine against one each. The slot answers the reader's question — why should I care — not the scanner's |
-| Phase 4 heading | keep the `(outcome-only)` suffix, e.g. `## Phase 4 — File one issue per finding (outcome-only)` | the unsuffixed form | The minority form wins this one row deliberately: the suffix is the verbosity contract for the phase, telling the run to emit outcomes rather than narrate the filing. Four templates carry it and ten dropped it, which is drift towards the less informative heading |
+| Phase 4 heading | keep the `(outcome-only)` suffix, e.g. `## Phase 4 — File one issue per finding (outcome-only)` | the unsuffixed form | The minority form wins this one row deliberately: the suffix is the verbosity contract for the phase, telling the run to emit outcomes rather than narrate the filing. Four templates carry it and ten dropped it; the fifteenth, `prompts/retro/`, has no filing phase at Phase 4 and is not counted either way. The unsuffixed majority is drift towards the less informative heading |
 
 `## Why this scan exists` is a **prompt-level** section — it tells the run what
 the scan is for. It is not a variant of `## Why this matters`, which is a slot in
@@ -89,7 +91,7 @@ Applies to the twelve interactive directories in [Families](#families).
 | --- | --- | --- | --- |
 | Opening mode heading | `## <X> Mode`, optionally with a ` — <subtitle>` tail | no mode heading at all on an interactive prompt | Seven templates open this way. The opening H2 is what tells a run in one line which workflow it is in; a template that opens with prose makes the run infer it |
 | Repo-standards section | `## Project Guidelines` | `## Coding Guidelines`, `## Guidelines`, `### Guidelines` | It is the section that points at the repository's own standards, and two templates already name it so. `### Planning Guidelines` is a **different** section — guidance on how to plan, not on repo standards — and stays |
-| Worked examples | `### Worked Examples` | `## Worked Examples`, `### Worked examples`, `### Worked cases`, `### Examples` | Four templates against two, one, two and one. The examples illustrate the section above them, so H3 is the right depth, and "Worked" is what distinguishes a resolved case from an illustration |
+| Worked examples | `### Worked Examples` | `## Worked Examples`, `### Worked examples`, `### Worked cases`, `### Examples` | Four templates against one, one, two and one, counted inside the family — the second `## Worked Examples` on disk is `prompts/coding_guidelines/`, an injected fragment. The examples illustrate the section above them, so H3 is the right depth, and "Worked" is what distinguishes a resolved case from an illustration |
 
 ## Literals
 
@@ -148,8 +150,9 @@ maintainer reading one template cannot tell which keyword their scan honours.
 
 A row here is changed the same way it was set: with the evidence. State the count
 on the latest template of every directory, name the form that wins and why, and
-change this page **first** — the sweeps and the drift test read it, so a template
-bumped ahead of the canon reads as drift and fails the gate. Because the change
+change this page **first** — the sweeps read it, and the drift test will once
+#840 lands, so a template bumped ahead of the canon reads as drift. Because the
+change
 is a name, it lands as a version bump of each affected directory's latest
 template; committed versions stay immutable.
 
