@@ -1122,6 +1122,13 @@ export async function runQualityGate(
   // Detect tools
   const denoResult = await detectTool("deno");
   if (!denoResult.ok) {
+    // Fail loud: four FAILED Deno checks with no stated reason cost a CI run
+    // to diagnose (PR #888). Say why, in the gate output and on stderr.
+    const why =
+      `[quality-gate] deno could not be located: ${denoResult.error.message} — every Deno check is reported FAILED`;
+    console.error(why);
+    allOutput.push(why);
+    config.onProgress?.(why);
     recordCheck(checks, "deno tests", "FAILED");
     recordCheck(checks, "deno lint", "FAILED");
     recordCheck(checks, "deno type check", "FAILED");
