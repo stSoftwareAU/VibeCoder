@@ -30,6 +30,14 @@ and every mechanism that existed to support versioning is gone with it:
 - **CLI** — `prompt-manager` drops `get-latest-version`, `list-versions` and
   `validate-immutability`; `record-version` becomes `record-commit`. No doc,
   script or workflow referenced the removed operations.
+- **Tests** — the migration exposed a latent fault: any test reaching the real
+  `loadPrompt` without naming a directory resolved it through `PROMPTS_DIR` /
+  `VIBE_BASE_DIR`, which a worker host exports at the *worker's own* checkout.
+  Those tests were reading another clone's `prompts/` and passed only while its
+  layout matched. New `worker/deno/tests/support/repo_prompts.ts` drops both
+  overrides so resolution falls through to the module-relative path; the 26
+  affected files call `pinPromptsToThisCheckout()` at module scope, and the
+  eight duplicated `withRepoRootCwd` helpers collapse into it.
 - **Docs** — `CODING-STANDARDS.md` § Prompt Templates, `docs/EXTENDING.md`,
   `docs/PROMPTS.md`, `AGENTS.md`, `DESIGN-PRINCIPLES.md`, `README.md` and every
   other doc naming a versioned path now refer to `prompts/<type>/prompt.md` or
@@ -87,6 +95,10 @@ Modified elsewhere:
   prompt-immutability check is no longer expected in the check list.
 - ~50 prompt-content tests now load `prompts/<type>/prompt.md` instead of
   iterating versioned files.
+- 26 processor/idle-task test files (`grill_me_processor_test.ts`,
+  `pr_ci_processor_test.ts`, `raise_all_idle_tasks_test.ts`, …) call
+  `pinPromptsToThisCheckout()` so they read this checkout's templates rather
+  than whatever `PROMPTS_DIR` points at on the host.
 
 Removed (documented business-logic change — the feature under test is gone):
 

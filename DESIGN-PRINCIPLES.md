@@ -748,8 +748,8 @@ worker defer internal-dependency fixes by filing follow-up issues.
   "Too big for one run" is almost never a valid reason to *fully* defer.
 
 The behaviour lives in the `prompts/issue/` and `prompts/coding_guidelines/`
-escape-hatch sections. The actual cross-repo PR plumbing, the one-follow-up dedup cap
-, and the release-gating boundary are sibling issues under parent.
+escape-hatch sections. The actual cross-repo PR plumbing, the one-follow-up
+dedup cap, and the release-gating boundary are sibling issues under parent.
 
 ### Escape hatch for out-of-scope work
 
