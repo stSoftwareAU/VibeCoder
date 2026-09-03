@@ -9,7 +9,7 @@
  * contract:
  *
  *   - **Outcome-only Claude contract.** The orchestrating prompt at
- *     `prompts/supply_chain_readiness/v1.md` instructs Claude to file
+ *     `prompts/supply_chain_readiness/prompt.md` instructs Claude to file
  *     findings directly via `gh issue create`. `runTask` verifies the
  *     outcome by snapshotting the repo's open
  *     `supply-chain-readiness`-labelled issues before and after the
@@ -160,7 +160,7 @@ export interface ScanError {
 
 /**
  * Substitute the two placeholders defined by
- * `prompts/supply_chain_readiness/v1.md`.
+ * `prompts/supply_chain_readiness/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleTestAuditPrompt` so wrappers read naturally both
@@ -272,7 +272,7 @@ export function renderSupplyChainReadinessSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/supply_chain_readiness/v1.md`,
+ * Default Claude runner. Loads `prompts/supply_chain_readiness/prompt.md`,
  * substitutes placeholders, and invokes Claude with the same
  * write-tool blocklist as `test_audit_template.defaultRunScan`.
  *

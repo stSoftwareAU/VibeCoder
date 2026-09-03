@@ -14,7 +14,7 @@
  *     issue; it never auto-runs the formatter and never raises a pull
  *     request. The fix is mechanical, but wiring it up is a human call.
  *   - **Native toolchain, check mode only (no network).** The
- *     orchestrating prompt at `prompts/format_drift/v1.md` instructs
+ *     orchestrating prompt at `prompts/format_drift/prompt.md` instructs
  *     Claude to run `deno fmt --check` / `deno lint` (or the repo's
  *     native equivalents) and to never regress a Deno repo to Node
  *     tooling (Issue #2222).
@@ -160,7 +160,7 @@ export interface ScanError {
 
 /**
  * Substitute the three placeholders defined by
- * `prompts/format_drift/v1.md`.
+ * `prompts/format_drift/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleDocCoveragePrompt` so wrappers read naturally both standalone
@@ -272,7 +272,7 @@ export function renderFormatDriftSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/format_drift/v1.md`, substitutes
+ * Default Claude runner. Loads `prompts/format_drift/prompt.md`, substitutes
  * placeholders, and invokes Claude with the same write-tool blocklist as
  * `doc_coverage_template.defaultRunScan` (issue-only — no writes, no PR).
  *

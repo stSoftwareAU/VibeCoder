@@ -574,7 +574,7 @@ async function loadQuorumTemplate(
   type: string,
   promptsDir?: string,
 ): Promise<Result<string>> {
-  const loaded = await loadPrompt(type, undefined, promptsDir);
+  const loaded = await loadPrompt(type, promptsDir);
   if (!loaded.ok) return loaded;
   const validated = validatePromptTemplate(type, loaded.value);
   if (!validated.ok) return validated as Result<string>;

@@ -5,8 +5,8 @@
  * carrying an unquantified adjective or an unresolved placeholder must not
  * yield a Ready marker. These tests call `decideGrillMeReadiness` /
  * `evaluateRequirementsRubric` with real understanding text and assert on the
- * decision and the named classes, and check the v13 prompt actually receives
- * the findings.
+ * decision and the named classes, and check the grill-me prompt actually
+ * receives the findings.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -257,8 +257,8 @@ Deno.test("extractUnderstanding - unterminated block still yields its content", 
 
 // --- Prompt integration ---
 
-Deno.test("grill-me v13 - carries the rubric classes and the no-Ready rule", async () => {
-  const result = await loadPrompt("grill-me", "v13", PROMPTS_DIR);
+Deno.test("grill-me - carries the rubric classes and the no-Ready rule", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   for (

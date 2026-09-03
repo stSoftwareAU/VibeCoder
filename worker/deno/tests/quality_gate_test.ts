@@ -62,24 +62,6 @@ Deno.test("runQualityGate - returns result with checks and summary", async () =>
   } catch { /* ignore */ }
 });
 
-Deno.test("runQualityGate - records prompt immutability check", async () => {
-  const config = createTestConfig();
-  const result = await runQualityGate(config);
-
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    const immutabilityCheck = result.value.checks.find(
-      (c) => c.name === "prompt immutability",
-    );
-    // Should be SKIPPED since we're not in a git repo
-    assertEquals(immutabilityCheck !== undefined, true);
-  }
-
-  try {
-    Deno.removeSync(config.scriptDir, { recursive: true });
-  } catch { /* ignore */ }
-});
-
 Deno.test("runQualityGate - strict mode fails on skipped checks", async () => {
   const config = createTestConfig({
     options: { strict: true, sequential: true, validatePrompts: false },
@@ -712,11 +694,11 @@ Deno.test("formatCheckProgress - names the check, its status and its duration (I
 
 Deno.test("formatCheckProgress - a check with no measured duration still reports (Issue #399)", () => {
   const line = formatCheckProgress({
-    name: "prompt immutability",
+    name: "prompt placeholders",
     status: "SKIPPED",
     output: "",
   });
-  assertStringIncludes(line, "prompt immutability");
+  assertStringIncludes(line, "prompt placeholders");
   assertStringIncludes(line, "SKIPPED");
   assertEquals(line.includes("undefined"), false);
 });

@@ -23,6 +23,10 @@ import type {
   GitHubDeps,
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 function makeSilentLogger(): Logger {
   const noop = () => {};

@@ -477,19 +477,19 @@ Deno.test(
     const verdict = await detectLlmUsage(repoRoot);
     assertEquals(verdict.isLlmUsing, true);
 
-    // 2. The v17 prompt carries the gated LLM taxonomy that therefore
-    //    applies to VibeCoder's scan.
-    const prompt = await loadPrompt("security_scan", "v17", promptsDir);
+    // 2. The security_scan prompt carries the gated LLM taxonomy that
+    //    therefore applies to VibeCoder's scan.
+    const prompt = await loadPrompt("security_scan", promptsDir);
     assert(prompt.ok);
     if (!prompt.ok) return;
     assert(
       prompt.value.includes("OWASP GenAI / LLM Top 10"),
-      "v17 must carry the LLM Top 10 taxonomy",
+      "security_scan must carry the LLM Top 10 taxonomy",
     );
     assert(
       prompt.value.includes("LLM01:2025") &&
         prompt.value.includes("LLM10:2025"),
-      "v17 must cover the full LLM01..LLM10 range",
+      "security_scan must cover the full LLM01..LLM10 range",
     );
   },
 );

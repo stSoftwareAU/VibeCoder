@@ -32,6 +32,10 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubComment, GitHubIssue, WorkerConfig } from "../types.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror grill_me_processor_test.ts shapes for consistency)

@@ -57,6 +57,10 @@ import type { RunStats } from "../lib/run_stats.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 import { DEGRADED_MODEL_LABEL } from "../lib/planning_degraded_label.ts";
 import { FABLE_PREFLIGHT_DEGRADED_REASON } from "../lib/fable_routing.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Fixtures

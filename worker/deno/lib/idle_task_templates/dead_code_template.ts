@@ -9,7 +9,7 @@
  * with the same outcome-only Claude contract:
  *
  *   - **Issue-only — never a PR.** The orchestrating prompt at
- *     `prompts/dead_code/v1.md` instructs Claude to file findings
+ *     `prompts/dead_code/prompt.md` instructs Claude to file findings
  *     directly via `gh issue create` and explicitly forbids opening a
  *     pull request or editing any file. `runTask` verifies the outcome
  *     by snapshotting the repo's open `dead-code`-labelled issues before
@@ -149,7 +149,7 @@ export interface ScanError {
 // ---------------------------------------------------------------------------
 
 /**
- * Substitute the three placeholders defined by `prompts/dead_code/v1.md`.
+ * Substitute the three placeholders defined by `prompts/dead_code/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleTestAuditPrompt` so wrappers read naturally both standalone
@@ -259,7 +259,7 @@ export function renderDeadCodeSummary(newlyFiled: readonly number[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/dead_code/v1.md`, substitutes
+ * Default Claude runner. Loads `prompts/dead_code/prompt.md`, substitutes
  * placeholders, and invokes Claude with the same write-tool blocklist as
  * `test_audit_template.defaultRunScan` — the scan is issue-only, so the
  * write tools are blocked outright.

@@ -13,7 +13,7 @@
  * Modelled on `test_audit_template.ts` — single language-agnostic prompt,
  * no bucket, and the same outcome-only Claude contract:
  *
- *   - **Outcome-only Claude contract.** `prompts/duplicated_knowledge/v1.md`
+ *   - **Outcome-only Claude contract.** `prompts/duplicated_knowledge/prompt.md`
  *     instructs Claude to file findings directly via `gh issue create`.
  *     `runTask` verifies the outcome by snapshotting the repo's open
  *     `duplicated-knowledge` issues before and after the scan and diffing
@@ -162,7 +162,7 @@ export interface ScanError {
 
 /**
  * Substitute the placeholders defined by
- * `prompts/duplicated_knowledge/v1.md`.
+ * `prompts/duplicated_knowledge/prompt.md`.
  *
  * Empty inputs render as `(none)` — the same convention as the sibling
  * scan templates, so a wrapper reads naturally both standalone and inline.
@@ -284,7 +284,7 @@ export function renderDuplicatedKnowledgeSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/duplicated_knowledge/v1.md`, runs
+ * Default Claude runner. Loads `prompts/duplicated_knowledge/prompt.md`, runs
  * the deterministic duplicate-block pre-pass over the cloned repo,
  * substitutes the placeholders, and invokes Claude with the same
  * write-tool blocklist as the sibling scan templates.

@@ -55,7 +55,7 @@ import { isAiAction, normaliseUses } from "./ai_action_identifiers.ts";
 
 // ---------------------------------------------------------------------------
 // v7 check #22 field lists — encoded verbatim (v7.md ~507-524).
-// Keep these in lockstep with prompts/github_actions_audit/v7.md so the
+// Keep these in lockstep with prompts/github_actions_audit/prompt.md so the
 // native pre-filer and the LLM #22 check agree.
 // ---------------------------------------------------------------------------
 

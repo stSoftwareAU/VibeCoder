@@ -10,7 +10,7 @@
  * Claude contract:
  *
  *   - **Issue-only — never a PR.** The orchestrating prompt at
- *     `prompts/deprecated_api/v1.md` instructs Claude to file findings
+ *     `prompts/deprecated_api/prompt.md` instructs Claude to file findings
  *     directly via `gh issue create` and explicitly forbids opening a
  *     pull request or editing any file. `runTask` verifies the outcome by
  *     snapshotting the repo's open `deprecated-api`-labelled issues before
@@ -151,7 +151,7 @@ export interface ScanError {
 
 /**
  * Substitute the three placeholders defined by
- * `prompts/deprecated_api/v1.md`.
+ * `prompts/deprecated_api/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleDeadCodePrompt` so wrappers read naturally both standalone and
@@ -263,7 +263,7 @@ export function renderDeprecatedApiSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/deprecated_api/v1.md`, substitutes
+ * Default Claude runner. Loads `prompts/deprecated_api/prompt.md`, substitutes
  * placeholders, and invokes Claude with the same write-tool blocklist as
  * `dead_code_template.defaultRunScan` — the scan is issue-only, so the
  * write tools are blocked outright.
