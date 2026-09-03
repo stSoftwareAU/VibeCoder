@@ -544,9 +544,11 @@ the repos are named on two surfaces:
   grep '\[repo-access\]' ~/logs/worker.log | tail -n 5
   ```
 
-- **private-repo-6 dashboard** — the healthy heartbeat is suppressed, so the host's
-  row goes **stale** instead of reporting green, and the end-of-run report
-  carries `--message "repos inaccessible: TitlePage/bar, TitlePage/foo"`.
+- **Health-reporting callback** — the run reports
+  `lastHealthCheckPassed: false`, so a
+  [post-run callback](CONFIGURATION.md#-post-run-callbacks) publishing host
+  health can withhold the green signal and carry
+  `repos inaccessible: TitlePage/bar, TitlePage/foo` as the reason.
 
 **What it means.** The worker authenticated fine — this condition sits *after*
 the Claude and `gh auth` checks — but the account it authenticated as cannot see

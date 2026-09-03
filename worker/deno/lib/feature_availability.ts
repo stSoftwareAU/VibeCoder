@@ -26,7 +26,7 @@ export type FeatureStatus = "available" | "degraded" | "unknown";
  * A registered feature with its check function and metadata.
  */
 export interface Feature {
-  /** Unique feature identifier (e.g., "imgbb", "health-tracking") */
+  /** Unique feature identifier (e.g., "imgbb", "github-status") */
   name: string;
   /** Human-readable description for logging */
   description: string;

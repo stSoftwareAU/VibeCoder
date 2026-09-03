@@ -3244,8 +3244,7 @@ export async function createProductionRunCoreDeps(
                 // inherits from the parent shell's tty and never reaches
                 // the worker log — making "filer never fires" indistinguishable
                 // from "filer fired but silently failed". Same root cause
-                // and same fix shape as PR #2016 for the private-repo-6
-                // heartbeat.
+                // and same fix shape as PR #2016 for the fleet heartbeat.
                 __testDeps: { log: (line: string) => logger.info(line) },
               },
               config,
@@ -3538,7 +3537,7 @@ export async function createProductionRunCoreDeps(
     // implementations; we thread the shared logger so the `[liveness] ALERT`
     // line and the per-tick decision line land in `~/logs/worker-*.log`
     // rather than the inherited tty (same fix shape as the idle-task filer
-    // and private-repo-6 heartbeat). Best-effort: any throw is caught here and
+    // and the fleet heartbeat). Best-effort: any throw is caught here and
     // logged so a guard failure never reaches the loop's catch.
     checkLivenessWindow: async ({ tick }: { tick: number }) => {
       try {

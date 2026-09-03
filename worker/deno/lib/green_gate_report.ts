@@ -13,8 +13,7 @@
  *   (`VIBE_RUN_ID=…`) and, since this issue, the per-launch record
  *   `run mode: <mode> host=<host> run_id=<id>` (`run_mode_record.ts`).
  * - `~/logs/worker-*.log(.gz)`: `Processing issue`, `Releasing claim`,
- *   `[WORKER_SUMMARY]`, `Reporting health as Vibe Coder:<host>`,
- *   `FLEET heartbeat failed`, `ACTION REQUIRED: agent credential is failing`,
+ *   `[WORKER_SUMMARY]`, `ACTION REQUIRED: agent credential is failing`,
  *   `[SECURITY] [AGENT_KILLED]`.
  * - `~/logs/self-heal.jsonl`: `container_restart` and `crash_cleanup` events.
  * - GitHub (optional): which of the named regression issues are still open.
@@ -44,9 +43,6 @@ import { parseRunModeRecord } from "./run_mode_record.ts";
  */
 export const HOST_MODE_RUN_MODES: readonly string[] = ["native", "seatbelt"];
 
-/** A gap between consecutive private-repo-6 reports longer than this counts. */
-export const HEARTBEAT_GAP_THRESHOLD_MS = 90 * 60 * 1000;
-
 /** The regression issues the Phase 0 gate names (plan #4160, this issue). */
 export const DEFAULT_REGRESSION_ISSUES: readonly number[] = [
   4145,
@@ -71,7 +67,7 @@ export const DEFAULT_REGRESSION_ISSUES: readonly number[] = [
 /** Injectable evidence sources. */
 export interface GreenGateSources {
   now(): Date;
-  /** This host's id, as private-repo-6 names it. */
+  /** This host's id, as the fleet names it. */
   hostId(): string;
   /** Text of `run_core.log` and its rotated siblings, any order. */
   readRunCoreLogs(): Promise<string[]>;
@@ -114,8 +110,6 @@ export interface GreenGateEvidence {
   workerLogsRead: number;
   issuesProcessed: number;
   claimsReleased: number;
-  heartbeatGaps: number;
-  heartbeatFailures: number;
   authBreakerTrips: number;
   agentKills: number;
   restarts: number;
@@ -142,8 +136,6 @@ export interface GreenGateHostSummary {
   claimsReleased: number;
   restarts: number;
   crashCleanups: number;
-  heartbeatGaps: number;
-  heartbeatFailures: number;
   authBreakerTrips: number;
   agentKills: number;
 }
@@ -169,8 +161,6 @@ const RUN_ID_RE = /^VIBE_RUN_ID=(\S+)/;
 const WORKER_TS_RE = /^\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})Z\]/;
 const PROCESSING_RE = /INFO: (?:\[[^\]]*\] )?Processing issue (\S+#\d+)/;
 const RELEASING_RE = /INFO: (?:\[[^\]]*\] )?Releasing claim (\S+#\d+)/;
-const HEALTH_RE = /Reporting health as Vibe Coder:/;
-const HEARTBEAT_FAILED_RE = /FLEET heartbeat failed/;
 const AUTH_BREAKER_RE = /ACTION REQUIRED: agent credential is failing/;
 const AGENT_KILLED_RE = /\[SECURITY\] \[AGENT_KILLED\]/;
 
@@ -237,11 +227,9 @@ export async function gatherGreenGateEvidence(
     }
   }
 
-  // --- worker logs: claims, heartbeats, breaker, kills --------------------
+  // --- worker logs: claims, breaker trips, kills --------------------------
   const processed = new Set<string>();
   let claimsReleased = 0;
-  let heartbeatGaps = 0;
-  let heartbeatFailures = 0;
   let authBreakerTrips = 0;
   let agentKills = 0;
   let workerLogsRead = 0;
@@ -267,18 +255,7 @@ export async function gatherGreenGateEvidence(
         claimsReleased++;
         continue;
       }
-      if (HEALTH_RE.test(line)) {
-        if (
-          lastHealthMs !== undefined &&
-          ts - lastHealthMs > HEARTBEAT_GAP_THRESHOLD_MS
-        ) {
-          heartbeatGaps++;
-        }
-        lastHealthMs = ts;
-        continue;
-      }
-      if (HEARTBEAT_FAILED_RE.test(line)) heartbeatFailures++;
-      else if (AUTH_BREAKER_RE.test(line)) authBreakerTrips++;
+      if (AUTH_BREAKER_RE.test(line)) authBreakerTrips++;
       else if (AGENT_KILLED_RE.test(line)) agentKills++;
     }
   }
@@ -320,8 +297,6 @@ export async function gatherGreenGateEvidence(
     workerLogsRead,
     issuesProcessed: processed.size,
     claimsReleased,
-    heartbeatGaps,
-    heartbeatFailures,
     authBreakerTrips,
     agentKills,
     restarts,
@@ -420,8 +395,6 @@ export function analyseGreenGate(
       claimsReleased: evidence.claimsReleased,
       restarts: evidence.restarts,
       crashCleanups: evidence.crashCleanups,
-      heartbeatGaps: evidence.heartbeatGaps,
-      heartbeatFailures: evidence.heartbeatFailures,
       authBreakerTrips: evidence.authBreakerTrips,
       agentKills: evidence.agentKills,
     },
@@ -486,11 +459,6 @@ export function formatGreenGateReport(report: GreenGateReport): string {
   row("Claims released", h.claimsReleased);
   row("Container restarts / backoffs", h.restarts);
   row("Crash cleanups", h.crashCleanups);
-  row(
-    "Heartbeat gaps (over 90 min between private-repo-6 reports)",
-    h.heartbeatGaps,
-  );
-  row("Heartbeat push failures", h.heartbeatFailures);
   row("Auth-failure breaker trips", h.authBreakerTrips);
   row("Agent processes killed (SIGKILL)", h.agentKills);
   lines.push("");
@@ -536,7 +504,7 @@ export function formatGreenGateReport(report: GreenGateReport): string {
     "- Launches and run modes: `run_core.log` (`VIBE_RUN_ID=…` and `run mode: … host=… run_id=…` records).",
   );
   lines.push(
-    "- Issues, claims, heartbeats, breaker trips, kills: `worker-*.log` (gzip included) within the window.",
+    "- Issues, claims, breaker trips, kills: `worker-*.log` (gzip included) within the window.",
   );
   lines.push("- Restarts and crash cleanups: `self-heal.jsonl`.");
   lines.push(

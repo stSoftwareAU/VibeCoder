@@ -458,9 +458,6 @@ to `git clone`.
   falling back to `git fetch --unshallow` as a last resort. On a full clone the
   helper is a no-op.
 
-**Precedent:** private-repo-6 already clones with `git clone --depth=1` successfully
-(see `worker/deno/lib/fleet_health.ts`).
-
 **Implementation:** `buildShallowCloneArgs()` in
 `worker/deno/commands/git_operations.ts` produces the argument list for the
 `gh repo clone` invocation. The integration test in

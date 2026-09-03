@@ -180,8 +180,6 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     sleep: () => Promise.resolve(),
     now: () => Date.now(),
 
-    // Issue #1935: private-repo-6 heartbeat — best-effort no-op by default.
-
     // Expose call log for testing
     _callLog: callLog,
 

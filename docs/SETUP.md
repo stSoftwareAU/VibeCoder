@@ -842,8 +842,7 @@ explained beneath the block, never inside it.
   "claude_model": "opus",
   "claude_timeout": 10800,
   "sleep_interval": 120,
-  "worker_name": "Worker Alpha",
-  "fleet_health_repo": "git@github.com:myorg/fleet-health.git"
+  "worker_name": "Worker Alpha"
 }
 ```
 
@@ -870,9 +869,10 @@ explained beneath the block, never inside it.
   Write them only when they must differ from the defaults; the file holds
   overrides, not a snapshot. Values and defaults are in
   [Configuration Defaults](CONFIGURATION.md#configuration-defaults).
-- `worker_name`, `fleet_health_repo` — multi-worker visibility and fleet
-  health tracking, both optional and both in the same
-  [defaults table](CONFIGURATION.md#configuration-defaults).
+- `worker_name` — multi-worker visibility, optional and in the same
+  [defaults table](CONFIGURATION.md#configuration-defaults). Host health
+  reporting is not built in: use a
+  [post-run callback](CONFIGURATION.md#-post-run-callbacks).
 
 ### Choosing the coding agent
 

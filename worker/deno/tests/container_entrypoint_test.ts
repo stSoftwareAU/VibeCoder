@@ -404,8 +404,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 Deno.test("entrypoint - exports GH_CONFIG_DIR so raw scripts inherit gh auth (Issue #4220)", async () => {
-  // Observed live: private-repo-6's helpers/repos.sh runs raw `git push` in the
-  // worker's inherited environment; without GH_CONFIG_DIR the credential
+  // Observed live: a callback hook runs raw `git push` in the worker's
+  // inherited environment; without GH_CONFIG_DIR the credential
   // helper reads an absent default config and the push dies unauthenticated
   // ("could not read Username for 'https://github.com'") — silently, behind
   // the script's exit 0 and its own rate limit. The staged runtime copy must
@@ -470,12 +470,12 @@ Deno.test("entrypoint - leaves GH_CONFIG_DIR unset when no credential is mounted
 });
 
 Deno.test("entrypoint - sets a container-wide git identity from the mounted credential (Issue #4235)", async () => {
-  // Raw scripts (private-repo-6's repos.sh) inherit no per-call identity, so
-  // their `git commit` died identity-less, exited 0, and the uncommitted
-  // repos.json edit rate-limited every retry — the heartbeat stayed dead
-  // behind three separate silent layers. The identity comes from the
-  // credential's own `user:` record, so heartbeat commits attribute to the
-  // host's service account like the rest of the fleet.
+  // Raw scripts (a callback hook) inherit no per-call identity, so their
+  // `git commit` died identity-less, exited 0, and the uncommitted edit
+  // rate-limited every retry — the write stayed dead behind three separate
+  // silent layers. The identity comes from the credential's own `user:`
+  // record, so such commits attribute to the host's service account like the
+  // rest of the fleet.
   const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
   try {
     await stubDeno(dir);

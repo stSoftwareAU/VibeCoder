@@ -94,7 +94,7 @@ export async function runWithTimeout(
       stdout: options?.quiet ? "null" : "piped",
       // stderr is always piped + captured. Muting stderr at the OS
       // level discards exit-trap diagnostics from helper scripts
-      // (e.g. private-repo-6's repos.sh), producing empty-tail "Command
+      // (e.g. a repository's quality gate), producing empty-tail "Command
       // failed with code 1: " messages that defeat operator
       // troubleshooting (Issue #1979).
       stderr: "piped",

@@ -266,8 +266,8 @@ export interface RunCoreResult {
   quotaResetEpochMs?: number;
   /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
-   * passed. Used to gate the end-of-run private-repo-6 report — a worker that
-   * could not authenticate must not report itself healthy.
+   * passed. Reported to the caller so a health-reporting callback can gate
+   * on it — a worker that could not authenticate must not report healthy.
    */
   lastHealthCheckPassed: boolean;
   /**
@@ -3867,8 +3867,8 @@ export async function runCoreLoop(
             // `[repo-access] host=… status=inaccessible repos=… consecutive=…`
             // — so the outage is recoverable from the log after the fact.
             // `logRepoAccessOnce` suppresses the identical line from the
-            // other call sites in the same iteration (the private-repo-6
-            // report), and the iteration boundary resets it.
+            // other call sites in the same iteration, and the iteration
+            // boundary resets it.
             logRepoAccessOnce(
               inaccessibleRepos,
               (line) => deps.logError(line),
