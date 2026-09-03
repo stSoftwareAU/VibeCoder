@@ -576,32 +576,13 @@ export const VERBOSITY_LEVELS = {
  */
 export const DEFAULT_VERBOSITY = "standard" as const;
 
-/**
- * Phase-specific verbosity defaults (Issue #1330).
- *
- * Maps each worker phase to a sensible default verbosity level.
- * Phases not listed here fall back to DEFAULT_VERBOSITY ("standard").
- *
- * Rationale:
- * - spelling_fix / summarise → minimal (trivial, mechanical tasks)
- * - ci_fix / pr_feedback / quality_fix / refinement / revision / clarification → concise
- *   (reactive tasks with structured input — brief output is sufficient)
- * - issue → standard (general implementation — balanced detail)
- * - planning / question → verbose (architecture decisions need full reasoning)
- */
-export const PHASE_VERBOSITY_DEFAULTS: Readonly<Record<string, string>> = {
-  spelling_fix: VERBOSITY_LEVELS.minimal,
-  summarise: VERBOSITY_LEVELS.minimal,
-  ci_fix: VERBOSITY_LEVELS.concise,
-  pr_feedback: VERBOSITY_LEVELS.concise,
-  quality_fix: VERBOSITY_LEVELS.concise,
-  refinement: VERBOSITY_LEVELS.concise,
-  revision: VERBOSITY_LEVELS.concise,
-  clarification: VERBOSITY_LEVELS.concise,
-  issue: VERBOSITY_LEVELS.standard,
-  planning: VERBOSITY_LEVELS.verbose,
-  question: VERBOSITY_LEVELS.verbose,
-} as const;
+// Issue #798: a per-phase verbosity default map used to live here. It was dead
+// configuration — `resolveVerbosity()` has one non-test call site (the `issue`
+// phase) and no other prompt builder is ever passed a level, so every other
+// phase rendered the `standard` block whatever the map declared. Verbosity is
+// set by the per-repo `verbosity` override or the global `.config.json`
+// `verbosity`, never by the phase. Do not reintroduce it without threading a
+// resolved level through every prompt builder.
 
 /**
  * Effort levels for the Claude CLI `--effort` flag (Issue #1402, #2620).

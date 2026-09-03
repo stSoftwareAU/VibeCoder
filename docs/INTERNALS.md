@@ -2710,28 +2710,36 @@ Opus/Sonnet, 200k for Haiku —):
 
 ### 🔊 Verbosity configuration
 
-Four verbosity levels control Claude's response style, reducing token usage for
-mechanical tasks while preserving detailed reasoning for complex ones.
-[verbosity.ts](../worker/deno/lib/verbosity.ts) resolves the effective level and
-returns instruction text injected into prompts:
+Four verbosity levels control Claude's response style, reducing token usage
+where detail adds nothing. [verbosity.ts](../worker/deno/lib/verbosity.ts)
+resolves the effective level and returns instruction text injected into prompts.
 
 Each level is stated as the output shape to produce, not as a prohibition, and
 every level emits a `## Response Verbosity` block:
 
-| Level        | Behaviour                                            | Example phases                                       |
-| ------------ | ---------------------------------------------------- | ---------------------------------------------------- |
-| **minimal**  | One sentence naming the change; that is the response | `spelling_fix`, `summarise`                          |
-| **concise**  | 2–3 sentences: what changed and why                  | `ci_fix`, `pr_feedback`, `quality_fix`, `refinement` |
-| **standard** | End-of-run summary; no running commentary            | `issue` (general implementation)                     |
-| **verbose**  | Standard summary plus the genuinely close decisions  | `planning`, `question`                               |
+| Level        | Behaviour                                            |
+| ------------ | ---------------------------------------------------- |
+| **minimal**  | One sentence naming the change; that is the response |
+| **concise**  | 2–3 sentences: what changed and why                  |
+| **standard** | End-of-run summary; no running commentary            |
+| **verbose**  | Standard summary plus the genuinely close decisions  |
 
-Resolution priority chain:
+Levels are configured, never derived from the phase (Issue #798): the per-phase
+default map that used to sit in the chain reached no rendered prompt, because
+`resolveVerbosity()` has one non-test call site — the `issue` phase in
+[execute_claude_phase.ts](../worker/deno/lib/execute_claude_phase.ts) — and no
+other prompt builder is passed a level. It was deleted rather than threaded
+through.
+
+`resolveVerbosity()` resolution chain (used by the `issue` phase):
 
 1. **Per-repo override** — set via the `verbosity` field in `.config.json`
    `repo_config` (highest priority).
-2. **Phase default** — from `PHASE_VERBOSITY_DEFAULTS` in
-   [config_defaults.ts](../worker/deno/lib/config_defaults.ts).
-3. **Global default** — `"standard"`, preserving existing behaviour.
+2. **Global default** — `DEFAULT_VERBOSITY` (`"standard"`).
+
+The `grill_me` and `quorum` rounds bypass that chain and render the global
+`.config.json` `verbosity` directly via `buildVerbosityBlock()`. Every other
+phase renders `standard`.
 
 ### 📅 April 2026 additions
 

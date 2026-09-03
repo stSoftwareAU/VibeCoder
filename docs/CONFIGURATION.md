@@ -309,7 +309,7 @@ explicitly overridden.
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
-| `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`). See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                       |
+| `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `author_source`              | `config`                  | Where the trusted-author and authorised-commenter sets come from. `"config"` uses the local arrays; `"github"` derives them from write/maintain/admin collaborators minus exclusions. See [Author source](#author-source). |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from GitHub-derived allowlists. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. |
 
@@ -994,55 +994,45 @@ version floor is met — see [Minimum-Version Floor](#-minimum-version-floor).
 ### 🔊 Verbosity Configuration
 
 The worker supports configurable response verbosity — controlling how detailed
-Claude's output is for each task. Different task types benefit from different
-levels of output detail: a spelling fix needs only "done", while a planning task
-benefits from detailed reasoning.
+Claude's output is. Verbosity is set by configuration, not by the phase: there
+are no automatic per-phase levels (Issue #798), so an unconfigured worker
+renders `standard` on every surface.
 
 **Available levels:**
 
 | Level      | Behaviour                                                                             |
 | ---------- | ------------------------------------------------------------------------------------- |
-| `minimal`  | Single sentence confirming what was done. No reasoning or alternatives.               |
+| `minimal`  | Single sentence naming what changed; that sentence is the whole response.             |
 | `concise`  | Brief response (2–3 sentences). Key changes and rationale only.                       |
-| `standard` | Current default behaviour — balanced detail. No additional instructions injected.     |
-| `verbose`  | Detailed explanations of approach, trade-offs considered, and alternatives evaluated. |
+| `standard` | The default — an end-of-run summary, with no running commentary while the run works.  |
+| `verbose`  | The standard summary plus one short section per genuinely close decision.             |
 
-**Phase-specific defaults:**
+**Which override reaches which surface:**
 
-Each worker phase has a sensible default verbosity level. Phases not listed
-below default to `standard`.
+The two overrides are read by different code paths, so they do not both apply
+everywhere:
 
-| Phase           | Default Verbosity | Rationale                                  |
-| --------------- | ----------------- | ------------------------------------------ |
-| `spelling_fix`  | `minimal`         | Trivial, mechanical task                   |
-| `summarise`     | `minimal`         | Trivial, mechanical task                   |
-| `ci_fix`        | `concise`         | Reactive task with structured input        |
-| `pr_feedback`   | `concise`         | Reactive task with structured input        |
-| `quality_fix`   | `concise`         | Reactive task with structured input        |
-| `refinement`    | `concise`         | Reactive task with structured input        |
-| `revision`      | `concise`         | Reactive task with structured input        |
-| `clarification` | `concise`         | Reactive task with structured input        |
-| `issue`         | `standard`        | General implementation — balanced detail   |
-| `planning`      | `verbose`         | Architecture decisions need full reasoning |
-| `question`      | `verbose`         | Architecture decisions need full reasoning |
+| Surface                             | Level used                                             |
+| ----------------------------------- | ------------------------------------------------------ |
+| `issue` phase                       | Per-repo `verbosity` override, else `standard`         |
+| `grill_me` and `quorum` rounds      | Global `.config.json` `verbosity`, else `standard`     |
+| Every other phase                   | `standard`                                             |
 
-> **📝 Note:** `grill_me` is deliberately absent from that table — it takes the
-> `standard` fallback, so every round is told "no running commentary while you
-> work". Nobody watches an unattended round in real time, so its template stops
-> asking for narration from `prompts/grill-me/v15.md` onwards (Issue #759); a
-> round's output is the comment it posts.
+> **📝 Note:** every round is told "no running commentary while you work".
+> Nobody watches an unattended round in real time, so the `grill-me` template
+> stops asking for narration from `prompts/grill-me/v15.md` onwards
+> (Issue #759); a round's output is the comment it posts.
 
-**Resolution priority** (highest to lowest):
+**Resolution priority** for the `issue` phase (highest to lowest):
 
 1. Per-repo override in `repo_config` (see
    [Per-Repository Configuration](#per-repository-configuration))
-2. Phase-specific default (table above)
-3. Global default (`standard`)
+2. Global default (`standard`)
 
 **Global verbosity override:**
 
-Set `verbosity` at the top level of `.config.json` to change the default for all
-repositories:
+Set `verbosity` at the top level of `.config.json` to change the level used by
+the `grill_me` and `quorum` rounds:
 
 ```json
 {
@@ -1073,10 +1063,10 @@ This is useful when some repositories handle simple, mechanical tasks (use
 }
 ```
 
-> **📝 Note:** The per-repo `verbosity` override applies to **all phases** for
-> that repository. Phase-specific defaults are only used when no per-repo
-> override is set. The `standard` level injects no additional instructions,
-> preserving the existing behaviour for backward compatibility.
+> **📝 Note:** The per-repo `verbosity` override reaches the `issue` phase only
+> — that is the one phase whose prompt builder is passed a resolved level. It is
+> not consulted by the `grill_me` and `quorum` rounds, which read the global
+> setting instead.
 
 **Token savings and cost impact:**
 
@@ -1085,10 +1075,10 @@ Approximate savings compared to `standard`:
 
 | Level      | Output Token Impact                | Best For                                     |
 | ---------- | ---------------------------------- | -------------------------------------------- |
-| `minimal`  | ~60–80% fewer output tokens        | Mechanical tasks (spelling fixes, summaries) |
-| `concise`  | ~30–50% fewer output tokens        | Reactive tasks (CI fixes, PR feedback)       |
+| `minimal`  | ~60–80% fewer output tokens        | Mechanical, low-risk repositories            |
+| `concise`  | ~30–50% fewer output tokens        | Repositories needing only a short rationale  |
 | `standard` | Baseline                           | General implementation                       |
-| `verbose`  | ~20–40% more output tokens         | Architectural decisions, planning            |
+| `verbose`  | ~20–40% more output tokens         | Repositories needing architectural reasoning |
 
 **How verbosity instructions are injected:**
 
@@ -1099,12 +1089,13 @@ and an issue comment a human reads, so leaving it silent left the expected
 visible output unstated.
 
 Each level states the shape of the output to produce rather than a list of
-prohibitions. A `minimal` phase receives _"Produce a single sentence naming
+prohibitions. A `minimal` run receives _"Produce a single sentence naming
 what you changed. That sentence is the whole response."_; `standard` receives
 _"Summarise what you changed once the work is done … no running commentary
 while you work."_; `verbose` is bounded to the decisions that were genuinely
-close, so "thorough" does not mean "unbounded". The instruction text lives in
-`worker/deno/lib/verbosity.ts`; the phase defaults live in
+close, so "thorough" does not mean "unbounded". The instruction text and the
+two-tier resolution both live in `worker/deno/lib/verbosity.ts`, and the
+`standard` default is `DEFAULT_VERBOSITY` in
 `worker/deno/lib/config_defaults.ts`.
 
 ### 💪 Effort Level Configuration
@@ -2725,7 +2716,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass. A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
-| `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`). Overrides phase defaults. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                         |
+| `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
 | `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only. See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; `provider` is required, `jobPath` is required for `jenkins`. GitHub Actions is the built-in default and needs no entry. Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#adding-a-ci-log-provider) and [Per-repository PR failure actions](per-repo-pr-failure-actions.md). |
 | `prFailureActions`      | array   | **Deprecated — use `ciProviders`.** Still parsed and converted into an equivalent `ciProviders` entry, so existing configuration keeps working unchanged. The only action type is `fetch-jenkins-log`. See [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for the schema, the `JENKINS_URL`/`JENKINS_USER`/`JENKINS_TOKEN` env var contract, a worked private-repo-12 example, and troubleshooting steps. |

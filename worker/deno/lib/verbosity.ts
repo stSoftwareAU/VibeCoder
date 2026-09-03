@@ -8,10 +8,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
 
-import {
-  DEFAULT_VERBOSITY,
-  PHASE_VERBOSITY_DEFAULTS,
-} from "./config_defaults.ts";
+import { DEFAULT_VERBOSITY } from "./config_defaults.ts";
 import type { RepoConfig, VerbosityLevel } from "../types.ts";
 
 /**
@@ -62,26 +59,22 @@ export function getVerbosityInstructions(level: VerbosityLevel): string {
  * Resolves the effective verbosity level using the priority chain:
  *
  * 1. Per-repo override (highest priority)
- * 2. Phase default (from PHASE_VERBOSITY_DEFAULTS)
- * 3. Global default ("standard")
+ * 2. Global default ("standard")
  *
- * @param phase - The current worker phase (e.g. "issue", "planning").
+ * Verbosity is not phase-dependent (Issue #798). A per-phase default tier used
+ * to sit between the two, but it never reached a rendered prompt: this
+ * function has one non-test call site — the `issue` phase — and no other
+ * prompt builder is ever passed a level, so every other phase rendered the
+ * `standard` block whatever the map declared. The dead tier was deleted rather
+ * than activated.
+ *
  * @param repoConfig - Optional per-repo configuration.
  * @returns The resolved VerbosityLevel.
  */
-export function resolveVerbosity(
-  phase: string,
-  repoConfig?: RepoConfig,
-): VerbosityLevel {
+export function resolveVerbosity(repoConfig?: RepoConfig): VerbosityLevel {
   // Per-repo override takes highest priority
   if (repoConfig?.verbosity) {
     return repoConfig.verbosity;
-  }
-
-  // Phase default from PHASE_VERBOSITY_DEFAULTS
-  const phaseDefault = PHASE_VERBOSITY_DEFAULTS[phase];
-  if (phaseDefault) {
-    return phaseDefault as VerbosityLevel;
   }
 
   // Global default

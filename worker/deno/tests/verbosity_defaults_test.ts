@@ -1,5 +1,5 @@
 /**
- * Tests for verbosity level definitions and phase-specific defaults.
+ * Tests for verbosity level definitions and config loading.
  *
  * Issue #1330: Define verbosity levels and add to RepoConfig type.
  * Part of #1329 (caveman mode — configurable verbosity).
@@ -11,7 +11,6 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   buildDefaultWorkerConfig,
   DEFAULT_VERBOSITY,
-  PHASE_VERBOSITY_DEFAULTS,
   VERBOSITY_LEVELS,
 } from "../lib/config_defaults.ts";
 import { loadConfig } from "../lib/config.ts";
@@ -51,64 +50,11 @@ Deno.test("verbosity - DEFAULT_VERBOSITY is standard", () => {
   assertEquals(DEFAULT_VERBOSITY, "standard");
 });
 
-// =============================================================================
-// Phase-Specific Verbosity Defaults
-// =============================================================================
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps spelling_fix to minimal", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["spelling_fix"], "minimal");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps ci_fix to concise", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["ci_fix"], "concise");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps pr_feedback to concise", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["pr_feedback"], "concise");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps quality_fix to concise", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["quality_fix"], "concise");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps issue to standard", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["issue"], "standard");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps planning to verbose", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["planning"], "verbose");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps question to verbose", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["question"], "verbose");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps refinement to concise", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["refinement"], "concise");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps revision to concise", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["revision"], "concise");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps summarise to minimal", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["summarise"], "minimal");
-});
-
-Deno.test("verbosity - PHASE_VERBOSITY_DEFAULTS maps clarification to concise", () => {
-  assertEquals(PHASE_VERBOSITY_DEFAULTS["clarification"], "concise");
-});
-
-Deno.test("verbosity - all PHASE_VERBOSITY_DEFAULTS values are valid VerbosityLevel", () => {
-  const validLevels: Set<string> = new Set(Object.values(VERBOSITY_LEVELS));
-  for (const [phase, level] of Object.entries(PHASE_VERBOSITY_DEFAULTS)) {
-    assertEquals(
-      validLevels.has(level),
-      true,
-      `Phase "${phase}" has invalid verbosity level: ${level}`,
-    );
-  }
-});
+// Issue #798: the per-phase default map that used to be pinned here is gone.
+// It was dead configuration — no prompt builder but the `issue` phase was ever
+// passed a resolved level — so verbosity now comes from the per-repo override
+// or the global default only. `verbosity_test.ts` covers that two-tier chain
+// and asserts the map is no longer exported.
 
 // =============================================================================
 // buildDefaultWorkerConfig includes verbosity

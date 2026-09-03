@@ -869,12 +869,12 @@ export async function runExecuteClaudePhase(
 
   // --- Resolve verbosity level (Issue #1332) ---
   // The verbosity level controls how verbose Claude's response should be.
-  // It is resolved from the priority chain: per-repo override > phase default > global default.
+  // Two tiers since Issue #798: per-repo override > global default.
   const repoConfig = repoConfigs?.[repo];
-  const verbosityLevel = resolveVerbosity("issue", repoConfig);
+  const verbosityLevel = resolveVerbosity(repoConfig);
   if (verbosityLevel !== "standard") {
     deps.log(
-      `Verbosity level resolved to '${verbosityLevel}' for phase 'issue' (Issue #1332)`,
+      `Verbosity level resolved to '${verbosityLevel}' from the ${repo} repo config (Issue #1332)`,
     );
   }
 

@@ -1,9 +1,9 @@
 /**
  * Tests for the grill-me narration contradiction (Issue #759).
  *
- * `grill_me` has no `PHASE_VERBOSITY_DEFAULTS` entry, so the round renders
- * the `standard` verbosity block — "no running commentary while you work" —
- * into `{{VERBOSITY_INSTRUCTIONS}}`. Up to v14 the template then asked the
+ * A grill-me round renders the level the global `.config.json` `verbosity`
+ * carries, which defaults to `standard` — "no running commentary while you
+ * work" — into `{{VERBOSITY_INSTRUCTIONS}}`. Up to v14 the template asked the
  * agent to "Narrate briefly as you go", so one rendered prompt both asked
  * for and forbade narration. v15 drops the narration clause, keeping the ban
  * as the single instruction on the subject.
@@ -97,9 +97,10 @@ Deno.test("grill-me - the latest version keeps the unattended framing", async ()
 });
 
 Deno.test("resolveVerbosity - grill-me still renders the standard block that bans commentary", () => {
-  // The contradiction only exists because grill_me falls back to `standard`.
-  // Pin that fallback so the rendered-round test below stays the real case.
-  assertEquals(resolveVerbosity("grill_me"), "standard");
+  // The contradiction only exists because an unconfigured repo falls back to
+  // `standard`. Pin that fallback so the rendered-round test below stays the
+  // real case.
+  assertEquals(resolveVerbosity(), "standard");
 });
 
 Deno.test("buildGrillMePrompt - a standard round forbids narration and never asks for it", async () => {
