@@ -20,6 +20,7 @@ import {
 import { loadConfig } from "../lib/config.ts";
 import type { ConfigFile } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { canEnforceUnwritableDir } from "./support/environment_capability.ts";
 
 // Test helper to create a temporary config file
 async function withTempConfig(
@@ -382,45 +383,54 @@ Deno.test("resolveServiceAccountEnv - a staged candidate without hosts.yml is sk
   assertEquals(env.GH_CONFIG_DIR, "/home/vibe/.config/gh-runtime");
 });
 
-Deno.test("applyServiceAccountEnv - an unwritable gh config dir is restaged writable", async () => {
-  // The end of the live failure: the only hosts.yml the container can see is
-  // on the read-only mount. gh migrates its config on first use, so handing
-  // that directory over is a startup failure — a writable copy must be made.
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
-  const previousTmp = Deno.env.get("TMPDIR");
-  const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
-  const home = await Deno.makeTempDir();
-  const tmp = await Deno.makeTempDir();
-  const mounted = `${home}/.vibe-coder/credentials/gh`;
-  try {
-    await Deno.mkdir(mounted, { recursive: true });
-    await Deno.writeTextFile(`${mounted}/hosts.yml`, "github.com:\n");
-    // Read-only directory: writing the probe file inside it must fail.
-    await Deno.chmod(mounted, 0o500);
-    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
-    Deno.env.set("TMPDIR", tmp);
-    Deno.env.delete("VIBE_SCRATCH_DIR");
-    Deno.env.delete("GH_CONFIG_DIR");
-    applyServiceAccountEnv(
-      buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
-      home,
-    );
-    const applied = Deno.env.get("GH_CONFIG_DIR");
-    assertEquals(applied, `${tmp}/vibe-gh-config`);
-    assertEquals(
-      await Deno.readTextFile(`${applied}/hosts.yml`),
-      "github.com:\n",
-    );
-  } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
-    restoreEnv("TMPDIR", previousTmp);
-    restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
-    await Deno.chmod(mounted, 0o700);
-    await Deno.remove(home, { recursive: true });
-    await Deno.remove(tmp, { recursive: true });
-  }
+Deno.test({
+  name:
+    "applyServiceAccountEnv - an unwritable gh config dir is restaged writable",
+  // Issue #891: the container runs with privileges under which a chmod-ed
+  // unwritable directory is still writable, so the branch this drives is
+  // never taken and the assertion fails on every branch. Skipped explicitly
+  // — reported as ignored — rather than passing silently.
+  ignore: !(await canEnforceUnwritableDir()),
+  fn: async () => {
+    // The end of the live failure: the only hosts.yml the container can see is
+    // on the read-only mount. gh migrates its config on first use, so handing
+    // that directory over is a startup failure — a writable copy must be made.
+    const previousGh = Deno.env.get("GH_CONFIG_DIR");
+    const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
+    const previousTmp = Deno.env.get("TMPDIR");
+    const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
+    const home = await Deno.makeTempDir();
+    const tmp = await Deno.makeTempDir();
+    const mounted = `${home}/.vibe-coder/credentials/gh`;
+    try {
+      await Deno.mkdir(mounted, { recursive: true });
+      await Deno.writeTextFile(`${mounted}/hosts.yml`, "github.com:\n");
+      // Read-only directory: writing the probe file inside it must fail.
+      await Deno.chmod(mounted, 0o500);
+      Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
+      Deno.env.set("TMPDIR", tmp);
+      Deno.env.delete("VIBE_SCRATCH_DIR");
+      Deno.env.delete("GH_CONFIG_DIR");
+      applyServiceAccountEnv(
+        buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
+        home,
+      );
+      const applied = Deno.env.get("GH_CONFIG_DIR");
+      assertEquals(applied, `${tmp}/vibe-gh-config`);
+      assertEquals(
+        await Deno.readTextFile(`${applied}/hosts.yml`),
+        "github.com:\n",
+      );
+    } finally {
+      restoreEnv("GH_CONFIG_DIR", previousGh);
+      restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
+      restoreEnv("TMPDIR", previousTmp);
+      restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
+      await Deno.chmod(mounted, 0o700);
+      await Deno.remove(home, { recursive: true });
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
 });
 
 Deno.test("applyServiceAccountEnv - a writable gh config dir is left alone", async () => {
