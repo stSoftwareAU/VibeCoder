@@ -256,15 +256,6 @@ import {
 } from "./idle_inversion_streak.ts";
 import { resolveRunId } from "./audit_journal.ts";
 import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
-import { readQuotaOutage } from "./rate_limit_signal.ts";
-import { formatCoarseDuration } from "./rate_limit_wait.ts";
-/**
- * A quota outage at least this long makes the host unhealthy (Issue #333).
- * Six hours: longer than the five-hour subscription window, so an ordinary
- * mid-cycle lapse never flags a host, and any weekly limit always does.
- */
-const QUOTA_OUTAGE_UNHEALTHY_SECONDS = 6 * 3600;
-
 import {
   formatDerivedAuthorsFoldSummary,
   intersectDerivedAuthors,
@@ -324,15 +315,6 @@ import {
 import { workVolumeFault } from "./work_volume_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
-
-// FLEET health
-import { claimSuppressedNote } from "./claim_gate_health_note.ts";
-import {
-  buildFleetHealthConfig,
-  createProductionFleetHealthDeps,
-  fleetHealthCheckoutDirName,
-  runFleetHealthReporting,
-} from "./fleet_health.ts";
 
 /** Home directory, in the order `agent_transcript.ts` resolves it. */
 function homeDirectory(): string | undefined {
@@ -850,22 +832,6 @@ export async function createProductionRunCoreDeps(
       issueCache,
     );
 
-  // Issue #1935: build the private-repo-6 config + deps once so the
-  // per-iteration heartbeat does not re-resolve env vars / hostname on
-  // every loop. The heartbeat itself is registered below in the deps
-  // object so it can be replaced under test.
-  //
-  // Issue #2015: pass the shared worker logger into the private-repo-6 deps so
-  // heartbeat info/warning lines land in `~/logs/worker-*.log` alongside
-  // the rest of the loop. Without this the deps log via raw `console.log`,
-  // which goes to the inherited tty and is silently lost — masking any
-  // failure mode (the original 17h-stale-dashboard symptom that prompted
-  // this fix).
-  const fleetHealthConfig = buildFleetHealthConfig(repoDir);
-  // Issue #226: name a low host disk on the fleet-health payload.
-  // Issue #333: the quota outage is read once per cycle rather than inside
-  // `hostNotes`, which is synchronous. A stale reading is harmless — the note
-  // exists to name a multi-day outage, not to be second-accurate.
   /**
    * The claim scan's per-issue skip reasons from the most recent scan
    * (Issue #460). Read once at the idle-task filing decision point so the
@@ -875,21 +841,6 @@ export async function createProductionRunCoreDeps(
    * reading names a gate one scan out of date, never blocks a claim.
    */
   let lastScanBlockedDetails: BlockedCandidateInfo[] = [];
-
-  let quotaOutageNote: string | null = null;
-  const refreshQuotaOutageNote = async () => {
-    const outage = await readQuotaOutage(workDir);
-    // Only a *long* outage is a health condition. A five-hour window that
-    // lapses mid-cycle is ordinary operation and must not flag the host.
-    quotaOutageNote = outage !== null &&
-        outage.remainingSeconds >= QUOTA_OUTAGE_UNHEALTHY_SECONDS
-      ? `out of Claude quota for ${
-        formatCoarseDuration(outage.remainingSeconds)
-      } — the window reopens at ${
-        new Date(outage.resetEpochMs).toISOString()
-      }; this host needs a different account or a topped-up plan`
-      : null;
-  };
 
   /**
    * The two disk signals' shared verdict (Issue #345). A work-volume probe
@@ -908,54 +859,16 @@ export async function createProductionRunCoreDeps(
   /**
    * Why the claim scan stopped, for the census (Issue #479).
    *
-   * Reads the same two host-level gates the fleet-board note does, so the
-   * board and the census can never disagree about why this host is idle.
-   * Neither gate active means the scan really did run out of cycle, which is
-   * #437's deferral and keeps its historical reason.
+   * Reads the two host-level gates that make the cycle skip the claim scan
+   * outright, so a host declining every issue in the fleet says which gate
+   * held it back. Neither gate active means the scan really did run out of
+   * cycle, which is #437's deferral and keeps its historical reason.
    */
   const claimGateReason = (): RepoCensusSkipReason => {
     if (hostDisk.status.level === "low") return "host_disk_low";
     if (workVolumeFault() !== null) return "work_volume_fault";
     return "cycle_deadline";
   };
-
-  fleetHealthConfig.hostNotes = () => {
-    const notes: string[] = [];
-    const status = hostDisk.status;
-    const fault = workVolumeFault();
-    // Issue #477: lead with the consequence. These are exactly the two gates
-    // that make the cycle skip the claim scan outright ("claiming no new
-    // issues this cycle"), so a host reporting either is declining every
-    // issue in the fleet — an outage, not the housekeeping note that
-    // `host-disk low: …` alone reads as. The gate detail is carried inside
-    // the note, so nothing #226 or #229 reported is lost.
-    const gateNote = claimSuppressedNote([
-      ...(status.level === "low"
-        ? [{ id: "host-disk-low", detail: status.detail }]
-        : []),
-      ...(fault !== null
-        ? [{ id: "work-volume-fault", detail: fault.detail }]
-        : []),
-    ]);
-    if (gateNote !== null) notes.push(gateNote);
-    // Issue #345: a host that has lost its disk telemetry says so on the
-    // fleet board *before* it fills up, not after the crash.
-    notes.push(...diskTelemetry().notes);
-    // Issue #333: "unhealthy" alone does not say which host to fix.
-    if (quotaOutageNote !== null) notes.push(quotaOutageNote);
-    return notes;
-  };
-  // Issue #410: the health checkout is gated on the host figure this monitor
-  // already maintains — never on a `df` taken inside the guest, which
-  // describes the thin-provisioned work volume and reports plenty of room
-  // while the host is full. `status` is the last sampled verdict, so the gate
-  // costs nothing and cannot disagree with the reclaimer acting on the same
-  // monitor. `unknown` is not `low`: an unprobed host must not silently
-  // switch health reporting off.
-  const fleetHealthDeps = createProductionFleetHealthDeps(
-    logger,
-    () => Promise.resolve(hostDisk.status.level === "low"),
-  );
 
   /**
    * Helper: wrap find-by-label + process into PriorityHandlerResult.
@@ -2552,15 +2465,6 @@ export async function createProductionRunCoreDeps(
         monitoredRepos: config.repos,
         mode: "disk-low",
         bytesNeeded: hostDisk.shortfallBytes,
-        // Issue #477: the fleet-health checkout is a side clone by shape, so
-        // this sweep used to delete it to win back space — after which #410
-        // refused to clone it back while the host stayed below the floor, and
-        // the host reported nothing to the fleet board for as long as the
-        // condition lasted. It is the instrument that reports this fault, and
-        // megabytes never buy back a floor measured in gigabytes.
-        protectedNames: [
-          fleetHealthCheckoutDirName(fleetHealthConfig.healthDir),
-        ],
         log: (message: string) => logger.info(message),
       });
       const after = await hostDisk.check({ force: true });
@@ -3300,23 +3204,6 @@ export async function createProductionRunCoreDeps(
       return { ok: true as const };
     },
 
-    // Issue #1935: per-iteration private-repo-6 heartbeat. The end-of-run
-    // call in `commands/run_core.ts` was silently lost when the parent
-    // shell sent SIGTERM during the post-loop block, leaving the host
-    // flagged dead on the dashboard. Reporting from the top of every
-    // priority-loop iteration keeps the heartbeat alive for the lifetime
-    // of the run. Best-effort — `runFleetHealthReporting` already swallows
-    // its own errors, but we additionally guard here so any unexpected
-    // throw is logged and the loop continues.
-    reportFleetHealthHeartbeat: async () => {
-      try {
-        // Issue #333: refresh before reporting so a multi-day quota outage is
-        // named on the heartbeat that carries it.
-        await refreshQuotaOutageNote();
-        await runFleetHealthReporting(fleetHealthConfig, fleetHealthDeps);
-      } catch { /* best-effort */ }
-    },
-
     // Issue #2005, #2023: idle-task issue filer. Invoked from the main
     // loop after a fully-idle pass (no priority work and no claimable
     // issue). The filer shuffles the monitored-repo list, picks the
@@ -3918,18 +3805,6 @@ async function scanStaleWorkflowIssuesFn(
       },
     },
   );
-}
-
-/**
- * Run FLEET health reporting at the end of a worker run.
- *
- * This is called after the main loop exits, replacing the shell
- * implementation at lines 1118–1141 of run_core.sh.
- */
-export async function runEndOfRunHealthReport(repoDir: string): Promise<void> {
-  const fleetConfig = buildFleetHealthConfig(repoDir);
-  const fleetDeps = createProductionFleetHealthDeps();
-  await runFleetHealthReporting(fleetConfig, fleetDeps);
 }
 
 // ---------------------------------------------------------------------------

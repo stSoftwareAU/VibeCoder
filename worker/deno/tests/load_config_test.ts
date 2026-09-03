@@ -7,7 +7,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { loadConfigCommand } from "../commands/load_config.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { ConfigFile } from "../types.ts";
@@ -62,44 +62,28 @@ Deno.test("load-config - outputs shell variable assignments", async () => {
   });
 });
 
-Deno.test("load-config - fleet_health_dir / fleet_health_repo reach the worker as FLEET_HEALTH_DIR / FLEET_HEALTH_REPO, and only when set", async () => {
-  await withTempConfig({
-    allowed_authors: ["user1"],
-    repos: ["org/repo1"],
-    fleet_health_dir: "/srv/GRQ-health",
-    fleet_health_repo: "git@github.com:org/GRQ-health.git",
-  }, async (configPath) => {
-    const result = await loadConfigCommand.execute(
-      { "config-path": configPath },
-      buildDefaultWorkerConfig(),
-    );
-    assert(
-      result.message.includes(
-        'FLEET_HEALTH_DIR="${FLEET_HEALTH_DIR:-/srv/GRQ-health}"',
-      ),
-      result.message,
-    );
-    assert(
-      result.message.includes(
-        'FLEET_HEALTH_REPO="${FLEET_HEALTH_REPO:-git@github.com:org/GRQ-health.git}"',
-      ),
-      result.message,
-    );
-  });
-
-  // Not configured: neither variable is emitted, so the worker sees no
-  // checkout and no URL and reports that tracking is off — never a guess.
-  await withTempConfig({
-    allowed_authors: ["user1"],
-    repos: ["org/repo1"],
-  }, async (configPath) => {
-    const result = await loadConfigCommand.execute(
-      { "config-path": configPath },
-      buildDefaultWorkerConfig(),
-    );
-    assert(!result.message.includes("FLEET_HEALTH_REPO"), result.message);
-    assert(!result.message.includes("FLEET_HEALTH_DIR"), result.message);
-  });
+Deno.test("load-config - a stale fleet_health_* config is refused, never exported (Issue #805)", async () => {
+  await withTempConfig(
+    {
+      allowed_authors: ["user1"],
+      repos: ["org/repo1"],
+      fleet_health_dir: "/srv/health",
+      fleet_health_repo: "git@github.com:org/health.git",
+    } as ConfigFile & Record<string, unknown>,
+    async (configPath) => {
+      const error = await assertRejects(
+        () =>
+          loadConfigCommand.execute(
+            { "config-path": configPath },
+            buildDefaultWorkerConfig(),
+          ),
+        Error,
+      );
+      assert(error.message.includes("fleet_health_dir"), error.message);
+      assert(error.message.includes("callbacks"), error.message);
+      assert(!error.message.includes("FLEET_HEALTH_DIR="), error.message);
+    },
+  );
 });
 
 Deno.test("load-config - legacy ALLOWED_AUTHOR scalar tracks allowedAuthors[0] (Issue #3206)", async () => {

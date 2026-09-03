@@ -24,8 +24,8 @@
  * repositories and documentation placeholders (`foo`, `repo-a`…) are left.
  *
  * A `rename:` rule is a case-preserving **substring** rename of a private
- * name that has been baked into identifiers and file names (`fleet_health.ts`,
- * `reportFleetHealthHeartbeat`, `VIBE_FLEET_HEALTH_DIR`): lower-case stays
+ * name that has been baked into identifiers and file names (`fleet_metrics.ts`,
+ * `reportFleetMetricsBeat`, `VIBE_FLEET_METRICS_DIR`): lower-case stays
  * lower, Capitalised stays Capitalised, UPPER stays UPPER, and every file or
  * directory whose path carries the substring is renamed the same way — so
  * imports keep resolving and the published tree still builds. Applied last.

@@ -181,7 +181,6 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     now: () => Date.now(),
 
     // Issue #1935: private-repo-6 heartbeat — best-effort no-op by default.
-    reportFleetHealthHeartbeat: () => Promise.resolve(),
 
     // Expose call log for testing
     _callLog: callLog,
@@ -1494,216 +1493,6 @@ Deno.test("run_core - empty iteration emits graphql-calls: 0 total (Issue #1924)
 });
 
 // ---------------------------------------------------------------------------
-// Tests — private-repo-6 heartbeat (Issue #1935)
-// ---------------------------------------------------------------------------
-
-Deno.test(
-  "run_core - reportFleetHealthHeartbeat is invoked once per iteration (Issue #1935)",
-  async () => {
-    let heartbeatCalls = 0;
-    let cycleCount = 0;
-    let nowValue = 0;
-
-    const deps = createMockDeps({
-      reportFleetHealthHeartbeat: () => {
-        heartbeatCalls++;
-        return Promise.resolve();
-      },
-      now: () => nowValue,
-      sleep: () => {
-        cycleCount++;
-        // After two iterations, advance past the run-duration cap so the
-        // loop exits cleanly.
-        if (cycleCount >= 2) {
-          nowValue += 4000 * 1000;
-        }
-        return Promise.resolve();
-      },
-    });
-
-    const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
-
-    await runCoreLoop(config, deps);
-
-    // Heartbeat called once per iteration (at the top of the while loop)
-    // — assert it fired at least as many times as we ran cycles.
-    assertEquals(
-      heartbeatCalls >= cycleCount,
-      true,
-      `heartbeat fired ${heartbeatCalls} times across ${cycleCount} cycles`,
-    );
-    assertEquals(heartbeatCalls >= 2, true, "heartbeat must fire each cycle");
-  },
-);
-
-Deno.test(
-  "run_core - heartbeat failure does not exit the priority loop (Issue #1935)",
-  async () => {
-    let heartbeatCalls = 0;
-    let cycleCount = 0;
-    let nowValue = 0;
-    const logLines: string[] = [];
-
-    const deps = createMockDeps({
-      log: (msg: string) => logLines.push(msg),
-      reportFleetHealthHeartbeat: () => {
-        heartbeatCalls++;
-        return Promise.reject(new Error("simulated heartbeat outage"));
-      },
-      now: () => nowValue,
-      sleep: () => {
-        cycleCount++;
-        if (cycleCount >= 2) {
-          nowValue += 4000 * 1000;
-        }
-        return Promise.resolve();
-      },
-    });
-
-    const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
-
-    const result = await runCoreLoop(config, deps);
-
-    // The loop completed normally despite every heartbeat throwing.
-    assertEquals(result.plannedShutdown, true);
-    assertEquals(result.exitedOnFailures, false);
-    // Heartbeat was attempted on every cycle.
-    assertEquals(heartbeatCalls >= 2, true);
-    // The loop logged the failure (so silent loss like the original bug
-    // cannot happen again).
-    const heartbeatLogs = logLines.filter((l) =>
-      l.includes("FLEET heartbeat failed")
-    );
-    assertEquals(heartbeatLogs.length >= 2, true);
-    assertStringIncludes(heartbeatLogs[0]!, "simulated heartbeat outage");
-  },
-);
-
-Deno.test(
-  "run_core - heartbeat is NOT reported when Claude health check fails (Issue #2602)",
-  async () => {
-    let heartbeatCalls = 0;
-    let cycleCount = 0;
-    let nowValue = 0;
-
-    const deps = createMockDeps({
-      // Claude is not authorised — simulate the 401 path.
-      checkClaudeHealth: () =>
-        Promise.resolve({ ok: true, value: { healthy: false } }),
-      reportFleetHealthHeartbeat: () => {
-        heartbeatCalls++;
-        return Promise.resolve();
-      },
-      now: () => nowValue,
-      sleep: () => {
-        cycleCount++;
-        if (cycleCount >= 2) {
-          nowValue += 4000 * 1000;
-        }
-        return Promise.resolve();
-      },
-    });
-
-    const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
-
-    await runCoreLoop(config, deps);
-
-    // The whole point of #2602: an unauthorised worker must NOT report
-    // itself healthy. With Claude failing every cycle, the heartbeat must
-    // never fire so the host goes stale on the private-repo-6 dashboard.
-    assertEquals(
-      heartbeatCalls,
-      0,
-      "heartbeat must not fire while Claude health check is failing",
-    );
-    assertEquals(cycleCount >= 2, true, "loop must still cycle and skip");
-  },
-);
-
-Deno.test(
-  "run_core - heartbeat is NOT reported when GitHub auth check fails (Issue #2602)",
-  async () => {
-    let heartbeatCalls = 0;
-    let cycleCount = 0;
-    let nowValue = 0;
-
-    const deps = createMockDeps({
-      checkGhAuth: () => Promise.resolve({ ok: true, value: { valid: false } }),
-      reportFleetHealthHeartbeat: () => {
-        heartbeatCalls++;
-        return Promise.resolve();
-      },
-      now: () => nowValue,
-      sleep: () => {
-        cycleCount++;
-        if (cycleCount >= 2) {
-          nowValue += 4000 * 1000;
-        }
-        return Promise.resolve();
-      },
-    });
-
-    const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
-
-    await runCoreLoop(config, deps);
-
-    assertEquals(
-      heartbeatCalls,
-      0,
-      "heartbeat must not fire while GitHub auth check is failing",
-    );
-    assertEquals(cycleCount >= 2, true, "loop must still cycle and skip");
-  },
-);
-
-Deno.test(
-  "run_core - heartbeat fires before priority dispatch within an iteration (Issue #1935)",
-  async () => {
-    const sequence: string[] = [];
-    let cycleCount = 0;
-    let nowValue = 0;
-
-    const deps = createMockDeps({
-      reportFleetHealthHeartbeat: () => {
-        sequence.push("heartbeat");
-        return Promise.resolve();
-      },
-      findAndProcessPrFeedback: () => {
-        sequence.push("pr-feedback");
-        return Promise.resolve({ ok: true, value: { processed: false } });
-      },
-      now: () => nowValue,
-      sleep: () => {
-        cycleCount++;
-        if (cycleCount >= 1) {
-          nowValue += 4000 * 1000;
-        }
-        return Promise.resolve();
-      },
-    });
-
-    const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
-
-    await runCoreLoop(config, deps);
-
-    const heartbeatIdx = sequence.indexOf("heartbeat");
-    const prFeedbackIdx = sequence.indexOf("pr-feedback");
-    assertEquals(heartbeatIdx >= 0, true, "heartbeat must fire");
-    assertEquals(prFeedbackIdx >= 0, true, "pr-feedback must fire");
-    assertEquals(
-      heartbeatIdx < prFeedbackIdx,
-      true,
-      "heartbeat must fire before priority dispatch begins",
-    );
-  },
-);
-
-// ---------------------------------------------------------------------------
 // Tests — monitored-repo accessibility health gate (Issue #4038)
 // ---------------------------------------------------------------------------
 
@@ -1763,13 +1552,8 @@ Deno.test(
   "run_core - one inaccessible monitored repo marks the host unhealthy WITHOUT skipping the cycle (Issue #4038)",
   async () => {
     const errorLines: string[] = [];
-    let heartbeatCalls = 0;
     const { deps, scanCalls } = createAccessGateDeps(2, {
       logError: (msg: string) => errorLines.push(msg),
-      reportFleetHealthHeartbeat: () => {
-        heartbeatCalls++;
-        return Promise.resolve();
-      },
       // One of several monitored repos has lost access.
       getInaccessibleRepos: () => ["stSoftwareAU/repo-b"],
     });
@@ -1791,11 +1575,6 @@ Deno.test(
       scanCalls() >= 1,
       true,
       "the iteration must fall through to the scan so accessible repos keep being worked",
-    );
-    assertEquals(
-      heartbeatCalls,
-      0,
-      "an unhealthy host must not heartbeat as healthy (the #4028 signature)",
     );
     const accessLines = errorLines.filter((l) => l.includes("repo-access"));
     assertEquals(accessLines.length >= 1, true, "the gate must log the repos");

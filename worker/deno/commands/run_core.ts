@@ -10,10 +10,7 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { createDefaultRunCoreConfig, runCoreLoop } from "../lib/run_core.ts";
-import {
-  createProductionRunCoreDeps,
-  runEndOfRunHealthReport,
-} from "../lib/run_core_production_deps.ts";
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import {
   formatBuildBanner,
   resolveWorkerBuildInfo,
@@ -152,22 +149,6 @@ export const runCoreCommand: Command = {
       });
 
       const result = await runCoreLoop(coreConfig, deps);
-
-      // FLEET health reporting at end of run (best-effort).
-      // Issue #2602: only report healthy when the worker's last health checks
-      // passed. A run that could not authenticate (e.g. Claude 401 every
-      // cycle) must NOT report itself healthy — skipping the report lets the
-      // host go stale on the dashboard so the failure stays visible.
-      if (result.lastHealthCheckPassed) {
-        try {
-          await runEndOfRunHealthReport(repoDir);
-        } catch { /* FLEET health is best-effort */ }
-      } else {
-        console.error(
-          "Skipping end-of-run FLEET health report — last health check failed " +
-            "(worker is unhealthy, not reporting healthy). Issue #2602",
-        );
-      }
 
       return {
         // Issue #563: a fatal error is a failed run whatever else is true of

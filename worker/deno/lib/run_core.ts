@@ -910,24 +910,6 @@ export interface RunCoreDeps {
   refreshTrustedAuthors?: () => Promise<RefreshOutcome>;
 
   /**
-   * Report worker health to the private-repo-6 repository (Issue #1935).
-   *
-   * Invoked at the top of every priority-loop iteration as a heartbeat,
-   * so the host's `last_commit_ts` row in `private-repo-6/docs/repos.json`
-   * advances at least once per iteration. The previous end-of-run-only
-   * heartbeat in `commands/run_core.ts` was silently lost when the
-   * parent shell sent SIGTERM during the post-loop best-effort block,
-   * leaving hosts flagged dead on the dashboard.
-   *
-   * Best-effort — failures are caught by the loop and never abort the
-   * run. The underlying `helpers/repos.sh` script enforces its own 1h
-   * rate-limit, so frequent calls are cheap no-ops between real pushes.
-   *
-   * Optional so test deps can omit it.
-   */
-  reportFleetHealthHeartbeat?: () => Promise<void>;
-
-  /**
    * Fire the idle-task issue filer (Issue #2005).
    *
    * Invoked after a scan cycle ends with no claimed work. The hook
@@ -3942,35 +3924,6 @@ export async function runCoreLoop(
                     : String(fableErr)
                 }`,
               );
-            }
-          }
-
-          // Issue #1935: emit a private-repo-6 heartbeat once per iteration so the
-          // host's row in `private-repo-6/docs/repos.json` advances even when the
-          // end-of-run path is killed by SIGTERM. `helpers/repos.sh`
-          // rate-limits to one push/hour, so frequent invocations are cheap
-          // no-ops.
-          //
-          // Issue #2602: the heartbeat is reported only AFTER the Claude and
-          // GitHub auth health checks pass. A worker that cannot authenticate
-          // (e.g. Claude 401) must NOT report itself healthy — skipping the
-          // heartbeat lets the host go stale on the dashboard so the failure
-          // is visible instead of being masked by a green "healthy" row.
-          // Best-effort — wrapped so a heartbeat failure cannot abort the loop.
-          //
-          // Issue #4038: the `lastHealthCheckPassed` guard is explicit because
-          // the monitored-repo access check above falls through instead of
-          // skipping the cycle. Without it, a host that cannot see its repos
-          // would keep heartbeating green — the exact #4028 false-healthy
-          // signature this gate exists to end.
-          if (lastHealthCheckPassed && deps.reportFleetHealthHeartbeat) {
-            try {
-              await deps.reportFleetHealthHeartbeat();
-            } catch (heartbeatErr) {
-              const msg = heartbeatErr instanceof Error
-                ? heartbeatErr.message
-                : String(heartbeatErr);
-              deps.log(`FLEET heartbeat failed (continuing): ${msg}`);
             }
           }
 
