@@ -295,7 +295,10 @@ Deno.test("out-of-scope table names every excluded guide heading", async () => {
 Deno.test("applicability note covers both surface kinds", async () => {
   const body = section(await readChecklist(), "Applicability");
 
-  assert(body.includes("prompts/<name>/vN.md"), "static template kind missing");
+  assert(
+    body.includes("prompts/<name>/prompt.md"),
+    "static template kind missing",
+  );
   assert(
     body.includes("worker/deno/lib/prompt_builder.ts"),
     "code-assembled kind missing",

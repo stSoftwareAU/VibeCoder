@@ -52,13 +52,12 @@ export function generateImprovements(): Improvement[] {
     {
       title: "Expand PR feedback prompt template to match issue template depth",
       description:
-        "`prompts/pr_feedback/v5.md` is ~79 lines, noticeably shallower than " +
-        "`prompts/issue/v13.md` (~137 lines). It omits the worked example, " +
+        "`prompts/pr_feedback/prompt.md` is noticeably shallower than " +
+        "`prompts/issue/prompt.md`. It omits the worked example, " +
         "acceptance-criteria re-check step, and error-recovery guidance that the " +
         "issue template carries.\n\n" +
         "### Proposed Solution\n" +
-        "Create a new immutable `prompts/pr_feedback/v6.md` (per the prompt " +
-        "versioning policy in AGENTS.md) that adds:\n" +
+        "Edit `prompts/pr_feedback/prompt.md` in place to add:\n" +
         "- A concrete before/after example of applying review feedback\n" +
         "- An explicit step to re-verify the original acceptance criteria after " +
         "reworking for feedback\n" +
