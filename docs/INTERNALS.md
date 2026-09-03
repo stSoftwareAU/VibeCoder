@@ -748,6 +748,79 @@ flowchart TD
     H --> W
 ```
 
+### 📈 Fleet telemetry — idle, blocked and success rate (Issue #855)
+
+Per-run telemetry said what a run did; it never said how much of the fleet's
+wall time was spent doing nothing, or why. `fleet_telemetry.ts` accumulates
+that across cycles and the loop emits one machine-readable line per cycle and
+at exit:
+
+```text
+fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
+  busy=52920s token_blocked=0s token_blocked_waits=0 rate_limited=0s
+  rate_limit_waits=0 claims=32 successes=17 failures=13 skips=2
+  success_rate=0.57
+  idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
+  failures_by_class=execute=9,timeout=3,setup=1 utilisation=serial=0.57
+```
+
+(The real line is one line; it is wrapped here for readability.)
+
+The run's wall time is partitioned into three non-overlapping spans, so
+`wall ≈ occupied + blocked + idle`:
+
+```mermaid
+flowchart LR
+    W["run wall time"] --> O["occupied<br/>≥1 stream holding a claim"]
+    W --> K["blocked<br/>rate_limited / token_blocked"]
+    W --> I["idle<br/>scan, maintenance, sleep"]
+    I --> R["attributed to the idle census's reason<br/>(nothing_claimable_backlog, dependency_blocked, host_disk_low, …)<br/>or 'served' when the cycle claimed work"]
+    style O fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style K fill:#9d0208,stroke:#6a040f,color:#fff
+    style I fill:#e9c46a,stroke:#b08968,color:#000
+```
+
+- **`occupied` is not the sum of per-stream busy time.** With an N-slot pool,
+  summing concurrent slots overshoots the wall clock, and subtracting that sum
+  would report a half-idle pool as fully busy — zero idle. `occupied` is
+  "at least one stream held a claim", so it can never exceed the wall clock.
+  `busy` and `utilisation` remain per-stream and do overlap each other; that
+  is the point of a per-stream number.
+- **Idle reasons** reuse the idle-decision census's own vocabulary. The census
+  only sets an explicit skip reason for the claim gates (`host_disk_low`,
+  `work_volume_fault`, `cycle_deadline`); a fleet that was genuinely scanned
+  is split further by the census's per-repo counts, so
+  `dependency_blocked`, `stream_occupied`, `pr_blocked`, `cooldown_local` and
+  `low_priority_suppressed` are reachable rather than merely declared. Idle
+  while unblocked priority work was open (`nothing_claimable_backlog`) is
+  reported separately from idle with nothing to claim
+  (`nothing_claimable_empty`) — the first is a fault, the second is not.
+- **A block inside a run** — the agent's own retry ladder sleeps in-process —
+  counts towards `token_blocked_seconds` but not towards `idle_by_reason`: the
+  fleet was holding a claim, not idle. This is the one deliberate overlap, and
+  it is why the blocked totals can exceed the blocked share of `idle_seconds`.
+- **`rate_limited` vs `token_blocked`** are separated by the shared
+  `.rate_limit_signal` file, which now records whether a GitHub API limit or a
+  model usage limit wrote it. Each carries a wait count alongside the total
+  backoff.
+- **Failure classes** are the phase a run died at (`setup`, `execute`,
+  `quality_gate`, …), with `timeout` taking precedence — so "13 failures" says
+  where. Skips (claim rejected, expected bounce) are excluded from
+  `success_rate`, which is `successes / (successes + failures)`.
+- **Utilisation** is `busy / wall` per work stream (`serial`, or `slot-N` in
+  the issue pool), so "idle should be near zero" is directly checkable.
+
+The totals are persisted to a per-host JSON sidecar
+`fleet_telemetry_<hostname>.json` in `WORK_DIR`, holding this run's totals
+under `run` and every run this host has recorded under `cumulative`. The
+hostname rides in the filename — as it does for the scan cursor — so workers on
+different hosts sharing a work volume never clobber one another. It is written
+after every cycle and again when the run ends, including the abnormal exits
+(quota pause, transient network failure, fatal error): those are precisely the
+runs whose idle and blocked seconds an operator needs. A sidecar that exists but
+cannot be read or parsed, or that carries a newer schema, is reported in the log
+before the cumulative totals restart from zero — it is never dropped silently.
+
 ### 🚪 Exit conditions
 
 The worker exits when any of these occur:
