@@ -48,10 +48,11 @@ import {
   startCycleTimings,
 } from "./cycle_timings.ts";
 import {
+  beginBusy,
+  endBusy,
   type FleetIdleReason,
   formatFleetSummary,
   recordBlockedSeconds,
-  recordBusySeconds,
   recordClaim as recordFleetClaim,
   recordCycleIdle,
   recordOutcome as recordFleetOutcome,
@@ -1899,9 +1900,15 @@ async function runIssueScanLoop(
     // recorded before the run, matching `tracker.recordClaim` above.
     recordFleetClaim();
     // Process the issue
-    const processStartMs = deps.now();
-    const processResult = await deps.processIssue(issue, endTime);
-    recordBusySeconds("serial", (deps.now() - processStartMs) / 1000);
+    beginBusy("serial", deps.now());
+    let processResult;
+    try {
+      processResult = await deps.processIssue(issue, endTime);
+    } finally {
+      // In a `finally` so a throw cannot leave the stream marked busy
+      // for the rest of the run, which would read as 100% utilisation.
+      endBusy("serial", deps.now());
+    }
     // The run outcome (Issue #4325) rides the claim release so the comment
     // states what happened; absent when the run never ran (skip).
     const runOutcome = processResult.ok
@@ -3141,10 +3148,15 @@ async function runSlotIssue(
   tracker.recordClaim(issue.repo);
   recordFleetClaim();
   // Issue #855: busy time is per work stream, so a pool slot's utilisation
-  // is reported separately from its siblings'.
-  const processStartMs = deps.now();
-  const processResult = await deps.processIssue(issue, endTime);
-  recordBusySeconds(slotId, (deps.now() - processStartMs) / 1000);
+  // is reported separately from its siblings'. Fleet occupancy is "any
+  // slot busy", never the sum, so a half-idle pool still reports idle.
+  beginBusy(slotId, deps.now());
+  let processResult;
+  try {
+    processResult = await deps.processIssue(issue, endTime);
+  } finally {
+    endBusy(slotId, deps.now());
+  }
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
 
   if (processResult.ok && processResult.value.success) {
@@ -3356,10 +3368,31 @@ export async function runCoreLoop(
    * cycle's idle seconds — and the run's trailing segment.
    */
   let fleetIdleReason: FleetIdleReason = "unknown";
+  /** Set once the fleet summary has been emitted, so `finally` is a no-op. */
+  let fleetSummaryEmitted = false;
 
   // Issue #855: open the fleet accumulation window. Everything from here
-  // is either busy, blocked, or idle for a recorded reason.
+  // is either occupied, blocked, or idle for a recorded reason.
   startFleetTelemetry(startTime);
+
+  /**
+   * Close the current segment, log the fleet summary and persist the
+   * sidecar (Issue #855). Best-effort — a telemetry failure is reported
+   * but never aborts or fails the run.
+   */
+  async function emitFleetSummary(reason: FleetIdleReason): Promise<void> {
+    recordCycleIdle(reason, deps.now());
+    deps.log(formatFleetSummary(deps.now()));
+    if (!deps.writeFleetTelemetrySummary) return;
+    try {
+      await deps.writeFleetTelemetrySummary();
+    } catch (telemetryErr) {
+      const msg = telemetryErr instanceof Error
+        ? telemetryErr.message
+        : String(telemetryErr);
+      deps.log(`Fleet telemetry write failed (continuing): ${msg}`);
+    }
+  }
 
   // Build result helper
   function buildResult(reason: string): RunCoreResult {
@@ -4391,24 +4424,12 @@ export async function runCoreLoop(
 
           // --- Fleet telemetry (Issue #855) ---
           // After the sleep, so the cycle's idle seconds include it. A
-          // cycle that served work books its non-busy remainder against
+          // cycle that served work books its unoccupied remainder against
           // `served`; a cycle that claimed nothing books the whole of it
-          // against the census's reason.
-          recordCycleIdle(
-            tracker.foundClaimableIssue ? "served" : fleetIdleReason,
-            deps.now(),
-          );
-          deps.log(formatFleetSummary(deps.now()));
-          if (deps.writeFleetTelemetrySummary) {
-            try {
-              await deps.writeFleetTelemetrySummary();
-            } catch (telemetryErr) {
-              const msg = telemetryErr instanceof Error
-                ? telemetryErr.message
-                : String(telemetryErr);
-              deps.log(`Fleet telemetry write failed (continuing): ${msg}`);
-            }
-          }
+          // against the census's reason. The reason is retained so the
+          // run's trailing segment is attributed, not left `unknown`.
+          if (tracker.foundClaimableIssue) fleetIdleReason = "served";
+          await emitFleetSummary(fleetIdleReason);
 
           // Issue #2427: the resume skip applies once. After a full sweep
           // completes, subsequent iterations dispatch from Priority 1.
@@ -4492,18 +4513,10 @@ export async function runCoreLoop(
     // Fleet telemetry for the whole run (Issue #855). Closes the trailing
     // segment — the shutdown work after the last cycle is idle too — then
     // logs the run's totals and persists them for the next run to add to.
-    recordCycleIdle(fleetIdleReason, deps.now());
-    deps.log(formatFleetSummary(deps.now()));
-    if (deps.writeFleetTelemetrySummary) {
-      try {
-        await deps.writeFleetTelemetrySummary();
-      } catch (telemetryErr) {
-        const msg = telemetryErr instanceof Error
-          ? telemetryErr.message
-          : String(telemetryErr);
-        deps.log(`Fleet telemetry write failed (continuing): ${msg}`);
-      }
-    }
+    // The `finally` below repeats this for every abnormal exit; a quota
+    // pause is exactly the run whose numbers matter most.
+    await emitFleetSummary(fleetIdleReason);
+    fleetSummaryEmitted = true;
 
     deps.logWorkerSummary(
       tracker.issuesProcessed,
@@ -4572,6 +4585,17 @@ export async function runCoreLoop(
     fatalError = true;
     return buildResult(`Fatal error: ${message}`);
   } finally {
+    // Issue #855: a run that exits through the quota-pause, transient-network
+    // or fatal-error path is exactly the run whose idle and blocked seconds
+    // an operator needs, so the summary and the sidecar are emitted here too
+    // — once, guarded by the flag the normal path sets.
+    if (!fleetSummaryEmitted) {
+      fleetSummaryEmitted = true;
+      try {
+        await emitFleetSummary(fleetIdleReason);
+      } catch { /* best-effort */ }
+    }
+
     // --- Cleanup ---
     // Issue #2670 (shutdown/rate-limit path): the per-issue claim is released
     // inside the scan loop (success/failure/skip). For an issue interrupted

@@ -78,6 +78,7 @@ import {
 } from "./orphan_collector.ts";
 import { applyJitter } from "./rate_limit_jitter.ts";
 import { writeRateLimitSignal } from "./rate_limit_signal.ts";
+import { recordInRunBlockedSeconds } from "./fleet_telemetry.ts";
 import { logInvocation } from "./credit_tracker.ts";
 import { extractProviderTokenUsage } from "./provider_token_usage.ts";
 import {
@@ -2743,6 +2744,10 @@ export async function runClaudeWithRetry(
         );
 
         await new Promise((resolve) => setTimeout(resolve, actualWait * 1000));
+        // Issue #855: this ladder sleeps in-process, inside a claimed run.
+        // Without recording it, an hour spent waiting on the model's own
+        // rate limit reads as an hour of work and `token_blocked` stays 0.
+        recordInRunBlockedSeconds("token_blocked", actualWait);
         totalWaitTime += actualWait;
         waitInterval *= 2; // Exponential backoff
         continue;

@@ -48,6 +48,12 @@ export interface FleetTelemetryFile {
 export interface WriteFleetTelemetryOptions {
   hostname?: string;
   nowMs?: number;
+  /**
+   * Reports a sidecar that exists but could not be used as a baseline.
+   * The write still proceeds from zero, but the loss of the host's
+   * accumulated history is never silent.
+   */
+  warn?: (message: string) => void;
 }
 
 /**
@@ -74,6 +80,7 @@ export function emptyTotals(): FleetTelemetryTotals {
     wallSeconds: 0,
     idleSeconds: 0,
     idleByReason: {},
+    occupiedSeconds: 0,
     busySeconds: 0,
     busyByStream: {},
     tokenBlockedSeconds: 0,
@@ -108,6 +115,7 @@ export function mergeCumulative(
     wallSeconds: prior.wallSeconds + run.wallSeconds,
     idleSeconds: prior.idleSeconds + run.idleSeconds,
     idleByReason: addMaps(prior.idleByReason, run.idleByReason),
+    occupiedSeconds: prior.occupiedSeconds + run.occupiedSeconds,
     busySeconds: prior.busySeconds + run.busySeconds,
     busyByStream: addMaps(prior.busyByStream, run.busyByStream),
     tokenBlockedSeconds: prior.tokenBlockedSeconds + run.tokenBlockedSeconds,
@@ -122,36 +130,62 @@ export function mergeCumulative(
   };
 }
 
+/** Why a sidecar could not be used as a baseline. */
+export type FleetTelemetryReadFault =
+  | "absent"
+  | "unreadable"
+  | "unparseable"
+  | "future-schema";
+
 /**
- * Read the sidecar. Returns `null` when it is absent, unreadable, or does
- * not parse — a corrupt sidecar is diagnostic data, so it is replaced on
- * the next write rather than failing the run.
+ * Read the sidecar. A corrupt sidecar is diagnostic data, so it is
+ * replaced on the next write rather than failing the run — but the
+ * distinction between "absent" and "present but unusable" is preserved so
+ * the caller can say which happened instead of silently resetting the
+ * host's accumulated history.
  */
 export async function readFleetTelemetryFile(
   workDir: string,
   hostname: string = getHostname(),
-): Promise<FleetTelemetryFile | null> {
+): Promise<FleetTelemetryFile | FleetTelemetryReadFault> {
+  let raw: string;
   try {
-    const raw = await Deno.readTextFile(fleetTelemetryPath(workDir, hostname));
-    const parsed = JSON.parse(raw) as FleetTelemetryFile;
-    if (
-      typeof parsed?.schema !== "number" ||
-      typeof parsed?.cumulative?.idleSeconds !== "number"
-    ) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
+    raw = await Deno.readTextFile(fleetTelemetryPath(workDir, hostname));
+  } catch (err) {
+    return err instanceof Deno.errors.NotFound ? "absent" : "unreadable";
   }
+  let parsed: FleetTelemetryFile;
+  try {
+    parsed = JSON.parse(raw) as FleetTelemetryFile;
+  } catch {
+    return "unparseable";
+  }
+  if (
+    typeof parsed?.schema !== "number" ||
+    typeof parsed?.cumulative?.idleSeconds !== "number"
+  ) {
+    return "unparseable";
+  }
+  // A file written by a newer worker is not ours to merge as if it were
+  // schema 1 — that would silently mix incompatible totals.
+  if (parsed.schema > FLEET_TELEMETRY_SCHEMA) return "future-schema";
+  return parsed;
+}
+
+/** Narrow a {@link readFleetTelemetryFile} result to a usable file. */
+export function isFleetTelemetryFile(
+  result: FleetTelemetryFile | FleetTelemetryReadFault,
+): result is FleetTelemetryFile {
+  return typeof result !== "string";
 }
 
 /**
- * Cumulative totals this run started from, per sidecar path. Keyed by the
- * accumulation window's run token so a second write in the same run reuses
- * the baseline (no double count) while a new run re-reads it.
+ * Cumulative totals this run started from. Keyed by sidecar path and the
+ * accumulation window's run token, so a second write in the same run
+ * reuses the baseline (no double count) while a new run re-reads it.
  */
-const baselineCache = new Map<string, FleetTelemetryTotals>();
+let baselineKey: string | undefined;
+let baselineTotals: FleetTelemetryTotals | undefined;
 
 /**
  * Write the sidecar. Fails loudly (a non-ok `Result`) when the file cannot
@@ -168,13 +202,25 @@ export async function writeFleetTelemetryFile(
   const run = getFleetTelemetry(nowMs);
 
   const cacheKey = `${path}#${run.runToken}`;
-  let baseline = baselineCache.get(cacheKey);
-  if (baseline === undefined) {
-    baseline = (await readFleetTelemetryFile(workDir, hostname))?.cumulative ??
-      emptyTotals();
-    baselineCache.clear();
-    baselineCache.set(cacheKey, baseline);
+  if (baselineKey !== cacheKey || baselineTotals === undefined) {
+    const prior = await readFleetTelemetryFile(workDir, hostname);
+    if (isFleetTelemetryFile(prior)) {
+      baselineTotals = prior.cumulative;
+    } else {
+      // "absent" is the ordinary first write; anything else means this
+      // host's accumulated totals are being dropped, and that must be
+      // said out loud rather than reported as a clean start.
+      if (prior !== "absent") {
+        options.warn?.(
+          `Fleet telemetry sidecar at ${path} is ${prior} — cumulative ` +
+            `totals restart from zero.`,
+        );
+      }
+      baselineTotals = emptyTotals();
+    }
+    baselineKey = cacheKey;
   }
+  const baseline = baselineTotals;
 
   const contents: FleetTelemetryFile = {
     schema: FLEET_TELEMETRY_SCHEMA,

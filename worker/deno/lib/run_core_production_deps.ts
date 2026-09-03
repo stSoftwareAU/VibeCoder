@@ -2970,7 +2970,9 @@ export async function createProductionRunCoreDeps(
     // Fails loud in the log — a telemetry write that quietly does nothing
     // is exactly the silent failure this telemetry exists to surface.
     async writeFleetTelemetrySummary() {
-      const written = await writeFleetTelemetryFile(workDir);
+      const written = await writeFleetTelemetryFile(workDir, {
+        warn: (message) => logger.warn(message),
+      });
       if (!written.ok) {
         logger.warn(
           `Could not write the fleet telemetry sidecar: ${written.error.message}`,

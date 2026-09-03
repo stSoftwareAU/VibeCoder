@@ -400,6 +400,37 @@ Deno.test(
 );
 
 Deno.test(
+  "run_core - a fatal error still emits the run's fleet summary and sidecar",
+  async () => {
+    const logs: string[] = [];
+    const clock = oneCycleClock();
+    let writes = 0;
+    const deps = createMockDeps({
+      now: clock.now,
+      sleep: clock.sleep,
+      log: (line: string) => logs.push(line),
+      writeFleetTelemetrySummary: () => {
+        writes += 1;
+        return Promise.resolve();
+      },
+      // Thrown from inside the cycle, before any summary is emitted.
+      findNextIssue: () => {
+        throw new Error("the disk went away");
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    // The numbers of a run that died are exactly the ones an operator
+    // needs, so the summary must survive the abnormal exit.
+    assertEquals(writes, 1);
+    lastFleetSummary(logs);
+  },
+);
+
+Deno.test(
   "run_core - a sidecar write failure is logged, never fatal",
   async () => {
     const logs: string[] = [];
