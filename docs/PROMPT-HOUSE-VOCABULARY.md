@@ -32,9 +32,12 @@ flowchart LR
 - It governs **names and casing only**. Presence gaps — a scan with no persona
   line, a scan with no `### Verification before exit` — and the marker shapes the
   worker emits are separate work, not variants of anything recorded here.
-- Counts and file citations below were verified on the latest template of each
-  directory at commit `4051c6d`. They are evidence for the decision, not the
-  rule; the rule is the house form.
+- Counts and file citations below are the **audit baseline** — verified on the
+  latest template of each directory at commit `4051c6d`, before any sweep of
+  #794 landed. They are evidence for the decision, not the rule; the rule is the
+  house form. Each sweep that lands moves the counts towards the house form, so
+  a smaller minority on disk today is the canon working, not the page going
+  stale.
 
 ## Families
 
@@ -118,9 +121,10 @@ Applies to the twelve interactive directories in [Families](#families).
 best-practices finding by accident. Renaming any of the three would break every
 suppression comment already committed in a monitored repo.
 
-What is banned is the **prose**: ten latest templates describe their keyword as
-"the shared suppression-comment grammar" while naming only one of the three, so a
-maintainer reading one template cannot tell which keyword their scan honours.
+What is banned is the **prose**: at the audit baseline ten latest templates
+described their keyword as "the shared suppression-comment grammar" while naming
+only one of the three, so a maintainer reading one template cannot tell which
+keyword their scan honours.
 
 **Each template names its own keyword, and none calls the grammar shared.**
 
