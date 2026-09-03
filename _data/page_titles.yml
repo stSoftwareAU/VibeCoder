@@ -183,6 +183,10 @@ docs/PROMPT-BEST-PRACTICES-CHECKLIST.md:
   title: "Vibe Coder: Prompt best-practices checklist"
   page_icon: "📐"
 
+docs/PROMPT-HOUSE-VOCABULARY.md:
+  title: "Vibe Coder: Prompt house vocabulary"
+  page_icon: "🗣️"
+
 docs/INTERNALS.md:
   title: "Vibe Coder: Worker Internals"
   page_icon: "🏗️"
