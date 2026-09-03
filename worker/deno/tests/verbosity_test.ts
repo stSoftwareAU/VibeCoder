@@ -12,7 +12,7 @@ import {
   getVerbosityInstructions,
   resolveVerbosity,
 } from "../lib/verbosity.ts";
-import type { RepoConfig } from "../types.ts";
+import type { RepoConfig, VerbosityLevel } from "../types.ts";
 
 // =============================================================================
 // getVerbosityInstructions — instruction text for each level
@@ -86,69 +86,60 @@ Deno.test("verbosity instructions - verbose mentions alternatives", () => {
 // resolveVerbosity — priority chain tests
 // =============================================================================
 
-Deno.test("resolveVerbosity - returns global default when no phase default and no repo config", () => {
-  const result = resolveVerbosity("unknown_phase");
+// Issue #798: the chain is two tiers — per-repo override, then the hard-coded
+// default. The per-phase tests that pinned the deleted tier are replaced by
+// these; `verbosity.ts` records why that tier went.
+
+Deno.test("resolveVerbosity - returns the global default when no repo config is given", () => {
+  const result = resolveVerbosity();
   assertEquals(result, "standard");
 });
 
-Deno.test("resolveVerbosity - returns phase default for known phase", () => {
-  const result = resolveVerbosity("planning");
-  assertEquals(result, "verbose");
-});
-
-Deno.test("resolveVerbosity - returns phase default for minimal phase", () => {
-  const result = resolveVerbosity("spelling_fix");
-  assertEquals(result, "minimal");
-});
-
-Deno.test("resolveVerbosity - returns phase default for concise phase", () => {
-  const result = resolveVerbosity("ci_fix");
-  assertEquals(result, "concise");
-});
-
-Deno.test("resolveVerbosity - returns phase default for standard phase", () => {
-  const result = resolveVerbosity("issue");
+Deno.test("resolveVerbosity - returns the global default for an undefined repo config", () => {
+  const result = resolveVerbosity(undefined);
   assertEquals(result, "standard");
 });
 
-Deno.test("resolveVerbosity - repo config overrides phase default", () => {
+Deno.test("resolveVerbosity - repo config overrides the global default", () => {
   const repoConfig: RepoConfig = { verbosity: "minimal" };
-  const result = resolveVerbosity("planning", repoConfig);
+  const result = resolveVerbosity(repoConfig);
   assertEquals(result, "minimal");
 });
 
-Deno.test("resolveVerbosity - repo config overrides global default for unknown phase", () => {
-  const repoConfig: RepoConfig = { verbosity: "verbose" };
-  const result = resolveVerbosity("unknown_phase", repoConfig);
-  assertEquals(result, "verbose");
+Deno.test("resolveVerbosity - every level survives the repo override", () => {
+  const levels: VerbosityLevel[] = [
+    "minimal",
+    "concise",
+    "standard",
+    "verbose",
+  ];
+  for (const level of levels) {
+    assertEquals(resolveVerbosity({ verbosity: level }), level);
+  }
 });
 
-Deno.test("resolveVerbosity - repo config without verbosity falls back to phase default", () => {
+Deno.test("resolveVerbosity - repo config without verbosity falls back to the global default", () => {
   const repoConfig: RepoConfig = { skipQualityCheck: true };
-  const result = resolveVerbosity("planning", repoConfig);
-  assertEquals(result, "verbose");
-});
-
-Deno.test("resolveVerbosity - repo config undefined falls back to phase default", () => {
-  const result = resolveVerbosity("summarise", undefined);
-  assertEquals(result, "minimal");
+  const result = resolveVerbosity(repoConfig);
+  assertEquals(result, "standard");
 });
 
 // =============================================================================
 // Integration — resolveVerbosity + getVerbosityInstructions
 // =============================================================================
 
-Deno.test("verbosity - end-to-end: resolve then get instructions for planning phase", () => {
-  const level = resolveVerbosity("planning");
+Deno.test("verbosity - end-to-end: repo override to verbose produces verbose instructions", () => {
+  const repoConfig: RepoConfig = { verbosity: "verbose" };
+  const level = resolveVerbosity(repoConfig);
   const instructions = getVerbosityInstructions(level);
   assertNotEquals(instructions, "");
   assertEquals(instructions.toLowerCase().includes("detailed"), true);
 });
 
-// Issue #3813 (Gap 3): the issue phase defaults to standard, which used to
-// resolve to an empty instruction. It now carries the end-of-run summary.
-Deno.test("verbosity - end-to-end: resolve then get instructions for issue phase", () => {
-  const level = resolveVerbosity("issue");
+// Issue #3813 (Gap 3): an unconfigured repo resolves to standard, which used
+// to return an empty instruction. It now carries the end-of-run summary.
+Deno.test("verbosity - end-to-end: an unconfigured repo gets the standard instructions", () => {
+  const level = resolveVerbosity();
   assertEquals(level, "standard");
   const instructions = getVerbosityInstructions(level);
   assertNotEquals(instructions, "");
@@ -157,7 +148,7 @@ Deno.test("verbosity - end-to-end: resolve then get instructions for issue phase
 
 Deno.test("verbosity - end-to-end: repo override to minimal produces minimal instructions", () => {
   const repoConfig: RepoConfig = { verbosity: "minimal" };
-  const level = resolveVerbosity("planning", repoConfig);
+  const level = resolveVerbosity(repoConfig);
   const instructions = getVerbosityInstructions(level);
   assertNotEquals(instructions, "");
   assertEquals(instructions.toLowerCase().includes("single sentence"), true);
