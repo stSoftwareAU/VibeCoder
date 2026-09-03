@@ -554,3 +554,69 @@ Deno.test(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// 4. Issue #867: a scan that rejects before the lane rotation resolves.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "run_core - a fast scan rejection is handled, not an unhandled rejection (Issue #867)",
+  async () => {
+    // `scanTask` is created, then two `await`s (the lane rotation read and
+    // advance) run before the `allSettled` that awaits it. A rejection landing
+    // in that window has no handler attached yet, and an unhandled rejection
+    // aborts the whole module under `deno test` — which is how `quality.sh`
+    // went red on main with `29 passed | 32 failed`.
+    //
+    // The window's width is set by `readLaneRotation`, which returns
+    // immediately when `WORK_DIR` is unset and does real file I/O when it is.
+    // Every other test in this file leaves it unset, so the window was a
+    // couple of microtasks and the race never fired locally. The worker always
+    // runs with it set. Setting it here reproduces the fleet's conditions.
+    const workDir = await Deno.makeTempDir();
+    const previous = Deno.env.get("WORK_DIR");
+    Deno.env.set("WORK_DIR", workDir);
+    try {
+      let findCalls = 0;
+      let nowValue = 0;
+
+      const deps = createMockDeps({
+        findNextIssue: () => {
+          findCalls++;
+          if (findCalls === 1) {
+            // Rejects on the first microtask, well before the lane rotation's
+            // file read resolves.
+            throw new Error(
+              "gh command failed: GraphQL: API rate limit already exceeded for user ID 1.",
+            );
+          }
+          return Promise.resolve({ ok: true, value: null });
+        },
+        getRateLimitReset: () => Promise.resolve(60),
+        now: () => nowValue,
+        sleep: (ms?: number) => {
+          nowValue += ms ?? 30000;
+          return Promise.resolve();
+        },
+      });
+
+      const config = createDefaultRunCoreConfig();
+      config.runDurationSeconds = 3600;
+
+      // Reaching this line at all is the assertion: without the early
+      // rejection handler the module aborts before the loop returns.
+      await runCoreLoop(config, deps);
+      assert(
+        findCalls >= 1,
+        `the scan should have run and rejected, findCalls=${findCalls}`,
+      );
+    } finally {
+      if (previous === undefined) {
+        Deno.env.delete("WORK_DIR");
+      } else {
+        Deno.env.set("WORK_DIR", previous);
+      }
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
