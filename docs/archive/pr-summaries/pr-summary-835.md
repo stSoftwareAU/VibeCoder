@@ -66,14 +66,21 @@ flowchart LR
 Backend/prompt-content change with no web interface, so no screenshot applies.
 The evidence is the gate plus the banned-form sweep.
 
-`./quality.sh` — every stage `PASSED` except `deno tests`, which fails
-identically on the base branch. The four failures are environment tests
-(`tests/setup_lockfile_test.ts` × 3, `tests/setup_prerequisites_test.ts` × 1)
-about `setup.sh` and container buildability in this sandbox; confirmed
-pre-existing by running the same two files in a clean worktree of
-`origin/milestone/794-prompt-terminology-and-structural-drift-across` —
-`FAILED | 45 passed | 4 failed` on both. No prompt-related test fails:
-`prompt_h1_version_agreement`, `prompt_manager`,
+`./quality.sh` — every stage `PASSED` except `deno tests`, whose failures are
+pre-existing and reproduce identically on the base branch.
+
+`deno test -A` on this branch: `16953 passed | 35 failed | 55 ignored`. All 35
+are sandbox-environment tests about `setup.sh`, host credential provisioning
+and container buildability, in six files: `setup_credential_provisioning_test.ts`
+(18), `setup_provider_credential_flow_test.ts` (10), `setup_lockfile_test.ts`
+(3), `setup_workdir_reminder_test.ts` (2), `setup_prerequisites_test.ts` (1),
+`service_account_env_test.ts` (1). Running those same six files in a clean
+worktree of `origin/milestone/794-prompt-terminology-and-structural-drift-across`
+reproduces all 35 — `30 failed`, `4 failed` and `1 failed` across the three
+invocations — so none is caused by this diff and none reads a file under
+`prompts/`.
+
+No prompt-related test fails: `prompt_h1_version_agreement`, `prompt_manager`,
 `prompt_placeholder_substitution`, `docs_prompt_version_freshness` and the
 per-template suites all pass, and `docs prompt versions` reports `PASSED`
 (75 files, 17 references) so no doc needed refreshing or pinning.
