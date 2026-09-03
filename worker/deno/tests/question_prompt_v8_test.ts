@@ -1,16 +1,19 @@
 /**
- * Tests for question prompt v8 (Issue #3792).
+ * Tests for the question prompt (Issue #3792).
  *
- * v8 closes the eight Claude best-practice gaps the #3771 audit recorded
- * against v7 — the only surface whose output is published verbatim to a public
- * GitHub issue: named untrusted input sections, worked examples, XML tags, a
- * role, a quote-first grounding step, a positive answer skeleton, parallel-read
- * guidance, and the agentic-systems clauses (read-before-assert with `file:line`
- * evidence, a success criterion, a scope/length bound, a delegation criterion).
+ * The template closes the eight Claude best-practice gaps the #3771 audit
+ * recorded against the question phase — the only surface whose output is
+ * published verbatim to a public GitHub issue: named untrusted input sections,
+ * worked examples, XML tags, a role, a quote-first grounding step, a positive
+ * answer skeleton, parallel-read guidance, and the agentic-systems clauses
+ * (read-before-assert with `file:line` evidence, a success criterion, a
+ * scope/length bound, a delegation criterion).
  *
- * v7 stays immutable and is used here as the negative control: each gap test
- * asserts the defect is present in v7 and absent in v8, so the test fails
- * against the unfixed template.
+ * These cases pin the surface the builder actually renders: the untrusted
+ * section names the template cites are the ones the builder emits, and every
+ * placeholder is substituted.
+ *
+ * Australian English spelling used throughout (behaviour, organisation).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -19,21 +22,19 @@ import { buildQuestionPrompt } from "../lib/prompt_builder.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
-async function loadQuestion(version: string): Promise<string> {
-  const result = await loadPrompt("question", version, PROMPTS_DIR);
-  assertEquals(result.ok, true, `question ${version} failed to load`);
-  if (!result.ok) throw new Error(`question ${version} failed to load`);
+async function loadQuestion(): Promise<string> {
+  const result = await loadPrompt("question", PROMPTS_DIR);
+  assertEquals(result.ok, true, "question failed to load");
+  if (!result.ok) throw new Error("question failed to load");
   return result.value;
 }
-
-const loadV8 = () => loadQuestion("v8");
 
 // --- Loading contract ---
 
 // --- Gap 1: be clear and direct ---
 
-Deno.test("question v8 - Gap 1: the section names it cites are the ones the builder emits", async () => {
-  const body = await loadV8();
+Deno.test("question - Gap 1: the section names it cites are the ones the builder emits", async () => {
+  const body = await loadQuestion();
   const built = await buildQuestionPrompt({
     repo: "stSoftwareAU/VibeCoder",
     issueNumber: "3792",
@@ -72,9 +73,9 @@ Deno.test("question v8 - Gap 1: the section names it cites are the ones the buil
 
 // --- Gap 8: agentic systems (rows 16, 17, 20, 22) ---
 
-// --- Integration: the builder renders v8 by default ---
+// --- Integration: the builder renders the template ---
 
-Deno.test("buildQuestionPrompt - substitutes v8 without leaving placeholders", async () => {
+Deno.test("buildQuestionPrompt - substitutes the template without leaving placeholders", async () => {
   const built = await buildQuestionPrompt({
     repo: "stSoftwareAU/VibeCoder",
     issueNumber: "3792",
@@ -88,7 +89,7 @@ Deno.test("buildQuestionPrompt - substitutes v8 without leaving placeholders", a
   assertEquals(built.ok, true);
   if (!built.ok) return;
   const { prompt, systemPrompt } = built.value;
-  // The v8 markers are present and every placeholder is resolved.
+  // The template's markers are present and every placeholder is resolved.
   assertStringIncludes(prompt, "You are a senior engineer on this codebase");
   assertStringIncludes(prompt, "## Scope and length");
   assertEquals(

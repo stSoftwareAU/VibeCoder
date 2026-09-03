@@ -69,7 +69,7 @@ function createMockDeps(
       }),
     recordHeartbeat: () => Promise.resolve({ ok: true, value: undefined }),
     clearHeartbeat: () => Promise.resolve({ ok: true, value: undefined }),
-    getLatestVersion: () => Promise.resolve({ ok: true, value: "v31" }),
+    getPromptsCommit: () => Promise.resolve({ ok: true, value: "abc1234" }),
     log: () => {},
   };
 }

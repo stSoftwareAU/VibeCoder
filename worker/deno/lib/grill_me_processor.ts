@@ -650,7 +650,6 @@ export async function buildGrillMePrompt(
 ): Promise<Result<string>> {
   const templateResult = await loadPrompt(
     "grill-me",
-    undefined,
     opts.promptsDir,
   );
   if (!templateResult.ok) return templateResult;

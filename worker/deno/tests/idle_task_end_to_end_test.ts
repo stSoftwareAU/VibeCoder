@@ -43,6 +43,10 @@ import {
   type IdleTaskTemplate,
 } from "../lib/idle_task_template.ts";
 import type { Logger, WorkerConfig } from "../types.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Shared test fixtures

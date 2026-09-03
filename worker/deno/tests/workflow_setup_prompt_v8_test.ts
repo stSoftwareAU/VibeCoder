@@ -1,22 +1,20 @@
 /**
- * Tests for workflow_setup prompt v8 (Issue #596, parent #566).
+ * Tests for the workflow_setup prompt's canonical gitleaks example
+ * (Issue #596, parent #566).
  *
  * Two paths produce a repository's `gitleaks.yml`: the deterministic
  * template in `worker/deno/lib/workflow_definitions.ts`, and the
- * LLM-authored setup run driven by `prompts/workflow_setup/`. v7 still
- * taught the pre-#594 pattern — `gitleaks-action@v2`, no `pull_request`
- * branch filter and an optional licence fallback — so an LLM-authored copy
- * reintroduced the milestone-PR gap #594 closed in the template.
+ * LLM-authored setup run driven by `prompts/workflow_setup/`. The prompt
+ * once taught the pre-#594 pattern — `gitleaks-action@v2`, no
+ * `pull_request` branch filter and an optional licence fallback — so an
+ * LLM-authored copy reintroduced the milestone-PR gap #594 closed in the
+ * template.
  *
- * v8 reproduces the refreshed canonical template verbatim, so the two
- * paths cannot disagree. The tests below parse the prompt's canonical
+ * The prompt now reproduces the refreshed canonical template verbatim, so the
+ * two paths cannot disagree. The tests below parse the prompt's canonical
  * example as YAML and assert against the *behaviour* it declares (branch
  * matching via the fleet's own matcher, both scan paths, SHA pins) rather
  * than grepping prose.
- *
- * v7 is frozen (Issue #235) and is used as the negative control: each gap
- * test asserts the defect is present in v7 and absent in v8, so the suite
- * fails against the unfixed prompt set.
  *
  * Australian English throughout (behaviour, organisation, licence).
  */
@@ -29,7 +27,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
 import { anyBranchMatches } from "../lib/workflow_branch_glob.ts";
 import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
@@ -48,15 +46,12 @@ const REQUIRED_PLACEHOLDERS = [
   "EXISTING_WORKFLOWS",
 ];
 
-async function loadWorkflowSetup(version: string): Promise<string> {
-  const result = await loadPrompt("workflow_setup", version, PROMPTS_DIR);
-  assert(result.ok, `workflow_setup ${version} failed to load`);
-  if (!result.ok) throw new Error(`workflow_setup ${version} failed to load`);
+async function loadWorkflowSetup(): Promise<string> {
+  const result = await loadPrompt("workflow_setup", PROMPTS_DIR);
+  assert(result.ok, "workflow_setup failed to load");
+  if (!result.ok) throw new Error("workflow_setup failed to load");
   return result.value;
 }
-
-const loadV8 = () => loadWorkflowSetup("v8");
-const loadV7 = () => loadWorkflowSetup("v7");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -105,39 +100,23 @@ function pullRequestBranches(workflow: string): unknown {
 
 // --- Loading contract ---
 
-Deno.test("workflow_setup v8 - is the version this contract entered at", async () => {
-  // Issue #787 minted v9 (the SHA-pinning rule loses its owner exception), so
-  // v8 is no longer the highest on disk. What this file pins is the contract
-  // v8 introduced, which every later version must keep — so the check is
-  // "v8 or newer" and the loader still takes whatever is latest.
-  const latest = await getLatestVersion("workflow_setup", PROMPTS_DIR);
-  assert(latest.ok, "getLatestVersion(workflow_setup) failed");
-  if (!latest.ok) return;
-  const version = parseInt(latest.value.replace("v", ""), 10);
-  assertEquals(
-    version >= 8,
-    true,
-    `Expected workflow_setup >= v8, got ${latest.value}`,
-  );
-});
-
-Deno.test("workflow_setup v8 - carries every required placeholder", async () => {
-  const body = await loadV8();
+Deno.test("workflow_setup - carries every required placeholder", async () => {
+  const body = await loadWorkflowSetup();
   for (const placeholder of REQUIRED_PLACEHOLDERS) {
     assertStringIncludes(
       body,
       `{{${placeholder}}}`,
-      `v8 must substitute {{${placeholder}}} or prompt-manager validation ` +
-        "rejects the template",
+      `the template must substitute {{${placeholder}}} or prompt-manager ` +
+        "validation rejects it",
     );
   }
 });
 
 // --- Gap 1: the branch filter must reach milestone PRs ---
 
-Deno.test("workflow_setup v8 - the canonical example filters on milestone branches", async () => {
+Deno.test("workflow_setup - the canonical example filters on milestone branches", async () => {
   const branches = pullRequestBranches(
-    canonicalGitleaksExample(await loadV8()),
+    canonicalGitleaksExample(await loadWorkflowSetup()),
   );
   assert(
     Array.isArray(branches),
@@ -158,33 +137,21 @@ Deno.test("workflow_setup v8 - the canonical example filters on milestone branch
   );
 });
 
-Deno.test("workflow_setup v8 - the prose forbids the bare star filter", async () => {
-  const body = await loadV8();
+Deno.test("workflow_setup - the prose forbids the bare star filter", async () => {
+  const body = await loadWorkflowSetup();
   assertStringIncludes(
     body,
     '`["*"]`',
-    "v8 must name the forbidden bare-star filter explicitly",
+    "the template must name the forbidden bare-star filter explicitly",
   );
   assertStringIncludes(body, "milestone/*");
 });
 
-// Negative control: v7's example declares no triggers at all, so nothing
-// constrains the branch filter an LLM invents.
-Deno.test("workflow_setup v7 - the frozen example declares no branch filter", async () => {
-  const example = canonicalGitleaksExample(await loadV7());
-  const parsed = parseYaml(example);
-  assert(isRecord(parsed), "v7 example did not parse as a YAML mapping");
-  assertFalse(
-    "on" in parsed || "true" in parsed,
-    "v7 is frozen (Issue #235): it is the gap v8 closes, not a template " +
-      "to edit",
-  );
-});
-
 // --- Gap 2: gitleaks-action v3, pinned to this repository's SHA ---
 
-Deno.test("workflow_setup v8 - pins the gitleaks action to the repository's v3 pin", async () => {
-  const example = canonicalGitleaksExample(await loadV8());
+Deno.test("workflow_setup - pins the gitleaks action to the repository's v3 pin", async () => {
+  const body = await loadWorkflowSetup();
+  const example = canonicalGitleaksExample(body);
   const pin = PINNED_ACTIONS["gitleaks/gitleaks-action"];
   assert(pin !== undefined, "gitleaks-action is not pinned");
   assertStringIncludes(
@@ -193,27 +160,21 @@ Deno.test("workflow_setup v8 - pins the gitleaks action to the repository's v3 p
     "the example must reuse the SHA pinned in pinned_actions.ts",
   );
   assertStringIncludes(
-    await loadV8(),
+    body,
     pin.version,
-    `v8 prose must name the pinned action version (${pin.version})`,
+    `the prose must name the pinned action version (${pin.version})`,
   );
 });
 
-Deno.test("workflow_setup v8 - stops teaching gitleaks-action v2", async () => {
-  const v8 = await loadV8();
+Deno.test("workflow_setup - does not teach gitleaks-action v2", async () => {
   assertFalse(
-    v8.includes("gitleaks-action@v2"),
-    "v8 must not name the superseded v2 action",
-  );
-  // Negative control: v7 does, which is the defect being fixed.
-  assert(
-    (await loadV7()).includes("gitleaks-action@v2"),
-    "v7 is the frozen negative control and must still name v2",
+    (await loadWorkflowSetup()).includes("gitleaks-action@v2"),
+    "the template must not name the superseded v2 action",
   );
 });
 
-Deno.test("workflow_setup v8 - every uses: in the example is SHA-pinned", async () => {
-  const usesLines = canonicalGitleaksExample(await loadV8())
+Deno.test("workflow_setup - every uses: in the example is SHA-pinned", async () => {
+  const usesLines = canonicalGitleaksExample(await loadWorkflowSetup())
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.startsWith("- uses:") || line.startsWith("uses:"));
@@ -230,8 +191,8 @@ Deno.test("workflow_setup v8 - every uses: in the example is SHA-pinned", async 
 
 // --- Gap 3: the licence-less fallback is mandatory, not optional ---
 
-Deno.test("workflow_setup v8 - the example keeps both scan paths", async () => {
-  const example = canonicalGitleaksExample(await loadV8());
+Deno.test("workflow_setup - the example keeps both scan paths", async () => {
+  const example = canonicalGitleaksExample(await loadWorkflowSetup());
   const parsed = parseYaml(example);
   assert(isRecord(parsed), "example did not parse as a YAML mapping");
   const jobs = parsed["jobs"];
@@ -294,29 +255,31 @@ Deno.test("workflow_setup v8 - the example keeps both scan paths", async () => {
   );
 });
 
-Deno.test("workflow_setup v8 - never triggers on pull_request_target", async () => {
-  const v8 = await loadV8();
+Deno.test("workflow_setup - never triggers on pull_request_target", async () => {
+  const body = await loadWorkflowSetup();
   assertFalse(
-    canonicalGitleaksExample(v8).includes("pull_request_target"),
+    canonicalGitleaksExample(body).includes("pull_request_target"),
     "the canonical example must not use pull_request_target",
   );
   assertStringIncludes(
-    v8,
+    body,
     "pull_request_target",
-    "v8 must still tell the agent to avoid pull_request_target",
+    "the template must still tell the agent to avoid pull_request_target",
   );
 });
 
 // --- The two provisioning paths must not disagree ---
 
-Deno.test("workflow_setup v8 - the example is the canonical template", async () => {
-  const fromPrompt = parseYaml(canonicalGitleaksExample(await loadV8()));
+Deno.test("workflow_setup - the example is the canonical template", async () => {
+  const fromPrompt = parseYaml(
+    canonicalGitleaksExample(await loadWorkflowSetup()),
+  );
   const fromTemplate = parseYaml(gitleaksTemplate());
   assertEquals(
     fromPrompt,
     fromTemplate,
     "the LLM setup path and the deterministic template must emit the same " +
-      "gitleaks workflow — refresh the template and add a new " +
-      "workflow_setup version together (Issue #596)",
+      "gitleaks workflow — refresh the template and the workflow_setup " +
+      "prompt together (Issue #596)",
   );
 });

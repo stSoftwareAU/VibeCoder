@@ -7,9 +7,9 @@
  * `Issue #NNN` reference in that body is auto-linked by GitHub to the target
  * repo's own unrelated issue — a mislink. VibeCoder-internal file paths
  * (`worker/deno/…`) are equally meaningless once the body lands in another
- * repo. This guard loads the *latest* version of every cross-repo-filed
- * prompt body (plus every best-practices bucket guide, which is inlined into
- * the best-practices wrapper body) and fails loudly if either defect returns.
+ * repo. This guard loads every cross-repo-filed prompt body (plus every
+ * best-practices bucket guide, which is inlined into the best-practices
+ * wrapper body) and fails loudly if either defect returns.
  *
  * The set of prompt names is enumerated here and cross-checked against the
  * `idle_task_templates/` directory: adding a template without listing its
@@ -18,7 +18,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt, PROMPT_FILENAME } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const TEMPLATES_DIR = new URL(
@@ -28,7 +28,7 @@ const TEMPLATES_DIR = new URL(
 
 /**
  * Every idle-task template that files its prompt body verbatim into a target
- * repository. Each name maps to a `prompts/<name>/vN.md` directory. Keep this
+ * repository. Each name maps to a `prompts/<name>/prompt.md` file. Keep this
  * in sync with `worker/deno/lib/idle_task_templates/*_template.ts` — the
  * completeness test below enforces it.
  */
@@ -111,14 +111,11 @@ Deno.test(
   async () => {
     const offenders: string[] = [];
     for (const name of CROSS_REPO_PROMPT_NAMES) {
-      const latest = await getLatestVersion(name, PROMPTS_DIR);
-      assert(latest.ok, `no versions for ${name}`);
-      if (!latest.ok) continue;
-      const loaded = await loadPrompt(name, latest.value, PROMPTS_DIR);
-      assert(loaded.ok, `failed to load ${name} ${latest.value}`);
+      const loaded = await loadPrompt(name, PROMPTS_DIR);
+      assert(loaded.ok, `failed to load ${name}`);
       if (!loaded.ok) continue;
       for (const hit of findMatches(loaded.value, BARE_REF)) {
-        offenders.push(`${name}/${latest.value}.md ${hit}`);
+        offenders.push(`${name}/${PROMPT_FILENAME} ${hit}`);
       }
     }
     assertEquals(
@@ -159,14 +156,11 @@ Deno.test(
   async () => {
     const offenders: string[] = [];
     for (const name of CROSS_REPO_PROMPT_NAMES) {
-      const latest = await getLatestVersion(name, PROMPTS_DIR);
-      assert(latest.ok, `no versions for ${name}`);
-      if (!latest.ok) continue;
-      const loaded = await loadPrompt(name, latest.value, PROMPTS_DIR);
-      assert(loaded.ok, `failed to load ${name} ${latest.value}`);
+      const loaded = await loadPrompt(name, PROMPTS_DIR);
+      assert(loaded.ok, `failed to load ${name}`);
       if (!loaded.ok) continue;
       for (const hit of findMatches(loaded.value, INTERNAL_PATH)) {
-        offenders.push(`${name}/${latest.value}.md ${hit}`);
+        offenders.push(`${name}/${PROMPT_FILENAME} ${hit}`);
       }
     }
     assertEquals(

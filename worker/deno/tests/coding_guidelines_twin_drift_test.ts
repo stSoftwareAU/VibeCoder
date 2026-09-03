@@ -23,7 +23,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -35,7 +35,7 @@ const readStandards = () =>
   Deno.readTextFile(`${REPO_ROOT}CODING-STANDARDS.md`);
 
 async function latestPromptText(name: string): Promise<string> {
-  const result = await loadPrompt(name, undefined, PROMPTS_DIR);
+  const result = await loadPrompt(name, PROMPTS_DIR);
   assert(result.ok, `${name} prompt failed to load`);
   return result.value;
 }
@@ -76,12 +76,10 @@ Deno.test("twin pair - the coverage rule carries the same strength on both surfa
 
 Deno.test("twin pair - the injected guidelines block carries no test-first rule (Issue #793)", async () => {
   const guidelines = await latestPromptText("coding_guidelines");
-  const latest = await getLatestVersion("coding_guidelines", PROMPTS_DIR);
-  assert(latest.ok, "could not resolve the latest coding_guidelines version");
   assertEquals(
     TDD_PATTERN.test(guidelines),
     false,
-    `coding_guidelines/${latest.value} now states a test-first rule. That is ` +
+    "coding_guidelines/prompt.md now states a test-first rule. That is " +
       "fine, but CODING-STANDARDS.md says it does not — update the claim in " +
       "the 'Language-Agnostic Standards vs Per-Language Buckets' section.",
   );

@@ -11,9 +11,9 @@
  *
  * The phase-level ban is the intended behaviour: the prompt already records
  * that the **worker** adds `needs-human` once the answer is posted. The
- * injected block was the surface that did not know it, so the new `question`
- * version carves those two sections out and names the answer text as the sole
- * escalation channel. The guidelines are untouched — escalation is correct for
+ * injected block was the surface that did not know it, so the `question`
+ * template carves those two sections out and names the answer text as the
+ * sole escalation channel. The guidelines are untouched — escalation is correct for
  * every phase that can write.
  *
  * These cases assert the resolution on the **rendered** prompt, which is where
@@ -25,7 +25,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildQuestionPrompt } from "../lib/prompt_builder.ts";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -48,15 +48,12 @@ async function renderQuestion(): Promise<string> {
   return `${result.value.systemPrompt}\n${result.value.prompt}`;
 }
 
-/** The latest `question` text, and the version it came from. */
-async function latestQuestion(): Promise<{ version: string; text: string }> {
-  const latest = await getLatestVersion("question", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) throw new Error(latest.error.message);
-  const loaded = await loadPrompt("question", latest.value, PROMPTS_DIR);
+/** The `question` template text. */
+async function questionText(): Promise<string> {
+  const loaded = await loadPrompt("question", PROMPTS_DIR);
   assertEquals(loaded.ok, true);
   if (!loaded.ok) throw new Error(loaded.error.message);
-  return { version: latest.value, text: loaded.value };
+  return loaded.value;
 }
 
 Deno.test("question - the rendered prompt carries the escalation text and its carve-out (Issue #782)", async () => {
@@ -87,7 +84,7 @@ Deno.test("question - the carve-out is stated after the block it qualifies (Issu
 });
 
 Deno.test("question - the answer text is named as the only escalation channel (Issue #782)", async () => {
-  const { text } = await latestQuestion();
+  const text = await questionText();
   assertStringIncludes(text, "The answer text is your only escalation");
   // And the run is told who does perform the escalation, so "say it in the
   // answer" does not read as "the escalation simply does not happen".
@@ -96,33 +93,15 @@ Deno.test("question - the answer text is named as the only escalation channel (I
 
 Deno.test("question - the read-only constraints the carve-out relies on are intact (Issue #782)", async () => {
   // The carve-out is only correct while the phase really writes nothing.
-  const { text } = await latestQuestion();
+  const text = await questionText();
   assertStringIncludes(text, "writing is not permitted at all");
   assertStringIncludes(text, "Do not modify labels or close the issue");
-});
-
-Deno.test("question - v10 stays immutable (Issue #782)", async () => {
-  const result = await loadPrompt("question", "v10", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (!result.ok) return;
-  assertEquals(
-    result.value.includes(CARVE_OUT),
-    false,
-    "v10 predates the carve-out and must keep reading as it did",
-  );
 });
 
 Deno.test("question - the guidelines keep their unconditional escalation for other phases (Issue #782)", async () => {
   // The fix is phase-side on purpose: a carve-out written into the shared
   // block would have released every phase from escalating.
-  const latest = await getLatestVersion("coding_guidelines", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) return;
-  const result = await loadPrompt(
-    "coding_guidelines",
-    latest.value,
-    PROMPTS_DIR,
-  );
+  const result = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertStringIncludes(result.value, "for any reason");

@@ -22,6 +22,13 @@ import { createAllIdleTaskWrappersCommand } from "../commands/create_all_idle_ta
 import type { CreateAllIdleTaskWrappersResult } from "../lib/create_all_idle_task_wrappers.ts";
 import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
 import type { Result, WorkerConfig } from "../types.ts";
+import {
+  pinPromptsToThisCheckout,
+  withRepoRootCwd,
+} from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 /** Narrow the non-generic CommandResult.data to the helper's result shape. */
 function dataOf(
@@ -37,19 +44,6 @@ const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
 
 const stableNow = () => new Date("2026-06-16T00:00:00.000Z");
-
-/** Repo root so the real template body builders resolve their prompt paths. */
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-
-async function withRepoRootCwd<T>(fn: () => Promise<T>): Promise<T> {
-  const original = Deno.cwd();
-  Deno.chdir(REPO_ROOT);
-  try {
-    return await fn();
-  } finally {
-    Deno.chdir(original);
-  }
-}
 
 interface GhCall {
   args: string[];

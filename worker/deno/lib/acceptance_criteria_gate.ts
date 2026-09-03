@@ -2,12 +2,12 @@
  * Deterministic acceptance-criteria closure gate for PR summaries (Issue #518).
  *
  * The planner writes a `## Acceptance Criteria` checklist into every published
- * sub-issue (`prompts/planning/v21.md`), and until now nothing downstream ever
+ * sub-issue (`prompts/planning/prompt.md`), and until now nothing downstream ever
  * read it back: the implementing run never saw the criteria as a target and the
  * PR summary never said which were met, so a reviewer had to re-derive them by
  * hand. The artefact was written and orphaned.
  *
- * `prompts/issue/v36.md` closes the loop on the agent side — when the issue body
+ * `prompts/issue/prompt.md` closes the loop on the agent side — when the issue body
  * carries criteria, the PR summary must carry a `## Acceptance Criteria` block
  * assessing each one as `met` / `partial` / `missing`, with the file or test that
  * evidences it, a one-line reason for every gap, and an `unrequested` entry for

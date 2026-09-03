@@ -11,7 +11,7 @@ day. Every attempt ended in the same `PR creation blocked:` comment; the code
 and tests on the branch were sound from early attempts, and only the PR
 summary's evidence format was wrong. Nothing ever converged, because:
 
-1. **The prompt never stated the contract.** No version of `prompts/issue/vN.md`
+1. **The prompt never stated the contract.** The `prompts/issue/` template never
    mentioned the `path/to/foo_test.ts::test name` citation, the
    fail-before/pass-after linkage wording, or the trigger-closed statement. An
    agent could only discover the contract by failing it.

@@ -16,7 +16,7 @@
  */
 
 import type { Result } from "../types.ts";
-import { getLatestVersion, loadPrompt } from "./prompt_manager.ts";
+import { loadPrompt } from "./prompt_manager.ts";
 
 /** Static prompt component names whose content forms the hash input. */
 const STATIC_PROMPT_COMPONENTS = ["coding_guidelines", "issue"] as const;
@@ -41,9 +41,9 @@ export async function computePromptHash(content: string): Promise<string> {
 /**
  * Compute a SHA-256 hash of the combined static prompt content for a repo.
  *
- * Loads the latest versions of static prompt components (coding guidelines,
- * issue template) via prompt_manager, concatenates them with the repo name
- * and any per-repo custom instructions, and returns the hash.
+ * Loads the static prompt components (coding guidelines, issue template) via
+ * prompt_manager, concatenates them with the repo name and any per-repo
+ * custom instructions, and returns the hash.
  *
  * The hash covers only static content that rarely changes between
  * invocations. Dynamic content (issue number, title, body, labels) is
@@ -68,34 +68,21 @@ export async function computeStaticPromptHash(
   // Include repo name for per-repo differentiation
   parts.push(`repo:${repoName}`);
 
-  // Load each static prompt component's latest version
+  // Load each static prompt component. Issue #844: the template content is
+  // itself hashed, so an edit to `prompt.md` changes the key without needing
+  // a version identifier alongside it.
   for (const component of STATIC_PROMPT_COMPONENTS) {
-    const versionResult = await getLatestVersion(component, promptsDir);
-    if (!versionResult.ok) {
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to resolve latest version for '${component}': ${versionResult.error.message}`,
-        ),
-      };
-    }
-
-    const loadResult = await loadPrompt(
-      component,
-      versionResult.value,
-      promptsDir,
-    );
+    const loadResult = await loadPrompt(component, promptsDir);
     if (!loadResult.ok) {
       return {
         ok: false,
         error: new Error(
-          `Failed to load prompt '${component}' ${versionResult.value}: ${loadResult.error.message}`,
+          `Failed to load prompt '${component}': ${loadResult.error.message}`,
         ),
       };
     }
 
-    // Include the version identifier so hash changes when version changes
-    parts.push(`${component}@${versionResult.value}:${loadResult.value}`);
+    parts.push(`${component}:${loadResult.value}`);
   }
 
   // Append per-repo custom instructions if provided
