@@ -181,6 +181,17 @@ export interface ConfigFileJson {
   idle_task_cadence?: unknown;
   /** Per-tool minimum version floors for software auto-update (Issue #2622) */
   software_min_versions?: Record<string, string>;
+  /**
+   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
+   * of #843).
+   *
+   * Only the shallow JSON shape (array of objects) is checked here; field-
+   * level validation (label pattern, absolute path, file readability,
+   * duplicates, reserved-label collisions) is `parseCustomLabelPrompts()`'s
+   * job in `lib/custom_label_prompts_config.ts`, which fails loud on any
+   * fault at config load.
+   */
+  custom_label_prompts?: unknown;
 }
 
 // --- Helpers ---
@@ -754,6 +765,27 @@ export function validateConfigFileJson(
         return fail(
           `software_min_versions.${key}`,
           `Expected string, got ${typeof val}`,
+        );
+      }
+    }
+  }
+
+  // custom_label_prompts is optional and must be an array of objects when
+  // present (Issue #846). Field-level checks happen in
+  // parseCustomLabelPrompts()/assertCustomLabelPrompts() — this is only the
+  // shallow JSON-shape gate every other config key gets here.
+  if (data.custom_label_prompts !== undefined) {
+    if (!Array.isArray(data.custom_label_prompts)) {
+      return fail(
+        "custom_label_prompts",
+        `Expected array, got ${typeof data.custom_label_prompts}`,
+      );
+    }
+    for (let i = 0; i < data.custom_label_prompts.length; i++) {
+      if (!isObject(data.custom_label_prompts[i])) {
+        return fail(
+          `custom_label_prompts[${i}]`,
+          `Expected object, got ${typeof data.custom_label_prompts[i]}`,
         );
       }
     }

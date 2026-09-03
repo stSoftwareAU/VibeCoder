@@ -195,6 +195,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Deployer-supplied container build-time tools (Issue #69, parent #5)
   "container_tools",
+
+  // Custom label → non-public prompt file mappings (Issue #846, part of #843)
+  "custom_label_prompts",
 ]);
 
 /**

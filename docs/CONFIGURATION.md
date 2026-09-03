@@ -298,6 +298,7 @@ explicitly overridden.
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in — Java and Maven are the first expected use. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or `JAVA_HOME` at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked Java + Maven example](CONTAINER.md#deployer-supplied-build-time-tools). |
+| `custom_label_prompts` | `[]` | Operator-defined GitHub label → non-public prompt file mappings, extending the Vibe Coder without publishing a private prompt (see [Custom Label Prompts](#-custom-label-prompts)). |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_overrides`      | `{}`                      | Per-phase model tier overrides (see below)                                                                                                                                                                                                                                                       |
@@ -473,6 +474,45 @@ resolves to `claude-opus-5` once the CLI is at (or above) an Opus-5-resolving
 version; raising the floor to that release is tracked separately in. Until
 the floor is raised, an older CLI resolves `opus` to Opus 4.8 — still priced
 identically ($5 / $25 per MTok), so cost tracking is unaffected.
+
+### 🏷️ Custom Label Prompts
+
+`custom_label_prompts` maps a GitHub label to a **non-public prompt template
+file** — an absolute path on the host, outside the public repository — so an
+operator can extend the Vibe Coder with private prompts without publishing
+them. This is the key reference entry only; the worked extension guide,
+including how a custom label dispatches, lives in a separate document (part of
+#843).
+
+```json
+{
+  "custom_label_prompts": [
+    {
+      "label": "my-custom-label",
+      "prompt_path": "/opt/vibe-secrets/prompts/my-custom-label.md"
+    }
+  ]
+}
+```
+
+Semantics:
+
+- **`label`** — the GitHub label the mapping dispatches. Must be a non-empty
+  string with no NUL or control characters, unique within the list, and must
+  not be one of the reserved workflow labels or the three hardwired discovery
+  labels (`top-priority`, `work-on`, `low-priority`) — those are never
+  remappable.
+- **`prompt_path`** — the absolute host path of the prompt template file. Must
+  be a non-empty, control-character-free string starting with `/`, and must
+  name a file that exists and is readable **at config load time**.
+- **Fail loud, always.** Every fault above — a non-array value, a malformed
+  entry, a relative or unreadable `prompt_path`, a duplicate or reserved
+  `label` — throws from config load naming the offending entry and field.
+  Nothing here is warned about and defaulted: a silently dropped mapping would
+  leave an operator believing their extension was live when it never
+  dispatched.
+- **Default = off.** The default empty list changes no existing behaviour —
+  an operator opts in by adding entries.
 
 ### 🧭 Run Mode
 

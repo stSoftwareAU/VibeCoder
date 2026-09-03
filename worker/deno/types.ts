@@ -489,6 +489,19 @@ export interface WorkerConfig {
    * immediately, bypassing the interval gate. Default: `{ claude: "2.1.170" }`.
    */
   softwareMinVersions: Record<string, string>;
+  /**
+   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
+   * of #843).
+   *
+   * An operator extends the Vibe Coder with a private prompt template — a
+   * local file path on the host outside the public repository — without
+   * publishing it. Read from the `.config.json` `custom_label_prompts` block
+   * and validated fail-loud by `assertCustomLabelPrompts()` in
+   * `lib/custom_label_prompts_config.ts`. Defaults to an empty list: the
+   * feature is off until an operator opts in, and no existing config changes
+   * behaviour.
+   */
+  customLabelPrompts: CustomLabelPromptMapping[];
   /** Per-repo configuration overrides (Issue #1187) */
   repoConfig?: Record<string, RepoConfig>;
 }
@@ -1239,6 +1252,17 @@ export interface ConfigFile {
    * they fail loud on any fault rather than repairing it.
    */
   container_tools?: ContainerToolSpec[];
+  /**
+   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
+   * of #843).
+   *
+   * Deliberately `unknown`: the block arrives untrusted from the operator's
+   * file, and only `parseCustomLabelPrompts()` / `assertCustomLabelPrompts()`
+   * in `lib/custom_label_prompts_config.ts` may be trusted to produce the
+   * typed {@link CustomLabelPromptMapping} form — they fail loud on any fault
+   * rather than repairing or dropping it.
+   */
+  custom_label_prompts?: unknown;
 }
 
 /**
@@ -1302,4 +1326,20 @@ export interface IdleTaskCadenceFileConfig {
   weekly_days?: number;
   /** Monthly rolling window, in days (default 30, must exceed `weekly_days`). */
   monthly_days?: number;
+}
+
+/**
+ * A validated operator mapping from a GitHub label to a non-public prompt
+ * template file on the host (Issue #846, part of #843).
+ *
+ * Extends the Vibe Coder without publishing a private prompt to the public
+ * repository: the label dispatches like `work-on`, but the generic
+ * implementation phase runs `promptPath`'s contents instead of the built-in
+ * template.
+ */
+export interface CustomLabelPromptMapping {
+  /** The GitHub label that dispatches this mapping. */
+  label: string;
+  /** Absolute host path of the prompt template file. */
+  promptPath: string;
 }
