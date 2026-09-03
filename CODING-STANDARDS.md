@@ -143,9 +143,9 @@ alike. Unproven means no signal, never "go ahead".
 
 ### Test coverage expectations
 
-Every new or modified public function should cover the happy path, at least one
-error path, and the edge cases relevant to it (empty input, zero, maximum size,
-unicode, etc.). For bug fixes, add a regression test that fails against the
+Every new or modified public function MUST have tests covering the happy path,
+at least one error path, and the edge cases relevant to it (empty input, zero,
+maximum size, unicode, etc.). For bug fixes, add a regression test that fails against the
 unfixed code and passes after the fix, and state that linkage in the PR summary.
 
 ## Unit Tests vs Benchmarks
@@ -180,8 +180,8 @@ a fix, never on a timer. Never background it behind a `sleep`/`pgrep` poll loop
 — that spends the whole budget waiting (Issue #399). It streams one line per
 check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented in Deno
-TypeScript (`worker/deno/quality.ts`) and runs prompt-immutability,
-benchmark-audit, pages-liquid, markdownlint, semgrep, `deno test`, `deno lint`,
+TypeScript (`worker/deno/quality.ts`) and runs benchmark-audit, pages-liquid,
+markdownlint, semgrep, `deno test`, `deno lint`,
 `deno check`, and `deno fmt --check`. The semgrep stage runs the same
 `p/default` ruleset as the blocking `semgrep.yml` PR check, over the branch's
 changed files only, so a SAST finding is met before the push rather than after
@@ -215,8 +215,13 @@ or the directory alone — never by a version number.
 ## Language-Agnostic Standards vs Per-Language Buckets
 
 This document and the injected `prompts/coding_guidelines/` template carry the
-**language-agnostic** rules — fail-loud, security, commit safety, TDD, quality
+**language-agnostic** rules — fail-loud, security, commit safety, quality
 gates. They apply to every run in every repository.
+
+Test-first TDD is **not** in that injected block. It rides the `issue` and
+`pr_feedback` phase prompts, so the phases that receive only the injected
+guidelines — `spelling_fix`, `ci_fix`, `merge_conflict`, `workflow_setup` —
+carry the coverage expectations above but no test-first ordering requirement.
 
 **Language-specific** rules live in per-language best-practice buckets under
 [`prompts/best_practices/buckets/`](prompts/best_practices/buckets/) and are

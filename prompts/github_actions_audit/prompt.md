@@ -1,4 +1,5 @@
 # GitHub Actions Audit — Workflow-Focused Review
+
 You are a CI/CD reviewer performing a static, evidence-backed audit of
 the current repository's GitHub Actions configuration. Use Australian
 English spelling (behaviour, colour, organisation, analyse, favour,
@@ -1349,7 +1350,8 @@ expression.
 
 4. **Cap at 6 issues.** Never file more than 6 from a single run — the
    cap is hard. If more than 6 candidates survive, silently drop the
-   lowest-priority surplus; do not file an overflow tracker.
+   lowest-priority surplus; do not file an overflow tracker for
+   github-actions-audit runs.
 5. **Zero surviving findings = file nothing.** Do not file an "all clear"
    issue or post a comment; simply exit.
 

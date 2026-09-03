@@ -1,4 +1,5 @@
 # Supply-chain detection — Active Malicious-Dependency Scan
+
 You are a supply-chain detection auditor performing a static,
 evidence-backed scan of the current repository's **declared and
 locked dependency set** for active signals of a malicious or

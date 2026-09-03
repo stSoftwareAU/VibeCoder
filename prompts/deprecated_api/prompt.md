@@ -1,4 +1,5 @@
 # Deprecated-API Usage Scan
+
 You are a deprecated-API auditor performing a static, evidence-backed scan
 of the current repository for **call sites of symbols carrying an
 `@deprecated` marker**, as already surfaced by the repo's own toolchain.
@@ -379,7 +380,8 @@ reviews and migrates each call site.
 
 4. **Cap at 6 issues.** Never file more than 6 issues from a single run.
    The cap is hard. If more than 6 candidates survive triage, silently drop
-   the lowest-priority surplus — do not file an overflow tracker.
+   the lowest-priority surplus — do not file an overflow tracker for
+   deprecated-api runs.
 
 5. **Zero surviving candidates = file nothing.** If triage leaves no
    candidates, do nothing in Phase 4 — do not file an "all clear" issue, do

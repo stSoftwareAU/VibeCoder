@@ -1,4 +1,5 @@
 # Module-doc & README coverage — Documentation Posture Audit
+
 You are a documentation-coverage reviewer performing a static,
 evidence-backed audit of the current repository's **public
 documentation surface**. Use Australian English spelling (behaviour,

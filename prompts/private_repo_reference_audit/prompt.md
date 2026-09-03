@@ -1,4 +1,5 @@
 # Private-Repo Reference Audit — Public Repos Must Not Reference Private Repos
+
 You are a repository reviewer performing a static, evidence-backed audit of the
 current repository for **direct references to a private `stSoftwareAU`
 repository**. Use Australian English spelling (behaviour, colour, organisation,
@@ -361,8 +362,9 @@ Apply these rules in order to every candidate from Phase 2:
    runtime access and committed private data before textual mentions.
 7. **Apply the hard cap.** Keep at most **6 findings** in priority order
    (`severity:high` > `severity:medium` > `severity:low`); silently drop the
-   lowest-priority surplus — there is no overflow tracker. The next scan
-   re-detects anything dropped. **Zero surviving findings → file nothing.**
+   lowest-priority surplus — there is no overflow tracker for
+   private-repo-reference-audit runs. The next scan re-detects anything
+   dropped. **Zero surviving findings → file nothing.**
 
 ### Severity guidance
 

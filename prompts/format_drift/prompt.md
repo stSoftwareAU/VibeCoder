@@ -1,4 +1,5 @@
 # Formatting & lint-drift — Toolchain Drift Audit
+
 You are a code-hygiene reviewer performing a static, evidence-backed
 audit of whether the current repository's **formatting and lint posture
 has drifted** and whether that posture is **enforced in CI**. Use

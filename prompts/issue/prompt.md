@@ -565,9 +565,17 @@ the summary says who judged it:
 - **The reviewer's verdict challenges yours; it does not silently lose.** A
   reviewer that saw only the diff is sometimes wrong about a criterion satisfied
   by code it could not see. You may depart from its verdict, but only out loud:
-  keep the `reviewer:` field as the reviewer wrote it and add a one-line
-  `reason:` saying why you departed. An unrecorded departure is the
-  self-assessment this whole section exists to remove.
+  add a one-line `reason:` saying why you departed. An unrecorded departure is
+  the self-assessment this whole section exists to remove.
+- **`reviewer:` is a verdict, not a quotation.** It carries exactly one of
+  `met`, `partial`, `missing` or `unrequested` — the gate parses it, and any
+  other text fails the run with the work already done. When the reviewer's own
+  words do not land on one of the four ("not assessed", "traceable, not creep",
+  a hedge, a question), put the **nearest** of the four in `reviewer:` and
+  quote what it actually said in `reason:`. Quoting it there loses nothing: the
+  `reason:` line is the record, and it is what a human reads. Reaching for
+  `unrequested` because the reviewer was unclear is the one wrong answer — say
+  `missing` and explain, so the doubt is visible rather than dismissed.
 - **Every `violation` names evidence and a reason** — the `file:line`, and
   whether you fixed it in this diff or why it stands.
 - **Never fabricate a verdict.** If a reviewer sub-agent genuinely cannot be
@@ -837,6 +845,7 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — buttons align on mobile — evidence: `docs/evidence/button-fix.png` — reviewer: met
+- **met** — `./quality.sh` passes — evidence: full gate run after the final edit — reviewer: missing — reason: the reviewer saw only the diff and could not run the gate; it was run here and passed
 - **missing** — the tablet breakpoint — reviewer: missing — reason: no tablet viewport in the test matrix
 
 ## Standards Review

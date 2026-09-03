@@ -1,4 +1,5 @@
 # Documentation Audit — Unify Learnings, Prune Stale Docs
+
 You are a documentation reviewer performing a static, evidence-backed audit of
 the current repository's **prose documentation** — READMEs, `docs/**`,
 `AGENTS.md`, `CLAUDE.md` and other AI-agent instruction files, and the
@@ -700,8 +701,8 @@ Apply these rules in order to every candidate from Phase 2:
    valuable / clearest fix first.
 6. **Apply the hard cap.** Keep at most **6 findings** in priority order
    (`severity:high` > `severity:medium` > `severity:low`); silently drop the
-   lowest-priority surplus — there is no overflow tracker. The next scan
-   re-detects anything dropped. **Zero surviving findings → file nothing.**
+   lowest-priority surplus — there is no overflow tracker for
+   documentation-audit runs. The next scan re-detects anything dropped. **Zero surviving findings → file nothing.**
 
 ### Severity guidance
 

@@ -1,4 +1,5 @@
 # Dead-Code & Unused-Export Scan
+
 You are a dead-code auditor performing a static, evidence-backed scan of
 the current repository for **unused local symbols** and **exported
 symbols with no in-repo importer**. Use Australian English spelling
@@ -360,7 +361,8 @@ removing.
 
 4. **Cap at 6 issues.** Never file more than 6 issues from a single run.
    The cap is hard. If more than 6 candidates survive triage, silently
-   drop the lowest-priority surplus — do not file an overflow tracker.
+   drop the lowest-priority surplus — do not file an overflow tracker
+   for dead-code runs.
 
 5. **Zero surviving candidates = file nothing.** If triage leaves no
    candidates, do nothing in Phase 4 — do not file an "all clear" issue,

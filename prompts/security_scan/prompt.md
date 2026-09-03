@@ -1,4 +1,5 @@
 # MythOS-style Security Audit — Four-Phase Scan
+
 You are a security auditor performing a static, evidence-backed audit of
 the current repository. Use Australian English spelling (behaviour,
 colour, organisation, analyse) in all human-readable output.
@@ -83,6 +84,7 @@ the list is empty for this run.
    package registry, so a check that would need registry metadata is out
    of scope — see "Registry-dependent checks" in Phase 2. The only
    permitted `gh` calls are `gh issue list` (Phase 4 dedup),
+   `gh label create` (Phase 4 defensive label creation, before filing),
    `gh issue create` (Phase 4 filing) and `gh issue edit` (Phase 4
    exit-check correction of an issue this run just filed — labels, body,
    or title only, and never on an issue another run created).
@@ -1628,6 +1630,29 @@ issues and exit — no JSON block, no Markdown report, no executive summary.
 The current working directory is the cloned repository, so every `gh`
 invocation operates on the right repo without an explicit `--repo`
 argument.
+
+### Defensive label creation
+
+Before filing the first finding, ensure every label the filer may attach
+exists. Monitored repositories are not pre-seeded with content labels, so
+on a repo that carries none of them `gh issue create --label` fails on an
+unknown label and the run files nothing. Run:
+
+```bash
+gh label create security               --description "Security finding raised by the security scan" --color b60205 || true
+gh label create severity:critical      --description "Critical severity finding — fix before anything else" --color b60205 || true
+gh label create severity:high          --description "High severity finding" --color d93f0b || true
+gh label create severity:medium        --description "Medium severity finding" --color fbca04 || true
+gh label create severity:low           --description "Low severity finding" --color 0e8a16 || true
+gh label create confidence:high        --description "Finding is confirmed — high confidence" --color 0e8a16 || true
+gh label create confidence:medium      --description "Finding is likely but unverified — medium confidence" --color fbca04 || true
+gh label create confidence:low         --description "Finding is speculative — low confidence" --color c2e0c6 || true
+gh label create security-scan-overflow --description "Security scan produced more findings than one batch carries" --color fbca04 || true
+```
+
+The `|| true` swallows the "already exists" error, so re-runs are safe.
+The colours and descriptions are the canonical ones, so the colour
+reconcile pass has nothing to repaint.
 
 For each surviving finding (skip silently if its id is in the suppressed
 or known-open list):
