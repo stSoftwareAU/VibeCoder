@@ -518,9 +518,13 @@ Semantics:
   `allowed_authors` allowlist — a trusted issue *author* is not sufficient. An
   add by an untrusted account is stripped, not honoured as a plain descriptive
   label, and an add that cannot be attributed from the issue timeline fails
-  closed (the issue is skipped). The worker itself never self-applies a custom
-  label: the creation-time reserved-label filters treat the configured labels as
-  reserved. See
+  closed (the issue is skipped). The worker's own creation paths treat a
+  configured label as reserved and strip it, and a label the worker legitimately
+  raises itself (`idle-task`, `security`, `severity:…`) is refused at config
+  load rather than remapped — so the worker cannot self-apply a custom label
+  into a dispatch. A custom label that a model-driven `gh issue create` path
+  puts on an issue is still stripped at dispatch time, because a fleet worker
+  login is never a trusted label adder. See
   [INTERNALS.md — Issue discovery](INTERNALS.md#-issue-discovery-modular-issue-finder).
 
 ### 🧭 Run Mode

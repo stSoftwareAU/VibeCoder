@@ -1237,10 +1237,14 @@ be on the allowlist, the comparison is case-insensitive, and an add that cannot
 be attributed to anyone fails closed (the issue is skipped, never handed to
 another handler as a plain descriptive label). The same labels are treated as
 operational by `verifyOperationalLabels()`
-([label_security.ts](../worker/deno/lib/label_security.ts)) so an untrusted
-actor's add is stripped on the discovery path too, and as reserved by the
-creation-time filters in [github.ts](../worker/deno/lib/github.ts) so the worker
-never self-applies one. With no mappings configured the set is the same six
+([label_security.ts](../worker/deno/lib/label_security.ts)) in all four
+discovery collectors, so an untrusted actor's add is stripped on those paths
+too, and as reserved by the creation-time filters in
+[github.ts](../worker/deno/lib/github.ts) so the worker's own creation paths
+never apply one. A label the worker legitimately raises itself (`idle-task`,
+`security`, `severity:…`) cannot be remapped at all — the config validator
+refuses the collision at load, so making custom labels reserved can never strip
+a label the worker needs. With no mappings configured the set is the same six
 labels as before.
 
 Issues are **excluded** from selection if they carry any of: `failed`,

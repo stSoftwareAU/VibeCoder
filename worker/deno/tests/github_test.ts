@@ -634,9 +634,10 @@ Deno.test("github - filterReservedLabels strips a configured custom label (Issue
   const custom = ["deploy-review"];
   // Case-insensitive, like every other reserved-label guard.
   assertEquals(
-    filterReservedLabels(["enhancement", "deploy-review", "DEPLOY-REVIEW"], [
-      "deploy-review",
-    ]),
+    filterReservedLabels(
+      ["enhancement", "deploy-review", "DEPLOY-REVIEW"],
+      custom,
+    ),
     ["enhancement"],
   );
   // Without the custom list the label is descriptive and survives.
