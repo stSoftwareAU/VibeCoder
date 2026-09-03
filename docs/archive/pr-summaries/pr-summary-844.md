@@ -74,8 +74,16 @@ flowchart LR
   six files fail with the identical 35 count on a `main` worktree in this
   container (`FAILED | 76 passed | 35 failed`), so they are pre-existing and
   environmental, not caused by this change.
-- `deno fmt`, `deno lint`, `deno check '**/*.ts'`, `check-mermaid` (346 files,
-  465 blocks) and `markdownlint-cli2` all pass.
+- `./quality.sh < /dev/null` — every check passes except `deno tests`, which
+  carries only those 35 pre-existing failures: benchmark audit, hardcoded
+  branch names, needs-human chokepoint, gh spawn chokepoint, host work-dir
+  guard, git ref chokepoint, workflow hygiene, source targets, mermaid,
+  markdownlint, semgrep, deno lint, deno type check and deno fmt are all
+  `PASSED`.
+- The six pre-existing failures come from a bash harness that `source`s
+  `setup.sh` with a stripped environment (`worker/deno/tests/setup_lockfile_test.ts:45`);
+  it exits 1 in this container on `main` as well, so it is unrelated to
+  prompt versioning and out of scope here.
 - 324 `vN.md` files deleted, 33 renamed to `prompt.md`; `find prompts -name
   'v[0-9]*.md'` returns nothing.
 
