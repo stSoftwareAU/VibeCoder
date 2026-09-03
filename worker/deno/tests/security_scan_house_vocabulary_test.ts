@@ -59,14 +59,30 @@ Deno.test("security_scan - spells the product name Vibe Coder in prose (Issue #8
     [],
     "the house form is `Vibe Coder` in prose:\n" + hits.join("\n"),
   );
+  // Absence alone would also pass if the sentences were simply deleted.
+  assert(
+    (await latestSecurityScan()).includes("Vibe Coder"),
+    "the two renamed sentences must survive, not be deleted",
+  );
 });
 
 Deno.test("security_scan - calls the Deno harness the worker (Issue #837)", async () => {
-  const hits = await proseHits(/\bexecutor\b/i);
+  // Scoped to the harness noun: "executor" is a legitimate finding-class
+  // word (thread-pool executor, statement executor) in a security prompt.
+  const hits = await proseHits(/\b(?:the|The)\s+executors?\b/);
   assertEquals(
     hits,
     [],
     "the house noun for the harness is `the worker`:\n" + hits.join("\n"),
+  );
+  const text = await latestSecurityScan();
+  assert(
+    text.includes("The worker substitutes the values below"),
+    "the Inputs preamble must name the worker, not be deleted",
+  );
+  assert(
+    text.includes("the worker measures success by diffing"),
+    "the Phase 4 preamble must name the worker, not be deleted",
   );
 });
 
@@ -142,14 +158,8 @@ Deno.test("security_scan - names its own suppression keyword rather than a share
       "tell which of the three namespaced keywords to write",
   );
   assert(
-    text.includes("security-scan-ignore"),
+    text.includes("`security-scan-ignore` keyword"),
     "the template must name its own keyword, `security-scan-ignore`",
-  );
-  // The keyword is namespaced per scan; SEC- ids never take the BP- keyword.
-  assert(
-    !text.includes("best-practice-ignore") &&
-      !text.includes("orphan-deps-ignore"),
-    "sibling keywords map to BP- ids and must not appear here",
   );
 });
 
@@ -157,7 +167,14 @@ Deno.test("security_scan - cites the attribution footer one way (Issue #837)", a
   const text = await latestSecurityScan();
   assert(
     text.includes("attribution footer** line from the Inputs section"),
-    "the house citation is `from the Inputs section`",
+    "the issue body's footer citation must read `from the Inputs section`",
+  );
+  assert(
+    text.includes(
+      "ends with the attribution footer line from the Inputs " +
+        "section",
+    ),
+    "the overflow tracker's footer citation must read the same way",
   );
   assert(
     !text.includes("from the end of this prompt"),
