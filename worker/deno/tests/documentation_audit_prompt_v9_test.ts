@@ -47,11 +47,20 @@ Deno.test("documentation_audit v9 - is the version the worker resolves", async (
   const latest = await getLatestVersion("documentation_audit", PROMPTS_DIR);
   assertEquals(latest.ok, true);
   if (!latest.ok) return;
-  assertEquals(latest.value, "v9");
+  // Issue #790: v10 scopes the overflow-tracker prohibition to
+  // documentation-audit runs, so the resolved version moves. The contract
+  // under test is "the worker resolves the newest version and that is what
+  // it loads by name" — not a pinned number.
+  const latestNumber = Number(latest.value.slice(1));
+  assertEquals(
+    Number.isInteger(latestNumber) && latestNumber >= 9,
+    true,
+    `expected v9 or newer, got ${latest.value}`,
+  );
 
   const [byName, byVersion] = await Promise.all([
     loadPrompt("documentation_audit", undefined, PROMPTS_DIR),
-    loadV9(),
+    loadDocumentationAudit(latest.value),
   ]);
   assertEquals(byName.ok, true);
   if (!byName.ok) return;
