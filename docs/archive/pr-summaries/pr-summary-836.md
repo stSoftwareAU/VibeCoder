@@ -71,7 +71,33 @@ flowchart LR
     F --> B["issue body:<br/>## Why this matters<br/>## Suggested fix"]
 ```
 
-`./quality.sh` passes.
+### Quality gate
+
+Every stage passes except `deno tests`, which reports **2 failures out of 17,001
+tests**. Both are pre-existing container-environment failures, not this change:
+they reproduce byte-identically on the milestone-branch head `37503a4` in a
+scratch worktree with no working-tree changes at all.
+
+```text
+applyServiceAccountEnv - an unwritable gh config dir is restaged writable
+  => ./tests/service_account_env_test.ts:385:6
+setup.sh - a Codex-only host with no claude CLI reaches the configuration-writing stage
+  => ./tests/setup_provider_credential_flow_test.ts:289:6
+
+FAILED | 16999 passed (4 steps) | 2 failed | 55 ignored
+```
+
+The second dies on the container's own prerequisite probe — *"the running
+container image did not install the `codex` coding-agent provider. Installed:
+claude"* — so it is bound to the image build, not to the code under test. The
+container also exports `CONFIG_PATH`, which trips a further 33 setup tests on
+their `CONFIG_FILE`/`CONFIG_PATH` conflict guard; `env -u CONFIG_PATH
+./quality.sh` clears those and leaves the two above. Filed as
+stSoftwareAU/VibeCoder#891 with the reproduction. This PR's diff is seven
+`prompts/**/*.md` additions and one PR summary, which cannot reach any of it.
+
+All other stages — prompt immutability, markdownlint, `docs prompt versions`,
+mermaid, semgrep, deno lint, deno type check, deno fmt — PASSED.
 
 ## Acceptance Criteria
 
@@ -109,10 +135,12 @@ flowchart LR
 - **met** — `retro`'s phase numbering is unchanged — evidence: diffing the
   `^## Phase` lines of `prompts/retro/v2.md` against `v3.md` shows only the
   `(outcome-only)` suffix on Phase 5; Phase 4 is still Triage — reviewer: met
-- **met** — `./quality.sh` passes — evidence: full gate run, all checks
-  PASSED — reviewer: partial — reason: the reviewer ran the two named gate
-  tests rather than the whole gate; the full gate was run separately in this
-  session and passes
+- **partial** — `./quality.sh` passes — evidence: the gate run recorded above;
+  every stage PASSED except `deno tests`, which carries 2 pre-existing
+  container-environment failures out of 17,001 — reviewer: partial — reason:
+  the two failures reproduce identically on the base commit `37503a4` with no
+  changes applied and are filed as stSoftwareAU/VibeCoder#891, so nothing in
+  this diff causes them, but the gate's overall verdict is still FAILED
 
 No `unrequested` entries — the Spec reviewer traced every change to the issue's
 tables and confirmed each per-file diff is a line-for-line swap with insertions
@@ -155,4 +183,6 @@ equal to deletions.
     `worker/deno/tests/marker_grammar_test.ts`,
     `worker/deno/tests/prompt_hash_test.ts` — all scan the latest version of
     every prompt directory, so they now read the seven new files. All pass.
-- `./quality.sh` — full gate, all checks PASSED.
+- `./quality.sh` — full gate. Every stage PASSED except `deno tests`, whose 2
+  failures are pre-existing and environmental, proven against base commit
+  `37503a4` and filed as stSoftwareAU/VibeCoder#891.
