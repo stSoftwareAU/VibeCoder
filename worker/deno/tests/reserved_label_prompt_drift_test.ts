@@ -28,7 +28,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 import {
   OPERATIONAL_LABEL_NAMES,
   verifyOperationalLabels,
@@ -68,17 +68,12 @@ const TEMPLATES = [
   "planning_critique",
 ] as const;
 
-/** The latest text of one prompt, and the version it came from. */
-async function latestText(
-  prompt: string,
-): Promise<{ version: string; text: string }> {
-  const latest = await getLatestVersion(prompt, PROMPTS_DIR);
-  assertEquals(latest.ok, true, `no latest version for ${prompt}`);
-  if (!latest.ok) throw new Error(latest.error.message);
-  const loaded = await loadPrompt(prompt, latest.value, PROMPTS_DIR);
-  assertEquals(loaded.ok, true, `cannot load ${prompt} ${latest.value}`);
+/** The shipped text of one prompt. */
+async function promptText(prompt: string): Promise<string> {
+  const loaded = await loadPrompt(prompt, PROMPTS_DIR);
+  assertEquals(loaded.ok, true, `cannot load ${prompt}`);
   if (!loaded.ok) throw new Error(loaded.error.message);
-  return { version: latest.value, text: loaded.value };
+  return loaded.value;
 }
 
 /**
@@ -153,24 +148,23 @@ Deno.test("reserved labels - the in-code prohibition publishes the same membersh
 
 Deno.test("reserved labels - every template publishes the same membership (Issue #780)", async () => {
   for (const prompt of TEMPLATES) {
-    const { version, text } = await latestText(prompt);
+    const text = await promptText(prompt);
     const passages = listPassages(text);
     assert(
       passages.length > 0,
-      `${prompt} ${version} publishes no reserved-label list`,
+      `${prompt} publishes no reserved-label list`,
     );
     const published = passages.filter(publishesList);
     assert(
       published.length > 0,
-      `${prompt} ${version} publishes no reserved-label list`,
+      `${prompt} publishes no reserved-label list`,
     );
     for (const passage of published) {
       const listed = labelsIn(passage);
       for (const label of CANONICAL_RESERVED) {
         assert(
           listed.has(label),
-          `${prompt} ${version} omits \`${label}\` from a reserved-label ` +
-            `list:\n${passage}`,
+          `${prompt} omits \`${label}\` from a reserved-label list:\n${passage}`,
         );
       }
     }
@@ -181,7 +175,7 @@ Deno.test("reserved labels - no template lists needs-human among them (Issue #78
   // The list is the never-self-apply set. `needs-human` is the worker's own
   // escalation label and belongs to the sentence beside the list, not to it.
   for (const prompt of TEMPLATES) {
-    const { version, text } = await latestText(prompt);
+    const text = await promptText(prompt);
     for (const passage of listPassages(text).filter(publishesList)) {
       // Only the group that *is* the list: a nearby "(`needs-human`)" in the
       // prose beside it is the sentence that grants the exception, not a
@@ -192,8 +186,8 @@ Deno.test("reserved labels - no template lists needs-human among them (Issue #78
         assertEquals(
           labelsIn(group).has("needs-human"),
           false,
-          `${prompt} ${version} lists \`needs-human\` as a reserved label ` +
-            `the agent may never apply, which the code contradicts:\n${group}`,
+          `${prompt} lists \`needs-human\` as a reserved label the agent may ` +
+            `never apply, which the code contradicts:\n${group}`,
         );
       }
     }
@@ -214,14 +208,14 @@ Deno.test("reserved labels - no template claims a worker's needs-human is stripp
   const CORRECTIVE =
     /trusts a `needs-human`|is trusted and does survive|removed after creation/i;
   for (const prompt of TEMPLATES) {
-    const { version, text } = await latestText(prompt);
+    const text = await promptText(prompt);
     for (const paragraph of text.split(/\n\s*\n/)) {
       if (!paragraph.includes("needs-human")) continue;
       if (!/label_security/.test(paragraph)) continue;
       assert(
         CORRECTIVE.test(paragraph),
-        `${prompt} ${version} names \`needs-human\` beside label_security ` +
-          `stripping without saying which rule applies:\n${paragraph}`,
+        `${prompt} names \`needs-human\` beside label_security stripping ` +
+          `without saying which rule applies:\n${paragraph}`,
       );
     }
   }

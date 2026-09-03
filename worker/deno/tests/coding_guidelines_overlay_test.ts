@@ -5,8 +5,8 @@
  * note ride on top of the model-agnostic `coding_guidelines` baseline
  * (Issue #373). These tests cover the identity → prompt-name mapping, the
  * loader's precedence (model-specific before provider-wide), and the two
- * failure boundaries: an absent overlay is not an error, a present but
- * version-less overlay directory is.
+ * failure boundaries: an absent overlay is not an error, a present overlay
+ * directory carrying no `prompt.md` is.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -101,7 +101,7 @@ Deno.test("overlay load - absent overlay resolves to undefined, not an error", a
 
 Deno.test("overlay load - unknown identity resolves to undefined, not a throw", async () => {
   await withPromptsDir(
-    { "coding_guidelines_claude/v1.md": "Claude overlay" },
+    { "coding_guidelines_claude/prompt.md": "Claude overlay" },
     async (dir) => {
       const result = await loadCodingGuidelinesOverlay(
         { provider: "no-such-agent-9000" },
@@ -113,24 +113,23 @@ Deno.test("overlay load - unknown identity resolves to undefined, not a throw", 
   );
 });
 
-Deno.test("overlay load - loads the latest version of the provider overlay", async () => {
+Deno.test("overlay load - loads the provider overlay's prompt.md", async () => {
   await withPromptsDir({
-    "coding_guidelines_claude/v1.md": "old overlay",
-    "coding_guidelines_claude/v2.md": "new overlay",
+    "coding_guidelines_claude/prompt.md": "provider overlay",
   }, async (dir) => {
     const result = await loadCodingGuidelinesOverlay(
       { provider: CLAUDE_PROVIDER_ID },
       dir,
     );
     assertEquals(result.ok, true);
-    if (result.ok) assertEquals(result.value, "new overlay");
+    if (result.ok) assertEquals(result.value, "provider overlay");
   });
 });
 
 Deno.test("overlay load - a model overlay wins over the provider overlay", async () => {
   await withPromptsDir({
-    "coding_guidelines_claude/v1.md": "provider overlay",
-    "coding_guidelines_claude_opus/v1.md": "model overlay",
+    "coding_guidelines_claude/prompt.md": "provider overlay",
+    "coding_guidelines_claude_opus/prompt.md": "model overlay",
   }, async (dir) => {
     const model = await loadCodingGuidelinesOverlay(
       { provider: CLAUDE_PROVIDER_ID, model: "opus" },
@@ -151,7 +150,7 @@ Deno.test("overlay load - a model overlay wins over the provider overlay", async
 
 Deno.test("overlay load - one provider's overlay never leaks into another's run", async () => {
   await withPromptsDir(
-    { "coding_guidelines_claude/v1.md": "CLAUDE ONLY" },
+    { "coding_guidelines_claude/prompt.md": "CLAUDE ONLY" },
     async (dir) => {
       for (const provider of [CODEX_PROVIDER_ID, GEMINI_PROVIDER_ID]) {
         const result = await loadCodingGuidelinesOverlay({ provider }, dir);
@@ -162,15 +161,15 @@ Deno.test("overlay load - one provider's overlay never leaks into another's run"
   );
 });
 
-Deno.test("overlay load - a version-less overlay directory fails loud", async () => {
+Deno.test("overlay load - an overlay directory with no prompt.md fails loud", async () => {
   const dir = await Deno.makeTempDir({ prefix: "cg_overlay_" });
   try {
     // The directory exists (so it was authored deliberately) but carries no
-    // vN.md: reporting "no overlay" here would mask the authoring mistake.
+    // prompt.md: reporting "no overlay" would mask the authoring mistake.
     await Deno.mkdir(`${dir}/coding_guidelines_claude`, { recursive: true });
     await Deno.writeTextFile(
       `${dir}/coding_guidelines_claude/draft.md`,
-      "not a version",
+      "not the template",
     );
 
     const result = await loadCodingGuidelinesOverlay(

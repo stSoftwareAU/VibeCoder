@@ -1020,8 +1020,8 @@ everywhere:
 
 > **📝 Note:** every round is told "no running commentary while you work".
 > Nobody watches an unattended round in real time, so the `grill-me` template
-> stops asking for narration from `prompts/grill-me/v15.md` onwards
-> (Issue #759); a round's output is the comment it posts.
+> stops asking for narration (`prompts/grill-me/prompt.md`, Issue #759);
+> a round's output is the comment it posts.
 
 **Resolution priority** for the `issue` phase (highest to lowest):
 

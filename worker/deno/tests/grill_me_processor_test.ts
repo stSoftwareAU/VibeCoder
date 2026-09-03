@@ -49,6 +49,10 @@ import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubComment, GitHubIssue, WorkerConfig } from "../types.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 

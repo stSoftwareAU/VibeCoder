@@ -1,0 +1,152 @@
+# Bash Syntax Audit
+This audit verifies that this repository's **own CI** blocks any pull request
+whose scripts fail a basic-validity gate, and files one issue per missing gate.
+Bash has no compile step, so an invalid bash script can regress into a
+repository with no quality gate catching it — the exact FLEET regression that
+motivated this audit. Australian English (behaviour, colour, organisation,
+analyse) is used in all human-readable output.
+
+## Who performs this audit
+
+**Two native detectors do, before this issue exists.** No model turn is involved
+and nothing in this body is work for a person or an agent to carry out: every
+section below is an indicative description of what the detectors already did,
+and the deliverable is the set of findings issues they filed. A worker that
+picks this issue up should take no action on it — the audit **never** opens a
+pull request and **never** edits a file. Each repository owns and commits its
+own gate, and that fix rides a normal `work-on` pipeline PR later. Repositories
+are **absolutely isolated**: this audit only verifies the presence of a gate and
+raises an issue where one is missing.
+
+## What the detectors check
+
+- **Bash CI gate.** Discovers the repo's bash scripts (`*.sh` / `*.bash` and
+  bash-shebang files) and checks `.github/workflows/*` for two independent
+  gates:
+  1. a `bash -n` / `sh -n` **syntax** check, and
+  2. a `shellcheck` **lint** check.
+
+  A step that runs a committed gate script (e.g. `./quality.sh`,
+  `quality/bash_syntax.sh`) counts as the gate — the script's committed
+  contents are inspected. A repo with **no** bash scripts is *not applicable*
+  (no finding); a repo with **no** loaded workflows leaves the gate *unknown*
+  (no false "missing" finding).
+- **Language-validity gate.** For each other main language (Rust, TypeScript,
+  React, Java, Python) checks that a native basic-validity step is wired into
+  CI — `cargo check`, `deno check` / `tsc --noEmit`, `mvn compile` /
+  `gradle compileJava`, `python -m py_compile`. Basic validity only (does it
+  compile / parse), not style or lint.
+
+## Findings — one per missing gate
+
+Each missing gate is filed as its own deduped issue labelled `bash-syntax-audit`
+plus one `severity:*`:
+
+- **Missing `bash -n` syntax gate → `severity:high`.** Invalid bash reaching the
+  default branch is the exact regression this audit prevents.
+- **Missing `shellcheck` gate → `severity:medium`.** The lint gate; error-level
+  findings block at rollout, warnings are tightened later.
+- **A main language missing its native validity check → `severity:high`.**
+  Mirrors the best-practices compile-gate severity.
+
+Every finding **leads with the fix**: it names the missing gate and gives the
+concrete CI invocation to add so the regression class cannot recur. Each repo
+commits its own gate — there is no shared cross-repo Action.
+
+## Fail-loud contract
+
+The detectors **never return a silent green on error**. A directory-walk or
+file-read failure surfaces as a loud failure and is reported on this wrapper
+issue — an audit that cannot complete is never reconciled as "no findings". A
+gate whose status is *unknown* (no workflows loaded, or an unparseable workflow)
+never produces a false "missing gate" finding.
+
+## In-code suppression
+
+A finding can be suppressed by adding a governed
+`best-practice-ignore: <finding-id> — author=<github-login> expires=<YYYY-MM-DD> <reason>`
+comment (the shared idle-task grammar) — for a gate finding, as a `#` comment in
+a `.github/workflows/*` file.
+
+All three fields are mandatory. The suppression check honours a marker — and
+skips its id — **only** when `author=` is present and non-empty, `expires=` is a
+real `YYYY-MM-DD` calendar date that is today or later, and non-empty reason
+text follows. A marker missing any field, or carrying a malformed or past
+expiry, **does not suppress**: the finding is reported as normal and the run
+records `Rejected suppression: <file>:<line> <id> — <failed check>` rather than
+silently obeying the marker. This is the rule the deterministic suppression
+check applies, and every LLM triage path that reads these markers applies the
+same three-field check — so the automated and LLM paths cannot drift.
+
+<examples>
+
+Worked verdicts of that check, not templates to copy. A valid marker and a
+rejected one differ by a few characters, so each case names the field that
+decided it. The gate ids are the stable ones the detectors emit
+(`BP-BASH-SYNTAX-GATE`, `BP-BASH-SHELLCHECK-GATE`,
+`BP-VALIDITY-GATE-<language>`).
+
+<example>
+<case>
+`.github/workflows/ci.yml:12` carries
+`# best-practice-ignore: BP-BASH-SHELLCHECK-GATE — author=maintainer expires=2027-06-30
+shellcheck lands with the release-gate rework`, and the run date is earlier than
+2027-06-30.
+</case>
+<verdict>suppressed — no finding is filed for this id</verdict>
+<reason>All three governance fields pass: `author=` is present and non-empty,
+`expires=` is a real calendar date still in the future, and there is reason text
+after the fields. A fully governed waiver is the one case where the gate finding
+is dropped silently.</reason>
+</example>
+
+<example>
+<case>
+The same marker and the same id, but `expires=2026-05-01` — a date that has
+passed.
+</case>
+<verdict>not suppressed — the finding is filed, with the rejection line</verdict>
+<reason>An expired waiver is an ungoverned waiver: the team's own deadline for
+the exception has passed, so the missing gate is live again. It is filed exactly
+as an unmarked finding would be, and the run records
+
+`Rejected suppression: .github/workflows/ci.yml:12 BP-BASH-SHELLCHECK-GATE — expires=2026-05-01 has passed`
+</reason>
+</example>
+
+<example>
+<case>
+`.github/workflows/ci.yml:12` carries
+`# best-practice-ignore: BP-BASH-SYNTAX-GATE — author= expires=2027-06-30
+deferred to the CI rewrite` — the `author=` field is present but empty.
+</case>
+<verdict>not suppressed — the finding is filed, with the rejection line</verdict>
+<reason>An empty field is a missing field: nobody owns the waiver, so there is
+no one to ask why it exists, and the author is never inferred from `git blame`
+or the commit that added the line. The run records
+
+`Rejected suppression: .github/workflows/ci.yml:12 BP-BASH-SYNTAX-GATE — author= empty`
+</reason>
+</example>
+
+<example>
+<case>
+`.github/workflows/ci.yml:12` carries
+`# best-practice-ignore: BP-VALIDITY-GATE-rust — author=maintainer expires=2027-06-30`
+— both fields well-formed, nothing after them.
+</case>
+<verdict>not suppressed — the finding is filed, with the rejection line</verdict>
+<reason>A waiver with no reason records only that someone silenced the check,
+which is exactly what the governance fields exist to prevent. The run records
+
+`Rejected suppression: .github/workflows/ci.yml:12 BP-VALIDITY-GATE-rust — reason text empty`
+
+A marker that fails any one field does not suppress, and the failed check is
+always named.</reason>
+</example>
+
+</examples>
+
+---
+
+{{ATTRIBUTION_FOOTER}}

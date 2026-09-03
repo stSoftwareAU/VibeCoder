@@ -21,7 +21,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 import { CONTENT_LABEL_DEFINITIONS } from "../setup/content_label_definitions.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -40,7 +40,7 @@ const FILER_LABELS = [
 ] as const;
 
 async function latestSecurityScan(): Promise<string> {
-  const result = await loadPrompt("security_scan", undefined, PROMPTS_DIR);
+  const result = await loadPrompt("security_scan", PROMPTS_DIR);
   assert(result.ok, "security_scan prompt failed to load");
   return result.value;
 }
@@ -117,15 +117,5 @@ Deno.test("security_scan - every defensive creation tolerates an existing label 
     [],
     "without `|| true` an already-existing label aborts the run:\n" +
       unguarded.join("\n"),
-  );
-});
-
-Deno.test("security_scan - the resolved version declares its own number in the H1 (Issue #791)", async () => {
-  const latest = await getLatestVersion("security_scan", PROMPTS_DIR);
-  assert(latest.ok, "could not resolve the latest security_scan version");
-  const h1 = (await latestSecurityScan()).split("\n")[0] ?? "";
-  assert(
-    h1.includes(`(${latest.value})`),
-    `H1 must declare ${latest.value}, got: ${h1}`,
   );
 });

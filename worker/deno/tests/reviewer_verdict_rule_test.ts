@@ -36,12 +36,12 @@
  */
 
 import { assert, assertStringIncludes } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 async function latestIssuePrompt(): Promise<string> {
-  const result = await loadPrompt("issue", undefined, PROMPTS_DIR);
+  const result = await loadPrompt("issue", PROMPTS_DIR);
   assert(result.ok, "issue prompt failed to load");
   return result.value;
 }
@@ -91,15 +91,5 @@ Deno.test("reviewer verdict - departing out loud is still required (Issue #886)"
   assertStringIncludes(
     flat,
     "An unrecorded departure is the self-assessment this whole section exists to remove",
-  );
-});
-
-Deno.test("reviewer verdict - the resolved version is what the worker loads (Issue #886)", async () => {
-  const latest = await getLatestVersion("issue", PROMPTS_DIR);
-  assert(latest.ok, "could not resolve the latest issue prompt version");
-  const version = Number(latest.value.slice(1));
-  assert(
-    Number.isInteger(version) && version >= 44,
-    `expected v44 or newer, got ${latest.value}`,
   );
 });

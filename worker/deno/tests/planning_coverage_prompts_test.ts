@@ -55,34 +55,25 @@ async function buildDraft(): Promise<string> {
   return built.value.prompt;
 }
 
-Deno.test("planning_critique v6 - the publish turn is told to post a coverage table", async () => {
+Deno.test("planning_critique - the publish turn is told to post a coverage table", async () => {
   const prompt = await buildCritique();
   assertStringIncludes(prompt, "## Plan Coverage");
   assertStringIncludes(prompt, "| Ask | Covered by | Notes |");
   assertStringIncludes(prompt, "Out of scope");
-
-  const v5 = await Deno.readTextFile(`${PROMPTS_DIR}/planning_critique/v5.md`);
-  assertEquals(v5.includes("## Plan Coverage"), false);
 });
 
-Deno.test("planning_critique v6 - each sub-issue's Context names the ask it covers", async () => {
+Deno.test("planning_critique - each sub-issue's Context names the ask it covers", async () => {
   const prompt = await buildCritique();
   assertStringIncludes(prompt, "Covers ask:");
-
-  const v5 = await Deno.readTextFile(`${PROMPTS_DIR}/planning_critique/v5.md`);
-  assertEquals(v5.includes("Covers ask:"), false);
 });
 
-Deno.test("planning v22 - the draft turn lists the asks and traces each sub-issue to one", async () => {
+Deno.test("planning - the draft turn lists the asks and traces each sub-issue to one", async () => {
   const prompt = await buildDraft();
   assertStringIncludes(prompt, "coverage table");
   assertStringIncludes(prompt, "Covers ask:");
-
-  const v21 = await Deno.readTextFile(`${PROMPTS_DIR}/planning/v21.md`);
-  assertEquals(v21.includes("Covers ask:"), false);
 });
 
-Deno.test("planning_critique v6 - the example table it teaches passes the real gate", async () => {
+Deno.test("planning_critique - the example table it teaches passes the real gate", async () => {
   const prompt = await buildCritique();
   const verdict = judgePlanCoverage(prompt);
   assert(

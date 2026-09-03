@@ -41,6 +41,10 @@ import type { GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { WorkerConfig } from "../types.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Plan-coverage gate fixtures (Issue #520)

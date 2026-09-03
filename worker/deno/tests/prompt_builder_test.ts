@@ -23,7 +23,7 @@ import {
   stripPlaywrightSection,
   stripScreenshotInstructions,
 } from "../lib/prompt_builder.ts";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt, PROMPT_FILENAME } from "../lib/prompt_manager.ts";
 import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -83,12 +83,12 @@ async function withOverlayPromptsDir(
   try {
     await Deno.mkdir(`${dir}/coding_guidelines`, { recursive: true });
     await Deno.writeTextFile(
-      `${dir}/coding_guidelines/v1.md`,
+      `${dir}/coding_guidelines/${PROMPT_FILENAME}`,
       "# Baseline\n\nAgnostic rules.\n\n### Playwright MCP (Container Headless Browser)\n\nDrive the headless browser.\n",
     );
     for (const [name, body] of Object.entries(overlays)) {
       await Deno.mkdir(`${dir}/${name}`, { recursive: true });
-      await Deno.writeTextFile(`${dir}/${name}/v1.md`, body);
+      await Deno.writeTextFile(`${dir}/${name}/${PROMPT_FILENAME}`, body);
     }
     await run(dir);
   } finally {
@@ -97,11 +97,7 @@ async function withOverlayPromptsDir(
 }
 
 Deno.test("prompt builder - no identity is byte-identical to the un-overlaid baseline (Issue #374)", async () => {
-  const template = await loadPrompt(
-    "coding_guidelines",
-    undefined,
-    PROMPTS_DIR,
-  );
+  const template = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(template.ok, true);
   if (!template.ok) return;
   const expected =
@@ -196,10 +192,10 @@ Deno.test("prompt builder - skipScreenshots still strips Playwright with an over
 // --- stripScreenshotInstructions tests ---
 
 // The "## Screenshot Generation with Playwright MCP" section rule was deleted
-// in Issue #3812 — that heading last existed in `prompts/issue/v9.md`, so the
-// rule had not fired against a live template since v10 and its presence hid
-// the drifted UI-Changes rule. Coverage for the surviving rules lives in
-// `screenshot_strip_test.ts`.
+// in Issue #3812 — that heading had long since left the issue template (it
+// survives only in git history), so the rule had not fired against the live
+// template for many revisions and its presence hid the drifted UI-Changes
+// rule. Coverage for the surviving rules lives in `screenshot_strip_test.ts`.
 
 Deno.test("prompt builder - strips UI Changes bullet regardless of wording", () => {
   // The bullet is matched on its stable `- **UI Changes**:` key, so a template

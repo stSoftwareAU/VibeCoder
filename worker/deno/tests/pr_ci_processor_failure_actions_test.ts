@@ -33,6 +33,10 @@ import type {
   runPrFailureActions,
 } from "../lib/pr_failure_actions.ts";
 import type { fetchGithubActionsLogExcerpt } from "../lib/github_actions_log_fetcher.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -61,7 +61,7 @@ function makeDeps(
   return {
     loadPromptFn: async (name: string) => {
       const { loadPrompt } = await import("../lib/prompt_manager.ts");
-      return loadPrompt(name, undefined, PROMPTS_DIR);
+      return loadPrompt(name, PROMPTS_DIR);
     },
     runClaudeFn: fakeRunner(output, captured),
   };
@@ -211,7 +211,7 @@ Deno.test("runSecurityScan - non-zero exit returns claude error", async () => {
   const deps: ScannerDeps = {
     loadPromptFn: async (name) => {
       const { loadPrompt } = await import("../lib/prompt_manager.ts");
-      return loadPrompt(name, undefined, PROMPTS_DIR);
+      return loadPrompt(name, PROMPTS_DIR);
     },
     runClaudeFn: () =>
       Promise.resolve({
@@ -231,7 +231,7 @@ Deno.test("runSecurityScan - timeout returns timeout error with partial output",
   const deps: ScannerDeps = {
     loadPromptFn: async (name) => {
       const { loadPrompt } = await import("../lib/prompt_manager.ts");
-      return loadPrompt(name, undefined, PROMPTS_DIR);
+      return loadPrompt(name, PROMPTS_DIR);
     },
     runClaudeFn: () =>
       Promise.resolve({
@@ -362,7 +362,7 @@ function makeDepsWithVerdict(
   return {
     loadPromptFn: async (name: string) => {
       const { loadPrompt } = await import("../lib/prompt_manager.ts");
-      return loadPrompt(name, undefined, PROMPTS_DIR);
+      return loadPrompt(name, PROMPTS_DIR);
     },
     runClaudeFn: fakeRunner("", captured),
     detectLlmUsageFn: () => Promise.resolve(verdict),
@@ -418,7 +418,7 @@ Deno.test(
     const deps: ScannerDeps = {
       loadPromptFn: async (name: string) => {
         const { loadPrompt } = await import("../lib/prompt_manager.ts");
-        return loadPrompt(name, undefined, PROMPTS_DIR);
+        return loadPrompt(name, PROMPTS_DIR);
       },
       runClaudeFn: fakeRunner("", captured),
       detectLlmUsageFn: () => Promise.reject(new Error("walk failed")),

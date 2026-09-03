@@ -66,8 +66,7 @@ export const SECURITY_SCAN_ISSUE_TITLE = "Run a security scan";
 /**
  * Body fingerprint that uniquely identifies a security-scan wrapper
  * (Issues #2087, #2118). The phrase is stable across prompt revisions
- * (`v1.md`..`v5.md`) and unlikely to appear in a hand-typed issue
- * unrelated to a scan.
+ * and unlikely to appear in a hand-typed issue unrelated to a scan.
  *
  * Issue #2118 anchored the match to a Markdown heading at the start of
  * a line. The original substring match treated *any* mention of the

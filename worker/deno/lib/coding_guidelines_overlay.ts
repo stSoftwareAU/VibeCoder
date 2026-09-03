@@ -1,7 +1,7 @@
 /**
  * Per-model coding-guidelines overlay (Issue #374, parent #358).
  *
- * The shared `coding_guidelines` template is model-agnostic from v42
+ * The shared `coding_guidelines` template is model-agnostic
  * (Issue #373): it states the standing directives as rules rather than
  * asserting one generation's traits to every agent that runs them. Genuine
  * per-model tuning still has to live somewhere, so this module resolves an
@@ -9,16 +9,15 @@
  * the same identity `lib/agent_provider.ts` resolves — and
  * `buildCodingGuidelines()` appends it behind the agnostic baseline.
  *
- * Overlays are ordinary versioned prompts: `prompts/coding_guidelines_<id>/`
- * holding immutable `vN.md` files, of which the highest wins. Two candidates
- * are tried, most specific first:
+ * Overlays are ordinary prompts: `prompts/coding_guidelines_<id>/prompt.md`.
+ * Two candidates are tried, most specific first:
  *
  *   1. `coding_guidelines_<provider>_<model>` — tuning for one model,
  *   2. `coding_guidelines_<provider>`         — tuning for the whole provider.
  *
  * No candidate directory → no overlay, and the baseline is returned byte for
- * byte. A directory that *does* exist but carries no `vN.md` is an authoring
- * mistake and fails loud rather than passing for "no overlay".
+ * byte. A directory that *does* exist but carries no `prompt.md` is an
+ * authoring mistake and fails loud rather than passing for "no overlay".
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -109,7 +108,7 @@ async function isDirectory(path: string): Promise<boolean> {
  * @param promptsDir - Prompts directory (defaults to the worker's).
  * @returns The overlay text, or `undefined` when no overlay directory exists
  *   for this identity. Errors only when an overlay directory exists but
- *   cannot be read or carries no version.
+ *   cannot be read or carries no `prompt.md`.
  */
 export async function loadCodingGuidelinesOverlay(
   identity?: AgentIdentity,
@@ -139,14 +138,14 @@ export async function loadCodingGuidelinesOverlay(
     }
     if (!exists) continue;
 
-    const loaded = await loadPrompt(name, undefined, dir);
+    const loaded = await loadPrompt(name, dir);
     if (!loaded.ok) {
       // The directory was authored deliberately, so an unloadable overlay is
       // a fault — reporting "no overlay" here would mask it.
       return {
         ok: false,
         error: new Error(
-          `Coding-guidelines overlay '${name}' exists but no version could be loaded: ${loaded.error.message}`,
+          `Coding-guidelines overlay '${name}' exists but its prompt could not be loaded: ${loaded.error.message}`,
         ),
       };
     }

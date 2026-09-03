@@ -114,9 +114,9 @@ deno run --allow-X worker/deno/mod.ts command-name --arg1 value1 --arg2 value2
 
 The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
 `worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
-launcher that locates Deno and delegates. The gate runs: prompt immutability,
-benchmark audit, `deno test`, `deno lint`, `deno check`, `deno fmt --check`,
-plus mermaid, markdownlint, semgrep, and the docs prompt-version checks.
+launcher that locates Deno and delegates. The gate runs: benchmark audit,
+`deno test`, `deno lint`, `deno check`, `deno fmt --check`, plus mermaid,
+markdownlint, and semgrep.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
@@ -2878,9 +2878,9 @@ links to its issue for the full rationale.
   invoking Claude.
 - **Worker quality-gate baseline-aware push (generalised in ):** Pre-existing
   failures captured by the baseline are not blamed on the current change. The
-  bypass reasons over every diffable check at once — mermaid, markdownlint, and
-  the docs prompt-version check (`baseline_gate.ts`) — so a pre-existing failure
-  in an untouched mermaid/markdownlint/docs artefact no longer forces a
+  bypass reasons over every diffable check at once — mermaid and markdownlint
+  (`baseline_gate.ts`) — so a pre-existing failure in an untouched
+  mermaid/markdownlint artefact no longer forces a
   remediation loop, while a genuinely-new failure is never waved through.
 - **Pre-flight rate-limit check at startup:** the worker driver aborts cleanly
   when GitHub rate-limit headroom is too low to complete a scan cycle.
