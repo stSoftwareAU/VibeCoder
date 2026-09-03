@@ -242,6 +242,24 @@ Deno.test("security_scan - carries the family's shared headings (Issue #837)", a
   );
 });
 
+Deno.test("security_scan - files its rationale under the family slot (Issue #837)", async () => {
+  const text = await securityScanPrompt();
+  // The issue-body rationale slot: every sibling scan writes the reader's
+  // stake under `## Why this matters`, and a reader scanning filed issues
+  // across scans should not have to know which scan wrote the body.
+  assert(
+    !text.includes("## Why it is a bug"),
+    "`## Why it is a bug` names the verdict, not the reader's stake",
+  );
+  // Both the prose listing the body's sections and the rendered worked
+  // example must carry the house slot, so the shape and its example agree.
+  assertEquals(
+    [...text.matchAll(/## Why this matters/g)].length,
+    2,
+    "the section list and the rendered example must both name the slot",
+  );
+});
+
 Deno.test("security_scan - uses the SEC-prefixed finding-id placeholder (Issue #837)", async () => {
   const text = await securityScanPrompt();
   assert(

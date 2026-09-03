@@ -1665,10 +1665,11 @@ reconcile pass has nothing to repaint.
    waives a real security finding, so it counts only when it records who
    waived it, until when, and why. When the file at
    `<file>:<first-line>` carries a matching marker — this scan's own
-   `security-scan-ignore` keyword in a `#`, `//` or `/* */` comment, or
-   the `# noqa: SEC-…` and `// eslint-disable-next-line SEC-…` forms the
-   suppression checker also recognises for `SEC-` ids — check all three
-   governance fields before honouring it:
+   `security-scan-ignore` keyword in whichever comment syntax the file's
+   language uses (`#`, `//` or `/* */`), or the `# noqa: SEC-…` and
+   `// eslint-disable-next-line SEC-…` forms the suppression checker also
+   recognises for `SEC-` ids — check all three governance fields before
+   honouring it:
    - `author=<github-login>` — present and non-empty;
    - `expires=<YYYY-MM-DD>` — a real calendar date, today or later;
    - reason text after those fields — present and non-empty.
@@ -1701,7 +1702,7 @@ reconcile pass has nothing to repaint.
    reworded, renamed, or prose-only CWE mention is silently dropped.
    Emit **at most one** cwe marker per issue, and none at all when
    Phase 3 assigned no confident id. Then a prose lead naming the file,
-   lines, severity, and class, then `## Why it is a bug`, `## Attacker model`,
+   lines, severity, and class, then `## Why this matters`, `## Attacker model`,
    `## Trigger`, `## Exploit sketch`, and `## Suggested fix` — only the
    sections you have evidence for. For a Deno repo (Phase 1), prefer the
    Deno-native tool (`deno test`, `deno lint`, `deno fmt`, `deno run`)
@@ -1722,7 +1723,7 @@ reconcile pass has nothing to repaint.
    Unparameterised SQL built from request input in
    `src/api/orders.ts:47-52` — severity high, class SQL injection.
 
-   ## Why it is a bug
+   ## Why this matters
 
    <what the cited lines do wrong>
 
