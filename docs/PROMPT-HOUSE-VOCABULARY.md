@@ -107,7 +107,7 @@ Applies to the twelve interactive directories in [Families](#families).
   (`prompts/doc_coverage/`) are banned: they describe today's placement rather
   than the house one, and each sweep that leaves them standing keeps a second
   place a maintainer must look. At the baseline eleven of the seventeen
-  templates carrying the placeholder already held it under `## Inputs`. Four —
+  placeholder-carrying templates already held it under `## Inputs`. Four —
   `prompts/alert_feed/`, `prompts/bash_script_refs/`,
   `prompts/bash_syntax_audit/` and `prompts/workflow_annotation_scan/` — have no
   `## Inputs` section at all; adding one to a lightweight audit is a presence
