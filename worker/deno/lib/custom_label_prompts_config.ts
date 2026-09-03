@@ -24,6 +24,7 @@
 
 import type { CustomLabelPromptMapping, Result } from "../types.ts";
 import { isReservedLabel } from "./config_defaults.ts";
+import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
 
 /** Keys a `custom_label_prompts` entry may carry. */
 const KNOWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
@@ -101,6 +102,19 @@ function parseEntry(
     reject(
       `${entryField}.label`,
       `"${label}" is a reserved or discovery label and cannot be remapped`,
+    );
+  }
+  // Issue #847: a custom label dispatches a privileged phase, so the worker
+  // must never self-apply one — the creation-time filters treat it as
+  // reserved. A label the worker legitimately applies itself (`idle-task`,
+  // `security`, `severity:high`, …) would therefore be stripped from the
+  // worker's own issues, starving the very flow that files them. Those labels
+  // are not in RESERVED_LABELS by design, so refuse the collision at config
+  // load rather than let it fail silently at runtime.
+  if (isWorkerAppliableLabel(label)) {
+    reject(
+      `${entryField}.label`,
+      `"${label}" is a label the worker applies itself and cannot be remapped`,
     );
   }
   if (seenLabels.has(label.toLowerCase())) {
@@ -183,6 +197,24 @@ export function assertCustomLabelPrompts(
     );
   }
   return result.value;
+}
+
+/**
+ * The label names of every configured mapping (Issue #847, part of #843).
+ *
+ * The trust gate (`operationalDispatchLabels`), the operational-label
+ * verification in `label_security.ts`, and the reserved-label filters in
+ * `github.ts` all need the label names without the prompt paths. Reading them
+ * from this one helper keeps those guards in step with the validated config
+ * rather than each rebuilding the list.
+ *
+ * @param config - Worker configuration (or any object carrying the resolved list)
+ * @returns The configured labels, in configuration order and original case
+ */
+export function customLabelPromptLabels(
+  config: { customLabelPrompts: CustomLabelPromptMapping[] },
+): string[] {
+  return config.customLabelPrompts.map((mapping) => mapping.label);
 }
 
 /**

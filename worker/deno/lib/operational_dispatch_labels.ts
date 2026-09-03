@@ -20,6 +20,7 @@
  */
 
 import type { WorkerConfig } from "../types.ts";
+import { customLabelPromptLabels } from "./custom_label_prompts_config.ts";
 
 /**
  * Resolve the configured operational dispatch labels.
@@ -42,6 +43,12 @@ export function operationalDispatchLabels(config: WorkerConfig): string[] {
     config.planningLabel,
     config.questionLabel,
     config.needsRevisionLabel,
+    // Issue #847 (part of #843): a `custom_label_prompts` label dispatches a
+    // privileged automation phase with an operator-supplied prompt, so it is as
+    // privileged as planning and belongs in the same AND-gated set. With no
+    // mappings configured this contributes nothing and the six labels above are
+    // returned unchanged.
+    ...customLabelPromptLabels(config),
   ];
 }
 

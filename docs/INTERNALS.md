@@ -1229,6 +1229,24 @@ trusted label adder). The set is resolved from config by
 `requiresLabelAdderTrust()` in
 [operational_dispatch_labels.ts](../worker/deno/lib/operational_dispatch_labels.ts).
 
+Every label declared in `custom_label_prompts`
+([Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts)) joins that set
+(Issue #847). A custom label dispatches a privileged automation phase with an
+operator-supplied prompt, so it is gated exactly like `planning`: the adder must
+be on the allowlist, the comparison is case-insensitive, and an add that cannot
+be attributed to anyone fails closed (the issue is skipped, never handed to
+another handler as a plain descriptive label). The same labels are treated as
+operational by `verifyOperationalLabels()`
+([label_security.ts](../worker/deno/lib/label_security.ts)) in all four
+discovery collectors, so an untrusted actor's add is stripped on those paths
+too, and as reserved by the creation-time filters in
+[github.ts](../worker/deno/lib/github.ts) so the worker's own creation paths
+never apply one. A label the worker legitimately raises itself (`idle-task`,
+`security`, `severity:…`) cannot be remapped at all — the config validator
+refuses the collision at load, so making custom labels reserved can never strip
+a label the worker needs. With no mappings configured the set is the same six
+labels as before.
+
 Issues are **excluded** from selection if they carry any of: `failed`,
 `refine-issue`, `planning`, `question`, `needs-human`. retired the standalone
 `needs-clarification` label and folded the clarification handoff onto

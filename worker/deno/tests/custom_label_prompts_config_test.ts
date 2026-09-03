@@ -15,8 +15,11 @@
  *   6. a relative `prompt_path` is rejected;
  *   7. a `prompt_path` that does not exist or is not readable is rejected;
  *   8. a duplicate label is rejected;
- *   9. a label colliding with a reserved or discovery label is rejected; and
- *  10. an unknown key inside an entry is rejected.
+ *   9. a label colliding with a reserved or discovery label is rejected;
+ *  10. an unknown key inside an entry is rejected; and
+ *  11. a label the worker applies itself is rejected (Issue #847), so the
+ *      reserved-label filters can treat every custom label as reserved without
+ *      stripping a label the worker legitimately raises.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -24,6 +27,7 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   assertCustomLabelPrompts,
+  customLabelPromptLabels,
   customLabelPromptPath,
   parseCustomLabelPrompts,
 } from "../lib/custom_label_prompts_config.ts";
@@ -381,4 +385,49 @@ Deno.test("loadConfig - an unreadable prompt file fails config load", async () =
     );
     await assertRejects(() => loadConfig(path), Error, "custom_label_prompts");
   });
+});
+
+// ---------------------------------------------------------------------------
+// Trust-gate support (Issue #847, part of #843)
+// ---------------------------------------------------------------------------
+
+Deno.test("parseCustomLabelPrompts - rejects a label the worker applies itself (Issue #847)", async () => {
+  // These labels are deliberately absent from RESERVED_LABELS because the
+  // worker self-applies them. Remapping one would make the reserved-label
+  // filters strip the worker's own label, starving the flow that files it.
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-prompts-" });
+  try {
+    const promptPath = await writePromptFile(dir, "a.md");
+    for (const label of ["idle-task", "Security", "severity:high"]) {
+      assertRejected(
+        [{ label, prompt_path: promptPath }],
+        "custom_label_prompts[0].label",
+        "the worker applies itself",
+      );
+    }
+    // A label the worker never applies is still accepted.
+    const ok = parseCustomLabelPrompts([{
+      label: "deploy-review",
+      prompt_path: promptPath,
+    }]);
+    assertEquals(ok.ok, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("customLabelPromptLabels - returns the configured labels in order", () => {
+  assertEquals(
+    customLabelPromptLabels({
+      customLabelPrompts: [
+        { label: "deploy-review", promptPath: "/opt/prompts/a.md" },
+        { label: "Ops-Audit", promptPath: "/opt/prompts/b.md" },
+      ],
+    }),
+    ["deploy-review", "Ops-Audit"],
+  );
+});
+
+Deno.test("customLabelPromptLabels - returns an empty list when nothing is configured", () => {
+  assertEquals(customLabelPromptLabels({ customLabelPrompts: [] }), []);
 });
