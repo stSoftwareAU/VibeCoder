@@ -71,6 +71,12 @@ export interface LoggerOptions {
   debug?: boolean;
   /** Minimum log level to output (defaults to INFO). Takes precedence over debug flag. */
   logLevel?: LogLevel;
+  /**
+   * Host identity stamped on every line (Issue #856). Defaults to
+   * `<hostname>:<pid>`, matching the form the idle instruments already use.
+   * Pass a fixed value in tests; pass `""` to omit the field entirely.
+   */
+  host?: string;
 }
 
 /**
@@ -155,6 +161,46 @@ export function formatDuration(totalSeconds: number): string {
  * @param options - Logger configuration options
  * @returns Logger instance with structured logging methods
  */
+/**
+ * This process's identity, for stamping on every log line (Issue #856).
+ *
+ * Only 26% of the worker's log lines carried a host — the idle instruments
+ * did, and nothing else. Once logs from several hosts are copied to one
+ * place, every claim, PR, error, escalation and outcome became unattributable,
+ * so "which host is failing?" could not be answered from the merged store.
+ *
+ * The form matches what `idle_decision_census.ts` and
+ * `idle_detect_diagnostics.ts` already emit, so a scraper needs one shape
+ * rather than two. Resolved once: the hostname does not change under us, and
+ * a syscall per log line would be absurd.
+ *
+ * Falls back to `unknown-host` when the hostname cannot be read — a log line
+ * missing its host is worth far less than a crash in the logger.
+ */
+let cachedHostId: string | undefined;
+
+function defaultHostId(): string {
+  if (cachedHostId !== undefined) return cachedHostId;
+  let name = "unknown-host";
+  try {
+    name = Deno.hostname();
+  } catch {
+    // `--allow-sys=hostname` not granted; the pid alone still separates
+    // concurrent processes on one machine.
+  }
+  let pid = 0;
+  try {
+    pid = Deno.pid;
+  } catch { /* not addressable; 0 is a legible placeholder */ }
+  cachedHostId = `${name}:${pid}`;
+  return cachedHostId;
+}
+
+/** Reset the cached identity. Tests only. */
+export function resetHostIdForTest(): void {
+  cachedHostId = undefined;
+}
+
 export function createLogger(options: LoggerOptions = {}): Logger {
   // Redact known secret shapes from every line before it reaches the sink
   // (Issue #2417). This is the single chokepoint for worker log output, so
@@ -171,6 +217,13 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const sink = options.write ?? ((msg: string) => console.error(msg));
   const write = (msg: string) => sink(redactSecrets(msg));
   const minLevel = resolveLogLevel(options);
+  // Issue #856: appended rather than prefixed. Several parsers anchor on the
+  // `[timestamp] LEVEL: message` shape (`green_gate_report.ts`,
+  // `first_run_verification.ts`), and a host inserted before the message
+  // would break them for no gain — a trailing field greps and splits just as
+  // well in a merged store.
+  const hostId = options.host ?? defaultHostId();
+  const hostSuffix = hostId === "" ? "" : ` host=${hostId}`;
 
   const log = (
     level: LogLevel,
@@ -183,7 +236,9 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     // Slot attribution (Issue #4181): lines written under a concurrent
     // issue slot carry `[sN owner/repo#issue]`; outside a slot, unchanged.
     write(
-      `[${timestamp}] ${level}: ${attributeToSlot(message)}${contextStr}`,
+      `[${timestamp}] ${level}: ${
+        attributeToSlot(message)
+      }${contextStr}${hostSuffix}`,
     );
   };
 
