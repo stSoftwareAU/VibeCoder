@@ -198,7 +198,7 @@ export interface ContainerLaunchInputs {
   containerToolsSpecJson?: string;
   /**
    * The host's own short hostname, passed into the container as
-   * VIBE_HOST_ID so fleet telemetry (private-repo-6) names the real machine
+   * VIBE_HOST_ID so fleet telemetry names the real machine
    * rather than the ephemeral container hostname. Optional: absent means
    * the worker falls back to its own hostname (native-mode behaviour).
    */

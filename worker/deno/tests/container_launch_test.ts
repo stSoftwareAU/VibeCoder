@@ -357,9 +357,9 @@ Deno.test("resolveContainerResources - host-aware defaults with operator overrid
 });
 
 Deno.test("buildContainerLaunchPlan - passes the host identity into the container", () => {
-  // private-repo-6 heartbeats must name the real host, not the ephemeral
-  // container hostname (a fresh name every cycle would leave the host
-  // permanently "dead" on the fleet board and add a phantom host per run).
+  // Fleet telemetry must name the real host, not the ephemeral container
+  // hostname (a fresh name every cycle would leave the host permanently
+  // "dead" on the fleet board and add a phantom host per run).
   const plan = buildContainerLaunchPlan(inputs({ hostId: "host-23" }));
   assertEquals(plan.runArgs.includes("VIBE_HOST_ID=host-23"), true);
   // Without a hostId the env is simply absent — the worker falls back to

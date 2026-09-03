@@ -223,7 +223,7 @@ export interface MaybeFileIdleTaskData {
  * `lib/run_core_production_deps.ts` also injects `log` here to route
  * the structured progress lines (`[idle-task] ...`) through the shared
  * worker Logger instead of letting them sink into the inherited tty —
- * the same visibility fix #2016 applied to the private-repo-6 heartbeat.
+ * the same visibility fix #2016 applied to the fleet heartbeat.
  */
 interface TestDeps {
   /**

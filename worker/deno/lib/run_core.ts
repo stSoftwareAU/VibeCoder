@@ -266,8 +266,9 @@ export interface RunCoreResult {
   quotaResetEpochMs?: number;
   /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
-   * passed. Used to gate the end-of-run private-repo-6 report — a worker that
-   * could not authenticate must not report itself healthy.
+   * passed. Reported on the loop result so the caller can tell a healthy
+   * exit from an unhealthy one — a worker that could not authenticate must
+   * not be recorded as healthy.
    */
   lastHealthCheckPassed: boolean;
   /**
@@ -908,24 +909,6 @@ export interface RunCoreDeps {
    * is inert and behaviour is unchanged.
    */
   refreshTrustedAuthors?: () => Promise<RefreshOutcome>;
-
-  /**
-   * Report worker health to the private-repo-6 repository (Issue #1935).
-   *
-   * Invoked at the top of every priority-loop iteration as a heartbeat,
-   * so the host's `last_commit_ts` row in `private-repo-6/docs/repos.json`
-   * advances at least once per iteration. The previous end-of-run-only
-   * heartbeat in `commands/run_core.ts` was silently lost when the
-   * parent shell sent SIGTERM during the post-loop best-effort block,
-   * leaving hosts flagged dead on the dashboard.
-   *
-   * Best-effort — failures are caught by the loop and never abort the
-   * run. The underlying `helpers/repos.sh` script enforces its own 1h
-   * rate-limit, so frequent calls are cheap no-ops between real pushes.
-   *
-   * Optional so test deps can omit it.
-   */
-  reportFleetHealthHeartbeat?: () => Promise<void>;
 
   /**
    * Fire the idle-task issue filer (Issue #2005).
@@ -3848,9 +3831,9 @@ export async function runCoreLoop(
           }
 
           // --- Health checks ---
-          // Issue #2602: a failed check marks the worker unhealthy so neither
-          // the per-iteration heartbeat below nor the end-of-run report
-          // (gated on `lastHealthCheckPassed`) reports the host as healthy.
+          // Issue #2602: a failed check marks the worker unhealthy, so the
+          // loop result carries `lastHealthCheckPassed: false` and the host
+          // is never recorded as healthy for this run.
           const claudeHealth = await deps.checkClaudeHealth();
           if (!claudeHealth.ok || !claudeHealth.value.healthy) {
             lastHealthCheckPassed = false;
@@ -3885,8 +3868,8 @@ export async function runCoreLoop(
             // `[repo-access] host=… status=inaccessible repos=… consecutive=…`
             // — so the outage is recoverable from the log after the fact.
             // `logRepoAccessOnce` suppresses the identical line from the
-            // other call sites in the same iteration (the private-repo-6
-            // report), and the iteration boundary resets it.
+            // other call sites in the same iteration, and the iteration
+            // boundary resets it.
             logRepoAccessOnce(
               inaccessibleRepos,
               (line) => deps.logError(line),
@@ -3942,35 +3925,6 @@ export async function runCoreLoop(
                     : String(fableErr)
                 }`,
               );
-            }
-          }
-
-          // Issue #1935: emit a private-repo-6 heartbeat once per iteration so the
-          // host's row in `private-repo-6/docs/repos.json` advances even when the
-          // end-of-run path is killed by SIGTERM. `helpers/repos.sh`
-          // rate-limits to one push/hour, so frequent invocations are cheap
-          // no-ops.
-          //
-          // Issue #2602: the heartbeat is reported only AFTER the Claude and
-          // GitHub auth health checks pass. A worker that cannot authenticate
-          // (e.g. Claude 401) must NOT report itself healthy — skipping the
-          // heartbeat lets the host go stale on the dashboard so the failure
-          // is visible instead of being masked by a green "healthy" row.
-          // Best-effort — wrapped so a heartbeat failure cannot abort the loop.
-          //
-          // Issue #4038: the `lastHealthCheckPassed` guard is explicit because
-          // the monitored-repo access check above falls through instead of
-          // skipping the cycle. Without it, a host that cannot see its repos
-          // would keep heartbeating green — the exact #4028 false-healthy
-          // signature this gate exists to end.
-          if (lastHealthCheckPassed && deps.reportFleetHealthHeartbeat) {
-            try {
-              await deps.reportFleetHealthHeartbeat();
-            } catch (heartbeatErr) {
-              const msg = heartbeatErr instanceof Error
-                ? heartbeatErr.message
-                : String(heartbeatErr);
-              deps.log(`FLEET heartbeat failed (continuing): ${msg}`);
             }
           }
 

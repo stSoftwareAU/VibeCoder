@@ -862,10 +862,10 @@ Four boundaries hold now:
   `Feature work-volume` only when the volume has surfaced no I/O fault
   **and** its standing totals are measurable.
 - **Both signals blind marks the host unhealthy.** One blind signal is named
-  on the fleet-health payload; losing both is a health condition in its own
-  right — the iteration logs `[DISK_TELEMETRY_BLIND]` once, the host reports
-  unhealthy, and the payload says *which* host lost its disk telemetry. It
-  gates nothing: a monitoring fault must not stop the fleet working.
+  in the telemetry notes; losing both is a health condition in its own
+  right — the iteration logs `[DISK_TELEMETRY_BLIND]` once and the host
+  reports unhealthy. It gates nothing: a monitoring fault must not stop the
+  fleet working.
 - **Measure where the bytes are.** The cycle-start walk lands ~2 minutes in,
   before the clones a cycle creates exist, so it is sampled **again at end of
   run** — when the volume is at its fullest — as `Work volume (end of run):`.
