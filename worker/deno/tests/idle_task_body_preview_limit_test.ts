@@ -60,22 +60,10 @@ import "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 import "../lib/idle_task_templates/private_repo_reference_template.ts";
 import "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import "../lib/idle_task_templates/retro_template.ts";
-
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
+import { withRepoRootCwd } from "./support/repo_prompts.ts";
 
 /** A 40-character commit SHA, as GitHub permalinks carry. */
 const SHA_40 = /\b[0-9a-f]{40}\b/;
-
-/** Run `fn` with cwd at the repo root, restoring the original cwd after. */
-async function withRepoRootCwd<T>(fn: () => Promise<T>): Promise<T> {
-  const original = Deno.cwd();
-  Deno.chdir(REPO_ROOT);
-  try {
-    return await fn();
-  } finally {
-    Deno.chdir(original);
-  }
-}
 
 /** Build a template's preview body exactly as the two filers do. */
 function buildPreview(template: IdleTaskTemplate): Promise<string> {
