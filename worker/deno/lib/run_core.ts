@@ -970,12 +970,21 @@ export interface RunCoreDeps {
    * `mis_classification` alert when its own probe disagrees with the
    * scan loop.
    *
+   * Issue #898: `scanExcludedRepos` names the repos the scan was never
+   * shown, because a slot or the maintenance lane held them. The scan
+   * cannot disagree about a repository it was not allowed to see, so those
+   * repos raise no alert — their claimable counts are unchanged.
+   *
    * Best-effort — any throw is caught by the loop and logged so an
    * audit failure never aborts the main loop. Optional so test deps
    * can omit it.
    */
   runIdleDetectAudit?: (
-    info: { tick: number; scanFoundClaimable: boolean },
+    info: {
+      tick: number;
+      scanFoundClaimable: boolean;
+      scanExcludedRepos: readonly string[];
+    },
   ) => Promise<{ claimableTotal: number } | void>;
 
   /**
@@ -1015,12 +1024,19 @@ export interface RunCoreDeps {
    * from four minutes earlier, so "the claim scan keeps refusing this work"
    * was already false when it was written. A served repo never feeds the
    * escalation streak.
+   *
+   * Issue #898: `scanExcludedRepos` names the repos that completed pass was
+   * never shown, because an issue slot (Issue #4176) or the maintenance lane
+   * (Issue #213) held them. The scan skips those before any collector runs,
+   * so `claimScanCompleted` says nothing about them and they must not
+   * escalate as work the scan refused.
    */
   runIdleDecisionCensus?: (
     info: {
       decisionPoint: "filing" | "selection";
       claimScanCompleted: boolean;
       claimedRepos: readonly string[];
+      scanExcludedRepos: readonly string[];
     },
   ) => Promise<
     {
@@ -1760,6 +1776,12 @@ async function runIssueScanLoop(
      * it and the idle-inversion escalation must not fire.
      */
     eligibilityScanCompleted?: boolean;
+    /**
+     * The repositories that pass was never shown (Issue #898). Always empty
+     * for the serial loop — one slot shares no clone, so it excludes
+     * nothing; the pool sets it from its in-flight registry.
+     */
+    scanExcludedRepos?: readonly string[];
   }
 > {
   // Concurrent slots (Issue #4177, part of #4168): above one slot the pool
@@ -2434,6 +2456,17 @@ interface SlotPoolState {
    * idle-inversion escalation has no evidence to escalate.
    */
   eligibilityScanCompleted: boolean;
+  /**
+   * The repositories the completed eligibility pass was never shown
+   * (Issue #898) — `findOldestIssue`'s `excludeRepos` set at the moment a
+   * scan came up empty, i.e. every repo an issue slot (Issue #4176) or the
+   * maintenance lane (Issue #213) held.
+   *
+   * The scan skips those before any collector runs, so it records no
+   * per-issue skip reason for them and the census must not read
+   * {@link SlotPoolState.eligibilityScanCompleted} as covering them.
+   */
+  scanExcludedRepos?: ReadonlySet<string>;
 }
 
 /**
@@ -2486,6 +2519,8 @@ async function runIssueScanPool(
     workVolumeFaulted: boolean;
     /** See the serial loop's field of the same name (Issue #437). */
     eligibilityScanCompleted: boolean;
+    /** See {@link SlotPoolState.scanExcludedRepos} (Issue #898). */
+    scanExcludedRepos: readonly string[];
   }
 > {
   await deps.resetRepoFailures();
@@ -2539,6 +2574,7 @@ async function runIssueScanPool(
     hostDiskLow: pool.hostDiskLow === true,
     workVolumeFaulted: pool.workVolumeFaulted === true,
     eligibilityScanCompleted: pool.eligibilityScanCompleted,
+    scanExcludedRepos: [...(pool.scanExcludedRepos ?? [])],
   };
 }
 
@@ -2704,8 +2740,11 @@ async function runSlot(
 
     // Find the next issue outside the repositories siblings hold.
     let scanSummary: DiagnosticSummary | undefined;
+    // Issue #898: kept, because it is the census's only record of what this
+    // pass was not allowed to see.
+    const excludedRepos = pool.registry.heldRepos();
     const findResult = await deps.findNextIssue({
-      excludeRepos: pool.registry.heldRepos(),
+      excludeRepos: excludedRepos,
       // Issues this cycle already deferred for the adaptive floor (#245).
       excludeIssues: pool.deferredClaims,
       onScanSummary: (summary) => {
@@ -2724,6 +2763,9 @@ async function runSlot(
       // record the idle-inversion escalation reads to tell "the scan said
       // no" from "the scan never looked".
       pool.eligibilityScanCompleted = true;
+      // Issue #898: and the repos this pass was never shown, so the census
+      // does not read "refused" over a repository a slot had made invisible.
+      pool.scanExcludedRepos = excludedRepos;
       // Issue #219: an empty scan is reported with its counts, and the slot
       // retires only when nothing else is running. Returning on the first
       // null parked the slot until the whole pool drained — a two-slot pool
@@ -4189,6 +4231,9 @@ export async function runCoreLoop(
                 const auditResult = await deps.runIdleDetectAudit({
                   tick: idleDetectTick,
                   scanFoundClaimable: tracker.foundClaimableIssue,
+                  // Issue #898: the scan and the audit cannot disagree about
+                  // a repository the scan was never shown.
+                  scanExcludedRepos: scanResult.scanExcludedRepos ?? [],
                 });
                 if (
                   auditResult !== undefined &&
@@ -4229,6 +4274,11 @@ export async function runCoreLoop(
                     scanResult.eligibilityScanCompleted === true,
                   // Issue #460: a repo the scan served is not one it refused.
                   claimedRepos: [...tracker.claimedRepos],
+                  // Issue #898: nor is one it was never shown. A slot or the
+                  // maintenance lane holding a repo makes it invisible to
+                  // the scan, which then records no reason for any of its
+                  // issues — the empty section in every escalation filed.
+                  scanExcludedRepos: scanResult.scanExcludedRepos ?? [],
                 });
                 if (
                   censusResult !== undefined &&
