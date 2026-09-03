@@ -94,6 +94,7 @@ import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 // Issue #4037: the audit's per-repo probe also feeds the access store.
 import { recordRepoProbeBestEffort } from "./monitored_repo_access.ts";
+import { extractDependencyReferencesDetailed } from "./issue_dependencies.ts";
 
 // ---------------------------------------------------------------------------
 // Label sets
@@ -213,6 +214,8 @@ function normaliseIssue(raw: unknown): {
   labels: string[];
   assignees: string[];
   milestone: string;
+  /** Issue #857: carries the dependency references the scan's gate reads. */
+  body?: string;
 } | null {
   if (typeof raw !== "object" || raw === null) return null;
   const v = raw as GhIssue;
@@ -231,7 +234,17 @@ function normaliseIssue(raw: unknown): {
   const milestone = (v.milestone && typeof v.milestone.title === "string")
     ? v.milestone.title
     : "";
-  return { number: v.number, title, labels, assignees, milestone };
+  const body = typeof (v as { body?: unknown }).body === "string"
+    ? (v as { body: string }).body
+    : undefined;
+  return {
+    number: v.number,
+    title,
+    labels,
+    assignees,
+    milestone,
+    ...(body === undefined ? {} : { body }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +311,8 @@ export type IssueExclusionReason =
   | "pr_blocked"
   /** Named by a merged fleet PR — a permanent skip (GRQ#4419). */
   | "merged_pr_blocked"
+  /** Names an open dependency the scan refuses it for (#460, GRQ#4465). */
+  | "dependency_blocked"
   /** Held back by this run's own cooldown / processed-issue registry (#655). */
   | "run_local_hold";
 
@@ -339,6 +354,46 @@ export interface ClassifyOptions {
    * mis-classification this audit exists to catch.
    */
   runLocalHolds?: ReadonlySet<number>;
+  /**
+   * Issue #857: the repo's own open-issue numbers, so the classifier can
+   * model the scan's `dependency-blocked` gate (Issue #460, GRQ#4465) the
+   * way `idle_decision_census.ts` already does — resolved from data the
+   * caller holds, so it costs no extra `gh` call.
+   *
+   * Requires `repo` and the issues' `body`. Omitted or empty means "no data"
+   * and no issue is excluded by this gate, the same fail-safe as `openPRs`.
+   */
+  openIssueNumbers?: ReadonlySet<number>;
+  /** Repo the issues belong to, for resolving same-repo dependency refs. */
+  repo?: string;
+}
+
+/**
+ * True when `issue` names an open dependency the Priority 2 scan refuses it
+ * for (Issue #460, GRQ#4465).
+ *
+ * Mirrors `isDependencyBlockedByOpenIssue` in `idle_decision_census.ts`,
+ * including its two deliberate choices: a same-repo `#N` absent from the
+ * open set is closed and does not block, and a cross-repo reference cannot
+ * be resolved here so it counts as blocking, because the scan fails safe the
+ * same way. Parent/child blocking is not modelled — it needs a per-issue API
+ * call, and omitting it under-counts, which merely alerts on work that will
+ * not be claimed rather than inventing a blocker.
+ */
+function isDependencyBlockedByOpenIssue(
+  body: string | undefined,
+  repo: string,
+  openIssueNumbers: ReadonlySet<number>,
+): boolean {
+  if (body === undefined) return false;
+  const refs = extractDependencyReferencesDetailed(body);
+  const lowerRepo = repo.trim().toLowerCase();
+  return refs.some((ref) => {
+    const sameRepo = ref.repo === undefined ||
+      ref.repo.trim().toLowerCase() === lowerRepo;
+    if (!sameRepo) return true;
+    return openIssueNumbers.has(ref.number);
+  });
 }
 
 /**
@@ -353,6 +408,8 @@ export function classifyIssues(
     labels: string[];
     assignees: string[];
     milestone: string;
+    /** Issue #857: body, for the dependency gate. Absent → not blocked. */
+    body?: string;
   }>,
   opts: ClassifyOptions,
 ): IssueVerdict[] {
@@ -361,6 +418,8 @@ export function classifyIssues(
   const openPRs = opts.openPRs ?? [];
   const mergedPRs = opts.mergedPRs ?? [];
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
+  const openIssueNumbers = opts.openIssueNumbers ?? new Set<number>();
+  const repo = opts.repo ?? "";
 
   // Streams occupied by the worker = milestones (or "" for the default
   // branch stream) that already host a worker-assigned open issue.
@@ -438,6 +497,22 @@ export function classifyIssues(
         number: issue.number,
         claimable: false,
         excludedBy: "merged_pr_blocked",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
+    // Issue #857: the scan's eighth gate, absent here until now — the audit
+    // counted dependency-blocked issues as claimable and disagreed with a
+    // scan that was right, on every tick. Applied in the scan's own order,
+    // so an issue refused for a more fundamental reason keeps that reason.
+    if (
+      openIssueNumbers.size > 0 && repo !== "" &&
+      isDependencyBlockedByOpenIssue(issue.body, repo, openIssueNumbers)
+    ) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "dependency_blocked",
         milestone: issue.milestone,
       });
       continue;
@@ -678,7 +753,10 @@ export async function auditClaimableState(
         "--state",
         "open",
         "--json",
-        "number,labels,assignees,milestone",
+        // Issue #857: `body` carries the dependency references the scan's
+        // eighth gate reads. One extra field on a call already being made —
+        // no extra request, matching how the census gets it free.
+        "number,labels,assignees,milestone,body",
         "--limit",
         String(limit),
       ]);
@@ -775,11 +853,19 @@ export async function auditClaimableState(
       }
     }
 
+    // Issue #857: the repo's own open issues, resolved from the response
+    // already in hand. Capped by `perRepoLimit` like everything else here, so
+    // a dependency beyond the cap reads as closed — an under-count, the same
+    // fail-safe direction every other gate takes.
+    const openIssueNumbers = new Set(issues.map((i) => i.number));
+
     const verdicts = classifyIssues(issues, {
       workerUser: opts.workerUser,
       openPRs,
       mergedPRs,
       runLocalHolds,
+      repo,
+      openIssueNumbers,
     });
     const claimableCount = verdicts.filter((v) => v.claimable).length;
     const reason: ClaimableSkipReason = claimableCount > 0
