@@ -156,15 +156,45 @@ export function formatSummary(
 }
 
 /**
+ * The running Deno executable, when it is one.
+ *
+ * This process IS deno, so its own path is the authoritative answer for the
+ * `deno` tool — no PATH lookup can be more accurate, and none can fail.
+ * `Deno.execPath()` throws without read permission, and a `deno compile`d
+ * binary's path is not a deno CLI, so both cases fall through to the probes.
+ */
+export function runningDenoPath(): string | null {
+  try {
+    const path = Deno.execPath();
+    const name = path.split(/[/\\]/).pop() ?? "";
+    return name === "deno" || name === "deno.exe" ? path : null;
+  } catch {
+    return null; // no read permission — fall through to the probes
+  }
+}
+
+/**
  * Detect whether a tool is available on the system.
  *
- * Checks the PATH first via `which`, then common install locations.
+ * For `deno`, the running executable answers first (PR #888 CI): `which` is
+ * an unnecessary subprocess whose failure — a PATH a test left rewritten, a
+ * spawn that lost a fork, an image without `which` — silently demoted every
+ * Deno check in the gate. CI installs Deno into the runner tool cache, which
+ * none of the hardcoded fallbacks below cover, so that lookup was the only
+ * thing standing between the gate and four unexplained FAILED checks.
+ *
+ * Otherwise checks the PATH via `which`, then common install locations.
  * Returns the path to the tool if found, or an error result if not.
  */
 export async function detectTool(
   toolName: string,
   homeDir?: string,
 ): Promise<Result<string>> {
+  if (toolName === "deno") {
+    const running = runningDenoPath();
+    if (running) return { ok: true, value: running };
+  }
+
   // Check PATH via which
   try {
     const cmd = new Deno.Command("which", {

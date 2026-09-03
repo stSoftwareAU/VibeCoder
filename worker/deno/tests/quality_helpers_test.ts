@@ -21,6 +21,7 @@ import {
   formatSummary,
   parseQualityArgs,
   recordCheck,
+  runningDenoPath,
 } from "../lib/quality_helpers.ts";
 
 // =============================================================================
@@ -221,6 +222,33 @@ Deno.test("detectTool - finds deno in HOME/.deno/bin if on PATH", async () => {
   const result = await detectTool("deno");
   assertEquals(result.ok, true);
 });
+
+Deno.test("runningDenoPath - answers with the running deno binary", () => {
+  // The gate no longer asks `which` where deno is: this process is deno.
+  assertEquals(runningDenoPath(), Deno.execPath());
+});
+
+Deno.test(
+  "detectTool - deno resolves with an empty PATH and no fallback dir (PR #888 CI)",
+  async () => {
+    // Regression: CI installs Deno into the runner tool cache, which none of
+    // detectTool's hardcoded fallbacks cover, so a `which` that could not
+    // answer demoted every Deno check in the gate to FAILED. This process is
+    // deno, so its own path must answer regardless of PATH or HOME. On a host
+    // where deno happens to sit on one of those fallbacks this passes either
+    // way; on the CI runner, where it does not, only the fix keeps it green.
+    const originalPath = Deno.env.get("PATH");
+    Deno.env.set("PATH", "");
+    try {
+      const result = await detectTool("deno", "/nonexistent-home-xyzzy");
+      assertEquals(result.ok, true);
+      if (result.ok) assertEquals(result.value, Deno.execPath());
+    } finally {
+      if (originalPath === undefined) Deno.env.delete("PATH");
+      else Deno.env.set("PATH", originalPath);
+    }
+  },
+);
 
 // =============================================================================
 // detectMissingQualityTools tests (Issue #3036)
