@@ -174,12 +174,12 @@ Deno.test("builder fails loud when a template placeholder has no value", async (
     await Deno.mkdir(`${tempDir}/issue`, { recursive: true });
     await Deno.mkdir(`${tempDir}/coding_guidelines`, { recursive: true });
     await Deno.writeTextFile(
-      `${tempDir}/issue/v1.md`,
+      `${tempDir}/issue/prompt.md`,
       "Work on #{{ISSUE_NUMBER}}.\n{{QUALITY_INSTRUCTIONS}}\n" +
         "Report to {{UNKNOWN_PLACEHOLDER}} and {{ANOTHER_MISSING}}.\n",
     );
     await Deno.writeTextFile(
-      `${tempDir}/coding_guidelines/v1.md`,
+      `${tempDir}/coding_guidelines/prompt.md`,
       "Use Australian English.\n",
     );
 

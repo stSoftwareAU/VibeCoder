@@ -166,16 +166,16 @@ Deno.test(
           `${preview.slice(0, 80)}`,
       );
 
-      // Permalink to the exact prompt version at a 40-character commit SHA.
+      // Permalink to the exact prompt text at a 40-character commit SHA.
       const sha = await headCommitSha();
       assert(sha !== null, "repo-root HEAD SHA could not be read");
       const link = new RegExp(
         `https://github\\.com/${PROMPT_SOURCE_REPO}/blob/[0-9a-f]{40}/` +
-          `prompts/security_scan/v\\d+\\.md`,
+          `prompts/security_scan/prompt\\.md`,
       );
       assert(
         link.test(preview),
-        "condensed body has no SHA-pinned prompts/security_scan/vN.md permalink",
+        "condensed body has no SHA-pinned prompts/security_scan/prompt.md permalink",
       );
       assert(SHA_40.test(preview));
       assertStringIncludes(preview, sha);
@@ -194,9 +194,6 @@ Deno.test("buildPromptPreviewBody - an under-budget body passes through byte-for
     promptName: "dead_code",
     scope: "Find unreferenced code.",
   }, {
-    latestVersionFn: () => {
-      throw new Error("must not resolve a version for an under-budget body");
-    },
     headCommitShaFn: () => {
       throw new Error("must not read HEAD for an under-budget body");
     },
@@ -207,7 +204,7 @@ Deno.test("buildPromptPreviewBody - an under-budget body passes through byte-for
 
 Deno.test("buildPromptPreviewBody - an over-budget body is condensed with a pinned permalink", async () => {
   const sha = "a".repeat(40);
-  const full = `# MythOS-style Security Audit — Four-Phase Scan (v30)\n\n` +
+  const full = `# MythOS-style Security Audit — Four-Phase Scan\n\n` +
     `## Phase 1 — Inventory\n\n${"filler line\n".repeat(400)}` +
     `## Phase 2 — Attack surface\n\n${"filler line\n".repeat(400)}`;
 
@@ -216,7 +213,6 @@ Deno.test("buildPromptPreviewBody - an over-budget body is condensed with a pinn
     scope: "Four-phase security-in-depth audit.",
     maxChars: 2_000,
   }, {
-    latestVersionFn: () => Promise.resolve({ ok: true, value: "v30" }),
     headCommitShaFn: () => Promise.resolve(sha),
   });
 
@@ -224,34 +220,11 @@ Deno.test("buildPromptPreviewBody - an over-budget body is condensed with a pinn
   assert(result.startsWith("# MythOS-style Security Audit"));
   assertStringIncludes(
     result,
-    `https://github.com/${PROMPT_SOURCE_REPO}/blob/${sha}/prompts/security_scan/v30.md`,
+    `https://github.com/${PROMPT_SOURCE_REPO}/blob/${sha}/prompts/security_scan/prompt.md`,
   );
   assertStringIncludes(result, "Phase 1 — Inventory");
   assertStringIncludes(result, "Phase 2 — Attack surface");
   assertStringIncludes(result, "Four-phase security-in-depth audit.");
-});
-
-Deno.test("buildPromptPreviewBody - a failed version lookup fails loud", async () => {
-  const full = `# Test-Audit Scan\n\n${"x".repeat(5_000)}`;
-
-  let thrown: Error | null = null;
-  try {
-    await buildPromptPreviewBody(full, {
-      promptName: "test_audit",
-      scope: "Audit tests.",
-      maxChars: 1_000,
-    }, {
-      latestVersionFn: () =>
-        Promise.resolve({ ok: false, error: new Error("no versions found") }),
-      headCommitShaFn: () => Promise.resolve("b".repeat(40)),
-    });
-  } catch (err) {
-    thrown = err as Error;
-  }
-
-  assert(thrown !== null, "expected a failed version lookup to throw");
-  assertStringIncludes(thrown.message, "test_audit");
-  assertStringIncludes(thrown.message, "no versions found");
 });
 
 Deno.test("buildPromptPreviewBody - an unreadable HEAD falls back to a visible main link", async () => {
@@ -262,13 +235,12 @@ Deno.test("buildPromptPreviewBody - an unreadable HEAD falls back to a visible m
     scope: "Audit tests.",
     maxChars: 2_000,
   }, {
-    latestVersionFn: () => Promise.resolve({ ok: true, value: "v10" }),
     headCommitShaFn: () => Promise.resolve(null),
   });
 
   assertStringIncludes(
     result,
-    `https://github.com/${PROMPT_SOURCE_REPO}/blob/main/prompts/test_audit/v10.md`,
+    `https://github.com/${PROMPT_SOURCE_REPO}/blob/main/prompts/test_audit/prompt.md`,
   );
   assertStringIncludes(result, "commit SHA was unavailable");
 });
@@ -282,7 +254,6 @@ Deno.test("condensePromptPreview - throws when the body carries no heading to fi
   try {
     condensePromptPreview("no heading here, just prose\n", {
       promptName: "security_scan",
-      promptVersion: "v30",
       commitSha: "c".repeat(40),
       scope: "Scan.",
     });
@@ -302,7 +273,6 @@ Deno.test("condensePromptPreview - a huge outline is capped, and the cap is anno
 
   const result = condensePromptPreview(`# Big Scan\n\n${sections}`, {
     promptName: "big_scan",
-    promptVersion: "v2",
     commitSha: "d".repeat(40),
     scope: "Everything.",
   });

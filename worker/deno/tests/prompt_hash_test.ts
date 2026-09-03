@@ -130,7 +130,7 @@ Deno.test("prompt hash - returns error for missing prompts directory", async () 
   }
 });
 
-Deno.test("prompt hash - hash changes when prompt template versions change", async () => {
+Deno.test("prompt hash - hash changes when a prompt template is edited", async () => {
   // Create a temporary prompts directory with controlled content
   const tmpDir = await Deno.makeTempDir();
   const codingDir = `${tmpDir}/coding_guidelines`;
@@ -138,17 +138,17 @@ Deno.test("prompt hash - hash changes when prompt template versions change", asy
   await Deno.mkdir(codingDir);
   await Deno.mkdir(issueDir);
 
-  // Write initial versions
-  await Deno.writeTextFile(`${codingDir}/v1.md`, "Guidelines version 1");
-  await Deno.writeTextFile(`${issueDir}/v1.md`, "Issue template version 1");
+  await Deno.writeTextFile(`${codingDir}/prompt.md`, "Guidelines, first cut");
+  await Deno.writeTextFile(`${issueDir}/prompt.md`, "Issue template");
 
   const result1 = await computeStaticPromptHash(tmpDir, "org/repo");
   assertEquals(result1.ok, true);
 
-  // Add a new version of coding_guidelines (simulates a prompt update)
+  // Issue #844: templates are edited in place, so the hash must track the
+  // file's content rather than a version identifier alongside it.
   await Deno.writeTextFile(
-    `${codingDir}/v2.md`,
-    "Guidelines version 2 — updated",
+    `${codingDir}/prompt.md`,
+    "Guidelines, updated in place",
   );
 
   const result2 = await computeStaticPromptHash(tmpDir, "org/repo");
@@ -158,7 +158,7 @@ Deno.test("prompt hash - hash changes when prompt template versions change", asy
     assertNotEquals(
       result1.value,
       result2.value,
-      "Hash should change when prompt template version changes",
+      "Hash should change when a prompt template is edited",
     );
   }
 

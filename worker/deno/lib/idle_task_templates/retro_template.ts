@@ -17,7 +17,7 @@
  * Modelled on `duplicated_knowledge_template.ts` — single language-agnostic
  * prompt, no bucket, and the same outcome-only Claude contract:
  *
- *   - **Outcome-only Claude contract.** `prompts/retro/v1.md` instructs
+ *   - **Outcome-only Claude contract.** `prompts/retro/prompt.md` instructs
  *     Claude to file the issue directly via `gh issue create`. `runTask`
  *     verifies the outcome by snapshotting the repo's open `retro` issues
  *     before and after the scan and diffing them — no JSON parsing.
@@ -153,7 +153,7 @@ export interface ScanError {
 // ---------------------------------------------------------------------------
 
 /**
- * Substitute the placeholders defined by `prompts/retro/v1.md`.
+ * Substitute the placeholders defined by `prompts/retro/prompt.md`.
  *
  * Empty inputs render as `(none)` — the same convention as the sibling
  * scan templates, so a wrapper reads naturally both standalone and inline.

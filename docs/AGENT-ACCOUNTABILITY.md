@@ -54,7 +54,7 @@ who compromises the agent host (or the agent itself) should not be able
 to silently rewrite history. In practice that means writing the trail
 to a sink the agent cannot rewrite (append-only storage, an external
 log service, or a cryptographically chained ledger), and writing
-enough context (prompt version, model, inputs, decision branches taken)
+enough context (prompt text, model, inputs, decision branches taken)
 that a reviewer can re-derive the agent's reasoning.
 
 ### Current Vibe Coder behaviour
@@ -106,10 +106,10 @@ that a reviewer can re-derive the agent's reasoning.
   ([`comment_rate_limiter.ts`](../worker/deno/lib/comment_rate_limiter.ts)),
   and stuck heartbeat / recovery decisions
   ([`heartbeat_recovery_audit.ts`](../worker/deno/lib/heartbeat_recovery_audit.ts)).
-- Prompt-template versioning is immutable
-  ([`prompts/<type>/vN.md`](../prompts/) plus the
-  `prompt immutability` quality check) so the exact prompt body used
-  for any past run is recoverable from git history.
+- Prompt templates live one per type
+  ([`prompts/<type>/prompt.md`](../prompts/)) and each run logs the
+  checkout's short commit hash, so the exact prompt body used for any
+  past run is recoverable from git history.
 
 ### Gap
 
@@ -494,7 +494,8 @@ takes down the whole fleet.
   comment and commit on that issue can carry the `delegated-by` field.
 - **Add a "trace this PR" doc section** so a reviewer can read a single
   PR and follow the chain back: PR → issue (closing keyword) → claim
-  state → host log → external log sink → prompt version. Today the
+  state → host log → external log sink → the checkout's commit hash
+  (which pins the prompt text that ran). Today the
   chain exists but is undocumented.
 
 ### Implemented — run-id traceability
@@ -573,7 +574,7 @@ prod?"* — and the answer must be no.
   bypass is explicitly forbidden by the coding guidelines.
 - **Quality gate must pass before PR open**
   ([`quality.sh`](../quality.sh) → `worker/deno/quality.ts`): lint,
-  type, tests, prompt immutability, Liquid, markdownlint
+  type, tests, Liquid, markdownlint
   must all be green or the PR is not created. (Shell-script linting is
   delegated to each target repo's own CI —.)
 - **Comment author trust** is enforced

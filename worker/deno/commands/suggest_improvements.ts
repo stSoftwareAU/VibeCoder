@@ -143,19 +143,19 @@ export function generateImprovements(): Improvement[] {
       labels: ["enhancement"],
     },
     {
-      title: "Persist prompt versions to a per-run audit log",
+      title: "Persist the prompts commit to a per-run audit log",
       description:
-        "`recordPromptVersion()` exists in `worker/deno/lib/prompt_manager.ts` " +
-        "and is wired to the `prompt-manager` command, but the issue worker only " +
-        'logs the resolved prompt versions via `logger.info("Using prompt ' +
-        'versions", ...)` in `worker/deno/lib/issue_worker.ts` (around line ' +
-        "536 — Issue #1190). There is no durable audit trail tying a specific " +
-        "issue run to the exact prompt versions used.\n\n" +
+        "`recordPromptCommit()` exists in `worker/deno/lib/prompt_manager.ts` " +
+        "and is wired to the `prompt-manager` command, but the execute phase " +
+        'only logs the resolved commit via `logger.info("Using prompts from ' +
+        'commit", ...)` in `worker/deno/lib/phases/execute_phase.ts` (Issue ' +
+        "#1190, #844). There is no durable audit trail tying a specific issue " +
+        "run to the exact prompt text used.\n\n" +
         "### Proposed Solution\n" +
-        "Call `recordPromptVersion()` from the issue worker after prompt " +
-        "resolution, writing to a per-repo log (e.g., `logs/prompt-versions.log`). " +
+        "Call `recordPromptCommit()` from the execute phase after resolving " +
+        "the commit, writing to a per-repo log (e.g., `logs/prompt-commits.log`). " +
         "Include the issue number so a completed PR can be traced back to the " +
-        "exact prompt versions that produced it.",
+        "exact prompt text that produced it.",
       category: "observability",
       labels: ["enhancement"],
     },

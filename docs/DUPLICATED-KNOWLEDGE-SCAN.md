@@ -135,7 +135,7 @@ families from double-filing the same root cause.
 | Template name  | `duplicated-knowledge`                                    |
 | Wrapper title  | `Run a duplicated-knowledge scan`                         |
 | Findings label | `duplicated-knowledge` + one `severity:*`                 |
-| Prompt         | `prompts/duplicated_knowledge/` (latest version)          |
+| Prompt         | `prompts/duplicated_knowledge/prompt.md`                  |
 | Pre-pass       | `lib/duplicate_block_scanner.ts` → `{{DUPLICATE_BLOCKS}}` |
 | Dedup          | `{{KNOWN_OPEN_FINDING_IDS}}` + `{{OPEN_ISSUE_TITLES}}` — both repo-wide, `(none)` when empty ([contract](IDLE-TASK-FRAMEWORK.md#cross-label-dedup--the-open-issue-title-list)) |
 | Raises a PR?   | No — issue-only (`skipMilestone: true`)                   |

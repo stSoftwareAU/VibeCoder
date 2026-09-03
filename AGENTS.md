@@ -29,8 +29,8 @@ flowchart LR
   [`docs/`](docs/).
 - **[README](README.md)** — user-facing overview, feature index, supported
   labels, and the full documentation table.
-- **[Extending the Worker](docs/EXTENDING.md)** — adding Deno commands, prompt
-  versioning, and running tests.
+- **[Extending the Worker](docs/EXTENDING.md)** — adding Deno commands, editing
+  prompt templates, and running tests.
 - **[Contributing](CONTRIBUTING.md)** — branching, commits, and the local
   quality gate.
 - **[Security](SECURITY.md)** — security architecture, controls and
@@ -39,5 +39,6 @@ flowchart LR
   **[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)**.
 
 The full agent-facing behaviour the worker itself applies at runtime lives in
-the versioned prompt templates under [`prompts/`](prompts/) (the worker always
-loads the latest version).
+the prompt templates under [`prompts/`](prompts/) — one editable
+`prompts/<type>/prompt.md` per type, with git history as the record of how each
+evolved.

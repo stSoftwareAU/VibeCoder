@@ -446,12 +446,12 @@ exact character count, and emits an `action=truncated_body` log line — the bod
 never shrinks silently.
 
 The scan itself is unaffected: the wrapper body is a _preview_, while
-`template.runTask` re-loads the full prompt from `prompts/<scan>/vN.md` at run
-time.
+`template.runTask` re-loads the full prompt from `prompts/<scan>/prompt.md` at
+run time.
 
 ### Condensed previews — summary plus pinned permalink
 
-The clamp is a backstop, not a fix. `security_scan` v30 built a
+The clamp is a backstop, not a fix. The `security_scan` prompt built a
 100,841-character preview, so **every** seeded wrapper lost ~36,000 characters
 out of its middle and the only signal was one `action=truncated_body` log line.
 A truncated copy of a prompt serves nobody, so a template whose preview would
@@ -460,9 +460,9 @@ overshoot now stops inlining the prompt altogether:
 a short wrapper carrying the prompt's own first heading (so each template's body
 fingerprint still dispatches), a visible condensed notice, the template's scope,
 an outline of the prompt's sections, the dedup rules — and a **permalink to
-`prompts/<scan>/vN.md` pinned to the seeding commit SHA**, so a reader opens the
-exact prompt text that ran. `security-scan` and `github-actions-audit` are the
-two templates currently over the ceiling.
+`prompts/<scan>/prompt.md` pinned to the seeding commit SHA**, so a reader opens
+the exact prompt text that ran. `security-scan` and `github-actions-audit` are
+the two templates currently over the ceiling.
 
 `tests/idle_task_body_preview_limit_test.ts` is the gate: it builds every
 registered template's preview and fails when any exceeds the budget
@@ -502,7 +502,7 @@ candidate is dropped. Two boundaries keep the rule honest:
   _because_ the documented convention itself is unsafe (a security or fail-loud
   violation), the finding is filed **against the convention** and says so.
 
-Carrying the stanza (each as a new prompt version — prompts are immutable):
+Carrying the stanza (each edited in place in its `prompt.md`):
 `best-practices`, `documentation-audit`, `doc-coverage`, `test-audit`,
 `format-drift`, `dead-code`. Deliberately **not** carrying it: `security-scan`
 (no documenting your way past a security finding) and the purely mechanical

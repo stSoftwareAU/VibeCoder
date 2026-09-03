@@ -30,7 +30,6 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import type { Result } from "../types.ts";
 import { GITHUB_ISSUE_BODY_MAX_CHARS } from "./idle_task_body_limit.ts";
 import { PROMPT_FILENAME } from "./prompt_manager.ts";
 import { runGitCommand as defaultRunGitCommand } from "./git_timeout.ts";
@@ -231,7 +230,6 @@ export function condensePromptPreview(
 /**
  * Return `fullBody` when it fits the preview budget, otherwise the condensed
  * summary-plus-permalink form.
- *
  */
 export async function buildPromptPreviewBody(
   fullBody: string,

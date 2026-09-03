@@ -209,7 +209,7 @@ export async function isPublicRepo(
 
 /**
  * Substitute the placeholders defined by
- * `prompts/private_repo_reference_audit/v1.md`.
+ * `prompts/private_repo_reference_audit/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleDocumentationAuditPrompt` so wrappers read naturally both
@@ -329,7 +329,7 @@ export function renderSkippedPrivateSummary(repo: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/private_repo_reference_audit/v1.md`,
+ * Default Claude runner. Loads `prompts/private_repo_reference_audit/prompt.md`,
  * substitutes placeholders, and invokes Claude with the same write-tool
  * blocklist as `documentation_audit_template.defaultRunScan` — the scan
  * is read-only and files issues via `gh` only.

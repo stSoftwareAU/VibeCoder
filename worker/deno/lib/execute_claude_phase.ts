@@ -144,8 +144,11 @@ export interface ExecuteClaudePhaseResult {
   hasUncommittedChanges?: boolean;
   /** Whether Claude created new commits. */
   hasNewCommits?: boolean;
-  /** Prompt versions used for traceability. */
-  promptVersions?: { issue: string; codingGuidelines: string };
+  /**
+   * Short commit hash of the prompts checkout, for traceability (Issue #844).
+   * Undefined when git could not resolve it — the phase logs that loudly.
+   */
+  promptsCommit?: string;
   /** SHA-256 hash of the static prompt content (Issue #1273). */
   promptSha?: string;
   /** Whether the prompt cache was hit (Issue #1273). */
@@ -1005,14 +1008,17 @@ export async function runExecuteClaudePhase(
   // Templates are no longer versioned by filename, so the checkout's commit
   // is what identifies the text this run used. A failure is logged loudly
   // rather than recorded as an unknown-but-fine revision.
-  const promptsCommit = await deps.getPromptsCommit();
-  if (promptsCommit.ok) {
-    deps.log(`Using prompts from commit ${promptsCommit.value}`);
-  } else {
+  const promptsCommitResult = await deps.getPromptsCommit();
+  if (!promptsCommitResult.ok) {
     deps.log(
-      `WARNING: could not resolve the prompts commit — ${promptsCommit.error.message}`,
+      `WARNING: could not resolve the prompts commit — ${promptsCommitResult.error.message}`,
     );
+  } else {
+    deps.log(`Using prompts from commit ${promptsCommitResult.value}`);
   }
+  const promptsCommit = promptsCommitResult.ok
+    ? promptsCommitResult.value
+    : undefined;
 
   // --- Validate repository state (Issue #621) ---
   deps.log("Validating repository state before Claude invocation...");
@@ -1164,10 +1170,7 @@ export async function runExecuteClaudePhase(
         prUrl: selfHealResult.value.prUrl,
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
-        promptVersions: {
-          issue: issueVersion,
-          codingGuidelines: guidelinesVersion,
-        },
+        promptsCommit,
         promptSha,
         promptCacheHit,
       };
@@ -1178,10 +1181,7 @@ export async function runExecuteClaudePhase(
       failureType: "out_of_memory",
       failureMessage,
       elapsedSeconds,
-      promptVersions: {
-        issue: issueVersion,
-        codingGuidelines: guidelinesVersion,
-      },
+      promptsCommit,
       promptSha,
       promptCacheHit,
     };
@@ -1215,10 +1215,7 @@ export async function runExecuteClaudePhase(
         prUrl: selfHealResult.value.prUrl,
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
-        promptVersions: {
-          issue: issueVersion,
-          codingGuidelines: guidelinesVersion,
-        },
+        promptsCommit,
         promptSha,
         promptCacheHit,
       };
@@ -1238,10 +1235,7 @@ export async function runExecuteClaudePhase(
         diagnosticContent: "",
       }),
       elapsedSeconds,
-      promptVersions: {
-        issue: issueVersion,
-        codingGuidelines: guidelinesVersion,
-      },
+      promptsCommit,
       promptSha,
       promptCacheHit,
     };
@@ -1308,10 +1302,7 @@ export async function runExecuteClaudePhase(
         prUrl: selfHealResult.value.prUrl,
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
-        promptVersions: {
-          issue: issueVersion,
-          codingGuidelines: guidelinesVersion,
-        },
+        promptsCommit,
         promptSha,
         promptCacheHit,
       };
@@ -1323,10 +1314,7 @@ export async function runExecuteClaudePhase(
       failureMessage,
       diagnosticContext,
       elapsedSeconds,
-      promptVersions: {
-        issue: issueVersion,
-        codingGuidelines: guidelinesVersion,
-      },
+      promptsCommit,
       promptSha,
       promptCacheHit,
     };
@@ -1371,10 +1359,7 @@ export async function runExecuteClaudePhase(
         prUrl: selfHealResult.value.prUrl,
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
-        promptVersions: {
-          issue: issueVersion,
-          codingGuidelines: guidelinesVersion,
-        },
+        promptsCommit,
         promptSha,
         promptCacheHit,
       };
@@ -1392,10 +1377,7 @@ export async function runExecuteClaudePhase(
         failureType: "execution_error",
         failureMessage: err instanceof Error ? err.message : String(err),
         elapsedSeconds,
-        promptVersions: {
-          issue: issueVersion,
-          codingGuidelines: guidelinesVersion,
-        },
+        promptsCommit,
         promptSha,
         promptCacheHit,
       };
@@ -1425,10 +1407,7 @@ export async function runExecuteClaudePhase(
           hasUncommittedChanges: false,
           hasNewCommits: true,
           elapsedSeconds,
-          promptVersions: {
-            issue: issueVersion,
-            codingGuidelines: guidelinesVersion,
-          },
+          promptsCommit,
           promptSha,
           promptCacheHit,
         };
@@ -1441,10 +1420,7 @@ export async function runExecuteClaudePhase(
       hasUncommittedChanges: false,
       hasNewCommits: false,
       elapsedSeconds,
-      promptVersions: {
-        issue: issueVersion,
-        codingGuidelines: guidelinesVersion,
-      },
+      promptsCommit,
       promptSha,
       promptCacheHit,
     };
@@ -1456,10 +1432,7 @@ export async function runExecuteClaudePhase(
     hasUncommittedChanges,
     hasNewCommits,
     elapsedSeconds,
-    promptVersions: {
-      issue: issueVersion,
-      codingGuidelines: guidelinesVersion,
-    },
+    promptsCommit,
   };
 }
 

@@ -423,7 +423,9 @@ export async function getPromptsCommit(
       const stderr = new TextDecoder().decode(output.stderr).trim();
       return {
         ok: false,
-        error: new Error(`Failed to resolve prompts commit in ${dir}: ${stderr}`),
+        error: new Error(
+          `Failed to resolve prompts commit in ${dir}: ${stderr}`,
+        ),
       };
     }
     const commit = new TextDecoder().decode(output.stdout).trim();

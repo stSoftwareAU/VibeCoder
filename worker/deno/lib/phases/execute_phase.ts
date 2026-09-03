@@ -2,7 +2,7 @@
  * Phase 3 — Execute Claude.
  *
  * Builds the prompt with per-repo customisations, invokes Claude with
- * timeout/retry, records prompt versions and session resume state,
+ * timeout/retry, records the prompts commit and session resume state,
  * then detects whether any code changes were actually produced. Single
  * responsibility: drive Claude and classify the outcome (continue /
  * early_exit:no_changes / failure).

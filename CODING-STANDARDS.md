@@ -199,21 +199,18 @@ build commands on unattended machines (`./quality.sh < /dev/null`,
 `npm test < /dev/null`) so a tool that unexpectedly reads stdin fails fast
 instead of hanging.
 
-## Prompt Template Versioning
+## Prompt Templates
 
-Prompt templates in `prompts/` are **immutable once committed**. Do NOT modify
-an existing version file — create a new version instead. The worker always loads
-the latest version at runtime. `quality.sh` enforces immutability. See
-[docs/EXTENDING.md → Prompt Versioning and Templates](docs/EXTENDING.md) for the
-full workflow.
+Each prompt type has exactly one editable template — `prompts/<type>/prompt.md`
+— which the worker loads at runtime. Edit it in place. There is no `vN.md`
+versioning and no immutability rule: the repo is public, so **git history is the
+record** of how a template evolved (`git log -p prompts/<type>/prompt.md`), and a
+run's traceability comes from the checkout's commit hash, which the execute phase
+logs. See
+[docs/EXTENDING.md → Prompt Templates](docs/EXTENDING.md) for the full workflow.
 
-### Documentation references to prompt versions
-
-Published documentation must refer to prompts by **directory name only** —
-`prompts/<type>/` — so it stays fresh as new versions are added. When you
-genuinely need to name a specific version, use the wording **"from vN onward"**
-rather than a literal `prompts/<type>/vN.md` filename. The
-`docs prompt versions` quality check enforces this.
+Published documentation refers to prompts by path — `prompts/<type>/prompt.md`
+or the directory alone — never by a version number.
 
 ## Language-Agnostic Standards vs Per-Language Buckets
 
