@@ -559,6 +559,14 @@ export interface RunCoreDeps {
      * single-issue path omits it.
      */
     cycleDeadlineEpochMs?: number,
+    /**
+     * Stable id of the lane running this issue (Issue #923) — `s1`, `s2`,
+     * or `serial` for the single-stream loop. The issue pipeline works in
+     * a git worktree named for it, so two slots in one repository never
+     * share a working tree, a Claude session or resume state. Absent (CLI
+     * single-issue runs, tests): the shared clone, exactly as before.
+     */
+    laneId?: string,
   ) => Promise<
     Result<{
       success: boolean;
@@ -1945,7 +1953,7 @@ async function runIssueScanLoop(
     noteSlotActivity("serial", "claim", deps.now());
     let processResult;
     try {
-      processResult = await deps.processIssue(issue, endTime);
+      processResult = await deps.processIssue(issue, endTime, "serial");
     } finally {
       // In a `finally` so a throw cannot leave the stream marked busy
       // for the rest of the run, which would read as 100% utilisation.
@@ -3318,7 +3326,7 @@ async function runSlotIssue(
   pool.idleHooks?.filerLatch.release();
   let processResult;
   try {
-    processResult = await deps.processIssue(issue, endTime);
+    processResult = await deps.processIssue(issue, endTime, slotId);
   } finally {
     endBusy(slotId, deps.now());
     noteSlotActivity(slotId, "idle", deps.now());
