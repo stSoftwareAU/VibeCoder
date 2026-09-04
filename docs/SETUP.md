@@ -689,6 +689,18 @@ reaches the coding agent's environment. No other vendor takes extra files, and
 a metered `ANTHROPIC_API_KEY` is not one of these: a host with one credential —
 key or token — behaves exactly as it always has.
 
+What that guarantee does and does not cover: the coding agent's environment
+carries the selected token and no other, and a suffixed or indexed variant of
+an accepted variable name (`CLAUDE_CODE_OAUTH_TOKEN_2`) is refused rather than
+inherited. It is an **environment** guarantee. The whole `claude/`
+sub-directory is mounted read-only into the container, so a process with
+filesystem read access inside the container can read every token file there,
+selected or not — recorded as residual risk R9 in
+[the threat model](THREAT-MODEL.md#-residual-risks). That is the same exposure
+a single-token host has always carried; more tokens raise its count, not its
+kind. Add a second subscription knowing that its blast radius is the container,
+not the environment policy.
+
 **Writing the files is your own step.** `setup.sh` provisions
 `claude/provider.env` and nothing else: there is no `VIBE_LAUNCHAGENT_*`
 variable for a second token, no launcher change and no crontab change. The
@@ -803,16 +815,13 @@ carrying the credential. The last line names why the winner won:
 Absence of these lines is itself informative: a host with one token, or with
 one token plus a metered key, logs none of them, because it makes no probe.
 
-**What the choice isolates, and what it does not.** Exactly one token file's
-variables are exported into the worker's environment, and the coding agent's
-subprocess is built from that environment — so an unselected subscription's
-token is not something a run can spend. That is an **environment** guarantee.
-The container mounts the whole `claude/` sub-directory read-only, so every
-token file in it can be read from inside the container regardless of what the
-environment policy withheld; that exposure is recorded, deliberately, as a
-residual risk in [the threat model](THREAT-MODEL.md#-residual-risks) rather
-than closed here. Add a second subscription knowing the blast radius of one bad
-run is the container, not the environment.
+**What the choice isolates.** Selection decides what the run's *environment*
+carries — one token file's variables, and no other subscription's. It decides
+nothing about the credential *mount*, which still exposes every token file in
+`claude/` to the container. That boundary, and the residual risk R9 that
+records the part of it which is not closed, are stated under
+[Several Claude tokens](#several-claude-tokens) above and in
+[the threat model](THREAT-MODEL.md#-residual-risks).
 
 One last precedence note: a `CLAUDE_CODE_OAUTH_TOKEN` already present in the
 worker's own environment is never overwritten by a file, so an
