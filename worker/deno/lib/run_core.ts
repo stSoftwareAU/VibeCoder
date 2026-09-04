@@ -2039,12 +2039,10 @@ async function runIssueScanLoop(
     try {
       processResult = await deps.processIssue(issue, endTime, "serial");
     } catch (thrown) {
-      // Issue #806: a throw is a terminal run, so the failure and always
-      // callbacks fire exactly once before it propagates. Restored twice —
-      // Issue #928, then again here — because a `main` sync merge replaces
-      // this `catch` with the `finally` below and silently drops the
-      // dispatch, leaving a thrown run the one terminal outcome that
-      // reported nothing.
+      // A throw is a terminal run, so the failure and always callbacks fire
+      // exactly once before it propagates (Issue #806). Covered by
+      // `run_core_callbacks_test.ts` — a sync merge has collapsed this
+      // `catch` into the `finally` below twice, silently.
       await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
         result: "failure",
         startedAtEpochMs: claimedAtEpochMs,
@@ -3418,11 +3416,10 @@ async function runSlotIssue(
   /**
    * Set when the claim starts running, so a pre-claim throw reports nothing.
    *
-   * Required, with no default (Issue #796). The default this parameter used
-   * to carry is what let two separate `main` sync merges drop the argument
-   * at the sole call site and still compile: the slot then watched a private
-   * flag nobody read, so every thrown run looked unclaimed and dispatched no
-   * callbacks. Without the default, the same deletion fails `deno check`.
+   * Deliberately has no default (Issue #796): with one, dropping the
+   * argument at the sole call site still compiles, and the slot then watches
+   * a flag nobody sets — every thrown run looks unclaimed and reports no
+   * callbacks. Without one, that deletion fails `deno check`.
    */
   started: { value: boolean },
 ): Promise<"success" | "skip" | "failure" | "exit"> {

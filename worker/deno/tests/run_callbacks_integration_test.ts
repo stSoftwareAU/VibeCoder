@@ -14,7 +14,6 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   CALLBACK_SCHEMA_VERSION,
-  INHERITED_ENV_VARS,
   invokeRunCallbacks,
   type IssueRunCallbackContext,
 } from "../lib/run_callbacks.ts";
@@ -361,17 +360,21 @@ Deno.test({
       await run(callbacks, context());
 
       const childEnv = await Deno.readTextFile(`${dir}/env.txt`);
-      // Every name the child actually carries, rather than one planted
-      // token: the worker's own environment holds real credentials, and an
+      // Checks every name the child actually carries, not one planted
+      // token: the worker's own environment holds real credentials, so an
       // allowlist proves none of them — named or not — crossed over.
       // Planting one would mutate the process environment, which races
       // under `deno test --parallel` (Issue #880).
+      //
+      // The allowlist is spelled out here rather than imported from
+      // run_callbacks.ts, so widening what the hook inherits fails this
+      // test instead of silently redefining what it asserts.
       const leaked = childEnv.split("\n")
         .map((line) => /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1])
         .filter((name): name is string => name !== undefined)
         .filter((name) =>
           !name.startsWith("VIBECODER_") &&
-          !INHERITED_ENV_VARS.includes(name) &&
+          !["PATH", "HOME", "LANG", "TZ", "TMPDIR"].includes(name) &&
           // `/bin/sh` sets these itself; they carry nothing of the worker's.
           !["PWD", "OLDPWD", "SHLVL", "IFS", "PS1", "_"].includes(name)
         );

@@ -92,9 +92,6 @@ const PROCESS_STATE_MUTATORS: ReadonlySet<string> = new Set([
   "feature_availability_test.ts",
   "fetch_jenkins_log_command_test.ts",
   "first_run_verify_command_test.ts",
-  // `fleet_health_test.ts` left with the built-in health reporting it
-  // covered (Issue #805) — the list is an exact record, so its entry went
-  // with it.
   "gemini_phase_routing_test.ts",
   "gh_guard_shim_test.ts",
   "gh_spawn_test.ts",
