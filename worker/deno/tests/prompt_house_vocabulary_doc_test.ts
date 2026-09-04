@@ -214,6 +214,7 @@ const SCAN_HEADINGS: Array<[string, string[]]> = [
     "## Why this is flagged",
     "## Why it is safe to remove",
   ]],
+  ["`### Verification before exit`", ["H2", "unheaded tail paragraph"]],
   ["(outcome-only)", ["unsuffixed"]],
 ];
 

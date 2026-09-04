@@ -493,6 +493,8 @@ VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY="sk-ant-your_key" \
 
 Set only the variables for the vendors you use: an unset provisioning variable leaves that provider unprovisioned and never disturbs an existing credential file.
 
+`setup.sh` writes exactly one credential file per vendor, and there is no provisioning variable for a second one. A host holding several Claude subscriptions may add `claude/provider-2.env`, `provider-3.env` … by hand — each run then starts on whichever has the most budget left — but that is an operator's own edit, with no launcher, crontab or `VIBE_LAUNCHAGENT_*` change behind it ([Several Claude tokens](SETUP.md#several-claude-tokens)).
+
 | Variable | Description |
 |----------|-------------|
 | `VIBE_CREDENTIAL_DIR` | Credential directory (default: `~/.vibe-coder/credentials`) |
@@ -504,7 +506,7 @@ Set only the variables for the vendors you use: an unset provisioning variable l
 
 When these variables are set, `setup.sh` writes the files with owner-only permissions, points `gh_config_dir` at `<credential dir>/gh`, and never offers the interactive `gh auth login` prompt for that directory. The prompt remains available only for an operator-chosen gh config directory at a terminal — never on the runtime path.
 
-**Startup fails loudly and early** when the material is absent or unusable. Before it resolves the GitHub user or starts any work, the worker runs the credential preflight (`worker/deno/lib/credential_preflight.ts`) and aborts with exit 1 and a named, actionable message — `credential-dir-missing`, `credential-dir-empty`, `credential-dir-unreadable`, `github-credentials-missing`, `provider-credentials-missing`, `credential-permissions-too-open`, or `unexpected-credential-material` — rather than degrading into a mid-run auth error. A `provider-credentials-missing` failure names the enabled provider that lacks a credential and the variable that provisions it, so a multi-vendor run says which vendor to fix. Provider and GitHub failures are classified with the same predicates the runtime auth surfaces use (`isClaudeAuthError`, `isGhAuthError`), so the preflight and a mid-run failure agree on what an auth error is.
+**Startup fails loudly and early** when the material is absent or unusable. Before it resolves the GitHub user or starts any work, the worker runs the credential preflight (`worker/deno/lib/credential_preflight.ts`) and aborts with exit 1 and a named, actionable message — `credential-dir-missing`, `credential-dir-empty`, `credential-dir-unreadable`, `github-credentials-missing`, `provider-credentials-missing`, `credential-permissions-too-open`, `provider-token-file-unrecognised`, or `unexpected-credential-material` — rather than degrading into a mid-run auth error. A `provider-credentials-missing` failure names the enabled provider that lacks a credential and the variable that provisions it, so a multi-vendor run says which vendor to fix. Provider and GitHub failures are classified with the same predicates the runtime auth surfaces use (`isClaudeAuthError`, `isGhAuthError`), so the preflight and a mid-run failure agree on what an auth error is.
 
 ```mermaid
 flowchart LR

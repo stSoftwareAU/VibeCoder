@@ -60,8 +60,15 @@ import {
   applyProviderCredentialEnv,
   checkCredentialPreflight,
   credentialPreflightMessage,
+  type EnvLookup,
+  type ProviderTokenSelector,
 } from "./credential_preflight.ts";
-import { getGithubUser } from "./claude_runner.ts";
+import type { AgentProviderDescriptor } from "./agent_provider.ts";
+import { createClaudeBudgetTokenSelector } from "./claude_token_selection.ts";
+import {
+  NETWORK_UNAVAILABLE_MARKER,
+  resolveGithubUserWithRetry,
+} from "./github_user_resolution.ts";
 import { formatRunModeRecord, resolveRunHostId } from "./run_mode_record.ts";
 import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
@@ -204,9 +211,79 @@ export interface RunWorkerDeps {
   }): Promise<void>;
 }
 
+/** Seams for {@link checkWorkerCredentials} — every one injectable. */
+export interface CheckWorkerCredentialsOptions {
+  /** Credential directory to inspect (defaults to the resolved one). */
+  dir?: string;
+  /** Environment lookup (defaults to the process environment). */
+  env?: EnvLookup;
+  /** Environment setter (defaults to `Deno.env.set`). */
+  setEnv?: (name: string, value: string) => void;
+  /** Providers to check (defaults to the enabled set). */
+  providers?: readonly AgentProviderDescriptor[];
+  /**
+   * Which of a provider's token files is exported (Issues #917, #919). The
+   * production set passes the budget-based selector; omitting it keeps
+   * #917's discovery-order default.
+   */
+  selectToken?: ProviderTokenSelector;
+  /** Where informational lines go; defaults to discarding them. */
+  log?: (message: string) => void;
+}
+
+/**
+ * The credential preflight step of worker start (Issue #4064), with the
+ * budget-based token selection of Issue #919 wired in.
+ *
+ * Proves the credential material exists, then exports exactly one of each
+ * provider's token files into the run environment — agent child environments
+ * are built FROM this process's env, so the parent must actually carry the
+ * variables. Which token is exported is the {@link ProviderTokenSelector}'s
+ * decision, taken once here at startup and unchanged for the rest of the run.
+ *
+ * Names only in the log, never values.
+ *
+ * @param options - Injected directory, environment, providers, selector, log.
+ * @returns Null when the credentials are usable, or the operator-facing
+ *   failure message when they are not.
+ */
+export async function checkWorkerCredentials(
+  options: CheckWorkerCredentialsOptions = {},
+): Promise<string | null> {
+  const log = options.log ?? (() => {});
+  const result = await checkCredentialPreflight({
+    dir: options.dir,
+    env: options.env,
+    providers: options.providers,
+  });
+  const message = credentialPreflightMessage(result);
+  if (!result.ok) return message;
+  log(`[SECURITY] ${message}`);
+  const exported = await applyProviderCredentialEnv({
+    dir: options.dir,
+    env: options.env,
+    setEnv: options.setEnv,
+    providers: options.providers,
+    selectToken: options.selectToken,
+  });
+  if (exported.length > 0) {
+    log(
+      `[SECURITY] provider credentials exported to the run ` +
+        `environment: ${exported.join(", ")}`,
+    );
+  }
+  return null;
+}
+
 /** Build the production dependency set for {@link runWorker}. */
 export function createDefaultRunWorkerDeps(): RunWorkerDeps {
   const logger = createLogger({ debug: Deno.env.get("DEBUG") === "true" });
+  // Built ONCE per process (Issue #919): the selector remembers which token it
+  // chose, so the run's coding-agent credential is fixed at startup and no
+  // later call can re-select or issue a second round of probes.
+  const selectToken = createClaudeBudgetTokenSelector({
+    log: (message) => logger.info(message),
+  });
   return {
     evaluateRunGuard: (pidFile, maxRunSeconds) =>
       defaultEvaluateRunGuard(pidFile, maxRunSeconds),
@@ -228,41 +305,60 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
     recordRunMode: ({ logDir, mode, host, runId }) =>
       appendRunCoreLogLine(logDir, formatRunModeRecord({ mode, host, runId })),
     validateConfig: (config) => validateWorkerConfig(config),
-    checkCredentials: async () => {
-      const result = await checkCredentialPreflight();
-      const message = credentialPreflightMessage(result);
-      if (result.ok) {
-        logger.info(`[SECURITY] ${message}`);
-        // The runtime half of Issue #4064: the preflight proved the material
-        // exists; exporting it is what lets the agent spawns (health check
-        // included) authenticate — child envs are built from this process's
-        // env. Names only in the log, never values.
-        const exported = await applyProviderCredentialEnv();
-        if (exported.length > 0) {
+    checkCredentials: () =>
+      checkWorkerCredentials({
+        log: (message) => logger.info(message),
+        selectToken,
+      }),
+    resolveGithubUser: async () => {
+      // Issue #949: retry a network-class failure before giving up. This is
+      // the first GitHub call of the run, made seconds after the container
+      // comes up, and it used to end the run on one dropped packet — which
+      // on a host behind an intermittent link cost sixteen minutes of
+      // backoff per blip. An auth failure still fails on the first attempt,
+      // because only a human can fix that one.
+      const outcome = await resolveGithubUserWithRetry({
+        onRetry: (attempt, attempts, reason, delayMs) => {
+          logger.warn(
+            `[run-worker] could not resolve the authenticated GitHub user ` +
+              `(attempt ${attempt}/${attempts}): ${reason} — retrying in ` +
+              `${Math.round(delayMs / 1000)}s`,
+          );
+        },
+      });
+      if (outcome.ok) {
+        if (outcome.attempts > 1) {
           logger.info(
-            `[SECURITY] provider credentials exported to the run ` +
-              `environment: ${exported.join(", ")}`,
+            `[run-worker] resolved the authenticated GitHub user on attempt ` +
+              `${outcome.attempts}`,
           );
         }
-        return null;
+        return outcome.login;
       }
-      return message;
-    },
-    resolveGithubUser: async () => {
-      const result = await getGithubUser();
-      if (result.ok && result.value) return result.value;
       // Say WHY, with the configuration that produced it (Issue #509): the
       // read-only-root milestone moved the staged gh config and every run
       // died here reporting only "could not resolve authenticated GitHub
       // user" — gh's own "failed to write config after migration: … read-only
       // file system" reached no log at all.
-      const reason = result.ok
-        ? "gh returned an empty login"
-        : result.error.message;
+      //
+      // Issue #949: name the class too. `network` tells the supervisor to
+      // re-probe soon rather than serve the long backoff meant for a host
+      // that needs a human.
       logger.error(
-        `[run-worker] gh could not resolve the authenticated user: ${reason} ` +
+        `[run-worker] gh could not resolve the authenticated user ` +
+          `(${outcome.kind}, ${outcome.attempts} attempt(s)): ` +
+          `${outcome.reason} ` +
           `(GH_CONFIG_DIR=${Deno.env.get("GH_CONFIG_DIR") ?? "<unset>"})`,
       );
+      if (outcome.kind === "network") {
+        // Read by the supervisor's backoff off the launch log: this host is
+        // not broken, its link is, so the next attempt is due at the base
+        // cadence rather than up the failure ladder.
+        logger.error(
+          `[run-worker] ${NETWORK_UNAVAILABLE_MARKER} — GitHub was ` +
+            `unreachable for every attempt; not a host fault`,
+        );
+      }
       return null;
     },
     assertIdentity: (githubUser, config) => {

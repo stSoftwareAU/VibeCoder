@@ -41,6 +41,7 @@ import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
+import { integrationTestIgnoreArg } from "./integration_test_manifest.ts";
 
 /** Result of a single check execution. */
 export interface CheckExecutionResult {
@@ -498,11 +499,21 @@ async function runHomeWorkDirGuardCheck(
   );
 
   if (result.violations.length === 0 && result.staleAllowlist.length === 0) {
+    // Issue #883: an allowlist entry whose file is gone is reported, not
+    // fatal. It cannot mask a violation — there is no file to construct a
+    // work dir in — and failing over it cost #805 two runs and #808 two more,
+    // none of which had changed anything wrong. The note keeps it visible so
+    // the entry still gets trimmed.
+    const note = result.orphanedAllowlist.length === 0 ? "" : "\n" + [
+      ...result.orphanedAllowlist.map((s) => `ORPHANED ALLOWLIST: ${s}`),
+      "These entries name files that no longer exist. They cannot hide a",
+      "violation, so they do not fail the gate — trim them when convenient.",
+    ].join("\n");
     return {
       name,
       status: "PASSED",
       output:
-        `host work-dir guard: PASSED (${result.filesScanned} files scanned)`,
+        `host work-dir guard: PASSED (${result.filesScanned} files scanned)${note}`,
     };
   }
 
@@ -938,6 +949,13 @@ async function runDenoTests(
       "--allow-run",
       "--allow-write",
       "--allow-sys=hostname",
+      // Issue #907: the suites that copy the repository's own `.sh`/`.ps1`
+      // into a temp tree, stub a PATH and spawn them are integration tests.
+      // They cost ~12 of the gate's ~36 minutes and run on every change,
+      // including changes that cannot reach them — #891 was found exactly
+      // that way, by a diff touching only `prompts/**`. CI runs them, where
+      // sharding absorbs the cost; the worker's gate does not.
+      `--ignore=${integrationTestIgnoreArg()}`,
     ],
     { cwd: config.denoDir, env: testStageEnv(Deno.env.toObject()) },
   );

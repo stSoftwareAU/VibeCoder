@@ -37,40 +37,37 @@ import {
 } from "../lib/config_unknown_keys.ts";
 import { validateConfigFileJson } from "../lib/validation.ts";
 import { loadConfig } from "../lib/config.ts";
-
-/** Every DeepSeek routing env var a test may set, cleared before each run. */
-const ROUTING_ENV_VARS = [
-  "DEEPSEEK_MODEL",
-  "DEEPSEEK_MODEL_PLANNING",
-  "DEEPSEEK_MODEL_TOTALLY_UNKNOWN_PHASE",
-];
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** The Anthropic tier aliases Claude's own routing resolves to (Issue #413). */
 const ANTHROPIC_TIER_ALIASES = ["fable", "opus", "sonnet", "haiku"];
 
 /**
- * Run `fn` with the DeepSeek routing state reset — no env vars, no config
- * overrides, no per-repo overrides, no recorded effort warnings — and restore
- * the environment afterwards.
+ * Run `fn` with the DeepSeek routing state reset — no config overrides, no
+ * per-repo overrides, no recorded effort warnings — and an environment holding
+ * exactly `vars`.
+ *
+ * The environment is a lookup handed to the resolvers (Issue #957), never the
+ * process: nothing here can race a test running beside it, and a `DEEPSEEK_*`
+ * variable the worker container exports cannot reach the chain either.
+ *
+ * @param vars - The DeepSeek routing variables this test declares as set.
+ * @param fn - The test body, given the lookup to inject.
  */
-function withCleanRouting(fn: () => void): void {
-  const saved = new Map<string, string | undefined>(
-    ROUTING_ENV_VARS.map((name) => [name, Deno.env.get(name)]),
-  );
-  for (const name of ROUTING_ENV_VARS) Deno.env.delete(name);
+function withCleanRouting(
+  vars: Record<string, string>,
+  fn: (env: EnvLookup) => void,
+): void {
   setDeepSeekPhaseModelConfigOverrides({});
   setActiveRepoDeepSeekModelOverrides(undefined);
   clearDeepSeekEffortWarnings();
   try {
-    fn();
+    fn(envFrom(vars));
   } finally {
     setDeepSeekPhaseModelConfigOverrides({});
     setActiveRepoDeepSeekModelOverrides(undefined);
     clearDeepSeekEffortWarnings();
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
   }
 }
 
@@ -94,7 +91,7 @@ function captureWarnings(fn: () => void): string[] {
 // ---------------------------------------------------------------------------
 
 Deno.test("deepseek routing - the full phase table routes as designed", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     const expected: Record<string, string> = {
       planning: "deepseek-reasoner",
       grill_me: "deepseek-reasoner",
@@ -115,7 +112,7 @@ Deno.test("deepseek routing - the full phase table routes as designed", () => {
 
     for (const [phase, model] of Object.entries(expected)) {
       assertEquals(
-        resolveDeepSeekModel(phase),
+        resolveDeepSeekModel(phase, env),
         model,
         `phase ${phase} must route to ${model}`,
       );
@@ -125,9 +122,9 @@ Deno.test("deepseek routing - the full phase table routes as designed", () => {
 });
 
 Deno.test("deepseek routing - planning reasons, summarise chats", () => {
-  withCleanRouting(() => {
-    assertEquals(resolveDeepSeekModel("planning"), "deepseek-reasoner");
-    assertEquals(resolveDeepSeekModel("summarise"), "deepseek-chat");
+  withCleanRouting({}, (env) => {
+    assertEquals(resolveDeepSeekModel("planning", env), "deepseek-reasoner");
+    assertEquals(resolveDeepSeekModel("summarise", env), "deepseek-chat");
     assertEquals(
       DEFAULT_DEEPSEEK_MODEL_TOP_TIER as string,
       "deepseek-reasoner",
@@ -144,12 +141,12 @@ Deno.test("deepseek routing - the table covers the same phase keys as the Claude
 });
 
 Deno.test("deepseek routing - no phase resolves to an Anthropic tier alias", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     // The regression this issue exists to prevent: DeepSeek rides the Claude
     // CLI, so a missing table entry (or a pasted Claude tier) would send
     // `fable`/`opus`/`sonnet`/`haiku` to an endpoint that cannot resolve it.
     for (const phase of Object.keys(PHASE_MODEL_DEFAULTS)) {
-      const model = resolveDeepSeekModel(phase);
+      const model = resolveDeepSeekModel(phase, env);
       assert(model, `phase ${phase} must resolve to a DeepSeek model id`);
       assert(
         !ANTHROPIC_TIER_ALIASES.includes(model),
@@ -161,9 +158,9 @@ Deno.test("deepseek routing - no phase resolves to an Anthropic tier alias", () 
 });
 
 Deno.test("deepseek routing - a phase-less call leaves the CLI on its default, quietly", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     const warnings = captureWarnings(() => {
-      assertEquals(resolveDeepSeekModel(), undefined);
+      assertEquals(resolveDeepSeekModel(undefined, env), undefined);
       assertEquals(resolveDeepSeekEffort(), undefined);
     });
     assertEquals(warnings.length, 0, "a phase-less call is deliberate");
@@ -175,58 +172,57 @@ Deno.test("deepseek routing - a phase-less call leaves the CLI on its default, q
 // ---------------------------------------------------------------------------
 
 Deno.test("deepseek routing - a phase-specific env var beats every other source", () => {
-  withCleanRouting(() => {
-    Deno.env.set("DEEPSEEK_MODEL_PLANNING", "deepseek-env");
-    Deno.env.set("DEEPSEEK_MODEL", "deepseek-base");
+  withCleanRouting({
+    DEEPSEEK_MODEL_PLANNING: "deepseek-env",
+    DEEPSEEK_MODEL: "deepseek-base",
+  }, (env) => {
     setDeepSeekPhaseModelConfigOverrides({ planning: "deepseek-global" });
     setActiveRepoDeepSeekModelOverrides({
       deepseekModel: "deepseek-repo-base",
       deepseekPhaseModelOverrides: { planning: "deepseek-repo-phase" },
     });
 
-    assertEquals(resolveDeepSeekModel("planning"), "deepseek-env");
+    assertEquals(resolveDeepSeekModel("planning", env), "deepseek-env");
   });
 });
 
 Deno.test("deepseek routing - a per-repo phase override beats the per-repo base tier", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setActiveRepoDeepSeekModelOverrides({
       deepseekModel: "deepseek-repo-base",
       deepseekPhaseModelOverrides: { planning: "deepseek-repo-phase" },
     });
 
-    assertEquals(resolveDeepSeekModel("planning"), "deepseek-repo-phase");
+    assertEquals(resolveDeepSeekModel("planning", env), "deepseek-repo-phase");
     // A phase the repo does not re-pin still takes the repo base tier.
-    assertEquals(resolveDeepSeekModel("health"), "deepseek-repo-base");
+    assertEquals(resolveDeepSeekModel("health", env), "deepseek-repo-base");
   });
 });
 
 Deno.test("deepseek routing - the per-repo base tier beats the global config override", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setDeepSeekPhaseModelConfigOverrides({ planning: "deepseek-global" });
     setActiveRepoDeepSeekModelOverrides({
       deepseekModel: "deepseek-repo-base",
     });
 
-    assertEquals(resolveDeepSeekModel("planning"), "deepseek-repo-base");
+    assertEquals(resolveDeepSeekModel("planning", env), "deepseek-repo-base");
   });
 });
 
 Deno.test("deepseek routing - a global config override beats the phase default", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setDeepSeekPhaseModelConfigOverrides({ planning: "deepseek-global" });
 
-    assertEquals(resolveDeepSeekModel("planning"), "deepseek-global");
+    assertEquals(resolveDeepSeekModel("planning", env), "deepseek-global");
   });
 });
 
 Deno.test("deepseek routing - the base env var covers a phase with no table entry", () => {
-  withCleanRouting(() => {
-    Deno.env.set("DEEPSEEK_MODEL", "deepseek-base");
-
+  withCleanRouting({ DEEPSEEK_MODEL: "deepseek-base" }, (env) => {
     const warnings = captureWarnings(() => {
       assertEquals(
-        resolveDeepSeekModel("totally_unknown_phase"),
+        resolveDeepSeekModel("totally_unknown_phase", env),
         "deepseek-base",
       );
     });
@@ -239,9 +235,12 @@ Deno.test("deepseek routing - the base env var covers a phase with no table entr
 });
 
 Deno.test("deepseek routing - a phase with no model anywhere warns", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     const warnings = captureWarnings(() => {
-      assertEquals(resolveDeepSeekModel("totally_unknown_phase"), undefined);
+      assertEquals(
+        resolveDeepSeekModel("totally_unknown_phase", env),
+        undefined,
+      );
     });
 
     assertEquals(warnings.length, 1);
@@ -252,18 +251,21 @@ Deno.test("deepseek routing - a phase with no model anywhere warns", () => {
 });
 
 Deno.test("deepseek routing - per-repo overrides are replaced, never merged, on a repo switch", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setActiveRepoDeepSeekModelOverrides({
       deepseekModel: "deepseek-premium",
       deepseekPhaseModelOverrides: { planning: "deepseek-premium-planning" },
     });
-    assertEquals(resolveDeepSeekModel("planning"), "deepseek-premium-planning");
+    assertEquals(
+      resolveDeepSeekModel("planning", env),
+      "deepseek-premium-planning",
+    );
 
     // The next repo configures no DeepSeek routing: the premium tier must not
     // leak into it.
     setActiveRepoDeepSeekModelOverrides({});
     assertEquals(
-      resolveDeepSeekModel("planning"),
+      resolveDeepSeekModel("planning", env),
       DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
     );
   });
@@ -274,7 +276,7 @@ Deno.test("deepseek routing - per-repo overrides are replaced, never merged, on 
 // ---------------------------------------------------------------------------
 
 Deno.test("deepseek effort - the resolver reports the effort the phase was asked to run at", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, () => {
     for (const phase of Object.keys(PHASE_MODEL_DEFAULTS)) {
       assertEquals(resolveDeepSeekEffort(phase), PHASE_EFFORT_DEFAULTS[phase]);
     }
@@ -292,7 +294,7 @@ Deno.test("deepseek effort - there is no DeepSeek effort table or effort config 
 });
 
 Deno.test("deepseek effort - an unhonourable effort warns once per phase", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, () => {
     const warnings = captureWarnings(() => {
       for (let i = 0; i < 3; i++) {
         warnDeepSeekEffortUnsupported("high", "planning");
@@ -366,13 +368,47 @@ Deno.test("deepseek config - repo and global DeepSeek keys survive loadConfig", 
     });
 
     // And they route: the loaded repo config drives the resolver.
-    withCleanRouting(() => {
+    withCleanRouting({}, (env) => {
       setDeepSeekPhaseModelConfigOverrides(config.deepseekPhaseModelOverrides);
       setActiveRepoDeepSeekModelOverrides(repo);
-      assertEquals(resolveDeepSeekModel("issue"), "deepseek-repo-issue");
-      assertEquals(resolveDeepSeekModel("planning"), "deepseek-repo-base");
+      assertEquals(resolveDeepSeekModel("issue", env), "deepseek-repo-issue");
+      assertEquals(
+        resolveDeepSeekModel("planning", env),
+        "deepseek-repo-base",
+      );
     });
   } finally {
     await Deno.remove(path);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The injected environment lookup (Issue #957)
+// ---------------------------------------------------------------------------
+
+Deno.test("deepseek routing - both env reads go through the injected lookup, never the process (Issue #957)", () => {
+  // The sentinel exists in no process environment, so a resolver that fell
+  // back to `Deno.env.get` would return undefined instead of it.
+  const sentinel = "deepseek-957-sentinel";
+  withCleanRouting({}, () => {
+    const asked: string[] = [];
+    // An unknown phase misses steps 2-5, so one call covers step 1 (the
+    // phase-specific variable) and step 6 (the base variable).
+    const model = resolveDeepSeekModel("totally_unknown_phase", (name) => {
+      asked.push(name);
+      return name === "DEEPSEEK_MODEL" ? sentinel : undefined;
+    });
+
+    assertEquals(model, sentinel);
+    assertEquals(asked, [
+      "DEEPSEEK_MODEL_TOTALLY_UNKNOWN_PHASE",
+      "DEEPSEEK_MODEL",
+    ]);
+    assertEquals(Deno.env.get("DEEPSEEK_MODEL"), undefined);
+  });
+
+  withCleanRouting({ DEEPSEEK_MODEL_PLANNING: sentinel }, (env) => {
+    // Step 1 beats the designed "deepseek-reasoner" default.
+    assertEquals(resolveDeepSeekModel("planning", env), sentinel);
+  });
 });

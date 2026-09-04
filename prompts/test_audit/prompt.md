@@ -15,9 +15,9 @@ present in the repo (TypeScript / Deno, JavaScript, Rust, Java, Go,
 Python, shell / BATS, Cypress, Playwright, etc.). Findings from all
 detected test ecosystems are evaluated and reported together.
 
-The audit reviews two complementary concerns and reports both in the
-**same** run, using the same deduplication, severity, stable-ID and
-finding-limit rules — never as a parallel report:
+The audit reviews three complementary concerns and reports all of them
+in the **same** run, using the same deduplication, severity, stable-ID
+and finding-limit rules — never as a parallel report:
 
 - **Test maintainability** — tests that get in the way of refactoring
   (the ten test-maintainability smells, checks 1–6 and 8–11 in
@@ -25,6 +25,13 @@ finding-limit rules — never as a parallel report:
 - **Potential behavioural coverage gaps** — public API functions where
   no test directly references the symbol and no reviewed test provides
   clear indirect behavioural coverage (check 7 in Phase 2).
+- **Unit-suite classification** — unit tests that mutate process-wide
+  state, or whose shape shows they must wait on the clock, and so belong
+  behind a seam or in the integration suite (checks 12–13 in Phase 2).
+  The repository's own coding standards own the normative definition of
+  unit, integration and benchmark — read it there ("Unit Tests vs
+  Benchmarks" in `CODING-STANDARDS.md`, or the equivalent section this
+  repository documents) rather than inferring one.
 
 This audit reads **test source**. It is distinct from its
 documentation-scan siblings, which read the same repo for different
@@ -44,7 +51,7 @@ The audit runs in five phases, each producing the input to the next:
    win over any check below.
 1. **Inventory** — the list of test files to review **and** the list of
    exported / public functions to cross-check for coverage.
-2. **Detect** — evidence-backed candidate findings against the eleven
+2. **Detect** — evidence-backed candidate findings against the thirteen
    audit checks.
 3. **Triage** — dedup, filter, and rank the candidates.
 4. **File** — one GitHub issue per surviving finding.
@@ -267,10 +274,11 @@ real logic.
 If the repo contains no test files at all, exit immediately with
 **zero findings** filed.
 
-## Phase 2 — Apply the eleven audit checks
+## Phase 2 — Apply the thirteen audit checks
 
 Walk the test files inventoried in Phase 1 against checks 1–6 and 8–11
-(the **test-maintainability smells**), and cross-check the public
+(the **test-maintainability smells**) and against checks 12–13
+(**unit-suite classification**), and cross-check the public
 functions from Phase 1b against the test suite for check 7 (a
 **potential behavioural coverage gap**). Within the bound below, aim for
 **coverage**: surface every candidate the evidence supports — **do not
@@ -404,9 +412,9 @@ An exported / public function (from Phase 1b) that appears to lack
 behavioural coverage: no test directly references the symbol and no
 reviewed test provides clear indirect behavioural coverage. This is a
 **statically detected candidate**, not a measured-coverage claim. The
-other ten checks find tests that get in the way of a refactor; this one
-finds public behaviour that may have no safety net, so a refactor could
-silently break it.
+maintainability checks find tests that get in the way of a refactor;
+this one finds public behaviour that may have no safety net, so a
+refactor could silently break it.
 
 Decide "appears to have a test?" with evidence, not assumption:
 
@@ -561,6 +569,126 @@ Severity: **high** when the tautology is the only test naming the
 behaviour, so nothing catches a regression in it; **medium** when it
 sits beside assertions that do constrain the same behaviour.
 
+### 12. Parallel-unsafe unit tests
+
+A test in the **unit** suite that mutates process-wide state instead of
+taking its configuration as a parameter or through an injected seam.
+Process-wide state is shared by every test in the process, so two such
+tests cannot run concurrently: the suite has to be run serially or
+sharded, and every other test in it pays for that. This is the debt that
+turns a gate which should answer a one-line change in minutes into one
+that takes tens of them.
+
+This is a **static, source-shape** check. It fires on the mutating call
+read in the test source; it never claims an observed race, because the
+audit does not run the suite. Typical shapes:
+
+- `Deno.env.set(…)`, `Deno.env.delete(…)`, `Deno.chdir(…)`;
+- `process.env.FOO = …`, `process.chdir(…)` (Node);
+- `os.environ[…] = …`, `os.chdir(…)`, a session-scoped `setenv` fixture
+  (Python);
+- `std::env::set_var`, `std::env::set_current_dir` (Rust);
+- `System.setProperty(…)` (Java), `os.Setenv`, `os.Chdir` (Go);
+- assignment to a module-level singleton, cache or registry that the
+  rest of the suite reads.
+
+**Stay silent** when:
+
+- the file is already listed in the repository's declared
+  parallel-unsafe test manifest (`parallel_unsafe_test_manifest.ts`, or
+  the equivalent list this repository maintains). Those files are
+  **known debt**: already recorded, already run serially, already being
+  paid down. This check exists to stop that list growing, so a file on
+  it is never a new finding — re-reporting the whole list would bury
+  every other finding in the run;
+- the file is declared an integration test (the exclusion check 13
+  states) — process-wide setup is expected there;
+- the mutated state is state the test itself owns and no concurrently
+  running test can observe: a value inside a temporary directory the
+  test created, a locally constructed object, or an environment handed
+  to a **child** process as an argument rather than set on this one.
+
+The remedy stated in the finding is **the seam, never a flag**: take the
+value as a parameter, accept a reader function (`getEnv: (key: string)
+=> string | undefined`), or pass the environment to the child process
+instead of setting it on this one. A `--no-parallel` switch, a serial
+annotation, or a new entry on the known-debt manifest is not a fix and
+must not be offered as one.
+
+Report the habit as **one** finding listing the offending files — never
+one finding per file. A suite-wide mutation habit is a single root cause
+(Phase 3 step 3), and a repository with a hundred such files must still
+yield one finding, not a hundred issues.
+
+Severity: **medium** — it holds the whole suite back rather than hiding
+a bug in the behaviour under test.
+
+### 13. Slow unit tests — a wait, a poll or a spawn in the source
+
+A test in the **unit** suite whose shape shows it cannot meet the time
+budget the repository's coding standards set for a unit test (the "Unit
+Tests vs Benchmarks" section of `CODING-STANDARDS.md`, or the equivalent
+section this repository documents — that section is normative, not this
+check).
+
+This is a **static, source-shape** check, and that constraint is the
+whole of it. The audit does not execute tests, so this check keys on an
+observable wait, poll or spawn **read in the source** — never on a
+measured duration, and never on an estimated or guessed one. Do not put
+a number of seconds in a finding unless it is a literal you read in the
+test.
+
+Flag:
+
+- **A wall-clock sleep** — `await delay(2000)`, `sleep 5`,
+  `Thread.sleep(…)`, `time.sleep(…)`, a `setTimeout` awaited only to let
+  real time pass;
+- **A retry loop with wall-clock backoff** — a loop that waits between
+  attempts against the real clock rather than an injected one;
+- **A polling wait** — "keep checking this condition every N ms until a
+  timeout", where the clock being polled is the real one;
+- **A spawned process** — the test starts one of the repository's own
+  scripts, binaries or servers and waits on it.
+
+**Stay silent** when:
+
+- the file is listed in the repository's declared integration-test
+  manifest (`integration_test_manifest.ts`, or the equivalent list this
+  repository maintains). Those files are integration tests **by
+  declaration**: spawning a script and waiting on it is what they are
+  for, and reporting them would bury the real findings;
+- the wait is against an **injected** clock, timer or scheduler that the
+  test advances itself — no wall-clock time passes, so the shape is
+  fast;
+- the test is a **ratio assertion** that times the same work at two
+  input sizes and compares the two readings. That is check 3's
+  carve-out, restated here so this check cannot be read as
+  contradicting it: such a test measures deliberately, and it compares
+  an elapsed time against another reading of the same work rather than
+  against a constant, so a slower host inflates both readings and it
+  stays green. Check 3 does not flag it and neither does this one. An
+  **absolute** wall-clock threshold remains a check 3 finding.
+
+The remedy stated in the finding is one of two, and the issue names
+both: **a seam that removes the wait** — an injected clock the test
+advances, a fake scheduler, an injected process runner returning a
+canned result — or **reclassification**, moving the file into the
+repository's integration-test manifest so it runs where the cost is
+expected and budgeted.
+
+Report the habit as **one** finding listing the offending files — never
+one finding per file (Phase 3 step 3).
+
+Severity: **medium**; **high** when one test's waits dominate the
+suite's wall-clock.
+
+**Neither check reports a failing test.** Checks 12 and 13 key on the
+shape of the source, never on whether a test passes. A test that fails
+on a given host for an environmental reason — an interpreter, runtime or
+toolchain the host does not have — is neither parallel-unsafe nor slow,
+and is a finding under neither check. The audit does not run the suite,
+so it has no pass/fail verdict to report in the first place.
+
 ### Exemption — production regression tests are sacred
 
 A test that reproduces a real production bug — named for the incident or
@@ -688,6 +816,49 @@ project's own `toRow()` mapping persists `discountCents` as an integer:
 that fails when the project breaks it, so it is silent.</reason>
 </example>
 
+<example name="parallel-unsafe-unit-test">
+<excerpt>`src/run_id_test.ts:14` — `Deno.env.set("VIBE_RUN_ID",
+"vibe-test-abc123")` at the top of a `Deno.test` case in the unit suite,
+with the file absent from the repository's parallel-unsafe manifest.</excerpt>
+<signal>check 12 — parallel-unsafe unit test</signal>
+<verdict>file — `severity:medium`</verdict>
+<reason>Every parallel worker shares one process environment, so this
+case races whatever else reads `VIBE_RUN_ID`, and the whole suite has to
+run serially to stay deterministic. The fix is the seam the code already
+supports — pass a `getEnv` reader to the function under test — never a
+`--no-parallel` switch or a new entry on the known-debt list. The
+sibling cases in the same suite go in the same finding, not in one issue
+each.</reason>
+</example>
+
+<example name="parallel-unsafe-test-already-on-the-known-debt-list">
+<excerpt>`src/config_test.ts:20` — the same environment mutation, in a
+file the repository's parallel-unsafe manifest already lists.</excerpt>
+<signal>none</signal>
+<verdict>silent</verdict>
+<reason>The near-miss for check 12: the debt is already recorded and
+already run serially, and the manifest is capped so it can only shrink.
+The check exists to stop the list growing, so a listed file is never a
+new finding. Re-reporting the list would fill the run's six issues with
+debt the repository is already tracking.</reason>
+</example>
+
+<example name="slow-unit-test-by-shape">
+<excerpt>`src/backoff_test.ts:31` — `for (let i = 0; i < 5; i++) { await
+delay(2000); … }` inside a `Deno.test` case, in a file the
+integration-test manifest does not list.</excerpt>
+<signal>check 13 — slow unit test</signal>
+<verdict>file — `severity:medium`</verdict>
+<reason>Ten seconds of real waiting is read directly from the source, so
+no measurement or estimate is needed to know the case cannot meet the
+unit budget. The remedy is an injected clock the test advances, or
+moving the file into the integration-test manifest. Compare
+`src/growth_test.ts:40`, which times the same work at N and 4N and
+asserts on the ratio: that measures on purpose, compares one reading
+against another rather than against a constant, and is silent under
+checks 3 and 13 alike.</reason>
+</example>
+
 </examples>
 
 ## Phase 3 — Triage
@@ -743,7 +914,10 @@ Apply these rules in order to every candidate from Phase 2:
   timing assertion; one grep-as-assertion; a tautological assertion
   beside others that do constrain the same behaviour; a family of
   near-duplicate tests large enough to be a real maintenance drag), or a
-  public function with real logic appears to lack behavioural coverage.
+  public function with real logic appears to lack behavioural coverage,
+  or the unit suite carries tests that mutate process-wide state
+  (check 12) or that must wait on the clock (check 13), holding the
+  whole suite back.
 - **`severity:low`** — the test is suspect but the harm is limited (a
   small unjustified expected value, but the function is rarely
   modified; a pair of near-duplicate tests; a framework-guarantee test,
@@ -760,13 +934,14 @@ Compute each finding's stable id as `BP-<12 hex>` from the inputs
 
 The literal `"test-audit"` discriminator is required so test-audit ids
 never collide with best-practices findings for the same file. The
-`audit-check slug` is a stable identifier for which of the eleven checks
+`audit-check slug` is a stable identifier for which of the thirteen checks
 fired (for example `implementation-coupled-assertion`,
 `source-text-grep`, `timing-assertion`, `benchmark-in-unit-tests`,
 `unjustified-expected-value`, `unreviewable-snapshot`,
 `potentially-untested-public-api`, `mocked-state-object`,
-`near-duplicate-tests`, `framework-guarantee-test`, or
-`tautological-expected-value`). A tautological assertion (check 11)
+`near-duplicate-tests`, `framework-guarantee-test`,
+`tautological-expected-value`, `parallel-unsafe-unit-test`, or
+`slow-unit-test`). A tautological assertion (check 11)
 takes its own slug, never `unjustified-expected-value`, so the two
 never collapse into one id for the same file. Derive the id
 from the audit check
@@ -889,6 +1064,14 @@ project test.
      behaviour-based (WHAT) test that exercises the function's
      observable behaviour — sketch the new test; never auto-write it
      (this audit is issue-only).
+
+     For a unit-suite classification finding (checks 12–13), name the
+     remedy the check states: for check 12 the seam that replaces the
+     process-wide mutation — never a `--no-parallel` switch and never a
+     new entry on the known-debt manifest; for check 13 either the seam
+     that removes the wait or reclassification into the repository's
+     integration-test manifest. List every affected file in the one
+     issue body rather than filing an issue per file.
    - Any `Rejected suppression: <file>:<line> <id> — <failed check>` line
      from Phase 3 step 5 goes at the end of `## Suggested fix`.
    - The final line is the literal **attribution footer** line from

@@ -161,6 +161,7 @@ import {
   buildIdleDecisionCensus,
   formatIdleDecisionCensus,
   type RepoCensusSkipReason,
+  resolveRepoScanState,
 } from "./idle_decision_census.ts";
 
 // Label-based processors
@@ -2690,6 +2691,7 @@ export async function createProductionRunCoreDeps(
     async processIssue(
       issue: DiscoveredIssue,
       cycleDeadlineEpochMs?: number,
+      laneId?: string,
     ) {
       const issueData: IssueData = await fetchIssueData(
         issue.repo,
@@ -2810,6 +2812,9 @@ export async function createProductionRunCoreDeps(
         config,
         // Issue #4254: bound the execute timeout by the cycle deadline.
         cycleDeadlineEpochMs,
+        // Issue #923: which lane is running this, so the setup phase can
+        // give it its own worktree instead of the shared clone.
+        ...(laneId === undefined ? {} : { laneId }),
       };
 
       const result = await workOnIssue(ctx, workerDeps);
@@ -3343,7 +3348,9 @@ export async function createProductionRunCoreDeps(
     // `mis_classification` alert when its verdict disagrees with the
     // scan's `foundClaimableIssue` flag. Logs route through the shared
     // `logger.info` for the same reason as the filer above.
-    runIdleDetectAudit: async ({ tick, scanFoundClaimable }) => {
+    runIdleDetectAudit: async (
+      { tick, scanFoundClaimable, scanExcludedRepos },
+    ) => {
       const { auditClaimableState } = await import(
         "./idle_detect_diagnostics.ts"
       );
@@ -3379,6 +3386,11 @@ export async function createProductionRunCoreDeps(
           // Read from the same signals the census and the fleet-board note
           // use, so all three agree about why this host is idle.
           claimGateActive: claimGateReason() !== "cycle_deadline",
+          // Issue #898: a repo a slot — or the maintenance lane — held was
+          // skipped by the scan before any eligibility check ran, so the two
+          // never disagreed about it. The claimable counts stay; the ALERT
+          // goes, exactly as it does for a claim gate.
+          heldRepos: scanExcludedRepos,
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -3406,10 +3418,13 @@ export async function createProductionRunCoreDeps(
     // the filer and audit above. Best-effort — any throw is caught here
     // and logged so a census failure never reaches the loop's catch.
     runIdleDecisionCensus: async (
-      { decisionPoint, claimScanCompleted, claimedRepos },
+      { decisionPoint, claimScanCompleted, claimedRepos, scanExcludedRepos },
     ) => {
       try {
         const host = `${Deno.hostname()}:${Deno.pid}`;
+        // Issue #898: the repos this cycle's eligibility pass was never shown
+        // because a slot — or the maintenance lane — held them.
+        const heldRepos = new Set(scanExcludedRepos);
         // Issue #655: the same holds the claim scan filtered its candidates
         // against, so the two instruments cannot disagree about them.
         const runLocalHold = await loadRunLocalHolds();
@@ -3450,7 +3465,7 @@ export async function createProductionRunCoreDeps(
               // runway floor, a shutdown or a drain — on such a cycle the
               // backlog was never evaluated, so the repo was not scanned and
               // its claimable work was deferred rather than refused.
-              scannedThisCycle: claimScanCompleted,
+              //
               // Issue #479: name the gate that actually refused the work. A
               // host below its disk floor (#226) or carrying a work-volume
               // fault (#229) stops claiming for the whole host, and
@@ -3459,7 +3474,16 @@ export async function createProductionRunCoreDeps(
               // because "nothing refused the work", true of a deadline and
               // false of a gate, so the real cause was never named and an
               // operator reading the census went looking at cycle duration.
-              ...(claimScanCompleted ? {} : { skipReason: claimGateReason() }),
+              //
+              // Issue #898: and a repo a slot held is not covered by either
+              // verdict — the scan skipped it before any eligibility check
+              // ran, so it recorded no reason for a single one of its issues.
+              ...resolveRepoScanState({
+                repo,
+                claimScanCompleted,
+                scanExcludedRepos: heldRepos,
+                claimGateReason,
+              }),
               nice: getRepoNice(config.repoConfig, repo),
               issues: issues.map((i) => ({
                 number: i.number,

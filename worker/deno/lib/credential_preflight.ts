@@ -12,7 +12,9 @@
  *
  *   <credential dir>/            default ~/.vibe-coder/credentials
  *   ├── gh/hosts.yml             the worker's GH_CONFIG_DIR host material
- *   └── <provider>/<file>        one credential per enabled provider
+ *   ├── <provider>/<file>        one credential per enabled provider
+ *   └── <provider>/<extra file>  extra tokens, for a provider that takes a
+ *                                pool of them (Issue #917, parent #902)
  *
  * The provider sub-directories, their files and the environment variables that
  * can stand in for them all come from the provider seam (`agent_provider.ts`,
@@ -34,6 +36,7 @@
  * Australian English spelling throughout (behaviour, authorised, organisation).
  */
 
+import type { EnvLookup } from "./env_lookup.ts";
 import {
   activeAgentProvider,
   type AgentProviderDescriptor,
@@ -113,6 +116,7 @@ export type CredentialFailureCode =
   | "github-credentials-missing"
   | "provider-credentials-missing"
   | "credential-permissions-too-open"
+  | "provider-token-file-unrecognised"
   | "unexpected-credential-material";
 
 /** Where usable credential material was found. */
@@ -159,8 +163,14 @@ export interface CredentialPreflightResult {
   failures: CredentialFailure[];
 }
 
-/** Environment lookup seam (tests inject a fixed map). */
-export type EnvLookup = (name: string) => string | undefined;
+/**
+ * Environment lookup seam (tests inject a fixed map).
+ *
+ * Re-exported from the canonical {@link module:lib/env_lookup} so the worker
+ * has one spelling of this type (Issue #956); the name is kept here because
+ * every existing importer reaches for it at this path.
+ */
+export type { EnvLookup };
 
 /**
  * Resolve the credential directory for this host.
@@ -242,6 +252,166 @@ export function parseProviderCredentialEntries(
 }
 
 /**
+ * One credential file found in a provider's credential sub-directory
+ * (Issue #917, parent #902).
+ *
+ * The record is safe to log as a whole only after {@link value} is dropped:
+ * {@link label} exists precisely so a run can say which token it chose
+ * without the token ever reaching a log line, a comment, or an escalation.
+ */
+export interface ProviderTokenFile {
+  /** File stem — `provider`, `provider-2`, … — safe to log. */
+  label: string;
+  /** Absolute path to the file. */
+  path: string;
+  /**
+   * The recognised credential variable that identifies this token, or null
+   * when the file holds none. The first recognised entry wins, which is the
+   * same entry {@link parseProviderCredentials} reports.
+   */
+  name: string | null;
+  /** The credential value. NEVER log it. Null when {@link name} is null. */
+  value: string | null;
+  /** True for the provider's primary `provider.env`. */
+  primary: boolean;
+  /**
+   * True when this file's variable makes it a budget-selection candidate —
+   * a subscription OAuth token rather than a metered API key. The budget
+   * probe (#918) and the selector (#919) consider these and no others.
+   */
+  poolMember: boolean;
+  /**
+   * Every recognised entry in the file, in file order. Exporting the whole
+   * file rather than {@link name} alone is what keeps a single-token host
+   * byte-for-byte on its previous behaviour.
+   */
+  entries: ProviderCredentialEntry[];
+}
+
+/** Strip a credential file's extension to get its loggable label. */
+function fileStem(name: string): string {
+  return name.replace(/\.[^.]+$/, "");
+}
+
+/** Build one token record from a file's raw content. */
+function tokenFileRecord(
+  path: string,
+  fileName: string,
+  content: string,
+  provider: AgentProviderDescriptor,
+  primary: boolean,
+): ProviderTokenFile {
+  const entries = parseProviderCredentialEntries(
+    content,
+    provider.credentials.envVars,
+  );
+  const first = entries[0] ?? null;
+  const pool = provider.credentials.tokenPool;
+  return {
+    label: fileStem(fileName),
+    path,
+    name: first?.name ?? null,
+    value: first?.value ?? null,
+    primary,
+    poolMember: first !== null && (pool?.envVars.includes(first.name) ?? false),
+    entries,
+  };
+}
+
+/**
+ * Every credential file in one provider's credential sub-directory, in a
+ * deterministic order (Issue #917, parent #902).
+ *
+ * Order is the primary `provider.env` first, then the pool files in ascending
+ * NUMERIC order of their ordinal — `provider-2`, `provider-10` — because a
+ * directory listing's order is filesystem-dependent and a text sort puts
+ * `provider-10.env` before `provider-2.env`. A stable order is what makes
+ * "the first entry" a defensible default selection while #919 is outstanding.
+ *
+ * A provider with no {@link AgentProviderTokenPool} yields at most the one
+ * record it has always had, so no other vendor gains a pool.
+ *
+ * Files that parse to no recognised variable are still returned, with a null
+ * {@link ProviderTokenFile.name}: the preflight reports them by name rather
+ * than skipping them silently (fail-loud, Issue #3234).
+ *
+ * @param dir - The credential directory.
+ * @param provider - The provider whose sub-directory to list.
+ * @returns The discovered token files, in selection order.
+ */
+export async function discoverProviderTokenFiles(
+  dir: string,
+  provider: AgentProviderDescriptor,
+): Promise<ProviderTokenFile[]> {
+  const tokens: ProviderTokenFile[] = [];
+  const primaryPath = providerCredentialPath(dir, provider);
+  const primary = await readIfPresent(primaryPath);
+  if (primary !== null) {
+    tokens.push(
+      tokenFileRecord(
+        primaryPath,
+        provider.credentials.file,
+        primary,
+        provider,
+        true,
+      ),
+    );
+  }
+
+  const pool = provider.credentials.tokenPool;
+  if (!pool) return tokens;
+
+  const subdir = `${dir}/${provider.credentials.subdir}`;
+  let entries: Deno.DirEntry[] = [];
+  try {
+    entries = await Array.fromAsync(Deno.readDir(subdir));
+  } catch {
+    return tokens; // Absent or unreadable: already reported by the preflight.
+  }
+
+  const extras: { ordinal: number; name: string }[] = [];
+  for (const entry of entries) {
+    if (entry.isDirectory) continue;
+    const ordinal = Number(entry.name.match(pool.fileMatch)?.[1]);
+    if (!Number.isFinite(ordinal)) continue;
+    extras.push({ ordinal, name: entry.name });
+  }
+  extras.sort((a, b) => a.ordinal - b.ordinal || a.name.localeCompare(b.name));
+
+  for (const extra of extras) {
+    const path = `${subdir}/${extra.name}`;
+    const content = await readIfPresent(path);
+    if (content === null) continue;
+    tokens.push(tokenFileRecord(path, extra.name, content, provider, false));
+  }
+  return tokens;
+}
+
+/**
+ * Chooses which discovered token file is exported into the run environment.
+ *
+ * The seam #918 (budget probe) and #919 (budget-based selection) replace: the
+ * contract is that exactly ONE token file is ever exported, so an unselected
+ * subscription never reaches the coding agent's environment (parent #902).
+ */
+export type ProviderTokenSelector = (
+  tokens: readonly ProviderTokenFile[],
+  provider: AgentProviderDescriptor,
+) => ProviderTokenFile | null | Promise<ProviderTokenFile | null>;
+
+/**
+ * The default selector: the first usable file in discovery order.
+ *
+ * Deterministic and, on a host with the single `provider.env` it has always
+ * had, indistinguishable from the behaviour before Issue #917.
+ *
+ * @param tokens - The discovered files, in discovery order.
+ * @returns The first file holding a recognised credential, or null.
+ */
+export const selectFirstProviderToken: ProviderTokenSelector = (tokens) =>
+  tokens.find((token) => token.name !== null) ?? null;
+
+/**
  * Export each enabled provider's directory credential into the process
  * environment — the runtime half of Issue #4064.
  *
@@ -256,8 +426,15 @@ export function parseProviderCredentialEntries(
  * A variable already present in the environment is never clobbered — an
  * operator override or env-provisioned credential wins.
  *
- * @param options - Directory, env lookup, setter and provider overrides
- *   (all injectable for tests).
+ * Exactly ONE of a provider's token files is exported (Issue #917, parent
+ * #902): a host may now hold several subscriptions with one vendor, and an
+ * unselected one must never reach the coding agent's environment. Which one
+ * is exported is the {@link ProviderTokenSelector}'s decision; until #919
+ * lands it is the first in discovery order, so a single-token host exports
+ * exactly what it did before.
+ *
+ * @param options - Directory, env lookup, setter, provider and selector
+ *   overrides (all injectable for tests).
  * @returns The variable names exported, for names-only logging.
  */
 export async function applyProviderCredentialEnv(options: {
@@ -265,26 +442,21 @@ export async function applyProviderCredentialEnv(options: {
   env?: EnvLookup;
   setEnv?: (name: string, value: string) => void;
   providers?: readonly AgentProviderDescriptor[];
+  selectToken?: ProviderTokenSelector;
 } = {}): Promise<string[]> {
   const env = options.env ?? ((name: string) => Deno.env.get(name));
   const setEnv = options.setEnv ??
     ((name: string, value: string) => Deno.env.set(name, value));
   const dir = options.dir ?? resolveCredentialDir(env);
   const providers = options.providers ?? enabledAgentProviders();
+  const selectToken = options.selectToken ?? selectFirstProviderToken;
   const exported: string[] = [];
   for (const provider of providers) {
-    let content = "";
-    try {
-      content = await Deno.readTextFile(providerCredentialPath(dir, provider));
-    } catch {
-      continue; // Absent file: the preflight already reported it.
-    }
-    for (
-      const entry of parseProviderCredentialEntries(
-        content,
-        provider.credentials.envVars,
-      )
-    ) {
+    const tokens = await discoverProviderTokenFiles(dir, provider);
+    // Absent files are the preflight's business, not this function's.
+    const selected = await selectToken(tokens, provider);
+    if (!selected) continue;
+    for (const entry of selected.entries) {
       if (env(entry.name)) continue;
       setEnv(entry.name, entry.value);
       exported.push(entry.name);
@@ -442,15 +614,34 @@ export async function checkCredentialPreflight(
     }
 
     // --- Provider material, one enabled provider at a time -------------------
+    // Every discovered token file is permission-checked, not just the primary
+    // one (Issue #917): the unexpected-material check above sees only the TOP
+    // level of the credential directory, so an added provider-2.env inside a
+    // provider's own sub-directory at mode 0644 would otherwise pass the
+    // preflight entirely unexamined.
     for (const provider of providers) {
-      const path = providerCredentialPath(dir, provider);
-      const material = await readIfPresent(path);
-      if (
-        material !== null &&
-        parseProviderCredentials(material, provider.credentials.envVars)
-      ) {
-        providerSources.set(provider.id, "directory");
-        failures.push(...(await permissionFailures(path)));
+      for (const token of await discoverProviderTokenFiles(dir, provider)) {
+        if (token.name !== null) {
+          providerSources.set(provider.id, "directory");
+          failures.push(...(await permissionFailures(token.path)));
+          continue;
+        }
+        // A pool file that parses to nothing is a typo an operator made by
+        // hand and must hear about. The primary file keeps its long-standing
+        // path: its emptiness is already reported as
+        // provider-credentials-missing, so saying it twice would change what
+        // a single-token host sees.
+        if (token.primary) continue;
+        failures.push(...(await permissionFailures(token.path)));
+        failures.push({
+          code: "provider-token-file-unrecognised",
+          path: token.path,
+          provider: provider.id,
+          message:
+            `Token file ${token.path} holds no credential ${provider.displayName} recognises — it must set one of ${
+              provider.credentials.envVars.join("/")
+            }. Fix the variable name or remove the file.`,
+        });
       }
     }
   }

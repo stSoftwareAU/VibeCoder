@@ -52,7 +52,11 @@ Deno.test("slot context - outside a slot the logger output is unchanged (single-
   logger.timing("execute", 5);
   assertEquals(currentSlotContext(), undefined);
   assert(
-    /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z\] INFO: Processing issue o\/a#1: title \[build\]$/
+    // Issue #856: every line now ends with the host that wrote it, so a
+    // merged multi-host log stays attributable. The anchor is kept — it is
+    // what proves no `[sN owner/repo#issue]` prefix was added outside a slot,
+    // which is this test's actual subject.
+    /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z\] INFO: Processing issue o\/a#1: title \[build\] host=\S+$/
       .test(lines[0]!),
     lines[0],
   );
