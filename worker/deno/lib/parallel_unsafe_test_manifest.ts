@@ -101,7 +101,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/container_entrypoint_test.ts",
   "tests/container_image_hash_test.ts",
   "tests/container_image_provider_set_test.ts",
-  "tests/container_image_selection_test.ts",
   "tests/create_all_idle_task_wrappers_command_test.ts",
   "tests/create_all_idle_task_wrappers_test.ts",
   "tests/default_branch_cache_test.ts",
