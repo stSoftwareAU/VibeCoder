@@ -7,14 +7,16 @@
  * never kill, because the budget has not run out — so the deadline decision
  * reads a verdict describing the last check window instead of the whole grant.
  *
- * The agent is a stub script on PATH and the tree probe is injected, so no
- * test needs a git repository.
+ * The agent is a stub script named by path (Issue #959) and the tree probe
+ * is injected, so no test needs a git repository and nothing here touches
+ * the process-wide `PATH`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { type AgentStub, createAgentStub } from "./support/agent_stub.ts";
 import type { TreeProgressState } from "../lib/progress_extension.ts";
 import type { Logger } from "../types.ts";
 
@@ -23,14 +25,11 @@ const TOOL_LINE =
   `{"type":"assistant","message":{"content":[{"type":"tool_use",` +
   `"name":"Edit","input":{"file_path":"worker/deno/lib/x.ts"}}]}}`;
 
-/** A stub agent on PATH plus the temp dir holding it. */
-interface StubAgent {
-  dir: string;
-  restore: () => Promise<void>;
-}
-
 /**
- * Install a stub `claude` on PATH.
+ * Write a stub agent and return its path.
+ *
+ * Named by path rather than installed on the process-wide `PATH`
+ * (Issue #959), so the file no longer races the rest of the suite.
  *
  * The stub runs in the `deno test` process group — deliberately, so the
  * watchdog signals its PID and descendants and never a process GROUP
@@ -42,20 +41,8 @@ interface StubAgent {
  *
  * @param body - Bash body of the stub, after the shebang.
  */
-async function installStub(body: string): Promise<StubAgent> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_check_interval_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body}`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  return {
-    dir,
-    restore: async () => {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
-    },
-  };
+function installStub(body: string): Promise<AgentStub> {
+  return createAgentStub(body, { prefix: "claude_check_interval_" });
 }
 
 /** A stub that emits a tool call every `gapSeconds` for `count` iterations. */
@@ -99,6 +86,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger: silentLogger(),
@@ -125,7 +113,7 @@ Deno.test({
         `interim samples must run on the check interval (probe calls: ${calls.length})`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -142,6 +130,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 5,
         killAfterSeconds: 1,
         logger: silentLogger(),
@@ -168,7 +157,7 @@ Deno.test({
         `the interim checks must have run (probe calls: ${calls.length})`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });

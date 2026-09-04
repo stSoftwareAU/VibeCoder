@@ -15,33 +15,32 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+
+/** Basename of the file the stub records its argv in. */
+const ARGV_LOG = "argv.log";
 
 /**
- * A stub `claude` that records its argv and the byte count it read from
- * stdin, then emits one stream-json result naming both.
+ * A stub agent that records its argv and the byte count it read from stdin,
+ * then emits one stream-json result naming both.
+ *
+ * Named by path rather than installed on `PATH` (Issue #959), so nothing here
+ * touches process-wide state.
  */
-async function withStdinStub<T>(
-  fn: (stub: { dir: string; argvLog: string }) => Promise<T>,
+function withStdinStub<T>(
+  fn: (stub: { path: string; argvLog: string }) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_stdin_stub_" });
-  const argvLog = `${dir}/argv.log`;
-  const script = [
-    "#!/usr/bin/env bash",
-    `printf '%s\\n' "$@" > '${argvLog}'`,
+  const body = [
+    `printf '%s\\n' "$@" > "$(dirname "$0")/${ARGV_LOG}"`,
     `bytes=$(cat | wc -c | tr -d ' ')`,
     `printf '%s\\n' "{\\"type\\":\\"result\\",\\"result\\":\\"stdin_bytes=$bytes\\"}"`,
     "exit 0",
   ].join("\n");
-  await Deno.writeTextFile(`${dir}/claude`, `${script}\n`);
-  await Deno.chmod(`${dir}/claude`, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn({ dir, argvLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
+  return withAgentStub(
+    body,
+    (stub) => fn({ path: stub.path, argvLog: `${stub.dir}/${ARGV_LOG}` }),
+    { prefix: "claude_stdin_stub_" },
+  );
 }
 
 Deno.test({
@@ -60,6 +59,7 @@ Deno.test({
       const result = await runClaudeWithRetry(
         {
           prompt,
+          agentBinaryPath: stub.path,
           model: "sonnet",
           enableModelFallback: false,
           timeoutSeconds: 30,
@@ -96,32 +96,26 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   async fn() {
     // Auth-error shape: the CLI prints and exits without ever touching stdin.
-    const dir = await Deno.makeTempDir({ prefix: "claude_stdin_early_" });
-    await Deno.writeTextFile(
-      `${dir}/claude`,
-      `#!/usr/bin/env bash\nprintf '%s\\n' '{"type":"result","result":"left early"}'\nexit 3\n`,
+    await withAgentStub(
+      `printf '%s\\n' '{"type":"result","result":"left early"}'\nexit 3\n`,
+      async (stub) => {
+        const result = await runClaudeWithRetry(
+          {
+            prompt: "y".repeat(600_000), // far more than a pipe buffer holds
+            agentBinaryPath: stub.path,
+            model: "sonnet",
+            enableModelFallback: false,
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+          },
+          { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 1 },
+        );
+        assert(result.ok, `expected ok, got ${!result.ok && result.error}`);
+        if (!result.ok) return;
+        assertEquals(result.value.exitCode, 3);
+        assert(result.value.output.includes("left early"));
+      },
+      { prefix: "claude_stdin_early_" },
     );
-    await Deno.chmod(`${dir}/claude`, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
-    try {
-      const result = await runClaudeWithRetry(
-        {
-          prompt: "y".repeat(600_000), // far more than a pipe buffer holds
-          model: "sonnet",
-          enableModelFallback: false,
-          timeoutSeconds: 30,
-          killAfterSeconds: 2,
-        },
-        { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 1 },
-      );
-      assert(result.ok, `expected ok, got ${!result.ok && result.error}`);
-      if (!result.ok) return;
-      assertEquals(result.value.exitCode, 3);
-      assert(result.value.output.includes("left early"));
-    } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
-    }
   },
 });
