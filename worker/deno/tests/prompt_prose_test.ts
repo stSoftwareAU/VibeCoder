@@ -11,7 +11,7 @@
  * These cases drive the real functions with template-shaped text and assert
  * on what comes back: the happy path for each, the exemptions the gates rely
  * on (fences, code spans), the boundaries (a phrase split by the hard wrap,
- * an unterminated fence), and each of the three faults the module raises
+ * an unterminated fence), and each of the four faults the module raises
  * rather than swallowing.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
@@ -96,9 +96,27 @@ Deno.test("prompt prose - fenced blocks are returned without their fence lines",
     "## Why this matters\n\nthe executor is fine inside a fence",
   ]);
   assertEquals(fencedBlocks("no fences here"), []);
-  // An unterminated fence yields nothing rather than the rest of the file:
-  // the block never closed, so there is no block to return.
-  assertEquals(fencedBlocks("```sh\nrunning\n"), []);
+});
+
+Deno.test("prompt prose - an unterminated fence raises rather than dropping the rest of the file", () => {
+  // The fault a gate cannot survive quietly: one stray fence inverts the
+  // parity, so every later line reads as fenced and disappears from the prose
+  // a rule is asserted against. Both projections raise on it.
+  const stray = ["```", "", "The executor runs quality.sh on an idle task."]
+    .join("\n");
+  assertThrows(() => flattenProse(stray), Error, "unbalanced fences");
+  assertThrows(() => hitsIn(stray, /\bexecutors?\b/g), Error, "line 1");
+  assertThrows(() => fencedBlocks("```sh\nrunning\n"), Error, "line 1");
+
+  // A balanced pair either side of prose is not unbalanced, however many
+  // blocks there are — the guard must not fire on an ordinary template.
+  assertEquals(
+    hitsIn(
+      "```\nfenced\n```\nthe executor\n```\nmore\n```\n",
+      /\bexecutors?\b/g,
+    ),
+    ["line 4: executor"],
+  );
 });
 
 Deno.test("prompt prose - headings are listed with level, line and written form", () => {

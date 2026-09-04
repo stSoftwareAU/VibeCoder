@@ -37,6 +37,33 @@ export interface FlatProse {
 }
 
 /**
+ * Raise when a fence is opened and never closed.
+ *
+ * Both projections below segment on ` ``` ` lines, so one stray fence inverts
+ * the parity for the rest of the file: {@link flattenProse} would drop the
+ * remaining prose and {@link fencedBlocks} would drop the last block. Either
+ * way a gate reading the projection reports green over text it never saw,
+ * which is the silent pass these gates exist to prevent — so an unbalanced
+ * template fails loudly here instead.
+ *
+ * @param text - The template's full text
+ */
+function assertFencesBalanced(text: string): void {
+  let openedAt = 0;
+  text.split("\n").forEach((raw, index) => {
+    if (!/^\s*```/.test(raw)) return;
+    openedAt = openedAt === 0 ? index + 1 : 0;
+  });
+  if (openedAt !== 0) {
+    throw new Error(
+      `unbalanced fences: the \`\`\` opened on line ${openedAt} is never ` +
+        "closed, so everything after it would silently drop out of the " +
+        "projection this gate reads",
+    );
+  }
+}
+
+/**
  * A template's prose with fenced blocks and inline code spans blanked out,
  * joined into one string so a banned phrase cannot hide across the ~70-column
  * hard wrap. Each character keeps the source line it came from, so a hit
@@ -46,6 +73,7 @@ export interface FlatProse {
  * @returns The flattened prose and its line map
  */
 export function flattenProse(text: string): FlatProse {
+  assertFencesBalanced(text);
   let inFence = false;
   const parts: string[] = [];
   const lines: number[] = [];
@@ -116,6 +144,7 @@ export function hitsIn(text: string, pattern: RegExp): string[] {
  * @returns One entry per fenced block, in source order
  */
 export function fencedBlocks(text: string): string[] {
+  assertFencesBalanced(text);
   const blocks: string[] = [];
   let current: string[] | null = null;
   for (const line of text.split("\n")) {

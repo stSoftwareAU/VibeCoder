@@ -47,6 +47,7 @@ import { findSuppressions } from "../lib/suppression_comments.ts";
 import { REPO_ROOT } from "./support/repo_prompts.ts";
 import {
   fencedBlocks,
+  flattenProse,
   type Heading,
   headings,
   hitsIn,
@@ -287,8 +288,27 @@ function proseHits(
 ): string[] {
   const hits: string[] = [];
   for (const [name, text] of set) {
-    for (const hit of hitsIn(text, pattern)) {
-      hits.push(`${fileOf(name)} ${hit}`);
+    // Non-vacuity, per template rather than per rule: every prose rule below
+    // asserts an absence, so a projection that returned little or nothing for
+    // one template would report green over text it never read. The shipped
+    // set retains 69% of its bytes at worst — fenced examples are the rest —
+    // so half is a floor no healthy template approaches, and one that does
+    // has lost its prose to a segmentation fault rather than to fences.
+    try {
+      const { flat } = flattenProse(text);
+      assert(
+        flat.length * 2 > text.length,
+        `the prose projection kept only ${flat.length} of ${text.length} ` +
+          "bytes; the rules here would pass over a template they never read",
+      );
+      for (const hit of hitsIn(text, pattern)) {
+        hits.push(`${fileOf(name)} ${hit}`);
+      }
+    } catch (error) {
+      // Re-raised with the file, because the projection raises without one and
+      // "unbalanced fences on line 154" of an unnamed template is not enough
+      // to act on at 2am.
+      throw new Error(`${fileOf(name)} — ${String(error)}`, { cause: error });
     }
   }
   return hits;
