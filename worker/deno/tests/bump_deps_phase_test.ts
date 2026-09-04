@@ -21,8 +21,11 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildBumpScriptEnv,
   createBumpDepsRuntimeDeps,
+  readQuarantineHoursFromEnv,
+  readWorkflowScopeFromEnv,
   workOnIssueBumpDeps,
 } from "../lib/phases/bump_deps_phase.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { BumpDepsDeps } from "../lib/bump_deps.ts";
 import { type BumpAgeDeps, emptyBumpAgeAudit } from "../lib/bump_age_audit.ts";
@@ -237,86 +240,92 @@ Deno.test(
 // =============================================================================
 
 Deno.test(
-  "workOnIssueBumpDeps - reads GH_TOKEN_HAS_WORKFLOW_SCOPE and VIBE_BUMP_QUARANTINE_HOURS from env",
+  "workOnIssueBumpDeps - reads GH_TOKEN_HAS_WORKFLOW_SCOPE and VIBE_BUMP_QUARANTINE_HOURS from the lookup it is given",
   async () => {
-    const previousScope = Deno.env.get("GH_TOKEN_HAS_WORKFLOW_SCOPE");
-    const previousHours = Deno.env.get("VIBE_BUMP_QUARANTINE_HOURS");
-    Deno.env.set("GH_TOKEN_HAS_WORKFLOW_SCOPE", "true");
-    Deno.env.set("VIBE_BUMP_QUARANTINE_HOURS", "72");
+    const ctx = makeContext();
+    const state = makeState();
+    const recorded: Array<Record<string, string>> = [];
+    const bumpDeps = makeBumpDeps({
+      runScript: (_cwd, _scriptPath, env) => {
+        recorded.push(env);
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+      getModifiedFiles: () => Promise.resolve([]),
+    });
 
-    try {
-      const ctx = makeContext();
-      const state = makeState();
-      const recorded: Array<Record<string, string>> = [];
-      const bumpDeps = makeBumpDeps({
-        runScript: (_cwd, _scriptPath, env) => {
-          recorded.push(env);
-          return Promise.resolve({ exitCode: 0, output: "" });
-        },
-        getModifiedFiles: () => Promise.resolve([]),
-      });
+    await workOnIssueBumpDeps(
+      ctx,
+      state,
+      createMockDeps(),
+      bumpDeps,
+      "",
+      envFrom({
+        GH_TOKEN_HAS_WORKFLOW_SCOPE: "true",
+        // A window no host exports: a read that fell back to the process
+        // would answer the 24h default and fail here.
+        VIBE_BUMP_QUARANTINE_HOURS: "964",
+      }),
+    );
 
-      await workOnIssueBumpDeps(
-        ctx,
-        state,
-        createMockDeps(),
-        bumpDeps,
-      );
-
-      assertEquals(recorded.length, 1);
-      assertEquals(recorded[0]!["GH_TOKEN_HAS_WORKFLOW_SCOPE"], "true");
-      assertEquals(recorded[0]!["VIBE_BUMP_QUARANTINE_HOURS"], "72");
-    } finally {
-      if (previousScope === undefined) {
-        Deno.env.delete("GH_TOKEN_HAS_WORKFLOW_SCOPE");
-      } else {
-        Deno.env.set("GH_TOKEN_HAS_WORKFLOW_SCOPE", previousScope);
-      }
-      if (previousHours === undefined) {
-        Deno.env.delete("VIBE_BUMP_QUARANTINE_HOURS");
-      } else {
-        Deno.env.set("VIBE_BUMP_QUARANTINE_HOURS", previousHours);
-      }
-    }
+    assertEquals(recorded.length, 1);
+    assertEquals(recorded[0]!["GH_TOKEN_HAS_WORKFLOW_SCOPE"], "true");
+    assertEquals(recorded[0]!["VIBE_BUMP_QUARANTINE_HOURS"], "964");
   },
 );
 
 Deno.test(
   "workOnIssueBumpDeps - defaults to scope=false / hours=24 when env unset",
   async () => {
-    const previousScope = Deno.env.get("GH_TOKEN_HAS_WORKFLOW_SCOPE");
-    const previousHours = Deno.env.get("VIBE_BUMP_QUARANTINE_HOURS");
-    Deno.env.delete("GH_TOKEN_HAS_WORKFLOW_SCOPE");
-    Deno.env.delete("VIBE_BUMP_QUARANTINE_HOURS");
+    const ctx = makeContext();
+    const state = makeState();
+    const recorded: Array<Record<string, string>> = [];
+    const bumpDeps = makeBumpDeps({
+      runScript: (_cwd, _scriptPath, env) => {
+        recorded.push(env);
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+    });
 
-    try {
-      const ctx = makeContext();
-      const state = makeState();
-      const recorded: Array<Record<string, string>> = [];
-      const bumpDeps = makeBumpDeps({
-        runScript: (_cwd, _scriptPath, env) => {
-          recorded.push(env);
-          return Promise.resolve({ exitCode: 0, output: "" });
-        },
-      });
+    await workOnIssueBumpDeps(
+      ctx,
+      state,
+      createMockDeps(),
+      bumpDeps,
+      "",
+      emptyEnv,
+    );
 
-      await workOnIssueBumpDeps(
-        ctx,
-        state,
-        createMockDeps(),
-        bumpDeps,
-      );
+    assertEquals(recorded[0]!["GH_TOKEN_HAS_WORKFLOW_SCOPE"], "false");
+    assertEquals(recorded[0]!["VIBE_BUMP_QUARANTINE_HOURS"], "24");
+  },
+);
 
-      assertEquals(recorded[0]!["GH_TOKEN_HAS_WORKFLOW_SCOPE"], "false");
-      assertEquals(recorded[0]!["VIBE_BUMP_QUARANTINE_HOURS"], "24");
-    } finally {
-      if (previousScope !== undefined) {
-        Deno.env.set("GH_TOKEN_HAS_WORKFLOW_SCOPE", previousScope);
-      }
-      if (previousHours !== undefined) {
-        Deno.env.set("VIBE_BUMP_QUARANTINE_HOURS", previousHours);
-      }
-    }
+Deno.test(
+  "bump_deps_phase - the two readers answer from the injected lookup alone (Issue #964)",
+  () => {
+    // Only a case-insensitive "true" is the workflow scope.
+    assertEquals(
+      readWorkflowScopeFromEnv(
+        envFrom({ GH_TOKEN_HAS_WORKFLOW_SCOPE: "TRUE" }),
+      ),
+      true,
+    );
+    assertEquals(
+      readWorkflowScopeFromEnv(
+        envFrom({ GH_TOKEN_HAS_WORKFLOW_SCOPE: "sentinel-964" }),
+      ),
+      false,
+    );
+    assertEquals(readWorkflowScopeFromEnv(emptyEnv), false);
+
+    // A window value no host exports, so an ambient read cannot supply it.
+    assertEquals(
+      readQuarantineHoursFromEnv(
+        envFrom({ VIBE_BUMP_QUARANTINE_HOURS: "964" }),
+      ),
+      964,
+    );
+    assertEquals(readQuarantineHoursFromEnv(emptyEnv), 24);
   },
 );
 
@@ -329,36 +338,23 @@ Deno.test(
 // anything that is "not a positive integer".
 // =============================================================================
 
-/** Run the phase with `VIBE_BUMP_QUARANTINE_HOURS` set to `raw`. */
+/** Run the phase with `VIBE_BUMP_QUARANTINE_HOURS` reading as `raw`. */
 async function quarantineHoursFor(raw: string | undefined): Promise<string> {
-  const previous = Deno.env.get("VIBE_BUMP_QUARANTINE_HOURS");
-  if (raw === undefined) {
-    Deno.env.delete("VIBE_BUMP_QUARANTINE_HOURS");
-  } else {
-    Deno.env.set("VIBE_BUMP_QUARANTINE_HOURS", raw);
-  }
-
-  try {
-    const recorded: Array<Record<string, string>> = [];
-    await workOnIssueBumpDeps(
-      makeContext(),
-      makeState(),
-      createMockDeps(),
-      makeBumpDeps({
-        runScript: (_cwd, _scriptPath, env) => {
-          recorded.push(env);
-          return Promise.resolve({ exitCode: 0, output: "" });
-        },
-      }),
-    );
-    return recorded[0]!["VIBE_BUMP_QUARANTINE_HOURS"]!;
-  } finally {
-    if (previous === undefined) {
-      Deno.env.delete("VIBE_BUMP_QUARANTINE_HOURS");
-    } else {
-      Deno.env.set("VIBE_BUMP_QUARANTINE_HOURS", previous);
-    }
-  }
+  const recorded: Array<Record<string, string>> = [];
+  await workOnIssueBumpDeps(
+    makeContext(),
+    makeState(),
+    createMockDeps(),
+    makeBumpDeps({
+      runScript: (_cwd, _scriptPath, env) => {
+        recorded.push(env);
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+    }),
+    "",
+    raw === undefined ? emptyEnv : envFrom({ VIBE_BUMP_QUARANTINE_HOURS: raw }),
+  );
+  return recorded[0]!["VIBE_BUMP_QUARANTINE_HOURS"]!;
 }
 
 Deno.test(

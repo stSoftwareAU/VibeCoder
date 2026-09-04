@@ -89,9 +89,10 @@ Deno.test("chokepoint - `gh api rate_limit` stays callable while latched", async
 Deno.test("chokepoint - a live primary-quota failure latches the process and signals the window", async () => {
   clearPrimaryQuotaLatch();
   const workDir = await Deno.makeTempDir({ prefix: "quota_latch_" });
-  const prevWorkDir = Deno.env.get("WORK_DIR");
-  Deno.env.set("WORK_DIR", workDir);
-
+  // The signal's directory is a parameter, not `WORK_DIR` set on the
+  // process (Issue #966): a temp root no environment names, so a code path
+  // that fell back to `Deno.env.get("WORK_DIR")` writes somewhere else and
+  // the `readRateLimitSignal` below finds nothing.
   const nowSec = Math.floor(Date.now() / 1000);
   const resetAt = nowSec + 900;
   const seen: string[] = [];
@@ -108,7 +109,7 @@ Deno.test("chokepoint - a live primary-quota failure latches the process and sig
   try {
     // The first live call fails with the primary-quota message …
     await assertRejects(
-      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"]),
+      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"], { workDir }),
       Error,
       "already exceeded",
     );
@@ -128,7 +129,7 @@ Deno.test("chokepoint - a live primary-quota failure latches the process and sig
     // the first failing call plus the one exempt rate_limit read.
     const spawnsBefore = seen.length;
     await assertRejects(
-      () => runGhCommandRaw(["issue", "list", "--repo", "o/r"]),
+      () => runGhCommandRaw(["issue", "list", "--repo", "o/r"], { workDir }),
       Error,
     );
     assertEquals(
@@ -139,12 +140,41 @@ Deno.test("chokepoint - a live primary-quota failure latches the process and sig
   } finally {
     _resetGhSpawnRunner();
     clearPrimaryQuotaLatch();
-    if (prevWorkDir === undefined) {
-      Deno.env.delete("WORK_DIR");
-    } else {
-      Deno.env.set("WORK_DIR", prevWorkDir);
-    }
     await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("chokepoint - the rate-limit signal lands in the injected work dir, not the ambient one (Issue #966)", async () => {
+  clearPrimaryQuotaLatch();
+  const pointedAt = await Deno.makeTempDir({ prefix: "quota_signal_used_" });
+  const decoy = await Deno.makeTempDir({ prefix: "quota_signal_decoy_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  _setGhSpawnRunner((args) => {
+    if (args[0] === "api" && args.includes("rate_limit")) {
+      return Promise.resolve(ok(rateLimitDoc(nowSec + 900)));
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+  try {
+    await assertRejects(
+      () =>
+        runGhCommandRaw(["pr", "list", "--repo", "o/r"], {
+          workDir: pointedAt,
+        }),
+      Error,
+      "already exceeded",
+    );
+
+    // Written where it was told to write, and nowhere else: a fallback to
+    // `Deno.env.get("WORK_DIR")` would leave this root empty.
+    const signal = await readRateLimitSignal(pointedAt);
+    assert(signal.ok && signal.value.waitSeconds > 0, "no signal was written");
+    assertEquals([...Deno.readDirSync(decoy)], []);
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(pointedAt, { recursive: true });
+    await Deno.remove(decoy, { recursive: true });
   }
 });
 

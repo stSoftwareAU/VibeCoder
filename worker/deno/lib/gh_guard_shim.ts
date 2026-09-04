@@ -74,6 +74,7 @@ import {
   noteAgentAllowlistSnapshot,
 } from "./write_repo_allowlist.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { type ClaimedIssue, claimedIssueGuard } from "./claimed_issue_guard.ts";
 
 /**
@@ -147,6 +148,14 @@ export interface GhGuardShimOptions {
    * {@link UNGUARDED_AGENT_GH_ENV}.
    */
   allowUnguarded?: boolean;
+  /**
+   * Environment lookup for {@link UNGUARDED_AGENT_GH_ENV} (Issue #964).
+   * Defaults to the process environment, so production behaves exactly as
+   * it did when this module read `Deno.env.get` itself. A test hands in a
+   * fixed map rather than mutating the environment every parallel worker
+   * shares.
+   */
+  env?: EnvLookup;
   /** Override the audit sink (test seam). Defaults to the journal. */
   record?: ShimAuditRecorder;
   /** Override temp-directory creation (test seam). */
@@ -335,11 +344,17 @@ exit "$status"
  *
  * A read that throws (no `--allow-env`) counts as **no** opt-in, so the
  * decision stays fail-closed.
+ *
+ * @param env - Environment lookup (Issue #964); defaults to the process
+ *   environment. Exported so the opt-in spelling can be asserted directly
+ *   against an injected map.
  */
-function unguardedOptInFromEnv(): boolean {
+export function unguardedOptInFromEnv(
+  env: EnvLookup = processEnvLookup,
+): boolean {
   let raw: string | undefined;
   try {
-    raw = Deno.env.get(UNGUARDED_AGENT_GH_ENV);
+    raw = env(UNGUARDED_AGENT_GH_ENV);
   } catch {
     return false;
   }
@@ -381,7 +396,8 @@ export async function installGhGuardShim(
    * operator opt-in downgrades the block to a degraded run.
    */
   const unavailable = async (why: string): Promise<GhGuardShimOutcome> => {
-    const optedIn = opts.allowUnguarded ?? unguardedOptInFromEnv();
+    const optedIn = opts.allowUnguarded ??
+      unguardedOptInFromEnv(opts.env ?? processEnvLookup);
     const blocked = opts.active && !optedIn;
     warn(
       blocked

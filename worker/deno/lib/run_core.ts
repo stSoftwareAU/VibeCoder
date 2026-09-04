@@ -179,6 +179,18 @@ export interface RunCoreConfig {
    * `PLANNING_TAIL_SECONDS` for the post-publish gate and self-repair.
    */
   planningTimeoutSeconds: number;
+  /**
+   * Directory the worker clones repositories into — the work volume root
+   * (Issue #966).
+   *
+   * The lane-rotation cursor lives beside the other worker state on the
+   * volume, so the loop needs the work directory. It used to read
+   * `WORK_DIR` at the point of use; the resolved value now arrives here
+   * from `createProductionRunCoreDeps`, which already has it, and the
+   * environment read remains only as the default for a caller that does
+   * not set it.
+   */
+  workDir?: string;
 }
 
 /** Result of a single priority handler execution. */
@@ -4713,10 +4725,12 @@ export async function runCoreLoop(
           // open-PR gate that also holds new issue claims. Rotating costs
           // nothing and changes no resource bound: still one agent-backed
           // pass at a time, just not always the same one first.
-          // `WORK_DIR` rather than a dep: the lane's own state belongs beside
-          // the other worker state on the volume, and `run_core` carries no
-          // work-directory of its own.
-          const laneWorkDir = Deno.env.get("WORK_DIR")?.trim() || undefined;
+          // The lane's own state belongs beside the other worker state on
+          // the volume. `config.workDir` carries the resolved work
+          // directory (Issue #966); `WORK_DIR` remains only as its default,
+          // for a caller that builds a config without one.
+          const laneWorkDir = config.workDir?.trim() ||
+            Deno.env.get("WORK_DIR")?.trim() || undefined;
           const laneOffset = await readLaneRotation(laneWorkDir);
           const rotatedLanePasses = rotate(deferredLanePasses, laneOffset);
           if (rotatedLanePasses.length > 1) {

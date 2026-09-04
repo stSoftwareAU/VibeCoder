@@ -60,6 +60,7 @@ import {
   resolveSpendCeilingUsd,
   SPEND_CEILING_ENV,
 } from "./spend_ceiling.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   invalidateHealthCache,
   isHealthCacheValid,
@@ -349,6 +350,15 @@ export interface ProductionDepsOptions {
    * real `gh` call fail would prove nothing on a host where `gh` works.
    */
   resolveTrustedAuthors?: typeof resolveDerivedAuthors;
+  /**
+   * Environment lookup for this factory's own reads (Issue #964) —
+   * `CONFIG_PATH`, `HOME`, `DEBUG`, `TMPDIR` and the spend-ceiling pair.
+   * Defaults to the process environment, so production wiring passes
+   * nothing and behaves exactly as it did when the factory read
+   * `Deno.env.get` itself. A test hands in a fixed map rather than mutating
+   * the environment every parallel worker shares.
+   */
+  env?: EnvLookup;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,9 +398,10 @@ export async function createProductionRunCoreDeps(
   options: ProductionDepsOptions,
 ): Promise<{ deps: RunCoreDeps; config: RunCoreConfig; cleanup: () => void }> {
   const { repoDir, workDir, githubUser } = options;
+  const env = options.env ?? processEnvLookup;
 
   // Load config
-  const configPath = Deno.env.get("CONFIG_PATH") ?? `${repoDir}/.config.json`;
+  const configPath = env("CONFIG_PATH") ?? `${repoDir}/.config.json`;
   let config: WorkerConfig;
   try {
     config = options.config ?? await loadConfig(configPath);
@@ -420,7 +431,7 @@ export async function createProductionRunCoreDeps(
   if (options.logger) {
     logger = options.logger;
   } else {
-    const home = Deno.env.get("HOME") ?? "~";
+    const home = env("HOME") ?? "~";
     const workerLogPath = `${home}/logs/worker.log`;
     try {
       logFileHandle = await Deno.open(workerLogPath, {
@@ -432,7 +443,7 @@ export async function createProductionRunCoreDeps(
     const encoder = new TextEncoder();
     const handle = logFileHandle;
     logger = createLogger({
-      debug: Deno.env.get("DEBUG") === "true",
+      debug: env("DEBUG") === "true",
       write: handle
         ? (msg: string) => {
           console.error(msg);
@@ -449,11 +460,11 @@ export async function createProductionRunCoreDeps(
   // malformed value throws here, failing the run at start-up rather than
   // silently disabling the guard.
   const spendCeilingUsd = resolveSpendCeilingUsd(
-    Deno.env.get(SPEND_CEILING_ENV),
+    env(SPEND_CEILING_ENV),
   );
   const creditLogDir = resolveCreditLogDir(
     workDir,
-    Deno.env.get(CREDIT_LOG_DIR_ENV),
+    env(CREDIT_LOG_DIR_ENV),
   );
   const checkSpendCeiling = createSpendCeilingCheck({
     logDir: creditLogDir,
@@ -547,7 +558,7 @@ export async function createProductionRunCoreDeps(
   };
 
   const repoFailureFile = `${
-    Deno.env.get("TMPDIR") ?? "/tmp"
+    env("TMPDIR") ?? "/tmp"
   }/vibe-repo-failures-${Deno.pid}`;
   const repoFailureConfig: RepoFailureTrackerConfig = {
     failureFile: repoFailureFile,
@@ -809,6 +820,10 @@ export async function createProductionRunCoreDeps(
     // budget with it rather than being clipped by the flat 600 s.
     planningTimeoutSeconds: config.planningTimeout ??
       runCoreConfig.planningTimeoutSeconds,
+    // Issue #966: the loop's lane-rotation cursor lives on the work volume.
+    // The resolved directory travels in the config rather than being read
+    // back out of `WORK_DIR` at the point of use.
+    workDir,
   };
 
   const repos = config.repos ?? [];
