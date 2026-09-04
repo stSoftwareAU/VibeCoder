@@ -46,6 +46,7 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
+import { readConfiguredCustomPromptPaths } from "../lib/custom_label_prompts_config.ts";
 import {
   readConfiguredDiskFloors,
   resolveDiskFloors,
@@ -152,6 +153,15 @@ export async function buildLaunchPlanForCommand(
   const claimFloors = resolveDiskFloors(
     (name) => Deno.env.get(name),
     await readConfiguredDiskFloors(hostPaths.configFile),
+  );
+
+  // The operator's own prompt templates live on the host (Issue #850), so the
+  // launcher reads the mappings here — before any worker has loaded a
+  // configuration — and the plan mounts each containing directory read-only.
+  // A malformed block stops the launch rather than starting a container in
+  // which every custom label would fail at dispatch.
+  const customPromptPaths = await readConfiguredCustomPromptPaths(
+    hostPaths.configFile,
   );
 
   // The selected tools and providers are baked into the image, so they are part
@@ -267,6 +277,7 @@ export async function buildLaunchPlanForCommand(
     watchdogSeconds,
     hostPaths,
     agentProviders: providers,
+    ...(customPromptPaths.length > 0 ? { customPromptPaths } : {}),
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),

@@ -565,10 +565,19 @@ flowchart LR
 - **A broken mapping never starves the others.** The remaining configured labels
   are still scanned, each fault is logged as an error naming its label and path,
   and the pass fails when nothing else was worked.
-- **Container run mode: the path must be reachable inside the container.** The
-  mount set is fixed (checkout, work dir, staged config, credentials), so put
-  the prompt file where one of those mounts reaches it — an arbitrary host path
-  is not visible to the worker and fails config load.
+- **Container run mode: the launcher mounts the prompt directory read-only**
+  (Issue #850). The **containing directory** of every configured `prompt_path`
+  is bind-mounted into the container at
+  `/home/vibe/.vibe-coder/custom-prompts/<n>`, read-only, and the worker
+  resolves the configured host path onto that mount — so the same
+  `.config.json` works natively and containerised, and nothing inside the
+  container can edit an operator's template. Keep the prompts in a directory of
+  their own: everything beside them in that directory is readable inside the
+  container too. A path the containment allowlist refuses — the host home
+  directory or an ancestor of it, the filesystem root, a runtime control
+  socket, a relative path — **fails the launch loudly** rather than starting a
+  container without the mount. See
+  [CONTAINMENT.md — the mount set](CONTAINMENT.md#the-mount-set).
 - **Default = off.** With no mapping configured the priority row does not exist
   and the ladder is unchanged.
 

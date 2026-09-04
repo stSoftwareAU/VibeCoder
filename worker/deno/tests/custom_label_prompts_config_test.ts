@@ -30,6 +30,7 @@ import {
   customLabelPromptLabels,
   customLabelPromptPath,
   parseCustomLabelPrompts,
+  readConfiguredCustomPromptPaths,
 } from "../lib/custom_label_prompts_config.ts";
 import {
   detectUnknownConfigKeys,
@@ -430,4 +431,155 @@ Deno.test("customLabelPromptLabels - returns the configured labels in order", ()
 
 Deno.test("customLabelPromptLabels - returns an empty list when nothing is configured", () => {
   assertEquals(customLabelPromptLabels({ customLabelPrompts: [] }), []);
+});
+
+// ---------------------------------------------------------------------------
+// Container path translation (Issue #850, part of #843)
+//
+// The staged `.config.json` the worker reads inside the container still names
+// the operator's *host* paths — one file works in both modes — so the launcher
+// hands over where it mounted each one and the loader resolves onto that.
+// ---------------------------------------------------------------------------
+
+Deno.test("loadConfig - inside the container the configured path resolves onto the mount (Issue #850)", async () => {
+  await withConfig({}, async (path, dir) => {
+    // The prompt as the container sees it: the launcher mounted the
+    // operator's directory read-only under the container's target.
+    const mounted = await writePromptFile(dir, "mounted.md");
+    // The path the operator configured on the host, which does not exist here
+    // — exactly the situation inside the container.
+    const hostPath = "/srv/vibe-prompts/private-label.md";
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        custom_label_prompts: [
+          { label: "private-label", prompt_path: hostPath },
+        ],
+      }),
+    );
+
+    const config = await loadConfig(path, {
+      env: (name) =>
+        name === "VIBE_CUSTOM_PROMPT_PATHS"
+          ? JSON.stringify({ [hostPath]: mounted })
+          : undefined,
+    });
+    assertEquals(config.customLabelPrompts, [
+      { label: "private-label", promptPath: mounted },
+    ]);
+    // Dispatch reads the mounted path, so the operator's template loads.
+    assertEquals(
+      customLabelPromptPath(config, "private-label"),
+      mounted,
+    );
+  });
+});
+
+Deno.test("loadConfig - a prompt missing from its mount fails loud naming both paths (Issue #850)", async () => {
+  await withConfig({}, async (path, dir) => {
+    const hostPath = "/srv/vibe-prompts/private-label.md";
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        custom_label_prompts: [
+          { label: "private-label", prompt_path: hostPath },
+        ],
+      }),
+    );
+
+    const error = await assertRejects(
+      () =>
+        loadConfig(path, {
+          env: (name) =>
+            name === "VIBE_CUSTOM_PROMPT_PATHS"
+              ? JSON.stringify({ [hostPath]: `${dir}/absent.md` })
+              : undefined,
+        }),
+      Error,
+      "is not a readable file",
+    );
+    assert(
+      error.message.includes(hostPath),
+      `expected the configured host path in the message, got: ${error.message}`,
+    );
+  });
+});
+
+Deno.test("parseCustomLabelPrompts - no translation leaves the host path unchanged (Issue #850)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-prompts-" });
+  try {
+    const promptPath = await writePromptFile(dir, "native.md");
+    const result = parseCustomLabelPrompts(
+      [{ label: "native-label", prompt_path: promptPath }],
+      {},
+    );
+    assert(result.ok, result.ok ? "" : result.error);
+    assertEquals(result.value, [
+      { label: "native-label", promptPath },
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The launcher's own read (Issue #850)
+//
+// The container launcher must know which host directories to mount before any
+// worker has loaded a configuration, so it reads the mappings straight off the
+// file — with the same fail-loud posture.
+// ---------------------------------------------------------------------------
+
+Deno.test("readConfiguredCustomPromptPaths - returns the configured paths in order", async () => {
+  await withConfig({}, async (path, dir) => {
+    const first = await writePromptFile(dir, "first.md");
+    const second = await writePromptFile(dir, "second.md");
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        custom_label_prompts: [
+          { label: "first-label", prompt_path: first },
+          { label: "second-label", prompt_path: second },
+        ],
+      }),
+    );
+    assertEquals(await readConfiguredCustomPromptPaths(path), [first, second]);
+  });
+});
+
+Deno.test("readConfiguredCustomPromptPaths - nothing configured means no mounts", async () => {
+  await withConfig({ repos: ["stSoftwareAU/VibeCoder"] }, async (path) => {
+    assertEquals(await readConfiguredCustomPromptPaths(path), []);
+  });
+  // An absent file is what an unprovisioned host has; it is not a fault here.
+  assertEquals(
+    await readConfiguredCustomPromptPaths("/nonexistent/.config.json"),
+    [],
+  );
+});
+
+Deno.test("readConfiguredCustomPromptPaths - a malformed file stops the launch", async () => {
+  await withConfig(
+    { custom_label_prompts: [{ label: "custom-label" }] },
+    async (path) => {
+      await assertRejects(
+        () => readConfiguredCustomPromptPaths(path),
+        Error,
+        "prompt_path",
+      );
+    },
+  );
+
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-prompts-cfg-" });
+  try {
+    const path = `${dir}/.config.json`;
+    await Deno.writeTextFile(path, "{ not json");
+    await assertRejects(
+      () => readConfiguredCustomPromptPaths(path),
+      Error,
+      "is not valid JSON",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

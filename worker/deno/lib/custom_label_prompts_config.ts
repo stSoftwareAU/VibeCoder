@@ -72,11 +72,25 @@ function parseCleanString(raw: unknown, field: string): string {
   return raw;
 }
 
+/**
+ * How a configured prompt path is resolved to where it is readable.
+ *
+ * The identity by default — natively the operator's path *is* the path. In
+ * container mode the launcher mounts each prompt directory read-only and hands
+ * over the host → in-container translation (Issue #850), so the same
+ * `.config.json` works on both sides of the boundary.
+ */
+export interface CustomLabelPromptOptions {
+  /** Resolve a configured host path to where this run can read it. */
+  resolvePath?: (promptPath: string) => string;
+}
+
 /** Validate one entry; `seenLabels` carries the labels already accepted. */
 function parseEntry(
   raw: unknown,
   index: number,
   seenLabels: Set<string>,
+  resolvePath: (promptPath: string) => string,
 ): CustomLabelPromptMapping {
   const entryField = `custom_label_prompts[${index}]`;
   if (!isPlainObject(raw)) {
@@ -121,23 +135,33 @@ function parseEntry(
     reject(`${entryField}.label`, `duplicate label ${show(label)}`);
   }
 
-  const promptPath = parseCleanString(
+  const configuredPath = parseCleanString(
     raw.prompt_path,
     `${entryField}.prompt_path`,
   );
-  if (!promptPath.startsWith("/")) {
+  if (!configuredPath.startsWith("/")) {
     reject(
       `${entryField}.prompt_path`,
-      `must be an absolute path, got ${show(promptPath)}`,
+      `must be an absolute path, got ${show(configuredPath)}`,
     );
   }
+
+  // Validated — and, from here on, used — at the path this run can actually
+  // read it at: inside the container that is the launcher's read-only mount
+  // of the operator's directory (Issue #850).
+  const promptPath = resolvePath(configuredPath);
+  const origin = promptPath === configuredPath
+    ? ""
+    : ` (mounted from ${configuredPath})`;
 
   try {
     Deno.readTextFileSync(promptPath);
   } catch (error) {
     reject(
       `${entryField}.prompt_path`,
-      `is not a readable file: ${promptPath} (${(error as Error).message})`,
+      `is not a readable file: ${promptPath}${origin} (${
+        (error as Error).message
+      })`,
     );
   }
 
@@ -155,6 +179,7 @@ function parseEntry(
  */
 export function parseCustomLabelPrompts(
   raw: unknown,
+  options: CustomLabelPromptOptions = {},
 ): Result<CustomLabelPromptMapping[], string> {
   if (raw === undefined || raw === null) return { ok: true, value: [] };
   if (!Array.isArray(raw)) {
@@ -169,9 +194,10 @@ export function parseCustomLabelPrompts(
 
   const mappings: CustomLabelPromptMapping[] = [];
   const seenLabels = new Set<string>();
+  const resolvePath = options.resolvePath ?? ((path: string) => path);
   try {
     for (let index = 0; index < raw.length; index++) {
-      mappings.push(parseEntry(raw[index], index, seenLabels));
+      mappings.push(parseEntry(raw[index], index, seenLabels, resolvePath));
     }
   } catch (error) {
     if (error instanceof MappingError) {
@@ -189,14 +215,66 @@ export function parseCustomLabelPrompts(
  */
 export function assertCustomLabelPrompts(
   raw: unknown,
+  options: CustomLabelPromptOptions = {},
 ): CustomLabelPromptMapping[] {
-  const result = parseCustomLabelPrompts(raw);
+  const result = parseCustomLabelPrompts(raw, options);
   if (!result.ok) {
     throw new Error(
       `Invalid custom_label_prompts in .config.json: ${result.error}`,
     );
   }
   return result.value;
+}
+
+/**
+ * The configured prompt paths, read straight from a `.config.json` on disk
+ * (Issue #850, part of #843).
+ *
+ * Used by the container launcher, which must know which host directories to
+ * mount before any worker has loaded a configuration. Absent file → no
+ * mappings, which is what an unconfigured host has always had. A file that
+ * exists but cannot be read, is not JSON, or states a malformed mapping is
+ * **not** treated as unconfigured: it throws, because launching without the
+ * mount would leave every custom label failing at dispatch inside the
+ * container.
+ *
+ * @param configFile - Host path of the worker configuration file
+ * @returns The configured absolute host prompt paths, in configuration order
+ * @throws When the file exists but is unreadable, is not a JSON object, or
+ *   carries an invalid `custom_label_prompts` block
+ */
+export async function readConfiguredCustomPromptPaths(
+  configFile: string,
+): Promise<string[]> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(configFile);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw new Error(
+      `Cannot read the custom prompt mappings: ${configFile} is unreadable ` +
+        `(${(error as Error).message}).`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `Cannot read the custom prompt mappings: ${configFile} is not valid ` +
+        `JSON (${(error as Error).message}).`,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `Cannot read the custom prompt mappings: ${configFile} is not a JSON ` +
+        `object.`,
+    );
+  }
+
+  const raw = (parsed as Record<string, unknown>)["custom_label_prompts"];
+  return assertCustomLabelPrompts(raw).map((mapping) => mapping.promptPath);
 }
 
 /**
