@@ -156,7 +156,6 @@ import { milestoneBranchSyncCommand } from "./commands/milestone_branch_sync.ts"
 import { diagnoseCommand } from "./commands/diagnose.ts";
 import { diagnoseIssueCommand } from "./commands/diagnose_issue.ts";
 import { diagnoseRepoCommand } from "./commands/diagnose_repo.ts";
-import { fleetHealthCommand } from "./commands/fleet_health.ts";
 import { clarityPhaseCommand } from "./commands/clarity_phase.ts";
 import { qualityGatePhaseCommand } from "./commands/quality_gate_phase.ts";
 import { executeClaudePhaseCommand } from "./commands/execute_claude_phase.ts";
@@ -167,6 +166,7 @@ import { selfHealSummaryCommand } from "./commands/self_heal_summary.ts";
 import { analyseFailedOnceCommand } from "./commands/analyse_failed_once.ts";
 import { auditHeartbeatRecoveriesCommand } from "./commands/audit_heartbeat_recoveries.ts";
 import { checkPagesLiquidCommand } from "./commands/check_pages_liquid.ts";
+import { callbackConformanceCommand } from "./commands/callback_conformance.ts";
 import { checkMermaidCommand } from "./commands/check_mermaid.ts";
 import { checkMermaidBuiltOutputCommand } from "./commands/check_mermaid_built_output.ts";
 import { checkMarkdownlintCommand } from "./commands/check_markdownlint.ts";
@@ -352,7 +352,6 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(diagnoseCommand);
   registry.register(diagnoseIssueCommand);
   registry.register(diagnoseRepoCommand);
-  registry.register(fleetHealthCommand);
   registry.register(clarityPhaseCommand);
   registry.register(qualityGatePhaseCommand);
   registry.register(executeClaudePhaseCommand);
@@ -363,6 +362,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(analyseFailedOnceCommand);
   registry.register(auditHeartbeatRecoveriesCommand);
   registry.register(checkPagesLiquidCommand);
+  registry.register(callbackConformanceCommand);
   registry.register(checkMermaidCommand);
   registry.register(checkMermaidBuiltOutputCommand);
   registry.register(notifyAuditFailureCommand);
@@ -588,11 +588,13 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "run-bootstrap",
       "revision-processor",
       "run-core",
-      "fleet-health",
       "milestone-health",
       "sync-milestone-branches",
       "analyse-failed-once",
       "check-pages-liquid",
+      // An extension author proves the callback contract in a checkout that
+      // may carry no config at all (Issue #807).
+      "callback-conformance",
       "check-mermaid",
       "check-mermaid-built-output",
       "check-markdownlint",
@@ -703,11 +705,13 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "run-bootstrap",
       "revision-processor",
       "run-core",
-      "fleet-health",
       "milestone-health",
       "sync-milestone-branches",
       "analyse-failed-once",
       "check-pages-liquid",
+      // An extension author proves the callback contract in a checkout that
+      // may carry no config at all (Issue #807).
+      "callback-conformance",
       "check-mermaid",
       "check-mermaid-built-output",
       "check-markdownlint",

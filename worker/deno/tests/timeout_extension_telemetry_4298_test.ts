@@ -16,14 +16,16 @@
  *   count, the total elapsed and the stalled signal;
  * - with the feature disabled every message is byte-identical to today's.
  *
- * The agent is a stub script on PATH and the tree probe is injected, so no
- * test needs a git repository.
+ * The agent is a stub script named by path (Issue #960) and the tree probe is
+ * injected, so no test needs a git repository and nothing touches the
+ * process-wide `PATH`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { type AgentStub, createAgentStub } from "./support/agent_stub.ts";
 import type { TreeProgressState } from "../lib/progress_extension.ts";
 import {
   buildExtensionTelemetry,
@@ -40,13 +42,12 @@ const TOOL_LINE =
   `{"type":"assistant","message":{"content":[{"type":"tool_use",` +
   `"name":"Edit","input":{"file_path":"worker/deno/lib/x.ts"}}]}}`;
 
-/** A stub agent on PATH plus the temp dir holding it. */
-interface StubAgent {
-  restore: () => Promise<void>;
-}
-
 /**
- * Install a stub `claude` on PATH.
+ * Write a stub agent and return its path (Issue #960).
+ *
+ * The path goes to the runner as `agentBinaryPath`; nothing is installed on
+ * `PATH`, which is process-wide and raced every other test in the run
+ * (Issue #880, plan #944).
  *
  * The stub runs in the `deno test` process group — deliberately, so the
  * watchdog signals its PID and descendants and never a process GROUP
@@ -56,19 +57,8 @@ interface StubAgent {
  * the kill under test is exercised end to end without a signal that can
  * escape the tree.
  */
-async function installStub(body: string): Promise<StubAgent> {
-  const dir = await Deno.makeTempDir({ prefix: "timeout_telemetry_4298_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body}`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  return {
-    restore: async () => {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
-    },
-  };
+function installStub(body: string): Promise<AgentStub> {
+  return createAgentStub(body, { prefix: "timeout_telemetry_4298_" });
 }
 
 /** A stub that emits a tool call every `gapSeconds` for `count` iterations. */
@@ -119,6 +109,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -151,7 +142,7 @@ Deno.test({
         `the stalled signal must be named: ${ext.refusalReason}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -171,6 +162,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -195,7 +187,7 @@ Deno.test({
           `after ${ext.granted} extension(s) totalling ${ext.extendedSeconds}s`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -210,6 +202,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -228,7 +221,7 @@ Deno.test({
       assertStringIncludes(kill, "working tree unchanged");
       assertStringIncludes(kill, "killing process tree");
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -242,6 +235,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -268,7 +262,7 @@ Deno.test({
         `no extension wording may appear: ${kill}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -283,6 +277,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -311,7 +306,7 @@ Deno.test({
         `the disabled policy must keep today's wording: ${kill}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });

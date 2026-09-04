@@ -15,6 +15,7 @@ import {
   type AgentActivitySnapshot,
   AgentProgressTracker,
 } from "../lib/agent_progress.ts";
+import { createAgentStub } from "./support/agent_stub.ts";
 import type { Logger } from "../types.ts";
 
 function toolUseLine(name: string, input: Record<string, unknown>): string {
@@ -277,8 +278,6 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
-    const dir = await Deno.makeTempDir({ prefix: "agent_progress_stub_" });
-    const stubPath = `${dir}/claude`;
     const toolLine = JSON.stringify({
       type: "assistant",
       message: {
@@ -289,17 +288,14 @@ Deno.test({
         }],
       },
     });
-    await Deno.writeTextFile(
-      stubPath,
-      "#!/usr/bin/env bash\n" +
-        `printf '%s\\n' '${toolLine}'\n` +
+    // Named by path, never installed on the process-wide `PATH` (Issue #960).
+    const stub = await createAgentStub(
+      `printf '%s\\n' '${toolLine}'\n` +
         "sleep 2\n" +
         `printf '%s\\n' '${toolLine}'\n` +
         `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+      { prefix: "agent_progress_stub_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
 
     const logs: string[] = [];
     const logger = {
@@ -314,6 +310,7 @@ Deno.test({
       );
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         phase: "execute",
         timeoutSeconds: 30,
         killAfterSeconds: 1,
@@ -331,8 +328,7 @@ Deno.test({
       assertStringIncludes(progressLines[0]!, "tool call");
       assertStringIncludes(progressLines[0]!, "worker/deno/lib/live.ts");
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+      await stub.dispose();
     }
   },
 });
@@ -343,8 +339,6 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
-    const dir = await Deno.makeTempDir({ prefix: "agent_progress_stub_" });
-    const stubPath = `${dir}/claude`;
     const toolLine = JSON.stringify({
       type: "assistant",
       message: {
@@ -355,16 +349,13 @@ Deno.test({
         }],
       },
     });
-    await Deno.writeTextFile(
-      stubPath,
-      "#!/usr/bin/env bash\n" +
-        `printf '%s\\n' '${toolLine}'\n` +
+    // Named by path, never installed on the process-wide `PATH` (Issue #960).
+    const stub = await createAgentStub(
+      `printf '%s\\n' '${toolLine}'\n` +
         `printf '%s\\n' '${toolLine}'\n` +
         `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+      { prefix: "agent_progress_stub_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
 
     const snapshots: AgentActivitySnapshot[] = [];
     // A console spy: with no logger, NOTHING may be printed for progress.
@@ -379,6 +370,7 @@ Deno.test({
       );
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         phase: "execute",
         timeoutSeconds: 30,
         killAfterSeconds: 1,
@@ -400,8 +392,7 @@ Deno.test({
     } finally {
       console.error = originalError;
       console.log = originalLog;
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+      await stub.dispose();
     }
   },
 });

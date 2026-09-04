@@ -10,8 +10,9 @@
  * the per-tier retry-state reset, the `fable → opus → sonnet → haiku → null`
  * termination, and the `enableModelFallback: false` short-circuit.
  *
- * These tests run the loop against a stub `claude` on PATH that always emits a
- * rate-limit result and exits non-zero. The stub records the `--model`
+ * These tests run the loop against a stub agent — named by path rather than
+ * installed on `PATH` (Issue #959) — that always emits a rate-limit result
+ * and exits non-zero. The stub records the `--model`
  * argument of every invocation to a log file, so the test can assert the exact
  * tier-by-tier downgrade sequence — proving there is no upgrade and no infinite
  * loop. Small `maxRetries`/`maxWaitSeconds` keep the run well under the
@@ -23,32 +24,38 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
 
 // ---------------------------------------------------------------------------
-// Stub harness — a fake `claude` on PATH that records its --model arg and
-// always returns a rate-limit non-zero exit.
+// Stub harness — a fake agent, named by path (Issue #959), that records its
+// --model arg and always returns a rate-limit non-zero exit.
 // ---------------------------------------------------------------------------
 
 interface StubClaude {
-  /** Directory holding the stub, prepended to PATH. */
-  dir: string;
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
   /** Path the stub appends each invocation's --model value to. */
   modelLog: string;
 }
 
+/** Basename of the file the stub records each invocation's model in. */
+const MODEL_LOG = "models.log";
+
 /**
- * Build a stub `claude` script whose body records the `--model` argument of
- * each invocation (one per line) to `modelLog`, prints a stream-json result
- * whose text matches the rate-limit detector, and exits with `exitCode`.
+ * Build a stub agent script whose body records the `--model` argument of each
+ * invocation (one per line), prints a stream-json result whose text matches
+ * the rate-limit detector, and exits with `exitCode`.
  */
-function buildRateLimitStubBody(modelLog: string, exitCode: number): string {
+function buildRateLimitStubBody(exitCode: number): string {
   // Walk the args to find the value following `--model`. Append it to the
-  // log so the test can assert the downgrade sequence across re-invocations.
+  // log — beside the stub, located from `$0` so no path is baked in — so the
+  // test can assert the downgrade sequence across re-invocations.
   return [
+    `log="$(dirname "$0")/${MODEL_LOG}"`,
     `prev=""`,
     `for arg in "$@"; do`,
     `  if [ "$prev" = "--model" ]; then`,
-    `    printf '%s\\n' "$arg" >> '${modelLog}'`,
+    `    printf '%s\\n' "$arg" >> "$log"`,
     `  fi`,
     `  prev="$arg"`,
     `done`,
@@ -59,32 +66,19 @@ function buildRateLimitStubBody(modelLog: string, exitCode: number): string {
 }
 
 /**
- * Create a temporary stub `claude` on PATH for the duration of `fn`, then
- * restore PATH and clean up. Mirrors the `withStubClaude` helper in
- * `claude_runner_test.ts` but also wires up the per-invocation model log.
+ * Create a temporary stub agent for the duration of `fn`, then clean up.
+ * The runner is handed the stub's path (Issue #959), so nothing here touches
+ * the process-wide `PATH`.
  */
-async function withRateLimitStub<T>(
+function withRateLimitStub<T>(
   exitCode: number,
   fn: (stub: StubClaude) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_rl_stub_" });
-  const modelLog = `${dir}/models.log`;
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(
-    stubPath,
-    `#!/usr/bin/env bash\n${buildRateLimitStubBody(modelLog, exitCode)}\n`,
+  return withAgentStub(
+    buildRateLimitStubBody(exitCode),
+    (stub) => fn({ path: stub.path, modelLog: `${stub.dir}/${MODEL_LOG}` }),
+    { prefix: "claude_rl_stub_" },
   );
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn({ dir, modelLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {
-      /* best-effort */
-    });
-  }
 }
 
 /** Read the recorded per-invocation model sequence (empty if never run). */
@@ -119,6 +113,7 @@ Deno.test({
       const result = await runClaudeWithRetry(
         {
           prompt: "test",
+          agentBinaryPath: stub.path,
           model: "fable",
           enableModelFallback: true,
           timeoutSeconds: 30,
@@ -158,6 +153,7 @@ Deno.test({
       const result = await runClaudeWithRetry(
         {
           prompt: "test",
+          agentBinaryPath: stub.path,
           model: "sonnet",
           enableModelFallback: true,
           timeoutSeconds: 30,
@@ -190,6 +186,7 @@ Deno.test({
       const result = await runClaudeWithRetry(
         {
           prompt: "test",
+          agentBinaryPath: stub.path,
           model: "fable",
           enableModelFallback: false,
           timeoutSeconds: 30,

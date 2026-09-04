@@ -240,8 +240,6 @@ function makeMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     sleep: () => Promise.resolve(),
     now: () => Date.now(),
 
-    reportFleetHealthHeartbeat: () => Promise.resolve(),
-
     ...overrides,
   };
 }

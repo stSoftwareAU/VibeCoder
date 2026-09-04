@@ -19,6 +19,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import { resolveContainerLaunchHostPaths } from "../lib/container_launch.ts";
+import { resolvePowerShell } from "./support/pwsh.ts";
 
 const BASE = "/opt/VibeCoder";
 const SETUP_SH = new URL("../../../setup.sh", import.meta.url).pathname;
@@ -258,25 +259,7 @@ Deno.test("setup.sh - refuses two config variables that disagree (Issue #750)", 
   assert(run.stderr.includes("/srv/other/config.json"), run.stderr);
 });
 
-/** The PowerShell interpreter to drive, or null when there is none. */
-async function findPowerShell(): Promise<string | null> {
-  for (const candidate of [Deno.env.get("VIBE_PWSH"), "pwsh", "powershell"]) {
-    if (!candidate) continue;
-    try {
-      const output = await new Deno.Command(candidate, {
-        args: ["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
-        stdout: "null",
-        stderr: "null",
-      }).output();
-      if (output.success) return candidate;
-    } catch {
-      // Try the next candidate.
-    }
-  }
-  return null;
-}
-
-const PWSH = await findPowerShell();
+const PWSH = await resolvePowerShell();
 
 /** Dot-source setup.ps1 and report the checkout and the config file. */
 function pwshCommand(): string[] {

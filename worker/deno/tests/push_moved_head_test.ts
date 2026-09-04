@@ -9,6 +9,12 @@
  *
  * They drive real git repositories end to end.
  *
+ * The run id is supplied as a parameter (Issue #963). It used to be set on
+ * the process as `VIBE_RUN_ID`, which races every other test running at that
+ * moment and pinned this file into the gate's serial pass (Issue #880).
+ * {@link TEST_RUN_ID} exists in no real environment, so a fall back to
+ * `Deno.env.get` would stamp a different id rather than pass unnoticed.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -18,6 +24,9 @@ import { runGitCommand } from "../lib/git_timeout.ts";
 
 const DEFAULT_BRANCH = "Develop";
 const FEATURE_BRANCH = "issue-556-moved-head";
+
+/** Run id stamped on the commits this test makes (Issue #963). */
+const TEST_RUN_ID = "vibe-963-moved-head-sentinel";
 
 /** Run a git command in a repo, failing loudly on a non-zero exit. */
 async function git(args: string[], cwd: string): Promise<string> {
@@ -99,8 +108,6 @@ async function cleanup(tmpDir: string): Promise<void> {
 
 Deno.test("commitAndPushPending - rebases onto a sibling's newer head and pushes", async () => {
   const { tmpDir, remotePath, workerPath, siblingPath } = await setupRepos();
-  const runIdBefore = Deno.env.get("VIBE_RUN_ID");
-  Deno.env.set("VIBE_RUN_ID", "test-run-211");
   try {
     // The agent's own work, committed but not yet pushed.
     await Deno.writeTextFile(`${workerPath}/agent.txt`, "agent fix\n");
@@ -117,6 +124,9 @@ Deno.test("commitAndPushPending - rebases onto a sibling's newer head and pushes
       FEATURE_BRANCH,
       "Fix CI failure: Quality Checks\n\nAutomated final-mile commit.",
       { cwd: workerPath },
+      false,
+      undefined,
+      TEST_RUN_ID,
     );
 
     if (!result.ok) throw result.error;
@@ -132,11 +142,6 @@ Deno.test("commitAndPushPending - rebases onto a sibling's newer head and pushes
     assertEquals(subjects.includes("Agent fix"), true);
     assertEquals(subjects.includes("Sibling fix"), true);
   } finally {
-    if (runIdBefore === undefined) {
-      Deno.env.delete("VIBE_RUN_ID");
-    } else {
-      Deno.env.set("VIBE_RUN_ID", runIdBefore);
-    }
     await cleanup(tmpDir);
   }
 });
