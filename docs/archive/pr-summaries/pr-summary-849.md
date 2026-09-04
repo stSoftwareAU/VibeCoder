@@ -39,10 +39,12 @@ What landed:
   `{{BOUNDARY_INTEGRITY_INSTRUCTION}}` is required there, so an override cannot
   drop the untrusted-text fencing.
 
-Also restores `custom_label_prompts` on `WorkerConfig` / `ConfigFile`,
-`config.ts`, `config_defaults.ts` and `KNOWN_CONFIG_KEYS`: the milestone
-branch's merge of `main` (ac1e7a6) dropped them, leaving `deno check` failing on
-the branch before this change.
+Merged with the milestone branch after Issue #850 landed there. Both changes
+added a second parameter to `parseCustomLabelPrompts()` /
+`assertCustomLabelPrompts()` — the configured label names here, the host →
+container path resolver there — so the two are now one
+`CustomLabelPromptOptions` carrying both, and `loadConfig` passes the label
+names and the resolver together.
 
 ## Evidence
 
@@ -127,16 +129,12 @@ flowchart LR
   `worker/deno/tests/prompt_override_resolver_test.ts` (12 tests), full gate run
   after the final edit — reviewer: met — reason: the reviewer could not confirm
   the full suite (still running when it reported); it was run here and passed.
-- **unrequested** — `worker/deno/lib/planning_processor.ts` `extractSubIssueNumbers`
-  and `worker/deno/tests/slot_idle_accounting_925_test.ts` `field()` rewritten
-  off dynamic `RegExp` — reviewer: unrequested — reason: both files are in the
-  milestone branch's semgrep changed-file set and their pre-existing ReDoS
-  findings blocked the gate; both rewrites are behaviour-equivalent and keep
-  their existing coverage.
-- **unrequested** — restoring `custom_label_prompts` on `WorkerConfig` /
-  `ConfigFile`, `config.ts`, `config_defaults.ts`, `KNOWN_CONFIG_KEYS` —
-  reviewer: unrequested — reason: Issue #846 wiring the milestone merge dropped;
-  without it `deno check` fails on the branch and this change cannot compile.
+- **unrequested** — `worker/deno/lib/planning_processor.ts`
+  `extractSubIssueNumbers` rewritten off a dynamic `RegExp` — reviewer:
+  unrequested — reason: this change puts the file in semgrep's changed-file set
+  and its pre-existing ReDoS finding blocked the gate; the rewrite is
+  behaviour-equivalent (it captures `owner/repo` from a literal pattern and
+  compares it exactly) and keeps its existing coverage.
 - **unrequested** — `quorum_judge` override support and the `grill-me`
   placeholder registration — reviewer: unrequested — reason: the issue names
   `quorumLabel` and the quorum placeholder rule, so the judge turn follows the
@@ -168,12 +166,13 @@ flowchart LR
   list-wide label uniqueness while the example showed two `planning` entries —
   evidence: `docs/CONFIGURATION.md:500` — reason: fixed here — the bullet now
   states the label/phase pair rule.
-- **violation** — the new `names` parameter on `parseCustomLabelPrompts` /
+- **violation** — the new label-names parameter on `parseCustomLabelPrompts` /
   `assertCustomLabelPrompts` had no `@param` and a default that silently
   resolves stock names — evidence:
-  `worker/deno/lib/custom_label_prompts_config.ts:220`, `:254` — reason: fixed
+  `worker/deno/lib/custom_label_prompts_config.ts:258`, `:306` — reason: fixed
   here — both are documented, naming the consequence for a caller holding a
-  `WorkerConfig`.
+  `WorkerConfig`. After the #850 merge the names ride on the shared
+  `CustomLabelPromptOptions` alongside the path resolver.
 - **violation** — the documented `customPromptPath` > `work-on` override
   precedence had no test — evidence: `worker/deno/lib/prompt_builder.ts:481` —
   reason: fixed here —

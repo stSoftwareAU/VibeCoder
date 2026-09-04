@@ -12,7 +12,7 @@
  * the host claimed no labelled work at all.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   buildServiceAccountEnv,
   resolveServiceAccountEnv,
@@ -403,7 +403,7 @@ Deno.test({
         await Deno.readTextFile(`${applied.GH_CONFIG_DIR}/hosts.yml`),
         "github.com:\n",
       );
-      const probe = `${applied}/.writable-probe`;
+      const probe = `${applied.GH_CONFIG_DIR}/.writable-probe`;
       await Deno.writeTextFile(probe, "");
       await Deno.remove(probe);
     } finally {
