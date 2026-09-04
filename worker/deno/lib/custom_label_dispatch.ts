@@ -8,6 +8,12 @@
  * **same** `workOnIssue` pipeline `work-on` runs — real branch, commits and PR
  * — with the operator's template substituted for `prompts/issue/`.
  *
+ * Because it raises a PR and never removes its own label, the scan that feeds
+ * this dispatch runs `work-on`'s new-work eligibility gates (Issue #937): the
+ * production wiring hands `findAndProcessByLabel` its `gateNewWork` flag for
+ * this row alone. Without it the next cycle re-ran the whole pipeline against
+ * the PR this one had just raised.
+ *
  * ## Fail loud at dispatch
  *
  * The prompt file was readable at config load. If it has since been deleted,
