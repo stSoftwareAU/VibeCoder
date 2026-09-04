@@ -37,6 +37,7 @@
  */
 
 import type { Logger } from "../types.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import {
@@ -161,6 +162,12 @@ export async function reportPhaseDegradation(args: {
     repo: string,
     issueNumber: number,
   ) => Promise<readonly { body: string }[]>;
+  /**
+   * Environment lookup the expected-model routing reads through
+   * (Issue #961); defaults to the process environment, so a production
+   * caller supplies nothing.
+   */
+  env?: EnvLookup;
 }): Promise<DegradationVerdict> {
   const {
     phase,
@@ -182,6 +189,7 @@ export async function reportPhaseDegradation(args: {
   const { expectedModel, verdict } = buildDegradationReport({
     invocations,
     phase,
+    ...(args.env ? { env: args.env } : {}),
   });
 
   // Lower-cased display name so warnings read naturally per phase

@@ -33,6 +33,8 @@ import type { ClaudeExecutionResult } from "../lib/claude_executor.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { Result } from "../types.ts";
 import { getDailySummary } from "../lib/credit_tracker.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // Child-environment sanitisation (Issue #3203)
@@ -98,13 +100,10 @@ Deno.test("claude runner - re-exports extractStreamJsonText", () => {
 });
 
 Deno.test("claude runner - re-exports buildClaudeModelArgs", () => {
-  const original = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL");
-  try {
-    assertEquals(buildClaudeModelArgs().length, 0);
-  } finally {
-    if (original) Deno.env.set("CLAUDE_MODEL", original);
-  }
+  // The chain reads the injected lookup (Issue #957), so a `CLAUDE_MODEL` the
+  // worker session exports is invisible here and nothing has to be deleted
+  // from a process every other test in the run shares.
+  assertEquals(buildClaudeModelArgs(undefined, emptyEnv).length, 0);
 });
 
 Deno.test("claude runner - re-exports captureTimeoutDiagnostics", () => {
@@ -185,28 +184,19 @@ Deno.test("claude runner - RunClaudeOptions sessionResumeState is optional (Issu
 // ---------------------------------------------------------------------------
 
 /**
- * Create a temporary stub directory with a `claude` script that ignores all
- * arguments and runs the supplied bash body. The directory is prepended to
- * PATH for the duration of the test, then restored.
+ * Create a temporary stub agent that ignores all arguments and runs the
+ * supplied bash body, handing its path to `fn`.
+ *
+ * The runner is given that path as `agentBinaryPath` (Issue #959), so the
+ * process-wide `PATH` is never touched.
  */
-async function withStubClaude<T>(
+function withStubClaude<T>(
   bashBody: string,
-  fn: () => Promise<T>,
+  fn: (agentBinaryPath: string) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_stub_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${bashBody}\n`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn();
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(
-      () => {/* best-effort */},
-    );
-  }
+  return withAgentStub(bashBody, (stub) => fn(stub.path), {
+    prefix: "claude_stub_",
+  });
 }
 
 Deno.test({
@@ -217,9 +207,10 @@ Deno.test({
   async fn() {
     // Stub claude that sleeps for 60s without emitting any stdout. The hard
     // timeout is 30s, but the silence watchdog (2s) should fire first.
-    const result = await withStubClaude("sleep 60", async () => {
+    const result = await withStubClaude("sleep 60", async (agentBinaryPath) => {
       return await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath,
         timeoutSeconds: 30,
         killAfterSeconds: 2,
         noOutputTimeout: 2,
@@ -250,9 +241,10 @@ Deno.test({
     // is short (2s) but the stub finishes quickly so it must not fire.
     const stubBody = `printf '%s\\n' '{"type":"result","result":"hello"}'\n` +
       `exit 0\n`;
-    const result = await withStubClaude(stubBody, async () => {
+    const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
       return await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath,
         timeoutSeconds: 30,
         killAfterSeconds: 2,
         noOutputTimeout: 2,
@@ -282,9 +274,10 @@ Deno.test({
     const stubBody = `sleep 5\n` +
       `printf '%s\\n' '{"type":"result","result":"late"}'\n` +
       `exit 0\n`;
-    const result = await withStubClaude(stubBody, async () => {
+    const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
       return await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath,
         timeoutSeconds: 30,
         killAfterSeconds: 2,
         noOutputTimeout: 0,
@@ -307,9 +300,10 @@ Deno.test({
   async fn() {
     // Stub sleeps long. noOutputTimeout=0 disables silence watchdog, so the
     // hard timeout (2s) must fire with reason "hard-timeout".
-    const result = await withStubClaude("sleep 60", async () => {
+    const result = await withStubClaude("sleep 60", async (agentBinaryPath) => {
       return await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath,
         timeoutSeconds: 2,
         killAfterSeconds: 2,
         noOutputTimeout: 0,
@@ -347,9 +341,10 @@ Deno.test({
     // runner discarded stderr — it must now be returned to the caller.
     const stubBody = `printf '%s\\n' 'boom: configuration error' 1>&2\n` +
       `exit 7\n`;
-    const result = await withStubClaude(stubBody, async () => {
+    const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
       return await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath,
         timeoutSeconds: 30,
         killAfterSeconds: 2,
       });
@@ -376,8 +371,8 @@ Deno.test({
     const stubBody =
       `printf '%s\\n' 'Error: model claude-bogus not found' 1>&2\n` +
       `exit 7\n`;
-    const result = await withStubClaude(stubBody, async () => {
-      return await checkClaudeHealth(10);
+    const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
+      return await checkClaudeHealth(10, undefined, undefined, agentBinaryPath);
     });
 
     assertEquals(result.healthy, false);
@@ -402,8 +397,8 @@ Deno.test({
     const stubBody =
       `printf '%s\\n' 'HTTP 429 rate limit exceeded, please retry' 1>&2\n` +
       `exit 1\n`;
-    const result = await withStubClaude(stubBody, async () => {
-      return await checkClaudeHealth(10);
+    const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
+      return await checkClaudeHealth(10, undefined, undefined, agentBinaryPath);
     });
 
     assertEquals(result.healthy, false);
@@ -420,8 +415,8 @@ Deno.test({
     const stubBody =
       `printf '%s\\n' 'Error: not logged in. Run claude login.' 1>&2\n` +
       `exit 1\n`;
-    const result = await withStubClaude(stubBody, async () => {
-      return await checkClaudeHealth(10);
+    const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
+      return await checkClaudeHealth(10, undefined, undefined, agentBinaryPath);
     });
 
     assertEquals(result.healthy, false);
@@ -615,12 +610,13 @@ Deno.test({
     ].join("\n");
 
     try {
-      const result = await withStubClaude(stubBody, async () => {
+      const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
         return await runClaudeWithRetry(
           {
             prompt: "test",
             model: "opus",
             phase: "implementation",
+            agentBinaryPath,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             enableModelFallback: true,
@@ -671,34 +667,42 @@ Deno.test({
 // spawn must now be refused unless an operator has explicitly opted in.
 // ---------------------------------------------------------------------------
 
+/** Where the gh-less stub records that it ran, beside the stub itself. */
+const SPAWN_MARKER = "spawned";
+
 /**
- * Run `fn` with PATH set to a directory holding only a `claude` stub that
- * records having run, so `gh` is unresolvable and the shim cannot install.
+ * Run `fn` with a stub agent whose child `PATH` holds only the stub's own
+ * directory, so `gh` is unresolvable and the shim cannot install.
+ *
+ * Nothing is exported into the process (Issue #961): the stub is named by
+ * path (`agentBinaryPath`, Issue #959), the `PATH` the shim searches is the
+ * one `parentEnv` supplies, and the journal is held off by an environment
+ * lookup that carries no `WORK_DIR` — the shim's own audit sink is asserted
+ * directly in `gh_guard_shim_test.ts`.
  */
-async function withGhLessStubClaude<T>(
-  fn: (marker: string) => Promise<T>,
+function withGhLessStubClaude<T>(
+  fn: (
+    run: { agentBinaryPath: string; parentEnv: Record<string, string> },
+  ) => Promise<T>,
+  marker: (path: string) => void,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_no_gh_" });
-  const marker = `${dir}/spawned`;
-  await Deno.writeTextFile(
-    `${dir}/claude`,
-    `#!/bin/bash\nprintf 'ran\\n' > "${marker}"\nprintf 'stub-claude-ok\\n'\n`,
+  return withAgentStub(
+    // `${0%/*}` rather than `dirname`: the child's PATH is deliberately
+    // gh-less, so the stub must reach for no external command at all.
+    `printf 'ran\\n' > "\${0%/*}/${SPAWN_MARKER}"\n` +
+      `printf 'stub-claude-ok\\n'`,
+    (stub) => {
+      marker(`${stub.dir}/${SPAWN_MARKER}`);
+      return fn({
+        agentBinaryPath: stub.path,
+        // `/bin` alone: enough for the stub's own `#!/usr/bin/env bash`,
+        // and no host puts `gh` there — so the shim finds none. The stub
+        // itself is named by path, so it needs no `PATH` entry.
+        parentEnv: { PATH: "/bin" },
+      });
+    },
+    { prefix: "claude_no_gh_" },
   );
-  await Deno.chmod(`${dir}/claude`, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  const originalAudit = Deno.env.get("VIBE_AUDIT_DISABLED");
-  Deno.env.set("PATH", dir);
-  // Keep the test off the production journal; the shim's own audit sink is
-  // asserted directly in gh_guard_shim_test.ts.
-  Deno.env.set("VIBE_AUDIT_DISABLED", "1");
-  try {
-    return await fn(marker);
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    if (originalAudit === undefined) Deno.env.delete("VIBE_AUDIT_DISABLED");
-    else Deno.env.set("VIBE_AUDIT_DISABLED", originalAudit);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
 }
 
 Deno.test({
@@ -707,19 +711,27 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const previousOptIn = Deno.env.get(UNGUARDED_AGENT_GH_ENV);
-    Deno.env.delete(UNGUARDED_AGENT_GH_ENV);
     seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
     try {
-      const { result, spawned } = await withGhLessStubClaude(async (marker) => {
-        const result = await runClaudeWithTimeout({
-          prompt: "test",
-          timeoutSeconds: 30,
-          killAfterSeconds: 2,
-        });
-        const spawned = await Deno.stat(marker).then(() => true, () => false);
-        return { result, spawned };
-      });
+      let marker = "";
+      const { result, spawned } = await withGhLessStubClaude(
+        async (run) => {
+          const result = await runClaudeWithTimeout({
+            prompt: "test",
+            ...run,
+            // No operator opt-in in this environment, and no `WORK_DIR`, so
+            // the journal stays inert.
+            env: emptyEnv,
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+          });
+          const spawned = await Deno.stat(marker).then(() => true, () => false);
+          return { result, spawned };
+        },
+        (path) => {
+          marker = path;
+        },
+      );
 
       assert(!result.ok, "an unguarded agent run must not be started");
       assertStringIncludes(result.error.message, "gh guard shim");
@@ -727,9 +739,6 @@ Deno.test({
       assertEquals(spawned, false, "claude must not have been spawned");
     } finally {
       resetWriteRepoAllowlist();
-      if (previousOptIn === undefined) {
-        Deno.env.delete(UNGUARDED_AGENT_GH_ENV);
-      } else Deno.env.set(UNGUARDED_AGENT_GH_ENV, previousOptIn);
     }
   },
 });
@@ -740,27 +749,31 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const previousOptIn = Deno.env.get(UNGUARDED_AGENT_GH_ENV);
     seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
     try {
-      Deno.env.set(UNGUARDED_AGENT_GH_ENV, "1");
-      const { result, spawned } = await withGhLessStubClaude(async (marker) => {
-        const result = await runClaudeWithTimeout({
-          prompt: "test",
-          timeoutSeconds: 30,
-          killAfterSeconds: 2,
-        });
-        const spawned = await Deno.stat(marker).then(() => true, () => false);
-        return { result, spawned };
-      });
+      let marker = "";
+      const { result, spawned } = await withGhLessStubClaude(
+        async (run) => {
+          const result = await runClaudeWithTimeout({
+            prompt: "test",
+            ...run,
+            // The operator opt-in, stated for this invocation only.
+            env: envFrom({ [UNGUARDED_AGENT_GH_ENV]: "1" }),
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+          });
+          const spawned = await Deno.stat(marker).then(() => true, () => false);
+          return { result, spawned };
+        },
+        (path) => {
+          marker = path;
+        },
+      );
 
       assert(result.ok, "the opt-in permits a degraded, unguarded run");
       assertEquals(spawned, true, "claude must have been spawned");
     } finally {
       resetWriteRepoAllowlist();
-      if (previousOptIn === undefined) {
-        Deno.env.delete(UNGUARDED_AGENT_GH_ENV);
-      } else Deno.env.set(UNGUARDED_AGENT_GH_ENV, previousOptIn);
     }
   },
 });

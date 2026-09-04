@@ -82,15 +82,12 @@
  * removed is one more file that runs in the fast pass.
  */
 export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  "tests/agent_provider_per_invocation_test.ts",
   "tests/best_practices_bucket_guides_consumer_test.ts",
   "tests/boy_scout_idle_tasks_test.ts",
   "tests/check_jenkins_access_command_test.ts",
   "tests/ci_failure_issue_test.ts",
   "tests/ci_log_provider_test.ts",
   "tests/ci_provider_jenkins_target_url_test.ts",
-  "tests/claude_runner_model_unavailable_fallback_test.ts",
-  "tests/claude_runner_test.ts",
   "tests/container_entrypoint_test.ts",
   "tests/container_image_hash_test.ts",
   "tests/container_image_provider_set_test.ts",
@@ -98,10 +95,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/create_all_idle_task_wrappers_test.ts",
   "tests/default_branch_cache_test.ts",
   "tests/env_stub_test.ts",
-  "tests/fable_globally_disabled_cycle_test.ts",
-  "tests/fable_preflight_deepseek_gate_test.ts",
-  "tests/fable_preflight_provider_gate_test.ts",
-  "tests/fable_preflight_reroute_wiring_test.ts",
   "tests/feature_availability_test.ts",
   "tests/fetch_jenkins_log_command_test.ts",
   "tests/follow_up_label_strip_paths_test.ts",
@@ -149,7 +142,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/run_entrypoint_test.ts",
   "tests/run_mode_test.ts",
   "tests/service_account_env_test.ts",
-  "tests/unpriced_spend_3870_test.ts",
   "tests/worker_cache_dir_test.ts",
   "tests/workflow_annotation_scan_template_test.ts",
 ];
