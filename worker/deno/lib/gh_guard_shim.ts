@@ -369,8 +369,11 @@ export function unguardedOptInFromEnv(
  * journalling not disabled), so unit tests incur no journal side effects.
  * Rejects when the append is refused, so the caller can say so loudly.
  */
-async function journalShimUnavailable(mutation: AuditMutation): Promise<void> {
-  if (!isAuditJournalEnabled()) return;
+async function journalShimUnavailable(
+  mutation: AuditMutation,
+  env: EnvLookup = processEnvLookup,
+): Promise<void> {
+  if (!isAuditJournalEnabled(env)) return;
   const result = await recordMutation(mutation);
   if (!result.ok) throw result.error;
 }
@@ -387,7 +390,9 @@ export async function installGhGuardShim(
   opts: GhGuardShimOptions,
 ): Promise<GhGuardShimOutcome> {
   const warn = opts.warn ?? ((m: string) => console.error(m));
-  const record = opts.record ?? journalShimUnavailable;
+  const env = opts.env ?? processEnvLookup;
+  const record = opts.record ??
+    ((mutation: AuditMutation) => journalShimUnavailable(mutation, env));
 
   /**
    * Report an uninstallable shim and decide whether the run may continue.
@@ -396,8 +401,7 @@ export async function installGhGuardShim(
    * operator opt-in downgrades the block to a degraded run.
    */
   const unavailable = async (why: string): Promise<GhGuardShimOutcome> => {
-    const optedIn = opts.allowUnguarded ??
-      unguardedOptInFromEnv(opts.env ?? processEnvLookup);
+    const optedIn = opts.allowUnguarded ?? unguardedOptInFromEnv(env);
     const blocked = opts.active && !optedIn;
     warn(
       blocked
@@ -518,12 +522,15 @@ export async function installGhGuardShim(
  *
  * @param baseEnv - The child environment before the shim is prepended.
  * @param warn - Sink for the unavailable warning (defaults to console.error).
+ * @param env - Environment lookup for the operator opt-in and the audit gate
+ *   (Issue #961); defaults to the process environment.
  * @returns The install outcome — the caller must refuse to spawn the agent on
  *   a `blocked` verdict (Issue #3869).
  */
 export function prepareGhGuardShim(
   baseEnv: Record<string, string>,
   warn?: (message: string) => void,
+  env?: EnvLookup,
 ): Promise<GhGuardShimOutcome> {
   noteAgentAllowlistSnapshot();
   const claimedIssue = claimedIssueGuard();
@@ -534,5 +541,6 @@ export function prepareGhGuardShim(
     // Issue #222 — inert unless the run seeded a claim.
     ...(claimedIssue ? { claimedIssue } : {}),
     ...(warn ? { warn } : {}),
+    ...(env ? { env } : {}),
   });
 }
