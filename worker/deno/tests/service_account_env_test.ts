@@ -399,6 +399,10 @@ Deno.test({
     const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
     const previousTmp = Deno.env.get("TMPDIR");
     const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
+    // The durable state root outranks TMPDIR among the staging candidates, so
+    // the worker's own VIBE_STATE_DIR would decide this assertion whenever the
+    // suite runs inside a container that sets it.
+    const previousState = Deno.env.get("VIBE_STATE_DIR");
     const home = await Deno.makeTempDir();
     const tmp = await Deno.makeTempDir();
     const mounted = `${home}/.vibe-coder/credentials/gh`;
@@ -410,6 +414,7 @@ Deno.test({
       Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
       Deno.env.set("TMPDIR", tmp);
       Deno.env.delete("VIBE_SCRATCH_DIR");
+      Deno.env.delete("VIBE_STATE_DIR");
       Deno.env.delete("GH_CONFIG_DIR");
       applyServiceAccountEnv(
         buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
@@ -426,6 +431,7 @@ Deno.test({
       restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
       restoreEnv("TMPDIR", previousTmp);
       restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
+      restoreEnv("VIBE_STATE_DIR", previousState);
       await Deno.chmod(mounted, 0o700);
       await Deno.remove(home, { recursive: true });
       await Deno.remove(tmp, { recursive: true });
