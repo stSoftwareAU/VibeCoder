@@ -1998,6 +1998,10 @@ async function runIssueScanLoop(
     // Issue #460: record the claim before the run, not after it. The
     // outcome does not change the fact that this repo was served.
     tracker.recordClaim(issue.repo);
+    // Process the issue. The claim time bounds the post-run callback
+    // context (Issue #806); a throw takes the failure/always path exactly
+    // once and then propagates as before.
+    const claimedAtEpochMs = deps.now();
     // Issue #855: fleet-level claim/busy/outcome counters. The claim is
     // recorded before the run, matching `tracker.recordClaim` above.
     recordFleetClaim();
@@ -2006,6 +2010,18 @@ async function runIssueScanLoop(
     let processResult;
     try {
       processResult = await deps.processIssue(issue, endTime);
+    } catch (thrown) {
+      // Issue #806: a throw is a terminal run, so the failure and always
+      // callbacks fire exactly once before it propagates. Restored in
+      // Issue #928 — a `main` sync merge replaced this `catch` with the
+      // `finally` below and silently dropped the dispatch, leaving a
+      // thrown run the one terminal outcome that reported nothing.
+      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
+        result: "failure",
+        startedAtEpochMs: claimedAtEpochMs,
+        guard: callbackGuard,
+      });
+      throw thrown;
     } finally {
       // In a `finally` so a throw cannot leave the stream marked busy
       // for the rest of the run, which would read as 100% utilisation.
@@ -2555,6 +2571,11 @@ interface SlotPoolState {
    * idle-inversion escalation has no evidence to escalate.
    */
   eligibilityScanCompleted: boolean;
+  /**
+   * The cycle's exactly-once post-run callback guard (Issue #806), shared by
+   * every slot, the slot-level catch and the shutdown drain.
+   */
+  callbackGuard: IssueCallbackGuard;
   /**
    * The repositories the completed eligibility pass was never shown
    * (Issue #898) — `findOldestIssue`'s `excludeRepos` set at the moment a
@@ -3318,6 +3339,14 @@ async function runSlotIssue(
 
   // Issue #460: see the sibling call site — the claim, not the outcome.
   tracker.recordClaim(issue.repo);
+  // Each slot bounds its own callback context (Issue #806), so concurrent
+  // slots never share a start time or a result.
+  const claimedAtEpochMs = deps.now();
+  // Issue #806: from here a throw is a *run* that failed, not an unclaimed
+  // cycle, so the slot-level catch reports it. Restored in Issue #928 — a
+  // `main` sync merge dropped this line, leaving `runStarted` permanently
+  // false and every thrown slot run silently reporting nothing.
+  started.value = true;
   recordFleetClaim();
   // Issue #855: busy time is per work stream, so a pool slot's utilisation
   // is reported separately from its siblings'. Fleet occupancy is "any
