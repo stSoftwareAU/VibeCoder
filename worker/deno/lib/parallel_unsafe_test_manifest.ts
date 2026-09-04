@@ -94,18 +94,7 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/ci_log_provider_test.ts",
   "tests/ci_provider_jenkins_target_url_test.ts",
   "tests/clarity_assessment_test.ts",
-  "tests/claude_runner_cache_telemetry_4282_test.ts",
-  "tests/claude_runner_check_interval_4295_test.ts",
-  "tests/claude_runner_external_progress_508_test.ts",
-  "tests/claude_runner_invalid_session_id_204_test.ts",
-  "tests/claude_runner_invocation_budget_3648_test.ts",
-  "tests/claude_runner_kill_bound_test.ts",
-  "tests/claude_runner_killed_test.ts",
   "tests/claude_runner_model_unavailable_fallback_test.ts",
-  "tests/claude_runner_oom_terminal_test.ts",
-  "tests/claude_runner_progress_extension_4296_test.ts",
-  "tests/claude_runner_rate_limit_fallback_test.ts",
-  "tests/claude_runner_stdin_prompt_test.ts",
   "tests/claude_runner_test.ts",
   "tests/claude_runner_usage_limit_test.ts",
   "tests/commit_and_push_pending_test.ts",
@@ -238,8 +227,30 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
  * left out goes red one run in five, on somebody else's change.
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
+  "tests/agent_mcp_config_test.ts",
+  "tests/agent_progress_test.ts",
+  "tests/agent_provider_per_invocation_test.ts",
+  "tests/agent_run_termination_test.ts",
+  "tests/agent_transcript_test.ts",
+  "tests/claude_runner_agent_binary_path_959_test.ts",
+  "tests/claude_runner_check_interval_4295_test.ts",
+  "tests/claude_runner_external_progress_508_test.ts",
+  "tests/claude_runner_invalid_session_id_204_test.ts",
+  "tests/claude_runner_invocation_budget_3648_test.ts",
+  "tests/claude_runner_kill_bound_test.ts",
   "tests/claude_runner_killed_test.ts",
+  "tests/claude_runner_model_unavailable_fallback_test.ts",
+  "tests/claude_runner_oom_terminal_test.ts",
+  "tests/claude_runner_progress_extension_4296_test.ts",
+  "tests/claude_runner_rate_limit_fallback_test.ts",
+  "tests/claude_runner_stdin_prompt_test.ts",
+  "tests/claude_runner_test.ts",
+  "tests/claude_runner_usage_limit_test.ts",
   "tests/claude_token_budget_test.ts",
+  "tests/fable_globally_disabled_cycle_test.ts",
+  "tests/fable_preflight_deepseek_gate_test.ts",
+  "tests/fable_preflight_provider_gate_test.ts",
+  "tests/fable_preflight_reroute_wiring_test.ts",
   "tests/growth_bound_test.ts",
   "tests/orphan_deps_suppression_scan_bounds_test.ts",
   "tests/orphan_deps_suppression_scan_cap_test.ts",
@@ -254,6 +265,8 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/secret_redaction_bounds_test.ts",
   "tests/secret_redaction_redos_test.ts",
   "tests/secret_transform_redaction_test.ts",
+  "tests/timeout_extension_report_768_test.ts",
+  "tests/timeout_extension_telemetry_4298_test.ts",
 ];
 
 /**
@@ -273,8 +286,29 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
 export function measuresWallClock(source: string): boolean {
   const code = stripComments(source);
   if (GROWTH_HELPER.test(code)) return true;
+  if (REAL_DEADLINE_RUN.test(code) && REAL_DEADLINE_ARG.test(code)) return true;
   return REAL_CLOCK.test(code) && ELAPSED_BOUND.test(code);
 }
+
+/**
+ * Driving the real runner, which is the other way to depend on the clock.
+ *
+ * `runClaudeWithTimeout` spawns a stub and enforces `timeoutSeconds` and
+ * `killAfterSeconds` against the wall clock, so the suite is asserting what
+ * happens inside a real one- to four-second window. Nothing in it reads a
+ * clock itself, so neither of the other two shapes sees it.
+ *
+ * Issue #959 is why this is here. It drained eleven `claude_runner_*` suites
+ * off `Deno.env`, which is exactly the right fix and moved them out of the
+ * mutator list — straight into the parallel pass, where a one-second budget
+ * shared with nine workers is not a test but a coin toss. Both halves of the
+ * signal are required: naming `timeoutSeconds` in a config object a test
+ * merely inspects is not running against it.
+ */
+const REAL_DEADLINE_RUN = /await runClaudeWith(Timeout|Retry)\(/;
+
+/** The deadline arguments that make such a run wall-clock bound. */
+const REAL_DEADLINE_ARG = /\b(timeoutSeconds|killAfterSeconds)\s*:/;
 
 /**
  * The shared ratio helper, which does its callers' timing for them.
@@ -292,9 +326,18 @@ const GROWTH_HELPER =
 /** A reading of the real clock. */
 const REAL_CLOCK = /performance\.now\(\)|Date\.now\(\)/;
 
-/** An elapsed value compared against a bound. */
+/**
+ * An elapsed value compared against a bound.
+ *
+ * The bound is any number, not only a millisecond-scale one. Issue #959
+ * drained the `claude_runner_*` suites off `Deno.env`, which moved them out
+ * of the mutator list and would have put them in the parallel pass — and they
+ * assert `elapsedSeconds < 4` on a real `Date.now()` delta. A three-digit
+ * minimum read that as "not a budget"; four seconds of slack shared with nine
+ * other workers is the tightest budget in the tree.
+ */
 const ELAPSED_BOUND =
-  /(took|elapsed|duration|spent|ms)\w*\s*<\s*[0-9_]{3,}|<\s*[A-Z_]*BUDGET/;
+  /(took|elapsed|duration|spent|ms)\w*\s*<\s*[0-9_]+|<\s*[A-Z_]*BUDGET/;
 
 /**
  * Test files that race a real subprocess against the clock (Issue #940).

@@ -403,3 +403,45 @@ Deno.test("parallel-unsafe manifest - a URL in a literal is not a line comment (
 Deno.test("parallel-unsafe manifest - block comments go whole (Issue #940)", () => {
   assertEquals(stripComments("a/* one\ntwo */b").replace(/\s+/g, ""), "ab");
 });
+
+Deno.test("parallel-unsafe manifest - driving the real runner is measuring (Issue #940)", () => {
+  // Issue #959 drained eleven `claude_runner_*` suites off `Deno.env` — the
+  // right fix, and it moved them out of the mutator list and straight at the
+  // parallel pass. Nothing in them reads a clock: the runner enforces
+  // `timeoutSeconds` against the wall clock for them, and a one-second budget
+  // shared with nine workers is a coin toss, not a test.
+  assert(
+    measuresWallClock(
+      'await runClaudeWithTimeout({ prompt: "p", timeoutSeconds: 1 });',
+    ),
+  );
+  assert(
+    measuresWallClock(
+      'await runClaudeWithRetry({ prompt: "p", killAfterSeconds: 2 });',
+    ),
+  );
+});
+
+Deno.test("parallel-unsafe manifest - a deadline a test only inspects is not measuring (Issue #940)", () => {
+  // Both halves are required. Plenty of suites build a policy object naming
+  // `timeoutSeconds` and assert on its shape without ever running anything;
+  // claiming those would pin real unit tests in the slow pass for nothing.
+  assertEquals(
+    measuresWallClock(
+      "const policy = { timeoutSeconds: 30 };\nassertEquals(policy.timeoutSeconds, 30);",
+    ),
+    false,
+  );
+});
+
+Deno.test("parallel-unsafe manifest - a seconds-scale bound is still a bound (Issue #940)", () => {
+  // `elapsedSeconds < 4` is the tightest budget in the tree, and a
+  // three-digit minimum read it as "not a budget" because it is not spelled
+  // in milliseconds.
+  assert(
+    measuresWallClock(
+      "const elapsedSeconds = (Date.now() - started) / 1000;\n" +
+        "assert(elapsedSeconds < 4);",
+    ),
+  );
+});
